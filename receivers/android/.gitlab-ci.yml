@@ -11,9 +11,11 @@ variables:
 
 buildAndDeployApk:
   stage: buildAndDeployApk
+  before_script:
+    - cd receivers/android
   script:
     - if [ -z "$ANDROID_VERSION_NAME" ] || [ -z "$ANDROID_VERSION_CODE" ]; then echo "Version name or code not specified. Skipping build."; exit 0; fi
-    - ./receivers/android/gradlew --stacktrace assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
+    - ./gradlew --stacktrace assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
     - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fcast-release.apk
     - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fastcast-release.apk
   when: manual
