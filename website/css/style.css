@@ -1,0 +1,299 @@
+html, body, .body {
+		max-width: 100%;
+		overflow-x: hidden;
+}
+
+.custom-font-size-1 {
+		font-size: 50px;
+}
+
+@media (min-width: 992px) {
+		.custom-font-size-1 {
+				font-size: 70px;
+		}
+}
+
+.btn-outline {
+		border-width: 1px;
+}
+
+@media (min-width: 992px) {
+		#header .header-nav-main nav > ul > li > a {
+				font-size: 14px;
+		}
+}
+
+.custom-stroke-text-effect-1 {
+		-webkit-text-fill-color: transparent;
+		-webkit-text-stroke-width: 1px;
+		-webkit-text-stroke-color: #777;
+		white-space: nowrap;
+}
+
+.custom-carousel-1 {
+		position: relative;
+		background: url(../../img/demos/app-landing/backgrounds/bg-smartphone.png);
+		width: 344px;
+		height: 636px;
+}
+
+.custom-carousel-1 .owl-carousel {
+		padding: 72px 0 0 3px;
+}
+
+.custom-carousel-1 .owl-carousel .owl-nav button.owl-next:before {
+		font-size: 32px !important;
+}
+
+.custom-carousel-1 .owl-carousel .owl-nav button.owl-prev {
+		left: -12px;
+}
+
+.custom-carousel-1 .owl-carousel .owl-nav button.owl-prev:before {
+		font-size: 32px !important;
+}
+
+.custom-call-to-action {
+		margin-left: 50px;
+		margin-right: 50px;
+		border-radius: 70px;
+}
+
+.custom-feature-box-1 .feature-box-icon {
+		width: 4.5em;
+		height: 4.5em;
+}
+
+.custom-feature-box-1 .feature-box-icon:after {
+		display: none !important;
+}
+
+@media (min-width: 992px) {
+		.custom-img-1 {
+				position: absolute;
+				top: -35%;
+				right: -25px;
+		}
+}
+
+.custom-svg-1 {
+		position: absolute;
+		right: -200%;
+		top: -60%;
+}
+
+@media (min-width: 992px) {
+		.custom-svg-1 {
+				right: -78%;
+		}
+}
+
+@media (min-width: 1200px) {
+		.custom-svg-1 {
+				right: -45%;
+		}
+}
+
+@media (min-width: 1440px) {
+		.custom-svg-1 {
+				right: -35%;
+		}
+}
+
+@media (min-width: 1680px) {
+		.custom-svg-1 {
+				right: -21%;
+		}
+}
+
+.custom-svg-2 {
+		position: absolute;
+		left: -120%;
+		top: -207%;
+		display: none;
+}
+
+@media (min-width: 992px) {
+		.custom-svg-2 {
+				display: block;
+		}
+}
+
+@media (min-width: 1200px) {
+		.custom-svg-2 {
+				left: -100%;
+		}
+}
+
+@media (min-width: 1440px) {
+		.custom-svg-2 {
+				left: -75%;
+		}
+}
+
+@media (min-width: 1680px) {
+		.custom-svg-2 {
+				left: -55%;
+		}
+}
+
+.custom-svg-3 {
+		position: absolute;
+		right: -120%;
+		top: 12%;
+		display: none;
+}
+
+@media (min-width: 992px) {
+		.custom-svg-3 {
+				display: block;
+		}
+}
+
+@media (min-width: 1200px) {
+		.custom-svg-3 {
+				right: -100%;
+		}
+}
+
+@media (min-width: 1440px) {
+		.custom-svg-3 {
+				right: -75%;
+		}
+}
+
+@media (min-width: 1680px) {
+		.custom-svg-3 {
+				right: -55%;
+		}
+}
+
+.custom-svg-4 {
+		position: absolute;
+		left: -120%;
+		top: 0%;
+		display: none;
+}
+
+@media (min-width: 992px) {
+		.custom-svg-4 {
+				display: block;
+		}
+}
+
+@media (min-width: 1200px) {
+		.custom-svg-4 {
+				left: -100%;
+		}
+}
+
+@media (min-width: 1440px) {
+		.custom-svg-4 {
+				left: -75%;
+		}
+}
+
+@media (min-width: 1680px) {
+		.custom-svg-4 {
+				left: -55%;
+		}
+}
+
+.custom-el {
+		position: absolute;
+		display: none;
+}
+
+@media (min-width: 992px) {
+		.custom-el {
+				display: block;
+		}
+}
+
+.custom-el-circle {
+		border: 2px solid #CCC;
+		border-radius: 50%;
+}
+
+.custom-el-rounded-rectangle {
+		border: 2px solid #CCC;
+		border-radius: 4px;
+}
+
+.custom-el-blur-1 {
+		filter: blur(1px);
+}
+
+.custom-el-blur-2 {
+		filter: blur(2px);
+}
+
+.custom-rotate-45 {
+		transform: rotate(45deg);
+}
+
+@media (min-width: 992px) {
+		.custom-steps-icons {
+				display: flex;
+		}
+}
+
+.custom-steps-icons .custom-steps-icon {
+		text-align: center;
+}
+
+.custom-steps-icons .custom-steps-icon .animated-icon {
+		border: 1px solid #d9d9d9;
+		padding: 14px;
+		border-radius: 50%;
+		max-width: 105px;
+		margin: 0 auto;
+}
+
+.custom-steps-icons .custom-steps-icon h4 {
+		font-size: 18px;
+		font-weight: bold;
+		letter-spacing: -0.5px;
+		display: inline-block;
+		margin-top: 5px;
+		margin-bottom: 15px;
+}
+
+@media (min-width: 992px) {
+		.custom-steps-icons .custom-steps-icon h4 {
+				margin-top: 10px;
+				margin-bottom: 0;
+		}
+}
+
+.custom-steps-icons .custom-steps-connect {
+		position: relative;
+		min-width: 115px;
+}
+
+.custom-steps-icons .custom-steps-connect-dots {
+		position: absolute;
+		top: 15%;
+		left: 5px;
+		visibility: hidden;
+}
+
+@media (min-width: 992px) {
+		.custom-steps-icons .custom-steps-connect-dots {
+				visibility: visible;
+		}
+}
+
+.custom-steps-icons .custom-steps-connect-point {
+		position: absolute;
+		top: 15%;
+		left: 98px;
+		margin-top: 15px;
+		visibility: hidden;
+}
+
+@media (min-width: 992px) {
+		.custom-steps-icons .custom-steps-connect-point {
+				visibility: visible;
+		}
+}
