@@ -30,6 +30,9 @@ buildAndDeployPlayStoreAab:
   script:
     - if [ -z "$ANDROID_VERSION_NAME" ] || [ -z "$ANDROID_VERSION_CODE" ]; then echo "Version name or code not specified. Skipping build."; exit 0; fi
     - ./gradlew --stacktrace assemblePlaystoreRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
+    - ls -la ./app/build/outputs/
+    - ls -la ./app/build/outputs/aab/playstoreRelease
+    - ls -la ./app/build/outputs/aab/release
     - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fcast-release.apk
     - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fastcast-release.apk
     - echo $ANDROID_VERSION_CODE > /var/www/html/fastcast-version.txt
