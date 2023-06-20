@@ -2,16 +2,15 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.serialization' version '1.8.10'
-    id 'org.ajoberstar.grgit' version '1.7.2'
 }
 
 ext {
-    gitVersionName = grgit.describe()
-    gitVersionCode = gitVersionName != null && gitVersionName.isInteger() ? gitVersionName.toInteger() : 1
+    currentVersionName = project.hasProperty('versionName') ? project.property('versionName') : '1.0.0'
+    currentVersionCode = project.hasProperty('versionCode') ? Integer.parseInt(project.property('versionCode')) : 1
 }
 
-println("Version Name: $gitVersionName")
-println("Version Code: $gitVersionCode")
+println("Version Name: $currentVersionName")
+println("Version Code: $currentVersionCode")
 
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('/opt/key.properties')
@@ -27,8 +26,8 @@ android {
         applicationId "com.futo.fcast.receiver"
         minSdk 24
         targetSdk 33
-        versionCode gitVersionCode
-        versionName gitVersionName
+        versionCode currentVersionCode
+        versionName currentVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
