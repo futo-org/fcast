@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var _textIPs: TextView
     private lateinit var _textProgress: TextView
     private lateinit var _updateSpinner: ImageView
+    private lateinit var _layoutUpdate: LinearLayout;
     private var _updating: Boolean = false
 
     private val _scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
@@ -44,10 +45,10 @@ class MainActivity : AppCompatActivity() {
         _textIPs = findViewById(R.id.text_ips)
         _textProgress = findViewById(R.id.text_progress)
         _updateSpinner = findViewById(R.id.update_spinner)
+        _layoutUpdate = findViewById(R.id.layout_update)
 
         _text.text = getString(R.string.checking_for_updates)
         _buttonUpdate.visibility = View.INVISIBLE
-        (_updateSpinner.drawable as Animatable?)?.start()
 
         _buttonUpdate.setOnClickListener {
             if (_updating) {
@@ -58,8 +59,18 @@ class MainActivity : AppCompatActivity() {
             update()
         }
 
-        _scope.launch(Dispatchers.IO) {
-            checkForUpdates()
+        if (BuildConfig.IS_PLAYSTORE_VERSION) {
+            _layoutUpdate.visibility = View.GONE
+            _updateSpinner.visibility = View.GONE
+            (_updateSpinner.drawable as Animatable?)?.stop()
+        } else {
+            _layoutUpdate.visibility = View.VISIBLE
+            _updateSpinner.visibility = View.VISIBLE
+            (_updateSpinner.drawable as Animatable?)?.start()
+
+            _scope.launch(Dispatchers.IO) {
+                checkForUpdates()
+            }
         }
 
         _textIPs.text = "IPs\n" + getIPs().joinToString("\n") + "\n\nPort\n46899"
@@ -177,6 +188,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun checkForUpdates() {
+        Log.i(TAG, "Checking for updates...");
+
         withContext(Dispatchers.IO) {
             try {
                 val latestVersion = downloadVersionCode()

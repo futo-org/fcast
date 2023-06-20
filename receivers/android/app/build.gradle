@@ -32,12 +32,32 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    flavorDimensions "type"
+    productFlavors {
+        playstore {
+            dimension "type"
+            applicationIdSuffix ".playstore"
+            versionNameSuffix "-playstore"
+            buildConfigField "boolean", "IS_PLAYSTORE_VERSION", "true"
+        }
+        defaultFlavor {
+            dimension "type"
+            buildConfigField "boolean", "IS_PLAYSTORE_VERSION", "false"
+        }
+    }
+
     signingConfigs {
         release {
             keyAlias keystoreProperties['keyAlias']
             keyPassword keystoreProperties['keyPassword']
             storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
             storePassword keystoreProperties['storePassword']
+        }
+    }
+
+    sourceSets {
+        playstore {
+            manifest.srcFile 'src/playstore/AndroidManifest.xml'
         }
     }
 

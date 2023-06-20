@@ -1,5 +1,6 @@
 stages:
   - buildAndDeployApk
+  - buildAndDeployPlayStoreAab
 
 variables:
   ANDROID_VERSION_NAME: 
@@ -18,4 +19,19 @@ buildAndDeployApk:
     - ./gradlew --stacktrace assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
     - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fcast-release.apk
     - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fastcast-release.apk
+    - echo $ANDROID_VERSION_CODE > /var/www/html/fastcast-version.txt
+    - echo $ANDROID_VERSION_CODE > /var/www/html/fcast-version.txt
+  when: manual
+
+buildAndDeployPlayStoreAab:
+  stage: buildAndDeployPlayStoreAab
+  before_script:
+    - cd receivers/android
+  script:
+    - if [ -z "$ANDROID_VERSION_NAME" ] || [ -z "$ANDROID_VERSION_CODE" ]; then echo "Version name or code not specified. Skipping build."; exit 0; fi
+    - ./gradlew --stacktrace assemblePlaystoreRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
+    - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fcast-release.apk
+    - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fastcast-release.apk
+    - echo $ANDROID_VERSION_CODE > /var/www/html/fastcast-version.txt
+    - echo $ANDROID_VERSION_CODE > /var/www/html/fcast-version.txt
   when: manual
