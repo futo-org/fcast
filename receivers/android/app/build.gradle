@@ -1,0 +1,72 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.serialization' version '1.8.10'
+    id 'org.ajoberstar.grgit' version '1.7.2'
+}
+
+ext {
+    gitVersionName = grgit.describe()
+    gitVersionCode = gitVersionName != null && gitVersionName.isInteger() ? gitVersionName.toInteger() : 1
+}
+
+println("Version Name: $gitVersionName")
+println("Version Code: $gitVersionCode")
+
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('/opt/key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace 'com.futo.fcast.receiver'
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.futo.fcast.receiver"
+        minSdk 24
+        targetSdk 33
+        versionCode gitVersionCode
+        versionName gitVersionName
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        release {
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
+            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+            storePassword keystoreProperties['storePassword']
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+
+    implementation 'androidx.core:core-ktx:1.7.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.8.0'
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.0"
+    implementation 'com.google.android.exoplayer:exoplayer:2.18.6'
+    implementation "com.squareup.okhttp3:okhttp:4.11.0"
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+}

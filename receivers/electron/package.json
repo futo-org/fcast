@@ -1,0 +1,21 @@
+{
+  "name": "fcast-receiver",
+  "version": "1.0.7",
+  "description": "An application implementing a FCast receiver.",
+  "main": "dist/bundle.js",
+  "author": "Koen Jeukendrup",
+  "license": "MIT",
+  "scripts": {
+    "build": "rm -rf dist/ && webpack --config ./webpack.config.js && cp src/*.html dist/ && cp src/*.js dist/ && cp src/*.css dist/ && cp app.ico dist/ && cp app.png dist/",
+    "start": "npm run build && electron ."
+  },
+  "devDependencies": {
+    "@types/workerpool": "^6.1.1",
+    "electron": "^22.2.0",
+    "mdns-js": "github:mdns-js/node-mdns-js",
+    "ts-loader": "^9.4.2",
+    "typescript": "^4.9.5",
+    "webpack": "^5.75.0",
+    "webpack-cli": "^5.0.1"
+  }
+}

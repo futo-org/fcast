@@ -1,0 +1,13 @@
+stages:
+- buildAndDeployApk
+
+buildAndDeployApk:
+  stage: buildAndDeployApk
+  script:
+    - ./gradlew --stacktrace assembleRelease
+    - cp ./app/build/outputs/apk/release/app-release.apk /var/www/html/fcast-release.apk
+    - git describe --tags > /var/www/html/fcast-version.txt
+  only:
+    - tags
+  except:
+    - branches
