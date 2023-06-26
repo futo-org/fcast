@@ -1,5 +1,5 @@
 deployWebsite:
   stage: deployWebsite
   script:
-    - wrangler pages deploy website --project-name=fcast --branch=production
+    - wrangler pages deploy website --project-name=fcast --branch=main
   when: manual
