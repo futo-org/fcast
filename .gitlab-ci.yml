@@ -1,2 +1,3 @@
 include:
-  - local: 'receivers/android/.gitlab-ci.yml'
+  - receivers-android: 'receivers/android/.gitlab-ci.yml'
+  - website: 'website/.gitlab-ci.yml'

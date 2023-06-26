@@ -1,0 +1,8 @@
+stages:
+  - deployWebsite
+
+deployWebsite:
+  stage: deployWebsite
+  script:
+    - wrangler pages publish website --project-name=fcast
+  when: manual
