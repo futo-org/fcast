@@ -1,6 +1,3 @@
-stages:
-  - deployWebsite
-
 deployWebsite:
   stage: deployWebsite
   script:

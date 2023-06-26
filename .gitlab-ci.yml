@@ -1,3 +1,16 @@
+stages:
+  - buildAndDeployApk
+  - buildAndDeployPlayStoreAab
+  - deployWebsite
+
+variables:
+  ANDROID_VERSION_NAME: 
+    value: ""
+    description: "Enter the version name here (e.g. 1.0.1)."
+  ANDROID_VERSION_CODE: 
+    value: ""
+    description: "Enter the version code here (e.g. 1)."
+
 include:
   - local: 'receivers/android/.gitlab-ci.yml'
   - local: 'website/.gitlab-ci.yml'
