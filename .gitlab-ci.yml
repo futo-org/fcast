@@ -2,6 +2,7 @@ stages:
   - buildAndDeployApk
   - buildAndDeployPlayStoreAab
   - deployWebsite
+  - buildAndDeployElectron
 
 variables:
   ANDROID_VERSION_NAME: 
