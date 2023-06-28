@@ -1,5 +1,7 @@
 deployWebsite:
   stage: deployWebsite
+  before_script:
+    - cd website
   script:
-    - wrangler pages deploy website --project-name=fcast --branch=main
+    - sh deploy.sh
   when: manual
