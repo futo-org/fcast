@@ -17,10 +17,12 @@ cp -r vendor $DOCUMENT_ROOT/
 
 # Notify Cloudflare to wipe the CDN cache
 echo "Purging Cloudflare cache..."
-curl -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache" \
+curl -X POST "https://api.cloudflare.com/client/v4/zones/018ad3b2bbb3bca14f2dd793ddb78de1/purge_cache" \
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
      -H "Content-Type: application/json" \
      --data '{"purge_everything":true}'
+
+sleep 30
 
 # Take site back online
 echo "Bringing site back online..."
