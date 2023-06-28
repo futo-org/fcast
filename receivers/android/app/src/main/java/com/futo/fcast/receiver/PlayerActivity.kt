@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.*
 import android.os.Bundle
 import android.util.Log
+import android.view.Window
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
@@ -23,6 +25,7 @@ class PlayerActivity : AppCompatActivity() {
     private var _shouldPlaybackRestartOnConnectivity: Boolean = false
     private lateinit var _connectivityManager: ConnectivityManager
     private lateinit var _scope: CoroutineScope
+    private  var _wasPlaying = false;
 
     val currentPosition get() = _exoPlayer.currentPosition
     val isPlaying get() = _exoPlayer.isPlaying
@@ -137,6 +140,20 @@ class PlayerActivity : AppCompatActivity() {
         TcpListenerService.activityCount++
     }
 
+    override fun onPause() {
+        super.onPause()
+
+        _wasPlaying = _exoPlayer.isPlaying
+        _exoPlayer.pause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (_wasPlaying) {
+            _exoPlayer.play()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
@@ -186,6 +203,7 @@ class PlayerActivity : AppCompatActivity() {
             _exoPlayer.seekTo(playMessage.time * 1000)
         }
 
+        _wasPlaying = false
         _exoPlayer.playWhenReady = true
         _exoPlayer.prepare()
         _exoPlayer.play()
