@@ -1,11 +1,7 @@
 buildAndDeployElectron:
   stage: buildAndDeployElectron
   before_script:
-    - cd receivers/electron/packaging
+    - cd receivers/electron
   script:
-    - npm install
-    - sh package-all.sh
-    - cp fcast-receiver-*.zip /var/www/html/fcastreceiver/
-    - cp ../package.json /var/www/html/fcastreceiver/
-    - cp -r ../dist /var/www/html/fcastreceiver/
+    - sh deploy.sh
   when: manual
