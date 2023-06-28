@@ -25,6 +25,8 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/ff904f7348b9513064b23e8
      -H "Content-Type: application/json" \
      --data '{"purge_everything":true}'
 
+sleep 30
+
 # Take site back online
 echo "Bringing site back online..."
 rm $DOCUMENT_ROOT/maintenance.file
