@@ -44,7 +44,7 @@ class TcpListenerService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("TCP Listener Service")
             .setContentText("Listening on port $PORT")
-            .setSmallIcon(R.drawable.ic_launcher_background)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
         startForeground(NOTIFICATION_ID, notification)

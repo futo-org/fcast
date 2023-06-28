@@ -2,9 +2,11 @@ package com.futo.fcast.receiver
 
 import android.content.Context
 import android.net.*
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Window
+import android.view.WindowInsets
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.exoplayer2.*
@@ -102,6 +104,7 @@ class PlayerActivity : AppCompatActivity() {
         Log.i(TAG, "onCreate")
 
         setContentView(R.layout.activity_player)
+        setFullScreen()
 
         _playerControlView = findViewById(R.id.player_control_view)
         _scope = CoroutineScope(Dispatchers.Main)
@@ -138,6 +141,25 @@ class PlayerActivity : AppCompatActivity() {
 
         instance = this
         TcpListenerService.activityCount++
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) setFullScreen()
+    }
+
+    private fun setFullScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.hide(WindowInsets.Type.statusBars())
+            window.insetsController?.hide(WindowInsets.Type.navigationBars())
+            window.insetsController?.hide(WindowInsets.Type.systemBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN
+            )
+        }
     }
 
     override fun onPause() {
