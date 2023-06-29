@@ -24,11 +24,10 @@ A "receiver", in this context, is a software implementation running on various p
 - Receivers
   - [**Android**](receivers/android) native.
   - [**MacOS, Windows, Linux**](receivers/electron) electron.
+  - Apple TV (future)
 
 - Clients
   - [**Grayjay**](https://gitlab.futo.org/videostreaming/platformplayer) is a player that exposes multiple video websites as sources in the app.
-
-  - Apple TV (future)
   - Browser plugin (future)
 
 ## Contributing
