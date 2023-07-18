@@ -95,8 +95,6 @@ class TcpListenerService : Service() {
         Log.i(TAG, "Started ListenerService")
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
-        onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
-
         return START_STICKY
     }
 
