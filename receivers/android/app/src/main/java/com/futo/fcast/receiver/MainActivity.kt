@@ -381,6 +381,10 @@ class MainActivity : AppCompatActivity() {
                     continue
                 }
 
+                if (addr.address.size != 4) {
+                    continue
+                }
+
                 Log.i(TcpListenerService.TAG, "Running on ${addr.hostAddress}:${TcpListenerService.PORT}")
                 addr.hostAddress?.let { ips.add(it) }
             }
