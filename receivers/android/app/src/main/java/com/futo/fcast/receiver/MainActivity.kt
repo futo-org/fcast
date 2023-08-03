@@ -1,12 +1,14 @@
 package com.futo.fcast.receiver
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.graphics.drawable.Animatable
+import android.graphics.drawable.TransitionDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,10 +16,21 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.android.exoplayer2.ExoPlayer
+import com.google.android.exoplayer2.MediaItem
+import com.google.android.exoplayer2.Player
+import com.google.android.exoplayer2.SimpleExoPlayer
+import com.google.android.exoplayer2.ui.PlayerView
+import com.google.android.exoplayer2.ui.StyledPlayerView
+import com.google.android.exoplayer2.upstream.DataSource
+import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
+import com.google.android.exoplayer2.util.Util
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import java.io.InputStream
@@ -31,7 +44,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var _textIPs: TextView
     private lateinit var _textProgress: TextView
     private lateinit var _updateSpinner: ImageView
-    private lateinit var _layoutUpdate: LinearLayout;
+    private lateinit var _imageSpinner: ImageView
+    private lateinit var _layoutConnectionInfo: ConstraintLayout
+    private lateinit var _videoBackground: StyledPlayerView
+    private lateinit var _player: ExoPlayer
     private var _updating: Boolean = false
 
     private val _scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
@@ -45,10 +61,15 @@ class MainActivity : AppCompatActivity() {
         _textIPs = findViewById(R.id.text_ips)
         _textProgress = findViewById(R.id.text_progress)
         _updateSpinner = findViewById(R.id.update_spinner)
-        _layoutUpdate = findViewById(R.id.layout_update)
+        _imageSpinner = findViewById(R.id.image_spinner)
+        _layoutConnectionInfo = findViewById(R.id.layout_connection_info)
+        _videoBackground = findViewById(R.id.video_background)
+
+        startVideo()
+        startAnimations()
 
         _text.text = getString(R.string.checking_for_updates)
-        _buttonUpdate.visibility = View.INVISIBLE
+        _buttonUpdate.visibility = View.GONE
 
         _buttonUpdate.setOnClickListener {
             if (_updating) {
@@ -60,11 +81,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (BuildConfig.IS_PLAYSTORE_VERSION) {
-            _layoutUpdate.visibility = View.GONE
+            _text.visibility = View.GONE
+            _buttonUpdate.visibility = View.GONE
             _updateSpinner.visibility = View.GONE
             (_updateSpinner.drawable as Animatable?)?.stop()
         } else {
-            _layoutUpdate.visibility = View.VISIBLE
+            _text.visibility = View.VISIBLE
+            _buttonUpdate.visibility = View.VISIBLE
             _updateSpinner.visibility = View.VISIBLE
             (_updateSpinner.drawable as Animatable?)?.start()
 
@@ -86,10 +109,23 @@ class MainActivity : AppCompatActivity() {
         requestSystemAlertWindowPermission()
     }
 
+    override fun onPause() {
+        super.onPause()
+        _player.playWhenReady = false
+        _player.pause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        _player.playWhenReady = true
+        _player.play()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         InstallReceiver.onReceiveResult = null
         _scope.cancel()
+        _player.release()
         TcpListenerService.activityCount--
     }
 
@@ -100,6 +136,22 @@ class MainActivity : AppCompatActivity() {
         }
 
         startService(Intent(this, TcpListenerService::class.java))
+    }
+
+    private fun startVideo() {
+        _player = ExoPlayer.Builder(this).build()
+        _videoBackground.player = _player
+
+        val mediaItem = MediaItem.fromUri(Uri.parse("android.resource://" + packageName + "/" + R.raw.c))
+        _player.setMediaItem(mediaItem)
+        _player.prepare()
+        _player.repeatMode = Player.REPEAT_MODE_ALL
+        _player.playWhenReady = true
+    }
+
+    private fun startAnimations() {
+        //Spinner animation
+        (_imageSpinner.drawable as Animatable?)?.start()
     }
 
     private fun checkAndRequestPermissions(): Boolean {
@@ -202,7 +254,7 @@ class MainActivity : AppCompatActivity() {
                         withContext(Dispatchers.Main) {
                             try {
                                 (_updateSpinner.drawable as Animatable?)?.stop()
-                                _updateSpinner.visibility = View.INVISIBLE
+                                _updateSpinner.visibility = View.GONE
                                 _text.text = resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update)
                                 _buttonUpdate.visibility = View.VISIBLE
                             } catch (e: Throwable) {
@@ -212,7 +264,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     } else {
                         withContext(Dispatchers.Main) {
-                            _updateSpinner.visibility = View.INVISIBLE
+                            _updateSpinner.visibility = View.GONE
                             _text.text = getString(R.string.no_updates_available)
                             Toast.makeText(this@MainActivity, "Already on latest version", Toast.LENGTH_LONG).show();
                         }
@@ -251,7 +303,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun update() {
         _updateSpinner.visibility = View.VISIBLE
-        _buttonUpdate.visibility = Button.INVISIBLE
+        _buttonUpdate.visibility = Button.GONE
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         _text.text = resources.getText(R.string.downloading_update)
