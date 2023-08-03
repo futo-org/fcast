@@ -68,8 +68,8 @@ class MainActivity : AppCompatActivity() {
         startVideo()
         startAnimations()
 
-        _text.text = getString(R.string.checking_for_updates)
-        _buttonUpdate.visibility = View.GONE
+        setText(getString(R.string.checking_for_updates))
+        _buttonUpdate.visibility = View.INVISIBLE
 
         _buttonUpdate.setOnClickListener {
             if (_updating) {
@@ -81,13 +81,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (BuildConfig.IS_PLAYSTORE_VERSION) {
-            _text.visibility = View.GONE
-            _buttonUpdate.visibility = View.GONE
-            _updateSpinner.visibility = View.GONE
+            _text.visibility = View.INVISIBLE
+            _buttonUpdate.visibility = View.INVISIBLE
+            _updateSpinner.visibility = View.INVISIBLE
             (_updateSpinner.drawable as Animatable?)?.stop()
         } else {
             _text.visibility = View.VISIBLE
-            _buttonUpdate.visibility = View.VISIBLE
             _updateSpinner.visibility = View.VISIBLE
             (_updateSpinner.drawable as Animatable?)?.start()
 
@@ -239,6 +238,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setText(text: CharSequence?) {
+        if (text == null) {
+            _text.visibility = View.INVISIBLE
+            _text.text = ""
+        } else {
+            _text.visibility = View.VISIBLE
+            _text.text = text
+        }
+    }
+
     private suspend fun checkForUpdates() {
         Log.i(TAG, "Checking for updates...");
 
@@ -254,8 +263,8 @@ class MainActivity : AppCompatActivity() {
                         withContext(Dispatchers.Main) {
                             try {
                                 (_updateSpinner.drawable as Animatable?)?.stop()
-                                _updateSpinner.visibility = View.GONE
-                                _text.text = resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update)
+                                _updateSpinner.visibility = View.INVISIBLE
+                                setText(resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update))
                                 _buttonUpdate.visibility = View.VISIBLE
                             } catch (e: Throwable) {
                                 Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show();
@@ -264,9 +273,11 @@ class MainActivity : AppCompatActivity() {
                         }
                     } else {
                         withContext(Dispatchers.Main) {
-                            _updateSpinner.visibility = View.GONE
-                            _text.text = getString(R.string.no_updates_available)
-                            Toast.makeText(this@MainActivity, "Already on latest version", Toast.LENGTH_LONG).show();
+                            _updateSpinner.visibility = View.INVISIBLE
+                            _buttonUpdate.visibility = View.INVISIBLE
+                            //setText(getString(R.string.no_updates_available))
+                            setText(null)
+                            //Toast.makeText(this@MainActivity, "Already on latest version", Toast.LENGTH_LONG).show();
                         }
                     }
                 } else {
@@ -303,10 +314,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun update() {
         _updateSpinner.visibility = View.VISIBLE
-        _buttonUpdate.visibility = Button.GONE
+        _buttonUpdate.visibility = Button.INVISIBLE
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        _text.text = resources.getText(R.string.downloading_update)
+        setText(resources.getText(R.string.downloading_update))
         (_updateSpinner.drawable as Animatable?)?.start()
 
         _scope.launch(Dispatchers.IO) {
@@ -381,7 +392,7 @@ class MainActivity : AppCompatActivity() {
 
             withContext(Dispatchers.Main) {
                 _textProgress.text = ""
-                _text.text = resources.getText(R.string.installing_update)
+                setText(resources.getText(R.string.installing_update))
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Exception thrown while downloading and installing latest version of app.", e)
@@ -405,10 +416,10 @@ class MainActivity : AppCompatActivity() {
 
         if (result == null || result.isBlank()) {
             _updateSpinner.setImageResource(R.drawable.ic_update_success)
-            _text.text = resources.getText(R.string.success)
+            setText(resources.getText(R.string.success))
         } else {
             _updateSpinner.setImageResource(R.drawable.ic_update_fail)
-            _text.text = "${resources.getText(R.string.failed_to_update_with_error)}: '$result'."
+            setText("${resources.getText(R.string.failed_to_update_with_error)}: '$result'.")
         }
     }
 
