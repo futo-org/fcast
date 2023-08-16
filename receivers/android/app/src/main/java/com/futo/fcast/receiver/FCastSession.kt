@@ -36,7 +36,7 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
     private var _bytesRead = 0
     private var _packetLength = 0
     private var _state = SessionState.WaitingForLength
-    private var _outputStream: DataOutputStream? = DataOutputStream(_socket.outputStream);
+    private var _outputStream: DataOutputStream? = DataOutputStream(_socket.outputStream)
 
     fun sendPlaybackUpdate(value: PlaybackUpdateMessage) {
         send(Opcode.PlaybackUpdate, value)
@@ -48,40 +48,40 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
 
     private inline fun <reified T> send(opcode: Opcode, message: T) {
         try {
-            val data: ByteArray;
-            var jsonString: String? = null;
+            val data: ByteArray
+            var jsonString: String? = null
             if (message != null) {
-                jsonString = Json.encodeToString(message);
-                data = jsonString.encodeToByteArray();
+                jsonString = Json.encodeToString(message)
+                data = jsonString.encodeToByteArray()
             } else {
-                data = ByteArray(0);
+                data = ByteArray(0)
             }
 
-            val size = 1 + data.size;
-            val outputStream = _outputStream;
+            val size = 1 + data.size
+            val outputStream = _outputStream
             if (outputStream == null) {
-                Log.w(TAG, "Failed to send $size bytes, output stream is null.");
-                return;
+                Log.w(TAG, "Failed to send $size bytes, output stream is null.")
+                return
             }
 
-            val serializedSizeLE = ByteArray(4);
-            serializedSizeLE[0] = (size and 0xff).toByte();
-            serializedSizeLE[1] = (size shr 8 and 0xff).toByte();
-            serializedSizeLE[2] = (size shr 16 and 0xff).toByte();
-            serializedSizeLE[3] = (size shr 24 and 0xff).toByte();
-            outputStream.write(serializedSizeLE);
+            val serializedSizeLE = ByteArray(4)
+            serializedSizeLE[0] = (size and 0xff).toByte()
+            serializedSizeLE[1] = (size shr 8 and 0xff).toByte()
+            serializedSizeLE[2] = (size shr 16 and 0xff).toByte()
+            serializedSizeLE[3] = (size shr 24 and 0xff).toByte()
+            outputStream.write(serializedSizeLE)
 
-            val opcodeBytes = ByteArray(1);
-            opcodeBytes[0] = opcode.value;
-            outputStream.write(opcodeBytes);
+            val opcodeBytes = ByteArray(1)
+            opcodeBytes[0] = opcode.value
+            outputStream.write(opcodeBytes)
 
             if (data.isNotEmpty()) {
-                outputStream.write(data);
+                outputStream.write(data)
             }
 
-            Log.d(TAG, "Sent $size bytes: '$jsonString'.");
+            Log.d(TAG, "Sent $size bytes: '$jsonString'.")
         } catch (e: Throwable) {
-            Log.i(TAG, "Failed to send message.", e);
+            Log.i(TAG, "Failed to send message.", e)
         }
     }
 

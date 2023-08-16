@@ -108,7 +108,7 @@ class TcpListenerService : Service() {
         _discoveryService = null
 
         _serverSocket?.close()
-        _serverSocket = null;
+        _serverSocket = null
 
         _listenThread?.join()
         _listenThread = null

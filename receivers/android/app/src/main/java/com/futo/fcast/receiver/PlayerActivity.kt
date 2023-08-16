@@ -1,18 +1,25 @@
 package com.futo.fcast.receiver
 
 import android.content.Context
+import android.graphics.drawable.Animatable
 import android.net.*
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
+import android.view.View
 import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.ImageView
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.constraintlayout.widget.ConstraintLayout
 import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.source.dash.DashMediaSource
 import com.google.android.exoplayer2.source.hls.HlsMediaSource
+import com.google.android.exoplayer2.text.ExoplayerCuesDecoder
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
 import com.google.android.exoplayer2.ui.StyledPlayerView
 import com.google.android.exoplayer2.upstream.DefaultDataSource
@@ -20,14 +27,18 @@ import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
+import kotlin.math.max
 
 class PlayerActivity : AppCompatActivity() {
     private lateinit var _playerControlView: StyledPlayerView
+    private lateinit var _imageSpinner: ImageView
+    private lateinit var _textMessage: TextView
+    private lateinit var _layoutOverlay: ConstraintLayout
     private lateinit var _exoPlayer: ExoPlayer
     private var _shouldPlaybackRestartOnConnectivity: Boolean = false
     private lateinit var _connectivityManager: ConnectivityManager
     private lateinit var _scope: CoroutineScope
-    private  var _wasPlaying = false;
+    private  var _wasPlaying = false
 
     val currentPosition get() = _exoPlayer.currentPosition
     val isPlaying get() = _exoPlayer.isPlaying
@@ -59,15 +70,24 @@ class PlayerActivity : AppCompatActivity() {
     private val _playerEventListener = object: Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             super.onPlaybackStateChanged(playbackState)
+            Log.i(TAG, "onPlaybackStateChanged playbackState=$playbackState")
 
             if (_shouldPlaybackRestartOnConnectivity && playbackState == ExoPlayer.STATE_READY) {
                 Log.i(TAG, "_shouldPlaybackRestartOnConnectivity=false")
                 _shouldPlaybackRestartOnConnectivity = false
             }
+
+            if (playbackState == ExoPlayer.STATE_READY) {
+                setStatus(false, null)
+            } else if (playbackState == ExoPlayer.STATE_BUFFERING) {
+                setStatus(true, null)
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             super.onPlayerError(error)
+
+            Log.e(TAG, "onPlayerError: $error")
 
             when (error.errorCode) {
                 PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
@@ -83,6 +103,8 @@ class PlayerActivity : AppCompatActivity() {
                     _shouldPlaybackRestartOnConnectivity = true
                 }
             }
+
+            setStatus(false, getFullExceptionMessage(error))
         }
 
         override fun onVolumeChanged(volume: Float) {
@@ -107,7 +129,12 @@ class PlayerActivity : AppCompatActivity() {
         setFullScreen()
 
         _playerControlView = findViewById(R.id.player_control_view)
+        _imageSpinner = findViewById(R.id.image_spinner)
+        _textMessage = findViewById(R.id.text_message)
+        _layoutOverlay = findViewById(R.id.layout_overlay)
         _scope = CoroutineScope(Dispatchers.Main)
+
+        setStatus(true, null)
 
         val trackSelector = DefaultTrackSelector(this)
         trackSelector.parameters = trackSelector.parameters
@@ -146,6 +173,35 @@ class PlayerActivity : AppCompatActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) setFullScreen()
+    }
+
+    private fun getFullExceptionMessage(ex: Throwable): String {
+        val messages = mutableListOf<String>()
+        var current: Throwable? = ex
+        while (current != null) {
+            messages.add(current.message ?: "Unknown error")
+            current = current.cause
+        }
+        return messages.joinToString(separator = " → ")
+    }
+
+    private fun setStatus(isLoading: Boolean, message: String?) {
+        if (isLoading) {
+            (_imageSpinner.drawable as Animatable?)?.start()
+            _imageSpinner.visibility = View.VISIBLE
+        } else {
+            (_imageSpinner.drawable as Animatable?)?.stop()
+            _imageSpinner.visibility = View.GONE
+        }
+
+        if (message != null) {
+            _textMessage.visibility = View.VISIBLE
+            _textMessage.text = message
+        } else {
+            _textMessage.visibility = View.GONE
+        }
+
+        _layoutOverlay.visibility = if (isLoading || message != null) View.VISIBLE else View.GONE
     }
 
     private fun setFullScreen() {
@@ -189,6 +245,28 @@ class PlayerActivity : AppCompatActivity() {
         TcpListenerService.activityCount--
     }
 
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                val newPosition = _exoPlayer.currentPosition - 10000
+                _exoPlayer.seekTo(max(0, newPosition))
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                val newPosition = _exoPlayer.currentPosition + 10000
+                _exoPlayer.seekTo(newPosition)
+                return true
+            }
+            KeyEvent.KEYCODE_BACK -> {
+                if (_playerControlView.isControllerFullyVisible) {
+                    _playerControlView.hideController()
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
     fun play(playMessage: PlayMessage) {
         val mediaItemBuilder = MediaItem.Builder()
         if (playMessage.container.isNotEmpty()) {
@@ -225,6 +303,7 @@ class PlayerActivity : AppCompatActivity() {
             _exoPlayer.seekTo(playMessage.time * 1000)
         }
 
+        setStatus(true, null)
         _wasPlaying = false
         _exoPlayer.playWhenReady = true
         _exoPlayer.prepare()
@@ -250,5 +329,8 @@ class PlayerActivity : AppCompatActivity() {
     companion object {
         var instance: PlayerActivity? = null
         private const val TAG = "PlayerActivity"
+
+        private const val SEEK_BACKWARD_MILLIS = 10_000
+        private const val SEEK_FORWARD_MILLIS = 10_000
     }
 }

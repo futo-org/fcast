@@ -47,8 +47,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var _imageSpinner: ImageView
     private lateinit var _layoutConnectionInfo: ConstraintLayout
     private lateinit var _videoBackground: StyledPlayerView
+    private lateinit var _viewDemo: View
     private lateinit var _player: ExoPlayer
     private var _updating: Boolean = false
+    private var _demoClickCount = 0
+    private var _lastDemoToast: Toast? = null
 
     private val _scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
 
@@ -64,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         _imageSpinner = findViewById(R.id.image_spinner)
         _layoutConnectionInfo = findViewById(R.id.layout_connection_info)
         _videoBackground = findViewById(R.id.video_background)
+        _viewDemo = findViewById(R.id.view_demo)
 
         startVideo()
         startAnimations()
@@ -78,6 +82,18 @@ class MainActivity : AppCompatActivity() {
 
             _updating = true
             update()
+        }
+
+        _viewDemo.setOnClickListener {
+            _demoClickCount++
+            if (_demoClickCount in 2..4) {
+                val remainingClicks = 5 - _demoClickCount
+                _lastDemoToast?.cancel()
+                _lastDemoToast = Toast.makeText(this, "Click $remainingClicks more times to start demo", Toast.LENGTH_SHORT).apply { show() }
+            } else if (_demoClickCount == 5) {
+                TcpListenerService.instance?.onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
+                _demoClickCount = 0
+            }
         }
 
         if (BuildConfig.IS_PLAYSTORE_VERSION) {
@@ -249,15 +265,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun checkForUpdates() {
-        Log.i(TAG, "Checking for updates...");
+        Log.i(TAG, "Checking for updates...")
 
         withContext(Dispatchers.IO) {
             try {
                 val latestVersion = downloadVersionCode()
 
                 if (latestVersion != null) {
-                    val currentVersion = BuildConfig.VERSION_CODE;
-                    Log.i(TAG, "Current version $currentVersion latest version $latestVersion.");
+                    val currentVersion = BuildConfig.VERSION_CODE
+                    Log.i(TAG, "Current version $currentVersion latest version $latestVersion.")
 
                     if (latestVersion > currentVersion) {
                         withContext(Dispatchers.Main) {
@@ -267,8 +283,8 @@ class MainActivity : AppCompatActivity() {
                                 setText(resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update))
                                 _buttonUpdate.visibility = View.VISIBLE
                             } catch (e: Throwable) {
-                                Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show();
-                                Log.w(TAG, "Error occurred in update dialog.");
+                                Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show()
+                                Log.w(TAG, "Error occurred in update dialog.")
                             }
                         }
                     } else {
@@ -277,21 +293,21 @@ class MainActivity : AppCompatActivity() {
                             _buttonUpdate.visibility = View.INVISIBLE
                             //setText(getString(R.string.no_updates_available))
                             setText(null)
-                            //Toast.makeText(this@MainActivity, "Already on latest version", Toast.LENGTH_LONG).show();
+                            //Toast.makeText(this@MainActivity, "Already on latest version", Toast.LENGTH_LONG).show()
                         }
                     }
                 } else {
-                    Log.w(TAG, "Failed to retrieve version from version URL.");
+                    Log.w(TAG, "Failed to retrieve version from version URL.")
 
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "Failed to retrieve version", Toast.LENGTH_LONG).show();
+                        Toast.makeText(this@MainActivity, "Failed to retrieve version", Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "Failed to check for updates.", e);
+                Log.w(TAG, "Failed to check for updates.", e)
 
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Failed to check for updates", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this@MainActivity, "Failed to check for updates", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -452,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                 addr.hostAddress?.let { ips.add(it) }
             }
         }
-        return ips;
+        return ips
     }
 
     companion object {
