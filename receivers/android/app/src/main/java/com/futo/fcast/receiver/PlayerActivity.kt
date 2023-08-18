@@ -245,26 +245,26 @@ class PlayerActivity : AppCompatActivity() {
         TcpListenerService.activityCount--
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                val newPosition = _exoPlayer.currentPosition - 10000
-                _exoPlayer.seekTo(max(0, newPosition))
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (_playerControlView.isControllerFullyVisible) {
+            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                _playerControlView.hideController()
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                val newPosition = _exoPlayer.currentPosition + 10000
-                _exoPlayer.seekTo(newPosition)
-                return true
-            }
-            KeyEvent.KEYCODE_BACK -> {
-                if (_playerControlView.isControllerFullyVisible) {
-                    _playerControlView.hideController()
+        } else {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    _exoPlayer.seekTo(max(0, _exoPlayer.currentPosition - SEEK_BACKWARD_MILLIS))
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    _exoPlayer.seekTo(_exoPlayer.currentPosition + SEEK_FORWARD_MILLIS)
                     return true
                 }
             }
         }
-        return super.onKeyDown(keyCode, event)
+
+        return super.dispatchKeyEvent(event)
     }
 
     fun play(playMessage: PlayMessage) {

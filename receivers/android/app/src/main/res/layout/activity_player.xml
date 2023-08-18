@@ -6,7 +6,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:background="@color/black">
 
-    <com.google.android.exoplayer2.ui.StyledPlayerView
+    <com.futo.fcast.receiver.CustomStyledPlayerView
         android:id="@+id/player_control_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
