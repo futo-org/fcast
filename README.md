@@ -37,3 +37,7 @@ We welcome all contributions. Please read our CONTRIBUTING.md before submitting 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE.md file for details.
+
+## Documentation
+
+Click [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-1) to see the protocol documentation.
