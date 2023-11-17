@@ -1,14 +1,13 @@
 package com.futo.fcast.receiver
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.graphics.drawable.Animatable
-import android.graphics.drawable.TransitionDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,7 +15,6 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
-import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
@@ -25,12 +23,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.SimpleExoPlayer
-import com.google.android.exoplayer2.ui.PlayerView
 import com.google.android.exoplayer2.ui.StyledPlayerView
-import com.google.android.exoplayer2.upstream.DataSource
-import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
-import com.google.android.exoplayer2.util.Util
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import java.io.InputStream
@@ -187,13 +180,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestSystemAlertWindowPermission() {
-        if (!Settings.canDrawOverlays(this)) {
+        val preferenceFileKey = "$packageName.PREFERENCE_FILE_KEY"
+        val permissionRequestFailedKey = "SYSTEM_ALERT_WINDOW_PERMISSION_REQUESTED_FAILED_KEY"
+
+        val sharedPref = this.getSharedPreferences(preferenceFileKey, Context.MODE_PRIVATE)
+        val hasPermissionRequestFailed = sharedPref.getBoolean(permissionRequestFailedKey, false)
+
+        if (!hasPermissionRequestFailed && !Settings.canDrawOverlays(this)) {
             AlertDialog.Builder(this)
                 .setTitle(R.string.permission_dialog_title)
                 .setMessage(R.string.permission_dialog_message)
                 .setPositiveButton(R.string.permission_dialog_positive_button) { _, _ ->
-                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                    startActivityForResult(intent, REQUEST_CODE)
+                    try {
+                        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                        startActivityForResult(intent, REQUEST_CODE)
+                    } catch (e: Exception) {
+                        Log.e("OverlayPermission", "Error requesting overlay permission", e)
+                        with(sharedPref.edit()) {
+                            putBoolean(permissionRequestFailedKey, true)
+                            apply()
+                        }
+                        Toast.makeText(this, "An error occurred: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
                 }
                 .setNegativeButton(R.string.permission_dialog_negative_button) { dialog, _ ->
                     dialog.dismiss()
