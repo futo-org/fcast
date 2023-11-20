@@ -174,7 +174,7 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
                 Opcode.SetVolume -> _service.onSetVolume(Json.decodeFromString(body!!))
                 else -> { }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to handle packet (opcode: ${opcode}, body: '${body}')")
         }
     }

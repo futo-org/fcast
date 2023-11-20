@@ -40,11 +40,22 @@ class TcpListenerService : Service() {
 
         _scope = CoroutineScope(Dispatchers.Main)
 
-        createNotificationChannel()
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = "TCP Listener Service"
+            val descriptionText = "Listening on port $PORT"
+            val importance = NotificationManager.IMPORTANCE_DEFAULT
+            val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
+                description = descriptionText
+            }
+
+            val notificationManager: NotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val notification: Notification = createNotificationBuilder()
             .setContentTitle("TCP Listener Service")
             .setContentText("Listening on port $PORT")
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.mipmap.ic_launcher) // Ensure this icon exists
             .build()
 
         startForeground(NOTIFICATION_ID, notification)
@@ -96,6 +107,15 @@ class TcpListenerService : Service() {
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
         return START_STICKY
+    }
+
+    private fun createNotificationBuilder(): NotificationCompat.Builder {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationCompat.Builder(this, CHANNEL_ID)
+        } else {
+            // For pre-Oreo, do not specify the channel ID
+            NotificationCompat.Builder(this)
+        }
     }
 
     override fun onDestroy() {
@@ -168,7 +188,7 @@ class TcpListenerService : Service() {
                         pi.send()
                     } else {
                         val pi = PendingIntent.getActivity(this@TcpListenerService, 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                        val playNotification = NotificationCompat.Builder(this@TcpListenerService, CHANNEL_ID)
+                        val playNotification = createNotificationBuilder()
                             .setContentTitle("FCast")
                             .setContentText("New content received. Tap to play.")
                             .setSmallIcon(R.drawable.ic_launcher_background)
@@ -310,20 +330,6 @@ class TcpListenerService : Service() {
         }
 
         Log.i(TAG, "Disconnected ${socket.remoteSocketAddress}")
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "TCP Listener Service"
-            val descriptionText = "Listening on port $PORT"
-            val importance = NotificationManager.IMPORTANCE_DEFAULT
-            val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
-                description = descriptionText
-            }
-
-            val notificationManager: NotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
-        }
     }
 
     companion object {

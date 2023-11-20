@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">FCastReceiver</string>
+    <string name="app_name">FCast Receiver</string>
     <string name="general_failure">The operation failed in a generic way</string>
     <string name="aborted">The operation failed because it was actively aborted</string>
     <string name="blocked">The operation failed because it was blocked</string>

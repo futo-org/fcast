@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity() {
     private var _updating: Boolean = false
     private var _demoClickCount = 0
     private var _lastDemoToast: Toast? = null
+    private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
 
     private val _scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
 
@@ -172,7 +173,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (listPermissionsNeeded.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, listPermissionsNeeded.toTypedArray(), REQUEST_ID_MULTIPLE_PERMISSIONS)
+            val permissionRequestedKey = "NOTIFICATIONS_PERMISSION_REQUESTED"
+            val sharedPref = this.getSharedPreferences(_preferenceFileKey, Context.MODE_PRIVATE)
+            val hasRequestedPermission = sharedPref.getBoolean(permissionRequestedKey, false)
+            if (!hasRequestedPermission) {
+                ActivityCompat.requestPermissions(this, listPermissionsNeeded.toTypedArray(), REQUEST_ID_MULTIPLE_PERMISSIONS)
+                with(sharedPref.edit()) {
+                    putBoolean(permissionRequestedKey, true)
+                    apply()
+                }
+            } else {
+                Toast.makeText(this, "Notifications permission missing", Toast.LENGTH_SHORT).show()
+            }
             return false
         }
 
@@ -180,35 +192,42 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestSystemAlertWindowPermission() {
-        val preferenceFileKey = "$packageName.PREFERENCE_FILE_KEY"
-        val permissionRequestFailedKey = "SYSTEM_ALERT_WINDOW_PERMISSION_REQUESTED_FAILED_KEY"
+        try {
+            val permissionRequestedKey = "SYSTEM_ALERT_WINDOW_PERMISSION_REQUESTED"
+            val sharedPref = this.getSharedPreferences(_preferenceFileKey, Context.MODE_PRIVATE)
+            val hasRequestedPermission = sharedPref.getBoolean(permissionRequestedKey, false)
 
-        val sharedPref = this.getSharedPreferences(preferenceFileKey, Context.MODE_PRIVATE)
-        val hasPermissionRequestFailed = sharedPref.getBoolean(permissionRequestFailedKey, false)
-
-        if (!hasPermissionRequestFailed && !Settings.canDrawOverlays(this)) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.permission_dialog_title)
-                .setMessage(R.string.permission_dialog_message)
-                .setPositiveButton(R.string.permission_dialog_positive_button) { _, _ ->
-                    try {
-                        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                        startActivityForResult(intent, REQUEST_CODE)
-                    } catch (e: Exception) {
-                        Log.e("OverlayPermission", "Error requesting overlay permission", e)
-                        with(sharedPref.edit()) {
-                            putBoolean(permissionRequestFailedKey, true)
-                            apply()
+            if (!Settings.canDrawOverlays(this)) {
+                if (!hasRequestedPermission) {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.permission_dialog_title)
+                        .setMessage(R.string.permission_dialog_message)
+                        .setPositiveButton(R.string.permission_dialog_positive_button) { _, _ ->
+                            try {
+                                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                                startActivityForResult(intent, REQUEST_CODE)
+                            } catch (e: Throwable) {
+                                Log.e("OverlayPermission", "Error requesting overlay permission", e)
+                                Toast.makeText(this, "An error occurred: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
-                        Toast.makeText(this, "An error occurred: ${e.message}", Toast.LENGTH_LONG).show()
+                        .setNegativeButton(R.string.permission_dialog_negative_button) { dialog, _ ->
+                            dialog.dismiss()
+                            Toast.makeText(this, "Permission is required to work in background", Toast.LENGTH_LONG).show()
+                        }
+                        .create()
+                        .show()
+
+                    with(sharedPref.edit()) {
+                        putBoolean(permissionRequestedKey, true)
+                        apply()
                     }
+                } else {
+                    Toast.makeText(this, "Optional system alert window permission missing", Toast.LENGTH_SHORT).show()
                 }
-                .setNegativeButton(R.string.permission_dialog_negative_button) { dialog, _ ->
-                    dialog.dismiss()
-                    Toast.makeText(this, "Permission is required to work in background", Toast.LENGTH_LONG).show()
-                }
-                .create()
-                .show()
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to request system alert window permissions")
         }
     }
 
