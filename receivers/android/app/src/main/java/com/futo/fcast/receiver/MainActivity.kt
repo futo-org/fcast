@@ -12,7 +12,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Base64
 import android.util.Log
+import android.util.TypedValue
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
@@ -24,7 +26,11 @@ import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.ui.StyledPlayerView
+import com.google.zxing.BarcodeFormat
+import com.journeyapps.barcodescanner.BarcodeEncoder
 import kotlinx.coroutines.*
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.io.InputStream
 import java.io.OutputStream
@@ -42,6 +48,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var _videoBackground: StyledPlayerView
     private lateinit var _viewDemo: View
     private lateinit var _player: ExoPlayer
+    private lateinit var _imageQr: ImageView
+    private lateinit var _textScanToConnect: TextView
+    private var _updateAvailable: Boolean? = null
     private var _updating: Boolean = false
     private var _demoClickCount = 0
     private var _lastDemoToast: Toast? = null
@@ -53,6 +62,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
+            _updateAvailable = savedInstanceState.getBoolean("updateAvailable", false)
+        } else {
+            _updateAvailable = null
+        }
+
         _buttonUpdate = findViewById(R.id.button_update)
         _text = findViewById(R.id.text_dialog)
         _textIPs = findViewById(R.id.text_ips)
@@ -62,6 +77,8 @@ class MainActivity : AppCompatActivity() {
         _layoutConnectionInfo = findViewById(R.id.layout_connection_info)
         _videoBackground = findViewById(R.id.video_background)
         _viewDemo = findViewById(R.id.view_demo)
+        _imageQr = findViewById(R.id.image_qr)
+        _textScanToConnect = findViewById(R.id.text_scan_to_connect)
 
         startVideo()
         startAnimations()
@@ -105,13 +122,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        _textIPs.text = "IPs\n" + getIPs().joinToString("\n") + "\n\nPort\n46899"
+        val ips = getIPs()
+        _textIPs.text = "IPs\n" + ips.joinToString("\n") + "\n\nPort\n46899"
+
+        try {
+            val barcodeEncoder = BarcodeEncoder()
+            val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 100.0f, resources.displayMetrics).toInt()
+            val json = Json.encodeToString(FCastNetworkConfig(ips, listOf(
+                FCastService(46899, 0)
+            )))
+            val base64 = Base64.encode(json.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val url = "fcast://r/${base64}"
+            val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px)
+            _imageQr.setImageBitmap(bitmap)
+        } catch (e: java.lang.Exception) {
+            _textScanToConnect.visibility = View.GONE
+            _imageQr.visibility = View.GONE
+        }
+
         TcpListenerService.activityCount++
 
-        if (checkAndRequestPermissions()) {
-            Log.i(TAG, "Notification permission already granted")
-            restartService()
-        } else {
+        checkAndRequestPermissions()
+        if (savedInstanceState == null) {
             restartService()
         }
 
@@ -136,6 +168,11 @@ class MainActivity : AppCompatActivity() {
         _scope.cancel()
         _player.release()
         TcpListenerService.activityCount--
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        _updateAvailable?.let { outState.putBoolean("updateAvailable", it) }
     }
 
     private fun restartService() {
@@ -294,50 +331,57 @@ class MainActivity : AppCompatActivity() {
     private suspend fun checkForUpdates() {
         Log.i(TAG, "Checking for updates...")
 
-        withContext(Dispatchers.IO) {
-            try {
-                val latestVersion = downloadVersionCode()
+        val updateAvailable = _updateAvailable
+        if (updateAvailable != null) {
+            setUpdateAvailable(updateAvailable)
+        } else {
+            withContext(Dispatchers.IO) {
+                try {
+                    val latestVersion = downloadVersionCode()
 
-                if (latestVersion != null) {
-                    val currentVersion = BuildConfig.VERSION_CODE
-                    Log.i(TAG, "Current version $currentVersion latest version $latestVersion.")
+                    if (latestVersion != null) {
+                        val currentVersion = BuildConfig.VERSION_CODE
+                        Log.i(TAG, "Current version $currentVersion latest version $latestVersion.")
 
-                    if (latestVersion > currentVersion) {
                         withContext(Dispatchers.Main) {
-                            try {
-                                (_updateSpinner.drawable as Animatable?)?.stop()
-                                _updateSpinner.visibility = View.INVISIBLE
-                                setText(resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update))
-                                _buttonUpdate.visibility = View.VISIBLE
-                            } catch (e: Throwable) {
-                                Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show()
-                                Log.w(TAG, "Error occurred in update dialog.")
-                            }
+                            setUpdateAvailable(latestVersion > currentVersion)
                         }
                     } else {
+                        Log.w(TAG, "Failed to retrieve version from version URL.")
+
                         withContext(Dispatchers.Main) {
-                            _updateSpinner.visibility = View.INVISIBLE
-                            _buttonUpdate.visibility = View.INVISIBLE
-                            //setText(getString(R.string.no_updates_available))
-                            setText(null)
-                            //Toast.makeText(this@MainActivity, "Already on latest version", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "Failed to retrieve version", Toast.LENGTH_LONG).show()
                         }
                     }
-                } else {
-                    Log.w(TAG, "Failed to retrieve version from version URL.")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to check for updates.", e)
 
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "Failed to retrieve version", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "Failed to check for updates", Toast.LENGTH_LONG).show()
                     }
-                }
-            } catch (e: Throwable) {
-                Log.w(TAG, "Failed to check for updates.", e)
-
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Failed to check for updates", Toast.LENGTH_LONG).show()
                 }
             }
         }
+    }
+
+    private fun setUpdateAvailable(updateAvailable: Boolean) {
+        if (updateAvailable) {
+            try {
+                (_updateSpinner.drawable as Animatable?)?.stop()
+                _updateSpinner.visibility = View.INVISIBLE
+                setText(resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update))
+                _buttonUpdate.visibility = View.VISIBLE
+            } catch (e: Throwable) {
+                Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show()
+                Log.w(TAG, "Error occurred in update dialog.")
+            }
+        } else {
+            _updateSpinner.visibility = View.INVISIBLE
+            _buttonUpdate.visibility = View.INVISIBLE
+            setText(null)
+        }
+
+        _updateAvailable = updateAvailable
     }
 
     private fun downloadVersionCode(): Int? {
