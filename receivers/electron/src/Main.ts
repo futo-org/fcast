@@ -196,7 +196,7 @@ export default class Main {
         }
 
         Main.mainWindow = new BrowserWindow({
-            fullscreen: false,
+            fullscreen: true,
             autoHideMenuBar: true,
             webPreferences: {
                 preload: path.join(__dirname, 'main/preload.js')
