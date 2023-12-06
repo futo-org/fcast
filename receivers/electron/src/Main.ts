@@ -1,14 +1,16 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog } from 'electron';
 import path = require('path');
-import { FCastService } from './FCastService';
+import { TcpListenerService } from './TcpListenerService';
 import { PlaybackUpdateMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
 import { DiscoveryService } from './DiscoveryService';
 import { Updater } from './Updater';
+import { WebSocketListenerService } from './WebSocketListenerService';
 
 export default class Main {
     static mainWindow: Electron.BrowserWindow;
     static application: Electron.App;
-    static service: FCastService;
+    static tcpListenerService: TcpListenerService;
+    static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
     static tray: Tray;
 
@@ -92,41 +94,54 @@ export default class Main {
         Main.discoveryService = new DiscoveryService();
         Main.discoveryService.start();
         
-        Main.service = new FCastService();
-        Main.service.emitter.on("play", (message) => {
-            if (Main.mainWindow == null) {
-                Main.mainWindow = new BrowserWindow({
-                    fullscreen: true,
-                    autoHideMenuBar: true,
-                    webPreferences: {
-                        preload: path.join(__dirname, 'preload.js')
-                    }
-                });
+        Main.tcpListenerService = new TcpListenerService();
+        Main.webSocketListenerService = new WebSocketListenerService();
+        const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
 
-                Main.mainWindow.setAlwaysOnTop(false, 'pop-up-menu');
-                Main.mainWindow.show();
-        
-                Main.mainWindow.loadFile(path.join(__dirname, 'index.html'));
-                Main.mainWindow.on('ready-to-show', () => {
+        listeners.forEach(l => {
+            l.emitter.on("play", (message) => {
+                if (Main.mainWindow == null) {
+                    Main.mainWindow = new BrowserWindow({
+                        fullscreen: true,
+                        autoHideMenuBar: true,
+                        webPreferences: {
+                            preload: path.join(__dirname, 'preload.js')
+                        }
+                    });
+    
+                    Main.mainWindow.setAlwaysOnTop(false, 'pop-up-menu');
+                    Main.mainWindow.show();
+            
+                    Main.mainWindow.loadFile(path.join(__dirname, 'index.html'));
+                    Main.mainWindow.on('ready-to-show', () => {
+                        Main.mainWindow?.webContents?.send("play", message);
+                    });
+                    Main.mainWindow.on('closed', Main.onClose);
+                } else {
                     Main.mainWindow?.webContents?.send("play", message);
-                });
-                Main.mainWindow.on('closed', Main.onClose);
-            } else {
-                Main.mainWindow?.webContents?.send("play", message);
-            }            
-        });
-        
-        Main.service.emitter.on("pause", () => Main.mainWindow?.webContents?.send("pause"));
-        Main.service.emitter.on("resume", () => Main.mainWindow?.webContents?.send("resume"));
+                }            
+            });
+            
+            l.emitter.on("pause", () => Main.mainWindow?.webContents?.send("pause"));
+            l.emitter.on("resume", () => Main.mainWindow?.webContents?.send("resume"));
+    
+            l.emitter.on("stop", () => {
+                Main.mainWindow.close();
+                Main.mainWindow = null;
+            });
+    
+            l.emitter.on("seek", (message) => Main.mainWindow?.webContents?.send("seek", message));
+            l.emitter.on("setvolume", (message) => Main.mainWindow?.webContents?.send("setvolume", message));
+            l.start();
 
-        Main.service.emitter.on("stop", () => {
-            Main.mainWindow.close();
-            Main.mainWindow = null;
+            ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
+                l.sendPlaybackUpdate(value);
+            });
+    
+            ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
+                l.sendVolumeUpdate(value);
+            });
         });
-
-        Main.service.emitter.on("seek", (message) => Main.mainWindow?.webContents?.send("seek", message));
-        Main.service.emitter.on("setvolume", (message) => Main.mainWindow?.webContents?.send("setvolume", message));
-        Main.service.start();
 
         ipcMain.on('toggle-full-screen', () => {
             const window = Main.mainWindow;
@@ -144,14 +159,6 @@ export default class Main {
             }
 
             window.setFullScreen(false);
-        });
-
-        ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
-            Main.service.sendPlaybackUpdate(value);
-        });
-
-        ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
-            Main.service.sendVolumeUpdate(value);
         });
     }
 

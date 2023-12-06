@@ -17,6 +17,7 @@ data class SeekMessage(
 
 @Serializable
 data class PlaybackUpdateMessage(
+    val generationTime: Long,
     val time: Double,
     val duration: Double,
     val state: Int
@@ -24,6 +25,7 @@ data class PlaybackUpdateMessage(
 
 @Serializable
 data class VolumeUpdateMessage(
+    val generationTime: Long,
     val volume: Double
 )
 

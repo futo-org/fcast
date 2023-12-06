@@ -15,10 +15,31 @@ const player = videojs("video-player", options, function onPlayerReady() {
     }
 });
 
-player.on("pause", () => { window.electronAPI.sendPlaybackUpdate({ time: Math.round(player.currentTime()), state: 2 }) });
-player.on("play", () => { window.electronAPI.sendPlaybackUpdate({ time: Math.round(player.currentTime()), state: 1 }) });
-player.on("seeked", () => { window.electronAPI.sendPlaybackUpdate({ time: Math.round(player.currentTime()), state: player.paused() ? 2 : 1 }) });
-player.on("volumechange", () => { window.electronAPI.sendVolumeUpdate({ volume: player.volume() }); });
+player.on("pause", () => { window.electronAPI.sendPlaybackUpdate({ 
+    generationTime: Date.now(),
+    time: Math.round(player.currentTime()), 
+    duration: Math.round(player.duration()), 
+    state: 2 
+})});
+
+player.on("play", () => { window.electronAPI.sendPlaybackUpdate({ 
+    generationTime: Date.now(),
+    time: Math.round(player.currentTime()), 
+    duration: Math.round(player.duration()), 
+    state: 1 
+})});
+
+player.on("seeked", () => { window.electronAPI.sendPlaybackUpdate({ 
+    generationTime: Date.now(),
+    time: Math.round(player.currentTime()), 
+    duration: Math.round(player.duration()), 
+    state: player.paused() ? 2 : 1 })
+});
+
+player.on("volumechange", () => { window.electronAPI.sendVolumeUpdate({ 
+    generationTime: Date.now(),
+    volume: player.volume() 
+})});
 
 window.electronAPI.onPlay((_event, value) => {
     console.log("Handle play message renderer", value);
@@ -57,7 +78,12 @@ window.electronAPI.onSetVolume((_event, value) => {
 });
 
 setInterval(() => {
-    window.electronAPI.sendPlaybackUpdate({ time: Math.round(player.currentTime()), state: player.paused() ? 2 : 1 });
+    window.electronAPI.sendPlaybackUpdate({ 
+        generationTime: Date.now(),
+        time: Math.round(player.currentTime()), 
+        duration: Math.round(player.duration()), 
+        state: player.paused() ? 2 : 1 
+    });
 }, 1000);
 
 let mouseTimer = null;

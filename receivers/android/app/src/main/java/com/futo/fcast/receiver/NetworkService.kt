@@ -64,12 +64,14 @@ class NetworkService : Service() {
                         val player = PlayerActivity.instance
                         val updateMessage =  if (player != null) {
                             PlaybackUpdateMessage(
+                                System.currentTimeMillis(),
                                 player.currentPosition / 1000.0,
                                 player.duration / 1000.0,
                                 if (player.isPlaying) 1 else 2
                             )
                         } else {
                             PlaybackUpdateMessage(
+                                System.currentTimeMillis(),
                                 0.0,
                                 0.0,
                                 0

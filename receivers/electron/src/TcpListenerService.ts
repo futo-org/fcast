@@ -5,7 +5,7 @@ import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetVolumeMessage, Volu
 import { dialog } from 'electron';
 import Main from './Main';
 
-export class FCastService {
+export class TcpListenerService {
     emitter = new EventEmitter();
     
     private server: net.Server;
@@ -41,7 +41,7 @@ export class FCastService {
                 session.sendPlaybackUpdate(value);
             } catch (e) {
                 console.warn("Failed to send update.", e);
-                session.socket.end();
+                session.close();
             }
         });
     }
@@ -54,7 +54,7 @@ export class FCastService {
                 session.sendVolumeUpdate(value);
             } catch (e) {
                 console.warn("Failed to send update.", e);
-                session.socket.end();
+                session.close();
             }
         });
     }
@@ -82,7 +82,7 @@ export class FCastService {
     private handleConnection(socket: net.Socket) {
         console.log(`new connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
-        const session = new FCastSession(socket);
+        const session = new FCastSession(socket, (data) => socket.write(data));
         session.emitter.on("play", (body: PlayMessage) => { this.emitter.emit("play", body) });
         session.emitter.on("pause", () => { this.emitter.emit("pause") });
         session.emitter.on("resume", () => { this.emitter.emit("resume") });

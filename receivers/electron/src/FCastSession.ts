@@ -1,6 +1,7 @@
 import net = require('net');
 import { EventEmitter } from 'node:events';
 import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
+import { WebSocket } from 'ws';
 
 enum SessionState {
     Idle = 0,
@@ -28,12 +29,14 @@ export class FCastSession {
     buffer: Buffer = Buffer.alloc(MAXIMUM_PACKET_LENGTH);
     bytesRead = 0;
     packetLength = 0;
-    socket: net.Socket;
+    socket: net.Socket | WebSocket;
+    writer: (data: Buffer) => void;
     state: SessionState;
     emitter = new EventEmitter();
 
-    constructor(socket: net.Socket) {
+    constructor(socket: net.Socket | WebSocket, writer: (data: Buffer) => void) {
         this.socket = socket;
+        this.writer = writer;
         this.state = SessionState.WaitingForLength;
     }
 
@@ -67,7 +70,15 @@ export class FCastSession {
             packet = header;
         }
 
-        this.socket.write(packet);
+        this.writer(packet);
+    }
+
+    close() {
+        if (this.socket instanceof WebSocket) {
+            this.socket.close();
+        } else if (this.socket instanceof net.Socket) {
+            this.socket.end();
+        }
     }
 
     processBytes(receivedBytes: Buffer) {
@@ -77,7 +88,7 @@ export class FCastSession {
             return;
         }
 
-        console.log(`${receivedBytes.length} bytes received from ${this.socket.remoteAddress}:${this.socket.remotePort}`);
+        console.log(`${receivedBytes.length} bytes received`);
 
         switch (this.state) {
             case SessionState.WaitingForLength:
@@ -104,17 +115,14 @@ export class FCastSession {
             this.state = SessionState.WaitingForData;
             this.packetLength = this.buffer.readUInt32LE(0);
             this.bytesRead = 0;
-            console.log(`Packet length header received from ${this.socket.remoteAddress}:${this.socket.remotePort}: ${this.packetLength}`);
+            console.log(`Packet length header received from: ${this.packetLength}`);
 
             if (this.packetLength > MAXIMUM_PACKET_LENGTH) {
-                console.log(`Maximum packet length is 32kB, killing socket ${this.socket.remoteAddress}:${this.socket.remotePort}: ${this.packetLength}`);
-                this.socket.end();
-                this.state = SessionState.Disconnected;
-                return;
+                throw new Error(`Maximum packet length is 32kB: ${this.packetLength}`);
             }
 
             if (bytesRemaining > 0) {
-                console.log(`${bytesRemaining} remaining bytes ${this.socket.remoteAddress}:${this.socket.remotePort} pushed to handlePacketBytes`);
+                console.log(`${bytesRemaining} remaining bytes pushed to handlePacketBytes`);
                 this.handlePacketBytes(receivedBytes.slice(bytesToRead));
             }
         }
@@ -129,7 +137,7 @@ export class FCastSession {
         console.log(`handlePacketBytes: Read ${bytesToRead} bytes from packet`);
 
         if (this.bytesRead >= this.packetLength) {
-            console.log(`Packet finished receiving from ${this.socket.remoteAddress}:${this.socket.remotePort} of ${this.packetLength} bytes.`);
+            console.log(`Packet finished receiving from of ${this.packetLength} bytes.`);
             this.handlePacket();
 
             this.state = SessionState.WaitingForLength;
@@ -137,14 +145,14 @@ export class FCastSession {
             this.bytesRead = 0;
 
             if (bytesRemaining > 0) {
-                console.log(`${bytesRemaining} remaining bytes ${this.socket.remoteAddress}:${this.socket.remotePort} pushed to handleLengthBytes`);
+                console.log(`${bytesRemaining} remaining bytes pushed to handleLengthBytes`);
                 this.handleLengthBytes(receivedBytes.slice(bytesToRead));
             }
         }
     }
 
     private handlePacket() {
-        console.log(`Processing packet of ${this.bytesRead} bytes from ${this.socket.remoteAddress}:${this.socket.remotePort}`);
+        console.log(`Processing packet of ${this.bytesRead} bytes from`);
 
         const opcode = this.buffer[0];
         const body = this.packetLength > 1 ? this.buffer.toString('utf8', 1, this.packetLength) : null;
@@ -172,7 +180,7 @@ export class FCastSession {
                     break;
             }
         } catch (e) {
-            console.warn(`Error handling packet from ${this.socket.remoteAddress}:${this.socket.remotePort}.`, e);
+            console.warn(`Error handling packet from.`, e);
         }
     }
 }
