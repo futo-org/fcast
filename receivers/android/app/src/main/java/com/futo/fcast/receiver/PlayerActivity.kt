@@ -81,6 +81,8 @@ class PlayerActivity : AppCompatActivity() {
             } else if (playbackState == ExoPlayer.STATE_BUFFERING) {
                 setStatus(true, null)
             }
+
+            //TODO: Send playback update
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -103,6 +105,8 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
+            //TODO: Send error notification
+
             setStatus(false, getFullExceptionMessage(error))
         }
 
@@ -110,7 +114,7 @@ class PlayerActivity : AppCompatActivity() {
             super.onVolumeChanged(volume)
             _scope.launch(Dispatchers.IO) {
                 try {
-                    NetworkService.instance?.sendCastVolumeUpdate(VolumeUpdateMessage(volume.toDouble()))
+                    NetworkService.instance?.sendCastVolumeUpdate(VolumeUpdateMessage(System.currentTimeMillis(), volume.toDouble()))
                 } catch (e: Throwable) {
                     Log.e(TAG, "Unhandled error sending volume update", e)
                 }

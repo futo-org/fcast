@@ -6,7 +6,7 @@
   "author": "Koen Jeukendrup",
   "license": "MIT",
   "scripts": {
-    "build": "rm -rf dist/ && webpack --config ./webpack.config.js && cp src/*.html dist/ && cp src/*.js dist/ && cp src/*.css dist/ && cp app.ico dist/ && cp app.png dist/",
+    "build": "rm -rf dist/ && webpack --config ./webpack.config.js && cp -r src/player dist/player && cp -r src/main dist/main && cp app.ico dist/ && cp app.png dist/",
     "start": "npm run build && electron ."
   },
   "devDependencies": {
@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "bufferutil": "^4.0.8",
+    "qrcode": "^1.5.3",
     "utf-8-validate": "^6.0.3",
     "ws": "^8.14.2"
   }

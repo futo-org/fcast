@@ -1,12 +1,15 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog } from 'electron';
 import path = require('path');
 import { TcpListenerService } from './TcpListenerService';
-import { PlaybackUpdateMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
+import { PlaybackUpdateMessage, VolumeUpdateMessage } from './Packets';
 import { DiscoveryService } from './DiscoveryService';
 import { Updater } from './Updater';
 import { WebSocketListenerService } from './WebSocketListenerService';
+import * as os from 'os';
 
 export default class Main {
+    static shouldOpenMainWindow = true; 
+    static playerWindow: Electron.BrowserWindow;
     static mainWindow: Electron.BrowserWindow;
     static application: Electron.App;
     static tcpListenerService: TcpListenerService;
@@ -19,6 +22,10 @@ export default class Main {
         const trayicon = nativeImage.createFromPath(icon)
         const tray = new Tray(trayicon.resize({ width: 16 }));
         const contextMenu = Menu.buildFromTemplate([
+            {
+                label: 'Open window',
+                click: () => Main.openMainWindow()
+            },
             {
                 label: 'Check for updates',
                 click: async () => {
@@ -83,10 +90,6 @@ export default class Main {
         tray.setContextMenu(contextMenu);
         this.tray = tray;
     }
-    
-    private static onClose() {
-        Main.mainWindow = null;
-    }
 
     private static onReady() {
         Main.createTray();
@@ -100,38 +103,40 @@ export default class Main {
 
         listeners.forEach(l => {
             l.emitter.on("play", (message) => {
-                if (Main.mainWindow == null) {
-                    Main.mainWindow = new BrowserWindow({
+                if (Main.playerWindow == null) {
+                    Main.playerWindow = new BrowserWindow({
                         fullscreen: true,
                         autoHideMenuBar: true,
                         webPreferences: {
-                            preload: path.join(__dirname, 'preload.js')
+                            preload: path.join(__dirname, 'player/preload.js')
                         }
                     });
     
-                    Main.mainWindow.setAlwaysOnTop(false, 'pop-up-menu');
-                    Main.mainWindow.show();
+                    Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
+                    Main.playerWindow.show();
             
-                    Main.mainWindow.loadFile(path.join(__dirname, 'index.html'));
-                    Main.mainWindow.on('ready-to-show', () => {
-                        Main.mainWindow?.webContents?.send("play", message);
+                    Main.playerWindow.loadFile(path.join(__dirname, 'player/index.html'));
+                    Main.playerWindow.on('ready-to-show', () => {
+                        Main.playerWindow?.webContents?.send("play", message);
                     });
-                    Main.mainWindow.on('closed', Main.onClose);
+                    Main.playerWindow.on('closed', () => {
+                        Main.playerWindow = null;
+                    });
                 } else {
-                    Main.mainWindow?.webContents?.send("play", message);
+                    Main.playerWindow?.webContents?.send("play", message);
                 }            
             });
             
-            l.emitter.on("pause", () => Main.mainWindow?.webContents?.send("pause"));
-            l.emitter.on("resume", () => Main.mainWindow?.webContents?.send("resume"));
+            l.emitter.on("pause", () => Main.playerWindow?.webContents?.send("pause"));
+            l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
     
             l.emitter.on("stop", () => {
-                Main.mainWindow.close();
-                Main.mainWindow = null;
+                Main.playerWindow.close();
+                Main.playerWindow = null;
             });
     
-            l.emitter.on("seek", (message) => Main.mainWindow?.webContents?.send("seek", message));
-            l.emitter.on("setvolume", (message) => Main.mainWindow?.webContents?.send("setvolume", message));
+            l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
+            l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
             l.start();
 
             ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
@@ -144,7 +149,7 @@ export default class Main {
         });
 
         ipcMain.on('toggle-full-screen', () => {
-            const window = Main.mainWindow;
+            const window = Main.playerWindow;
             if (!window) {
                 return;
             }
@@ -153,17 +158,70 @@ export default class Main {
         });
 
         ipcMain.on('exit-full-screen', () => {
-            const window = Main.mainWindow;
+            const window = Main.playerWindow;
             if (!window) {
                 return;
             }
 
             window.setFullScreen(false);
         });
+
+        if (Main.shouldOpenMainWindow) {
+            Main.openMainWindow();
+        }
     }
+
+    static getAllIPv4Addresses() {
+        const interfaces = os.networkInterfaces();
+        const ipv4Addresses: string[] = [];
+    
+        for (const interfaceName in interfaces) {
+            const addresses = interfaces[interfaceName];
+            if (!addresses) continue;
+    
+            for (const addressInfo of addresses) {
+                if (addressInfo.family === 'IPv4' && !addressInfo.internal) {
+                    ipv4Addresses.push(addressInfo.address);
+                }
+            }
+        }
+    
+        return ipv4Addresses;
+    }
+
+    static openMainWindow() {
+        if (Main.mainWindow) {
+            Main.mainWindow.focus();
+            return;
+        }
+
+        Main.mainWindow = new BrowserWindow({
+            fullscreen: false,
+            autoHideMenuBar: true,
+            webPreferences: {
+                preload: path.join(__dirname, 'main/preload.js')
+            }
+        });
+
+        Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
+        Main.mainWindow.on('closed', () => {
+            Main.mainWindow = null;
+        });
+
+        Main.mainWindow.show();
+
+        Main.mainWindow.on('ready-to-show', () => {
+            Main.mainWindow.webContents.send("device-info", {name: os.hostname(), addresses: Main.getAllIPv4Addresses()});
+        });
+    }    
 
     static main(app: Electron.App) {
         Main.application = app;
+        const argv = process.argv;
+        if (argv.includes('--no-main-window')) {
+            Main.shouldOpenMainWindow = false;
+        }
+
         Main.application.on('ready', Main.onReady);
         Main.application.on('window-all-closed', () => { });
     }

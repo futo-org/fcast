@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link href="./video-js.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css" />
+    <title>FCast Receiver</title>
+</head>
+<body>
+    <div id="main-container">
+        <video id="video-player" class="video-js" controls preload="auto" data-setup='{}' style="object-fit: cover;">
+            <p class="vjs-no-js">
+                To view this video please enable JavaScript, and consider upgrading to a web browser that
+                <a href="https://videojs.com/html5-video-support/" target="_blank">supports HTML5 video</a>
+            </p>
+        </video>
+        <div id="overlay">
+            <div id="title">FCast</div>
+            <div id="connection-info">
+                <div id="waiting-for-connection">Waiting for a connection</div>
+                <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                <div id="manual-connection-info">Manual connection information</div>
+                <div>
+                    <div id="ips">IPs</div><br />
+                    <div>Port<br>46899 (TCP), 46898 (WS)</div>
+                </div>                
+                <div id="automatic-discovery">Automatic discovery is available via mDNS</div>
+                <div id="qr-code"></div>
+                <div id="scan-to-connect">Scan to connect</div>
+            </div>
+        </div>
+    </div>
+    <script>window.HELP_IMPROVE_VIDEOJS = false;</script>
+    <script src="./video.min.js"></script>
+    <script src="./qrcode.min.js"></script>
+    <script src="./renderer.js"></script>
+</body>
+</html>
