@@ -16,18 +16,19 @@ impl PlayMessage {
 
 #[derive(Serialize, Debug)]
 pub struct SeekMessage {
-    pub time: u64,
+    pub time: f64,
 }
 
 impl SeekMessage {
-    pub fn new(time: u64) -> Self {
+    pub fn new(time: f64) -> Self {
         Self { time }
     }
 }
 
 #[derive(Deserialize, Debug)]
 pub struct PlaybackUpdateMessage {
-    pub time: u64,
+    pub time: f64,
+    pub duration: f64,
     pub state: u8 //0 = None, 1 = Playing, 2 = Paused
 }
 

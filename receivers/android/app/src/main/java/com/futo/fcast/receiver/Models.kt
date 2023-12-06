@@ -4,7 +4,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class FCastNetworkConfig(
-    val ips: List<String>,
+    val name: String,
+    val addresses: List<String>,
     val services: List<FCastService>
 )
 

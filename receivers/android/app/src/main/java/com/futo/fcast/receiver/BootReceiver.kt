@@ -22,7 +22,7 @@ class BootReceiver : BroadcastReceiver() {
                     showStartServiceNotification(context);
                 } else {
                     // Directly start the service for older versions
-                    val serviceIntent = Intent(context, TcpListenerService::class.java)
+                    val serviceIntent = Intent(context, NetworkService::class.java)
                     context.startService(serviceIntent)
                 }
             }
@@ -53,7 +53,7 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         // PendingIntent to start the TcpListenerService
-        val serviceIntent = Intent(context, TcpListenerService::class.java)
+        val serviceIntent = Intent(context, NetworkService::class.java)
         val pendingIntent = PendingIntent.getService(context, 0, serviceIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val startServiceAction = NotificationCompat.Action.Builder(0, "Start Service", pendingIntent).build()
 

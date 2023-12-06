@@ -12,12 +12,13 @@ data class PlayMessage(
 
 @Serializable
 data class SeekMessage(
-    val time: Long
+    val time: Double
 )
 
 @Serializable
 data class PlaybackUpdateMessage(
-    val time: Long,
+    val time: Double,
+    val duration: Double,
     val state: Int
 )
 

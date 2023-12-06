@@ -54,7 +54,7 @@
         </receiver>
 
         <service
-            android:name=".TcpListenerService"
+            android:name=".NetworkService"
             android:enabled="true"
             android:exported="false" />
 

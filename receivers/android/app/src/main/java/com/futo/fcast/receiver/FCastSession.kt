@@ -4,9 +4,10 @@ import android.util.Log
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.OutputStream
 import java.net.Socket
+import java.net.SocketAddress
 import java.nio.ByteBuffer
 
 enum class SessionState {
@@ -31,12 +32,12 @@ enum class Opcode(val value: Byte) {
 const val LENGTH_BYTES = 4
 const val MAXIMUM_PACKET_LENGTH = 32000
 
-class FCastSession(private val _socket: Socket, private val _service: TcpListenerService) {
+class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress: SocketAddress, private val _service: NetworkService) {
     private var _buffer = ByteArray(MAXIMUM_PACKET_LENGTH)
     private var _bytesRead = 0
     private var _packetLength = 0
     private var _state = SessionState.WaitingForLength
-    private var _outputStream: DataOutputStream? = DataOutputStream(_socket.outputStream)
+    private var _outputStream: DataOutputStream? = DataOutputStream(outputStream)
 
     fun sendPlaybackUpdate(value: PlaybackUpdateMessage) {
         send(Opcode.PlaybackUpdate, value)
@@ -82,6 +83,24 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
             Log.d(TAG, "Sent $size bytes: '$jsonString'.")
         } catch (e: Throwable) {
             Log.i(TAG, "Failed to send message.", e)
+            throw e
+        }
+    }
+
+    fun processBytes(data: ByteBuffer) {
+        Log.i(TAG, "${data.remaining()} bytes received from ${_remoteSocketAddress}")
+        if (!data.hasArray()) {
+            throw IllegalArgumentException("ByteBuffer does not have a backing array")
+        }
+
+        val byteArray = data.array()
+        val offset = data.arrayOffset() + data.position()
+        val length = data.remaining()
+
+        when (_state) {
+            SessionState.WaitingForLength -> handleLengthBytes(byteArray, offset, length)
+            SessionState.WaitingForData -> handlePacketBytes(byteArray, offset, length)
+            else -> throw Exception("Invalid state $_state encountered")
         }
     }
 
@@ -90,7 +109,7 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
             return
         }
 
-        Log.i(TAG, "$count bytes received from ${_socket.remoteSocketAddress}")
+        Log.i(TAG, "$count bytes received from ${_remoteSocketAddress}")
 
         when (_state) {
             SessionState.WaitingForLength -> handleLengthBytes(data, 0, count)
@@ -116,17 +135,15 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
                     ((_buffer[3].toInt() and 0xff) shl 24)
             _bytesRead = 0
 
-            Log.i(TAG, "Packet length header received from ${_socket.remoteSocketAddress}: $_packetLength")
+            Log.i(TAG, "Packet length header received from ${_remoteSocketAddress}: $_packetLength")
 
             if (_packetLength > MAXIMUM_PACKET_LENGTH) {
-                Log.i(TAG, "Maximum packet length is 32kB, killing socket ${_socket.remoteSocketAddress}: $_packetLength")
-                _socket.close()
-                _state = SessionState.Disconnected
-                return
+                Log.i(TAG, "Maximum packet length is 32kB, killing socket ${_remoteSocketAddress}: $_packetLength")
+                throw Exception("Maximum packet length is 32kB")
             }
 
             if (bytesRemaining > 0) {
-                Log.i(TAG, "$bytesRemaining remaining bytes ${_socket.remoteSocketAddress} pushed to handlePacketBytes")
+                Log.i(TAG, "$bytesRemaining remaining bytes ${_remoteSocketAddress} pushed to handlePacketBytes")
                 handlePacketBytes(data, offset + bytesToRead, bytesRemaining)
             }
         }
@@ -141,7 +158,7 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
         Log.i(TAG, "Read $bytesToRead bytes from packet")
 
         if (_bytesRead >= _packetLength) {
-            Log.i(TAG, "Packet finished receiving from ${_socket.remoteSocketAddress} of $_packetLength bytes.")
+            Log.i(TAG, "Packet finished receiving from ${_remoteSocketAddress} of $_packetLength bytes.")
             handlePacket()
 
             _state = SessionState.WaitingForLength
@@ -149,14 +166,14 @@ class FCastSession(private val _socket: Socket, private val _service: TcpListene
             _bytesRead = 0
 
             if (bytesRemaining > 0) {
-                Log.i(TAG, "$bytesRemaining remaining bytes ${_socket.remoteSocketAddress} pushed to handleLengthBytes")
+                Log.i(TAG, "$bytesRemaining remaining bytes ${_remoteSocketAddress} pushed to handleLengthBytes")
                 handleLengthBytes(data, offset + bytesToRead, bytesRemaining)
             }
         }
     }
 
     private fun handlePacket() {
-        Log.i(TAG, "Processing packet of $_bytesRead bytes from ${_socket.remoteSocketAddress}")
+        Log.i(TAG, "Processing packet of $_bytesRead bytes from ${_remoteSocketAddress}")
 
         val opcode = Opcode.values().firstOrNull { it.value == _buffer[0] } ?: Opcode.None
         val body = if (_packetLength > 1) _buffer.copyOfRange(1, _packetLength)

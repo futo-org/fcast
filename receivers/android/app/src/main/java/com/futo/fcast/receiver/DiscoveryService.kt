@@ -1,5 +1,6 @@
 package com.futo.fcast.receiver
 
+import WebSocketListenerService
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -7,7 +8,8 @@ import android.util.Log
 
 class DiscoveryService(private val _context: Context) {
     private var _nsdManager: NsdManager? = null
-    private val _serviceType = "_fcast._tcp"
+    private val _registrationListenerTcp = DefaultRegistrationListener()
+    private val _registrationListenerWs = DefaultRegistrationListener()
 
     private fun getDeviceName(): String {
         return "${android.os.Build.MANUFACTURER}-${android.os.Build.MODEL}"
@@ -20,23 +22,28 @@ class DiscoveryService(private val _context: Context) {
         Log.i("DiscoveryService", "Discovery service started. Name: $serviceName")
 
         _nsdManager = _context.getSystemService(Context.NSD_SERVICE) as NsdManager
-        val serviceInfo = NsdServiceInfo().apply {
+        _nsdManager?.registerService(NsdServiceInfo().apply {
             this.serviceName = serviceName
-            this.serviceType = _serviceType
-            this.port = 46899
-        }
+            this.serviceType = "_fcast._tcp"
+            this.port = TcpListenerService.PORT
+        }, NsdManager.PROTOCOL_DNS_SD, _registrationListenerTcp)
 
-        _nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        _nsdManager?.registerService(NsdServiceInfo().apply {
+            this.serviceName = serviceName
+            this.serviceType = "_fcast._ws"
+            this.port = WebSocketListenerService.PORT
+        }, NsdManager.PROTOCOL_DNS_SD, _registrationListenerWs)
     }
 
     fun stop() {
         if (_nsdManager == null) return
 
-        _nsdManager?.unregisterService(registrationListener)
+        _nsdManager?.unregisterService(_registrationListenerTcp)
+        _nsdManager?.unregisterService(_registrationListenerWs)
         _nsdManager = null
     }
 
-    private val registrationListener = object : NsdManager.RegistrationListener {
+    private class DefaultRegistrationListener : NsdManager.RegistrationListener {
         override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
             Log.d("DiscoveryService", "Service registered: ${serviceInfo.serviceName}")
         }

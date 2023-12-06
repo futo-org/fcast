@@ -146,7 +146,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         session.send_message(Opcode::Play, Some(play_message))?;
     } else if let Some(seek_matches) = matches.subcommand_matches("seek") {
         let seek_message = SeekMessage::new(match seek_matches.value_of("timestamp") {
-            Some(s) => s.parse::<u64>()?,
+            Some(s) => s.parse::<f64>()?,
             _ => return Err("Timestamp is required.".into())
         });
         println!("Sent seek {:?}", seek_message);

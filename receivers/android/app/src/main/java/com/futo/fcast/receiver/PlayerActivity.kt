@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
-import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.ImageView
@@ -19,7 +18,6 @@ import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.source.dash.DashMediaSource
 import com.google.android.exoplayer2.source.hls.HlsMediaSource
-import com.google.android.exoplayer2.text.ExoplayerCuesDecoder
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
 import com.google.android.exoplayer2.ui.StyledPlayerView
 import com.google.android.exoplayer2.upstream.DefaultDataSource
@@ -41,6 +39,7 @@ class PlayerActivity : AppCompatActivity() {
     private  var _wasPlaying = false
 
     val currentPosition get() = _exoPlayer.currentPosition
+    val duration get() = _exoPlayer.duration
     val isPlaying get() = _exoPlayer.isPlaying
 
     private val _connectivityEvents = object : ConnectivityManager.NetworkCallback() {
@@ -111,7 +110,7 @@ class PlayerActivity : AppCompatActivity() {
             super.onVolumeChanged(volume)
             _scope.launch(Dispatchers.IO) {
                 try {
-                    TcpListenerService.instance?.sendCastVolumeUpdate(VolumeUpdateMessage(volume.toDouble()))
+                    NetworkService.instance?.sendCastVolumeUpdate(VolumeUpdateMessage(volume.toDouble()))
                 } catch (e: Throwable) {
                     Log.e(TAG, "Unhandled error sending volume update", e)
                 }
@@ -167,7 +166,7 @@ class PlayerActivity : AppCompatActivity() {
         play(PlayMessage(container, url, content, time))
 
         instance = this
-        TcpListenerService.activityCount++
+        NetworkService.activityCount++
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -242,7 +241,7 @@ class PlayerActivity : AppCompatActivity() {
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         _playerControlView.player = null
-        TcpListenerService.activityCount--
+        NetworkService.activityCount--
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -293,6 +292,7 @@ class PlayerActivity : AppCompatActivity() {
         val mediaItem = mediaItemBuilder.build()
         val mediaSource = when (playMessage.container) {
             "application/dash+xml" -> DashMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
+            "application/x-mpegurl" -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
             "application/vnd.apple.mpegurl" -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
             else -> DefaultMediaSourceFactory(dataSourceFactory).createMediaSource(mediaItem)
         }
@@ -319,7 +319,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     fun seek(seekMessage: SeekMessage) {
-        _exoPlayer.seekTo(seekMessage.time * 1000)
+        _exoPlayer.seekTo((seekMessage.time * 1000.0).toLong())
     }
 
     fun setVolume(setVolumeMessage: SetVolumeMessage) {

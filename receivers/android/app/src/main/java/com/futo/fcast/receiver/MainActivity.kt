@@ -1,5 +1,6 @@
 package com.futo.fcast.receiver
 
+import WebSocketListenerService
 import android.Manifest
 import android.app.AlertDialog
 import android.app.PendingIntent
@@ -102,7 +103,7 @@ class MainActivity : AppCompatActivity() {
                 _lastDemoToast?.cancel()
                 _lastDemoToast = Toast.makeText(this, "Click $remainingClicks more times to start demo", Toast.LENGTH_SHORT).apply { show() }
             } else if (_demoClickCount == 5) {
-                TcpListenerService.instance?.onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
+                NetworkService.instance?.onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
                 _demoClickCount = 0
             }
         }
@@ -123,16 +124,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         val ips = getIPs()
-        _textIPs.text = "IPs\n" + ips.joinToString("\n") + "\n\nPort\n46899"
+        _textIPs.text = "IPs\n" + ips.joinToString("\n") + "\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
 
         try {
             val barcodeEncoder = BarcodeEncoder()
             val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 100.0f, resources.displayMetrics).toInt()
-            val json = Json.encodeToString(FCastNetworkConfig(ips, listOf(
-                FCastService(46899, 0)
+            val json = Json.encodeToString(FCastNetworkConfig("${Build.MANUFACTURER}-${Build.MODEL}", ips, listOf(
+                FCastService(TcpListenerService.PORT, 0),
+                FCastService(WebSocketListenerService.PORT, 1)
             )))
-            val base64 = Base64.encode(json.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val base64 = Base64.encodeToString(json.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
             val url = "fcast://r/${base64}"
+            Log.i(TAG, "connection url: $url")
             val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px)
             _imageQr.setImageBitmap(bitmap)
         } catch (e: java.lang.Exception) {
@@ -140,7 +143,7 @@ class MainActivity : AppCompatActivity() {
             _imageQr.visibility = View.GONE
         }
 
-        TcpListenerService.activityCount++
+        NetworkService.activityCount++
 
         checkAndRequestPermissions()
         if (savedInstanceState == null) {
@@ -167,7 +170,7 @@ class MainActivity : AppCompatActivity() {
         InstallReceiver.onReceiveResult = null
         _scope.cancel()
         _player.release()
-        TcpListenerService.activityCount--
+        NetworkService.activityCount--
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -176,12 +179,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restartService() {
-        val i = TcpListenerService.instance
+        val i = NetworkService.instance
         if (i != null) {
             i.stopSelf()
         }
 
-        startService(Intent(this, TcpListenerService::class.java))
+        startService(Intent(this, NetworkService::class.java))
     }
 
     private fun startVideo() {
@@ -535,7 +538,8 @@ class MainActivity : AppCompatActivity() {
                     continue
                 }
 
-                Log.i(TcpListenerService.TAG, "Running on ${addr.hostAddress}:${TcpListenerService.PORT}")
+                Log.i(TAG, "Running on ${addr.hostAddress}:${TcpListenerService.PORT} (TCP)")
+                Log.i(TAG, "Running on ${addr.hostAddress}:${WebSocketListenerService.PORT} (WebSocket)")
                 addr.hostAddress?.let { ips.add(it) }
             }
         }
