@@ -51,6 +51,7 @@ function updateUrlList() {
             castButton.disabled = !response.selectedHost;
             castButton.addEventListener('click', function() {
                 if (response.selectedHost) {
+                    console.log("castVideo", url);
                     chrome.runtime.sendMessage({ action: 'castVideo', url });
                 }
             });    

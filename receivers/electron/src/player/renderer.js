@@ -15,30 +15,45 @@ const player = videojs("video-player", options, function onPlayerReady() {
     }
 });
 
-player.on("pause", () => { window.electronAPI.sendPlaybackUpdate({ 
+player.on("pause", () => { window.electronAPI.sendPlaybackUpdate({
     generationTime: Date.now(),
-    time: Math.round(player.currentTime()), 
-    duration: Math.round(player.duration()), 
-    state: 2 
+    time: player.currentTime(), 
+    duration: player.duration(), 
+    state: 2,
+    speed: player.playbackRate()
 })});
 
 player.on("play", () => { window.electronAPI.sendPlaybackUpdate({ 
     generationTime: Date.now(),
-    time: Math.round(player.currentTime()), 
-    duration: Math.round(player.duration()), 
-    state: 1 
+    time: player.currentTime(), 
+    duration: player.duration(), 
+    state: 1,
+    speed: player.playbackRate()
 })});
 
 player.on("seeked", () => { window.electronAPI.sendPlaybackUpdate({ 
     generationTime: Date.now(),
-    time: Math.round(player.currentTime()), 
-    duration: Math.round(player.duration()), 
-    state: player.paused() ? 2 : 1 })
-});
+    time: player.currentTime(), 
+    duration: player.duration(), 
+    state: player.paused() ? 2 : 1,
+    speed: player.playbackRate()
+})});
 
 player.on("volumechange", () => { window.electronAPI.sendVolumeUpdate({ 
     generationTime: Date.now(),
     volume: player.volume() 
+})});
+
+player.on("ratechange", () => { window.electronAPI.sendPlaybackUpdate({ 
+    generationTime: Date.now(),
+    time: player.currentTime(), 
+    duration: player.duration(), 
+    state: player.paused() ? 2 : 1,
+    speed: player.playbackRate()
+})});
+
+player.on('error', () => { window.electronAPI.sendPlaybackError({ 
+    message: JSON.stringify(player.error())
 })});
 
 window.electronAPI.onPlay((_event, value) => {
@@ -50,11 +65,22 @@ window.electronAPI.onPlay((_event, value) => {
         player.src({ type: value.container, src: value.url });
     }
 
-    player.play();
+    const onLoadedMetadata = () => {
+        if (value.time) {
+            player.currentTime(value.time);
+        }
 
-    if (value.time) {
-        player.currentTime(value.time);
-    }
+        if (value.speed) {
+            player.playbackRate(value.speed);
+        } else {
+            player.playbackRate(1.0);
+        }
+
+        player.off('loadedmetadata', onLoadedMetadata);
+    };
+
+    player.on('loadedmetadata', onLoadedMetadata);
+    player.play();
 });
 
 window.electronAPI.onPause((_event) => {
@@ -77,12 +103,18 @@ window.electronAPI.onSetVolume((_event, value) => {
     player.volume(Math.min(1.0, Math.max(0.0, value.volume)));
 });
 
+window.electronAPI.onSetSpeed((_event, value) => {
+    console.log("Handle setSpeed");
+    player.playbackRate(value.speed);
+});
+
 setInterval(() => {
     window.electronAPI.sendPlaybackUpdate({ 
         generationTime: Date.now(),
-        time: Math.round(player.currentTime()), 
-        duration: Math.round(player.duration()), 
-        state: player.paused() ? 2 : 1 
+        time: (player.currentTime()), 
+        duration: (player.duration()), 
+        state: player.paused() ? 2 : 1,
+        speed: player.playbackRate()
     });
 }, 1000);
 
@@ -171,7 +203,7 @@ player.ready(() => {
     textTracks.addEventListener("change", function () {
         console.log("Text tracks changed", textTracks);
         for (let i = 0; i < textTracks.length; i++) {
-            if (textTracks[i].language === "en" && textTracks[i].mode !== "showing") {
+            if (textTracks[i].language === "df" && textTracks[i].mode !== "showing") {
                 textTracks[i].mode = "showing";
             }
         }
@@ -180,7 +212,7 @@ player.ready(() => {
     player.on('loadedmetadata', function () {
         console.log("Metadata loaded", textTracks);
         for (let i = 0; i < textTracks.length; i++) {
-            if (textTracks[i].language === "en" && textTracks[i].mode !== "showing") {
+            if (textTracks[i].language === "df" && textTracks[i].mode !== "showing") {
                 textTracks[i].mode = "showing";
             }
         }

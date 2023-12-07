@@ -3,7 +3,8 @@ export class PlayMessage {
         public container: String,
         public url: String = null,
         public content: String = null,
-        public time: number = null
+        public time: number = null,
+        public speed: number = null
     ) {}
 }
 
@@ -18,7 +19,14 @@ export class PlaybackUpdateMessage {
         public generationTime: number,
         public time: number,
         public duration: number,
-        public state: number
+        public state: number,
+        public speed: number
+    ) {}
+}
+
+export class PlaybackErrorMessage {
+    constructor(
+        public message: String
     ) {}
 }
 
@@ -32,5 +40,11 @@ export class VolumeUpdateMessage {
 export class SetVolumeMessage {
     constructor(
         public volume: number,
+    ) {}
+}
+
+export class SetSpeedMessage {
+    constructor(
+        public speed: number,
     ) {}
 }

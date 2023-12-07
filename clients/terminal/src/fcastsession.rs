@@ -1,6 +1,6 @@
-use std::{net::TcpStream, io::{Write, Read}, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
-use crate::models::{PlaybackUpdateMessage, VolumeUpdateMessage};
+use crate::{models::{PlaybackUpdateMessage, VolumeUpdateMessage, PlaybackErrorMessage}, transport::Transport};
 use serde::Serialize;
 
 #[derive(Debug)]
@@ -21,7 +21,9 @@ pub enum Opcode {
     Seek = 5,
     PlaybackUpdate = 6,
     VolumeUpdate = 7,
-    SetVolume = 8
+    SetVolume = 8,
+    PlaybackError = 9,
+    SetSpeed = 10
 }
 
 impl Opcode {
@@ -36,6 +38,8 @@ impl Opcode {
             6 => Opcode::PlaybackUpdate,
             7 => Opcode::VolumeUpdate,
             8 => Opcode::SetVolume,
+            9 => Opcode::PlaybackError,
+            10 => Opcode::SetSpeed,
             _ => panic!("Unknown value: {}", value),
         }
     }
@@ -48,17 +52,17 @@ pub struct FCastSession<'a> {
     buffer: Vec<u8>,
     bytes_read: usize,
     packet_length: usize,
-    stream: &'a TcpStream,
+    stream: Box<dyn Transport + 'a>,
     state: SessionState
 }
 
 impl<'a> FCastSession<'a> {
-    pub fn new(stream: &'a TcpStream) -> Self {
+    pub fn new<T: Transport + 'a>(stream: T) -> Self {
         FCastSession {
             buffer: vec![0; MAXIMUM_PACKET_LENGTH],
             bytes_read: 0,
             packet_length: 0,
-            stream,
+            stream: Box::new(stream),
             state: SessionState::Idle
         }
     }
@@ -76,7 +80,7 @@ impl FCastSession<'_> {
         
         let packet = [header, data.to_vec()].concat();
         println!("Sent {} bytes with (header size: {}, body size: {}).", packet.len(), header_size, data.len());
-        return self.stream.write_all(&packet);
+        return self.stream.transport_write(&packet);
     }
 
     pub fn send_empty(&mut self, opcode: Opcode) -> Result<(), std::io::Error> {
@@ -88,7 +92,7 @@ impl FCastSession<'_> {
         header[LENGTH_BYTES] = opcode as u8;
         
         let packet = [header, data.to_vec()].concat();
-        return self.stream.write_all(&packet);
+        return self.stream.transport_write(&packet);
     }
 
     pub fn receive_loop(&mut self, running: &Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +100,7 @@ impl FCastSession<'_> {
 
         let mut buffer = [0u8; 1024];
         while running.load(Ordering::SeqCst) {
-            let bytes_read = self.stream.read(&mut buffer)?;
+            let bytes_read = self.stream.transport_read(&mut buffer)?;
             self.process_bytes(&buffer[..bytes_read])?;
         }
 
@@ -109,12 +113,7 @@ impl FCastSession<'_> {
             return Ok(());
         }
 
-        let addr = match self.stream.peer_addr() {
-            Ok(a) => a.to_string(),
-            _ => String::new()
-        };
-
-        println!("{} bytes received from {}", received_bytes.len(), addr);
+        println!("{} bytes received", received_bytes.len());
 
         match self.state {
             SessionState::WaitingForLength => self.handle_length_bytes(received_bytes)?,
@@ -136,27 +135,22 @@ impl FCastSession<'_> {
         println!("handleLengthBytes: Read {} bytes from packet", bytes_to_read);
 
         if self.bytes_read >= LENGTH_BYTES {
-            let addr = match self.stream.peer_addr() {
-                Ok(a) => a.to_string(),
-                _ => String::new()
-            };
-
             self.state = SessionState::WaitingForData;
             self.packet_length = u32::from_le_bytes(self.buffer[..LENGTH_BYTES].try_into()?) as usize;
             self.bytes_read = 0;
 
-            println!("Packet length header received from {}: {}", addr, self.packet_length);
+            println!("Packet length header received from: {}", self.packet_length);
 
             if self.packet_length > MAXIMUM_PACKET_LENGTH {
-                println!("Maximum packet length is 32kB, killing stream {}: {}", addr, self.packet_length);
+                println!("Maximum packet length is 32kB, killing stream: {}", self.packet_length);
 
-                self.stream.shutdown(std::net::Shutdown::Both)?;
+                self.stream.transport_shutdown()?;
                 self.state = SessionState::Disconnected;
                 return Err(format!("Stream killed due to packet length ({}) exceeding maximum 32kB packet size.", self.packet_length).into());
             }
     
             if bytes_remaining > 0 {
-                println!("{} remaining bytes {} pushed to handlePacketBytes", bytes_remaining, addr);
+                println!("{} remaining bytes pushed to handlePacketBytes", bytes_remaining);
 
                 self.handle_packet_bytes(&received_bytes[bytes_to_read..])?;
             }
@@ -174,13 +168,8 @@ impl FCastSession<'_> {
     
         println!("handlePacketBytes: Read {} bytes from packet", bytes_to_read);
     
-        if self.bytes_read >= self.packet_length {
-            let addr = match self.stream.peer_addr() {
-                Ok(a) => a.to_string(),
-                _ => String::new()
-            };
-            
-            println!("Packet finished receiving from {} of {} bytes.", addr, self.packet_length);
+        if self.bytes_read >= self.packet_length {           
+            println!("Packet finished receiving of {} bytes.", self.packet_length);
             self.handle_packet()?;
 
             self.state = SessionState::WaitingForLength;
@@ -188,7 +177,7 @@ impl FCastSession<'_> {
             self.bytes_read = 0;
     
             if bytes_remaining > 0 {
-                println!("{} remaining bytes {} pushed to handleLengthBytes", bytes_remaining, addr);
+                println!("{} remaining bytes pushed to handleLengthBytes", bytes_remaining);
                 self.handle_length_bytes(&received_bytes[bytes_to_read..])?;
             }
         }
@@ -197,12 +186,7 @@ impl FCastSession<'_> {
     }
 
     fn handle_packet(&mut self) -> Result<(), std::str::Utf8Error> {
-        let addr = match self.stream.peer_addr() {
-            Ok(a) => a.to_string(),
-            _ => String::new()
-        };
-
-        println!("Processing packet of {} bytes from {}", self.bytes_read, addr);
+        println!("Processing packet of {} bytes", self.bytes_read);
 
         let opcode = Opcode::from_u8(self.buffer[0]);
         let body = if self.packet_length > 1 {
@@ -228,15 +212,22 @@ impl FCastSession<'_> {
                     }
                 }
             }
+            Opcode::PlaybackError => {
+                if let Some(body_str) = body {
+                    if let Ok(playback_error_msg) = serde_json::from_str::<PlaybackErrorMessage>(body_str) {
+                        println!("Received playback error {:?}", playback_error_msg);
+                    }
+                }
+            }
             _ => {
-                println!("Error handling packet from {}", addr);
+                println!("Error handling packet");
             }
         }
 
         Ok(())
     }
 
-    pub fn shutdown(&self) -> Result<(), std::io::Error> {
-        return self.stream.shutdown(std::net::Shutdown::Both);
+    pub fn shutdown(&mut self) -> Result<(), std::io::Error> {
+        return self.stream.transport_shutdown();
     }
 }

@@ -39,6 +39,7 @@ class PlayerActivity : AppCompatActivity() {
     private  var _wasPlaying = false
 
     val currentPosition get() = _exoPlayer.currentPosition
+    val speed get() = _exoPlayer.playbackParameters.speed
     val duration get() = _exoPlayer.duration
     val isPlaying get() = _exoPlayer.isPlaying
 
@@ -82,7 +83,15 @@ class PlayerActivity : AppCompatActivity() {
                 setStatus(true, null)
             }
 
-            //TODO: Send playback update
+            NetworkService.instance?.generateUpdateMessage()?.let {
+                _scope.launch(Dispatchers.IO) {
+                    try {
+                        NetworkService.instance?.sendPlaybackUpdate(it)
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Unhandled error sending playback update", e)
+                    }
+                }
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -105,9 +114,16 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
-            //TODO: Send error notification
+            val fullMessage = getFullExceptionMessage(error)
+            setStatus(false, fullMessage)
 
-            setStatus(false, getFullExceptionMessage(error))
+            _scope.launch(Dispatchers.IO) {
+                try {
+                    NetworkService.instance?.sendPlaybackError(fullMessage)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Unhandled error sending playback error", e)
+                }
+            }
         }
 
         override fun onVolumeChanged(volume: Float) {
@@ -118,8 +134,19 @@ class PlayerActivity : AppCompatActivity() {
                 } catch (e: Throwable) {
                     Log.e(TAG, "Unhandled error sending volume update", e)
                 }
+            }
+        }
 
-                Log.i(TAG, "Update sent")
+        override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+            super.onPlaybackParametersChanged(playbackParameters)
+            NetworkService.instance?.generateUpdateMessage()?.let {
+                _scope.launch(Dispatchers.IO) {
+                    try {
+                        NetworkService.instance?.sendPlaybackUpdate(it)
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Unhandled error sending playback update", e)
+                    }
+                }
             }
         }
     }
@@ -142,7 +169,7 @@ class PlayerActivity : AppCompatActivity() {
         val trackSelector = DefaultTrackSelector(this)
         trackSelector.parameters = trackSelector.parameters
             .buildUpon()
-            .setPreferredTextLanguage("en")
+            .setPreferredTextLanguage("df")
             .setSelectUndeterminedTextLanguage(true)
             .build()
 
@@ -165,9 +192,10 @@ class PlayerActivity : AppCompatActivity() {
         val container = intent.getStringExtra("container") ?: ""
         val url = intent.getStringExtra("url")
         val content = intent.getStringExtra("content")
-        val time = intent.getLongExtra("time", 0L)
+        val time = intent.getDoubleExtra("time", 0.0)
+        val speed = intent.getDoubleExtra("speed", 1.0)
 
-        play(PlayMessage(container, url, content, time))
+        play(PlayMessage(container, url, content, time, speed))
 
         instance = this
         NetworkService.activityCount++
@@ -302,9 +330,10 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         _exoPlayer.setMediaSource(mediaSource)
+        _exoPlayer.setPlaybackSpeed(playMessage.speed?.toFloat() ?: 1.0f)
 
         if (playMessage.time != null) {
-            _exoPlayer.seekTo(playMessage.time * 1000)
+            _exoPlayer.seekTo((playMessage.time * 1000).toLong())
         }
 
         setStatus(true, null)
@@ -324,6 +353,10 @@ class PlayerActivity : AppCompatActivity() {
 
     fun seek(seekMessage: SeekMessage) {
         _exoPlayer.seekTo((seekMessage.time * 1000.0).toLong())
+    }
+
+    fun setSpeed(setSpeedMessage: SetSpeedMessage) {
+        _exoPlayer.setPlaybackSpeed(setSpeedMessage.speed.toFloat())
     }
 
     fun setVolume(setVolumeMessage: SetVolumeMessage) {

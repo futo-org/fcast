@@ -58,43 +58,30 @@ class NetworkService : Service() {
 
         val onNewSession: (FCastSession) -> Unit = { session ->
             _scope?.launch(Dispatchers.Main) {
+                Log.i(TAG, "On new session ${session.id}")
+
                 var encounteredError = false
                 while (!_stopped && !encounteredError) {
                     try {
-                        val player = PlayerActivity.instance
-                        val updateMessage =  if (player != null) {
-                            PlaybackUpdateMessage(
-                                System.currentTimeMillis(),
-                                player.currentPosition / 1000.0,
-                                player.duration / 1000.0,
-                                if (player.isPlaying) 1 else 2
-                            )
-                        } else {
-                            PlaybackUpdateMessage(
-                                System.currentTimeMillis(),
-                                0.0,
-                                0.0,
-                                0
-                            )
-                        }
-
+                        val updateMessage = generateUpdateMessage()
                         withContext(Dispatchers.IO) {
                             try {
                                 session.sendPlaybackUpdate(updateMessage)
+                                Log.i(TAG, "Update sent ${session.id}")
                             } catch (eSend: Throwable) {
-                                Log.e(TAG, "Unhandled error sending update", eSend)
+                                Log.e(TAG, "Unhandled error sending update ${session.id}", eSend)
                                 encounteredError = true
                                 return@withContext
                             }
-
-                            Log.i(TAG, "Update sent")
                         }
                     } catch (eTimer: Throwable) {
-                        Log.e(TAG, "Unhandled error on timer thread", eTimer)
+                        Log.e(TAG, "Unhandled error on timer thread ${session.id}", eTimer)
                     } finally {
                         delay(1000)
                     }
                 }
+
+                Log.i(TAG, "Send loop closed ${session.id}")
             }
         }
 
@@ -102,11 +89,11 @@ class NetworkService : Service() {
             start()
         }
 
-        _tcpListenerService = TcpListenerService(this, onNewSession).apply {
+        _tcpListenerService = TcpListenerService(this) { onNewSession(it) }.apply {
             start()
         }
 
-        _webSocketListenerService = WebSocketListenerService(this, onNewSession).apply {
+        _webSocketListenerService = WebSocketListenerService(this) { onNewSession(it) }.apply {
             start()
         }
 
@@ -153,11 +140,82 @@ class NetworkService : Service() {
         instance = null
     }
 
+    fun generateUpdateMessage(): PlaybackUpdateMessage {
+        val player = PlayerActivity.instance
+        return  if (player != null) {
+            PlaybackUpdateMessage(
+                System.currentTimeMillis(),
+                player.currentPosition / 1000.0,
+                player.duration / 1000.0,
+                if (player.isPlaying) 1 else 2,
+                player.speed.toDouble()
+            )
+        } else {
+            PlaybackUpdateMessage(
+                System.currentTimeMillis(),
+                0.0,
+                0.0,
+                0,
+                0.0
+            )
+        }
+    }
+
+    fun sendPlaybackError(error: String) {
+        val message = PlaybackErrorMessage(error)
+        _tcpListenerService?.forEachSession { session ->
+            _scope?.launch(Dispatchers.IO) {
+                try {
+                    session.sendPlaybackError(message)
+                    Log.i(TAG, "Playback error sent ${session.id}")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to send playback error", e)
+                }
+            }
+        }
+
+        _webSocketListenerService?.forEachSession { session ->
+            _scope?.launch(Dispatchers.IO) {
+                try {
+                    session.sendPlaybackError(message)
+                    Log.i(TAG, "Playback error sent ${session.id}")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to send playback error", e)
+                }
+            }
+        }
+    }
+
+    fun sendPlaybackUpdate(message: PlaybackUpdateMessage) {
+        _tcpListenerService?.forEachSession { session ->
+            _scope?.launch(Dispatchers.IO) {
+                try {
+                    session.sendPlaybackUpdate(message)
+                    Log.i(TAG, "Playback update sent ${session.id}")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to send playback update", e)
+                }
+            }
+        }
+
+        _webSocketListenerService?.forEachSession { session ->
+            _scope?.launch(Dispatchers.IO) {
+                try {
+                    session.sendPlaybackUpdate(message)
+                    Log.i(TAG, "Playback update sent ${session.id}")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to send playback update", e)
+                }
+            }
+        }
+    }
+
     fun sendCastVolumeUpdate(value: VolumeUpdateMessage) {
         _tcpListenerService?.forEachSession { session ->
-            _scope?.launch {
+            _scope?.launch(Dispatchers.IO) {
                 try {
                     session.sendVolumeUpdate(value)
+                    Log.i(TAG, "Volume update sent ${session.id}")
                 } catch (e: Throwable) {
                     Log.w(TAG, "Failed to send volume update", e)
                 }
@@ -165,9 +223,10 @@ class NetworkService : Service() {
         }
 
         _webSocketListenerService?.forEachSession { session ->
-            _scope?.launch {
+            _scope?.launch(Dispatchers.IO) {
                 try {
                     session.sendVolumeUpdate(value)
+                    Log.i(TAG, "Volume update sent ${session.id}")
                 } catch (e: Throwable) {
                     Log.w(TAG, "Failed to send volume update", e)
                 }
@@ -178,7 +237,7 @@ class NetworkService : Service() {
     fun onCastPlay(playMessage: PlayMessage) {
         Log.i(TAG, "onPlay")
 
-        _scope?.launch {
+        _scope?.launch(Dispatchers.Main) {
             try {
                 if (PlayerActivity.instance == null) {
                     val i = Intent(this@NetworkService, PlayerActivity::class.java)
@@ -187,6 +246,7 @@ class NetworkService : Service() {
                     i.putExtra("url", playMessage.url)
                     i.putExtra("content", playMessage.content)
                     i.putExtra("time", playMessage.time)
+                    i.putExtra("speed", playMessage.speed)
 
                     if (activityCount > 0) {
                         startActivity(i)
@@ -219,7 +279,7 @@ class NetworkService : Service() {
     fun onCastPause() {
         Log.i(TAG, "onPause")
 
-        _scope?.launch {
+        _scope?.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.pause()
             } catch (e: Throwable) {
@@ -231,7 +291,7 @@ class NetworkService : Service() {
     fun onCastResume() {
         Log.i(TAG, "onResume")
 
-        _scope?.launch {
+        _scope?.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.resume()
             } catch (e: Throwable) {
@@ -243,7 +303,7 @@ class NetworkService : Service() {
     fun onCastStop() {
         Log.i(TAG, "onStop")
 
-        _scope?.launch {
+        _scope?.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.finish()
             } catch (e: Throwable) {
@@ -255,7 +315,7 @@ class NetworkService : Service() {
     fun onCastSeek(seekMessage: SeekMessage) {
         Log.i(TAG, "onSeek")
 
-        _scope?.launch {
+        _scope?.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.seek(seekMessage)
             } catch (e: Throwable) {
@@ -267,9 +327,21 @@ class NetworkService : Service() {
     fun onSetVolume(setVolumeMessage: SetVolumeMessage) {
         Log.i(TAG, "onSetVolume")
 
-        _scope?.launch {
+        _scope?.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.setVolume(setVolumeMessage)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to seek", e)
+            }
+        }
+    }
+
+    fun onSetSpeed(setSpeedMessage: SetSpeedMessage) {
+        Log.i(TAG, "setSpeedMessage")
+
+        _scope?.launch(Dispatchers.Main) {
+            try {
+                PlayerActivity.instance?.setSpeed(setSpeedMessage)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to seek", e)
             }

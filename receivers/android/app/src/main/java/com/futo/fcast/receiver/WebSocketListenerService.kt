@@ -6,44 +6,54 @@ import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.IdentityHashMap
 
 class WebSocketListenerService(private val _networkService: NetworkService, private val _onNewSession: (session: FCastSession) -> Unit) : WebSocketServer(InetSocketAddress(PORT)) {
-    private var _sessions = IdentityHashMap<WebSocket, FCastSession>()
+    private val _sockets = arrayListOf<WebSocket>()
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         val session = FCastSession(WebSocketOutputStream(conn), conn.remoteSocketAddress, _networkService)
-        synchronized(_sessions) {
-            _sessions[conn] = session
+        conn.setAttachment(session)
+
+        synchronized(_sockets) {
+            _sockets.add(conn)
         }
+
         _onNewSession(session)
 
-        Log.i(TAG, "New connection from ${conn.remoteSocketAddress}")
+        Log.i(TAG, "New connection from ${conn.remoteSocketAddress} ${session.id}")
     }
 
     override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
-        synchronized(_sessions) {
-            _sessions.remove(conn)
+        synchronized(_sockets) {
+            _sockets.remove(conn)
         }
 
-        Log.i(TAG, "Closed connection from ${conn.remoteSocketAddress}")
+        Log.i(TAG, "Closed connection from ${conn.remoteSocketAddress} ${conn.getAttachment<FCastSession>().id}")
     }
 
     override fun onMessage(conn: WebSocket?, message: String?) {
+        if (conn == null) {
+            Log.i(TAG, "Conn is null, ignore onMessage")
+            return
+        }
+
         Log.i(TAG, "Received string message, but not processing: $message")
     }
 
     override fun onMessage(conn: WebSocket?, message: ByteBuffer?) {
+        if (conn == null) {
+            Log.i(TAG, "Conn is null, ignore onMessage")
+            return
+        }
+
         if (message == null) {
             Log.i(TAG, "Received byte message null")
             return
         }
 
-        Log.i(TAG, "Received byte message (offset = ${message.arrayOffset()}, size = ${message.remaining()})")
-
-        synchronized(_sessions) {
-            _sessions[conn]?.processBytes(message)
-        }
+        val session = conn.getAttachment<FCastSession>()
+        Log.i(TAG, "Received byte message (offset = ${message.arrayOffset()}, size = ${message.remaining()}, id = ${session.id})")
+        session.processBytes(message)
     }
 
     override fun onError(conn: WebSocket?, ex: Exception) {
@@ -55,9 +65,9 @@ class WebSocketListenerService(private val _networkService: NetworkService, priv
     }
 
     fun forEachSession(handler: (FCastSession) -> Unit) {
-        synchronized(_sessions) {
-            for (pair in _sessions) {
-                handler(pair.value)
+        synchronized(_sockets) {
+            _sockets.forEach {
+                handler(it.getAttachment())
             }
         }
     }

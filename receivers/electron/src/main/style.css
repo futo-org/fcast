@@ -48,8 +48,12 @@ body, html {
     background-color: white;
 }
 
-#update-dialog, #waiting-for-connection, #manual-connection-info, #ips, #automatic-discovery, #scan-to-connect {
+#update-dialog, #waiting-for-connection, #ips, #automatic-discovery, #scan-to-connect {
     margin-top: 20px;
+}
+
+#spinner {
+    padding: 20px;
 }
 
 #update-button {

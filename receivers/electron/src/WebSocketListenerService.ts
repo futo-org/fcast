@@ -1,7 +1,7 @@
 import net = require('net');
 import { FCastSession } from './FCastSession';
 import { EventEmitter } from 'node:events';
-import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
 import { dialog } from 'electron';
 import Main from './Main';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -31,6 +31,19 @@ export class WebSocketListenerService {
         this.server = null;
 
         server.close();
+    }
+
+    sendPlaybackError(value: PlaybackErrorMessage) {
+        console.info("Sending playback error.", value);
+
+        this.sessions.forEach(session => {
+            try {
+                session.sendPlaybackError(value);
+            } catch (e) {
+                console.warn("Failed to send error.", e);
+                session.close();
+            }
+        });
     }
 
     sendPlaybackUpdate(value: PlaybackUpdateMessage) {
@@ -89,6 +102,7 @@ export class WebSocketListenerService {
         session.emitter.on("stop", () => { this.emitter.emit("stop") });
         session.emitter.on("seek", (body: SeekMessage) => { this.emitter.emit("seek", body) });
         session.emitter.on("setvolume", (body: SetVolumeMessage) => { this.emitter.emit("setvolume", body) });
+        session.emitter.on("setspeed", (body: SetSpeedMessage) => { this.emitter.emit("setspeed", body) });
         this.sessions.push(session);
 
         socket.on("error", (err) => {

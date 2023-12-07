@@ -6,9 +6,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.DataOutputStream
 import java.io.OutputStream
-import java.net.Socket
 import java.net.SocketAddress
 import java.nio.ByteBuffer
+import java.util.UUID
 
 enum class SessionState {
     Idle,
@@ -26,7 +26,9 @@ enum class Opcode(val value: Byte) {
     Seek(5),
     PlaybackUpdate(6),
     VolumeUpdate(7),
-    SetVolume(8)
+    SetVolume(8),
+    PlaybackError(9),
+    SetSpeed(10)
 }
 
 const val LENGTH_BYTES = 4
@@ -38,6 +40,11 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
     private var _packetLength = 0
     private var _state = SessionState.WaitingForLength
     private var _outputStream: DataOutputStream? = DataOutputStream(outputStream)
+    val id = UUID.randomUUID()
+
+    fun sendPlaybackError(value: PlaybackErrorMessage) {
+        send(Opcode.PlaybackError, value)
+    }
 
     fun sendPlaybackUpdate(value: PlaybackUpdateMessage) {
         send(Opcode.PlaybackUpdate, value)
@@ -82,7 +89,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
 
             Log.d(TAG, "Sent $size bytes: '$jsonString'.")
         } catch (e: Throwable) {
-            Log.i(TAG, "Failed to send message.", e)
+            Log.i(TAG, "Failed to send message ${id}.", e)
             throw e
         }
     }
@@ -189,6 +196,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
                 Opcode.Stop -> _service.onCastStop()
                 Opcode.Seek -> _service.onCastSeek(Json.decodeFromString(body!!))
                 Opcode.SetVolume -> _service.onSetVolume(Json.decodeFromString(body!!))
+                Opcode.SetSpeed -> _service.onSetSpeed(Json.decodeFromString(body!!))
                 else -> { }
             }
         } catch (e: Throwable) {

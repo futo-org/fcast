@@ -38,8 +38,18 @@ class DiscoveryService(private val _context: Context) {
     fun stop() {
         if (_nsdManager == null) return
 
-        _nsdManager?.unregisterService(_registrationListenerTcp)
-        _nsdManager?.unregisterService(_registrationListenerWs)
+        try {
+            _nsdManager?.unregisterService(_registrationListenerTcp)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to unregister TCP Listener.");
+        }
+
+        try {
+            _nsdManager?.unregisterService(_registrationListenerWs)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to unregister TCP Listener.");
+        }
+
         _nsdManager = null
     }
 
@@ -59,5 +69,9 @@ class DiscoveryService(private val _context: Context) {
         override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
             Log.e("DiscoveryService", "Service unregistration failed: errorCode=$errorCode")
         }
+    }
+
+    companion object {
+        private const val TAG = "DiscoveryService"
     }
 }

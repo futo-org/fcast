@@ -1,11 +1,6 @@
 package com.futo.fcast.receiver
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket

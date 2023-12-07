@@ -2,7 +2,9 @@ let mediaUrls = [];
 let hosts = [];
 let currentWebSocket = null;
 let playbackState = null;
+let playbackStateUpdateTime = null;
 let volume = 1.0;
+let volumeUpdateTime = null;
 let selectedHost = null;
 
 const Opcode = {
@@ -35,7 +37,6 @@ chrome.runtime.onInstalled.addListener(function() {
 
 chrome.webRequest.onHeadersReceived.addListener(
     function(details) {
-        console.log(`onHeadersReceived (${details.url})`, details);
         const contentType = details.responseHeaders.find(header => header.name.toLowerCase() === 'content-type')?.value;
         if (!contentType) {
             return;
@@ -48,10 +49,16 @@ chrome.webRequest.onHeadersReceived.addListener(
         const isSegment = details.url.endsWith(".ts");
 
         if (contentType && isMedia && !isSegment) {
-            if (!mediaUrls.some(v => v.url === details.url))
-                mediaUrls.push({contentType, url: details.url});
             console.log('Media URL found:', {contentType, url: details.url});
-            notifyPopup('updateUrls');
+
+            if (!mediaUrls.some(v => v.url === details.url)) {
+                mediaUrls.unshift({contentType, url: details.url});
+                if (mediaUrls.length > 5) {
+                    mediaUrls.pop();
+                }
+
+                notifyPopup('updateUrls');
+            }
         }
     },
     { urls: ["<all_urls>"] },
@@ -114,6 +121,8 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     } else if (request.action === 'stop') {
         stop(selectedHost);
     } else if (request.action === 'setVolume') {
+        volumeUpdateTime = Date.now();
+        volume = request.volume;
         setVolume(selectedHost, request.volume);
     } else if (request.action === 'seek') {
         seek(selectedHost, request.time);
@@ -241,8 +250,10 @@ function maintainWebSocketConnection(host) {
                     try {
                         const playbackUpdateMsg = JSON.parse(body);
                         console.log("Received playback update", playbackUpdateMsg);
-                        playbackState = playbackUpdateMsg;
-                        notifyPopup('updatePlaybackState');
+                        if (playbackStateUpdateTime == null || playbackStateUpdateTime.generationTime > playbackStateUpdateTime) {
+                            playbackState = playbackUpdateMsg;
+                            notifyPopup('updatePlaybackState');
+                        }
                     } catch (error) {
                         console.error("Error parsing playback update message:", error);
                     }
@@ -254,8 +265,11 @@ function maintainWebSocketConnection(host) {
                     try {
                         const volumeUpdateMsg = JSON.parse(body);
                         console.log("Received volume update", volumeUpdateMsg);
-                        volume = volumeUpdateMsg;
-                        notifyPopup('updateVolume');
+                        if (volumeUpdateTime == null || volumeUpdateMsg.generationTime > volumeUpdateTime) {
+                            volume = volumeUpdateMsg.volume;
+                            volumeUpdateTime = volumeUpdateMsg.generationTime;
+                            notifyPopup('updateVolume');
+                        }
                     } catch (error) {
                         console.error("Error parsing volume update message:", error);
                     }

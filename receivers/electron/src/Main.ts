@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog } from 'electron';
 import path = require('path');
 import { TcpListenerService } from './TcpListenerService';
-import { PlaybackUpdateMessage, VolumeUpdateMessage } from './Packets';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from './Packets';
 import { DiscoveryService } from './DiscoveryService';
 import { Updater } from './Updater';
 import { WebSocketListenerService } from './WebSocketListenerService';
@@ -137,7 +137,12 @@ export default class Main {
     
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
             l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
+            l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
             l.start();
+
+            ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
+                l.sendPlaybackError(value);
+            });
 
             ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
                 l.sendPlaybackUpdate(value);
@@ -198,6 +203,8 @@ export default class Main {
         Main.mainWindow = new BrowserWindow({
             fullscreen: true,
             autoHideMenuBar: true,
+            minWidth: 500,
+            minHeight: 920,
             webPreferences: {
                 preload: path.join(__dirname, 'main/preload.js')
             }

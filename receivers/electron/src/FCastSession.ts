@@ -1,6 +1,6 @@
 import net = require('net');
 import { EventEmitter } from 'node:events';
-import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
 import { WebSocket } from 'ws';
 
 enum SessionState {
@@ -19,7 +19,9 @@ enum Opcode {
     Seek = 5,
     PlaybackUpdate = 6,
     VolumeUpdate = 7,
-    SetVolume = 8
+    SetVolume = 8,
+    PlaybackError = 9,
+    SetSpeed = 10
 };
 
 const LENGTH_BYTES = 4;
@@ -38,6 +40,10 @@ export class FCastSession {
         this.socket = socket;
         this.writer = writer;
         this.state = SessionState.WaitingForLength;
+    }
+
+    sendPlaybackError(value: PlaybackErrorMessage) {
+        this.send(Opcode.PlaybackError, value);
     }
 
     sendPlaybackUpdate(value: PlaybackUpdateMessage) {
@@ -177,6 +183,9 @@ export class FCastSession {
                     break;
                 case Opcode.SetVolume:
                     this.emitter.emit("setvolume", JSON.parse(body) as SetVolumeMessage);
+                    break;
+                case Opcode.SetSpeed:
+                    this.emitter.emit("setspeed", JSON.parse(body) as SetSpeedMessage);
                     break;
             }
         } catch (e) {

@@ -15,8 +15,14 @@ cargo build
 Example usage of the fcast client.
 
 ```
-# Play a mp4 video URL
-./fcast -h localhost play --mime_type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10
+# Play a mp4 video URL (1.0 playbackspeed explicit)
+./fcast -h localhost play --mime_type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
+
+# Play a mp4 video URL using WebSockets
+./fcast -h localhost -c ws play --mime_type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10
+
+# Play a local mp4
+./fcast -h 192.168.1.62 play --mime_type video/mp4 -f /home/koen/Downloads/BigBuckBunny.mp4
 
 # Play a DASH URL
 ./fcast -h localhost play --mime_type application/dash+xml --url https://dash.akamaized.net/digitalprimates/fraunhofer/480p_video/heaac_2_0_with_video/Sintel/sintel_480p_heaac2_0.mpd
@@ -41,4 +47,7 @@ cat dash.mpd | ./fcast -h localhost play --mime_type application/dash+xml
 
 # Set volume to half
 ./fcast -h localhost setvolume -v 0.5
+
+# Set speed to double
+./fcast -h localhost setspeed -s 2.0
 ```
