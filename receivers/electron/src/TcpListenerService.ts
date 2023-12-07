@@ -125,5 +125,12 @@ export class TcpListenerService {
                 this.sessions.splice(index, 1);   
             }
         });
+
+        try {
+            console.log('Sending version');
+            session.sendVersion({version: 2});
+        } catch (e) {
+            console.log('Failed to send version');
+        }
     }
 }

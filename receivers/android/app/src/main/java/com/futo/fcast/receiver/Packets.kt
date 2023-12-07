@@ -45,3 +45,8 @@ data class SetSpeedMessage(
 data class SetVolumeMessage(
     val volume: Double
 )
+
+@Serializable
+data class VersionMessage(
+    val version: Long
+)

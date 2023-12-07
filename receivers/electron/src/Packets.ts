@@ -48,3 +48,9 @@ export class SetSpeedMessage {
         public speed: number,
     ) {}
 }
+
+export class VersionMessage {
+    constructor(
+        public version: number,
+    ) {}
+}

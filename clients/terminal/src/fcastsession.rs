@@ -1,6 +1,6 @@
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
-use crate::{models::{PlaybackUpdateMessage, VolumeUpdateMessage, PlaybackErrorMessage}, transport::Transport};
+use crate::{models::{PlaybackUpdateMessage, VolumeUpdateMessage, PlaybackErrorMessage, VersionMessage}, transport::Transport};
 use serde::Serialize;
 
 #[derive(Debug)]
@@ -23,7 +23,8 @@ pub enum Opcode {
     VolumeUpdate = 7,
     SetVolume = 8,
     PlaybackError = 9,
-    SetSpeed = 10
+    SetSpeed = 10,
+    Version = 11
 }
 
 impl Opcode {
@@ -40,6 +41,7 @@ impl Opcode {
             8 => Opcode::SetVolume,
             9 => Opcode::PlaybackError,
             10 => Opcode::SetSpeed,
+            11 => Opcode::Version,
             _ => panic!("Unknown value: {}", value),
         }
     }
@@ -216,6 +218,13 @@ impl FCastSession<'_> {
                 if let Some(body_str) = body {
                     if let Ok(playback_error_msg) = serde_json::from_str::<PlaybackErrorMessage>(body_str) {
                         println!("Received playback error {:?}", playback_error_msg);
+                    }
+                }
+            }
+            Opcode::Version => {
+                if let Some(body_str) = body {
+                    if let Ok(version_msg) = serde_json::from_str::<VersionMessage>(body_str) {
+                        println!("Received version {:?}", version_msg);
                     }
                 }
             }

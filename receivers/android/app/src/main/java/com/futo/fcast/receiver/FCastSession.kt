@@ -28,7 +28,8 @@ enum class Opcode(val value: Byte) {
     VolumeUpdate(7),
     SetVolume(8),
     PlaybackError(9),
-    SetSpeed(10)
+    SetSpeed(10),
+    Version(11)
 }
 
 const val LENGTH_BYTES = 4
@@ -41,6 +42,10 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
     private var _state = SessionState.WaitingForLength
     private var _outputStream: DataOutputStream? = DataOutputStream(outputStream)
     val id = UUID.randomUUID()
+
+    fun sendVersion(value: VersionMessage) {
+        send(Opcode.Version, value)
+    }
 
     fun sendPlaybackError(value: PlaybackErrorMessage) {
         send(Opcode.PlaybackError, value)
@@ -190,13 +195,13 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
 
         try {
             when (opcode) {
-                Opcode.Play -> _service.onCastPlay(Json.decodeFromString(body!!))
+                Opcode.Play -> _service.onCastPlay(json.decodeFromString(body!!))
                 Opcode.Pause -> _service.onCastPause()
                 Opcode.Resume -> _service.onCastResume()
                 Opcode.Stop -> _service.onCastStop()
-                Opcode.Seek -> _service.onCastSeek(Json.decodeFromString(body!!))
-                Opcode.SetVolume -> _service.onSetVolume(Json.decodeFromString(body!!))
-                Opcode.SetSpeed -> _service.onSetSpeed(Json.decodeFromString(body!!))
+                Opcode.Seek -> _service.onCastSeek(json.decodeFromString(body!!))
+                Opcode.SetVolume -> _service.onSetVolume(json.decodeFromString(body!!))
+                Opcode.SetSpeed -> _service.onSetSpeed(json.decodeFromString(body!!))
                 else -> { }
             }
         } catch (e: Throwable) {
@@ -206,5 +211,6 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
 
     companion object {
         const val TAG = "FCastSession"
+        private val json = Json { ignoreUnknownKeys = true }
     }
 }

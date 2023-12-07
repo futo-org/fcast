@@ -60,6 +60,15 @@ class NetworkService : Service() {
             _scope?.launch(Dispatchers.Main) {
                 Log.i(TAG, "On new session ${session.id}")
 
+                withContext(Dispatchers.IO) {
+                    try {
+                        Log.i(TAG, "Sending version ${session.id}")
+                        session.sendVersion(VersionMessage(2))
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed to send version ${session.id}")
+                    }
+                }
+
                 var encounteredError = false
                 while (!_stopped && !encounteredError) {
                     try {

@@ -65,3 +65,8 @@ impl SetSpeedMessage {
 pub struct PlaybackErrorMessage {
     pub message: String,
 }
+
+#[derive(Deserialize, Debug)]
+pub struct VersionMessage {
+    pub version: u64,
+}
