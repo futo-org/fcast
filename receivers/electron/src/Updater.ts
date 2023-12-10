@@ -12,15 +12,25 @@ export class Updater {
         this.basePath = basePath;
         this.baseUrl = baseUrl;
         this.appFiles = [
+            'dist/main/c.mp4',
+            'dist/main/index.html',
+            'dist/main/preload.js',
+            'dist/main/qrcode.min.js',
+            'dist/main/renderer.js',
+            'dist/main/style.css',
+            'dist/main/video-js.min.css',
+            'dist/main/video.min.js',
+
+            'dist/player/index.html',
+            'dist/player/preload.js',
+            'dist/player/renderer.js',
+            'dist/player/style.css',
+            'dist/player/video-js.min.css',
+            'dist/player/video.min.js',
+
             'dist/app.ico',
-            'dist/index.html',
-            'dist/style.css',
             'dist/app.png',
-            'dist/preload.js',
-            'dist/video-js.min.css',
             'dist/bundle.js',
-            'dist/renderer.js',
-            'dist/video.min.js',
             'package.json'
         ];
     }
