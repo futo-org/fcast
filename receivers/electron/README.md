@@ -10,7 +10,7 @@ The FCast receiver is a working receiver implementation compatible with Linux, W
 
 # Protocol specification
 
-The protocol specification can be found here https://gitlab.futo.org/videostreaming/fcast/-/wikis/home
+The protocol specification can be found here https://gitlab.com/futo-org/fcast/-/wikis/home
 
 # Clients
 
@@ -20,7 +20,7 @@ There are currently receivers for
 
 
 
-1. Download the latest build for your platform from https://gitlab.futo.org/videostreaming/fcast/-/releases or build it yourself by following the build instructions.
+1. Download the latest build for your platform from https://gitlab.com/futo-org/fcast/-/releases or build it yourself by following the build instructions.
 2. Unzip the archive at your desired location.
 3. Run the FCast receiver.
    - **MacOS:** Run the FCastReceiver application

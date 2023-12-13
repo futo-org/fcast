@@ -27,7 +27,7 @@ A "receiver", in this context, is a software implementation running on various p
   - Apple TV (future)
 
 - Clients
-  - [**Grayjay**](https://gitlab.futo.org/videostreaming/platformplayer) is a player that exposes multiple video websites as sources in the app.
+  - [**Grayjay**](https://github.com/futo-org/grayjay-android) is a player that exposes multiple video websites as sources in the app.
   - Browser plugin (future)
 
 ## Contributing
@@ -40,4 +40,4 @@ This project is licensed under the MIT License - see the LICENSE.md file for det
 
 ## Documentation
 
-Click [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-1) to see the protocol documentation.
+Click [here](https://gitlab.com/futo-org/fcast/-/wikis/Protocol-version-1) to see the protocol documentation.
