@@ -50,3 +50,22 @@ data class SetVolumeMessage(
 data class VersionMessage(
     val version: Long
 )
+
+@Serializable
+data class KeyExchangeMessage(
+    val version: Long,
+    val publicKey: String
+)
+
+@Serializable
+data class DecryptedMessage(
+    val opcode: Long,
+    val message: String?
+)
+
+@Serializable
+data class EncryptedMessage(
+    val version: Long,
+    val iv: String?,
+    val blob: String
+)

@@ -70,3 +70,41 @@ pub struct PlaybackErrorMessage {
 pub struct VersionMessage {
     pub version: u64,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct KeyExchangeMessage {
+    pub version: u64,
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+}
+
+impl KeyExchangeMessage {
+    pub fn new(version: u64, public_key: String) -> Self {
+        Self { version, public_key }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DecryptedMessage {
+    pub opcode: u64,
+    pub message: Option<String>,
+}
+
+impl DecryptedMessage {
+    pub fn new(opcode: u64, message: Option<String>) -> Self {
+        Self { opcode, message }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EncryptedMessage {
+    pub version: u64,
+    pub iv: Option<String>,
+    pub blob: String,
+}
+
+impl EncryptedMessage {
+    pub fn new(version: u64, iv: Option<String>, blob: String) -> Self {
+        Self { version, iv, blob }
+    }
+}

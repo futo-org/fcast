@@ -37,6 +37,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .required(false)
             .default_value("tcp")
             .takes_value(true))
+        .arg(Arg::with_name("encrypted")
+            .short('e')
+            .long("encrypted")
+            .value_name("Encrypted")
+            .help("Use encryption")
+            .required(false)
+            .takes_value(false))
         .arg(Arg::with_name("host")
             .short('h')
             .long("host")
@@ -154,13 +161,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let encrypted = matches.is_present("encrypted");
+
     let local_ip: Option<IpAddr>;
     let mut session = match connection_type {
         "tcp" => {
             println!("Connecting via TCP to host={} port={}...", host, port);
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
             local_ip = Some(stream.local_addr()?.ip());
-            FCastSession::new(stream)
+            FCastSession::new(stream, encrypted)?
         },
         "ws" => {
             println!("Connecting via WebSocket to host={} port={}...", host, port);
@@ -170,7 +179,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 MaybeTlsStream::Plain(ref stream) => Some(stream.local_addr()?.ip()),
                 _ => None
             };
-            FCastSession::new(stream)
+            FCastSession::new(stream, encrypted)?
         },
         _ => return Err("Invalid connection type. Use 'tcp' or 'websocket'.".into()),
     };
@@ -256,14 +265,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let json = serde_json::to_string(&play_message);
         println!("Sent play {:?}", json);
 
-        session.send_message(Opcode::Play, Some(play_message))?;
+        session.send_message(Opcode::Play, &play_message)?;
     } else if let Some(seek_matches) = matches.subcommand_matches("seek") {
         let seek_message = SeekMessage::new(match seek_matches.value_of("timestamp") {
             Some(s) => s.parse::<f64>()?,
             _ => return Err("Timestamp is required.".into())
         });
         println!("Sent seek {:?}", seek_message);
-        session.send_message(Opcode::Seek, Some(seek_message))?;
+        session.send_message(Opcode::Seek, &seek_message)?;
     } else if let Some(_) = matches.subcommand_matches("pause") {
         println!("Sent pause");
         session.send_empty(Opcode::Pause)?;
@@ -286,7 +295,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Waiting for Ctrl+C...");
 
-        session.receive_loop(&running)?;
+        session.receive_loop(&running, false)?;
 
         println!("Ctrl+C received, exiting...");
     } else if let Some(setvolume_matches) = matches.subcommand_matches("setvolume") {
@@ -295,18 +304,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err("Timestamp is required.".into())
         });
         println!("Sent setvolume {:?}", setvolume_message);
-        session.send_message(Opcode::SetVolume, Some(setvolume_message))?;
+        session.send_message(Opcode::SetVolume, &setvolume_message)?;
     } else if let Some(setspeed_matches) = matches.subcommand_matches("setspeed") {
         let setspeed_message = SetSpeedMessage::new(match setspeed_matches.value_of("speed") {
             Some(s) => s.parse::<f64>()?,
             _ => return Err("Speed is required.".into())
         });
         println!("Sent setspeed {:?}", setspeed_message);
-        session.send_message(Opcode::SetSpeed, Some(setspeed_message))?;
+        session.send_message(Opcode::SetSpeed, &setspeed_message)?;
     } else {
         println!("Invalid command. Use --help for more information.");
         std::process::exit(1);
     }
+
+    let receive_running = Arc::new(AtomicBool::new(true));
+    let receive_r = receive_running.clone();
+
+    ctrlc::set_handler(move || {
+        println!("Ctrl+C triggered...");
+        receive_r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    println!("Waiting on queues to be empty... press CTRL-C to cancel.");
+    session.receive_loop(&receive_running, true)?;
 
     println!("Waiting on other threads...");
     if let Some(v) = join_handle {

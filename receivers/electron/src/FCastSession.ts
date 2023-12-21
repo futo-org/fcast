@@ -1,6 +1,7 @@
 import net = require('net');
+import * as crypto from 'crypto';
 import { EventEmitter } from 'node:events';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
+import { DecryptedMessage, EncryptedMessage, KeyExchangeMessage, PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
 import { WebSocket } from 'ws';
 
 enum SessionState {
@@ -10,7 +11,7 @@ enum SessionState {
     Disconnected,
 };
 
-enum Opcode {
+export enum Opcode {
     None = 0,
     Play = 1,
     Pause = 2,
@@ -22,7 +23,12 @@ enum Opcode {
     SetVolume = 8,
     PlaybackError = 9,
     SetSpeed = 10,
-    Version = 11
+    Version = 11,
+    KeyExchange = 12,
+    Encrypted = 13,
+    Ping = 14,
+    Pong = 15,
+    StartEncryption = 16
 };
 
 const LENGTH_BYTES = 4;
@@ -36,11 +42,22 @@ export class FCastSession {
     writer: (data: Buffer) => void;
     state: SessionState;
     emitter = new EventEmitter();
+    encryptionStarted = false;
+
+    private aesKey: Buffer;
+    private dh: crypto.DiffieHellman;
+    private queuedEncryptedMessages: EncryptedMessage[] = [];
 
     constructor(socket: net.Socket | WebSocket, writer: (data: Buffer) => void) {
         this.socket = socket;
         this.writer = writer;
         this.state = SessionState.WaitingForLength;
+
+        this.dh = generateKeyPair();
+
+        const keyExchangeMessage = getKeyExchangeMessage(this.dh);
+        console.log(`Sending KeyExchangeMessage: ${keyExchangeMessage}`);
+        this.send(Opcode.KeyExchange, keyExchangeMessage);
     }
 
     sendVersion(value: VersionMessage) {
@@ -60,6 +77,16 @@ export class FCastSession {
     }
 
     private send(opcode: number, message = null) {
+        if (this.encryptionStarted && opcode != Opcode.Encrypted && opcode != Opcode.KeyExchange && opcode != Opcode.StartEncryption) {
+            const decryptedMessage: DecryptedMessage = {
+                opcode,
+                message
+            };
+
+            this.send(Opcode.Encrypted, encryptMessage(this.aesKey, decryptedMessage));
+            return;
+        }
+
         const json = message ? JSON.stringify(message) : null;
         let data: Uint8Array;
         if (json) {
@@ -149,7 +176,7 @@ export class FCastSession {
 
         if (this.bytesRead >= this.packetLength) {
             console.log(`Packet finished receiving from of ${this.packetLength} bytes.`);
-            this.handlePacket();
+            this.handleNextPacket();
 
             this.state = SessionState.WaitingForLength;
             this.packetLength = 0;
@@ -162,12 +189,8 @@ export class FCastSession {
         }
     }
 
-    private handlePacket() {
-        console.log(`Processing packet of ${this.bytesRead} bytes from`);
-
-        const opcode = this.buffer[0];
-        const body = this.packetLength > 1 ? this.buffer.toString('utf8', 1, this.packetLength) : null;
-        console.log('body', body);
+    private handlePacket(opcode: number, body: string | undefined) {
+        console.log(`handlePacket (opcode: ${opcode}, body: ${body})`);
 
         try {
             switch (opcode) {
@@ -192,9 +215,95 @@ export class FCastSession {
                 case Opcode.SetSpeed:
                     this.emitter.emit("setspeed", JSON.parse(body) as SetSpeedMessage);
                     break;
+                case Opcode.KeyExchange:
+                    const keyExchangeMessage = JSON.parse(body) as KeyExchangeMessage;                    
+                    this.aesKey = computeSharedSecret(this.dh, keyExchangeMessage);
+                    this.send(Opcode.StartEncryption);
+
+                    for (const encryptedMessage of this.queuedEncryptedMessages) {
+                        const decryptedMessage = decryptMessage(this.aesKey, encryptedMessage);
+                        this.handlePacket(decryptedMessage.opcode, decryptedMessage.message);
+                    }
+
+                    this.queuedEncryptedMessages = [];
+                    break;
+                case Opcode.Ping:
+                    this.send(Opcode.Pong);
+                    break;
+                case Opcode.Encrypted:
+                    const encryptedMessage = JSON.parse(body) as EncryptedMessage;
+
+                    if (this.aesKey) {
+                        const decryptedMessage = decryptMessage(this.aesKey, encryptedMessage);
+                        this.handlePacket(decryptedMessage.opcode, decryptedMessage.message);
+                    } else {
+                        if (this.queuedEncryptedMessages.length === 15) {
+                            this.queuedEncryptedMessages.shift();
+                        }
+                        
+                        this.queuedEncryptedMessages.push(encryptedMessage);                        
+                    }
+                    break;
             }
         } catch (e) {
             console.warn(`Error handling packet from.`, e);
         }
     }
+
+    private handleNextPacket() {
+        console.log(`Processing packet of ${this.bytesRead} bytes from`);
+
+        const opcode = this.buffer[0];
+        const body = this.packetLength > 1 ? this.buffer.toString('utf8', 1, this.packetLength) : null;
+        console.log('body', body);
+        this.handlePacket(opcode, body);
+    }
+}
+
+export function getKeyExchangeMessage(dh: crypto.DiffieHellman): KeyExchangeMessage {
+    return { version: 1, publicKey: dh.getPublicKey().toString('base64') };
+}
+
+export function computeSharedSecret(dh: crypto.DiffieHellman, keyExchangeMessage: KeyExchangeMessage): Buffer {
+    console.log("private", dh.getPrivateKey().toString('base64'));
+
+    const theirPublicKey = Buffer.from(keyExchangeMessage.publicKey, 'base64');
+    console.log("theirPublicKey", theirPublicKey.toString('base64'));
+    const secret = dh.computeSecret(theirPublicKey);
+    console.log("secret", secret.toString('base64'));
+    const digest = crypto.createHash('sha256').update(secret).digest();
+    console.log("digest", digest.toString('base64'));
+    return digest;
+}
+
+export function encryptMessage(aesKey: Buffer, decryptedMessage: DecryptedMessage): EncryptedMessage {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', aesKey, iv);
+    let encrypted = cipher.update(JSON.stringify(decryptedMessage), 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+    return {
+        version: 1,
+        iv: iv.toString('base64'),
+        blob: encrypted
+    };
+}
+
+export function decryptMessage(aesKey: Buffer, encryptedMessage: EncryptedMessage): DecryptedMessage {
+    const iv = Buffer.from(encryptedMessage.iv, 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', aesKey, iv);
+    let decrypted = decipher.update(encryptedMessage.blob, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+    return JSON.parse(decrypted) as DecryptedMessage;
+}
+
+export function generateKeyPair() {
+    const dh = createDiffieHellman();
+    dh.generateKeys();
+    return dh;
+}
+
+export function createDiffieHellman(): crypto.DiffieHellman {
+    const p = Buffer.from('ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aacaa68ffffffffffffffff', 'hex');
+    const g = Buffer.from('02', 'hex');
+    return crypto.createDiffieHellman(p, g);
 }

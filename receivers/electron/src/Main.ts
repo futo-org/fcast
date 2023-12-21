@@ -6,6 +6,7 @@ import { DiscoveryService } from './DiscoveryService';
 import { Updater } from './Updater';
 import { WebSocketListenerService } from './WebSocketListenerService';
 import * as os from 'os';
+import * as sodium from 'libsodium-wrappers';
 
 export default class Main {
     static shouldOpenMainWindow = true; 
@@ -195,6 +196,12 @@ export default class Main {
     }
 
     static openMainWindow() {
+        (async () => {
+            console.log("waiting for sodium...");
+            await sodium.ready;
+            console.log("sodium ready");
+        })();
+
         if (Main.mainWindow) {
             Main.mainWindow.focus();
             return;

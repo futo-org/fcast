@@ -54,3 +54,25 @@ export class VersionMessage {
         public version: number,
     ) {}
 }
+
+export class KeyExchangeMessage {
+    constructor(
+        public version: number,
+        public publicKey: string
+    ) {}
+}
+
+export class DecryptedMessage {
+    constructor(
+        public opcode: number,
+        public message: string | undefined
+    ) {}
+}
+
+export class EncryptedMessage {
+    constructor(
+        public version: number,
+        public iv: string | undefined,
+        public blob: string
+    ) {}
+}

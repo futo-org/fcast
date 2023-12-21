@@ -1,14 +1,28 @@
 package com.futo.fcast.receiver
 
+import android.util.Base64
 import android.util.Log
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.DataOutputStream
 import java.io.OutputStream
+import java.math.BigInteger
 import java.net.SocketAddress
 import java.nio.ByteBuffer
+import java.security.KeyFactory
+import java.security.KeyPair
+import java.security.KeyPairGenerator
+import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.KeyAgreement
+import javax.crypto.spec.DHParameterSpec
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+
 
 enum class SessionState {
     Idle,
@@ -29,7 +43,17 @@ enum class Opcode(val value: Byte) {
     SetVolume(8),
     PlaybackError(9),
     SetSpeed(10),
-    Version(11)
+    Version(11),
+    KeyExchange(12),
+    Encrypted(13),
+    Ping(14),
+    Pong(15),
+    StartEncryption(16);
+
+    companion object {
+        private val _map = values().associateBy { it.value }
+        fun find(value: Byte): Opcode = _map[value] ?: Opcode.None
+    }
 }
 
 const val LENGTH_BYTES = 4
@@ -41,7 +65,15 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
     private var _packetLength = 0
     private var _state = SessionState.WaitingForLength
     private var _outputStream: DataOutputStream? = DataOutputStream(outputStream)
+    private val _keyPair: KeyPair = generateKeyPair()
+    private var _aesKey: SecretKeySpec? = null
+    private val _queuedEncryptedMessages = arrayListOf<EncryptedMessage>()
+    private var _encryptionStarted = false
     val id = UUID.randomUUID()
+
+    init {
+        send(Opcode.KeyExchange, getKeyExchangeMessage(_keyPair))
+    }
 
     fun sendVersion(value: VersionMessage) {
         send(Opcode.Version, value)
@@ -59,17 +91,15 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         send(Opcode.VolumeUpdate, value)
     }
 
-    private inline fun <reified T> send(opcode: Opcode, message: T) {
-        try {
-            val data: ByteArray
-            var jsonString: String? = null
-            if (message != null) {
-                jsonString = Json.encodeToString(message)
-                data = jsonString.encodeToByteArray()
-            } else {
-                data = ByteArray(0)
-            }
+    private fun send(opcode: Opcode, message: String? = null) {
+        val aesKey = _aesKey
+        if (_encryptionStarted && aesKey != null && opcode != Opcode.Encrypted && opcode != Opcode.KeyExchange && opcode != Opcode.StartEncryption) {
+            send(Opcode.Encrypted, encryptMessage(aesKey, DecryptedMessage(opcode.value.toLong(), message)))
+            return
+        }
 
+        try {
+            val data: ByteArray = message?.encodeToByteArray() ?: ByteArray(0)
             val size = 1 + data.size
             val outputStream = _outputStream
             if (outputStream == null) {
@@ -92,9 +122,18 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
                 outputStream.write(data)
             }
 
-            Log.d(TAG, "Sent $size bytes: '$jsonString'.")
+            Log.d(TAG, "Sent $size bytes: (opcode: $opcode, body: $message).")
         } catch (e: Throwable) {
             Log.i(TAG, "Failed to send message ${id}.", e)
+            throw e
+        }
+    }
+
+    private inline fun <reified T> send(opcode: Opcode, message: T) {
+        try {
+            send(opcode, message?.let { Json.encodeToString(it) })
+        } catch (e: Throwable) {
+            Log.i(TAG, "Failed to encode message to string ${id}.", e)
             throw e
         }
     }
@@ -171,7 +210,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
 
         if (_bytesRead >= _packetLength) {
             Log.i(TAG, "Packet finished receiving from ${_remoteSocketAddress} of $_packetLength bytes.")
-            handlePacket()
+            handleNextPacket()
 
             _state = SessionState.WaitingForLength
             _packetLength = 0
@@ -184,14 +223,19 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         }
     }
 
-    private fun handlePacket() {
+    private fun handleNextPacket() {
         Log.i(TAG, "Processing packet of $_bytesRead bytes from ${_remoteSocketAddress}")
 
-        val opcode = Opcode.values().firstOrNull { it.value == _buffer[0] } ?: Opcode.None
+        val opcode = Opcode.find(_buffer[0])
         val body = if (_packetLength > 1) _buffer.copyOfRange(1, _packetLength)
             .toString(Charsets.UTF_8) else null
 
         Log.i(TAG, "Received packet (opcode: ${opcode}, body: '${body}')")
+        handlePacket(opcode, body)
+    }
+
+    private fun handlePacket(opcode: Opcode, body: String?) {
+        Log.i(TAG, "Processing packet (opcode: $opcode, size: ${body?.length ?: 0}, from ${_remoteSocketAddress})")
 
         try {
             when (opcode) {
@@ -202,15 +246,109 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
                 Opcode.Seek -> _service.onCastSeek(json.decodeFromString(body!!))
                 Opcode.SetVolume -> _service.onSetVolume(json.decodeFromString(body!!))
                 Opcode.SetSpeed -> _service.onSetSpeed(json.decodeFromString(body!!))
+                Opcode.KeyExchange -> {
+                    val keyExchangeMessage: KeyExchangeMessage = json.decodeFromString(body!!)
+                    _aesKey = computeSharedSecret(_keyPair.private, keyExchangeMessage)
+                    send(Opcode.StartEncryption)
+
+                    synchronized(_queuedEncryptedMessages) {
+                        for (queuedEncryptedMessages in _queuedEncryptedMessages) {
+                            val decryptedMessage = decryptMessage(_aesKey!!, queuedEncryptedMessages)
+                            val o = Opcode.find(decryptedMessage.opcode.toByte())
+                            handlePacket(o, decryptedMessage.message)
+                        }
+
+                        _queuedEncryptedMessages.clear()
+                    }
+                }
+                Opcode.Ping -> send(Opcode.Pong)
+                Opcode.Encrypted -> {
+                    val encryptedMessage: EncryptedMessage = json.decodeFromString(body!!)
+                    if (_aesKey != null) {
+                        val decryptedMessage = decryptMessage(_aesKey!!, encryptedMessage)
+                        val o = Opcode.find(decryptedMessage.opcode.toByte())
+                        handlePacket(o, decryptedMessage.message)
+                    } else {
+                        synchronized(_queuedEncryptedMessages) {
+                            if (_queuedEncryptedMessages.size == 15) {
+                                _queuedEncryptedMessages.removeAt(0)
+                            }
+
+                            _queuedEncryptedMessages.add(encryptedMessage)
+                        }
+                    }
+                }
+                Opcode.StartEncryption -> {
+                    _encryptionStarted = true
+                    //TODO: Send decrypted messages waiting for encryption to be established
+                }
                 else -> { }
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed to handle packet (opcode: ${opcode}, body: '${body}')")
+            Log.e(TAG, "Failed to handle packet (opcode: ${opcode}, body: '${body}')", e)
         }
     }
 
     companion object {
         const val TAG = "FCastSession"
         private val json = Json { ignoreUnknownKeys = true }
+
+        fun getKeyExchangeMessage(keyPair: KeyPair): KeyExchangeMessage {
+            return KeyExchangeMessage(1, Base64.encodeToString(keyPair.public.encoded, Base64.NO_WRAP))
+        }
+
+        fun generateKeyPair(): KeyPair {
+            //modp14
+            val p = BigInteger("ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aacaa68ffffffffffffffff", 16)
+            val g = BigInteger("2", 16)
+            val dhSpec = DHParameterSpec(p, g)
+
+            val keyGen = KeyPairGenerator.getInstance("DH")
+            keyGen.initialize(dhSpec)
+
+            return keyGen.generateKeyPair()
+        }
+
+        fun computeSharedSecret(privateKey: PrivateKey, keyExchangeMessage: KeyExchangeMessage): SecretKeySpec {
+            val keyFactory = KeyFactory.getInstance("DH")
+            val receivedPublicKeyBytes = Base64.decode(keyExchangeMessage.publicKey, Base64.NO_WRAP)
+            val receivedPublicKeySpec = X509EncodedKeySpec(receivedPublicKeyBytes)
+            val receivedPublicKey = keyFactory.generatePublic(receivedPublicKeySpec)
+
+            val keyAgreement = KeyAgreement.getInstance("DH")
+            keyAgreement.init(privateKey)
+            keyAgreement.doPhase(receivedPublicKey, true)
+
+            val sharedSecret = keyAgreement.generateSecret()
+            Log.i(TAG, "sharedSecret ${Base64.encodeToString(sharedSecret, Base64.NO_WRAP)}")
+            val sha256 = MessageDigest.getInstance("SHA-256")
+            val hashedSecret = sha256.digest(sharedSecret)
+            Log.i(TAG, "hashedSecret ${Base64.encodeToString(hashedSecret, Base64.NO_WRAP)}")
+
+            return SecretKeySpec(hashedSecret, "AES")
+        }
+
+        fun encryptMessage(aesKey: SecretKeySpec, decryptedMessage: DecryptedMessage): EncryptedMessage {
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, aesKey)
+            val iv = cipher.iv
+            val json = Json.encodeToString(decryptedMessage)
+            val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
+            return EncryptedMessage(
+                version = 1,
+                iv = Base64.encodeToString(iv, Base64.NO_WRAP),
+                blob = Base64.encodeToString(encrypted, Base64.NO_WRAP)
+            )
+        }
+
+        fun decryptMessage(aesKey: SecretKeySpec, encryptedMessage: EncryptedMessage): DecryptedMessage {
+            val iv = Base64.decode(encryptedMessage.iv, Base64.NO_WRAP)
+            val encrypted = Base64.decode(encryptedMessage.blob, Base64.NO_WRAP)
+
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(iv))
+            val decryptedJson = cipher.doFinal(encrypted)
+            return Json.decodeFromString(String(decryptedJson, Charsets.UTF_8))
+        }
     }
 }
