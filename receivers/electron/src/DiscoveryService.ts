@@ -4,9 +4,7 @@ const os = require('os');
 
 export class DiscoveryService {
     private serviceTcp: any;
-    private serviceTls: any;
     private serviceWs: any;
-    private serviceWss: any;
 
     private static getComputerName() {
         switch (process.platform) {
@@ -23,7 +21,7 @@ export class DiscoveryService {
     }
 
     start() {
-        if (this.serviceTcp || this.serviceTls || this.serviceWs || this.serviceWss) {
+        if (this.serviceTcp || this.serviceWs) {
             return;
         }
 
@@ -32,12 +30,8 @@ export class DiscoveryService {
 
         this.serviceTcp = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name });
         this.serviceTcp.start();
-        this.serviceTls = mdns.createAdvertisement(mdns.tcp('_fcast-tls'), 46897, { name: name });
-        this.serviceTls.start();
         this.serviceWs = mdns.createAdvertisement(mdns.tcp('_fcast-ws'), 46898, { name: name });
         this.serviceWs.start();
-        this.serviceWss = mdns.createAdvertisement(mdns.tcp('_fcast-wss'), 46896, { name: name });
-        this.serviceWss.start();
     }
 
     stop() {
@@ -46,19 +40,9 @@ export class DiscoveryService {
             this.serviceTcp = null;
         }
 
-        if (this.serviceTls) {
-            this.serviceTls.stop();
-            this.serviceTls = null;
-        }
-
         if (this.serviceWs) {
             this.serviceWs.stop();
             this.serviceWs = null;
-        }
-
-        if (this.serviceWss) {
-            this.serviceWss.stop();
-            this.serviceWss = null;
         }
     }
 }

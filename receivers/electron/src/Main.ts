@@ -7,10 +7,6 @@ import { Updater } from './Updater';
 import { WebSocketListenerService } from './WebSocketListenerService';
 import * as os from 'os';
 import { Opcode } from './FCastSession';
-import fs = require('fs');
-import forge = require('node-forge');
-import { TlsListenerService } from './TlsTcpListenerService';
-import { WebSocketSecureListenerService } from './WebSocketSecureListenerService';
 
 export default class Main {
     static shouldOpenMainWindow = true; 
@@ -19,8 +15,6 @@ export default class Main {
     static application: Electron.App;
     static tcpListenerService: TcpListenerService;
     static webSocketListenerService: WebSocketListenerService;
-    static tlsListenerService: TlsListenerService;
-    static webSocketSecureListenerService: WebSocketSecureListenerService;
     static discoveryService: DiscoveryService;
     static tray: Tray;
     static key: string = null;
@@ -108,10 +102,8 @@ export default class Main {
         
         Main.tcpListenerService = new TcpListenerService();
         Main.webSocketListenerService = new WebSocketListenerService();
-        Main.tlsListenerService = new TlsListenerService(Main.key, Main.cert);
-        Main.webSocketSecureListenerService = new WebSocketSecureListenerService(Main.key, Main.cert);
 
-        const listeners = [Main.tcpListenerService, Main.webSocketListenerService, Main.tlsListenerService, Main.webSocketSecureListenerService];
+        const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
         listeners.forEach(l => {
             l.emitter.on("play", (message) => {
                 if (Main.playerWindow == null) {
@@ -234,50 +226,6 @@ export default class Main {
     }    
 
     static main(app: Electron.App) {
-        if (!fs.existsSync('./cert.pem') || !fs.existsSync('./key.pem')) {
-            try {
-                const keys = forge.pki.rsa.generateKeyPair(2048);
-
-                const cert = forge.pki.createCertificate();
-                cert.publicKey = keys.publicKey;
-                cert.validity.notBefore = new Date();
-                cert.validity.notAfter = new Date(9999, 11, 31);
-                cert.sign(keys.privateKey);
-
-                const pemCert = forge.pki.certificateToPem(cert);
-                const pemKey = forge.pki.privateKeyToPem(keys.privateKey);
-                fs.writeFileSync('./cert.pem', pemCert);
-                fs.writeFileSync('./key.pem', pemKey);
-            } catch {
-                console.error("Failed to generate key pair.");
-            }
-        }
-
-        try {
-            Main.key = fs.readFileSync('./key.pem', 'utf8');
-            Main.cert = fs.readFileSync('./cert.pem', 'utf8');
-        } catch (e) {
-            console.error("Failed to load key pair.", e);
-
-            dialog.showMessageBox({
-                type: 'error',
-                title: 'Failed to initialize crypto',
-                message: `The application failed to start properly '${JSON.stringify(e)}'.`,
-                buttons: ['Restart', 'Close'],
-                defaultId: 0,
-                cancelId: 1
-            }).then((p) => {
-                if (p.response === 0) {
-                    app.relaunch();
-                    app.exit(0);
-                } else {
-                    app.exit(0);
-                }
-            });
-
-            return;
-        }
-
         Main.application = app;
         const argv = process.argv;
         if (argv.includes('--no-main-window')) {

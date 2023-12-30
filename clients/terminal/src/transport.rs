@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use native_tls::TlsStream;
 use tungstenite::Message;
 use tungstenite::protocol::WebSocket;
 
@@ -53,20 +52,5 @@ impl<T: Read + Write> Transport for WebSocket<T> {
         }
 
         Ok(())
-    }
-}
-
-
-impl Transport for TlsStream<TcpStream> {
-    fn transport_read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-        self.read(buf)
-    }
-
-    fn transport_write(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        self.write_all(buf)
-    }
-
-    fn transport_shutdown(&mut self) -> Result<(), std::io::Error> {
-        self.shutdown().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 }

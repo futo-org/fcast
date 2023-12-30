@@ -1,6 +1,5 @@
 package com.futo.fcast.receiver
 
-import SslKeyManager
 import WebSocketListenerService
 import android.app.*
 import android.content.Context
@@ -12,14 +11,11 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
-import org.bouncycastle.jce.provider.BouncyCastleProvider
-import java.security.Security
 
 class NetworkService : Service() {
     private var _discoveryService: DiscoveryService? = null
     private var _stopped = false
     private var _tcpListenerService: TcpListenerService? = null
-    private var _tlsListenerService: TlsListenerService? = null
     private var _webSocketListenerService: WebSocketListenerService? = null
     private var _scope: CoroutineScope? = null
 
@@ -110,11 +106,6 @@ class NetworkService : Service() {
             start()
         }
 
-        val sslKeyManager = SslKeyManager("fcast_receiver")
-        _tlsListenerService = TlsListenerService(this) { onNewSession(it) }.apply {
-            start(sslKeyManager)
-        }
-
         Log.i(TAG, "Started NetworkService")
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
@@ -143,9 +134,6 @@ class NetworkService : Service() {
 
         _tcpListenerService?.stop()
         _tcpListenerService = null
-
-        _tlsListenerService?.stop()
-        _tlsListenerService = null
 
         try {
             _webSocketListenerService?.stop()
@@ -197,7 +185,6 @@ class NetworkService : Service() {
 
         _tcpListenerService?.forEachSession(sender)
         _webSocketListenerService?.forEachSession(sender)
-        _tlsListenerService?.forEachSession(sender)
     }
 
     fun sendPlaybackError(error: String) {

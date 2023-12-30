@@ -3,9 +3,7 @@ mod fcastsession;
 mod transport;
 
 use clap::{App, Arg, SubCommand};
-use native_tls::{TlsConnector, Protocol};
 use tiny_http::{Server, Response, ListenAddr, Header};
-use tungstenite::Connector;
 use tungstenite::stream::MaybeTlsStream;
 use url::Url;
 use std::net::IpAddr;
@@ -39,13 +37,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .required(false)
             .default_value("tcp")
             .takes_value(true))
-        .arg(Arg::with_name("encrypted")
-            .short('e')
-            .long("encrypted")
-            .value_name("Encrypted")
-            .help("Use encryption")
-            .required(false)
-            .takes_value(false))
         .arg(Arg::with_name("host")
             .short('h')
             .long("host")
@@ -154,38 +145,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let connection_type = matches.value_of("connection_type").unwrap_or("tcp");
 
-    let encrypted = matches.is_present("encrypted");
     let port = match matches.value_of("port") {
         Some(s) => s,
-        _ => match (connection_type, encrypted) {
-            ("tcp", false) => "46899",
-            ("tcp", true) => "46897",
-            ("ws", false) => "46898",
-            ("ws", true) => "46896",
+        _ => match connection_type {
+            "tcp" => "46899",
+            "ws" => "46898",
             _ => return Err("Unknown connection type, cannot automatically determine port.".into())
         }
     };
 
     let local_ip: Option<IpAddr>;
-    let mut session = match (connection_type, encrypted) {
-        ("tcp", false) => {
+    let mut session = match connection_type {
+        "tcp" => {
             println!("Connecting via TCP to host={} port={}...", host, port);
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
             local_ip = Some(stream.local_addr()?.ip());
             FCastSession::new(stream)
         },
-        ("tcp", true) => {
-            println!("Connecting via TCP TLS to host={} port={}...", host, port);
-            let mut builder = TlsConnector::builder();
-            builder.min_protocol_version(Some(Protocol::Tlsv12));
-            builder.danger_accept_invalid_certs(true);
-            let connector = builder.build()?;
-            let stream = TcpStream::connect(format!("{}:{}", host, port))?;
-            let tls_stream = connector.connect(host, stream)?;
-            local_ip = Some(tls_stream.get_ref().local_addr()?.ip());
-            FCastSession::new(tls_stream)
-        },
-        ("ws", false) => {
+        "ws" => {
             println!("Connecting via WebSocket to host={} port={}...", host, port);
             let url = Url::parse(format!("ws://{}:{}", host, port).as_str())?;
             let (stream, _) = tungstenite::connect(url)?;
@@ -194,28 +171,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ => return Err("Established connection type is not plain.".into())
             };
             FCastSession::new(stream)
-        },
-        ("ws", true) => {
-            println!("Connecting via WebSocket to host={} port={}...", host, port);
-            let mut builder = TlsConnector::builder();
-            builder.min_protocol_version(Some(Protocol::Tlsv12));
-            builder.danger_accept_invalid_certs(true);
-            let connector = builder.build()?;
-        
-            let url = Url::parse(&format!("wss://{}:{}", host, port))?;
-            let stream = TcpStream::connect(format!("{}:{}", host, port))?;
-            let connector = Some(Connector::NativeTls(connector.into()));
-            let (socket, _) = tungstenite::client_tls_with_config(url, stream, None, connector)?;
-        
-            local_ip = match socket.get_ref() {
-                MaybeTlsStream::NativeTls(ref stream) => Some(stream.get_ref().local_addr()?.ip()),
-                _ => return Err("Expected TLS stream".into()),
-            };
-        
-            FCastSession::new(socket)
-        
-        },
-        _ => return Err("Invalid connection type or encryption flag.".into()),
+        }
+        _ => return Err("Invalid connection type.".into()),
     };
 
     println!("Connection established.");
