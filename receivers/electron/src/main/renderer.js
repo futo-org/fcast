@@ -22,8 +22,10 @@ window.electronAPI.onDeviceInfo((_event, value) => {
         name: value.name,
         addresses: value.addresses,
         services: [
-            { port: 46899, type: 0 },
-            { port: 46898, type: 1 }
+            { port: 46899, type: 0 }, //TCP
+            { port: 46898, type: 1 }, //WS
+            { port: 46897, type: 2 }, //TCP-TLS
+            { port: 46896, type: 3 } //WSS
         ]
     };
 

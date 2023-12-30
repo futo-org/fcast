@@ -3,7 +3,9 @@ mod fcastsession;
 mod transport;
 
 use clap::{App, Arg, SubCommand};
+use native_tls::{TlsConnector, Protocol};
 use tiny_http::{Server, Response, ListenAddr, Header};
+use tungstenite::Connector;
 use tungstenite::stream::MaybeTlsStream;
 use url::Url;
 use std::net::IpAddr;
@@ -152,36 +154,68 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let connection_type = matches.value_of("connection_type").unwrap_or("tcp");
 
+    let encrypted = matches.is_present("encrypted");
     let port = match matches.value_of("port") {
         Some(s) => s,
-        _ => match connection_type {
-            "tcp" => "46899",
-            "ws" => "46898",
+        _ => match (connection_type, encrypted) {
+            ("tcp", false) => "46899",
+            ("tcp", true) => "46897",
+            ("ws", false) => "46898",
+            ("ws", true) => "46896",
             _ => return Err("Unknown connection type, cannot automatically determine port.".into())
         }
     };
 
-    let encrypted = matches.is_present("encrypted");
-
     let local_ip: Option<IpAddr>;
-    let mut session = match connection_type {
-        "tcp" => {
+    let mut session = match (connection_type, encrypted) {
+        ("tcp", false) => {
             println!("Connecting via TCP to host={} port={}...", host, port);
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
             local_ip = Some(stream.local_addr()?.ip());
-            FCastSession::new(stream, encrypted)?
+            FCastSession::new(stream)
         },
-        "ws" => {
+        ("tcp", true) => {
+            println!("Connecting via TCP TLS to host={} port={}...", host, port);
+            let mut builder = TlsConnector::builder();
+            builder.min_protocol_version(Some(Protocol::Tlsv12));
+            builder.danger_accept_invalid_certs(true);
+            let connector = builder.build()?;
+            let stream = TcpStream::connect(format!("{}:{}", host, port))?;
+            let tls_stream = connector.connect(host, stream)?;
+            local_ip = Some(tls_stream.get_ref().local_addr()?.ip());
+            FCastSession::new(tls_stream)
+        },
+        ("ws", false) => {
             println!("Connecting via WebSocket to host={} port={}...", host, port);
             let url = Url::parse(format!("ws://{}:{}", host, port).as_str())?;
             let (stream, _) = tungstenite::connect(url)?;
             local_ip = match stream.get_ref() {
                 MaybeTlsStream::Plain(ref stream) => Some(stream.local_addr()?.ip()),
-                _ => None
+                _ => return Err("Established connection type is not plain.".into())
             };
-            FCastSession::new(stream, encrypted)?
+            FCastSession::new(stream)
         },
-        _ => return Err("Invalid connection type. Use 'tcp' or 'websocket'.".into()),
+        ("ws", true) => {
+            println!("Connecting via WebSocket to host={} port={}...", host, port);
+            let mut builder = TlsConnector::builder();
+            builder.min_protocol_version(Some(Protocol::Tlsv12));
+            builder.danger_accept_invalid_certs(true);
+            let connector = builder.build()?;
+        
+            let url = Url::parse(&format!("wss://{}:{}", host, port))?;
+            let stream = TcpStream::connect(format!("{}:{}", host, port))?;
+            let connector = Some(Connector::NativeTls(connector.into()));
+            let (socket, _) = tungstenite::client_tls_with_config(url, stream, None, connector)?;
+        
+            local_ip = match socket.get_ref() {
+                MaybeTlsStream::NativeTls(ref stream) => Some(stream.get_ref().local_addr()?.ip()),
+                _ => return Err("Expected TLS stream".into()),
+            };
+        
+            FCastSession::new(socket)
+        
+        },
+        _ => return Err("Invalid connection type or encryption flag.".into()),
     };
 
     println!("Connection established.");
@@ -295,7 +329,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Waiting for Ctrl+C...");
 
-        session.receive_loop(&running, false)?;
+        session.receive_loop(&running)?;
 
         println!("Ctrl+C received, exiting...");
     } else if let Some(setvolume_matches) = matches.subcommand_matches("setvolume") {
@@ -316,17 +350,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("Invalid command. Use --help for more information.");
         std::process::exit(1);
     }
-
-    let receive_running = Arc::new(AtomicBool::new(true));
-    let receive_r = receive_running.clone();
-
-    ctrlc::set_handler(move || {
-        println!("Ctrl+C triggered...");
-        receive_r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
-
-    println!("Waiting on queues to be empty... press CTRL-C to cancel.");
-    session.receive_loop(&receive_running, true)?;
 
     println!("Waiting on other threads...");
     if let Some(v) = join_handle {

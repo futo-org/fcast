@@ -3,7 +3,10 @@ const cp = require('child_process');
 const os = require('os');
 
 export class DiscoveryService {
-    private service: any;
+    private serviceTcp: any;
+    private serviceTls: any;
+    private serviceWs: any;
+    private serviceWss: any;
 
     private static getComputerName() {
         switch (process.platform) {
@@ -20,23 +23,42 @@ export class DiscoveryService {
     }
 
     start() {
-        if (this.service) {
+        if (this.serviceTcp || this.serviceTls || this.serviceWs || this.serviceWss) {
             return;
         }
 
         const name = `FCast-${DiscoveryService.getComputerName()}`;
         console.log("Discovery service started.", name);
 
-        this.service = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name });
-        this.service.start();
+        this.serviceTcp = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name });
+        this.serviceTcp.start();
+        this.serviceTls = mdns.createAdvertisement(mdns.tcp('_fcast-tls'), 46897, { name: name });
+        this.serviceTls.start();
+        this.serviceWs = mdns.createAdvertisement(mdns.tcp('_fcast-ws'), 46898, { name: name });
+        this.serviceWs.start();
+        this.serviceWss = mdns.createAdvertisement(mdns.tcp('_fcast-wss'), 46896, { name: name });
+        this.serviceWss.start();
     }
 
     stop() {
-        if (!this.service) {
-            return;
+        if (this.serviceTcp) {
+            this.serviceTcp.stop();
+            this.serviceTcp = null;
         }
 
-        this.service.stop();
-        this.service = null;
+        if (this.serviceTls) {
+            this.serviceTls.stop();
+            this.serviceTls = null;
+        }
+
+        if (this.serviceWs) {
+            this.serviceWs.stop();
+            this.serviceWs = null;
+        }
+
+        if (this.serviceWss) {
+            this.serviceWss.stop();
+            this.serviceWss = null;
+        }
     }
 }

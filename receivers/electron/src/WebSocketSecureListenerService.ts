@@ -1,37 +1,46 @@
-import net = require('net');
 import { FCastSession, Opcode } from './FCastSession';
 import { EventEmitter } from 'node:events';
 import { dialog } from 'electron';
 import Main from './Main';
+import { WebSocket, WebSocketServer } from 'ws';
+import * as https from 'https'; 
 
-export class TcpListenerService {
-    public static PORT = 46899;
+export class WebSocketSecureListenerService {
+    public static PORT = 46896;
 
     emitter = new EventEmitter();
     
-    private server: net.Server;
+    private server: WebSocketServer;
     private sessions: FCastSession[] = [];
+    private httpsServer: https.Server;
+
+    constructor(private key: string, private cert: string) {}
 
     start() {
-        if (this.server != null) {
+        if (this.server != null || this.httpsServer != null) {
             return;
         }
 
-        this.server = net.createServer()
-            .listen(TcpListenerService.PORT)
+        this.httpsServer = https.createServer({key: this.key, cert: this.cert});
+        this.httpsServer.listen(WebSocketSecureListenerService.PORT);
+
+        this.server = new WebSocketServer({server: this.httpsServer})
             .on("connection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }
 
     stop() {
-        if (this.server == null) {
-            return;
+        if (this.server != null) {
+            const server = this.server;
+            this.server = null;
+            server.close();
         }
 
-        const server = this.server;
-        this.server = null;
-
-        server.close();
+        if (this.httpsServer != null) {
+            const httpsServer = this.httpsServer;
+            this.httpsServer = null;
+            httpsServer.close();
+        }
     }
 
     send(opcode: number, message = null) {
@@ -65,28 +74,34 @@ export class TcpListenerService {
         }
     }
 
-    private handleConnection(socket: net.Socket) {
-        console.log(`new connection from ${socket.remoteAddress}:${socket.remotePort}`);
+    private handleConnection(socket: WebSocket) {
+        console.log('New WebSocketSecure connection');
 
-        const session = new FCastSession(socket, (data) => socket.write(data));
+        const session = new FCastSession(socket, (data) => socket.send(data));
         session.bindEvents(this.emitter);
         this.sessions.push(session);
 
         socket.on("error", (err) => {
-            console.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
-            socket.destroy();
+            console.warn(`Error.`, err);
+            session.close();
         });
 
-        socket.on("data", buffer => {
+        socket.on('message', data => {
             try {
-                session.processBytes(buffer);
+                if (data instanceof Buffer) {
+                    session.processBytes(data);
+                } else {
+                    console.warn("Received unhandled string message", data);
+                }
             } catch (e) {
-                console.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
-                socket.end();
+                console.warn(`Error while handling packet.`, e);
+                session.close();
             }
         });
 
         socket.on("close", () => {
+            console.log('WebSocketSecure connection closed');
+
             const index = this.sessions.indexOf(session);
             if (index != -1) {
                 this.sessions.splice(index, 1);   

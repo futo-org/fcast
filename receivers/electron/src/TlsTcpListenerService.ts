@@ -1,25 +1,27 @@
-import net = require('net');
+import tls = require('tls');
 import { FCastSession, Opcode } from './FCastSession';
 import { EventEmitter } from 'node:events';
 import { dialog } from 'electron';
 import Main from './Main';
 
-export class TcpListenerService {
-    public static PORT = 46899;
+export class TlsListenerService {
+    public static PORT = 46897;
 
     emitter = new EventEmitter();
     
-    private server: net.Server;
+    private server: tls.Server;
     private sessions: FCastSession[] = [];
+
+    constructor(private key: string, private cert: string) {}
 
     start() {
         if (this.server != null) {
             return;
         }
 
-        this.server = net.createServer()
-            .listen(TcpListenerService.PORT)
-            .on("connection", this.handleConnection.bind(this))
+        const options: tls.TlsOptions = {key: this.key, cert: this.cert};
+        this.server = tls.createServer(options).listen(TlsListenerService.PORT)
+            .on("secureConnection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }
 
@@ -65,8 +67,8 @@ export class TcpListenerService {
         }
     }
 
-    private handleConnection(socket: net.Socket) {
-        console.log(`new connection from ${socket.remoteAddress}:${socket.remotePort}`);
+    private handleConnection(socket: tls.TLSSocket) {
+        console.log(`new secure connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);

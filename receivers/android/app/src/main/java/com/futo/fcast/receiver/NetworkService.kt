@@ -1,5 +1,6 @@
 package com.futo.fcast.receiver
 
+import SslKeyManager
 import WebSocketListenerService
 import android.app.*
 import android.content.Context
@@ -11,13 +12,16 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import java.security.Security
 
 class NetworkService : Service() {
     private var _discoveryService: DiscoveryService? = null
+    private var _stopped = false
     private var _tcpListenerService: TcpListenerService? = null
+    private var _tlsListenerService: TlsListenerService? = null
     private var _webSocketListenerService: WebSocketListenerService? = null
     private var _scope: CoroutineScope? = null
-    private var _stopped = false
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -63,7 +67,7 @@ class NetworkService : Service() {
                 withContext(Dispatchers.IO) {
                     try {
                         Log.i(TAG, "Sending version ${session.id}")
-                        session.sendVersion(VersionMessage(2))
+                        session.send(Opcode.Version, VersionMessage(2))
                     } catch (e: Throwable) {
                         Log.e(TAG, "Failed to send version ${session.id}")
                     }
@@ -75,7 +79,7 @@ class NetworkService : Service() {
                         val updateMessage = generateUpdateMessage()
                         withContext(Dispatchers.IO) {
                             try {
-                                session.sendPlaybackUpdate(updateMessage)
+                                session.send(Opcode.PlaybackUpdate, updateMessage)
                                 Log.i(TAG, "Update sent ${session.id}")
                             } catch (eSend: Throwable) {
                                 Log.e(TAG, "Unhandled error sending update ${session.id}", eSend)
@@ -106,12 +110,18 @@ class NetworkService : Service() {
             start()
         }
 
+        val sslKeyManager = SslKeyManager("fcast_receiver")
+        _tlsListenerService = TlsListenerService(this) { onNewSession(it) }.apply {
+            start(sslKeyManager)
+        }
+
         Log.i(TAG, "Started NetworkService")
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
         return START_STICKY
     }
 
+    @Suppress("DEPRECATION")
     private fun createNotificationBuilder(): NotificationCompat.Builder {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationCompat.Builder(this, CHANNEL_ID)
@@ -133,6 +143,9 @@ class NetworkService : Service() {
 
         _tcpListenerService?.stop()
         _tcpListenerService = null
+
+        _tlsListenerService?.stop()
+        _tlsListenerService = null
 
         try {
             _webSocketListenerService?.stop()
@@ -170,12 +183,11 @@ class NetworkService : Service() {
         }
     }
 
-    fun sendPlaybackError(error: String) {
-        val message = PlaybackErrorMessage(error)
-        _tcpListenerService?.forEachSession { session ->
+    private inline fun <reified T> send(opcode: Opcode, message: T) {
+        val sender: (FCastSession) -> Unit = { session: FCastSession ->
             _scope?.launch(Dispatchers.IO) {
                 try {
-                    session.sendPlaybackError(message)
+                    session.send(opcode, message)
                     Log.i(TAG, "Playback error sent ${session.id}")
                 } catch (e: Throwable) {
                     Log.w(TAG, "Failed to send playback error", e)
@@ -183,64 +195,22 @@ class NetworkService : Service() {
             }
         }
 
-        _webSocketListenerService?.forEachSession { session ->
-            _scope?.launch(Dispatchers.IO) {
-                try {
-                    session.sendPlaybackError(message)
-                    Log.i(TAG, "Playback error sent ${session.id}")
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to send playback error", e)
-                }
-            }
-        }
+        _tcpListenerService?.forEachSession(sender)
+        _webSocketListenerService?.forEachSession(sender)
+        _tlsListenerService?.forEachSession(sender)
+    }
+
+    fun sendPlaybackError(error: String) {
+        val message = PlaybackErrorMessage(error)
+        send(Opcode.PlaybackError, message)
     }
 
     fun sendPlaybackUpdate(message: PlaybackUpdateMessage) {
-        _tcpListenerService?.forEachSession { session ->
-            _scope?.launch(Dispatchers.IO) {
-                try {
-                    session.sendPlaybackUpdate(message)
-                    Log.i(TAG, "Playback update sent ${session.id}")
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to send playback update", e)
-                }
-            }
-        }
-
-        _webSocketListenerService?.forEachSession { session ->
-            _scope?.launch(Dispatchers.IO) {
-                try {
-                    session.sendPlaybackUpdate(message)
-                    Log.i(TAG, "Playback update sent ${session.id}")
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to send playback update", e)
-                }
-            }
-        }
+        send(Opcode.PlaybackUpdate, message)
     }
 
     fun sendCastVolumeUpdate(value: VolumeUpdateMessage) {
-        _tcpListenerService?.forEachSession { session ->
-            _scope?.launch(Dispatchers.IO) {
-                try {
-                    session.sendVolumeUpdate(value)
-                    Log.i(TAG, "Volume update sent ${session.id}")
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to send volume update", e)
-                }
-            }
-        }
-
-        _webSocketListenerService?.forEachSession { session ->
-            _scope?.launch(Dispatchers.IO) {
-                try {
-                    session.sendVolumeUpdate(value)
-                    Log.i(TAG, "Volume update sent ${session.id}")
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to send volume update", e)
-                }
-            }
-        }
+        send(Opcode.VolumeUpdate, value)
     }
 
     fun onCastPlay(playMessage: PlayMessage) {
@@ -361,7 +331,7 @@ class NetworkService : Service() {
         private const val CHANNEL_ID = "NetworkListenerServiceChannel"
         private const val NOTIFICATION_ID = 1
         private const val PLAY_NOTIFICATION_ID = 2
-        private const val TAG = "NetworkService"
+        const val TAG = "NetworkService"
         var activityCount = 0
         var instance: NetworkService? = null
     }

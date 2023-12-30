@@ -1,11 +1,12 @@
-import { FCastSession } from './FCastSession';
+import { FCastSession, Opcode } from './FCastSession';
 import { EventEmitter } from 'node:events';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage } from './Packets';
 import { dialog } from 'electron';
 import Main from './Main';
 import { WebSocket, WebSocketServer } from 'ws';
 
 export class WebSocketListenerService {
+    public static PORT = 46898;
+
     emitter = new EventEmitter();
     
     private server: WebSocketServer;
@@ -16,7 +17,7 @@ export class WebSocketListenerService {
             return;
         }
 
-        this.server = new WebSocketServer({ port: 46898 })
+        this.server = new WebSocketServer({ port: WebSocketListenerService.PORT })
             .on("connection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }
@@ -32,40 +33,12 @@ export class WebSocketListenerService {
         server.close();
     }
 
-    sendPlaybackError(value: PlaybackErrorMessage) {
-        console.info("Sending playback error.", value);
-
+    send(opcode: number, message = null) {
         this.sessions.forEach(session => {
             try {
-                session.sendPlaybackError(value);
+                session.send(opcode, message);
             } catch (e) {
                 console.warn("Failed to send error.", e);
-                session.close();
-            }
-        });
-    }
-
-    sendPlaybackUpdate(value: PlaybackUpdateMessage) {
-        console.info("Sending playback update.", value);
-
-        this.sessions.forEach(session => {
-            try {
-                session.sendPlaybackUpdate(value);
-            } catch (e) {
-                console.warn("Failed to send update.", e);
-                session.close();
-            }
-        });
-    }
-
-    sendVolumeUpdate(value: VolumeUpdateMessage) {
-        console.info("Sending volume update.", value);
-
-        this.sessions.forEach(session => {
-            try {
-                session.sendVolumeUpdate(value);
-            } catch (e) {
-                console.warn("Failed to send update.", e);
                 session.close();
             }
         });
@@ -95,13 +68,7 @@ export class WebSocketListenerService {
         console.log('New WebSocket connection');
 
         const session = new FCastSession(socket, (data) => socket.send(data));
-        session.emitter.on("play", (body: PlayMessage) => { this.emitter.emit("play", body) });
-        session.emitter.on("pause", () => { this.emitter.emit("pause") });
-        session.emitter.on("resume", () => { this.emitter.emit("resume") });
-        session.emitter.on("stop", () => { this.emitter.emit("stop") });
-        session.emitter.on("seek", (body: SeekMessage) => { this.emitter.emit("seek", body) });
-        session.emitter.on("setvolume", (body: SetVolumeMessage) => { this.emitter.emit("setvolume", body) });
-        session.emitter.on("setspeed", (body: SetSpeedMessage) => { this.emitter.emit("setspeed", body) });
+        session.bindEvents(this.emitter);
         this.sessions.push(session);
 
         socket.on("error", (err) => {
@@ -133,7 +100,7 @@ export class WebSocketListenerService {
 
         try {
             console.log('Sending version');
-            session.sendVersion({version: 2});
+            session.send(Opcode.Version, {version: 2});
         } catch (e) {
             console.log('Failed to send version');
         }
