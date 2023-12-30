@@ -28,7 +28,8 @@ impl SeekMessage {
 
 #[derive(Deserialize, Debug)]
 pub struct PlaybackUpdateMessage {
-    pub generationTime: u64,
+    #[serde(rename = "generationTime")]
+    pub generation_time: u64,
     pub time: f64,
     pub duration: f64,
     pub speed: f64,
@@ -37,7 +38,8 @@ pub struct PlaybackUpdateMessage {
 
 #[derive(Deserialize, Debug)]
 pub struct VolumeUpdateMessage {
-    pub generationTime: u64,
+    #[serde(rename = "generationTime")]
+    pub generation_time: u64,
     pub volume: f64 //(0-1)
 }
 
