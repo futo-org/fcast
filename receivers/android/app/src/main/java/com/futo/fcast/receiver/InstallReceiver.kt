@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.os.Build
 import android.util.Log
 
 class InstallReceiver : BroadcastReceiver() {
@@ -13,7 +14,13 @@ class InstallReceiver : BroadcastReceiver() {
 
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                val activityIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                val activityIntent: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_INTENT)
+                }
+
                 if (activityIntent == null) {
                     Log.w(TAG, "Received STATUS_PENDING_USER_ACTION and activity intent is null.")
                     return

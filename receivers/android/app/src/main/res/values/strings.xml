@@ -21,4 +21,5 @@
     <string name="permission_dialog_message">This app requires the System Alert Window permission to display content on top of other apps. Please grant the permission.</string>
     <string name="permission_dialog_positive_button">Allow</string>
     <string name="permission_dialog_negative_button">Cancel</string>
+    <string name="waiting_for_media">Waiting for media</string>
 </resources>

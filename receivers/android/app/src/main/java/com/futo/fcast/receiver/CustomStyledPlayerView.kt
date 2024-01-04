@@ -2,7 +2,6 @@ package com.futo.fcast.receiver
 
 import android.content.Context
 import android.util.AttributeSet
-import android.view.KeyEvent
-import com.google.android.exoplayer2.ui.StyledPlayerView
+import androidx.media3.ui.PlayerView
 
-class CustomStyledPlayerView(context: Context, attrs: AttributeSet? = null) : StyledPlayerView(context, attrs) { }
+class CustomPlayerView(context: Context, attrs: AttributeSet? = null) : PlayerView(context, attrs) { }

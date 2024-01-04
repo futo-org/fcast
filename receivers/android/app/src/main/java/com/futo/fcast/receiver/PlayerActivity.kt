@@ -16,25 +16,28 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.PlaybackException
-import com.google.android.exoplayer2.PlaybackParameters
-import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
-import com.google.android.exoplayer2.source.dash.DashMediaSource
-import com.google.android.exoplayer2.source.hls.HlsMediaSource
-import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
-import com.google.android.exoplayer2.ui.StyledPlayerView
-import com.google.android.exoplayer2.upstream.DefaultDataSource
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
-import com.google.android.exoplayer2.upstream.HttpDataSource
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
@@ -42,7 +45,7 @@ import kotlin.math.max
 
 
 class PlayerActivity : AppCompatActivity() {
-    private lateinit var _playerControlView: StyledPlayerView
+    private lateinit var _playerControlView: PlayerView
     private lateinit var _imageSpinner: ImageView
     private lateinit var _textMessage: TextView
     private lateinit var _layoutOverlay: ConstraintLayout
@@ -165,6 +168,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate")
@@ -203,13 +207,15 @@ class PlayerActivity : AppCompatActivity() {
             .build()
         _connectivityManager.registerNetworkCallback(netReq, _connectivityEvents)
 
-        val container = intent.getStringExtra("container") ?: ""
-        val url = intent.getStringExtra("url")
-        val content = intent.getStringExtra("content")
-        val time = intent.getDoubleExtra("time", 0.0)
-        val speed = intent.getDoubleExtra("speed", 1.0)
-
-        play(PlayMessage(container, url, content, time, speed))
+        val playMessage = intent.getStringExtra("message")?.let {
+            try {
+                Json.decodeFromString<PlayMessage>(it)
+            } catch (e: Throwable) {
+                Log.i(TAG, "Failed to deserialize play message.", e)
+                null
+            }
+        }
+        playMessage?.let { play(it) }
 
         instance = this
         NetworkService.activityCount++
@@ -290,6 +296,7 @@ class PlayerActivity : AppCompatActivity() {
         NetworkService.activityCount--
     }
 
+    @OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (_playerControlView.isControllerFullyVisible) {
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
@@ -312,6 +319,7 @@ class PlayerActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    @OptIn(UnstableApi::class)
     fun play(playMessage: PlayMessage) {
         val mediaItemBuilder = MediaItem.Builder()
         if (playMessage.container.isNotEmpty()) {

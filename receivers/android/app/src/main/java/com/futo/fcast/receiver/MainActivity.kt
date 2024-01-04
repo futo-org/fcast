@@ -2,6 +2,7 @@ package com.futo.fcast.receiver
 
 import WebSocketListenerService
 import android.Manifest
+import android.app.Activity
 import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.Context
@@ -19,14 +20,17 @@ import android.util.TypedValue
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.ui.StyledPlayerView
+import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.google.zxing.BarcodeFormat
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import kotlinx.coroutines.*
@@ -46,27 +50,38 @@ class MainActivity : AppCompatActivity() {
     private lateinit var _updateSpinner: ImageView
     private lateinit var _imageSpinner: ImageView
     private lateinit var _layoutConnectionInfo: ConstraintLayout
-    private lateinit var _videoBackground: StyledPlayerView
+    private lateinit var _videoBackground: PlayerView
     private lateinit var _viewDemo: View
     private lateinit var _player: ExoPlayer
     private lateinit var _imageQr: ImageView
     private lateinit var _textScanToConnect: TextView
+    private lateinit var _systemAlertWindowPermissionLauncher: ActivityResultLauncher<Intent>
     private var _updateAvailable: Boolean? = null
     private var _updating: Boolean = false
     private var _demoClickCount = 0
     private var _lastDemoToast: Toast? = null
     private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
 
-    private val _scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
-            _updateAvailable = savedInstanceState.getBoolean("updateAvailable", false)
+        _systemAlertWindowPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+            if (Settings.canDrawOverlays(this)) {
+                // Permission granted, you can launch the activity from the foreground service
+                Toast.makeText(this, "Alert window permission granted", Toast.LENGTH_LONG).show()
+                Log.i(TAG, "Alert window permission granted")
+            } else {
+                // Permission denied, notify the user and request again if necessary
+                Toast.makeText(this, "Permission is required to work in background", Toast.LENGTH_LONG).show()
+                Log.i(TAG, "Alert window permission denied")
+            }
+        }
+
+        _updateAvailable = if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
+            savedInstanceState.getBoolean("updateAvailable", false)
         } else {
-            _updateAvailable = null
+            null
         }
 
         _buttonUpdate = findViewById(R.id.button_update)
@@ -118,13 +133,13 @@ class MainActivity : AppCompatActivity() {
             _updateSpinner.visibility = View.VISIBLE
             (_updateSpinner.drawable as Animatable?)?.start()
 
-            _scope.launch(Dispatchers.IO) {
+            lifecycleScope.launch(Dispatchers.IO) {
                 checkForUpdates()
             }
         }
 
         val ips = getIPs()
-        _textIPs.text = "IPs\n" + ips.joinToString("\n") + "\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+        _textIPs.text = "IPs\n${ips.joinToString("\n")}\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
 
         try {
             val barcodeEncoder = BarcodeEncoder()
@@ -168,7 +183,6 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         InstallReceiver.onReceiveResult = null
-        _scope.cancel()
         _player.release()
         NetworkService.activityCount--
     }
@@ -179,11 +193,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restartService() {
-        val i = NetworkService.instance
-        if (i != null) {
-            i.stopSelf()
-        }
-
+        NetworkService.instance?.stopSelf()
         startService(Intent(this, NetworkService::class.java))
     }
 
@@ -245,7 +255,7 @@ class MainActivity : AppCompatActivity() {
                         .setPositiveButton(R.string.permission_dialog_positive_button) { _, _ ->
                             try {
                                 val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                                startActivityForResult(intent, REQUEST_CODE)
+                                _systemAlertWindowPermissionLauncher.launch(intent)
                             } catch (e: Throwable) {
                                 Log.e("OverlayPermission", "Error requesting overlay permission", e)
                                 Toast.makeText(this, "An error occurred: ${e.message}", Toast.LENGTH_LONG).show()
@@ -269,23 +279,6 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to request system alert window permissions")
         }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == REQUEST_CODE) {
-            if (Settings.canDrawOverlays(this)) {
-                // Permission granted, you can launch the activity from the foreground service
-                Toast.makeText(this, "Alert window permission granted", Toast.LENGTH_LONG).show()
-                Log.i(TAG, "Alert window permission granted")
-            } else {
-                // Permission denied, notify the user and request again if necessary
-                Toast.makeText(this, "Permission is required to work in background", Toast.LENGTH_LONG).show()
-                Log.i(TAG, "Alert window permission denied")
-            }
-        }
-        super.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -410,7 +403,7 @@ class MainActivity : AppCompatActivity() {
         setText(resources.getText(R.string.downloading_update))
         (_updateSpinner.drawable as Animatable?)?.start()
 
-        _scope.launch(Dispatchers.IO) {
+        lifecycleScope.launch(Dispatchers.IO) {
             var inputStream: InputStream? = null
             try {
                 val client = OkHttpClient()
@@ -458,8 +451,7 @@ class MainActivity : AppCompatActivity() {
                     if (lastProgressText != progressText) {
                         lastProgressText = progressText
 
-                        //TODO: Use proper scope
-                        GlobalScope.launch(Dispatchers.Main) {
+                        lifecycleScope.launch(Dispatchers.Main) {
                             _textProgress.text = progressText
                         }
                     }
@@ -504,7 +496,7 @@ class MainActivity : AppCompatActivity() {
 
         (_updateSpinner.drawable as Animatable?)?.stop()
 
-        if (result == null || result.isBlank()) {
+        if (result.isNullOrBlank()) {
             _updateSpinner.setImageResource(R.drawable.ic_update_success)
             setText(resources.getText(R.string.success))
         } else {

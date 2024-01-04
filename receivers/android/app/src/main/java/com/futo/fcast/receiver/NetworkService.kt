@@ -11,6 +11,8 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 class NetworkService : Service() {
     private var _discoveryService: DiscoveryService? = null
@@ -208,11 +210,7 @@ class NetworkService : Service() {
                 if (PlayerActivity.instance == null) {
                     val i = Intent(this@NetworkService, PlayerActivity::class.java)
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    i.putExtra("container", playMessage.container)
-                    i.putExtra("url", playMessage.url)
-                    i.putExtra("content", playMessage.content)
-                    i.putExtra("time", playMessage.time)
-                    i.putExtra("speed", playMessage.speed)
+                    i.putExtra("message", Json.encodeToString(playMessage))
 
                     if (activityCount > 0) {
                         startActivity(i)
