@@ -4,11 +4,13 @@ import WebSocketListenerService
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.serialization.encodeToString
@@ -56,7 +58,11 @@ class NetworkService : Service() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
 
         val onNewSession: (FCastSession) -> Unit = { session ->
             _scope?.launch(Dispatchers.Main) {
