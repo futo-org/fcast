@@ -1,10 +1,11 @@
 export class PlayMessage {
     constructor(
-        public container: String,
-        public url: String = null,
-        public content: String = null,
+        public container: string,
+        public url: string = null,
+        public content: string = null,
         public time: number = null,
-        public speed: number = null
+        public speed: number = null,
+        public headers: { [key: string]: string } = null
     ) {}
 }
 
@@ -26,7 +27,7 @@ export class PlaybackUpdateMessage {
 
 export class PlaybackErrorMessage {
     constructor(
-        public message: String
+        public message: string
     ) {}
 }
 

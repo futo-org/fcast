@@ -5,6 +5,13 @@ function toggleFullScreen(ev) {
 const options = {
     textTrackSettings: false
 };
+
+let customHeaders = null;
+videojs.Vhs.xhr.beforeRequest = function(options) {
+    options.headers = { ... options.headers, ... customHeaders };    
+    return options;
+};
+
 const player = videojs("video-player", options, function onPlayerReady() {
     const fullScreenControls = document.getElementsByClassName("vjs-fullscreen-control");
     for (let i = 0; i < fullScreenControls.length; i++) {
@@ -58,6 +65,7 @@ player.on('error', () => { window.electronAPI.sendPlaybackError({
 
 window.electronAPI.onPlay((_event, value) => {
     console.log("Handle play message renderer", value);
+    customHeaders = value.headers;
 
     if (value.content) {
         player.src({ type: value.container, src: `data:${value.container};base64,` + window.btoa(value.content) });

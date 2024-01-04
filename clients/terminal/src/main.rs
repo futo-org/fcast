@@ -6,6 +6,7 @@ use clap::{App, Arg, SubCommand};
 use tiny_http::{Server, Response, ListenAddr, Header};
 use tungstenite::stream::MaybeTlsStream;
 use url::Url;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -102,6 +103,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .default_value("1")
                 .takes_value(true)
             )
+            .arg(Arg::with_name("header")
+                .short('H')
+                .long("header")
+                .value_name("HEADER")
+                .help("Custom request headers in key:value format")
+                .required(false)
+                .multiple_occurrences(true)
+            )
         )
         .subcommand(SubCommand::with_name("seek")
             .about("Seek to a timestamp")
@@ -177,18 +186,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connection established.");
 
+    
     let mut join_handle: Option<JoinHandle<Result<(), String>>> = None;
     if let Some(play_matches) = matches.subcommand_matches("play") {
+        let mime_type = match play_matches.value_of("mime_type") {
+            Some(s) => s.to_string(),
+            _ => return Err("MIME type is required.".into())
+        };
+
+        let time = match play_matches.value_of("timestamp") {
+            Some(s) => s.parse::<f64>().ok(),
+            _ => None
+        };
+
+        let speed = match play_matches.value_of("speed") {
+            Some(s) => s.parse::<f64>().ok(),
+            _ => None
+        };
+
+        let headers = play_matches.values_of("header")
+        .map(|values| values
+            .filter_map(|s| {
+                let mut parts = s.splitn(2, ':');
+                if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                    Some((key.trim().to_string(), value.trim().to_string()))
+                } else {
+                    None
+                }
+            }
+        ).collect::<HashMap<String, String>>());
+
         let file_path = play_matches.value_of("file");
 
         let mut play_message = if let Some(file_path) = file_path {
             match local_ip {
                 Some(lip) => {
-                    let mime_type = match play_matches.value_of("mime_type") {
-                        Some(s) => s.to_string(),
-                        _ => return Err("MIME type is required.".into())
-                    };
-
                     let running = Arc::new(AtomicBool::new(true));
                     let r = running.clone();            
 
@@ -208,24 +240,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                        mime_type,
                         Some(url),
                         None,
-                        match play_matches.value_of("timestamp") {
-                            Some(s) => s.parse::<f64>().ok(),
-                            _ => None
-                        },
-                        match play_matches.value_of("speed") {
-                            Some(s) => s.parse::<f64>().ok(),
-                            _ => None
-                        }
+                        time,
+                        speed,
+                        headers
                     )
                 },
                 _ => return Err("Local IP was not able to be resolved.".into())
             }
         } else {
             PlayMessage::new(
-                match play_matches.value_of("mime_type") {
-                    Some(s) => s.to_string(),
-                    _ => return Err("MIME type is required.".into())
-                },
+                mime_type,
                 match play_matches.value_of("url") {
                     Some(s) => Some(s.to_string()),
                     _ => None
@@ -234,14 +258,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Some(s) => Some(s.to_string()),
                     _ => None
                 },
-                match play_matches.value_of("timestamp") {
-                    Some(s) => s.parse::<f64>().ok(),
-                    _ => None
-                },
-                match play_matches.value_of("speed") {
-                    Some(s) => s.parse::<f64>().ok(),
-                    _ => None
-                }
+                time,
+                speed,
+                headers
             )
         };
 

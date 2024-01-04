@@ -1,12 +1,16 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog } from 'electron';
-import path = require('path');
 import { TcpListenerService } from './TcpListenerService';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from './Packets';
+import { PlayMessage, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from './Packets';
 import { DiscoveryService } from './DiscoveryService';
 import { Updater } from './Updater';
 import { WebSocketListenerService } from './WebSocketListenerService';
-import * as os from 'os';
 import { Opcode } from './FCastSession';
+import * as os from 'os';
+import * as path from 'path';
+import * as http from 'http';
+import * as url from 'url';
+import { AddressInfo } from 'ws';
+import { v4 as uuidv4 } from 'uuid';
 
 export default class Main {
     static shouldOpenMainWindow = true; 
@@ -19,6 +23,9 @@ export default class Main {
     static tray: Tray;
     static key: string = null;
     static cert: string = null;
+    static proxyServer: http.Server;
+    static proxyServerAddress: AddressInfo;
+    static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
 
     private static createTray() {
         const icon = (process.platform === 'win32') ? path.join(__dirname, 'app.ico') : path.join(__dirname, 'app.png');
@@ -105,7 +112,7 @@ export default class Main {
 
         const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
         listeners.forEach(l => {
-            l.emitter.on("play", (message) => {
+            l.emitter.on("play", async (message) => {
                 if (Main.playerWindow == null) {
                     Main.playerWindow = new BrowserWindow({
                         fullscreen: true,
@@ -119,14 +126,14 @@ export default class Main {
                     Main.playerWindow.show();
             
                     Main.playerWindow.loadFile(path.join(__dirname, 'player/index.html'));
-                    Main.playerWindow.on('ready-to-show', () => {
-                        Main.playerWindow?.webContents?.send("play", message);
+                    Main.playerWindow.on('ready-to-show', async () => {
+                        Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
                     });
                     Main.playerWindow.on('closed', () => {
                         Main.playerWindow = null;
                     });
                 } else {
-                    Main.playerWindow?.webContents?.send("play", message);
+                    Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
                 }            
             });
             
@@ -177,6 +184,98 @@ export default class Main {
         if (Main.shouldOpenMainWindow) {
             Main.openMainWindow();
         }
+    }
+
+
+    private static setupProxyServer(): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            try {
+                console.log(`Proxy server starting`);
+
+                const port = 0;
+                Main.proxyServer = http.createServer((req, res) => {
+                    console.log(`Request received`);
+                    const requestUrl = `http://${req.headers.host}${req.url}`;
+
+                    const proxyInfo = Main.proxiedFiles.get(requestUrl);
+        
+                    if (!proxyInfo) {
+                        res.writeHead(404);
+                        res.end('Not found');
+                        return;
+                    }
+
+                    const omitHeaders = new Set([
+                        'host',
+                        'connection',
+                        'keep-alive',
+                        'proxy-authenticate',
+                        'proxy-authorization',
+                        'te',
+                        'trailers',
+                        'transfer-encoding',
+                        'upgrade'
+                    ]);                    
+       
+                    const filteredHeaders = Object.fromEntries(Object.entries(req.headers)
+                        .filter(([key]) => !omitHeaders.has(key.toLowerCase()))
+                        .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value]));
+
+                    const parsedUrl = url.parse(proxyInfo.url);
+                    const options: http.RequestOptions = {
+                        ... parsedUrl,
+                        method: req.method,
+                        headers: { ...filteredHeaders, ...proxyInfo.headers }
+                    };
+
+                    const proxyReq = http.request(options, (proxyRes) => {
+                        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+                        proxyRes.pipe(res, { end: true });
+                    });
+        
+                    req.pipe(proxyReq, { end: true });
+                    proxyReq.on('error', (e) => {
+                        console.error(`Problem with request: ${e.message}`);
+                        res.writeHead(500);
+                        res.end();
+                    });
+                });
+                Main.proxyServer.on('error', e => {
+                    reject(e);
+                });
+                Main.proxyServer.listen(port, '127.0.0.1', () => {
+                    Main.proxyServerAddress = Main.proxyServer.address() as AddressInfo;
+                    console.log(`Proxy server running at http://127.0.0.1:${Main.proxyServerAddress.port}/`);
+                    resolve();
+                });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    static streamingMediaTypes = [
+        "application/vnd.apple.mpegurl",
+        "application/x-mpegURL",
+        "application/dash+xml"
+    ];
+
+    static async proxyPlayIfRequired(message: PlayMessage): Promise<PlayMessage> {
+        if (message.headers && message.url && !Main.streamingMediaTypes.find(v => v === message.container.toLocaleLowerCase())) {
+            return { ...message, url: await Main.proxyFile(message.url, message.headers) };
+        }
+        return message;
+    }
+
+    static async proxyFile(url: string, headers: { [key: string]: string }): Promise<string> {
+        if (!Main.proxyServer) {
+            await Main.setupProxyServer();
+        }
+
+        const proxiedUrl = `http://127.0.0.1:${Main.proxyServerAddress.port}/${uuidv4()}`;
+        console.log("Proxied url", { proxiedUrl, url, headers });
+        Main.proxiedFiles.set(proxiedUrl, { url: url, headers: headers });
+        return proxiedUrl;
     }
 
     static getAllIPv4Addresses() {
