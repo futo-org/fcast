@@ -12,6 +12,7 @@ class TcpListenerService(private val _networkService: NetworkService, private va
     private var _listenThread: Thread? = null
     private var _clientThreads: ArrayList<Thread> = arrayListOf()
     private var _sessions: ArrayList<FCastSession> = arrayListOf()
+    private var _serverSocket: ServerSocket? = null
 
     fun start() {
         Log.i(TAG, "Starting TcpListenerService")
@@ -36,6 +37,9 @@ class TcpListenerService(private val _networkService: NetworkService, private va
 
         _stopped = true
 
+        _serverSocket?.close()
+        _serverSocket = null
+
         _listenThread?.join()
         _listenThread = null
 
@@ -59,13 +63,13 @@ class TcpListenerService(private val _networkService: NetworkService, private va
 
         while (!_stopped) {
             try {
-                val serverSocket = ServerSocket()
+                _serverSocket = ServerSocket()
 
                 try {
-                    serverSocket.bind(InetSocketAddress(PORT))
+                    _serverSocket!!.bind(InetSocketAddress(PORT))
 
                     while (!_stopped) {
-                        val clientSocket = serverSocket.accept() ?: break
+                        val clientSocket = _serverSocket!!.accept() ?: break
                         val clientThread = Thread {
                             try {
                                 Log.i(TAG, "New connection received from ${clientSocket.remoteSocketAddress}")
@@ -97,7 +101,8 @@ class TcpListenerService(private val _networkService: NetworkService, private va
                     Log.e(TAG, "Failed to accept client connection due to an error, sleeping 1 second then restarting", e)
                     Thread.sleep(1000)
                 } finally {
-                    serverSocket.close()
+                    _serverSocket?.close()
+                    _serverSocket = null
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to create server socket, sleeping 1 second then restarting", e)

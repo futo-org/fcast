@@ -2,7 +2,11 @@ package com.futo.fcast.receiver
 
 import android.content.Context
 import android.graphics.drawable.Animatable
-import android.net.*
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -14,18 +18,28 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
-import com.google.android.exoplayer2.*
+import com.google.android.exoplayer2.ExoPlayer
+import com.google.android.exoplayer2.MediaItem
+import com.google.android.exoplayer2.PlaybackException
+import com.google.android.exoplayer2.PlaybackParameters
+import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.source.dash.DashMediaSource
 import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
 import com.google.android.exoplayer2.ui.StyledPlayerView
 import com.google.android.exoplayer2.upstream.DefaultDataSource
-import kotlinx.coroutines.*
+import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
+import com.google.android.exoplayer2.upstream.HttpDataSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.max
+
 
 class PlayerActivity : AppCompatActivity() {
     private lateinit var _playerControlView: StyledPlayerView
@@ -320,7 +334,15 @@ class PlayerActivity : AppCompatActivity() {
             throw IllegalArgumentException("Either URL or content must be provided.")
         }
 
-        val dataSourceFactory = DefaultDataSource.Factory(this)
+        val dataSourceFactory = if (playMessage.headers != null) {
+            val httpDataSourceFactory: HttpDataSource.Factory = DefaultHttpDataSource.Factory()
+            httpDataSourceFactory.setDefaultRequestProperties(playMessage.headers)
+            DefaultDataSource.Factory(this, httpDataSourceFactory)
+
+        } else {
+            DefaultDataSource.Factory(this)
+        }
+
         val mediaItem = mediaItemBuilder.build()
         val mediaSource = when (playMessage.container) {
             "application/dash+xml" -> DashMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)

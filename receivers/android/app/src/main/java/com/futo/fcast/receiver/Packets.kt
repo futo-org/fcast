@@ -8,7 +8,8 @@ data class PlayMessage(
     val url: String? = null,
     val content: String? = null,
     val time: Double? = null,
-    val speed: Double? = null
+    val speed: Double? = null,
+    val headers: Map<String, String>? = null
 )
 
 @Serializable
