@@ -76,29 +76,6 @@ class NetworkService : Service() {
                         Log.e(TAG, "Failed to send version ${session.id}")
                     }
                 }
-
-                var encounteredError = false
-                while (!_stopped && !encounteredError) {
-                    try {
-                        val updateMessage = generateUpdateMessage()
-                        withContext(Dispatchers.IO) {
-                            try {
-                                session.send(Opcode.PlaybackUpdate, updateMessage)
-                                Log.i(TAG, "Update sent ${session.id}")
-                            } catch (eSend: Throwable) {
-                                Log.e(TAG, "Unhandled error sending update ${session.id}", eSend)
-                                encounteredError = true
-                                return@withContext
-                            }
-                        }
-                    } catch (eTimer: Throwable) {
-                        Log.e(TAG, "Unhandled error on timer thread ${session.id}", eTimer)
-                    } finally {
-                        delay(1000)
-                    }
-                }
-
-                Log.i(TAG, "Send loop closed ${session.id}")
             }
         }
 
@@ -158,33 +135,12 @@ class NetworkService : Service() {
         instance = null
     }
 
-    fun generateUpdateMessage(): PlaybackUpdateMessage {
-        val player = PlayerActivity.instance
-        return  if (player != null) {
-            PlaybackUpdateMessage(
-                System.currentTimeMillis(),
-                player.currentPosition / 1000.0,
-                player.duration / 1000.0,
-                if (player.isPlaying) 1 else 2,
-                player.speed.toDouble()
-            )
-        } else {
-            PlaybackUpdateMessage(
-                System.currentTimeMillis(),
-                0.0,
-                0.0,
-                0,
-                0.0
-            )
-        }
-    }
-
     private inline fun <reified T> send(opcode: Opcode, message: T) {
         val sender: (FCastSession) -> Unit = { session: FCastSession ->
             _scope?.launch(Dispatchers.IO) {
                 try {
                     session.send(opcode, message)
-                    Log.i(TAG, "Playback error sent ${session.id}")
+                    Log.i(TAG, "Opcode sent (opcode = $opcode) ${session.id}")
                 } catch (e: Throwable) {
                     Log.w(TAG, "Failed to send playback error", e)
                 }
@@ -196,15 +152,18 @@ class NetworkService : Service() {
     }
 
     fun sendPlaybackError(error: String) {
+        Log.i(TAG, "sendPlaybackError")
         val message = PlaybackErrorMessage(error)
         send(Opcode.PlaybackError, message)
     }
 
     fun sendPlaybackUpdate(message: PlaybackUpdateMessage) {
+        Log.i(TAG, "sendPlaybackUpdate")
         send(Opcode.PlaybackUpdate, message)
     }
 
     fun sendCastVolumeUpdate(value: VolumeUpdateMessage) {
+        Log.i(TAG, "sendCastVolumeUpdate")
         send(Opcode.VolumeUpdate, value)
     }
 

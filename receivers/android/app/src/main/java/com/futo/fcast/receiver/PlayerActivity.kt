@@ -19,6 +19,7 @@ import android.widget.TextView
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
@@ -33,9 +34,10 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.PlayerView
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -52,13 +54,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var _exoPlayer: ExoPlayer
     private var _shouldPlaybackRestartOnConnectivity: Boolean = false
     private lateinit var _connectivityManager: ConnectivityManager
-    private lateinit var _scope: CoroutineScope
-    private  var _wasPlaying = false
-
-    val currentPosition get() = _exoPlayer.currentPosition
-    val speed get() = _exoPlayer.playbackParameters.speed
-    val duration get() = _exoPlayer.duration
-    val isPlaying get() = _exoPlayer.isPlaying
+    private var _wasPlaying = false
 
     private val _connectivityEvents = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -66,7 +62,7 @@ class PlayerActivity : AppCompatActivity() {
             Log.i(TAG, "_connectivityEvents onAvailable")
 
             try {
-                _scope.launch(Dispatchers.Main) {
+                lifecycleScope.launch(Dispatchers.Main) {
                     Log.i(TAG, "onConnectionAvailable")
 
                     val pos = _exoPlayer.currentPosition
@@ -84,7 +80,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private val _playerEventListener = object: Player.Listener {
+    private val _playerEventListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             super.onPlaybackStateChanged(playbackState)
             Log.i(TAG, "onPlaybackStateChanged playbackState=$playbackState")
@@ -100,15 +96,17 @@ class PlayerActivity : AppCompatActivity() {
                 setStatus(true, null)
             }
 
-            NetworkService.instance?.generateUpdateMessage()?.let {
-                _scope.launch(Dispatchers.IO) {
-                    try {
-                        NetworkService.instance?.sendPlaybackUpdate(it)
-                    } catch (e: Throwable) {
-                        Log.e(TAG, "Unhandled error sending playback update", e)
-                    }
-                }
-            }
+            sendPlaybackUpdate()
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            super.onPlayWhenReadyChanged(playWhenReady, reason)
+            sendPlaybackUpdate()
+        }
+
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            super.onPositionDiscontinuity(oldPosition, newPosition, reason)
+            sendPlaybackUpdate()
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -134,8 +132,15 @@ class PlayerActivity : AppCompatActivity() {
             val fullMessage = getFullExceptionMessage(error)
             setStatus(false, fullMessage)
 
-            _scope.launch(Dispatchers.IO) {
+            lifecycleScope.launch(Dispatchers.IO) {
                 try {
+                    NetworkService.instance?.sendPlaybackUpdate(PlaybackUpdateMessage(
+                        System.currentTimeMillis(),
+                        0.0,
+                        0.0,
+                        0,
+                        0.0
+                    ))
                     NetworkService.instance?.sendPlaybackError(fullMessage)
                 } catch (e: Throwable) {
                     Log.e(TAG, "Unhandled error sending playback error", e)
@@ -145,7 +150,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onVolumeChanged(volume: Float) {
             super.onVolumeChanged(volume)
-            _scope.launch(Dispatchers.IO) {
+            lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     NetworkService.instance?.sendCastVolumeUpdate(VolumeUpdateMessage(System.currentTimeMillis(), volume.toDouble()))
                 } catch (e: Throwable) {
@@ -156,14 +161,55 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
             super.onPlaybackParametersChanged(playbackParameters)
-            NetworkService.instance?.generateUpdateMessage()?.let {
-                _scope.launch(Dispatchers.IO) {
-                    try {
-                        NetworkService.instance?.sendPlaybackUpdate(it)
-                    } catch (e: Throwable) {
-                        Log.e(TAG, "Unhandled error sending playback update", e)
-                    }
-                }
+            sendPlaybackUpdate()
+        }
+    }
+
+    private fun sendPlaybackUpdate() {
+        val state: Int
+        if (_exoPlayer.playbackState == ExoPlayer.STATE_READY) {
+            if (_exoPlayer.playWhenReady) {
+                state = 1
+
+            } else {
+                state = 2
+            }
+        } else if (_exoPlayer.playbackState == ExoPlayer.STATE_BUFFERING) {
+            if (_exoPlayer.playWhenReady) {
+                state = 1
+            } else {
+                state = 2
+            }
+        } else {
+            state = 0
+        }
+
+        val time: Double
+        val duration: Double
+        val speed: Double
+        if (state != 0) {
+            duration = (_exoPlayer.duration / 1000.0).coerceAtLeast(1.0)
+            time = (_exoPlayer.currentPosition / 1000.0).coerceAtLeast(0.0).coerceAtMost(duration)
+            speed = _exoPlayer.playbackParameters.speed.toDouble().coerceAtLeast(0.01)
+        } else {
+            time = 0.0
+            duration = 0.0
+            speed = 1.0
+        }
+
+        val playbackUpdate = PlaybackUpdateMessage(
+            System.currentTimeMillis(),
+            time,
+            duration,
+            state,
+            speed
+        )
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                NetworkService.instance?.sendPlaybackUpdate(playbackUpdate)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Unhandled error sending playback update", e)
             }
         }
     }
@@ -180,7 +226,6 @@ class PlayerActivity : AppCompatActivity() {
         _imageSpinner = findViewById(R.id.image_spinner)
         _textMessage = findViewById(R.id.text_message)
         _layoutOverlay = findViewById(R.id.layout_overlay)
-        _scope = CoroutineScope(Dispatchers.Main)
 
         setStatus(true, null)
 
@@ -219,6 +264,17 @@ class PlayerActivity : AppCompatActivity() {
 
         instance = this
         NetworkService.activityCount++
+
+        lifecycleScope.launch(Dispatchers.Main) {
+            while (lifecycleScope.isActive) {
+                try {
+                    sendPlaybackUpdate()
+                    delay(1000)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Failed to send playback update.", e)
+                }
+            }
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -288,12 +344,25 @@ class PlayerActivity : AppCompatActivity() {
         Log.i(TAG, "onDestroy")
 
         instance = null
-        _scope.cancel()
         _connectivityManager.unregisterNetworkCallback(_connectivityEvents)
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         _playerControlView.player = null
         NetworkService.activityCount--
+
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                NetworkService.instance?.sendPlaybackUpdate(PlaybackUpdateMessage(
+                    System.currentTimeMillis(),
+                    0.0,
+                    0.0,
+                    0,
+                    0.0
+                ))
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to send playback update.", e)
+            }
+        }
     }
 
     @OptIn(UnstableApi::class)
