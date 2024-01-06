@@ -180,6 +180,8 @@ class PlayerActivity : AppCompatActivity() {
             } else {
                 state = 2
             }
+        } else if (_exoPlayer.playbackState == ExoPlayer.STATE_ENDED) {
+            state = 2
         } else {
             state = 0
         }
@@ -447,6 +449,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     fun resume() {
+        if (_exoPlayer.playbackState == ExoPlayer.STATE_ENDED && _exoPlayer.duration - _exoPlayer.currentPosition < 1000) {
+            _exoPlayer.seekTo(0)
+        }
+
         _exoPlayer.play()
     }
 
