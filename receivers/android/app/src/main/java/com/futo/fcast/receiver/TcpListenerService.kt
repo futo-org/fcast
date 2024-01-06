@@ -126,7 +126,7 @@ class TcpListenerService(private val _networkService: NetworkService, private va
 
             val bufferSize = 4096
             val buffer = ByteArray(bufferSize)
-            val inputStream = BufferedInputStream(socket.getInputStream())
+            val inputStream = socket.getInputStream()
 
             var bytesRead: Int
             while (!_stopped) {
