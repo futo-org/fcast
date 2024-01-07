@@ -22,24 +22,40 @@ const player = videojs("video-player", options, function onPlayerReady() {
     }
 });
 
-player.on("pause", () => { window.electronAPI.sendPlaybackUpdate({
-    generationTime: Date.now(),
+sendPlaybackUpdate = (message) => {
+    const sanitizedMessage = {
+        generationTime: Date.now(),
+        time: message.time ? message.time : 0, 
+        duration: message.duration && isFinite(message.duration) ? message.duration : 0, 
+        state: message.state,
+        speed: message.speed ? message.speed : 1
+    };
+
+    window.electronAPI.sendPlaybackUpdate(sanitizedMessage);
+};
+
+player.on("pause", () => { sendPlaybackUpdate({
     time: player.currentTime(), 
     duration: player.duration(), 
     state: 2,
     speed: player.playbackRate()
 })});
 
-player.on("play", () => { window.electronAPI.sendPlaybackUpdate({ 
-    generationTime: Date.now(),
+player.on("play", () => { sendPlaybackUpdate({ 
     time: player.currentTime(), 
     duration: player.duration(), 
     state: 1,
     speed: player.playbackRate()
 })});
 
-player.on("seeked", () => { window.electronAPI.sendPlaybackUpdate({ 
-    generationTime: Date.now(),
+player.on("seeked", () => { sendPlaybackUpdate({ 
+    time: player.currentTime(), 
+    duration: player.duration(), 
+    state: player.paused() ? 2 : 1,
+    speed: player.playbackRate()
+})});
+
+player.on("ratechange", () => { sendPlaybackUpdate({
     time: player.currentTime(), 
     duration: player.duration(), 
     state: player.paused() ? 2 : 1,
@@ -49,14 +65,6 @@ player.on("seeked", () => { window.electronAPI.sendPlaybackUpdate({
 player.on("volumechange", () => { window.electronAPI.sendVolumeUpdate({ 
     generationTime: Date.now(),
     volume: player.volume() 
-})});
-
-player.on("ratechange", () => { window.electronAPI.sendPlaybackUpdate({ 
-    generationTime: Date.now(),
-    time: player.currentTime(), 
-    duration: player.duration(), 
-    state: player.paused() ? 2 : 1,
-    speed: player.playbackRate()
 })});
 
 player.on('error', () => { window.electronAPI.sendPlaybackError({ 
@@ -117,12 +125,11 @@ window.electronAPI.onSetSpeed((_event, value) => {
 });
 
 setInterval(() => {
-    window.electronAPI.sendPlaybackUpdate({ 
-        generationTime: Date.now(),
-        time: (player.currentTime()), 
-        duration: (player.duration()), 
+    sendPlaybackUpdate({
+        time: player.currentTime(), 
+        duration: player.duration(), 
         state: player.paused() ? 2 : 1,
-        speed: player.playbackRate()
+        speed: player.playbackRate(),
     });
 }, 1000);
 
@@ -177,7 +184,12 @@ console.log("KeyDown", event);
             break;
         case 'ArrowRight':
             // Skip forward
-            player.currentTime(Math.min(player.currentTime() + skipInterval, player.duration()));
+            const duration = player.duration();
+            if (duration) {
+                player.currentTime(Math.min(player.currentTime() + skipInterval, duration));
+            } else {
+                player.currentTime(player.currentTime());
+            }
             event.preventDefault();
             break;
         case 'Space':
