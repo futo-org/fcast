@@ -142,7 +142,7 @@ class NetworkService : Service() {
                     session.send(opcode, message)
                     Log.i(TAG, "Opcode sent (opcode = $opcode) ${session.id}")
                 } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to send playback error", e)
+                    Log.w(TAG, "Failed to send opcode (opcode = $opcode) ${session.id}", e)
                 }
             }
         }
