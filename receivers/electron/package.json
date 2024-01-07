@@ -1,6 +1,6 @@
 {
   "name": "fcast-receiver",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "An application implementing a FCast receiver.",
   "main": "dist/bundle.js",
   "author": "Koen Jeukendrup",
