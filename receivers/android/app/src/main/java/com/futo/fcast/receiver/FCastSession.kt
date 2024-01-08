@@ -66,6 +66,8 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
     val id = UUID.randomUUID()
 
     fun send(opcode: Opcode, message: String? = null) {
+        ensureNotMainThread()
+
         synchronized(_outputStreamLock) {
             try {
                 val data: ByteArray = message?.encodeToByteArray() ?: ByteArray(0)
