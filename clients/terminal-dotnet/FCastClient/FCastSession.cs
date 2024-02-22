@@ -41,6 +41,8 @@ public class FCastSession : IDisposable
     private int _bytesRead;
     private int _packetLength;
     private Stream _stream;
+    private SemaphoreSlim _writerSemaphore = new SemaphoreSlim(1);
+    private SemaphoreSlim _readerSemaphore = new SemaphoreSlim(1);
     private SessionState _state;
 
     public FCastSession(Stream stream)
@@ -51,30 +53,48 @@ public class FCastSession : IDisposable
 
     public async Task SendMessageAsync(Opcode opcode, CancellationToken cancellationToken)
     {
-        int size = 1;
-        byte[] header = new byte[LengthBytes + 1];
-        Array.Copy(BitConverter.GetBytes(size), header, LengthBytes);
-        header[LengthBytes] = (byte)opcode;
+        await _writerSemaphore.WaitAsync();
 
-        Console.WriteLine($"Sent {header.Length} bytes with (opcode: {opcode}, header size: {header.Length}, no body).");
-        await _stream.WriteAsync(header, cancellationToken);
+        try
+        {
+            int size = 1;
+            byte[] header = new byte[LengthBytes + 1];
+            Array.Copy(BitConverter.GetBytes(size), header, LengthBytes);
+            header[LengthBytes] = (byte)opcode;
+
+            Console.WriteLine($"Sent {header.Length} bytes with (opcode: {opcode}, header size: {header.Length}, no body).");
+            await _stream.WriteAsync(header, cancellationToken);
+        }
+        finally
+        {
+            _writerSemaphore.Release();
+        }
     }
 
     public async Task SendMessageAsync<T>(Opcode opcode, T message, CancellationToken cancellationToken) where T : class
     {
-        string json = JsonSerializer.Serialize(message);
-        byte[] data = Encoding.UTF8.GetBytes(json);
-        int size = 1 + data.Length;
-        byte[] header = new byte[LengthBytes + 1];
-        Array.Copy(BitConverter.GetBytes(size), header, LengthBytes);
-        header[LengthBytes] = (byte)opcode;
+        await _writerSemaphore.WaitAsync();
 
-        byte[] packet = new byte[header.Length + data.Length];
-        header.CopyTo(packet, 0);
-        data.CopyTo(packet, header.Length);
+        try
+        {
+            string json = JsonSerializer.Serialize(message);
+            byte[] data = Encoding.UTF8.GetBytes(json);
+            int size = 1 + data.Length;
+            byte[] header = new byte[LengthBytes + 1];
+            Array.Copy(BitConverter.GetBytes(size), header, LengthBytes);
+            header[LengthBytes] = (byte)opcode;
 
-        Console.WriteLine($"Sent {packet.Length} bytes with (opcode: {opcode}, header size: {header.Length}, body size: {data.Length}, body: {json}).");
-        await _stream.WriteAsync(packet, cancellationToken);
+            byte[] packet = new byte[header.Length + data.Length];
+            header.CopyTo(packet, 0);
+            data.CopyTo(packet, header.Length);
+
+            Console.WriteLine($"Sent {packet.Length} bytes with (opcode: {opcode}, header size: {header.Length}, body size: {data.Length}, body: {json}).");
+            await _stream.WriteAsync(packet, cancellationToken);
+        }
+        finally
+        {
+            _writerSemaphore.Release();
+        }
     }
 
     public async Task ReceiveLoopAsync(CancellationToken cancellationToken)
@@ -85,12 +105,22 @@ public class FCastSession : IDisposable
         byte[] buffer = new byte[1024];
         while (!cancellationToken.IsCancellationRequested)
         {
-            int bytesRead = await _stream.ReadAsync(buffer, cancellationToken);
-            if (bytesRead == 0)
+            await _readerSemaphore.WaitAsync();
+
+            int bytesRead;
+            try
             {
-                Console.WriteLine("Connection shutdown gracefully.");
-                Dispose();
-                break;
+                bytesRead = await _stream.ReadAsync(buffer, cancellationToken);
+                if (bytesRead == 0)
+                {
+                    Console.WriteLine("Connection shutdown gracefully.");
+                    Dispose();
+                    break;
+                }
+            }
+            finally
+            {
+                _readerSemaphore.Release();
             }
 
             await ProcessBytesAsync(buffer, bytesRead, cancellationToken);

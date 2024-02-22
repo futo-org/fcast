@@ -121,6 +121,8 @@ internal class Program
             .Build();
 
         CommandMatches matches = rootCommand.Parse(args);
+        Console.WriteLine(matches.ToString());
+
         var host = matches.Value("host")!;
         var connectionType = matches.Value("connection_type")!;
 
