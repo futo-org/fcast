@@ -97,7 +97,7 @@ public class FCastSession : IDisposable
         }
     }
 
-    public async Task ReceiveLoopAsync(CancellationToken cancellationToken)
+    public async Task ReceiveLoopAsync(CancellationToken cancellationToken = default)
     {
         Console.WriteLine("Start receiving.");
         _state = SessionState.WaitingForLength;
@@ -150,7 +150,7 @@ public class FCastSession : IDisposable
     private async Task HandleLengthBytesAsync(byte[] receivedBytes, int offset, int length, CancellationToken cancellationToken)
     {
         int bytesToRead = Math.Min(LengthBytes, length);
-        Buffer.BlockCopy(receivedBytes, offset, _buffer, 0, bytesToRead);
+        Buffer.BlockCopy(receivedBytes, offset, _buffer, _bytesRead, bytesToRead);
         _bytesRead += bytesToRead;
 
         Console.WriteLine($"handleLengthBytes: Read {bytesToRead} bytes from packet");
@@ -173,7 +173,7 @@ public class FCastSession : IDisposable
 
             if (length > bytesToRead)
             {
-                await HandlePacketBytesAsync(receivedBytes, bytesToRead, length - bytesToRead, cancellationToken);
+                await HandlePacketBytesAsync(receivedBytes, offset + bytesToRead, length - bytesToRead, cancellationToken);
             }
         }
     }
@@ -181,7 +181,7 @@ public class FCastSession : IDisposable
     private async Task HandlePacketBytesAsync(byte[] receivedBytes, int offset, int length, CancellationToken cancellationToken)
     {
         int bytesToRead = Math.Min(_packetLength, length);
-        Buffer.BlockCopy(receivedBytes, offset, _buffer, 0, bytesToRead);
+        Buffer.BlockCopy(receivedBytes, offset, _buffer, _bytesRead, bytesToRead);
         _bytesRead += bytesToRead;
 
         Console.WriteLine($"handlePacketBytes: Read {bytesToRead} bytes from packet");
@@ -197,7 +197,7 @@ public class FCastSession : IDisposable
 
             if (length > bytesToRead)
             {
-                await HandleLengthBytesAsync(receivedBytes, bytesToRead, length - bytesToRead, cancellationToken);
+                await HandleLengthBytesAsync(receivedBytes, offset + bytesToRead, length - bytesToRead, cancellationToken);
             }
         }
     }
