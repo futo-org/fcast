@@ -40,6 +40,6 @@ window.electronAPI.onDeviceInfo((_event, value) => {
         height: 256,
         colorDark : "#000000",
         colorLight : "#ffffff",
-        correctLevel : QRCode.CorrectLevel.H
+        correctLevel : QRCode.CorrectLevel.M
     });
 });
