@@ -10,8 +10,16 @@ const player = videojs("video-player", options, function onPlayerReady() {
 });
 
 
-window.electronAPI.onDeviceInfo((_event, value) => {
-    console.log("onDeviceInfo", value);
+window.electronAPI.onDeviceInfo(renderIPsAndQRCode);
+
+if(window.electronAPI.getDeviceInfo()) {
+    console.log("device info already present");
+    renderIPsAndQRCode();
+} 
+
+function renderIPsAndQRCode() {
+    const value = window.electronAPI.getDeviceInfo();
+    console.log("device info", value);
 
     const ipsElement = document.getElementById('ips');
     if (ipsElement) {
@@ -42,4 +50,4 @@ window.electronAPI.onDeviceInfo((_event, value) => {
         colorLight : "#ffffff",
         correctLevel : QRCode.CorrectLevel.M
     });
-});
+}
