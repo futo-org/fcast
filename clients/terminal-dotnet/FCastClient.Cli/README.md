@@ -51,3 +51,8 @@ cat dash.mpd | ./fcast -h localhost play --mime_type application/dash+xml
 # Set speed to double
 ./fcast -h localhost setspeed -s 2.0
 ```
+
+If you want to use commands using `dotnet run` do it as follows:
+```
+dotnet run -- -h localhost play --mime_type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
+```
