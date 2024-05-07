@@ -4,10 +4,10 @@ FCast is a protocol designed for wireless streaming of audio and video content b
 
 # Building
 
-Setup a rust development environment and type:
+Setup a C# development environment and type:
 
 ```
-cargo build
+dotnet build
 ```
 
 # Usage
