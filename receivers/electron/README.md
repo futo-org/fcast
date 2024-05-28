@@ -98,6 +98,15 @@ Run the following commands in the `packaging` directory.
 sh package-macos.sh darwin-x64
 ```
 
+
+## Linux ARM64
+
+Run the following commands in the `packaging` directory.
+
+```
+sh package.sh linux-arm64
+```
+
 ## Linux x64
 
 Run the following commands in the `packaging` directory.
