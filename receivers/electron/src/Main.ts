@@ -11,9 +11,11 @@ import * as http from 'http';
 import * as url from 'url';
 import { AddressInfo } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
 
 export default class Main {
-    static shouldOpenMainWindow = true; 
+    static shouldOpenMainWindow = true;
     static playerWindow: Electron.BrowserWindow;
     static mainWindow: Electron.BrowserWindow;
     static application: Electron.App;
@@ -51,7 +53,7 @@ export default class Main {
                             });
 
                             console.log('Update completed');
-                        
+
                             // Restart the app if the user clicks the 'Restart' button
                             if (restartPrompt.response === 0) {
                                 Main.application.relaunch();
@@ -96,7 +98,7 @@ export default class Main {
                 }
             }
         ])
-        
+
         tray.setContextMenu(contextMenu);
         this.tray = tray;
     }
@@ -106,7 +108,7 @@ export default class Main {
 
         Main.discoveryService = new DiscoveryService();
         Main.discoveryService.start();
-        
+
         Main.tcpListenerService = new TcpListenerService();
         Main.webSocketListenerService = new WebSocketListenerService();
 
@@ -121,10 +123,10 @@ export default class Main {
                             preload: path.join(__dirname, 'player/preload.js')
                         }
                     });
-    
+
                     Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
                     Main.playerWindow.show();
-            
+
                     Main.playerWindow.loadFile(path.join(__dirname, 'player/index.html'));
                     Main.playerWindow.on('ready-to-show', async () => {
                         Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
@@ -132,19 +134,21 @@ export default class Main {
                     Main.playerWindow.on('closed', () => {
                         Main.playerWindow = null;
                     });
+
+                    // Main.playerWindow?.webContents?.openDevTools();
                 } else {
                     Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
-                }            
+                }
             });
-            
+
             l.emitter.on("pause", () => Main.playerWindow?.webContents?.send("pause"));
             l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
-    
+
             l.emitter.on("stop", () => {
                 Main.playerWindow.close();
                 Main.playerWindow = null;
             });
-    
+
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
             l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
@@ -157,7 +161,7 @@ export default class Main {
             ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
                 l.send(Opcode.PlaybackUpdate, value);
             });
-    
+
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
             });
@@ -198,7 +202,7 @@ export default class Main {
                     const requestUrl = `http://${req.headers.host}${req.url}`;
 
                     const proxyInfo = Main.proxiedFiles.get(requestUrl);
-        
+
                     if (!proxyInfo) {
                         res.writeHead(404);
                         res.end('Not found');
@@ -215,8 +219,8 @@ export default class Main {
                         'trailers',
                         'transfer-encoding',
                         'upgrade'
-                    ]);                    
-       
+                    ]);
+
                     const filteredHeaders = Object.fromEntries(Object.entries(req.headers)
                         .filter(([key]) => !omitHeaders.has(key.toLowerCase()))
                         .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value]));
@@ -232,7 +236,7 @@ export default class Main {
                         res.writeHead(proxyRes.statusCode, proxyRes.headers);
                         proxyRes.pipe(res, { end: true });
                     });
-        
+
                     req.pipe(proxyReq, { end: true });
                     proxyReq.on('error', (e) => {
                         console.error(`Problem with request: ${e.message}`);
@@ -281,18 +285,18 @@ export default class Main {
     static getAllIPv4Addresses() {
         const interfaces = os.networkInterfaces();
         const ipv4Addresses: string[] = [];
-    
+
         for (const interfaceName in interfaces) {
             const addresses = interfaces[interfaceName];
             if (!addresses) continue;
-    
+
             for (const addressInfo of addresses) {
                 if (addressInfo.family === 'IPv4' && !addressInfo.internal) {
                     ipv4Addresses.push(addressInfo.address);
                 }
             }
         }
-    
+
         return ipv4Addresses;
     }
 
@@ -322,15 +326,22 @@ export default class Main {
         Main.mainWindow.on('ready-to-show', () => {
             Main.mainWindow.webContents.send("device-info", {name: os.hostname(), addresses: Main.getAllIPv4Addresses()});
         });
-    }    
+
+        // Main.mainWindow.webContents.openDevTools();
+    }
 
     static main(app: Electron.App) {
         Main.application = app;
-        const argv = process.argv;
-        if (argv.includes('--no-main-window')) {
-            Main.shouldOpenMainWindow = false;
-        }
+        const argv = yargs(hideBin(process.argv))
+            .parserConfiguration({
+                'boolean-negation': false
+            })
+            .options({
+                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" }
+            })
+            .parseSync();
 
+        Main.shouldOpenMainWindow = !argv.noMainWindow;
         Main.application.on('ready', Main.onReady);
         Main.application.on('window-all-closed', () => { });
     }
