@@ -1,7 +1,17 @@
-buildAndDeployElectron:
+
+buildMacOs:
   stage: buildAndDeployElectron
   before_script:
     - cd receivers/electron
+  script:
+    - npm install
+    - npm run make --arch arm64
+  when: manual
+
+deploy:
+  stage: buildAndDeployElectron
+  # before_script:
+  #   - cd receivers/electron
   script:
     - sh deploy.sh
   when: manual
