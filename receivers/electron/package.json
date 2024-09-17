@@ -7,10 +7,20 @@
   "license": "MIT",
   "scripts": {
     "build": "rm -rf dist/ && webpack --config ./webpack.config.js && cp -r src/player dist/player && cp -r src/main dist/main && cp app.ico dist/ && cp app.png dist/",
-    "start": "npm run build && electron .",
-    "test": "jest"
+    "start": "electron-forge start",
+    "test": "jest",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
   },
   "devDependencies": {
+    "@electron-forge/cli": "^7.4.0",
+    "@electron-forge/maker-deb": "^7.4.0",
+    "@electron-forge/maker-rpm": "^7.4.0",
+    "@electron-forge/maker-squirrel": "^7.4.0",
+    "@electron-forge/maker-zip": "^7.4.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.4.0",
+    "@electron-forge/plugin-fuses": "^7.4.0",
+    "@electron/fuses": "^1.8.0",
     "@eslint/js": "^9.10.0",
     "@types/jest": "^29.5.11",
     "@types/mdns": "^0.0.38",
@@ -32,6 +42,7 @@
   "dependencies": {
     "@types/yargs": "^17.0.33",
     "bufferutil": "^4.0.8",
+    "electron-squirrel-startup": "^1.0.1",
     "http": "^0.0.1-security",
     "https": "^1.0.0",
     "qrcode": "^1.5.3",
