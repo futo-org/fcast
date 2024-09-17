@@ -6,6 +6,8 @@ buildMacOs:
   before_script:
     - cd receivers/electron
   script:
+    - /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    - brew install npm
     - npm install
     - npm run make --arch arm64
   when: manual
