@@ -1,6 +1,8 @@
 
 buildMacOs:
   stage: buildAndDeployElectron
+  tags:
+    - m1-macos
   before_script:
     - cd receivers/electron
   script:
