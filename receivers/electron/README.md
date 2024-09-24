@@ -12,7 +12,7 @@ The FCast receiver is a working receiver implementation compatible with Linux, W
 
 The protocol specification can be found here https://gitlab.com/futo-org/fcast/-/wikis/home
 
-# Clients
+# Senders
 
 # Receivers
 
