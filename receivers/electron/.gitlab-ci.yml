@@ -8,7 +8,8 @@ buildMacOs:
   script:
     - npm install
     - npm run build
-    - npm run make --arch arm64
+    - npm run package -- --arch="arm64"
+    - npm run make -- --arch="arm64"
   when: manual
 
 deploy:
