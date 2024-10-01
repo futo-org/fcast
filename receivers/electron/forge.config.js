@@ -6,29 +6,29 @@ module.exports = {
     asar: true,
     osxSign: {},
     osxNotarize: {
-      appleApiKey: process.env.APPLE_API_KEY,
-      appleApiKeyId: process.env.APPLE_API_KEY_ID,
-      appleApiIssuer: process.env.APPLE_API_ISSUER
+      appleApiKey: process.env.FCAST_APPLE_API_KEY,
+      appleApiKeyId: process.env.FCAST_APPLE_API_KEY_ID,
+      appleApiIssuer: process.env.FCAST_APPLE_API_ISSUER
     }
   },
   rebuildConfig: {},
   makers: [
-    {
-      name: '@electron-forge/maker-squirrel',
-      config: {},
-    },
+    // {
+    //   name: '@electron-forge/maker-squirrel',
+    //   config: {},
+    // },
     {
       name: '@electron-forge/maker-zip',
       platforms: ['win32', 'darwin', 'linux'],
     },
-    {
-      name: '@electron-forge/maker-deb',
-      config: {},
-    },
-    {
-      name: '@electron-forge/maker-rpm',
-      config: {},
-    },
+    // {
+    //   name: '@electron-forge/maker-deb',
+    //   config: {},
+    // },
+    // {
+    //   name: '@electron-forge/maker-rpm',
+    //   config: {},
+    // },
   ],
   plugins: [
     {
