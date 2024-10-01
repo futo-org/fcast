@@ -4,8 +4,8 @@
 
 # Build content
 
-echo "CI testing setup"
-pwd
+# echo "CI testing setup"
+# pwd
 
 # echo "Building content..."
 # npm install
