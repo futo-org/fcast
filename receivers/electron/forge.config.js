@@ -4,7 +4,9 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 module.exports = {
   packagerConfig: {
     asar: true,
-    osxSign: {},
+    osxSign: {
+      "identity": process.env.FCAST_APPLE_SIGN_ID
+    },
     osxNotarize: {
       appleApiKey: process.env.FCAST_APPLE_API_KEY,
       appleApiKeyId: process.env.FCAST_APPLE_API_KEY_ID,
