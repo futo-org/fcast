@@ -5,7 +5,7 @@ module.exports = {
   packagerConfig: {
     asar: true,
     osxSign: {
-      "identity": process.env.FCAST_SIGN_ID
+      "identity": process.env.FCAST_APPLE_SIGN_ID
     },
     osxNotarize: {
       appleApiKey: process.env.FCAST_APPLE_API_KEY,
