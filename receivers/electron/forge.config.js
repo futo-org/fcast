@@ -8,9 +8,10 @@ module.exports = {
       "identity": process.env.FCAST_APPLE_SIGN_ID
     },
     osxNotarize: {
-      appleApiKey: process.env.FCAST_APPLE_API_KEY,
-      appleApiKeyId: process.env.FCAST_APPLE_API_KEY_ID,
-      appleApiIssuer: process.env.FCAST_APPLE_API_ISSUER
+      keychainProfile: "codesign"
+      // appleApiKey: process.env.FCAST_APPLE_API_KEY,
+      // appleApiKeyId: process.env.FCAST_APPLE_API_KEY_ID,
+      // appleApiIssuer: process.env.FCAST_APPLE_API_ISSUER
     }
   },
   rebuildConfig: {},
