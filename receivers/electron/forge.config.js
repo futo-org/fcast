@@ -5,13 +5,13 @@ module.exports = {
   packagerConfig: {
     asar: true,
     osxSign: {
-      "identity": process.env.FCAST_APPLE_SIGN_ID
+      // "identity": process.env.FCAST_APPLE_SIGN_ID
     },
     osxNotarize: {
-      keychainProfile: "codesign"
-      // appleApiKey: process.env.FCAST_APPLE_API_KEY,
-      // appleApiKeyId: process.env.FCAST_APPLE_API_KEY_ID,
-      // appleApiIssuer: process.env.FCAST_APPLE_API_ISSUER
+      // keychainProfile: "codesign"
+      appleApiKey: process.env.FCAST_APPLE_API_KEY,
+      appleApiKeyId: process.env.FCAST_APPLE_API_KEY_ID,
+      appleApiIssuer: process.env.FCAST_APPLE_API_ISSUER
     }
   },
   rebuildConfig: {},
