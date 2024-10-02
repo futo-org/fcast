@@ -5,6 +5,7 @@ buildMacOs:
     - m1-macos
   before_script:
     - cd receivers/electron
+    - security unlock-keychain -p "$KEYCHAIN_CODESIGN_PASSWORD" "$HOME/Library/Keychains/codesign.keychain-db"
   script:
     - npm install
     - npm run build
