@@ -13,8 +13,7 @@ export class DiscoveryService {
             case "darwin":
                 return cp.execSync("scutil --get ComputerName").toString().trim();
             case "linux":
-                const prettyname = cp.execSync("hostnamectl --pretty").toString().trim();
-                return prettyname === "" ? os.hostname() : prettyname;
+                return os.hostname();
             default:
                 return os.hostname();
         }
