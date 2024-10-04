@@ -1,12 +1,23 @@
 
-buildMacOs:
+buildMac:
   stage: buildAndDeployElectron
   tags:
     - m1-macos
   before_script:
     - cd receivers/electron
-    # - echo testing envrionment variable access $TESTVAR
-    # - security unlock-keychain -p "$KEYCHAIN_CODESIGN_PASSWORD" "$HOME/Library/Keychains/codesign.keychain-db"
+  script:
+    - npm install
+    - npm run build
+    - npm run make -- --platform="darwin" --arch="arm64"
+    - npm run make -- --platform="darwin" --arch="x64"
+  when: manual
+
+buildLinux:
+  stage: buildAndDeployElectron
+  tags:
+    - fcast
+  before_script:
+    - cd receivers/electron
   script:
     - npm install
     - npm run build

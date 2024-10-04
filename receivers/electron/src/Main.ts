@@ -30,7 +30,7 @@ export default class Main {
     static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
 
     private static createTray() {
-        const icon = (process.platform === 'win32') ? path.join(__dirname, 'app.ico') : path.join(__dirname, 'app.png');
+        const icon = (process.platform === 'win32') ? path.join(__dirname, 'icon.ico') : path.join(__dirname, 'icon.png');
         const trayicon = nativeImage.createFromPath(icon)
         const tray = new Tray(trayicon.resize({ width: 16 }));
         const contextMenu = Menu.buildFromTemplate([

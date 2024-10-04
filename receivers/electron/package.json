@@ -6,7 +6,7 @@
   "author": "Koen Jeukendrup",
   "license": "MIT",
   "scripts": {
-    "build": "rm -rf dist/ && webpack --config ./webpack.config.js && cp -r src/player dist/player && cp -r src/main dist/main && cp app.ico dist/ && cp app.png dist/",
+    "build": "rm -rf dist/ && webpack --config ./webpack.config.js && cp -r src/player dist/player && cp -r src/main dist/main && cp assets/icons/icon.ico dist/ && cp assets/icons/icon.png dist/",
     "start": "electron-forge start",
     "test": "jest",
     "package": "electron-forge package",
@@ -27,6 +27,7 @@
     "@types/node-forge": "^1.3.10",
     "@types/workerpool": "^6.1.1",
     "@types/ws": "^8.5.10",
+    "@types/yargs": "^17.0.33",
     "electron": "^22.2.0",
     "eslint": "^9.10.0",
     "globals": "^15.9.0",
@@ -40,12 +41,12 @@
     "webpack-cli": "^5.0.1"
   },
   "dependencies": {
-    "@types/yargs": "^17.0.33",
     "bufferutil": "^4.0.8",
     "electron-squirrel-startup": "^1.0.1",
     "http": "^0.0.1-security",
     "https": "^1.0.0",
     "qrcode": "^1.5.3",
+    "update-electron-app": "^3.0.0",
     "url": "^0.11.3",
     "uuid": "^9.0.1",
     "ws": "^8.14.2",
