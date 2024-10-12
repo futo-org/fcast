@@ -235,7 +235,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let url = result.0;
                     join_handle = Some(result.1);
 
-                    //TODO: Make this work
                     PlayMessage::new(
                        mime_type,
                         Some(url),
@@ -354,8 +353,13 @@ impl ServerState {
 }
 
 fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String, running: &Arc<AtomicBool>) -> Result<(String, thread::JoinHandle<Result<(), String>>), String> {
+    let local_ip_str = if local_ip.is_ipv6() {
+        format!("[{}]", local_ip)
+    } else {
+        format!("{}", local_ip)
+    };
     let server = {
-        let this = Server::http(format!("{}:0", local_ip));
+        let this = Server::http(format!("{local_ip_str}:0"));
         match this {
             Ok(t) => Ok(t),
             Err(e) => Err((|e| format!("Failed to create server: {}", e))(e)),
@@ -363,7 +367,7 @@ fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String,
     }?;
 
     let url = match server.server_addr() {
-        ListenAddr::IP(addr) => format!("http://{}:{}/", local_ip, addr.port()),
+        ListenAddr::IP(addr) => format!("http://{local_ip_str}:{}/", addr.port()),
         #[cfg(unix)]
         ListenAddr::Unix(_) => return Err("Unix socket addresses are not supported.".to_string()),
     };
