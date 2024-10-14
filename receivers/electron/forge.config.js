@@ -6,12 +6,13 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
 const argv = yargs(hideBin(process.argv)).argv;
+// const APPLICATION_NAME = 'FCast Receiver';
+const APPLICATION_NAME = 'fcast-receiver';
 
 module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/icons/icon',
-    name: 'FCast Receiver',
     osxSign: {},
     osxNotarize: {
       appleApiKey: process.env.FCAST_APPLE_API_KEY,
@@ -21,10 +22,16 @@ module.exports = {
   },
   rebuildConfig: {},
   makers: [
-    // {
-    //   name: '@electron-forge/maker-squirrel',
-    //   config: {},
-    // },
+    {
+      name: '@electron-forge/maker-deb',
+      config: {
+        options: {
+          categories: ['AudioVideo', 'Audio', 'Video', 'Network', 'Utility'],
+          homepage: 'https://fcast.org/',
+          icon: './assets/icons/icon.png',
+        }
+      },
+    },
     {
       name: '@electron-forge/maker-dmg',
       config: {
@@ -42,58 +49,97 @@ module.exports = {
         },
         background: './assets/images/background.png',
         contents: [
-          { 'x': 90, 'y': 350, 'type': 'file', 'path': `out/FCast Receiver-darwin-${argv.arch}/FCast Receiver.app` },
+          { 'x': 90, 'y': 350, 'type': 'file', 'path': `out/${APPLICATION_NAME}-darwin-${argv.arch}/${APPLICATION_NAME}.app` },
           { 'x': 360, 'y': 350, 'type': 'link', 'path': '/Applications' },
           { 'x': 0, 'y': 540, 'type': 'position', 'path': '.background' },
           { 'x': 120, 'y': 540, 'type': 'position', 'path': '.VolumeIcon.icns' }
         ],
         format: 'ULFO',
         icon: './assets/icons/icon.icns',
-        name: 'FCast Receiver'
+        name: APPLICATION_NAME
+      }
+    },
+    {
+      name: '@electron-forge/maker-rpm',
+      config: {
+        options: {
+          categories: ['AudioVideo', 'Audio', 'Video', 'Network', 'Utility'],
+          homepage: 'https://fcast.org/',
+          icon: './assets/icons/icon.png',
+          license: 'GPL-3.0+',
+        }
+      },
+    },
+    {
+      name: '@electron-forge/maker-squirrel',
+      config: {
+        loadingGif: './assets/images/installing.gif'
       }
     },
     {
       name: '@electron-forge/maker-zip',
-      platforms: ['win32', 'darwin', 'linux'],
       config: {}
     },
-    // {
-
-    //   name: '@electron-forge/maker-deb',
-    //   config: {},
-    // },
-    // {
-    //   name: '@electron-forge/maker-rpm',
-    //   config: {},
-    // },
   ],
   hooks: {
     postMake: async (forgeConfig, makeResults) => {
       makeResults.forEach(e => {
         // Standardize artifact output naming
         switch (e.platform) {
-          case "win32":
-            break;
-          case "darwin": {
-            let artifactName = 'FCast Receiver.dmg';
-            if (fs.existsSync(`./out/make/${artifactName}`)) {
-              fs.renameSync(`./out/make/${artifactName}`, `./out/make/FCast-Receiver-${e.packageJSON.version}-macOS-${e.arch}.dmg`);
+          case "win32": {
+            let artifactName = `${APPLICATION_NAME}-win32-${e.arch}-${e.packageJSON.version}.zip`;
+            if (fs.existsSync(`./out/make/zip/win32/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/zip/win32/${e.arch}/${artifactName}`, `./out/make/zip/win32/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}.zip`);
             }
 
-            artifactName = 'FCast Receiver-darwin-arm64-1.0.14.zip';
-            if (fs.existsSync(`./out/make/zip/darwin/arm64/${artifactName}`)) {
-              fs.renameSync(`./out/make/zip/darwin/arm64/${artifactName}`, `./out/make/zip/darwin/arm64/FCast-Receiver-${e.packageJSON.version}-macOS-${e.arch}.zip`);
-            }
-
-            artifactName = 'FCast Receiver-darwin-x64-1.0.14.zip';
-            if (fs.existsSync(`./out/make/zip/darwin/x64/${artifactName}`)) {
-              fs.renameSync(`./out/make/zip/darwin/x64/${artifactName}`, `./out/make/zip/darwin/x64/FCast-Receiver-${e.packageJSON.version}-macOS-${e.arch}.zip`);
+            artifactName = `${APPLICATION_NAME}-${e.packageJSON.version} Setup.exe`;
+            if (fs.existsSync(`./out/make/zip/squirrel.windows/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/zip/squirrel.windows/${e.arch}/${artifactName}`, `./out/make/zip/squirrel.windows/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}-setup.exe`);
             }
 
             break;
           }
-          case "linux":
+          case "darwin": {
+            let artifactName = `${APPLICATION_NAME}.dmg`;
+            if (fs.existsSync(`./out/make/${artifactName}`)) {
+              fs.renameSync(`./out/make/${artifactName}`, `./out/make/FCast-Receiver-${e.packageJSON.version}-macOS-${e.arch}.dmg`);
+            }
+
+            artifactName = `${APPLICATION_NAME}-darwin-${e.arch}-${e.packageJSON.version}.zip`;
+            if (fs.existsSync(`./out/make/zip/darwin/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/zip/darwin/${e.arch}/${artifactName}`, `./out/make/zip/darwin/${e.arch}/FCast-Receiver-${e.packageJSON.version}-macOS-${e.arch}.zip`);
+            }
+
             break;
+          }
+          case "linux": {
+            let artifactName = `${APPLICATION_NAME}-linux-${e.arch}-${e.packageJSON.version}.zip`;
+            if (fs.existsSync(`./out/make/zip/linux/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/zip/linux/${e.arch}/${artifactName}`, `./out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.zip`);
+            }
+
+            artifactName = `${APPLICATION_NAME}_${e.packageJSON.version}_amd64.deb`
+            if (fs.existsSync(`./out/make/deb/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/deb/${e.arch}/${artifactName}`, `./out/make/deb/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.deb`);
+            }
+
+            artifactName = `${APPLICATION_NAME}_${e.packageJSON.version}_arm64.deb`
+            if (fs.existsSync(`./out/make/deb/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/deb/${e.arch}/${artifactName}`, `./out/make/deb/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.deb`);
+            }
+
+            artifactName = `${APPLICATION_NAME}-${e.packageJSON.version}-1.x86_64.rpm`
+            if (fs.existsSync(`./out/make/rpm/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/rpm/${e.arch}/${artifactName}`, `./out/make/rpm/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.rpm`);
+            }
+
+            artifactName = `${APPLICATION_NAME}-${e.packageJSON.version}-1.arm64.rpm`
+            if (fs.existsSync(`./out/make/rpm/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/rpm/${e.arch}/${artifactName}`, `./out/make/rpm/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.rpm`);
+            }
+
+            break;
+          }
           default:
             break;
         }
