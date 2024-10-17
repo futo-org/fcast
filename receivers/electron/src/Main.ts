@@ -119,6 +119,7 @@ export default class Main {
                     Main.playerWindow = new BrowserWindow({
                         fullscreen: true,
                         autoHideMenuBar: true,
+                        icon: path.join(__dirname, 'icon512.png'),
                         webPreferences: {
                             preload: path.join(__dirname, 'player/preload.js')
                         }
@@ -134,8 +135,6 @@ export default class Main {
                     Main.playerWindow.on('closed', () => {
                         Main.playerWindow = null;
                     });
-
-                    // Main.playerWindow?.webContents?.openDevTools();
                 } else {
                     Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
                 }
@@ -309,6 +308,7 @@ export default class Main {
         Main.mainWindow = new BrowserWindow({
             fullscreen: true,
             autoHideMenuBar: true,
+            icon: path.join(__dirname, 'icon512.png'),
             minWidth: 500,
             minHeight: 920,
             webPreferences: {
@@ -326,8 +326,6 @@ export default class Main {
         Main.mainWindow.on('ready-to-show', () => {
             Main.mainWindow.webContents.send("device-info", {name: os.hostname(), addresses: Main.getAllIPv4Addresses()});
         });
-
-        // Main.mainWindow.webContents.openDevTools();
     }
 
     static main(app: Electron.App) {

@@ -6,8 +6,8 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
 const argv = yargs(hideBin(process.argv)).argv;
-// const APPLICATION_NAME = 'FCast Receiver';
 const APPLICATION_NAME = 'fcast-receiver';
+const APPLICATION_TITLE = 'FCast Receiver';
 
 module.exports = {
   packagerConfig: {
@@ -66,14 +66,21 @@ module.exports = {
           categories: ['AudioVideo', 'Audio', 'Video', 'Network', 'Utility'],
           homepage: 'https://fcast.org/',
           icon: './assets/icons/icon.png',
-          license: 'GPL-3.0+',
+          license: 'MIT',
         }
       },
     },
+    // Same as '@electron-forge/maker-wix', except linux compatible
     {
-      name: '@electron-forge/maker-squirrel',
+      name: '@futo/forge-maker-wix-linux',
       config: {
-        loadingGif: './assets/images/installing.gif'
+        arch: 'x64',
+        appUserModelId: `org.futo.${APPLICATION_NAME}`,
+        // signing TBD
+        icon: './assets/icons/icon.ico',
+        name: APPLICATION_TITLE,
+        programFilesFolderName: APPLICATION_TITLE,
+        shortcutName: APPLICATION_TITLE,
       }
     },
     {
@@ -92,9 +99,9 @@ module.exports = {
               fs.renameSync(`./out/make/zip/win32/${e.arch}/${artifactName}`, `./out/make/zip/win32/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}.zip`);
             }
 
-            artifactName = `${APPLICATION_NAME}-${e.packageJSON.version} Setup.exe`;
-            if (fs.existsSync(`./out/make/zip/squirrel.windows/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/zip/squirrel.windows/${e.arch}/${artifactName}`, `./out/make/zip/squirrel.windows/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}-setup.exe`);
+            artifactName = `${APPLICATION_NAME}.msi`;
+            if (fs.existsSync(`./out/make/wix/${e.arch}/${artifactName}`)) {
+              fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, `./out/make/wix/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}-setup.msi`);
             }
 
             break;
