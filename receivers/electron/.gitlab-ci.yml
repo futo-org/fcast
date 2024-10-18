@@ -13,12 +13,13 @@ buildMac:
   when: manual
 
 buildLinux:
+  image: node:latest
   stage: buildAndDeployElectron
   tags:
     - fcast
   before_script:
     - cd receivers/electron
-    - apt-get update -qq && apt-get install -y -qq node wine rpm p7zip-full unzip
+    - apt install wine rpm p7zip-full unzip -y
     - export WINEPATH="/root/wix314-binaries/"
   script:
     - npm install
