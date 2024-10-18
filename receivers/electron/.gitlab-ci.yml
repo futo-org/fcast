@@ -19,7 +19,8 @@ buildWindowsAndLinux:
     - fcast
   before_script:
     - cd receivers/electron
-    - apt update && apt install -y zip dpkg fakeroot rpm wine mono-devel wget unzip
+    - dpkg --add-architecture i386
+    - apt update && apt install -y zip dpkg fakeroot rpm wine wine32:i386 mono-devel wget unzip
     - wget https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
     - unzip wix314-binaries.zip -d wix314-binaries
     # p7zip-full
