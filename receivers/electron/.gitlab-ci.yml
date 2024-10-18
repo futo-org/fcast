@@ -18,6 +18,7 @@ buildLinux:
     - fcast
   before_script:
     - cd receivers/electron
+    - apt install wine rpm p7zip-full unzip -y
     - export WINEPATH="/root/wix314-binaries/"
   script:
     - npm install
