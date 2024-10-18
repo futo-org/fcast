@@ -19,7 +19,7 @@ buildWindowsAndLinux:
     - fcast
   before_script:
     - cd receivers/electron
-    - apt update && apt install -y dpkg fakeroot rpm
+    - apt update && apt install -y zip dpkg fakeroot rpm
     #wine p7zip-full unzip
     - export WINEPATH="/root/wix314-binaries/"
   script:
