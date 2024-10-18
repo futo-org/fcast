@@ -18,6 +18,7 @@ buildLinux:
     - fcast
   before_script:
     - cd receivers/electron
+    - export WINEPATH="/root/wix314-binaries/"
   script:
     - npm install
     - npm run build
