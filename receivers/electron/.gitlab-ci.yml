@@ -12,14 +12,15 @@ buildMac:
     - npm run make -- --platform="darwin" --arch="x64"
   when: manual
 
-buildLinux:
+buildWindowsAndLinux:
   image: node:latest
   stage: buildAndDeployElectron
   tags:
     - fcast
   before_script:
     - cd receivers/electron
-    - apt update && apt install -y wine rpm p7zip-full unzip
+    - apt update && apt install -y dpkg fakeroot rpm
+    #wine p7zip-full unzip
     - export WINEPATH="/root/wix314-binaries/"
   script:
     - npm install

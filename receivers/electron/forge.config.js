@@ -1,6 +1,7 @@
 const fs = require('fs');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
+const extract = require('extract-zip')
 
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
@@ -71,18 +72,18 @@ module.exports = {
       },
     },
     // Same as '@electron-forge/maker-wix', except linux compatible
-    {
-      name: '@futo/forge-maker-wix-linux',
-      config: {
-        arch: 'x64',
-        appUserModelId: `org.futo.${APPLICATION_NAME}`,
-        // signing TBD
-        icon: './assets/icons/icon.ico',
-        name: APPLICATION_TITLE,
-        programFilesFolderName: APPLICATION_TITLE,
-        shortcutName: APPLICATION_TITLE,
-      }
-    },
+    // {
+    //   name: '@futo/forge-maker-wix-linux',
+    //   config: {
+    //     arch: 'x64',
+    //     appUserModelId: `org.futo.${APPLICATION_NAME}`,
+    //     // signing TBD
+    //     icon: './assets/icons/icon.ico',
+    //     name: APPLICATION_TITLE,
+    //     programFilesFolderName: APPLICATION_TITLE,
+    //     shortcutName: APPLICATION_TITLE,
+    //   }
+    // },
     {
       name: '@electron-forge/maker-zip',
       config: {}
@@ -90,7 +91,7 @@ module.exports = {
   ],
   hooks: {
     postMake: async (forgeConfig, makeResults) => {
-      makeResults.forEach(e => {
+      for (const e of makeResults) {
         // Standardize artifact output naming
         switch (e.platform) {
           case "win32": {
@@ -122,6 +123,10 @@ module.exports = {
           case "linux": {
             let artifactName = `${APPLICATION_NAME}-linux-${e.arch}-${e.packageJSON.version}.zip`;
             if (fs.existsSync(`./out/make/zip/linux/${e.arch}/${artifactName}`)) {
+              // note regarding ubuntu issue
+              // await extract(`./out/make/zip/linux/${e.arch}/${artifactName}`, { dir: `${process.cwd()}/out/make/zip/linux/${e.arch}/` });
+              // fs.chownSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 0, 0);
+              // fs.chmodSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 4755);
               fs.renameSync(`./out/make/zip/linux/${e.arch}/${artifactName}`, `./out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.zip`);
             }
 
@@ -150,7 +155,7 @@ module.exports = {
           default:
             break;
         }
-      });
+      }
     }
   },
   plugins: [
@@ -168,6 +173,7 @@ module.exports = {
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
       [FuseV1Options.OnlyLoadAppFromAsar]: true,
+
     }),
   ],
 };
