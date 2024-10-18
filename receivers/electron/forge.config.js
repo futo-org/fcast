@@ -72,18 +72,18 @@ module.exports = {
       },
     },
     // Same as '@electron-forge/maker-wix', except linux compatible
-    // {
-    //   name: '@futo/forge-maker-wix-linux',
-    //   config: {
-    //     arch: 'x64',
-    //     appUserModelId: `org.futo.${APPLICATION_NAME}`,
-    //     // signing TBD
-    //     icon: './assets/icons/icon.ico',
-    //     name: APPLICATION_TITLE,
-    //     programFilesFolderName: APPLICATION_TITLE,
-    //     shortcutName: APPLICATION_TITLE,
-    //   }
-    // },
+    {
+      name: '@futo/forge-maker-wix-linux',
+      config: {
+        arch: 'x64',
+        appUserModelId: `org.futo.${APPLICATION_NAME}`,
+        // signing TBD
+        icon: './assets/icons/icon.ico',
+        name: APPLICATION_TITLE,
+        programFilesFolderName: APPLICATION_TITLE,
+        shortcutName: APPLICATION_TITLE,
+      }
+    },
     {
       name: '@electron-forge/maker-zip',
       config: {}
@@ -173,7 +173,6 @@ module.exports = {
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
       [FuseV1Options.OnlyLoadAppFromAsar]: true,
-
     }),
   ],
 };
