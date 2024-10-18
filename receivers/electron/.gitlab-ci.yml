@@ -20,19 +20,18 @@ buildWindowsAndLinux:
   before_script:
     - cd receivers/electron
     - dpkg --add-architecture i386
-    - apt update && apt install -y zip dpkg fakeroot rpm wine wine32:i386 mono-devel wget p7zip-full
-    - wget https://github.com/PietJankbal/Chocolatey-for-wine/releases/download/v0.5a.745/Chocolatey-for-wine.7z
-    - 7za x Chocolatey-for-wine.7z
-    - wine Chocolatey-for-wine/ChoCinstaller_0.5a.745.exe
-    - wine choco install wixtoolset  --version=3.14.1
+    - apt update && apt install -y zip dpkg fakeroot rpm wine64 wine32:i386 mono-devel wget unzip
+    # - ln -s /usr/bin/wine /usr/bin/wine64
+    # - wget https://github.com/PietJankbal/Chocolatey-for-wine/releases/download/v0.5a.745/Chocolatey-for-wine.7z
+    # - 7za x Chocolatey-for-wine.7z
+    # - wine Chocolatey-for-wine/ChoCinstaller_0.5a.745.exe
+    # - wine choco install wixtoolset  --version=3.14.1
     # p7zip-full
     # unzip
-    # - wget https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
-    # - unzip wix314-binaries.zip -d wix314-binaries
-
-    # - ln -s /usr/bin/wine /usr/bin/wine64
-    # - export WINEPATH="wix314-binaries/"
-    - export WINEPATH="/root/.wine/drive_c/Program Files (x86)/WiX Toolset v3.14/bin/"
+    - wget https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
+    - unzip wix314-binaries.zip -d wix314-binaries
+    - export WINEPATH="wix314-binaries/"
+    # - export WINEPATH="/root/.wine/drive_c/Program Files (x86)/WiX Toolset v3.14/bin/"
   script:
     - npm install
     - npm run build
