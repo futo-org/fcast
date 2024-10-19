@@ -1,6 +1,7 @@
 
-buildDockerContainer:
+buildElectronDockerContainer:
   stage: buildDockerContainers
+  image: docker
   tags:
     - fcast
   before_script:
@@ -32,8 +33,8 @@ buildMac:
   when: manual
 
 buildWindowsAndLinux:
-  image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev
   stage: buildAndDeployElectron
+  image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev
   tags:
     - fcast
   before_script:
