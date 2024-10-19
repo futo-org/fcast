@@ -1,15 +1,17 @@
 
 buildElectronDockerContainer:
   stage: buildDockerContainers
-  image: docker
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
   tags:
     - fcast
   before_script:
     - cd receivers/electron
   script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
-    - docker build -t gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev .
-    - docker push gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/receiver-electron-dev:latest .
+    - docker push $CI_REGISTRY/videostreaming/fcast/receiver-electron-dev:latest
   when: manual
 
 buildMac:
