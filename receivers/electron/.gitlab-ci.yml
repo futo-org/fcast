@@ -13,14 +13,20 @@ buildMac:
   when: manual
 
 buildWindowsAndLinux:
-  image: node:latest
+  image: node:22.10.0-bookworm
   stage: buildAndDeployElectron
   tags:
     - fcast
   before_script:
     - cd receivers/electron
     - dpkg --add-architecture i386
-    - apt update && apt install -y zip dpkg fakeroot rpm wine64 wine32:i386 mono-devel wget unzip
+    - apt update && apt install -y zip dpkg fakeroot rpm wget unzip
+    - mkdir -pm755 /etc/apt/keyrings
+    - wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+    - wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources
+    - apt update && apt install -y --install-recommends winehq-staging mono-devel
+
+    # - apt update && apt install -y zip dpkg fakeroot rpm wine64 wine32:i386 mono-devel wget unzip
     # - ln -s /usr/bin/wine /usr/bin/wine64
     # - wget https://github.com/PietJankbal/Chocolatey-for-wine/releases/download/v0.5a.745/Chocolatey-for-wine.7z
     # - 7za x Chocolatey-for-wine.7z
@@ -36,6 +42,7 @@ buildWindowsAndLinux:
     - npm install
     - npm run build
     - npm run make -- --platform="win32" --arch="x64"
+
     # - npm run make -- --platform="linux" --arch="x64"
     # - npm run make -- --platform="linux" --arch="arm64"
   when: manual
