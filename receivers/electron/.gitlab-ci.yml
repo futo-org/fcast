@@ -1,4 +1,13 @@
 
+buildDockerContainer:
+  tags:
+    - fcast
+  before_script:
+    - cd receivers/electron
+  script:
+    - docker build -t gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev .
+    - docker push gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev
+
 buildMac:
   stage: buildAndDeployElectron
   tags:
@@ -10,47 +19,44 @@ buildMac:
     - npm run build
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - out/make/*
   when: manual
 
 buildWindowsAndLinux:
-  image: node:22.10.0-bookworm
+  image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev
   stage: buildAndDeployElectron
   tags:
     - fcast
   before_script:
     - cd receivers/electron
-    - dpkg --add-architecture i386
-    - apt update && apt install -y zip dpkg fakeroot rpm wget unzip
-    - mkdir -pm755 /etc/apt/keyrings
-    - wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
-    - wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources
-    - apt update && apt install -y --install-recommends winehq-staging mono-devel
-
-    # - apt update && apt install -y zip dpkg fakeroot rpm wine64 wine32:i386 mono-devel wget unzip
-    # - ln -s /usr/bin/wine /usr/bin/wine64
-    # - wget https://github.com/PietJankbal/Chocolatey-for-wine/releases/download/v0.5a.745/Chocolatey-for-wine.7z
-    # - 7za x Chocolatey-for-wine.7z
-    # - wine Chocolatey-for-wine/ChoCinstaller_0.5a.745.exe
-    # - wine choco install wixtoolset  --version=3.14.1
-    # p7zip-full
-    # unzip
-    - wget https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
-    - unzip wix314-binaries.zip -d wix314-binaries
-    - export WINEPATH="/wix314-binaries/"
-    # - export WINEPATH="/root/.wine/drive_c/Program Files (x86)/WiX Toolset v3.14/bin/"
   script:
     - npm install
     - npm run build
     - npm run make -- --platform="win32" --arch="x64"
-
-    # - npm run make -- --platform="linux" --arch="x64"
-    # - npm run make -- --platform="linux" --arch="arm64"
+    - npm run make -- --platform="linux" --arch="x64"
+    - npm run make -- --platform="linux" --arch="arm64"
+    # todo: upload artifacts to s3 if release or rc
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - out/make/*
+    exclude:
+      - out/make/wix/x64/*.w*
   when: manual
 
 deploy:
   stage: buildAndDeployElectron
-  # before_script:
-  #   - cd receivers/electron
+  before_script:
+    - cd receivers/electron
   script:
-    - sh deploy.sh
+    - python scripts/deploy.py
   when: manual
