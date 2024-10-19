@@ -36,7 +36,7 @@ buildWindowsAndLinux:
     # unzip
     - wget https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
     - unzip wix314-binaries.zip -d wix314-binaries
-    - export WINEPATH="wix314-binaries/"
+    - export WINEPATH="/wix314-binaries/"
     # - export WINEPATH="/root/.wine/drive_c/Program Files (x86)/WiX Toolset v3.14/bin/"
   script:
     - npm install
