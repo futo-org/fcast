@@ -1,5 +1,6 @@
 
 buildDockerContainer:
+  stage: buildDockerContainers
   tags:
     - fcast
   before_script:
