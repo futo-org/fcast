@@ -40,7 +40,8 @@ buildWindowsAndLinux:
   tags:
     - fcast
   variables:
-    - UPLOAD_TO_S3: "false"
+    UPLOAD_TO_S3:
+      value: "false"
   before_script:
     - cd receivers/electron
   script:
