@@ -25,6 +25,7 @@ buildMac:
     - npm run build
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
+    - cp -f out/make/* /artifacts/
   artifacts:
     untracked: false
     when: on_success
@@ -39,9 +40,6 @@ buildWindowsAndLinux:
   image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev:latest
   tags:
     - fcast
-  variables:
-    UPLOAD_TO_S3:
-      value: "false"
   before_script:
     - cd receivers/electron
   script:
@@ -50,7 +48,7 @@ buildWindowsAndLinux:
     - npm run make -- --platform="win32" --arch="x64"
     - npm run make -- --platform="linux" --arch="x64"
     - npm run make -- --platform="linux" --arch="arm64"
-    # todo: upload artifacts to s3 if release or rc
+    - cp -f out/make/* /artifacts/
   artifacts:
     untracked: false
     when: on_success
@@ -64,8 +62,15 @@ buildWindowsAndLinux:
 
 deploy:
   stage: buildAndDeployElectron
+  image: python:3.12.7-bookworm
+  tags:
+    - fcast
+  # dependencies:
+  #   - buildMac
+  #   - buildWindowsAndLinux
   before_script:
     - cd receivers/electron
+    - apt update && apt install -y python3-boto3
   script:
     - python scripts/deploy.py
   when: manual
