@@ -30,21 +30,23 @@ list_response = s3.list_objects_v2(Bucket=BUCKET_NAME)
 bucket_files = list_response.get('Contents', [])
 
 def copy_artifacts_to_local_cache():
+    print('Copying artifacts to cache...')
     dst = os.path.join(LOCAL_CACHE_DIR, 'temp')
     shutil.copytree('/artifacts', f'{dst}', dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
 
 # TODO: do partial sync to prevent downloading full bucket (only what is needed for delta updates and purge old files
 def sync_local_cache():
+    print('Syncing local cache with s3...')
     local_files = []
-    for _, _, files in os.walk(LOCAL_CACHE_DIR):
+    for root, _, files in os.walk(LOCAL_CACHE_DIR):
         for filename in files:
-            local_files.append(filename)
+            local_files.append(os.path.relpath(os.path.join(root, filename), LOCAL_CACHE_DIR))
 
     for obj in bucket_files:
         filename = obj['Key']
         save_path = os.path.join(LOCAL_CACHE_DIR, filename)
 
-        if os.path.basename(filename) not in local_files:
+        if filename not in local_files:
             print(f'Downloading file: {filename}')
             get_response = s3.get_object(Bucket=BUCKET_NAME, Key=filename)
 
@@ -53,13 +55,14 @@ def sync_local_cache():
                 file.write(get_response['Body'].read())
 
 def upload_local_cache():
+    print('Uploading local cache to s3...')
     local_files = []
     for root, _, files in os.walk(LOCAL_CACHE_DIR):
         for filename in files:
             local_files.append(os.path.relpath(os.path.join(root, filename), LOCAL_CACHE_DIR))
 
     for file_path in local_files:
-        if file_path not in map(lambda x: os.path.basename(x['Key']), bucket_files):
+        if file_path not in map(lambda x: x['Key'], bucket_files):
             print(f'Uploading file: {file_path}')
 
             with open(os.path.join(LOCAL_CACHE_DIR, file_path), 'rb') as file:
