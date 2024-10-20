@@ -72,5 +72,5 @@ deploy:
     - cd receivers/electron
     - apt update && apt install -y python3-boto3
   script:
-    - python scripts/deploy.py
+    - python3 scripts/deploy.py
   when: manual
