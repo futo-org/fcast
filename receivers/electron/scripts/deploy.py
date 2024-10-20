@@ -31,7 +31,7 @@ bucket_files = list_response.get('Contents', [])
 
 def copy_artifacts_to_local_cache():
     dst = os.path.join(LOCAL_CACHE_DIR, 'temp')
-    shutil.copytree('/artifacts', f'{dst}', dirs_exist_ok=True)
+    shutil.copytree('/artifacts', f'{dst}', dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
 
 # TODO: do partial sync to prevent downloading full bucket (only what is needed for delta updates and purge old files
 def sync_local_cache():
@@ -59,7 +59,7 @@ def upload_local_cache():
             local_files.append(os.path.relpath(os.path.join(root, filename), LOCAL_CACHE_DIR))
 
     for file_path in local_files:
-        if os.path.basename(file_path) not in map(lambda x: os.path.basename(x['Key']), bucket_files):
+        if file_path not in map(lambda x: os.path.basename(x['Key']), bucket_files):
             print(f'Uploading file: {file_path}')
 
             with open(os.path.join(LOCAL_CACHE_DIR, file_path), 'rb') as file:
