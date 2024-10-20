@@ -70,7 +70,7 @@ deploy:
   #   - buildWindowsAndLinux
   before_script:
     - cd receivers/electron
-    - apt update && apt install -y python3-boto3
+    - pip install boto3
   script:
     - python3 scripts/deploy.py
   when: manual
