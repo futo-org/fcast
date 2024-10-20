@@ -81,8 +81,8 @@ def update_website():
 
 # CI Operations
 copy_artifacts_to_local_cache()
-# sync_local_cache()
+sync_local_cache()
 # generate_delta_updates()
-# upload_local_cache()
+upload_local_cache()
 # generate_previous_releases_page()
 # update_website()
