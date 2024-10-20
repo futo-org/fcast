@@ -48,7 +48,7 @@ buildWindowsAndLinux:
     - npm run make -- --platform="win32" --arch="x64"
     - npm run make -- --platform="linux" --arch="x64"
     - npm run make -- --platform="linux" --arch="arm64"
-    - cp -f out/make/* /artifacts/
+    - cp -rf out/make/* /artifacts/
   artifacts:
     untracked: false
     when: on_success
