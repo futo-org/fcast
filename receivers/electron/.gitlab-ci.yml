@@ -26,6 +26,7 @@ buildMac:
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
     - cp -f out/make/* /artifacts/
+    - scp out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
   artifacts:
     untracked: false
     when: on_success
