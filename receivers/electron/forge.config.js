@@ -127,7 +127,8 @@ module.exports = {
           case "darwin": {
             let artifactName = `${APPLICATION_TITLE}.dmg`;
             if (fs.existsSync(`./out/make/${artifactName}`)) {
-              fs.renameSync(`./out/make/${artifactName}`, `./out/make/${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.dmg`);
+              fs.mkdirSync(`./out/make/dmg/${e.arch}`, { recursive: true });
+              fs.renameSync(`./out/make/${artifactName}`, `./out/make/dmg/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.dmg`);
             }
 
             console.log(`Making a zip distributable for ${e.platform}/${e.arch}`);
