@@ -1,3 +1,4 @@
+import glob
 import os
 import hashlib
 import boto3
@@ -63,8 +64,8 @@ def copy_artifacts_to_local_cache():
     shutil.copytree('/artifacts', dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
 
     # Clean up old job artifacts
-    shutil.rmtree('/artifacts')
-    os.makedirs('/artifacts', exist_ok=True)
+    for file in glob.glob(os.path.join('/artifacts', '*')):
+        os.remove(file)
     return version
 
 def sync_local_cache():
