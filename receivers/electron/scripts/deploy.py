@@ -49,6 +49,7 @@ list_response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix='electron/')
 bucket_files = list_response.get('Contents', [])
 bucket_versions_full = sorted(set(map(lambda x: x['Key'].split('/')[1], bucket_files)), key=cmp_to_key(compare_versions), reverse=True)
 bucket_versions = bucket_versions_full if CACHE_VERSION_AMOUNT < 0 else bucket_versions_full[:CACHE_VERSION_AMOUNT]
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 # CI functions
 
@@ -57,7 +58,13 @@ def copy_artifacts_to_local_cache():
     # All artifact should have same version in format: /artifacts/PKG/OS/ARCH/fcast-receiver-VERSION-OS-ARCH.PKG
     version = os.listdir('/artifacts/zip/linux/x64')[0].split('-')[2]
     dst = os.path.join(TEMP_DIR, version)
+
+    print(f'Current app version: {version}')
     shutil.copytree('/artifacts', dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
+
+    # Clean up old job artifacts
+    shutil.rmtree('/artifacts')
+    os.makedirs('/artifacts', exist_ok=True)
     return version
 
 def sync_local_cache():
@@ -88,6 +95,8 @@ def sync_local_cache():
 
 def upload_local_cache():
     print('Uploading local cache to s3...')
+    shutil.copytree(TEMP_DIR, os.path.join(LOCAL_CACHE_DIR, 'electron'), dirs_exist_ok=True)
+
     local_files = []
     for root, _, files in os.walk(LOCAL_CACHE_DIR):
         for filename in files:
@@ -121,3 +130,5 @@ sync_local_cache()
 upload_local_cache()
 # generate_previous_releases_page()
 # update_website()
+
+shutil.rmtree(TEMP_DIR)

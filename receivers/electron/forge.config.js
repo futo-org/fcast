@@ -3,7 +3,7 @@ const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const { exec } = require('child_process');
 const path = require('path');
-const extract = require('extract-zip')
+// const extract = require('extract-zip')
 
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
@@ -16,6 +16,7 @@ module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/icons/icon',
+    // TODO: Windows signing
     osxSign: {},
     osxNotarize: {
       appleApiKey: process.env.FCAST_APPLE_API_KEY,
