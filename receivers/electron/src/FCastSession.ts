@@ -1,4 +1,4 @@
-import net = require('net');
+import * as net from 'net';
 import { EventEmitter } from 'node:events';
 import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
 import { WebSocket } from 'ws';
@@ -56,7 +56,7 @@ export class FCastSession {
         } else  {
             data = new Uint8Array(0);
         }
-        
+
         const size = 1 + data.length;
         const header = Buffer.alloc(4 + 1);
         header.writeUint32LE(size, 0);

@@ -131,5 +131,3 @@ dist
 
 # Ignore VSCode user project settings
 .vscode
-
-packaging/*.zip
