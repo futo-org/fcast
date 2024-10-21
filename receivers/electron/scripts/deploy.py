@@ -1,4 +1,3 @@
-import glob
 import os
 import hashlib
 import boto3
@@ -63,9 +62,9 @@ def copy_artifacts_to_local_cache():
     print(f'Current app version: {version}')
     shutil.copytree('/artifacts', dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
 
-    # Clean up old job artifacts
-    for file in glob.glob(os.path.join('/artifacts', '*')):
-        os.remove(file)
+    for dir in os.listdir('/artifacts'):
+        shutil.rmtree(os.path.join('/artifacts', dir))
+
     return version
 
 def sync_local_cache():
@@ -126,9 +125,9 @@ def update_website():
 
 # CI Operations
 current_version = copy_artifacts_to_local_cache()
-sync_local_cache()
+# sync_local_cache()
 # generate_delta_updates(current_version)
-upload_local_cache()
+# upload_local_cache()
 # generate_previous_releases_page()
 # update_website()
 
