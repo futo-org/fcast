@@ -1,4 +1,4 @@
-import net = require('net');
+import * as net from 'net';
 import { FCastSession, Opcode } from './FCastSession';
 import { EventEmitter } from 'node:events';
 import { dialog } from 'electron';
@@ -8,7 +8,7 @@ export class TcpListenerService {
     public static PORT = 46899;
 
     emitter = new EventEmitter();
-    
+
     private server: net.Server;
     private sessions: FCastSession[] = [];
 
@@ -56,7 +56,7 @@ export class TcpListenerService {
             defaultId: 0,
             cancelId: 1
         });
-    
+
         if (restartPrompt.response === 0) {
             Main.application.relaunch();
             Main.application.exit(0);
@@ -89,7 +89,7 @@ export class TcpListenerService {
         socket.on("close", () => {
             const index = this.sessions.indexOf(session);
             if (index != -1) {
-                this.sessions.splice(index, 1);   
+                this.sessions.splice(index, 1);
             }
         });
 

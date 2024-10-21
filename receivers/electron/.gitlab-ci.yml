@@ -1,7 +1,76 @@
-buildAndDeployElectron:
-  stage: buildAndDeployElectron
+
+buildElectronDockerContainer:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast
   before_script:
     - cd receivers/electron
   script:
-    - sh deploy.sh
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/receiver-electron-dev:latest .
+    - docker push $CI_REGISTRY/videostreaming/fcast/receiver-electron-dev:latest
+  when: manual
+
+buildMac:
+  stage: buildAndDeployElectron
+  tags:
+    - m1-macos
+  before_script:
+    - cd receivers/electron
+  script:
+    - npm install
+    - npm run build
+    - npm run make -- --platform="darwin" --arch="arm64"
+    - npm run make -- --platform="darwin" --arch="x64"
+    - scp -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - receivers/electron/out/make/*
+  when: manual
+
+buildWindowsAndLinux:
+  stage: buildAndDeployElectron
+  image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev:latest
+  tags:
+    - fcast
+  before_script:
+    - cd receivers/electron
+  script:
+    - npm install
+    - npm run build
+    - npm run make -- --platform="win32" --arch="x64"
+    - npm run make -- --platform="linux" --arch="x64"
+    - npm run make -- --platform="linux" --arch="arm64"
+    - cp -rf out/make/* /artifacts/
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - receivers/electron/out/make/*
+    exclude:
+      - receivers/electron/out/make/wix/x64/*.w*
+  when: manual
+
+deploy:
+  stage: buildAndDeployElectron
+  image: python:3.12.7-bookworm
+  tags:
+    - fcast
+  # dependencies:
+  #   - buildMac
+  #   - buildWindowsAndLinux
+  before_script:
+    - cd receivers/electron
+    - pip install boto3
+  script:
+    - python3 scripts/deploy.py
   when: manual
