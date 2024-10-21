@@ -58,10 +58,9 @@ def copy_artifacts_to_local_cache():
     # All artifact should have same version in format: /artifacts/PKG/OS/ARCH/fcast-receiver-VERSION-OS-ARCH.PKG
     version = os.listdir('/artifacts/zip/linux/x64')[0].split('-')[2]
     dst = os.path.join(TEMP_DIR, version)
-
     print(f'Current app version: {version}')
-    shutil.copytree('/artifacts', dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
 
+    shutil.copytree('/artifacts', dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
     for dir in os.listdir('/artifacts'):
         shutil.rmtree(os.path.join('/artifacts', dir))
 
@@ -125,9 +124,9 @@ def update_website():
 
 # CI Operations
 current_version = copy_artifacts_to_local_cache()
-# sync_local_cache()
+sync_local_cache()
 # generate_delta_updates(current_version)
-# upload_local_cache()
+upload_local_cache()
 # generate_previous_releases_page()
 # update_website()
 
