@@ -3,13 +3,32 @@ import hashlib
 import boto3
 from botocore.client import Config
 import shutil
+from functools import cmp_to_key
 
 ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID')
 ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID')
 SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
 BUCKET_NAME = os.environ.get('R2_BUCKET_NAME')
 
-LOCAL_CACHE_DIR = os.environ.get('FCAST_LOCAL_CACHE_DIR')
+CACHE_VERSION_AMOUNT = int(os.environ.get('FCAST_CACHE_VERSION_AMOUNT', default="-1"))
+DEPLOY_DIR = os.environ.get('FCAST_DO_RUNNER_DEPLOY_DIR')
+TEMP_DIR = os.path.join(DEPLOY_DIR, 'temp')
+LOCAL_CACHE_DIR = os.path.join(DEPLOY_DIR, 'cache')
+
+# Utility functions
+def compare_versions(x, y):
+    x_parts = x.split('.')
+    y_parts = y.split('.')
+
+    for i in range(len(x_parts)):
+        if x_parts[i] < y_parts[i]:
+            return -1
+        elif x_parts[i] > y_parts[i]:
+            return 1
+
+    return 0
+
+# Initial setup
 
 # Note: Cloudflare R2 docs outdated, secret is not supposed to be hashed...
 
@@ -26,21 +45,34 @@ s3 = boto3.client('s3',
         signature_version='s3v4'
     )
 )
-list_response = s3.list_objects_v2(Bucket=BUCKET_NAME)
+list_response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix='electron/')
 bucket_files = list_response.get('Contents', [])
+bucket_versions_full = sorted(set(map(lambda x: x['Key'].split('/')[1], bucket_files)), key=cmp_to_key(compare_versions), reverse=True)
+bucket_versions = bucket_versions_full if CACHE_VERSION_AMOUNT < 0 else bucket_versions_full[:CACHE_VERSION_AMOUNT]
+
+# CI functions
 
 def copy_artifacts_to_local_cache():
     print('Copying artifacts to cache...')
-    dst = os.path.join(LOCAL_CACHE_DIR, 'temp')
-    shutil.copytree('/artifacts', f'{dst}', dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
+    # All artifact should have same version in format: /artifacts/PKG/OS/ARCH/fcast-receiver-VERSION-OS-ARCH.PKG
+    version = os.listdir('/artifacts/zip/linux/x64')[0].split('-')[2]
+    dst = os.path.join(TEMP_DIR, version)
+    shutil.copytree('/artifacts', dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.w*'))
+    return version
 
-# TODO: do partial sync to prevent downloading full bucket (only what is needed for delta updates and purge old files
 def sync_local_cache():
     print('Syncing local cache with s3...')
     local_files = []
     for root, _, files in os.walk(LOCAL_CACHE_DIR):
         for filename in files:
-            local_files.append(os.path.relpath(os.path.join(root, filename), LOCAL_CACHE_DIR))
+            rel_path = os.path.relpath(os.path.join(root, filename), LOCAL_CACHE_DIR)
+            version = os.path.relpath(rel_path, 'electron/').split('/')[0]
+
+            if version in bucket_versions:
+                local_files.append(rel_path)
+            else:
+                print(f'Purging file from local cache: {rel_path}')
+                os.remove(os.path.join(root, filename))
 
     for obj in bucket_files:
         filename = obj['Key']
@@ -72,7 +104,7 @@ def upload_local_cache():
                     Key=file_path,
                 )
 
-def generate_delta_updates():
+def generate_delta_updates(current_version):
     pass
 
 # generate html previous version browsing (based off of bucket + and local if does not have all files)
@@ -83,9 +115,9 @@ def update_website():
     pass
 
 # CI Operations
-copy_artifacts_to_local_cache()
+current_version = copy_artifacts_to_local_cache()
 sync_local_cache()
-# generate_delta_updates()
+# generate_delta_updates(current_version)
 upload_local_cache()
 # generate_previous_releases_page()
 # update_website()

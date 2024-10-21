@@ -79,7 +79,7 @@ module.exports = {
       config: {
         arch: 'x64',
         appUserModelId: `org.futo.${APPLICATION_NAME}`,
-        // signing TBD
+        // TODO: Windows signing
         icon: './assets/icons/icon.ico',
         name: APPLICATION_TITLE,
         programFilesFolderName: APPLICATION_TITLE,
@@ -143,7 +143,8 @@ module.exports = {
           case "linux": {
             let artifactName = `${APPLICATION_NAME}-linux-${e.arch}-${e.packageJSON.version}.zip`;
             if (fs.existsSync(`./out/make/zip/linux/${e.arch}/${artifactName}`)) {
-              // note regarding ubuntu issue
+              // TODO: Revisit Ubuntu 24.04 SUID sandbox issue
+
               // await extract(`./out/make/zip/linux/${e.arch}/${artifactName}`, { dir: `${process.cwd()}/out/make/zip/linux/${e.arch}/` });
               // fs.chownSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 0, 0);
               // fs.chmodSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 4755);
