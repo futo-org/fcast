@@ -177,6 +177,7 @@ body {
     left: 8px;
     bottom: 8px;
     height: 4px;
+    width: 0px;
     background-color: #019BE7;
     border-radius: 3px;
     pointer-events: none;

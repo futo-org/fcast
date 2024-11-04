@@ -182,6 +182,7 @@ export class Player {
             if (Number.isNaN(dashBufferLength))
                 dashBufferLength = 0;
 
+            dashBufferLength += dashPlayer.time();
             return dashBufferLength;
         } else { // HLS, HTML
             const videoPlayer = this.player as HTMLVideoElement;

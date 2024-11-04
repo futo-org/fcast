@@ -249,6 +249,8 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
                     playerPrevTime = videoElement.currentTime;
                 }
             };
+            // Buffering UI update when paused
+            videoElement.onprogress = () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); };
             videoElement.onratechange = () => { sendPlaybackUpdate(videoElement.paused ? 2 : 1) };
             videoElement.onvolumechange = () => {
                 playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
@@ -266,8 +268,8 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
     // Sender generated event handlers
     window.electronAPI.onPause(() => { playerCtrlStateUpdate(PlayerControlEvent.Pause); });
     window.electronAPI.onResume(() => { playerCtrlStateUpdate(PlayerControlEvent.Play); });
-    window.electronAPI.onSeek((_event, value: SeekMessage) => { console.log("electron on seek " + value.time); player.setCurrentTime(value.time); });
-    window.electronAPI.onSetVolume((_event, value: SetVolumeMessage) => { player.setVolume(value.volume); playerCtrlStateUpdate(PlayerControlEvent.VolumeChange); });
+    window.electronAPI.onSeek((_event, value: SeekMessage) => { player.setCurrentTime(value.time); });
+    window.electronAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
     window.electronAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
 });
 
@@ -324,7 +326,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
         case PlayerControlEvent.ToggleMute:
             player.setMute(!player.isMuted());
-            break;
+            // fallthrough
 
         case PlayerControlEvent.VolumeChange: {
             const volume = Math.round(player.getVolume() * playerCtrlVolumeBar.offsetWidth);
@@ -352,7 +354,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             const progress = Math.round((player.getCurrentTime() / player.getDuration()) * playerCtrlProgressBar.offsetWidth);
             const handle = progress + playerCtrlProgressBar.offsetLeft;
 
-            playerCtrlProgressBarBuffer.setAttribute("style", `width: ${progress + buffer}px`);
+            playerCtrlProgressBarBuffer.setAttribute("style", `width: ${buffer}px`);
             playerCtrlProgressBarProgress.setAttribute("style", `width: ${progress}px`);
             playerCtrlProgressBarHandle.setAttribute("style", `left: ${handle}px`);
 
