@@ -1,21 +1,11 @@
-const options = {
-    textTrackSettings: false,
-    autoplay: true,
-    loop: true,
-    controls: false
-};
-
-const player = videojs("video-player", options, function onPlayerReady() {
-    player.src({ type: "video/mp4", src: "./c.mp4" });
-});
-
+import QRCode from 'qrcode';
 
 window.electronAPI.onDeviceInfo(renderIPsAndQRCode);
 
 if(window.electronAPI.getDeviceInfo()) {
     console.log("device info already present");
     renderIPsAndQRCode();
-} 
+}
 
 function renderIPsAndQRCode() {
     const value = window.electronAPI.getDeviceInfo();
@@ -42,12 +32,16 @@ function renderIPsAndQRCode() {
     console.log("qr", {json, url, base64});
 
     const qrCodeElement = document.getElementById('qr-code');
-    new QRCode(qrCodeElement, {
-        text: url,
+    QRCode.toCanvas(qrCodeElement, url, {
+        margin: 0,
         width: 256,
-        height: 256,
-        colorDark : "#000000",
-        colorLight : "#ffffff",
-        correctLevel : QRCode.CorrectLevel.M
+        color: {
+            dark : "#000000",
+            light : "#ffffff",
+        },
+        errorCorrectionLevel : "M",
+    },
+    (e) => {
+        console.log(`Error rendering QR Code: ${e}`)
     });
 }
