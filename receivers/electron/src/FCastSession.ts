@@ -1,4 +1,4 @@
-import * as net from 'net';
+import net = require('net');
 import { EventEmitter } from 'node:events';
 import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
 import { WebSocket } from 'ws';

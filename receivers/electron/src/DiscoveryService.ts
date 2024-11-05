@@ -1,6 +1,6 @@
-import * as mdns from 'mdns-js';
-import * as cp from 'child_process';
-import * as os from 'os';
+import mdns = require('mdns-js');
+const cp = require('child_process');
+const os = require('os');
 
 export class DiscoveryService {
     private serviceTcp: any;

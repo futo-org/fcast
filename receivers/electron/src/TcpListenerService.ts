@@ -1,4 +1,4 @@
-import * as net from 'net';
+import net = require('net');
 import { FCastSession, Opcode } from './FCastSession';
 import { EventEmitter } from 'node:events';
 import { dialog } from 'electron';

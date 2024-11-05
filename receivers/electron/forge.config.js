@@ -15,7 +15,7 @@ const APPLICATION_TITLE = 'FCast Receiver';
 module.exports = {
   packagerConfig: {
     asar: true,
-    icon: './assets/icons/icon',
+    icon: './assets/icons/app/icon',
     // TODO: Windows signing
     osxSign: {},
     osxNotarize: {
@@ -32,7 +32,7 @@ module.exports = {
         options: {
           categories: ['AudioVideo', 'Audio', 'Video', 'Network', 'Utility'],
           homepage: 'https://fcast.org/',
-          icon: './assets/icons/icon.png',
+          icon: './assets/icons/app/icon.png',
         }
       },
     },
@@ -59,7 +59,7 @@ module.exports = {
           { 'x': 120, 'y': 540, 'type': 'position', 'path': '.VolumeIcon.icns' }
         ],
         format: 'ULFO',
-        icon: './assets/icons/icon.icns',
+        icon: './assets/icons/app/icon.icns',
         name: APPLICATION_TITLE
       }
     },
@@ -69,7 +69,7 @@ module.exports = {
         options: {
           categories: ['AudioVideo', 'Audio', 'Video', 'Network', 'Utility'],
           homepage: 'https://fcast.org/',
-          icon: './assets/icons/icon.png',
+          icon: './assets/icons/app/icon.png',
           license: 'MIT',
         }
       },
@@ -81,7 +81,7 @@ module.exports = {
         arch: 'x64',
         appUserModelId: `org.futo.${APPLICATION_NAME}`,
         // TODO: Windows signing
-        icon: './assets/icons/icon.ico',
+        icon: './assets/icons/app/icon.ico',
         name: APPLICATION_TITLE,
         programFilesFolderName: APPLICATION_TITLE,
         shortcutName: APPLICATION_TITLE,
@@ -95,7 +95,7 @@ module.exports = {
     },
   ],
   hooks: {
-    postPackage: async (config, packageResults) => {
+        postPackage: async (config, packageResults) => {
       switch (packageResults.platform) {
         case "darwin": {
           let artifactName = `${APPLICATION_NAME}.app`;
@@ -133,7 +133,7 @@ module.exports = {
             }
 
             console.log(`Making a zip distributable for ${e.platform}/${e.arch}`);
-            const zipName = `${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.zip`;
+const zipName = `${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.zip`;
             const zipPath = path.resolve(process.cwd(), 'out', 'make', 'zip', e.platform, e.arch, zipName);
 
             exec(`mkdir -p ${path.dirname(zipPath)}`, execOutput);

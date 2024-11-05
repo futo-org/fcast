@@ -119,6 +119,8 @@ export default class Main {
                     Main.playerWindow = new BrowserWindow({
                         fullscreen: true,
                         autoHideMenuBar: true,
+                        minWidth: 515,
+                        minHeight: 290,
                         icon: path.join(__dirname, 'icon512.png'),
                         webPreferences: {
                             preload: path.join(__dirname, 'player/preload.js')
@@ -164,6 +166,15 @@ export default class Main {
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
             });
+        });
+
+        ipcMain.handle('is-full-screen', async () => {
+            const window = Main.playerWindow;
+            if (!window) {
+                return;
+            }
+
+            return window.isFullScreen();
         });
 
         ipcMain.on('toggle-full-screen', () => {
@@ -330,7 +341,7 @@ export default class Main {
 
     static main(app: Electron.App) {
         Main.application = app;
-        const argv = yargs(hideBin(process.argv))
+                const argv = yargs(hideBin(process.argv))
             .parserConfiguration({
                 'boolean-negation': false
             })
