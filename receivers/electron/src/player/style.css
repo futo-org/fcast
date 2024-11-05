@@ -183,6 +183,20 @@ body {
     pointer-events: none;
 }
 
+.progressBarPosition {
+    position: absolute;
+    bottom: 25px;
+    padding: 2px 5px;
+
+    font-family: InterVariable;
+    font-size: 16px;
+    font-style: normal;
+    font-weight: 400;
+
+    border-radius: 3px;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
 .progressBarHandle {
     position: absolute;
     /* bottom: 70px; */
@@ -227,10 +241,13 @@ body {
 
 .liveBadge {
     background-color: red;
-    margin-top: -2px;
-    padding: 5px 5px;
+    /* margin-top: -2px; */
+    /* padding: 5px 5px; */
+    padding: 2px 5px;
     border-radius: 4px;
-    margin-left: 10px;
+    /* margin-left: 10px; */
+    margin-right: 10px;
+    cursor: pointer;
 }
 
 .play {
