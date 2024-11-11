@@ -95,7 +95,16 @@ module.exports = {
     },
   ],
   hooks: {
-        postPackage: async (config, packageResults) => {
+    readPackageJson: async (forgeConfig, packageJson) => {
+      packageJson.channel = process.env.FCAST_CHANNEL ? process.env.FCAST_CHANNEL : 'stable';
+      if (packageJson.channel !== 'stable') {
+        packageJson.channelVersion = process.env.FCAST_CHANNEL_VERSION ? process.env.FCAST_CHANNEL_VERSION : '1';
+      }
+
+      return packageJson;
+    },
+
+    postPackage: async (config, packageResults) => {
       switch (packageResults.platform) {
         case "darwin": {
           let artifactName = `${APPLICATION_NAME}.app`;
@@ -108,6 +117,7 @@ module.exports = {
           break;
       }
     },
+
     postMake: async (forgeConfig, makeResults) => {
       for (const e of makeResults) {
         // Standardize artifact output naming
@@ -115,12 +125,12 @@ module.exports = {
           case "win32": {
             let artifactName = `${APPLICATION_NAME}-win32-${e.arch}-${e.packageJSON.version}.zip`;
             if (fs.existsSync(`./out/make/zip/win32/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/zip/win32/${e.arch}/${artifactName}`, `./out/make/zip/win32/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}.zip`);
+              fs.renameSync(`./out/make/zip/win32/${e.arch}/${artifactName}`, path.join(`./out/make/zip/win32/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'zip')));
             }
 
             artifactName = `${APPLICATION_NAME}.msi`;
             if (fs.existsSync(`./out/make/wix/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, `./out/make/wix/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-windows-${e.arch}-setup.msi`);
+              fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, path.join(`./out/make/wix/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'msi')));
             }
 
             break;
@@ -129,12 +139,11 @@ module.exports = {
             let artifactName = `${APPLICATION_TITLE}.dmg`;
             if (fs.existsSync(`./out/make/${artifactName}`)) {
               fs.mkdirSync(`./out/make/dmg/${e.arch}`, { recursive: true });
-              fs.renameSync(`./out/make/${artifactName}`, `./out/make/dmg/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.dmg`);
+              fs.renameSync(`./out/make/${artifactName}`, path.join(`./out/make/dmg/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'dmg')));
             }
 
             console.log(`Making a zip distributable for ${e.platform}/${e.arch}`);
-const zipName = `${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.zip`;
-            const zipPath = path.resolve(process.cwd(), 'out', 'make', 'zip', e.platform, e.arch, zipName);
+            const zipPath = path.resolve(process.cwd(), 'out', 'make', 'zip', e.platform, e.arch, generateArtifactName(e.packageJSON, e.platform, e.arch, 'zip'));
 
             exec(`mkdir -p ${path.dirname(zipPath)}`, execOutput);
             exec(`cd out/${APPLICATION_NAME}-${e.platform}-${e.arch}; zip -r -y "${zipPath}" "${APPLICATION_TITLE}.app"`, execOutput);
@@ -149,27 +158,27 @@ const zipName = `${APPLICATION_NAME}-${e.packageJSON.version}-macOS-${e.arch}.zi
               // await extract(`./out/make/zip/linux/${e.arch}/${artifactName}`, { dir: `${process.cwd()}/out/make/zip/linux/${e.arch}/` });
               // fs.chownSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 0, 0);
               // fs.chmodSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 4755);
-              fs.renameSync(`./out/make/zip/linux/${e.arch}/${artifactName}`, `./out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.zip`);
+              fs.renameSync(`./out/make/zip/linux/${e.arch}/${artifactName}`, path.join(`./out/make/zip/linux/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'zip')));
             }
 
             artifactName = `${APPLICATION_NAME}_${e.packageJSON.version}_amd64.deb`
             if (fs.existsSync(`./out/make/deb/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/deb/${e.arch}/${artifactName}`, `./out/make/deb/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.deb`);
+              fs.renameSync(`./out/make/deb/${e.arch}/${artifactName}`, path.join(`./out/make/deb/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'deb')));
             }
 
             artifactName = `${APPLICATION_NAME}_${e.packageJSON.version}_arm64.deb`
             if (fs.existsSync(`./out/make/deb/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/deb/${e.arch}/${artifactName}`, `./out/make/deb/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.deb`);
+              fs.renameSync(`./out/make/deb/${e.arch}/${artifactName}`, path.join(`./out/make/deb/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'deb')));
             }
 
             artifactName = `${APPLICATION_NAME}-${e.packageJSON.version}-1.x86_64.rpm`
             if (fs.existsSync(`./out/make/rpm/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/rpm/${e.arch}/${artifactName}`, `./out/make/rpm/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.rpm`);
+              fs.renameSync(`./out/make/rpm/${e.arch}/${artifactName}`, path.join(`./out/make/rpm/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'rpm')));
             }
 
             artifactName = `${APPLICATION_NAME}-${e.packageJSON.version}-1.arm64.rpm`
             if (fs.existsSync(`./out/make/rpm/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/rpm/${e.arch}/${artifactName}`, `./out/make/rpm/${e.arch}/${APPLICATION_NAME}-${e.packageJSON.version}-linux-${e.arch}.rpm`);
+              fs.renameSync(`./out/make/rpm/${e.arch}/${artifactName}`, path.join(`./out/make/rpm/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'rpm')));
             }
 
             break;
@@ -204,4 +213,27 @@ function execOutput(err, stdout, stderr) {
     console.log(stderr);
   }
   console.log(stdout);
+}
+
+function getArtifactOS(platform) {
+  switch (platform) {
+      case 'win32':
+          return 'windows';
+      case 'darwin':
+          return 'macOS';
+      default:
+          return platform;
+  }
+}
+
+function generateArtifactName(packageJSON, platform, arch, extension) {
+  let artifactName = `${APPLICATION_NAME}-${packageJSON.version}-${getArtifactOS(platform)}-${arch}`;
+  if (extension === 'msi') {
+    artifactName += '-setup';
+  }
+  if (packageJSON.channel !== 'stable') {
+    artifactName += `-${packageJSON.channel}-${packageJSON.channel_version}`;
+  }
+  artifactName += `.${extension}`
+  return artifactName;
 }

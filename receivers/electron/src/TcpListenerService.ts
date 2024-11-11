@@ -1,4 +1,4 @@
-import net = require('net');
+import * as net from 'net';
 import { FCastSession, Opcode } from './FCastSession';
 import { EventEmitter } from 'node:events';
 import { dialog } from 'electron';
@@ -39,14 +39,14 @@ export class TcpListenerService {
             try {
                 session.send(opcode, message);
             } catch (e) {
-                console.warn("Failed to send error.", e);
+                Main.logger.warn("Failed to send error.", e);
                 session.close();
             }
         });
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
-        console.error("Server error:", err);
+        Main.logger.error("Server error:", err);
 
         const restartPrompt = await dialog.showMessageBox({
             type: 'error',
@@ -66,14 +66,14 @@ export class TcpListenerService {
     }
 
     private handleConnection(socket: net.Socket) {
-        console.log(`new connection from ${socket.remoteAddress}:${socket.remotePort}`);
+        Main.logger.info(`new connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);
         this.sessions.push(session);
 
         socket.on("error", (err) => {
-            console.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
+            Main.logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
             socket.destroy();
         });
 
@@ -81,7 +81,7 @@ export class TcpListenerService {
             try {
                 session.processBytes(buffer);
             } catch (e) {
-                console.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
+                Main.logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
                 socket.end();
             }
         });
@@ -94,10 +94,10 @@ export class TcpListenerService {
         });
 
         try {
-            console.log('Sending version');
+            Main.logger.info('Sending version');
             session.send(Opcode.Version, {version: 2});
         } catch (e) {
-            console.log('Failed to send version');
+            Main.logger.info('Failed to send version', e);
         }
     }
 }
