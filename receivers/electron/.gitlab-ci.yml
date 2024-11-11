@@ -20,6 +20,12 @@ buildMac:
     - m1-macos
   before_script:
     - cd receivers/electron
+    - whoami
+    - pwd
+    - locate npm
+    - echo ${PATH}
+    - which npm
+    - ls -lh $(which npm)
   script:
     - npm install
     - npm run build
