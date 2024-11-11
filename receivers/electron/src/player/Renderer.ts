@@ -100,7 +100,7 @@ let isLivePosition = false;
 
 
 window.electronAPI.onPlay((_event, value: PlayMessage) => {
-    console.log("Handle play message renderer", value);
+    console.log("Handle play message renderer", JSON.stringify(value));
     const currentVolume = player ? player.getVolume() : null;
     const currentPlaybackRate = player ? player.getPlaybackRate() : null;
 
@@ -150,7 +150,6 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
 
-                console.log(`CALC TIME: ${Math.abs(dashPlayer.time() - playerPrevTime)}`)
                 if (Math.abs(dashPlayer.time() - playerPrevTime) >= playbackUpdateInterval) {
                     sendPlaybackUpdate(dashPlayer.isPaused() ? 2 : 1);
                     playerPrevTime = dashPlayer.time();
@@ -338,7 +337,6 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
         case PlayerControlEvent.Play:
             playerCtrlAction.setAttribute("class", "pause");
-
             startUiHideTimer();
             player.play();
             break;
@@ -631,7 +629,7 @@ const skipInterval = 10;
 const volumeIncrement = 0.1;
 
 document.addEventListener('keydown', (event) => {
-console.log("KeyDown", event);
+// console.log("KeyDown", event);
 
     switch (event.code) {
         case 'F11':
