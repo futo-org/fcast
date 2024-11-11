@@ -55,8 +55,9 @@ buildWindowsAndLinux:
     - cd receivers/electron
   script:
     - touch test
-    - ls /artifacts/
     - ls /
+    - ls /artifacts
+    - ls /artifacts/
     - cp -rf test /artifacts/test
     # - npm install
     # - npm run build
