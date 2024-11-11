@@ -19,6 +19,9 @@ buildMac:
   tags:
     - m1-macos
   before_script:
+    - su futo
+    - pwd
+    - whoami
     - cd receivers/electron
     - whoami
     - pwd
