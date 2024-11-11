@@ -19,6 +19,8 @@ buildMac:
   tags:
     - m1-macos
   before_script:
+    # Temporary fix since runner is having restart issues...
+    - source ~/.bashrc
     - cd receivers/electron
   script:
     - npm install
