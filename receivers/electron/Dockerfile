@@ -1,7 +1,7 @@
 FROM node:22.10.0-bookworm
 
 RUN dpkg --add-architecture i386
-RUN apt update && apt install -y zip dpkg fakeroot rpm wget p7zip-full unzip
+RUN apt update && apt install -y zip dpkg fakeroot rpm wget p7zip-full unzip rsync
 
 RUN mkdir -pm755 /etc/apt/keyrings
 RUN wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
