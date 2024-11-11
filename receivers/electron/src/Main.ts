@@ -9,6 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
 import * as url from 'url';
+import * as log4js from "log4js";
 import { AddressInfo } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
 import yargs from 'yargs';
@@ -29,6 +30,7 @@ export default class Main {
     static proxyServer: http.Server;
     static proxyServerAddress: AddressInfo;
     static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
+    static logger: log4js.Logger;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -52,22 +54,18 @@ export default class Main {
                 label: 'Check for updates',
                 click: async () => {
                     try {
-                        const updater = new Updater(path.join(__dirname, '../'), 'https://releases.grayjay.app/fcastreceiver');
-                        if (await updater.update()) {
+                        if (await Updater.update()) {
                             const restartPrompt = await dialog.showMessageBox({
                                 type: 'info',
-                                title: 'Update completed',
-                                message: 'The application has been updated. Restart now to apply the changes.',
+                                title: 'Update ready',
+                                message: 'Update downloaded, restart now to apply the changes.',
                                 buttons: ['Restart'],
                                 defaultId: 0
                             });
 
-                            console.log('Update completed');
-
                             // Restart the app if the user clicks the 'Restart' button
                             if (restartPrompt.response === 0) {
-                                Main.application.relaunch();
-                                Main.application.exit(0);
+                                await Updater.processUpdate();
                             }
                         } else {
                             await dialog.showMessageBox({
@@ -82,12 +80,12 @@ export default class Main {
                         await dialog.showMessageBox({
                             type: 'error',
                             title: 'Failed to update',
-                            message: 'The application failed to update.',
+                            message: err,
                             buttons: ['OK'],
                             defaultId: 0
                         });
 
-                        console.error('Failed to update:', err);
+                        Main.logger.error('Failed to update:', err);
                     }
                 },
             },
@@ -98,7 +96,7 @@ export default class Main {
                 label: 'Restart',
                 click: () => {
                     this.application.relaunch();
-                    this.application.exit(0);
+                    this.application.exit();
                 }
             },
             {
@@ -220,11 +218,11 @@ export default class Main {
     private static setupProxyServer(): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             try {
-                console.log(`Proxy server starting`);
+                Main.logger.info(`Proxy server starting`);
 
                 const port = 0;
                 Main.proxyServer = http.createServer((req, res) => {
-                    console.log(`Request received`);
+                    Main.logger.info(`Request received`);
                     const requestUrl = `http://${req.headers.host}${req.url}`;
 
                     const proxyInfo = Main.proxiedFiles.get(requestUrl);
@@ -265,7 +263,7 @@ export default class Main {
 
                     req.pipe(proxyReq, { end: true });
                     proxyReq.on('error', (e) => {
-                        console.error(`Problem with request: ${e.message}`);
+                        Main.logger.error(`Problem with request: ${e.message}`);
                         res.writeHead(500);
                         res.end();
                     });
@@ -275,7 +273,7 @@ export default class Main {
                 });
                 Main.proxyServer.listen(port, '127.0.0.1', () => {
                     Main.proxyServerAddress = Main.proxyServer.address() as AddressInfo;
-                    console.log(`Proxy server running at http://127.0.0.1:${Main.proxyServerAddress.port}/`);
+                    Main.logger.info(`Proxy server running at http://127.0.0.1:${Main.proxyServerAddress.port}/`);
                     resolve();
                 });
             } catch (e) {
@@ -303,7 +301,7 @@ export default class Main {
         }
 
         const proxiedUrl = `http://127.0.0.1:${Main.proxyServerAddress.port}/${uuidv4()}`;
-        console.log("Proxied url", { proxiedUrl, url, headers });
+        Main.logger.info("Proxied url", { proxiedUrl, url, headers });
         Main.proxiedFiles.set(proxiedUrl, { url: url, headers: headers });
         return proxiedUrl;
     }
@@ -356,9 +354,27 @@ export default class Main {
         });
     }
 
-    static main(app: Electron.App) {
+    static async main(app: Electron.App) {
         Main.application = app;
-                const argv = yargs(hideBin(process.argv))
+        const fileLogType = Updater.isUpdating() ? 'fileSync' : 'file';
+
+        log4js.configure({
+            appenders: {
+                out: { type: 'stdout' },
+                log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'w' },
+            },
+            categories: {
+                default: { appenders: ['out', 'log'], level: 'info' },
+            },
+        });
+        Main.logger = log4js.getLogger();
+        Main.logger.info(`Starting application: ${app.name} (${app.getVersion()}) | ${app.getAppPath()}`);
+
+        if (Updater.isUpdating()) {
+            await Updater.processUpdate();
+        }
+
+        const argv = yargs(hideBin(process.argv))
             .parserConfiguration({
                 'boolean-negation': false
             })
