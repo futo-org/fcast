@@ -232,7 +232,7 @@ function generateArtifactName(packageJSON, platform, arch, extension) {
     artifactName += '-setup';
   }
   if (packageJSON.channel !== 'stable') {
-    artifactName += `-${packageJSON.channel}-${packageJSON.channel_version}`;
+    artifactName += `-${packageJSON.channel}-${packageJSON.channelVersion}`;
   }
   artifactName += `.${extension}`
   return artifactName;
