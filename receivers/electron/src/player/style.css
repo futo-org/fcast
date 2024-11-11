@@ -422,7 +422,7 @@ body {
     position: relative;
     /* top: -200px; */
     bottom: 150px;
-    /* margin: auto; */
+    margin: auto;
     text-align: center;
 
     font-family: InterVariable;
@@ -431,8 +431,9 @@ body {
     font-weight: 400;
 
     background-color: rgba(0, 0, 0, 0.5);
-    margin: 0px 40px 0px 40px;
+    padding: 0px 5px;
 
+    width: fit-content;
 
     /* display: flex; */
     /* align-items: center; */
