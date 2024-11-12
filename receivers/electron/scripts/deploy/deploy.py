@@ -13,6 +13,7 @@ EXCLUDED_DELTA_VERSIONS = ["1.0.14"]
 
 # Version tracking for migration support
 RELEASES_JSON_VERSION = '1'
+RELEASES_JSON_COMPAT_VERSION = '1'
 
 # Customizable CI parameters
 CACHE_VERSION_AMOUNT = int(os.environ.get('CACHE_VERSION_AMOUNT', default="-1"))
@@ -108,7 +109,7 @@ def generate_delta_updates(artifact_version):
 
             print(f'Generating sha digests from: {full_path}')
             artifact_name, digest = generate_update_tarball(full_path, rel_path, TEMP_DIR, package)
-            print(f'DIGEST INFO: {artifact_name} {digest}')
+            print(f'Digest Info: {artifact_name} {digest}')
 
             os_dict = delta_info.get(package.channel, {})
             arch_dict = os_dict.get(package.os, {})
@@ -212,6 +213,7 @@ def generate_releases_json(artifact_version, delta_info):
 
     releases['previousVersions'] = s3.get_versions(full=True)
     releases['fileVersion'] = RELEASES_JSON_VERSION
+    releases['fileCompatVersion'] = RELEASES_JSON_COMPAT_VERSION
     releases['allVersions'] = all_versions
     releases['channelCurrentVersions'] = channel_current_versions
     releases['currentReleases'] = current_releases
