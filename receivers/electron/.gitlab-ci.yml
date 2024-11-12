@@ -71,6 +71,7 @@ deploy:
   before_script:
     - cd receivers/electron
     - pip install boto3
+    - pip install requests
   script:
     - python3 scripts/deploy/deploy.py
   when: manual
