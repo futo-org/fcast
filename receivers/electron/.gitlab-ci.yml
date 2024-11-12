@@ -72,5 +72,5 @@ deploy:
     - cd receivers/electron
     - pip install boto3
   script:
-    - python3 scripts/deploy.py
+    - python3 scripts/deploy/deploy.py
   when: manual
