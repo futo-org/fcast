@@ -19,18 +19,7 @@ buildMac:
   tags:
     - m1-macos
   before_script:
-    - su futo
-    - pwd
-    - whoami
     - cd receivers/electron
-    - whoami
-    - pwd
-    - source ~/.bashrc
-    - npm -v
-    - locate npm
-    - echo ${PATH}
-    - which npm
-    - ls -lh $(which npm)
   script:
     - npm install
     - npm run build
@@ -54,17 +43,12 @@ buildWindowsAndLinux:
   before_script:
     - cd receivers/electron
   script:
-    - touch test
-    - ls /
-    - ls /artifacts
-    - ls /artifacts/
-    - cp -rf test /artifacts/test
-    # - npm install
-    # - npm run build
-    # - npm run make -- --platform="win32" --arch="x64"
-    # - npm run make -- --platform="linux" --arch="x64"
-    # - npm run make -- --platform="linux" --arch="arm64"
-    # - cp -rf out/make/* /artifacts/
+    - npm install
+    - npm run build
+    - npm run make -- --platform="win32" --arch="x64"
+    - npm run make -- --platform="linux" --arch="x64"
+    - npm run make -- --platform="linux" --arch="arm64"
+    - cp -rf out/make/* /artifacts/
   artifacts:
     untracked: false
     when: on_success
@@ -79,6 +63,8 @@ buildWindowsAndLinux:
 deploy:
   stage: buildAndDeployElectron
   image: python:3.12.7-bookworm
+  services:
+    - docker:20.10.16-dind
   tags:
     - fcast
   # dependencies:
