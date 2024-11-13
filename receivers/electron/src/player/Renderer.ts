@@ -585,14 +585,20 @@ playerCtrlFullscreen.onclick = () => { playerCtrlStateUpdate(PlayerControlEvent.
 
 playbackRates.forEach(r => {
     const entry = document.getElementById(`speedMenuEntry_${r}`);
-    entry.onclick = () => { player.setPlaybackRate(parseFloat(r)); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); };
+    entry.onclick = () => {
+        player.setPlaybackRate(parseFloat(r));
+        playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
+        playerCtrlStateUpdate(PlayerControlEvent.ToggleSpeedMenu);
+    };
 });
 
 videoElement.onclick = () => {
+    if (!playerCtrlSpeedMenuShown) {
         if (player.isPaused()) {
             playerCtrlStateUpdate(PlayerControlEvent.Play);
         } else {
             playerCtrlStateUpdate(PlayerControlEvent.Pause);
+        }
     }
 };
 videoElement.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
@@ -629,6 +635,14 @@ document.onmousemove = function() {
 };
 
 window.onresize = () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); };
+
+// Listener for hiding speed menu when clicking outside element
+document.addEventListener('click', (event: MouseEvent) => {
+    const node = event.target as Node;
+    if (playerCtrlSpeedMenuShown && !playerCtrlSpeed.contains(node) && !playerCtrlSpeedMenu.contains(node)){
+        playerCtrlStateUpdate(PlayerControlEvent.ToggleSpeedMenu);
+    }
+});
 
 // Add the keydown event listener to the document
 const skipInterval = 10;
