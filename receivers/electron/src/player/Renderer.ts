@@ -58,7 +58,7 @@ function onPlayerLoad(value: PlayMessage, currentPlaybackRate?: number, currentV
         window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
     }
 
-    playerCtrlStateUpdate(PlayerControlEvent.Play);
+    player.play();
 }
 
 // HTML elements
@@ -150,8 +150,8 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             }, true);
 
             // Player event handlers
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { sendPlaybackUpdate(1) });
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => { sendPlaybackUpdate(2) });
+            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { sendPlaybackUpdate(1); playerCtrlStateUpdate(PlayerControlEvent.Play); });
+            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => { sendPlaybackUpdate(2); playerCtrlStateUpdate(PlayerControlEvent.Pause); });
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ENDED, () => { sendPlaybackUpdate(0) });
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
@@ -254,8 +254,8 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
 
         // Player event handlers
         if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
-            videoElement.onplay = () => { sendPlaybackUpdate(1) };
-            videoElement.onpause = () => { sendPlaybackUpdate(2) };
+            videoElement.onplay = () => { sendPlaybackUpdate(1); playerCtrlStateUpdate(PlayerControlEvent.Play); };
+            videoElement.onpause = () => { sendPlaybackUpdate(2); playerCtrlStateUpdate(PlayerControlEvent.Pause); };
             videoElement.onended = () => { sendPlaybackUpdate(0) };
             videoElement.ontimeupdate = () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
@@ -283,8 +283,8 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
     }
 
     // Sender generated event handlers
-    window.electronAPI.onPause(() => { playerCtrlStateUpdate(PlayerControlEvent.Pause); });
-    window.electronAPI.onResume(() => { playerCtrlStateUpdate(PlayerControlEvent.Play); });
+    window.electronAPI.onPause(() => { player.pause(); });
+    window.electronAPI.onResume(() => { player.play(); });
     window.electronAPI.onSeek((_event, value: SeekMessage) => { player.setCurrentTime(value.time); });
     window.electronAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
     window.electronAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
@@ -297,7 +297,6 @@ enum PlayerControlEvent {
     Load,
     Pause,
     Play,
-    ToggleMute,
     VolumeChange,
     TimeUpdate,
     UiFadeOut,
@@ -348,20 +347,12 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         case PlayerControlEvent.Pause:
             playerCtrlAction.setAttribute("class", "play");
             stopUiHideTimer();
-            player.pause();
             break;
 
         case PlayerControlEvent.Play:
             playerCtrlAction.setAttribute("class", "pause");
             startUiHideTimer();
-            player.play();
             break;
-
-        case PlayerControlEvent.ToggleMute: {
-            // console.log(`ToggleMute: isMute ${player.isMuted()}, volume: ${player.getVolume()}`);
-            player.setMute(!player.isMuted());
-            break;
-        }
 
         case PlayerControlEvent.VolumeChange: {
             // console.log(`VolumeChange: isMute ${player.isMuted()}, volume: ${player.getVolume()}`);
@@ -512,13 +503,13 @@ function scrubbingMouseUIHandler(e: MouseEvent) {
 // Receiver generated event handlers
 playerCtrlAction.onclick = () => {
     if (player.isPaused()) {
-        playerCtrlStateUpdate(PlayerControlEvent.Play);
+        player.play();
     } else {
-        playerCtrlStateUpdate(PlayerControlEvent.Pause);
+        player.pause();
     }
 };
 
-playerCtrlVolume.onclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleMute); };
+playerCtrlVolume.onclick = () => { player.setMute(!player.isMuted()); };
 
 PlayerCtrlProgressBarInteractiveArea.onmousedown = (e: MouseEvent) => { scrubbing = true; scrubbingMouseHandler(e) };
 PlayerCtrlProgressBarInteractiveArea.onmouseup = () => { scrubbing = false; };
@@ -593,7 +584,7 @@ function setLivePosition() {
         playerCtrlLiveBadge.setAttribute("style", `background-color: red`);
 
         if (player.isPaused()) {
-            playerCtrlStateUpdate(PlayerControlEvent.Play);
+            player.play();
         }
     }
 }
@@ -614,9 +605,9 @@ playbackRates.forEach(r => {
 videoElement.onclick = () => {
     if (!playerCtrlSpeedMenuShown) {
         if (player.isPaused()) {
-            playerCtrlStateUpdate(PlayerControlEvent.Play);
+            player.play();
         } else {
-            playerCtrlStateUpdate(PlayerControlEvent.Pause);
+            player.pause();
         }
     }
 };
@@ -710,15 +701,15 @@ document.addEventListener('keydown', (event) => {
         case 'Enter':
             // Pause/Continue
             if (player.isPaused()) {
-                playerCtrlStateUpdate(PlayerControlEvent.Play);
+                player.play();
             } else {
-                playerCtrlStateUpdate(PlayerControlEvent.Pause);
+                player.pause();
             }
             event.preventDefault();
             break;
         case 'KeyM':
             // Mute toggle
-            playerCtrlStateUpdate(PlayerControlEvent.ToggleMute);
+            player.setMute(!player.isMuted());
             break;
         case 'ArrowUp':
             // Volume up
