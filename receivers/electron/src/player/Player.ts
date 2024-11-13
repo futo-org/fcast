@@ -203,6 +203,16 @@ export class Player {
         }
     }
 
+    isCaptionsSupported(): boolean {
+        if (this.playerType === PlayerType.Dash) {
+            return (this.player as dashjs.MediaPlayerClass).getTracksFor('text').length > 0;
+        } else if (this.playerType === PlayerType.Hls) {
+            return this.hlsPlayer.allSubtitleTracks.length > 0;
+        } else {
+            return false; // HTML captions not currently supported
+        }
+    }
+
     isCaptionsEnabled(): boolean {
         if (this.playerType === PlayerType.Dash) {
             return (this.player as dashjs.MediaPlayerClass).isTextEnabled();
@@ -212,6 +222,7 @@ export class Player {
             return false; // HTML captions not currently supported
         }
     }
+
     enableCaptions(enable: boolean) {
         if (this.playerType === PlayerType.Dash) {
             (this.player as dashjs.MediaPlayerClass).enableText(enable);

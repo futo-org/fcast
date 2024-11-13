@@ -309,7 +309,7 @@ enum PlayerControlEvent {
     ExitFullscreen,
 }
 
-// UI update handler
+// UI update handlers
 function playerCtrlStateUpdate(event: PlayerControlEvent) {
     switch (event) {
         case PlayerControlEvent.Load: {
@@ -332,6 +332,15 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                 playerCtrlDuration.innerHTML = `/&nbsp&nbsp${formatDuration(player.getDuration())}`;
             }
 
+            if (player.isCaptionsSupported()) {
+                playerCtrlCaptions.setAttribute("style", "display: block");
+                videoCaptions.setAttribute("style", "display: block");
+            }
+            else {
+                playerCtrlCaptions.setAttribute("style", "display: none");
+                videoCaptions.setAttribute("style", "display: none");
+                player.enableCaptions(false);
+            }
             playerCtrlStateUpdate(PlayerControlEvent.SetCaptions);
             break;
         }
@@ -479,6 +488,25 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         default:
             break;
     }
+}
+
+function scrubbingMouseUIHandler(e: MouseEvent) {
+    const progressBarOffset = e.offsetX - 8;
+    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - 16;
+    let time = isLive ? Math.round((1 - (progressBarOffset / progressBarWidth)) * player.getDuration()) : Math.round((progressBarOffset / progressBarWidth) * player.getDuration());
+    time = Math.min(player.getDuration(), Math.max(0.0, time));
+
+    if (scrubbing && isLive && e.buttons === 1) {
+        isLivePosition = false;
+        playerCtrlLiveBadge.setAttribute("style", `background-color: #595959`);
+    }
+
+    const livePrefix = isLive && Math.floor(time) !== 0 ? "-" : "";
+    playerCtrlProgressBarPosition.textContent = isLive ? `${livePrefix}${formatDuration(time)}` : formatDuration(time);
+
+    let offset = e.offsetX - (playerCtrlProgressBarPosition.offsetWidth / 2);
+    offset = Math.min(PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBarPosition.offsetWidth / 1), Math.max(8, offset));
+    playerCtrlProgressBarPosition.setAttribute("style", `display: block; left: ${offset}px`);
 }
 
 // Receiver generated event handlers
