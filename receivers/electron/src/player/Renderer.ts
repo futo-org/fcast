@@ -564,14 +564,20 @@ function volumeChangeHandler(volume: number) {
     player.setVolume(volume);
 }
 
-playerCtrlLiveBadge.onclick = () => {
+playerCtrlLiveBadge.onclick = () => { setLivePosition(); };
+
+function setLivePosition() {
     if (!isLivePosition) {
         isLivePosition = true;
 
         player.setCurrentTime(player.getDuration() - livePositionDelta);
         playerCtrlLiveBadge.setAttribute("style", `background-color: red`);
+
+        if (player.isPaused()) {
+            playerCtrlStateUpdate(PlayerControlEvent.Play);
+        }
     }
-};
+}
 
 playerCtrlCaptions.onclick = () => { player.enableCaptions(!player.isCaptionsEnabled()); playerCtrlStateUpdate(PlayerControlEvent.SetCaptions); };
 playerCtrlSpeed.onclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleSpeedMenu); };
@@ -583,10 +589,10 @@ playbackRates.forEach(r => {
 });
 
 videoElement.onclick = () => {
-    if (player.isPaused()) {
-        playerCtrlStateUpdate(PlayerControlEvent.Play);
-    } else {
-        playerCtrlStateUpdate(PlayerControlEvent.Pause);
+        if (player.isPaused()) {
+            playerCtrlStateUpdate(PlayerControlEvent.Play);
+        } else {
+            playerCtrlStateUpdate(PlayerControlEvent.Pause);
     }
 };
 videoElement.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
@@ -632,6 +638,7 @@ document.addEventListener('keydown', (event) => {
 // console.log("KeyDown", event);
 
     switch (event.code) {
+        case 'KeyF':
         case 'F11':
             playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen);
             event.preventDefault();
@@ -645,17 +652,27 @@ document.addEventListener('keydown', (event) => {
             player.setCurrentTime(Math.max(player.getCurrentTime() - skipInterval, 0));
             event.preventDefault();
             break;
-        case 'ArrowRight': {
+        case 'ArrowRight':
             // Skip forward
-            const duration = player.getDuration();
-            if (duration) {
-                player.setCurrentTime(Math.min(player.getCurrentTime() + skipInterval, duration));
-            } else {
-                player.setCurrentTime(player.getCurrentTime());
+            if (!isLivePosition) {
+                player.setCurrentTime(Math.min(player.getCurrentTime() + skipInterval, player.getDuration()));
             }
             event.preventDefault();
             break;
-        }
+        case "Home":
+            player.setCurrentTime(0);
+            event.preventDefault();
+            break;
+        case "End":
+            if (isLive) {
+                setLivePosition();
+            }
+            else {
+                player.setCurrentTime(player.getDuration());
+            }
+            event.preventDefault();
+            break;
+        case 'KeyK':
         case 'Space':
         case 'Enter':
             // Pause/Continue
