@@ -49,7 +49,13 @@ function onPlayerLoad(value: PlayMessage, currentPlaybackRate?: number, currentV
     playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
 
     if (currentVolume) {
-        player.setVolume(currentVolume);
+        volumeChangeHandler(currentVolume);
+    }
+    else {
+        // FCast PlayMessage does not contain volume field and could result in the receiver
+        // getting out-of-sync with the sender on 1st playback.
+        volumeChangeHandler(1.0);
+        window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
     }
 
     playerCtrlStateUpdate(PlayerControlEvent.Play);
@@ -161,8 +167,9 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PROGRESS, () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); });
 
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_VOLUME_CHANGED, () => {
+                const updateVolume = dashPlayer.isMuted() ? 0 : dashPlayer.getVolume();
                 playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
-                window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: dashPlayer.getVolume() });
+                window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
             });
 
             dashPlayer.on(dashjs.MediaPlayer.events.ERROR, (data) => { window.electronAPI.sendPlaybackError({
@@ -262,8 +269,9 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             videoElement.onprogress = () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); };
             videoElement.onratechange = () => { sendPlaybackUpdate(videoElement.paused ? 2 : 1) };
             videoElement.onvolumechange = () => {
+                const updateVolume = videoElement.muted ? 0 : videoElement.volume;
                 playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
-                window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: videoElement.volume });
+                window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
             };
 
             videoElement.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
@@ -325,7 +333,6 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             }
 
             playerCtrlStateUpdate(PlayerControlEvent.SetCaptions);
-
             break;
         }
 
@@ -341,12 +348,14 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             player.play();
             break;
 
-        case PlayerControlEvent.ToggleMute:
+        case PlayerControlEvent.ToggleMute: {
+            // console.log(`ToggleMute: isMute ${player.isMuted()}, volume: ${player.getVolume()}`);
             player.setMute(!player.isMuted());
-            window.electronAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 0 });
-            // fallthrough
+            break;
+        }
 
         case PlayerControlEvent.VolumeChange: {
+            // console.log(`VolumeChange: isMute ${player.isMuted()}, volume: ${player.getVolume()}`);
             const volume = Math.round(player.getVolume() * playerCtrlVolumeBar.offsetWidth);
 
             if (player.isMuted()) {
@@ -363,11 +372,12 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                 playerCtrlVolumeBarProgress.setAttribute("style", `width: ${volume}px`);
                 playerCtrlVolumeBarHandle.setAttribute("style", `left: ${volume}px`);
             }
-
             break;
         }
 
         case PlayerControlEvent.TimeUpdate: {
+            // console.log(`TimeUpdate: Position: ${player.getCurrentTime()}, Duration: ${player.getDuration()}`);
+
             if (isLive) {
                 if (isLivePosition && player.getDuration() - player.getCurrentTime() > livePositionWindow) {
                     isLivePosition = false;
@@ -505,25 +515,6 @@ function scrubbingMouseHandler(e: MouseEvent) {
     }
 
     scrubbingMouseUIHandler(e);
-}
-
-function scrubbingMouseUIHandler(e: MouseEvent) {
-    const progressBarOffset = e.offsetX - 8;
-    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - 16;
-    let time = isLive ? Math.round((1 - (progressBarOffset / progressBarWidth)) * player.getDuration()) : Math.round((progressBarOffset / progressBarWidth) * player.getDuration());
-    time = Math.min(player.getDuration(), Math.max(0.0, time));
-
-    if (scrubbing && isLive && e.buttons === 1) {
-        isLivePosition = false;
-        playerCtrlLiveBadge.setAttribute("style", `background-color: #595959`);
-    }
-
-    const livePrefix = isLive && Math.floor(time) !== 0 ? "-" : "";
-    playerCtrlProgressBarPosition.textContent = isLive ? `${livePrefix}${formatDuration(time)}` : formatDuration(time);
-
-    let offset = e.offsetX - (playerCtrlProgressBarPosition.offsetWidth / 2);
-    offset = Math.min(PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBarPosition.offsetWidth / 1), Math.max(8, offset));
-    playerCtrlProgressBarPosition.setAttribute("style", `display: block; left: ${offset}px`);
 }
 
 playerCtrlVolumeBarInteractiveArea.onmousedown = (e: MouseEvent) => { volumeChanging = true; volumeChangeMouseHandler(e) };
