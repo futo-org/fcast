@@ -17,11 +17,11 @@
                 <div id="main-view" >
                     <div id="title-container">
                         <div id="title-icon"></div>
-                        <div id="title-text">FCast</div>
+                        <div id="title-text" class="non-selectable">FCast</div>
                     </div>
 
                     <div id="connection-status">
-                        <div id="waiting-for-connection">Waiting for a connection</div>
+                        <div id="waiting-for-connection" class="non-selectable">Waiting for a connection</div>
                         <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
                     </div>
 
@@ -34,19 +34,19 @@
                     </div> -->
                 </div>
                 <div id="detail-view">
-                    <div id="manual-connection-info">Manual connection information</div>
+                    <div id="manual-connection-info" class="non-selectable">Manual connection information</div>
                     <div id="manual-connection-info-separator"></div>
                     <div>
                         <div id="ips">IPs</div><br />
                         <div>Port<br>46899 (TCP), 46898 (WS)</div>
                     </div>
-                    <div id="automatic-discovery">Automatic discovery is available via mDNS</div>
+                    <div id="automatic-discovery" class="non-selectable">Automatic discovery is available via mDNS</div>
                      <canvas id="qr-code"></canvas>
-                    <div id="scan-to-connect" style="font-weight: bold;">Scan to connect</div>
+                    <div id="scan-to-connect" class="non-selectable">Scan to connect</div>
                 </div>
             </div>
 
-            <div id="window-can-be-closed" style="color: #666666; position: absolute; bottom: 0; margin-bottom: 20px;">App will continue to run as tray app when the window is closed</div>
+            <div id="window-can-be-closed" class="non-selectable">App will continue to run as tray app when the window is closed</div>
         </div>
     </div>
     <script src="./renderer.js"></script>

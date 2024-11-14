@@ -15,6 +15,10 @@ body, html {
     object-fit: cover;
 }
 
+.non-selectable {
+    user-select: none;
+}
+
 #ui-container {
     display: flex;
     flex-direction: column;
@@ -52,7 +56,6 @@ body, html {
     font-size: 96px;
     font-weight: bold;
     text-align: center;
-    user-select: none;
 
     background-image: linear-gradient(180deg, #FFFFFF 5.9%, #D3D3D3 100%);
     background-clip: text;
@@ -110,7 +113,12 @@ body, html {
     background-color: white;
 }
 
-#update-dialog, #waiting-for-connection, #ips, #automatic-discovery, #scan-to-connect {
+#scan-to-connect {
+    margin-top: 20px;
+    font-weight: bold;
+}
+
+#update-dialog, #waiting-for-connection, #ips, #automatic-discovery {
     margin-top: 20px;
 }
 
