@@ -16,6 +16,7 @@ import { hideBin } from 'yargs/helpers';
 
 export default class Main {
     static shouldOpenMainWindow = true;
+    static startFullscreen = false;
     static playerWindow: Electron.BrowserWindow;
     static mainWindow: Electron.BrowserWindow;
     static application: Electron.App;
@@ -29,14 +30,23 @@ export default class Main {
     static proxyServerAddress: AddressInfo;
     static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
 
+    private static toggleMainWindow() {
+        if (Main.mainWindow) {
+            Main.mainWindow.close();
+        }
+        else {
+            Main.openMainWindow();
+        }
+    }
+
     private static createTray() {
         const icon = (process.platform === 'win32') ? path.join(__dirname, 'icon.ico') : path.join(__dirname, 'icon.png');
         const trayicon = nativeImage.createFromPath(icon)
         const tray = new Tray(trayicon.resize({ width: 16 }));
         const contextMenu = Menu.buildFromTemplate([
             {
-                label: 'Open window',
-                click: () => Main.openMainWindow()
+                label: 'Toggle window',
+                click: () => { Main.toggleMainWindow(); }
             },
             {
                 label: 'Check for updates',
@@ -100,6 +110,7 @@ export default class Main {
         ])
 
         tray.setContextMenu(contextMenu);
+        tray.on('click', () => { Main.toggleMainWindow(); } );
         this.tray = tray;
     }
 
@@ -317,11 +328,11 @@ export default class Main {
         }
 
         Main.mainWindow = new BrowserWindow({
-            fullscreen: true,
+            fullscreen: Main.startFullscreen,
             autoHideMenuBar: true,
             icon: path.join(__dirname, 'icon512.png'),
-            minWidth: 500,
-            minHeight: 920,
+            minWidth: 1100,
+            minHeight: 800,
             webPreferences: {
                 preload: path.join(__dirname, 'main/preload.js')
             }
@@ -332,6 +343,7 @@ export default class Main {
             Main.mainWindow = null;
         });
 
+        Main.mainWindow.maximize();
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
@@ -346,10 +358,12 @@ export default class Main {
                 'boolean-negation': false
             })
             .options({
-                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" }
+                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
+                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
             })
             .parseSync();
 
+        Main.startFullscreen = argv.fullscreen;
         Main.shouldOpenMainWindow = !argv.noMainWindow;
         Main.application.on('ready', Main.onReady);
         Main.application.on('window-all-closed', () => { });
