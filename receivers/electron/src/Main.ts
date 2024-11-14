@@ -110,7 +110,12 @@ export default class Main {
         ])
 
         tray.setContextMenu(contextMenu);
-        tray.on('click', () => { Main.toggleMainWindow(); } );
+
+        // Left-click opens up tray menu, unlike in Windows/Linux
+        if (process.platform !== 'darwin') {
+            tray.on('click', () => { Main.toggleMainWindow(); } );
+        }
+
         this.tray = tray;
     }
 
