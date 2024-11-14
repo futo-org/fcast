@@ -15,6 +15,13 @@ body, html {
     object-fit: cover;
 }
 
+#ui-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
 #overlay {
     position: absolute;
     top: 0;
@@ -22,28 +29,81 @@ body, html {
     right: 0;
     bottom: 0;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
     justify-content: center;
     color: white;
-    font-family: 'Inter', sans-serif;
+    gap: 15vw;
+
+    font-family: InterVariable;
+    font-size: 20px;
+    font-style: normal;
+    font-weight: 400;
 }
 
-#title {
-    font-size: 40px;
+#title-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#title-text {
+    font-family: Outfit;
+    font-size: 96px;
     font-weight: bold;
     text-align: center;
+    user-select: none;
+
+    background-image: linear-gradient(180deg, #FFFFFF 5.9%, #D3D3D3 100%);
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
-#connection-info {
-    background: rgba(0, 0, 0, 0.5);
+#title-icon {
+    width: 84px;
+    height: 84px;
+
+    background-image: url(../../assets/icons/app/icon.svg);
+    background-size: cover;
+    margin-right: 15px;
+}
+
+#connection-status {
     padding: 25px;
     text-align: center;
 }
 
+#main-view {
+    padding: 25px;
+}
+
+#detail-view {
+    text-align: center;
+
+    background-color: rgba(20, 20, 20, 0.5);
+    padding: 25px;
+    border-radius: 10px;
+    border: 1px solid #2E2E2E;
+    scrollbar-width: thin;
+    overflow: auto;
+}
+
+#manual-connection-info {
+    font-weight: 700;
+    line-height: 24px;
+    margin: 10px;
+}
+
+#manual-connection-info-separator {
+    height: 1px;
+    background: #2E2E2E;
+    margin-top: 3px;
+    margin-bottom: 3px;
+}
+
 #qr-code {
     display: flex;
-    margin-top: 20px;
+    margin: 20px auto;
     flex-direction: column;
     align-items: center;
     padding: 20px;
@@ -65,6 +125,18 @@ body, html {
     cursor: pointer;
 }
 
+/* .button {
+    display: inline-block;
+    align-items: center;
+    justify-content: center;
+    min-width: 100px;
+    padding: 18px 16px;
+    gap: 6px;
+    flex: 1 0 0;
+    border-radius: 6px;
+} */
+
+
 #progress-container {
     display: flex;
     align-items: center;
@@ -73,6 +145,18 @@ body, html {
 
 #progress-text {
     margin-left: 8px;
+}
+
+#window-can-be-closed {
+    color: #666666;
+    position: absolute;
+    bottom: 0;
+    margin-bottom: 20px;
+
+    font-family: InterVariable;
+    font-size: 18px;
+    font-style: normal;
+    font-weight: 400;
 }
 
 .lds-ring {
