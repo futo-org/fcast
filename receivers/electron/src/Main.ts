@@ -53,39 +53,41 @@ export default class Main {
             {
                 label: 'Check for updates',
                 click: async () => {
-                    try {
-                        if (await Updater.update()) {
-                            const restartPrompt = await dialog.showMessageBox({
-                                type: 'info',
-                                title: 'Update ready',
-                                message: 'Update downloaded, restart now to apply the changes.',
-                                buttons: ['Restart'],
-                                defaultId: 0
-                            });
+                    if (!Updater.isDownloading) {
+                        try {
+                            if (await Updater.update()) {
+                                const restartPrompt = await dialog.showMessageBox({
+                                    type: 'info',
+                                    title: 'Update ready',
+                                    message: 'Update downloaded, restart now to apply the changes.',
+                                    buttons: ['Restart'],
+                                    defaultId: 0
+                                });
 
-                            // Restart the app if the user clicks the 'Restart' button
-                            if (restartPrompt.response === 0) {
-                                await Updater.processUpdate();
+                                // Restart the app if the user clicks the 'Restart' button
+                                if (restartPrompt.response === 0) {
+                                    Updater.restart();
+                                }
+                            } else {
+                                await dialog.showMessageBox({
+                                    type: 'info',
+                                    title: 'Already up-to-date',
+                                    message: 'The application is already on the latest version.',
+                                    buttons: ['OK'],
+                                    defaultId: 0
+                                });
                             }
-                        } else {
+                        } catch (err) {
                             await dialog.showMessageBox({
-                                type: 'info',
-                                title: 'Already up-to-date',
-                                message: 'The application is already on the latest version.',
+                                type: 'error',
+                                title: 'Failed to update',
+                                message: err,
                                 buttons: ['OK'],
                                 defaultId: 0
                             });
-                        }
-                    } catch (err) {
-                        await dialog.showMessageBox({
-                            type: 'error',
-                            title: 'Failed to update',
-                            message: err,
-                            buttons: ['OK'],
-                            defaultId: 0
-                        });
 
-                        Main.logger.error('Failed to update:', err);
+                            Main.logger.error('Failed to update:', err);
+                        }
                     }
                 },
             },
@@ -355,38 +357,45 @@ export default class Main {
     }
 
     static async main(app: Electron.App) {
-        Main.application = app;
-        const fileLogType = Updater.isUpdating() ? 'fileSync' : 'file';
+        try {
+            Main.application = app;
+            const isUpdating = Updater.isUpdating();
+            const fileLogType = (isUpdating && !Updater.updateApplied) ? 'fileSync' : 'file';
 
-        log4js.configure({
-            appenders: {
-                out: { type: 'stdout' },
-                log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'w' },
-            },
-            categories: {
-                default: { appenders: ['out', 'log'], level: 'info' },
-            },
-        });
-        Main.logger = log4js.getLogger();
-        Main.logger.info(`Starting application: ${app.name} (${app.getVersion()}) | ${app.getAppPath()}`);
+            log4js.configure({
+                appenders: {
+                    out: { type: 'stdout' },
+                    log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'a', maxLogSize: '10M' },
+                },
+                categories: {
+                    default: { appenders: ['out', 'log'], level: 'info' },
+                },
+            });
+            Main.logger = log4js.getLogger();
+            Main.logger.info(`Starting application: ${app.name} (${app.getVersion()} - ${Updater.getChannelVersion()}) | ${app.getAppPath()}`);
 
-        if (Updater.isUpdating()) {
-            await Updater.processUpdate();
+            if (isUpdating) {
+                await Updater.processUpdate();
+            }
+
+            const argv = yargs(hideBin(process.argv))
+                .parserConfiguration({
+                    'boolean-negation': false
+                })
+                .options({
+                    'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
+                    'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
+                })
+                .parseSync();
+
+            Main.startFullscreen = argv.fullscreen;
+            Main.shouldOpenMainWindow = !argv.noMainWindow;
+            Main.application.on('ready', Main.onReady);
+            Main.application.on('window-all-closed', () => { });
         }
-
-        const argv = yargs(hideBin(process.argv))
-            .parserConfiguration({
-                'boolean-negation': false
-            })
-            .options({
-                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
-                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
-            })
-            .parseSync();
-
-        Main.startFullscreen = argv.fullscreen;
-        Main.shouldOpenMainWindow = !argv.noMainWindow;
-        Main.application.on('ready', Main.onReady);
-        Main.application.on('window-all-closed', () => { });
+        catch (err) {
+            Main.logger.error(`Error starting application: ${err}`);
+            app.exit();
+        }
     }
 }

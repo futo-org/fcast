@@ -12,8 +12,9 @@ BASE_DOWNLOAD_URL = BUCKET_NAME.replace('-', '.')
 EXCLUDED_DELTA_VERSIONS = ["1.0.14"]
 
 # Version tracking for migration support
-RELEASES_JSON_VERSION = '1'
-RELEASES_JSON_COMPAT_VERSION = '1'
+RELEASES_JSON_FILE_VERSION = 1
+RELEASES_JSON_MAJOR_VERSION = '1'
+RELEASES_JSON = f'releases_v{RELEASES_JSON_MAJOR_VERSION}.json'
 
 # Customizable CI parameters
 CACHE_VERSION_AMOUNT = int(os.environ.get('CACHE_VERSION_AMOUNT', default="-1"))
@@ -31,7 +32,7 @@ def ensure_files_exist(dirs, files):
 
 def copy_artifacts_to_local_cache():
     version = None
-    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', 'releases.json') , 'r') as file:
+    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', RELEASES_JSON) , 'r') as file:
         releases = json.load(file)
         version = ArtifactVersion(releases['currentVersion'], 'stable', None)
 
@@ -60,9 +61,9 @@ def sync_local_cache():
             rel_path = os.path.relpath(os.path.join(root, filename), LOCAL_CACHE_DIR)
             version = os.path.relpath(rel_path, 'electron/').split('/')[0]
 
-            if version in s3.get_versions() or filename == 'releases.json':
+            if version in s3.get_versions() or filename == RELEASES_JSON:
                 local_files.append(rel_path)
-            elif filename != 'releases.json':
+            elif filename != RELEASES_JSON:
                 print(f'Purging file from local cache: {rel_path}')
                 os.remove(os.path.join(root, filename))
 
@@ -85,7 +86,7 @@ def upload_local_cache():
             local_files.append(rel_path)
 
     for file_path in local_files:
-        if file_path not in map(lambda x: x['Key'], s3.get_bucket_files()) or os.path.basename(file_path) == 'releases.json':
+        if file_path not in map(lambda x: x['Key'], s3.get_bucket_files()) or os.path.basename(file_path) == RELEASES_JSON:
             s3.upload_file(os.path.join(LOCAL_CACHE_DIR, file_path), file_path)
 
 # TODO: WIP
@@ -93,7 +94,7 @@ def generate_delta_updates(artifact_version):
     delta_info = {}
 
     releases = None
-    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', 'releases.json') , 'r') as file:
+    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', RELEASES_JSON) , 'r') as file:
         releases = json.load(file)
 
     # Get sha digest from base version for integrity validation
@@ -156,9 +157,9 @@ def generate_delta_updates(artifact_version):
     return delta_info
 
 def generate_releases_json(artifact_version, delta_info):
-    print('Generating releases.json...')
+    print(f'Generating {RELEASES_JSON}...')
     releases = None
-    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', 'releases.json') , 'r') as file:
+    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', RELEASES_JSON) , 'r') as file:
         releases = json.load(file)
 
     current_version = releases.get('currentVersion', '0.0.0')
@@ -212,13 +213,12 @@ def generate_releases_json(artifact_version, delta_info):
         releases['currentVersion'] = current_version
 
     releases['previousVersions'] = s3.get_versions(full=True)
-    releases['fileVersion'] = RELEASES_JSON_VERSION
-    releases['fileCompatVersion'] = RELEASES_JSON_COMPAT_VERSION
+    releases['fileVersion'] = RELEASES_JSON_FILE_VERSION
     releases['allVersions'] = all_versions
     releases['channelCurrentVersions'] = channel_current_versions
     releases['currentReleases'] = current_releases
 
-    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', 'releases.json') , 'w') as file:
+    with open(os.path.join(LOCAL_CACHE_DIR, 'electron', RELEASES_JSON) , 'w') as file:
         json.dump(releases, file, indent=4)
 
 def generate_previous_releases_page():
@@ -236,7 +236,7 @@ ensure_files_exist(dirs=[
     os.path.join(LOCAL_CACHE_DIR, 'electron')
 ],
 files=[
-    os.path.join('electron', 'releases.json')
+    os.path.join('electron', RELEASES_JSON)
 ])
 artifact_version = copy_artifacts_to_local_cache()
 sync_local_cache()

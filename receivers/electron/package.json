@@ -45,6 +45,7 @@
     "webpack-cli": "^5.0.1"
   },
   "dependencies": {
+    "@vscode/sudo-prompt": "^9.3.1",
     "bufferutil": "^4.0.8",
     "dashjs": "^4.7.4",
     "electron-json-storage": "^4.6.0",
