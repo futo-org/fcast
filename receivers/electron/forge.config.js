@@ -53,8 +53,8 @@ module.exports = {
         },
         background: './assets/images/background.png',
         contents: [
-          { 'x': 190, 'y': 350, 'type': 'file', 'path': `out/${APPLICATION_NAME}-darwin-${argv.arch}/${APPLICATION_TITLE}.app` },
-          { 'x': 460, 'y': 350, 'type': 'link', 'path': '/Applications' },
+          { 'x': 90, 'y': 350, 'type': 'file', 'path': `out/${APPLICATION_NAME}-darwin-${argv.arch}/${APPLICATION_TITLE}.app` },
+          { 'x': 360, 'y': 350, 'type': 'link', 'path': '/Applications' },
           { 'x': 0, 'y': 540, 'type': 'position', 'path': '.background' },
           { 'x': 120, 'y': 540, 'type': 'position', 'path': '.VolumeIcon.icns' }
         ],
