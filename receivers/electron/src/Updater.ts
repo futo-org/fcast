@@ -6,6 +6,7 @@ import * as log4js from "log4js";
 import { app } from 'electron';
 import { Store } from './Store';
 import sudo from 'sudo-prompt';
+const cp = require('child_process');
 const extract = require('extract-zip');
 const logger = log4js.getLogger();
 
@@ -52,7 +53,6 @@ export class Updater {
     private static channelVersion: string = null;
 
     public static isDownloading: boolean = false;
-    public static updateApplied: boolean = false;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private static async fetchJSON(url: string): Promise<any> {
@@ -93,11 +93,6 @@ export class Updater {
     }
 
     private static async applyUpdate(src: string, dst: string) {
-        // Sanity removal protection check (especially under admin)
-        if (!dst.includes('fcast-receiver')) {
-            throw `Aborting update applying due to possible malformed path: ${dst}`;
-        }
-
         try {
             fs.accessSync(dst, fs.constants.F_OK | fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
 
@@ -105,15 +100,20 @@ export class Updater {
             process.noAsar = true
             fs.rmSync(dst, { recursive: true, force: true });
             fs.cpSync(src, dst, { recursive: true, force: true });
-            process.noAsar = false
         }
         catch (err) {
-            if (err.code === 'EACCES') {
+            if (err.code === 'EACCES' || err.code === 'EPERM') {
                 logger.info('Update requires admin privileges. Escalating...');
 
                 await new Promise<void>((resolve, reject) => {
-                    const shell = process.platform === 'win32' ? 'powershell' : '';
-                    const command = `${shell} rm -rf ${dst}; ${shell} cp -rf ${src} ${dst}`
+                    let command: string;
+                    if (process.platform === 'win32') {
+                        // Using native cmd.exe seems to create less issues than using powershell...
+                        command = `rmdir /S /Q "${dst}" & xcopy /Y /E "${src}" "${dst}"`;
+                    }
+                    else {
+                        command = `rm -rf '${dst}'; cp -rf '${src}' '${dst}'`;
+                    }
 
                     sudo.exec(command, { name: 'FCast Receiver' }, (error, stdout, stderr) => {
                         if (error)  {
@@ -134,6 +134,27 @@ export class Updater {
                 throw err;
             }
         }
+        finally {
+            process.noAsar = false;
+        }
+    }
+
+    // Cannot use app.relaunch(...) since it breaks privilege escalation on Linux...
+    private static relaunch(binPath: string) {
+        log4js.shutdown();
+
+        let proc;
+        if (process.platform === 'win32') {
+            // cwd is bugged on Windows, perhaps due to needing to be in system32 to launch cmd.exe
+            proc = cp.spawn(`"${binPath}"`, [], { stdio: 'ignore', shell: true, detached: true, windowsHide: true });
+        }
+        else {
+            proc = cp.spawn(binPath, [], { cwd: path.dirname(binPath), stdio: 'ignore', detached: true });
+        }
+
+        proc.unref();
+        app.exit();
+        return;
     }
 
     public static restart() {
@@ -142,15 +163,15 @@ export class Updater {
         const binaryName = process.platform === 'win32' ? 'fcast-receiver.exe' : 'fcast-receiver';
         const updateBinPath = process.platform === 'darwin' ? path.join(updateInfo.tempPath, extractionDir) : path.join(updateInfo.tempPath, extractionDir, binaryName);
 
-        app.relaunch({ execPath: updateBinPath });
-        app.exit();
+        Updater.relaunch(updateBinPath);
+        return;
     }
 
     public static isUpdating(): boolean {
         try {
             const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
-            Updater.updateApplied = updateInfo.updateState === 'cleanup' ? true : false;
-            return true;
+            // TODO: In case of error inform user
+            return updateInfo.updateState !== 'error';
         }
         catch {
             return false;
@@ -170,17 +191,17 @@ export class Updater {
         try {
             const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
             const extractionDir = process.platform === 'darwin' ? 'FCast Receiver.app' : `fcast-receiver-${process.platform}-${process.arch}`;
+            const binaryName = process.platform === 'win32' ? 'fcast-receiver.exe' : 'fcast-receiver';
+            const installBinPath = path.join(updateInfo.installPath, binaryName);
 
             switch (updateInfo.updateState) {
                 case UpdateState.Copy: {
-                    const binaryName = process.platform === 'win32' ? 'fcast-receiver.exe' : 'fcast-receiver';
-
                     try {
                         logger.info('Updater process started...');
                         const src = path.join(updateInfo.tempPath, extractionDir);
                         logger.info(`Copying files from update directory ${src} to install directory ${updateInfo.installPath}`);
 
-                        Updater.applyUpdate(src, updateInfo.installPath);
+                        await Updater.applyUpdate(src, updateInfo.installPath);
                         updateInfo.updateState = UpdateState.Cleanup;
                         fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
 
@@ -228,6 +249,7 @@ export class Updater {
                         fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
                     }
 
+                    Updater.relaunch(installBinPath);
                     return;
                 }
 

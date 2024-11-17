@@ -360,12 +360,12 @@ export default class Main {
         try {
             Main.application = app;
             const isUpdating = Updater.isUpdating();
-            const fileLogType = (isUpdating && !Updater.updateApplied) ? 'fileSync' : 'file';
+            const fileLogType = isUpdating ? 'fileSync' : 'file';
 
             log4js.configure({
                 appenders: {
                     out: { type: 'stdout' },
-                    log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'a', maxLogSize: '10M' },
+                    log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'a', maxLogSize: '5M' },
                 },
                 categories: {
                     default: { appenders: ['out', 'log'], level: 'info' },
