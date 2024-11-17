@@ -46,7 +46,7 @@ export class Updater {
     private static readonly supportedReleasesJsonVersion = '1';
 
     private static appPath: string = app.getAppPath();
-    private static installPath: string = path.join(Updater.appPath, '../../');
+    private static installPath: string = process.platform === 'darwin' ? path.join(Updater.appPath, '../../../') : path.join(Updater.appPath, '../../');
     private static updateDataPath: string = path.join(app.getPath('userData'), 'updater');
     private static updateMetadataPath = path.join(Updater.updateDataPath, './update.json');
     private static baseUrl: string = 'https://dl.fcast.org/electron';
@@ -99,7 +99,13 @@ export class Updater {
             // Electron runtime sees .asar file as directory and causes errors during copy/remove operations
             process.noAsar = true
             fs.rmSync(dst, { recursive: true, force: true });
-            fs.cpSync(src, dst, { recursive: true, force: true });
+            if (process.platform === 'darwin') {
+                // Electron framework libraries break otherwise on Mac
+                fs.cpSync(src, dst, { recursive: true, force: true, verbatimSymlinks: true });
+            }
+            else {
+                fs.cpSync(src, dst, { recursive: true, force: true });
+            }
         }
         catch (err) {
             if (err.code === 'EACCES' || err.code === 'EPERM') {
@@ -140,7 +146,9 @@ export class Updater {
     }
 
     // Cannot use app.relaunch(...) since it breaks privilege escalation on Linux...
+    // Also does not work very well on Mac...
     private static relaunch(binPath: string) {
+        logger.info(`Relaunching app binary: ${binPath}`);
         log4js.shutdown();
 
         let proc;
@@ -148,8 +156,11 @@ export class Updater {
             // cwd is bugged on Windows, perhaps due to needing to be in system32 to launch cmd.exe
             proc = cp.spawn(`"${binPath}"`, [], { stdio: 'ignore', shell: true, detached: true, windowsHide: true });
         }
+        else if (process.platform === 'darwin') {
+            proc = cp.spawn(`open '${binPath}'`, [], { cwd: path.dirname(binPath), shell: true, stdio: 'ignore', detached: true });
+        }
         else {
-            proc = cp.spawn(binPath, [], { cwd: path.dirname(binPath), stdio: 'ignore', detached: true });
+            proc = cp.spawn(binPath, [], { cwd: path.dirname(binPath), shell: true, stdio: 'ignore', detached: true });
         }
 
         proc.unref();
@@ -192,7 +203,7 @@ export class Updater {
             const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
             const extractionDir = process.platform === 'darwin' ? 'FCast Receiver.app' : `fcast-receiver-${process.platform}-${process.arch}`;
             const binaryName = process.platform === 'win32' ? 'fcast-receiver.exe' : 'fcast-receiver';
-            const installBinPath = path.join(updateInfo.installPath, binaryName);
+            const installBinPath = process.platform === 'darwin' ? updateInfo.installPath : path.join(updateInfo.installPath, binaryName);
 
             switch (updateInfo.updateState) {
                 case UpdateState.Copy: {
@@ -205,10 +216,8 @@ export class Updater {
                         updateInfo.updateState = UpdateState.Cleanup;
                         fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
 
-                        const installBinPath = path.join(updateInfo.installPath, binaryName);
-                        log4js.shutdown();
-                        app.relaunch({ execPath: installBinPath });
-                        app.exit();
+                        Updater.relaunch(installBinPath);
+                        return;
                     }
                     catch (err) {
                         logger.error('Error while applying update...');
