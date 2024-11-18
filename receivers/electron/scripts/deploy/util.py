@@ -14,6 +14,7 @@ ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID')
 SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
 BUCKET_NAME = os.environ.get('R2_BUCKET_NAME')
 
+EXCLUDED_BUCKET_FILES = ['electron/releases_v1.json']
 class S3Client:
     def __init__(self, cache_version_amount, excluded_delta_versions):
         # Note: Cloudflare R2 docs outdated, secret is not supposed to be hashed...
@@ -34,7 +35,7 @@ class S3Client:
         list_response = self.s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix='electron/')
         self.bucket_files = list_response.get('Contents', [])
 
-        bucket_files_versions = filter(lambda x: x['Key'] != 'electron/releases.json', self.bucket_files)
+        bucket_files_versions = filter(lambda x: x['Key'] not in EXCLUDED_BUCKET_FILES, self.bucket_files)
         self.bucket_versions_full = sorted(set(map(lambda x: x['Key'].split('/')[1], bucket_files_versions)), key=cmp_to_key(compare_versions), reverse=True)
         self.bucket_versions = self.bucket_versions_full if cache_version_amount < 0 else self.bucket_versions_full[:cache_version_amount]
         self.bucket_delta_versions = [v for v in self.bucket_versions if v not in excluded_delta_versions]

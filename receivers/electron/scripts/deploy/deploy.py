@@ -170,6 +170,11 @@ def generate_releases_json(artifact_version, delta_info):
     if current_version not in all_versions:
         all_versions.append(current_version)
 
+    if compare_versions(artifact_version.version, current_version) < 0 or \
+        (artifact_version.channel != 'stable' and int(artifact_version.channel_version) < int(channel_current_versions[artifact_version.channel])):
+        print('Uploading older release, skipping release json generation...')
+        return
+
     for root, _, files in os.walk(TEMP_DIR):
         # Only offer zip and delta updates. Other packages will update from zip packages
         for filename in filter(lambda f: f.endswith('.zip') or f.endswith('.delta'),  files):
