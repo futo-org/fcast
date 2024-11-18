@@ -17,7 +17,6 @@ module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/icons/app/icon',
-    // TODO: Windows signing
     osxSign: {},
     osxNotarize: {
       appleApiKey: process.env.FCAST_APPLE_API_KEY,
@@ -81,7 +80,6 @@ module.exports = {
       config: {
         arch: 'x64',
         appUserModelId: `org.futo.${APPLICATION_NAME}`,
-        // TODO: Windows signing
         icon: './assets/icons/app/icon.ico',
         name: APPLICATION_TITLE,
         programFilesFolderName: APPLICATION_TITLE,
@@ -109,7 +107,14 @@ module.exports = {
       switch (packageResults.platform) {
         case "win32": {
           const exePath = `./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}.exe`;
-          console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${exePath}`)));
+
+          if (fs.existsSync(CI_SIGNING_DIR)) {
+            console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${exePath}`)));
+          }
+          else {
+            console.warn('Windows signing script not found, skipping...');
+          }
+
           break;
         }
         case "darwin": {
@@ -138,7 +143,13 @@ module.exports = {
             if (fs.existsSync(`./out/make/wix/${e.arch}/${artifactName}`)) {
               const artifactPath = path.join(`./out/make/wix/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'msi'));
               fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, artifactPath);
-              console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${artifactPath}`)));
+
+              if (fs.existsSync(CI_SIGNING_DIR)) {
+                console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${artifactPath}`)));
+              }
+              else {
+                console.warn('Windows signing script not found, skipping...');
+              }
             }
 
             break;
