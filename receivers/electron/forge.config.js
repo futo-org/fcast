@@ -1,7 +1,7 @@
 const fs = require('fs');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
-const { exec } = require('child_process');
+const cp = require('child_process');
 const path = require('path');
 // const extract = require('extract-zip')
 
@@ -11,6 +11,7 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const argv = yargs(hideBin(process.argv)).argv;
 const APPLICATION_NAME = 'fcast-receiver';
 const APPLICATION_TITLE = 'FCast Receiver';
+const CI_SIGNING_DIR = '/deploy/signing';
 
 module.exports = {
   packagerConfig: {
@@ -106,6 +107,11 @@ module.exports = {
 
     postPackage: async (config, packageResults) => {
       switch (packageResults.platform) {
+        case "win32": {
+          const exePath = `./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}.exe`;
+          console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${exePath}`)));
+          break;
+        }
         case "darwin": {
           let artifactName = `${APPLICATION_NAME}.app`;
           if (fs.existsSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${artifactName}`)) {
@@ -130,7 +136,9 @@ module.exports = {
 
             artifactName = `${APPLICATION_NAME}.msi`;
             if (fs.existsSync(`./out/make/wix/${e.arch}/${artifactName}`)) {
-              fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, path.join(`./out/make/wix/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'msi')));
+              const artifactPath = path.join(`./out/make/wix/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'msi'));
+              fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, artifactPath);
+              console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${artifactPath}`)));
             }
 
             break;
@@ -145,9 +153,8 @@ module.exports = {
             console.log(`Making a zip distributable for ${e.platform}/${e.arch}`);
             const zipPath = path.resolve(process.cwd(), 'out', 'make', 'zip', e.platform, e.arch, generateArtifactName(e.packageJSON, e.platform, e.arch, 'zip'));
 
-            exec(`mkdir -p ${path.dirname(zipPath)}`, execOutput);
-            exec(`cd out/${APPLICATION_NAME}-${e.platform}-${e.arch}; zip -r -y "${zipPath}" "${APPLICATION_TITLE}.app"`, execOutput);
-
+            console.log(cp.execSync(`mkdir -p ${path.dirname(zipPath)}`));
+            console.log(cp.execSync(`cd out/${APPLICATION_NAME}-${e.platform}-${e.arch}; zip -r -y "${zipPath}" "${APPLICATION_TITLE}.app"`));
             break;
           }
           case "linux": {
@@ -207,13 +214,6 @@ module.exports = {
     }),
   ],
 };
-
-function execOutput(err, stdout, stderr) {
-  if (err) {
-    console.log(stderr);
-  }
-  console.log(stdout);
-}
 
 function getArtifactOS(platform) {
   switch (platform) {
