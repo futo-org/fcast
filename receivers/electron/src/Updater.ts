@@ -132,7 +132,14 @@ export class Updater {
 
             // Electron runtime sees .asar file as directory and causes errors during copy/remove operations
             process.noAsar = true
-            fs.rmSync(dst, { recursive: true, force: true });
+            if (process.platform === 'win32') {
+                // Cannot remove top-level directory since it might still be locked...
+                fs.rmSync(`${dst}\\*`, { maxRetries: 5, retryDelay: 1000, recursive: true, force: true });
+            }
+            else {
+                fs.rmSync(dst, { maxRetries: 5, retryDelay: 1000, recursive: true, force: true });
+            }
+
             if (process.platform === 'darwin') {
                 // Electron framework libraries break otherwise on Mac
                 fs.cpSync(src, dst, { recursive: true, force: true, verbatimSymlinks: true });
