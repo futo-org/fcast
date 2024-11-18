@@ -50,9 +50,17 @@ export class Updater {
     private static updateDataPath: string = path.join(app.getPath('userData'), 'updater');
     private static updateMetadataPath = path.join(Updater.updateDataPath, './update.json');
     private static baseUrl: string = 'https://dl.fcast.org/electron';
-    private static channelVersion: string = null;
+    private static isRestarting: boolean = false;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private static localPackageJson: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private static releasesJson: any = null;
 
     public static isDownloading: boolean = false;
+    public static updateError: boolean = false;
+    public static updateDownloaded: boolean = false;
+    public static updateProgress: number = 0;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private static async fetchJSON(url: string): Promise<any> {
@@ -80,7 +88,15 @@ export class Updater {
         return new Promise((resolve, reject) => {
             const file = fs.createWriteStream(destination);
             https.get(url, (response) => {
+                const downloadSize = Number(response.headers['content-length']);
+                logger.info(`Update size: ${downloadSize} bytes`);
                 response.pipe(file);
+                let downloadedBytes = 0;
+
+                response.on('data', (chunk) => {
+                    downloadedBytes += chunk.length;
+                    Updater.updateProgress = downloadedBytes / downloadSize;
+                });
                 file.on('finish', () => {
                     file.close();
                     resolve();
@@ -169,19 +185,23 @@ export class Updater {
     }
 
     public static restart() {
-        const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
-        const extractionDir = process.platform === 'darwin' ? 'FCast Receiver.app' : `fcast-receiver-${process.platform}-${process.arch}`;
-        const binaryName = process.platform === 'win32' ? 'fcast-receiver.exe' : 'fcast-receiver';
-        const updateBinPath = process.platform === 'darwin' ? path.join(updateInfo.tempPath, extractionDir) : path.join(updateInfo.tempPath, extractionDir, binaryName);
+        if (!Updater.isRestarting) {
+            Updater.isRestarting = true;
+            const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
+            const extractionDir = process.platform === 'darwin' ? 'FCast Receiver.app' : `fcast-receiver-${process.platform}-${process.arch}`;
+            const binaryName = process.platform === 'win32' ? 'fcast-receiver.exe' : 'fcast-receiver';
+            const updateBinPath = process.platform === 'darwin' ? path.join(updateInfo.tempPath, extractionDir) : path.join(updateInfo.tempPath, extractionDir, binaryName);
 
-        Updater.relaunch(updateBinPath);
+            Updater.relaunch(updateBinPath);
+        }
+
         return;
     }
 
     public static isUpdating(): boolean {
         try {
             const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
-            // TODO: In case of error inform user
+            Updater.updateError = true;
             return updateInfo.updateState !== 'error';
         }
         catch {
@@ -190,12 +210,12 @@ export class Updater {
     }
 
     public static getChannelVersion(): string {
-        if (Updater.channelVersion === null) {
-            const localPackage = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
-            Updater.channelVersion = localPackage.channelVersion ? localPackage.channelVersion : 0
+        if (Updater.localPackageJson === null) {
+            Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
+            Updater.localPackageJson.channelVersion = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0
         }
 
-        return Updater.channelVersion;
+        return Updater.localPackageJson.channelVersion;
     }
 
     public static async processUpdate(): Promise<void> {
@@ -215,9 +235,6 @@ export class Updater {
                         await Updater.applyUpdate(src, updateInfo.installPath);
                         updateInfo.updateState = UpdateState.Cleanup;
                         fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
-
-                        Updater.relaunch(installBinPath);
-                        return;
                     }
                     catch (err) {
                         logger.error('Error while applying update...');
@@ -226,10 +243,9 @@ export class Updater {
                         updateInfo.updateState = UpdateState.Error;
                         updateInfo.error = JSON.stringify(err);
                         fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
-                        log4js.shutdown();
-                        app.exit();
                     }
 
+                    Updater.relaunch(installBinPath);
                     return;
                 }
 
@@ -272,8 +288,44 @@ export class Updater {
         }
     }
 
-    public static async update(): Promise<boolean> {
-        logger.info('Updater invoked');
+    public static async checkForUpdates(): Promise<boolean> {
+        logger.info('Checking for updates...');
+        Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
+
+        try {
+            Updater.releasesJson = await Updater.fetchJSON(`${Updater.baseUrl}/releases_v${Updater.supportedReleasesJsonVersion}.json`.toString()) as ReleaseInfo;
+
+            let updaterSettings = Store.get('updater');
+            if (updaterSettings === null) {
+                updaterSettings = {
+                    'channel': Updater.localPackageJson.channel,
+                }
+
+                Store.set('updater', updaterSettings);
+            }
+            else {
+                Updater.localPackageJson.channel = updaterSettings.channel;
+            }
+
+            const localChannelVersion: number = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0;
+            const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] ? Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] : 0;
+            logger.info('Update check', { channel: Updater.localPackageJson.channel, channel_version: localChannelVersion, localVersion: Updater.localPackageJson.version,
+                currentVersion: Updater.releasesJson.currentVersion, currentChannelVersion: currentChannelVersion });
+
+            if (Updater.localPackageJson.version !== Updater.releasesJson.currentVersion || (Updater.localPackageJson.channel !== 'stable' && localChannelVersion < currentChannelVersion)) {
+                logger.info('Update available...');
+                return true;
+            }
+        }
+        catch (err) {
+            logger.error(`Failed to check for updates: ${err}`);
+            throw 'Please try again later or visit https://fcast.org for updates.';
+        }
+
+        return false;
+    }
+
+    public static async downloadUpdate(): Promise<boolean> {
         try {
             fs.accessSync(Updater.updateDataPath, fs.constants.F_OK);
         }
@@ -282,70 +334,50 @@ export class Updater {
             fs.mkdirSync(Updater.updateDataPath);
         }
 
-        const localPackage = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
         try {
-            const releases = await Updater.fetchJSON(`${Updater.baseUrl}/releases_v${Updater.supportedReleasesJsonVersion}.json`.toString()) as ReleaseInfo;
+            const channel = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion ? 'stable' : Updater.localPackageJson.channel;
+            const fileInfo = Updater.releasesJson.currentReleases[channel][process.platform][process.arch]
+            const file = fileInfo.url.toString().split('/').pop();
 
-            let updaterSettings = Store.get('updater');
-            if (updaterSettings === null) {
-                updaterSettings = {
-                    'channel': localPackage.channel,
-                }
+            const destination = path.join(Updater.updateDataPath, file);
+            logger.info(`Downloading '${fileInfo.url}' to '${destination}'.`);
+            Updater.isDownloading = true;
+            await Updater.downloadFile(fileInfo.url.toString(), destination);
 
-                Store.set('updater', updaterSettings);
+            const downloadedFile = await fs.promises.readFile(destination);
+            const hash = crypto.createHash('sha256').end(downloadedFile).digest('hex');
+            if (fileInfo.sha256Digest !== hash) {
+                const message = 'Update failed integrity check. Please try again later or visit https://fcast.org to for updates.';
+                logger.error(`Update failed integrity check. Expected hash: ${fileInfo.sha256Digest}, actual hash: ${hash}`);
+                throw message;
             }
 
-            const localChannelVersion: number = localPackage.channelVersion ? localPackage.channelVersion : 0
-            const currentChannelVersion: number = releases.channelCurrentVersions[localPackage.channel] ? releases.channelCurrentVersions[localPackage.channel] : 0
-            logger.info('Update check', { channel: localPackage.channel, channel_version: localChannelVersion, localVersion: localPackage.version,
-                currentVersion: releases.currentVersion, currentChannelVersion: currentChannelVersion });
+            // Electron runtime sees .asar file as directory and causes errors during extraction
+            logger.info('Extracting update...');
+            process.noAsar = true;
+            await extract(destination, { dir: path.dirname(destination) });
+            process.noAsar = false;
 
-            if (localPackage.version !== releases.currentVersion || (localPackage.channel !== 'stable' && localChannelVersion < currentChannelVersion)) {
-                const channel = localPackage.version !== releases.currentVersion ? 'stable' : localPackage.channel;
-                const fileInfo = releases.currentReleases[channel][process.platform][process.arch]
-                const file = fileInfo.url.toString().split('/').pop();
+            logger.info('Extraction complete.');
+            const updateInfo: UpdateInfo = {
+                updateState: UpdateState.Copy,
+                installPath: Updater.installPath,
+                tempPath: path.dirname(destination),
+                currentVersion: Updater.releasesJson.currentVersion,
+                downloadFile: file,
+            };
 
-                const destination = path.join(Updater.updateDataPath, file);
-                logger.info(`Downloading '${fileInfo.url}' to '${destination}'.`);
-                Updater.isDownloading = true;
-                await Updater.downloadFile(fileInfo.url.toString(), destination);
-
-                const downloadedFile = await fs.promises.readFile(destination);
-                const hash = crypto.createHash('sha256').end(downloadedFile).digest('hex');
-                if (fileInfo.sha256Digest !== hash) {
-                    const message = 'Update failed integrity check. Please try checking for updates again or downloading the update manually.';
-                    logger.error(`Update failed integrity check. Expected hash: ${fileInfo.sha256Digest}, actual hash: ${hash}`);
-                    throw message;
-                }
-
-                // Electron runtime sees .asar file as directory and causes errors during extraction
-                logger.info('Extracting update...');
-                process.noAsar = true;
-                await extract(destination, { dir: path.dirname(destination) });
-                process.noAsar = false;
-
-                logger.info('Extraction complete.');
-                const updateInfo: UpdateInfo = {
-                    updateState: UpdateState.Copy,
-                    installPath: Updater.installPath,
-                    tempPath: path.dirname(destination),
-                    currentVersion: releases.currentVersion,
-                    downloadFile: file,
-                };
-
-                fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
-                logger.info('Written update metadata.');
-                Updater.isDownloading = false;
-                return true;
-            }
+            fs.writeFileSync(Updater.updateMetadataPath, JSON.stringify(updateInfo));
+            logger.info('Written update metadata.');
+            Updater.isDownloading = false;
+            Updater.updateDownloaded = true;
+            return true;
         }
         catch (err) {
             Updater.isDownloading = false;
             process.noAsar = false;
-            logger.error(`Failed to check for updates: ${err}`);
-            throw 'Failed to check for updates. Please try again later or visit https://fcast.org for updates.';
+            logger.error(`Failed to download update: ${err}`);
+            throw 'Failed to download update. Please try again later or visit https://fcast.org to download.';
         }
-
-        return false;
     }
 }

@@ -53,41 +53,36 @@ export default class Main {
             {
                 label: 'Check for updates',
                 click: async () => {
-                    if (!Updater.isDownloading) {
-                        try {
-                            if (await Updater.update()) {
-                                const restartPrompt = await dialog.showMessageBox({
-                                    type: 'info',
-                                    title: 'Update ready',
-                                    message: 'Update downloaded, restart now to apply the changes.',
-                                    buttons: ['Restart'],
-                                    defaultId: 0
-                                });
+                    if (Updater.updateDownloaded) {
+                        Main.mainWindow.webContents.send("download-complete");
+                        return;
+                    }
 
-                                // Restart the app if the user clicks the 'Restart' button
-                                if (restartPrompt.response === 0) {
-                                    Updater.restart();
-                                }
-                            } else {
-                                await dialog.showMessageBox({
-                                    type: 'info',
-                                    title: 'Already up-to-date',
-                                    message: 'The application is already on the latest version.',
-                                    buttons: ['OK'],
-                                    defaultId: 0
-                                });
-                            }
-                        } catch (err) {
+                    try {
+                        const updateAvailable = await Updater.checkForUpdates();
+
+                        if (updateAvailable) {
+                            Main.mainWindow.webContents.send("update-available");
+                        }
+                        else {
                             await dialog.showMessageBox({
-                                type: 'error',
-                                title: 'Failed to update',
-                                message: err,
+                                type: 'info',
+                                title: 'Already up-to-date',
+                                message: 'The application is already on the latest version.',
                                 buttons: ['OK'],
                                 defaultId: 0
                             });
-
-                            Main.logger.error('Failed to update:', err);
                         }
+                    } catch (err) {
+                        await dialog.showMessageBox({
+                            type: 'error',
+                            title: 'Failed to check for updates',
+                            message: err,
+                            buttons: ['OK'],
+                            defaultId: 0
+                        });
+
+                        Main.logger.error('Failed to check for updates:', err);
                     }
                 },
             },
@@ -182,7 +177,33 @@ export default class Main {
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
             });
+
+            ipcMain.on('send-download-request', async () => {
+                if (!Updater.isDownloading) {
+                    try {
+                        await Updater.downloadUpdate();
+                        Main.mainWindow.webContents.send("download-complete");
+                    } catch (err) {
+                        await dialog.showMessageBox({
+                            type: 'error',
+                            title: 'Failed to download update',
+                            message: err,
+                            buttons: ['OK'],
+                            defaultId: 0
+                        });
+
+                        Main.logger.error('Failed to download update:', err);
+                        Main.mainWindow.webContents.send("download-failed");
+                    }
+                }
+            });
+
+            ipcMain.on('send-restart-request', async () => {
+                Updater.restart();
+            });
         });
+
+        ipcMain.handle('updater-progress', async () => { return Updater.updateProgress; });
 
         ipcMain.handle('is-full-screen', async () => {
             const window = Main.playerWindow;
@@ -213,6 +234,16 @@ export default class Main {
 
         if (Main.shouldOpenMainWindow) {
             Main.openMainWindow();
+        }
+
+        if (Updater.updateError) {
+            dialog.showMessageBox({
+                type: 'error',
+                title: 'Error applying update',
+                message: 'Please try again later or visit https://fcast.org to update.',
+                buttons: ['OK'],
+                defaultId: 0
+            });
         }
     }
 
