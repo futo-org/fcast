@@ -1,6 +1,8 @@
 import mdns from 'mdns-js';
+import * as log4js from "log4js";
 const cp = require('child_process');
 const os = require('os');
+const logger = log4js.getLogger();
 
 export class DiscoveryService {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -22,15 +24,15 @@ export class DiscoveryService {
                     hostname = os.hostname();
                 }
                 catch (err) {
-                    console.warn('Error fetching hostname, trying different method...');
-                    console.warn(err);
+                    logger.warn('Error fetching hostname, trying different method...');
+                    logger.warn(err);
 
                     try {
                         hostname = cp.execSync("hostnamectl hostname").toString().trim();
                     }
                     catch (err2) {
-                        console.warn('Error fetching hostname again, using generic name...');
-                        console.warn(err2);
+                        logger.warn('Error fetching hostname again, using generic name...');
+                        logger.warn(err2);
 
                         hostname = 'linux device';
                     }
@@ -50,7 +52,7 @@ export class DiscoveryService {
         }
 
         const name = `FCast-${DiscoveryService.getComputerName()}`;
-        console.log("Discovery service started.", name);
+        logger.info("Discovery service started.", name);
 
         this.serviceTcp = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name });
         this.serviceTcp.start();

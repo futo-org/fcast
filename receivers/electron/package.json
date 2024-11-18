@@ -24,6 +24,7 @@
     "@electron/fuses": "^1.8.0",
     "@eslint/js": "^9.10.0",
     "@futo/forge-maker-wix-linux": "^7.5.0",
+    "@types/electron-json-storage": "^4.5.4",
     "@types/jest": "^29.5.11",
     "@types/mdns": "^0.0.38",
     "@types/node-forge": "^1.3.10",
@@ -44,12 +45,15 @@
     "webpack-cli": "^5.0.1"
   },
   "dependencies": {
+    "@vscode/sudo-prompt": "^9.3.1",
     "bufferutil": "^4.0.8",
     "dashjs": "^4.7.4",
+    "electron-json-storage": "^4.6.0",
     "extract-zip": "^2.0.1",
     "hls.js": "^1.5.15",
     "http": "^0.0.1-security",
     "https": "^1.0.0",
+    "log4js": "^6.9.1",
     "qrcode": "^1.5.3",
     "update-electron-app": "^3.0.0",
     "url": "^0.11.3",

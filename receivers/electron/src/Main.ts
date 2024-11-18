@@ -9,6 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
 import * as url from 'url';
+import * as log4js from "log4js";
 import { AddressInfo } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
 import yargs from 'yargs';
@@ -29,6 +30,7 @@ export default class Main {
     static proxyServer: http.Server;
     static proxyServerAddress: AddressInfo;
     static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
+    static logger: log4js.Logger;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -51,25 +53,18 @@ export default class Main {
             {
                 label: 'Check for updates',
                 click: async () => {
+                    if (Updater.updateDownloaded) {
+                        Main.mainWindow.webContents.send("download-complete");
+                        return;
+                    }
+
                     try {
-                        const updater = new Updater(path.join(__dirname, '../'), 'https://releases.grayjay.app/fcastreceiver');
-                        if (await updater.update()) {
-                            const restartPrompt = await dialog.showMessageBox({
-                                type: 'info',
-                                title: 'Update completed',
-                                message: 'The application has been updated. Restart now to apply the changes.',
-                                buttons: ['Restart'],
-                                defaultId: 0
-                            });
+                        const updateAvailable = await Updater.checkForUpdates();
 
-                            console.log('Update completed');
-
-                            // Restart the app if the user clicks the 'Restart' button
-                            if (restartPrompt.response === 0) {
-                                Main.application.relaunch();
-                                Main.application.exit(0);
-                            }
-                        } else {
+                        if (updateAvailable) {
+                            Main.mainWindow.webContents.send("update-available");
+                        }
+                        else {
                             await dialog.showMessageBox({
                                 type: 'info',
                                 title: 'Already up-to-date',
@@ -81,13 +76,13 @@ export default class Main {
                     } catch (err) {
                         await dialog.showMessageBox({
                             type: 'error',
-                            title: 'Failed to update',
-                            message: 'The application failed to update.',
+                            title: 'Failed to check for updates',
+                            message: err,
                             buttons: ['OK'],
                             defaultId: 0
                         });
 
-                        console.error('Failed to update:', err);
+                        Main.logger.error('Failed to check for updates:', err);
                     }
                 },
             },
@@ -98,7 +93,7 @@ export default class Main {
                 label: 'Restart',
                 click: () => {
                     this.application.relaunch();
-                    this.application.exit(0);
+                    this.application.exit();
                 }
             },
             {
@@ -182,7 +177,33 @@ export default class Main {
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
             });
+
+            ipcMain.on('send-download-request', async () => {
+                if (!Updater.isDownloading) {
+                    try {
+                        await Updater.downloadUpdate();
+                        Main.mainWindow.webContents.send("download-complete");
+                    } catch (err) {
+                        await dialog.showMessageBox({
+                            type: 'error',
+                            title: 'Failed to download update',
+                            message: err,
+                            buttons: ['OK'],
+                            defaultId: 0
+                        });
+
+                        Main.logger.error('Failed to download update:', err);
+                        Main.mainWindow.webContents.send("download-failed");
+                    }
+                }
+            });
+
+            ipcMain.on('send-restart-request', async () => {
+                Updater.restart();
+            });
         });
+
+        ipcMain.handle('updater-progress', async () => { return Updater.updateProgress; });
 
         ipcMain.handle('is-full-screen', async () => {
             const window = Main.playerWindow;
@@ -214,17 +235,27 @@ export default class Main {
         if (Main.shouldOpenMainWindow) {
             Main.openMainWindow();
         }
+
+        if (Updater.updateError) {
+            dialog.showMessageBox({
+                type: 'error',
+                title: 'Error applying update',
+                message: 'Please try again later or visit https://fcast.org to update.',
+                buttons: ['OK'],
+                defaultId: 0
+            });
+        }
     }
 
 
     private static setupProxyServer(): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             try {
-                console.log(`Proxy server starting`);
+                Main.logger.info(`Proxy server starting`);
 
                 const port = 0;
                 Main.proxyServer = http.createServer((req, res) => {
-                    console.log(`Request received`);
+                    Main.logger.info(`Request received`);
                     const requestUrl = `http://${req.headers.host}${req.url}`;
 
                     const proxyInfo = Main.proxiedFiles.get(requestUrl);
@@ -265,7 +296,7 @@ export default class Main {
 
                     req.pipe(proxyReq, { end: true });
                     proxyReq.on('error', (e) => {
-                        console.error(`Problem with request: ${e.message}`);
+                        Main.logger.error(`Problem with request: ${e.message}`);
                         res.writeHead(500);
                         res.end();
                     });
@@ -275,7 +306,7 @@ export default class Main {
                 });
                 Main.proxyServer.listen(port, '127.0.0.1', () => {
                     Main.proxyServerAddress = Main.proxyServer.address() as AddressInfo;
-                    console.log(`Proxy server running at http://127.0.0.1:${Main.proxyServerAddress.port}/`);
+                    Main.logger.info(`Proxy server running at http://127.0.0.1:${Main.proxyServerAddress.port}/`);
                     resolve();
                 });
             } catch (e) {
@@ -303,7 +334,7 @@ export default class Main {
         }
 
         const proxiedUrl = `http://127.0.0.1:${Main.proxyServerAddress.port}/${uuidv4()}`;
-        console.log("Proxied url", { proxiedUrl, url, headers });
+        Main.logger.info("Proxied url", { proxiedUrl, url, headers });
         Main.proxiedFiles.set(proxiedUrl, { url: url, headers: headers });
         return proxiedUrl;
     }
@@ -356,21 +387,46 @@ export default class Main {
         });
     }
 
-    static main(app: Electron.App) {
-        Main.application = app;
-                const argv = yargs(hideBin(process.argv))
-            .parserConfiguration({
-                'boolean-negation': false
-            })
-            .options({
-                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
-                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
-            })
-            .parseSync();
+    static async main(app: Electron.App) {
+        try {
+            Main.application = app;
+            const isUpdating = Updater.isUpdating();
+            const fileLogType = isUpdating ? 'fileSync' : 'file';
 
-        Main.startFullscreen = argv.fullscreen;
-        Main.shouldOpenMainWindow = !argv.noMainWindow;
-        Main.application.on('ready', Main.onReady);
-        Main.application.on('window-all-closed', () => { });
+            log4js.configure({
+                appenders: {
+                    out: { type: 'stdout' },
+                    log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'a', maxLogSize: '5M' },
+                },
+                categories: {
+                    default: { appenders: ['out', 'log'], level: 'info' },
+                },
+            });
+            Main.logger = log4js.getLogger();
+            Main.logger.info(`Starting application: ${app.name} (${app.getVersion()} - ${Updater.getChannelVersion()}) | ${app.getAppPath()}`);
+
+            if (isUpdating) {
+                await Updater.processUpdate();
+            }
+
+            const argv = yargs(hideBin(process.argv))
+                .parserConfiguration({
+                    'boolean-negation': false
+                })
+                .options({
+                    'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
+                    'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
+                })
+                .parseSync();
+
+            Main.startFullscreen = argv.fullscreen;
+            Main.shouldOpenMainWindow = !argv.noMainWindow;
+            Main.application.on('ready', Main.onReady);
+            Main.application.on('window-all-closed', () => { });
+        }
+        catch (err) {
+            Main.logger.error(`Error starting application: ${err}`);
+            app.exit();
+        }
     }
 }
