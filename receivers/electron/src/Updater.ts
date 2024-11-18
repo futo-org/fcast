@@ -61,6 +61,24 @@ export class Updater {
     public static updateError: boolean = false;
     public static updateDownloaded: boolean = false;
     public static updateProgress: number = 0;
+    public static checkForUpdatesOnStart: boolean = true;
+
+    static {
+        Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
+
+        let updaterSettings = Store.get('updater');
+        if (updaterSettings !== null) {
+            Updater.localPackageJson.channel = updaterSettings.channel === undefined ? 'stable' : updaterSettings.channel;
+            Updater.checkForUpdatesOnStart = updaterSettings.checkForUpdatesOnStart === undefined ? true : updaterSettings.checkForUpdatesOnStart;
+        }
+
+        updaterSettings = {
+            'channel': Updater.localPackageJson.channel,
+            'checkForUpdatesOnStart': Updater.checkForUpdatesOnStart,
+        }
+
+        Store.set('updater', updaterSettings);
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private static async fetchJSON(url: string): Promise<any> {
@@ -210,11 +228,7 @@ export class Updater {
     }
 
     public static getChannelVersion(): string {
-        if (Updater.localPackageJson === null) {
-            Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
-            Updater.localPackageJson.channelVersion = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0
-        }
-
+        Updater.localPackageJson.channelVersion = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0
         return Updater.localPackageJson.channelVersion;
     }
 
@@ -290,22 +304,9 @@ export class Updater {
 
     public static async checkForUpdates(): Promise<boolean> {
         logger.info('Checking for updates...');
-        Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
 
         try {
             Updater.releasesJson = await Updater.fetchJSON(`${Updater.baseUrl}/releases_v${Updater.supportedReleasesJsonVersion}.json`.toString()) as ReleaseInfo;
-
-            let updaterSettings = Store.get('updater');
-            if (updaterSettings === null) {
-                updaterSettings = {
-                    'channel': Updater.localPackageJson.channel,
-                }
-
-                Store.set('updater', updaterSettings);
-            }
-            else {
-                Updater.localPackageJson.channel = updaterSettings.channel;
-            }
 
             const localChannelVersion: number = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0;
             const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] ? Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] : 0;

@@ -41,6 +41,44 @@ export default class Main {
         }
     }
 
+    private static async checkForUpdates(silent: boolean) {
+        if (Updater.updateDownloaded) {
+            Main.mainWindow.webContents.send("download-complete");
+            return;
+        }
+
+        try {
+            const updateAvailable = await Updater.checkForUpdates();
+
+            if (updateAvailable) {
+                Main.mainWindow.webContents.send("update-available");
+            }
+            else {
+                if (!silent) {
+                    await dialog.showMessageBox({
+                        type: 'info',
+                        title: 'Already up-to-date',
+                        message: 'The application is already on the latest version.',
+                        buttons: ['OK'],
+                        defaultId: 0
+                    });
+                }
+            }
+        } catch (err) {
+            if (!silent) {
+                await dialog.showMessageBox({
+                    type: 'error',
+                    title: 'Failed to check for updates',
+                    message: err,
+                    buttons: ['OK'],
+                    defaultId: 0
+                });
+            }
+
+            Main.logger.error('Failed to check for updates:', err);
+        }
+    }
+
     private static createTray() {
         const icon = (process.platform === 'win32') ? path.join(__dirname, 'icon.ico') : path.join(__dirname, 'icon.png');
         const trayicon = nativeImage.createFromPath(icon)
@@ -52,39 +90,7 @@ export default class Main {
             },
             {
                 label: 'Check for updates',
-                click: async () => {
-                    if (Updater.updateDownloaded) {
-                        Main.mainWindow.webContents.send("download-complete");
-                        return;
-                    }
-
-                    try {
-                        const updateAvailable = await Updater.checkForUpdates();
-
-                        if (updateAvailable) {
-                            Main.mainWindow.webContents.send("update-available");
-                        }
-                        else {
-                            await dialog.showMessageBox({
-                                type: 'info',
-                                title: 'Already up-to-date',
-                                message: 'The application is already on the latest version.',
-                                buttons: ['OK'],
-                                defaultId: 0
-                            });
-                        }
-                    } catch (err) {
-                        await dialog.showMessageBox({
-                            type: 'error',
-                            title: 'Failed to check for updates',
-                            message: err,
-                            buttons: ['OK'],
-                            defaultId: 0
-                        });
-
-                        Main.logger.error('Failed to check for updates:', err);
-                    }
-                },
+                click: async () => { await Main.checkForUpdates(false); },
             },
             {
                 type: 'separator',
@@ -244,6 +250,10 @@ export default class Main {
                 buttons: ['OK'],
                 defaultId: 0
             });
+        }
+
+        if (Updater.checkForUpdatesOnStart) {
+            Main.checkForUpdates(true);
         }
     }
 
