@@ -1,4 +1,20 @@
-# FCast
+<p align="center">
+  <br/>
+  <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/License-MIT-blue.svg?color=008BD7&style=for-the-badge&label=License&logoColor=000000&labelColor=ececec" alt="License: MIT"></a>
+  <br/>
+  <br/>
+</p>
+
+<p align="center">
+<a href="https://fcast.org/">
+<img src="website/images/ic_banner.svg" height="300">
+</a>
+</p>
+<h3 align="center"> Open source protocol for audio and video content streaming</h3>
+<br/>
+
+
+## What is FCast?
 
 FCast is an open source protocol that enables wireless streaming of audio and video content between devices, supporting various stream types such as DASH, HLS, and mp4.
 
@@ -40,4 +56,4 @@ This project is licensed under the MIT License - see the LICENSE.md file for det
 
 ## Documentation
 
-Click [here](https://gitlab.com/futo-org/fcast/-/wikis/Protocol-version-1) to see the protocol documentation.
+Click [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-1) to see the protocol documentation.
