@@ -131,15 +131,15 @@ module.exports = {
           fs.renameSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`, `./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}.app`);
           fs.writeFileSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`,
             '#!/bin/sh\n' +
-            'installDir=$(which fcast-receiver)\n' +
-            'if [ -z "$installDir" ]; then\n' +
-            '\tbin="$0/fcast-receiver"\n' +
+            'if [ "$0" = "/usr/bin/fcast-receiver" ]; then\n' +
+            '\tbin="/usr/lib/fcast-receiver/fcast-receiver.app"\n' +
             'else\n' +
-            '\tbin=$(readlink -f $installDir)\n' +
+            '\tbin="$0.app"\n' +
             'fi\n' +
-            '"$bin.app" --no-sandbox $*'
+            '"$bin" --no-sandbox $*'
           );
           fs.chmodSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`, 0o755);
+          break;
         }
         default:
           break;
