@@ -433,7 +433,9 @@ export default class Main {
                 },
             });
             Main.logger = log4js.getLogger();
-            Main.logger.info(`Starting application: ${app.name} (${app.getVersion()} - ${Updater.releaseChannel} - ${Updater.getChannelVersion()}) | ${app.getAppPath()}`);
+            Main.logger.info(`Starting application: ${app.name} | ${app.getAppPath()}`);
+            Main.logger.info(`Version: ${app.getVersion()}`);
+            Main.logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
             Main.logger.info(`OS: ${process.platform} ${process.arch}`);
 
             if (isUpdating) {
