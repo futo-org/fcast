@@ -420,9 +420,20 @@ export default class Main {
     static async main(app: Electron.App) {
         try {
             Main.application = app;
+
+            const argv = yargs(hideBin(process.argv))
+            .version(app.getVersion())
+            .parserConfiguration({
+                'boolean-negation': false
+            })
+            .options({
+                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
+                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
+            })
+            .parseSync();
+
             const isUpdating = Updater.isUpdating();
             const fileLogType = isUpdating ? 'fileSync' : 'file';
-
             log4js.configure({
                 appenders: {
                     out: { type: 'stdout' },
@@ -441,16 +452,6 @@ export default class Main {
             if (isUpdating) {
                 await Updater.processUpdate();
             }
-
-            const argv = yargs(hideBin(process.argv))
-                .parserConfiguration({
-                    'boolean-negation': false
-                })
-                .options({
-                    'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
-                    'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
-                })
-                .parseSync();
 
             Main.startFullscreen = argv.fullscreen;
             Main.shouldOpenMainWindow = !argv.noMainWindow;
