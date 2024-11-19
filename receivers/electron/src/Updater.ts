@@ -159,7 +159,7 @@ export class Updater {
                         command = `rmdir /S /Q "${dst}" & xcopy /Y /E "${src}" "${dst}"`;
                     }
                     else {
-                        command = `rm -rf '${dst}'; cp -rf '${src}' '${dst}'`;
+                        command = `rm -rf '${dst}'; cp -rf '${src}' '${dst}'; chmod 755 '${dst}'`;
                     }
 
                     sudo.exec(command, { name: 'FCast Receiver' }, (error, stdout, stderr) => {
