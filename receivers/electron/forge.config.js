@@ -124,6 +124,23 @@ module.exports = {
           }
           break;
         }
+        case "linux": {
+          // Workaround for broken Ubuntu builds due to sandboxing permissions:
+          // * https://github.com/electron/electron/issues/17972c
+          // * https://github.com/electron/electron/issues/41066
+          fs.renameSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`, `./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}.app`);
+          fs.writeFileSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`,
+            '#!/bin/sh\n' +
+            'installDir=$(which fcast-receiver)\n' +
+            'if [ -z "$installDir" ]; then\n' +
+            '\tbin="$0/fcast-receiver"\n' +
+            'else\n' +
+            '\tbin=$(readlink -f $installDir)\n' +
+            'fi\n' +
+            '"$bin.app" --no-sandbox $*'
+          );
+          fs.chmodSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`, 0o755);
+        }
         default:
           break;
       }
@@ -171,11 +188,6 @@ module.exports = {
           case "linux": {
             let artifactName = `${APPLICATION_NAME}-linux-${e.arch}-${e.packageJSON.version}.zip`;
             if (fs.existsSync(`./out/make/zip/linux/${e.arch}/${artifactName}`)) {
-              // TODO: Revisit Ubuntu 24.04 SUID sandbox issue
-
-              // await extract(`./out/make/zip/linux/${e.arch}/${artifactName}`, { dir: `${process.cwd()}/out/make/zip/linux/${e.arch}/` });
-              // fs.chownSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 0, 0);
-              // fs.chmodSync(`${process.cwd()}/out/make/zip/linux/${e.arch}/${APPLICATION_NAME}-linux-${e.arch}/chrome-sandbox`, 4755);
               fs.renameSync(`./out/make/zip/linux/${e.arch}/${artifactName}`, path.join(`./out/make/zip/linux/${e.arch}`, generateArtifactName(e.packageJSON, e.platform, e.arch, 'zip')));
             }
 
