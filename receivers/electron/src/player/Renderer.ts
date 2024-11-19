@@ -111,6 +111,9 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
     const currentPlaybackRate = player ? player.getPlaybackRate() : null;
 
     playerPrevTime = 0;
+    lastPlayerUpdateGenerationTime = 0;
+    isLive = false;
+    isLivePosition = false;
 
     if (player) {
         if (player.getSource() === value.url) {
@@ -327,6 +330,8 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             }
             else {
                 playerCtrlLiveBadge.setAttribute("style", "display: none");
+                playerCtrlPosition.setAttribute("style", "display: block");
+                playerCtrlDuration.setAttribute("style", "display: block");
                 playerCtrlPosition.textContent = formatDuration(player.getCurrentTime());
                 playerCtrlDuration.innerHTML = `/&nbsp&nbsp${formatDuration(player.getDuration())}`;
             }
