@@ -623,16 +623,19 @@ let uiHideTimer = null;
 let uiVisible = true;
 
 function startUiHideTimer() {
-    uiHideTimer = window.setTimeout(() => {
-        uiHideTimer = null;
-        uiVisible = false;
-        playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
-    }, 3000);
+    if (uiHideTimer === null) {
+        uiHideTimer = window.setTimeout(() => {
+            uiHideTimer = null;
+            uiVisible = false;
+            playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
+        }, 3000);
+    }
 }
 
 function stopUiHideTimer() {
     if (uiHideTimer) {
         window.clearTimeout(uiHideTimer);
+        uiHideTimer = null;
     }
 
     if (!uiVisible) {
