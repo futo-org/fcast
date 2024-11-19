@@ -62,13 +62,14 @@ export class Updater {
     public static updateDownloaded: boolean = false;
     public static updateProgress: number = 0;
     public static checkForUpdatesOnStart: boolean = true;
+    public static releaseChannel = 'stable';
 
     static {
         Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
 
         let updaterSettings = Store.get('updater');
         if (updaterSettings !== null) {
-            Updater.localPackageJson.channel = updaterSettings.channel === undefined ? 'stable' : updaterSettings.channel;
+            Updater.localPackageJson.channel = updaterSettings.channel === undefined ? Updater.localPackageJson.channel : updaterSettings.channel;
             Updater.checkForUpdatesOnStart = updaterSettings.checkForUpdatesOnStart === undefined ? true : updaterSettings.checkForUpdatesOnStart;
         }
 
@@ -77,6 +78,7 @@ export class Updater {
             'checkForUpdatesOnStart': Updater.checkForUpdatesOnStart,
         }
 
+        Updater.releaseChannel = Updater.localPackageJson.channel;
         Store.set('updater', updaterSettings);
     }
 

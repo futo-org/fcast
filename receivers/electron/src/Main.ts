@@ -93,6 +93,26 @@ export default class Main {
                 click: async () => { await Main.checkForUpdates(false); },
             },
             {
+                label: 'About',
+                click: async () => {
+                    let aboutMessage = `Version: ${Main.application.getVersion()}\nRelease channel: ${Updater.releaseChannel}\n`;
+
+                    if (Updater.releaseChannel !== 'stable') {
+                        aboutMessage += `Release channel version: ${Updater.getChannelVersion()}\n`;
+                    }
+
+                    aboutMessage += `OS: ${process.platform} ${process.arch}\n`;
+
+                    await dialog.showMessageBox({
+                        type: 'info',
+                        title: 'Fcast Receiver',
+                        message: aboutMessage,
+                        buttons: ['OK'],
+                        defaultId: 0
+                    });
+                },
+            },
+            {
                 type: 'separator',
             },
             {
@@ -413,7 +433,8 @@ export default class Main {
                 },
             });
             Main.logger = log4js.getLogger();
-            Main.logger.info(`Starting application: ${app.name} (${app.getVersion()} - ${Updater.getChannelVersion()}) | ${app.getAppPath()}`);
+            Main.logger.info(`Starting application: ${app.name} (${app.getVersion()} - ${Updater.releaseChannel} - ${Updater.getChannelVersion()}) | ${app.getAppPath()}`);
+            Main.logger.info(`OS: ${process.platform} ${process.arch}`);
 
             if (isUpdating) {
                 await Updater.processUpdate();
