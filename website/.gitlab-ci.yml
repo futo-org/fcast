@@ -1,7 +1,0 @@
-deployWebsite:
-  stage: deployWebsite
-  before_script:
-    - cd website
-  script:
-    - sh deploy.sh
-  when: manual
