@@ -318,11 +318,11 @@ html, body, .body {
 	-webkit-text-fill-color: transparent;
 }
 
-#title-icon {
+#title-logo {
     width: 84px;
     height: 84px;
 
-    background-image: url(../images/icon-dark.svg);
+    background-image: url(../images/logo-dark.svg);
     background-size: cover;
     margin-right: 15px;
 }
