@@ -117,8 +117,8 @@ body, html {
 
 #title-text {
     font-family: Outfit;
-    font-size: 96px;
-    font-weight: bold;
+    font-size: 100px;
+    font-weight: 800;
     text-align: center;
 
     background-image: linear-gradient(180deg, #FFFFFF 5.9%, #D3D3D3 100%);

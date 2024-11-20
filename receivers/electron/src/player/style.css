@@ -184,6 +184,7 @@ body {
 }
 
 .progressBarPosition {
+    display: none;
     position: absolute;
     bottom: 25px;
     padding: 2px 5px;
@@ -435,12 +436,7 @@ body {
 
     width: fit-content;
 
-    /* display: flex; */
-    /* align-items: center; */
-    /* min-width: 100%; */
-    /* height: 100px; */
-    /* text-overflow: ellipsis; */
-    /* overflow: hidden; */
+    transition: bottom 0.2s ease-in-out;
 }
 
 .speedMenu {

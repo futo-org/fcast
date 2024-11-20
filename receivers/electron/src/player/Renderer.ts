@@ -186,7 +186,6 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             dashPlayer.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => { onPlayerLoad(value, currentPlaybackRate, currentVolume); });
 
             dashPlayer.on(dashjs.MediaPlayer.events.CUE_ENTER, (e: any) => {
-                // console.log("cueEnter", e);
                 const subtitle = document.createElement("p")
                 subtitle.setAttribute("id", "subtitle-" + e.cueID)
 
@@ -195,8 +194,7 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             });
 
             dashPlayer.on(dashjs.MediaPlayer.events.CUE_EXIT, (e: any) => {
-                // console.log("cueExit ", e);
-                document.getElementById("subtitle-" + e.cueID).remove();
+                document.getElementById("subtitle-" + e.cueID)?.remove();
             });
 
             dashPlayer.updateSettings({
@@ -416,11 +414,26 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         case PlayerControlEvent.UiFadeOut:
             document.body.style.cursor = "none";
             playerControls.setAttribute("style", "opacity: 0");
+
+            if (player.isCaptionsEnabled()) {
+                videoCaptions.setAttribute("style", "display: block; bottom: 75px;");
+            } else {
+                videoCaptions.setAttribute("style", "display: block; bottom: 75px;");
+            }
+
+
             break;
 
         case PlayerControlEvent.UiFadeIn:
             document.body.style.cursor = "default";
             playerControls.setAttribute("style", "opacity: 1");
+
+            if (player.isCaptionsEnabled()) {
+                videoCaptions.setAttribute("style", "display: block; bottom: 150px;");
+            } else {
+                videoCaptions.setAttribute("style", "display: block; bottom: 150px;");
+            }
+
             break;
 
         case PlayerControlEvent.SetCaptions:
@@ -644,7 +657,17 @@ function stopUiHideTimer() {
     }
 }
 
-document.onmousemove = function() {
+document.onmouseout = () => {
+    if (uiHideTimer) {
+        window.clearTimeout(uiHideTimer);
+        uiHideTimer = null;
+    }
+
+    uiVisible = false;
+    playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
+}
+
+document.onmousemove = () => {
     stopUiHideTimer();
 
     if (player && !player.isPaused()) {
