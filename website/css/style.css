@@ -297,3 +297,32 @@ html, body, .body {
 				visibility: visible;
 		}
 }
+
+#title-container {
+    display: flex;
+    /* justify-content: center; */
+    align-items: center;
+}
+
+#title-text {
+	font-family: Outfit;
+	font-size: 100px;
+	font-weight: 800;
+	line-height: 110px;
+	text-align: center;
+	text-underline-position: from-font;
+	text-decoration-skip-ink: none;
+
+	background: linear-gradient(180deg, #5B5B5B 5.9%, #292929 100%);
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+}
+
+#title-icon {
+    width: 84px;
+    height: 84px;
+
+    background-image: url(../images/icon-dark.svg);
+    background-size: cover;
+    margin-right: 15px;
+}
