@@ -2,7 +2,7 @@
   "name": "fcast",
   "version": "1.0.0",
   "scripts": {
-    "deploy-site": "wrangler pages deploy --directory ./website --branch master --project-name fcast"
+    "deploy-site": "wrangler pages deploy --directory ./website --branch main --project-name fcast"
   },
   "dependencies": {
     "wrangler": "^3.88.0"
