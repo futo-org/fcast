@@ -2,3 +2,6 @@
 
 # Ignore VSCode user project settings
 .vscode
+
+node_modules/
+.wrangler/

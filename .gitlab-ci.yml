@@ -1,7 +1,6 @@
 stages:
   - buildDockerContainers
   - buildAndDeployAndroid
-  - deployWebsite
   - buildAndDeployElectron
 
 variables:
@@ -15,4 +14,3 @@ variables:
 include:
   - local: 'receivers/android/.gitlab-ci.yml'
   - local: 'receivers/electron/.gitlab-ci.yml'
-  - local: 'website/.gitlab-ci.yml'
