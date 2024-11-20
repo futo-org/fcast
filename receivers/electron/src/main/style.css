@@ -107,6 +107,7 @@ body, html {
     font-size: 20px;
     font-style: normal;
     font-weight: 400;
+    background-color: rgba(0,0,0,0.5)
 }
 
 #title-container {
@@ -227,7 +228,7 @@ body, html {
 }
 
 #window-can-be-closed {
-    color: #666666;
+    color: #aaaaaa;
     position: absolute;
     bottom: 0;
     margin-bottom: 20px;
