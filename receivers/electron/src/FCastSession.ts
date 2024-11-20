@@ -1,7 +1,9 @@
-import net = require('net');
+import * as net from 'net';
+import * as log4js from "log4js";
 import { EventEmitter } from 'node:events';
 import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
 import { WebSocket } from 'ws';
+const logger = log4js.getLogger();
 
 enum SessionState {
     Idle = 0,
@@ -47,7 +49,7 @@ export class FCastSession {
 
     send(opcode: number, message = null) {
         const json = message ? JSON.stringify(message) : null;
-        console.log(`send (opcode: ${opcode}, body: ${json})`);
+        logger.info(`send (opcode: ${opcode}, body: ${json})`);
 
         let data: Uint8Array;
         if (json) {
@@ -56,7 +58,7 @@ export class FCastSession {
         } else  {
             data = new Uint8Array(0);
         }
-        
+
         const size = 1 + data.length;
         const header = Buffer.alloc(4 + 1);
         header.writeUint32LE(size, 0);
@@ -87,7 +89,7 @@ export class FCastSession {
             return;
         }
 
-        console.log(`${receivedBytes.length} bytes received`);
+        logger.info(`${receivedBytes.length} bytes received`);
 
         switch (this.state) {
             case SessionState.WaitingForLength:
@@ -97,7 +99,7 @@ export class FCastSession {
                 this.handlePacketBytes(receivedBytes);
                 break;
             default:
-                console.log(`Data received is unhandled in current session state ${this.state}.`);
+                logger.info(`Data received is unhandled in current session state ${this.state}.`);
                 break;
         }
     }
@@ -108,20 +110,20 @@ export class FCastSession {
         receivedBytes.copy(this.buffer, this.bytesRead, 0, bytesToRead);
         this.bytesRead += bytesToRead;
 
-        console.log(`handleLengthBytes: Read ${bytesToRead} bytes from packet`);
+        logger.info(`handleLengthBytes: Read ${bytesToRead} bytes from packet`);
 
         if (this.bytesRead >= LENGTH_BYTES) {
             this.state = SessionState.WaitingForData;
             this.packetLength = this.buffer.readUInt32LE(0);
             this.bytesRead = 0;
-            console.log(`Packet length header received from: ${this.packetLength}`);
+            logger.info(`Packet length header received from: ${this.packetLength}`);
 
             if (this.packetLength > MAXIMUM_PACKET_LENGTH) {
                 throw new Error(`Maximum packet length is 32kB: ${this.packetLength}`);
             }
 
             if (bytesRemaining > 0) {
-                console.log(`${bytesRemaining} remaining bytes pushed to handlePacketBytes`);
+                logger.info(`${bytesRemaining} remaining bytes pushed to handlePacketBytes`);
                 this.handlePacketBytes(receivedBytes.slice(bytesToRead));
             }
         }
@@ -133,10 +135,10 @@ export class FCastSession {
         receivedBytes.copy(this.buffer, this.bytesRead, 0, bytesToRead);
         this.bytesRead += bytesToRead;
 
-        console.log(`handlePacketBytes: Read ${bytesToRead} bytes from packet`);
+        logger.info(`handlePacketBytes: Read ${bytesToRead} bytes from packet`);
 
         if (this.bytesRead >= this.packetLength) {
-            console.log(`Packet finished receiving from of ${this.packetLength} bytes.`);
+            logger.info(`Packet finished receiving from of ${this.packetLength} bytes.`);
             this.handleNextPacket();
 
             this.state = SessionState.WaitingForLength;
@@ -144,14 +146,14 @@ export class FCastSession {
             this.bytesRead = 0;
 
             if (bytesRemaining > 0) {
-                console.log(`${bytesRemaining} remaining bytes pushed to handleLengthBytes`);
+                logger.info(`${bytesRemaining} remaining bytes pushed to handleLengthBytes`);
                 this.handleLengthBytes(receivedBytes.slice(bytesToRead));
             }
         }
     }
 
     private handlePacket(opcode: number, body: string | undefined) {
-        console.log(`handlePacket (opcode: ${opcode}, body: ${body})`);
+        logger.info(`handlePacket (opcode: ${opcode}, body: ${body})`);
 
         try {
             switch (opcode) {
@@ -181,16 +183,16 @@ export class FCastSession {
                     break;
             }
         } catch (e) {
-            console.warn(`Error handling packet from.`, e);
+            logger.warn(`Error handling packet from.`, e);
         }
     }
 
     private handleNextPacket() {
-        console.log(`Processing packet of ${this.bytesRead} bytes from`);
+        logger.info(`Processing packet of ${this.bytesRead} bytes from`);
 
         const opcode = this.buffer[0];
         const body = this.packetLength > 1 ? this.buffer.toString('utf8', 1, this.packetLength) : null;
-        console.log('body', body);
+        logger.info('body', body);
         this.handlePacket(opcode, body);
     }
 

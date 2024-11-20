@@ -2,45 +2,61 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <link href="./video-js.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="../../assets/fonts/outfit.css" />
+    <link rel="stylesheet" href="../../assets/fonts/inter.css" />
     <link rel="stylesheet" href="./style.css" />
     <title>FCast Receiver</title>
 </head>
 <body>
     <div id="main-container">
-        <video id="video-player" class="video-js" controls preload="auto" data-setup='{}' style="object-fit: cover;">
-            <p class="vjs-no-js">
-                To view this video please enable JavaScript, and consider upgrading to a web browser that
-                <a href="https://videojs.com/html5-video-support/" target="_blank">supports HTML5 video</a>
-            </p>
+        <video id="video-player" class="video" autoplay loop>
+            <source src="../../assets/video/background.mp4" type="video/mp4">
         </video>
-        <div id="overlay">
-            <div id="title">FCast</div>
-            <div id="connection-info">
-                <div id="waiting-for-connection">Waiting for a connection</div>
-                <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
-                <div id="manual-connection-info">Manual connection information</div>
-                <div>
-                    <div id="ips">IPs</div><br />
-                    <div>Port<br>46899 (TCP), 46898 (WS)</div>
-                </div>
-                <div id="automatic-discovery">Automatic discovery is available via mDNS</div>
-                <div id="qr-code"></div>
-                <div id="scan-to-connect" style="font-weight: bold;">Scan to connect</div>
-            </div>
-            <!--<div id="update-dialog">There is an update available. Do you wish to update?</div>
-            <div id="update-button">Update</div>
-            <div id="progress-container">
-                <div id="update-spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
-                <div id="progress-text"></div>
-            </div>-->
+        <div id="ui-container">
+            <div id="overlay">
+                <div id="main-view" >
+                    <div id="title-container">
+                        <div id="title-icon"></div>
+                        <div id="title-text" class="non-selectable">FCast</div>
+                    </div>
 
-            <div id="window-can-be-closed" style="color: #666666; position: absolute; bottom: 0; margin-bottom: 20px;">App will continue to run as tray app when the window is closed</div>
+                    <div id="connection-status">
+                        <div id="waiting-for-connection" class="non-selectable">Waiting for a connection</div>
+                        <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                    </div>
+
+                    <div id="update-view" class="card">
+                        <div id="update-view-title" class="non-selectable card-title">FCast update available</div>
+                        <div class="card-title-separator"></div>
+
+                        <div id="update-text">Do you wish to update now?</div>
+                        <div id="update-button-container">
+                            <div id="update-button" class="button button-primary">Update</div>
+                            <div id="restart-button" class="button button-primary">Restart</div>
+                            <div id="update-later-button" class="button button-secondary">Later</div>
+                        </div>
+
+                        <div id="progress-bar">
+                            <div id="progress-bar-progress"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="detail-view" class="card">
+                    <div class="non-selectable card-title">Manual connection information</div>
+                    <div class="card-title-separator"></div>
+                    <div>
+                        <div id="ips">IPs</div><br />
+                        <div>Port<br>46899 (TCP), 46898 (WS)</div>
+                    </div>
+                    <div id="automatic-discovery" class="non-selectable">Automatic discovery is available via mDNS</div>
+                     <canvas id="qr-code"></canvas>
+                    <div id="scan-to-connect" class="non-selectable">Scan to connect</div>
+                </div>
+            </div>
+
+            <div id="window-can-be-closed" class="non-selectable">App will continue to run as tray app when the window is closed</div>
         </div>
     </div>
-    <script>window.HELP_IMPROVE_VIDEOJS = false;</script>
-    <script src="./video.min.js"></script>
-    <script src="./qrcode.min.js"></script>
     <script src="./renderer.js"></script>
 </body>
 </html>

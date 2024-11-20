@@ -6,29 +6,31 @@ FCast is a protocol designed for wireless streaming of audio and video content b
 
 The FCast receiver is a working receiver implementation compatible with Linux, Windows and MacOS that supports various stream types such as DASH, HLS and mp4.
 
-![FCast receiver running on Linux](images/Untitled2.png)
+![FCast receiver running on Linux](images/player-window.png)
 
 # Protocol specification
 
-The protocol specification can be found here https://gitlab.com/futo-org/fcast/-/wikis/home
+The protocol specification can be found here https://gitlab.futo.org/videostreaming/fcast/-/wikis/home
 
-# Clients
+# Receiver application
 
-# Receivers
-
-There are currently receivers for
-
-
-
-1. Download the latest build for your platform from https://gitlab.com/futo-org/fcast/-/releases or build it yourself by following the build instructions.
+1. Download the latest build for your platform from https://fcast.org/#downloads or build it yourself by following the build instructions.
 2. Unzip the archive at your desired location.
 3. Run the FCast receiver.
-   - **MacOS:** Run the FCastReceiver application
+   - **MacOS:** Run the `FCast Receiver` application
    - **Linux:** Run the `fcast-receiver` application
    - **Windows:** Run the `fcast-receiver.exe` application
-4. You should now have the receiver running on the background. On desktop it will have a tray icon as such allowing you to close the receiver.
+4. The application will open the main window where you can setup a connection to your sender device.
 
-![FCast receiver tray icon running on Linux](images/Untitled.png)
+![Main window](images/main-window.png)
+
+The application will continue to run in the system tray when you close the player or main window. You can exit the application or access other menu options from the tray icon.
+
+There are also command line flags to customize application behavior, some of which include:
+* `--no-main-window`: Hide the main window on start
+* `--fullscreen`: Start the main window in fullscreen
+
+Use the `--help` flag to see full list of available flags.
 
 # Connecting to the FCast receiver with the video streaming application
 
@@ -56,52 +58,38 @@ There are currently receivers for
 
 # How to build
 
-# Preparing for build
+## Preparing for build
 
-Run the following commands in the `root` directory.
+A docker file is provided to setup your build environment. From the root of the repository:
+* Build: `docker build -t fcast/receiver-electron-dev:latest receivers/electron/`
+* Run: `docker run --rm -it -w /app/receivers/electron --entrypoint='bash' -v .:/app fcast/receiver-electron-dev:latest`
+
+You can then run the following commands to finish setup.
 
 ```
 npm install
 ```
 
-# Building
+## Development
 
-Run the following commands in the `root` directory.
+Run the following commands in the `/app/receivers/electron` directory.
+* Build: `npm run build`
+* Run: `npm run start`
 
-```
-npm run build
-```
+## Packaging
 
-# Packaging
+Below are the following platforms currently used for packaging:
+* `npm run make -- --platform="darwin" --arch="arm64"`
+* `npm run make -- --platform="darwin" --arch="x64"`
+* `npm run make -- --platform="win32" --arch="x64"`
+* `npm run make -- --platform="linux" --arch="x64"`
+* `npm run make -- --platform="linux" --arch="arm64"`
 
-## Windows
+Other platforms and architectures supported by [Electron Forge](https://www.electronforge.io/) might work, but are currently untested.
 
-Run the following commands in the `packaging` directory.
+Packages that will be built from running the above `make` commands:
+* Windows: `.msi` and `.zip`
+* MacOS: `.dmg` and `.zip`
+* Linux: `.deb`, `.rpm` and `.zip`
 
-```
-sh package.sh win32-x64
-```
-
-## MacOS ARM64
-
-Run the following commands in the `packaging` directory.
-
-```
-sh package-macos.sh darwin-arm64
-```
-
-## MacOS x64
-
-Run the following commands in the `packaging` directory.
-
-```
-sh package-macos.sh darwin-x64
-```
-
-## Linux x64
-
-Run the following commands in the `packaging` directory.
-
-```
-sh package.sh linux-x64
-```
+Package artifacts will be located in `/app/receivers/electron/out/make`

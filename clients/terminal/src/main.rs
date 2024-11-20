@@ -59,7 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .long("mime_type")
                 .value_name("MIME_TYPE")
                 .help("Mime type (e.g., video/mp4)")
-                .required(true)
+                .required_unless_present("file")
                 .takes_value(true)
             )
             .arg(Arg::with_name("file")
@@ -189,9 +189,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     
     let mut join_handle: Option<JoinHandle<Result<(), String>>> = None;
     if let Some(play_matches) = matches.subcommand_matches("play") {
+        let file_path = play_matches.value_of("file");
+
         let mime_type = match play_matches.value_of("mime_type") {
             Some(s) => s.to_string(),
-            _ => return Err("MIME type is required.".into())
+            _ => {
+                if file_path.is_none() {
+                    return Err("MIME type is required.".into());
+                }
+                match file_path.unwrap().split('.').last() {
+                    Some("mkv") => "video/x-matroska".to_string(),
+                    Some("mov") => "video/quicktime".to_string(),
+                    Some("mp4") | Some("m4v") => "video/mp4".to_string(),
+                    Some("mpg") | Some("mpeg") => "video/mpeg".to_string(),
+                    Some("webm") => "video/webm".to_string(),
+                    _ => return Err("MIME type is required.".into()),
+                }
+            }
         };
 
         let time = match play_matches.value_of("timestamp") {
@@ -216,8 +230,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         ).collect::<HashMap<String, String>>());
 
-        let file_path = play_matches.value_of("file");
-
         let mut play_message = if let Some(file_path) = file_path {
             match local_ip {
                 Some(lip) => {
@@ -235,7 +247,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let url = result.0;
                     join_handle = Some(result.1);
 
-                    //TODO: Make this work
                     PlayMessage::new(
                        mime_type,
                         Some(url),
@@ -354,8 +365,13 @@ impl ServerState {
 }
 
 fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String, running: &Arc<AtomicBool>) -> Result<(String, thread::JoinHandle<Result<(), String>>), String> {
+    let local_ip_str = if local_ip.is_ipv6() {
+        format!("[{}]", local_ip)
+    } else {
+        format!("{}", local_ip)
+    };
     let server = {
-        let this = Server::http(format!("{}:0", local_ip));
+        let this = Server::http(format!("{local_ip_str}:0"));
         match this {
             Ok(t) => Ok(t),
             Err(e) => Err((|e| format!("Failed to create server: {}", e))(e)),
@@ -363,7 +379,7 @@ fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String,
     }?;
 
     let url = match server.server_addr() {
-        ListenAddr::IP(addr) => format!("http://{}:{}/", local_ip, addr.port()),
+        ListenAddr::IP(addr) => format!("http://{local_ip_str}:{}/", addr.port()),
         #[cfg(unix)]
         ListenAddr::Unix(_) => return Err("Unix socket addresses are not supported.".to_string()),
     };

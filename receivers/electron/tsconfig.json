@@ -1,15 +1,15 @@
-{ 
+{
   "compilerOptions": {
-    "target": "es5",
-    "module": "commonjs",
+    "target": "ES2022",
+    "module": "ES2022",
     "moduleResolution": "node",
     "sourceMap": false,
     "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
     "experimentalDecorators": true,
     "removeComments": false,
     "noImplicitAny": false,
-    "suppressImplicitAnyIndexErrors": true ,
     "outDir": "dist"
   },
-  "exclude": [ "node_modules", "test" ] 
+  "exclude": [ "node_modules", "test" ]
 }

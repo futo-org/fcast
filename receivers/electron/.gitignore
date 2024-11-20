@@ -129,4 +129,5 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-packaging/*.zip
+# Ignore VSCode user project settings
+.vscode
