@@ -183,8 +183,8 @@ export default class Main {
             l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
             l.emitter.on("stop", () => {
-                Main.playerWindow.close();
-                Main.playerWindow = null;
+                    Main.playerWindow?.close();
+                    Main.playerWindow = null;
             });
 
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));

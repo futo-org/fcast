@@ -198,6 +198,9 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
             });
 
             dashPlayer.updateSettings({
+                // debug: {
+                //     logLevel: dashjs.LogLevel.LOG_LEVEL_INFO
+                // },
                 streaming: {
                     text: {
                         dispatchForManualRendering: true
@@ -429,9 +432,9 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             playerControls.setAttribute("style", "opacity: 1");
 
             if (player.isCaptionsEnabled()) {
-                videoCaptions.setAttribute("style", "display: block; bottom: 150px;");
+                videoCaptions.setAttribute("style", "display: block; bottom: 160px;");
             } else {
-                videoCaptions.setAttribute("style", "display: block; bottom: 150px;");
+                videoCaptions.setAttribute("style", "display: block; bottom: 160px;");
             }
 
             break;
