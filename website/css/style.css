@@ -316,6 +316,7 @@ html, body, .body {
 	background: linear-gradient(180deg, #5B5B5B 5.9%, #292929 100%);
 	background-clip: text;
 	-webkit-text-fill-color: transparent;
+	user-select: none;
 }
 
 #title-logo {
