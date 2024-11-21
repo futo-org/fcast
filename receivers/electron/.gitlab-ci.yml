@@ -39,9 +39,8 @@ buildWindowsAndLinux:
   stage: buildAndDeployElectron
   image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev:latest
   tags:
-    - fcast
+    - fcast-instance-runner
   before_script:
-    - '[ ! -d "/artifacts" ] && echo "WARNING: Required directory to copy artifacts does not exist... Recommend aborting..."'
     - cd receivers/electron
   script:
     - npm install
