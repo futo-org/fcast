@@ -95,6 +95,7 @@ module.exports = {
   ],
   hooks: {
     readPackageJson: async (forgeConfig, packageJson) => {
+      packageJson.commit = cp.execSync('git rev-parse HEAD').toString().trim();
       packageJson.channel = process.env.FCAST_CHANNEL ? process.env.FCAST_CHANNEL : 'stable';
       if (packageJson.channel !== 'stable') {
         packageJson.channelVersion = process.env.FCAST_CHANNEL_VERSION ? process.env.FCAST_CHANNEL_VERSION : '1';

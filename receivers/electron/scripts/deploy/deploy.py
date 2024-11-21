@@ -5,6 +5,7 @@ import shutil
 from functools import cmp_to_key
 from util import BUCKET_NAME, S3Client, PackageFormat, ArtifactVersion, compare_versions, generate_update_tarball
 
+COMMIT_SHA = os.environ.get('CI_COMMIT_SHA')
 DEPLOY_DIR = os.environ.get('FCAST_DO_RUNNER_DEPLOY_DIR')
 TEMP_DIR = os.path.join(DEPLOY_DIR, 'temp')
 LOCAL_CACHE_DIR = os.path.join(DEPLOY_DIR, 'cache')
@@ -163,6 +164,7 @@ def generate_releases_json(artifact_version, delta_info):
         releases = json.load(file)
 
     current_version = releases.get('currentVersion', '0.0.0')
+    current_commit = releases.get('currentCommit', '')
     current_releases = releases.get('currentReleases', {})
     channel_current_versions = releases.get('channelCurrentVersions', {})
 
@@ -214,8 +216,10 @@ def generate_releases_json(artifact_version, delta_info):
 
     if artifact_version.channel == 'stable' and max([artifact_version.version, current_version], key=cmp_to_key(compare_versions)):
         releases['currentVersion'] = artifact_version.version
+        releases['currentCommit'] = COMMIT_SHA
     else:
         releases['currentVersion'] = current_version
+        releases['currentCommit'] = current_commit
 
     releases['previousVersions'] = s3.get_versions(full=True)
     releases['fileVersion'] = RELEASES_JSON_FILE_VERSION

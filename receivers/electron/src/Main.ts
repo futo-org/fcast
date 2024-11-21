@@ -95,7 +95,13 @@ export default class Main {
             {
                 label: 'About',
                 click: async () => {
-                    let aboutMessage = `Version: ${Main.application.getVersion()}\nRelease channel: ${Updater.releaseChannel}\n`;
+                    let aboutMessage = `Version: ${Main.application.getVersion()}\n`;
+
+                    if (Updater.getCommit()) {
+                        aboutMessage += `Commit: ${Updater.getCommit()}\n`;
+                    }
+
+                    aboutMessage += `Release channel: ${Updater.releaseChannel}\n`;
 
                     if (Updater.releaseChannel !== 'stable') {
                         aboutMessage += `Release channel version: ${Updater.getChannelVersion()}\n`;
@@ -446,6 +452,7 @@ export default class Main {
             Main.logger = log4js.getLogger();
             Main.logger.info(`Starting application: ${app.name} | ${app.getAppPath()}`);
             Main.logger.info(`Version: ${app.getVersion()}`);
+            Main.logger.info(`Commit: ${Updater.getCommit()}`);
             Main.logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
             Main.logger.info(`OS: ${process.platform} ${process.arch}`);
 

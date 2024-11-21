@@ -241,6 +241,11 @@ export class Updater {
         return Updater.localPackageJson.channelVersion;
     }
 
+    public static getCommit(): string {
+        Updater.localPackageJson.commit = Updater.localPackageJson.commit ? Updater.localPackageJson.commit : null
+        return Updater.localPackageJson.commit;
+    }
+
     public static async processUpdate(): Promise<void> {
         try {
             const updateInfo: UpdateInfo = JSON.parse(fs.readFileSync(Updater.updateMetadataPath, 'utf8'));
@@ -319,10 +324,22 @@ export class Updater {
 
             const localChannelVersion: number = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0;
             const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] ? Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] : 0;
-            logger.info('Update check', { channel: Updater.localPackageJson.channel, channel_version: localChannelVersion, localVersion: Updater.localPackageJson.version,
-                currentVersion: Updater.releasesJson.currentVersion, currentChannelVersion: currentChannelVersion });
+            logger.info('Update check', {
+                channel: Updater.localPackageJson.channel,
+                channel_version: localChannelVersion,
+                localVersion: Updater.localPackageJson.version,
+                currentVersion: Updater.releasesJson.currentVersion,
+                currentCommit: Updater.releasesJson.currentCommit,
+                currentChannelVersion: currentChannelVersion
+            });
 
-            if (Updater.localPackageJson.version !== Updater.releasesJson.currentVersion || (Updater.localPackageJson.channel !== 'stable' && localChannelVersion < currentChannelVersion)) {
+            const newVersion = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion;
+            const newChannelVersion = (Updater.localPackageJson.channel !== 'stable' && localChannelVersion < currentChannelVersion);
+
+            // Allow for update promotion to stable, while still getting updates from the subscribed channel
+            const newCommit = (Updater.localPackageJson.channel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
+
+            if (newVersion || newChannelVersion || newCommit) {
                 logger.info('Update available...');
                 return true;
             }
