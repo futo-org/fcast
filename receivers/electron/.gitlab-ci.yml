@@ -5,7 +5,7 @@ buildElectronDockerContainer:
   services:
     - docker:20.10.16-dind
   tags:
-    - fcast
+    - fcast-instance-runner
   before_script:
     - cd receivers/electron
   script:
@@ -64,7 +64,7 @@ deploy:
   stage: buildAndDeployElectron
   image: python:3.12.7-bookworm
   tags:
-    - fcast
+    - fcast-instance-runner
   # dependencies:
   #   - buildMac
   #   - buildWindowsAndLinux
