@@ -63,18 +63,19 @@ export class Updater {
     public static updateProgress: number = 0;
     public static checkForUpdatesOnStart: boolean = true;
     public static releaseChannel = 'stable';
+    public static updateChannel = 'stable';
 
     static {
         Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
 
         let updaterSettings = Store.get('updater');
         if (updaterSettings !== null) {
-            Updater.localPackageJson.channel = updaterSettings.channel === undefined ? Updater.localPackageJson.channel : updaterSettings.channel;
+            Updater.updateChannel = updaterSettings.channel === undefined ? Updater.localPackageJson.channel : updaterSettings.channel;
             Updater.checkForUpdatesOnStart = updaterSettings.checkForUpdatesOnStart === undefined ? true : updaterSettings.checkForUpdatesOnStart;
         }
 
         updaterSettings = {
-            'channel': Updater.localPackageJson.channel,
+            'channel': Updater.updateChannel,
             'checkForUpdatesOnStart': Updater.checkForUpdatesOnStart,
         }
 
@@ -323,9 +324,9 @@ export class Updater {
             Updater.releasesJson = await Updater.fetchJSON(`${Updater.baseUrl}/releases_v${Updater.supportedReleasesJsonVersion}.json`.toString()) as ReleaseInfo;
 
             const localChannelVersion: number = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0;
-            const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] ? Updater.releasesJson.channelCurrentVersions[Updater.localPackageJson.channel] : 0;
+            const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.updateChannel] ? Updater.releasesJson.channelCurrentVersions[Updater.updateChannel] : 0;
             logger.info('Update check', {
-                channel: Updater.localPackageJson.channel,
+                channel: Updater.updateChannel,
                 channel_version: localChannelVersion,
                 localVersion: Updater.localPackageJson.version,
                 currentVersion: Updater.releasesJson.currentVersion,
@@ -334,10 +335,10 @@ export class Updater {
             });
 
             const newVersion = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion;
-            const newChannelVersion = (Updater.localPackageJson.channel !== 'stable' && localChannelVersion < currentChannelVersion);
+            const newChannelVersion = (Updater.updateChannel !== 'stable' && localChannelVersion < currentChannelVersion);
 
             // Allow for update promotion to stable, while still getting updates from the subscribed channel
-            const newCommit = (Updater.localPackageJson.channel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
+            const newCommit = (Updater.updateChannel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
 
             if (newVersion || newChannelVersion || newCommit) {
                 logger.info('Update available...');
@@ -362,8 +363,8 @@ export class Updater {
         }
 
         try {
-            const newCommit = (Updater.localPackageJson.channel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
-            let channel = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion ? 'stable' : Updater.localPackageJson.channel;
+            const newCommit = (Updater.updateChannel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
+            let channel = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion ? 'stable' : Updater.updateChannel;
             channel = newCommit ? 'stable' : channel;
 
             const fileInfo = Updater.releasesJson.currentReleases[channel][process.platform][process.arch]
