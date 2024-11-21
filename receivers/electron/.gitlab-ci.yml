@@ -41,6 +41,7 @@ buildWindowsAndLinux:
   tags:
     - fcast
   before_script:
+    - '[ ! -d "/artifacts" ] && echo "WARNING: Required directory to copy artifacts does not exist... Recommend aborting..."'
     - cd receivers/electron
   script:
     - npm install
