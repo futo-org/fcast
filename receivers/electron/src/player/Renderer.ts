@@ -104,6 +104,37 @@ let lastPlayerUpdateGenerationTime = 0;
 let isLive = false;
 let isLivePosition = false;
 
+// Dashjs workaround for playback stalling when captions are enabled and user scrubs video beyond the loaded buffer...
+let playbackSeeking = false;
+let lastSeekTimestamp = 0;
+let lastSeekTime = 0;
+let bufferStalled = false;
+
+function stallRecoveryCheck(dashPlayer, value) {
+    // Buffer could have loaded by now, but the player still might be in the stalled state
+    if (playbackSeeking) {
+        const lastSeekDelta = Math.abs(Date.now() - lastSeekTimestamp)
+
+        if (lastSeekDelta < 5000) {
+            console.warn('Possible player stall, waiting 5 seconds after last seek...');
+            window.setTimeout(() => { stallRecoveryCheck(dashPlayer, value); }, 5000 - lastSeekDelta);
+        }
+        else {
+            console.warn('Detected player stall, reloading video in attempt to unstall...');
+            dashPlayer.initialize(videoElement, `data:${value.container};base64,` + window.btoa(value.content), true, lastSeekTime);
+
+            playerPrevTime = 0;
+            lastPlayerUpdateGenerationTime = 0;
+            isLive = false;
+            isLivePosition = false;
+
+            playbackSeeking = false;
+            lastSeekTimestamp = 0;
+            lastSeekTime = 0;
+            bufferStalled = false;
+        }
+    }
+}
 
 window.electronAPI.onPlay((_event, value: PlayMessage) => {
     console.log("Handle play message renderer", JSON.stringify(value));
@@ -114,6 +145,11 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
     lastPlayerUpdateGenerationTime = 0;
     isLive = false;
     isLivePosition = false;
+
+    playbackSeeking = false;
+    lastSeekTimestamp = 0;
+    lastSeekTime = 0;
+    bufferStalled = false;
 
     if (player) {
         if (player.getSource() === value.url) {
@@ -195,6 +231,39 @@ window.electronAPI.onPlay((_event, value: PlayMessage) => {
 
             dashPlayer.on(dashjs.MediaPlayer.events.CUE_EXIT, (e: any) => {
                 document.getElementById("subtitle-" + e.cueID)?.remove();
+            });
+
+            // Dashjs workaround for playback stalling when captions are enabled and user scrubs video beyond the loaded buffer...
+            dashPlayer.on(dashjs.MediaPlayer.events.BUFFER_LEVEL_STATE_CHANGED, (e: any) => {
+                if (player.isCaptionsSupported()) {
+                    if (e.state === 'bufferStalled') {
+                        bufferStalled = true;
+                    }
+                    else if (e.state === 'bufferLoaded') {
+                        bufferStalled = false;
+                    }
+
+                    if (playbackSeeking && bufferStalled) {
+                        window.setTimeout(() => { stallRecoveryCheck(dashPlayer, value); }, 5000);
+                    }
+                }
+            });
+
+            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_SEEKING, (e: any) => {
+                if (player.isCaptionsSupported()) {
+                    playbackSeeking = true;
+                    lastSeekTimestamp = Date.now();
+                    lastSeekTime = e.seekTime;
+                }
+            });
+
+
+            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_SEEKED, (e: any) => {
+                if (player.isCaptionsSupported()) {
+                    playbackSeeking = false;
+                    lastSeekTimestamp = 0;
+                    lastSeekTime = 0;
+                }
             });
 
             dashPlayer.updateSettings({
@@ -421,7 +490,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             if (player.isCaptionsEnabled()) {
                 videoCaptions.setAttribute("style", "display: block; bottom: 75px;");
             } else {
-                videoCaptions.setAttribute("style", "display: block; bottom: 75px;");
+                videoCaptions.setAttribute("style", "display: none; bottom: 75px;");
             }
 
 
@@ -434,7 +503,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             if (player.isCaptionsEnabled()) {
                 videoCaptions.setAttribute("style", "display: block; bottom: 160px;");
             } else {
-                videoCaptions.setAttribute("style", "display: block; bottom: 160px;");
+                videoCaptions.setAttribute("style", "display: none; bottom: 160px;");
             }
 
             break;
