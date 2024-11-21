@@ -110,7 +110,7 @@ module.exports = {
           const exePath = `./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}.exe`;
 
           if (fs.existsSync(CI_SIGNING_DIR)) {
-            console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${exePath}`)));
+            console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${exePath}`)).toString().trim());
           }
           else {
             console.warn('Windows signing script not found, skipping...');
@@ -163,7 +163,7 @@ module.exports = {
               fs.renameSync(`./out/make/wix/${e.arch}/${artifactName}`, artifactPath);
 
               if (fs.existsSync(CI_SIGNING_DIR)) {
-                console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${artifactPath}`)));
+                console.log(cp.execSync(path.join(CI_SIGNING_DIR, `sign.sh ${artifactPath}`)).toString().trim());
               }
               else {
                 console.warn('Windows signing script not found, skipping...');
@@ -182,8 +182,8 @@ module.exports = {
             console.log(`Making a zip distributable for ${e.platform}/${e.arch}`);
             const zipPath = path.resolve(process.cwd(), 'out', 'make', 'zip', e.platform, e.arch, generateArtifactName(e.packageJSON, e.platform, e.arch, 'zip'));
 
-            console.log(cp.execSync(`mkdir -p ${path.dirname(zipPath)}`));
-            console.log(cp.execSync(`cd out/${APPLICATION_NAME}-${e.platform}-${e.arch}; zip -r -y "${zipPath}" "${APPLICATION_TITLE}.app"`));
+            console.log(cp.execSync(`mkdir -p ${path.dirname(zipPath)}`).toString().trim());
+            console.log(cp.execSync(`cd out/${APPLICATION_NAME}-${e.platform}-${e.arch}; zip -r -y "${zipPath}" "${APPLICATION_TITLE}.app"`).toString().trim());
             break;
           }
           case "linux": {

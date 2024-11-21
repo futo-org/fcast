@@ -326,7 +326,7 @@ export class Updater {
             const localChannelVersion: number = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0;
             const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.updateChannel] ? Updater.releasesJson.channelCurrentVersions[Updater.updateChannel] : 0;
             logger.info('Update check', {
-                channel: Updater.updateChannel,
+                updateChannel: Updater.updateChannel,
                 channel_version: localChannelVersion,
                 localVersion: Updater.localPackageJson.version,
                 currentVersion: Updater.releasesJson.currentVersion,
@@ -340,7 +340,10 @@ export class Updater {
             // Allow for update promotion to stable, while still getting updates from the subscribed channel
             const newCommit = (Updater.updateChannel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
 
-            if (newVersion || newChannelVersion || newCommit) {
+            // Prevent downgrading to sub channel if on stable
+            const isDowngrade = Updater.releaseChannel === 'stable' && newChannelVersion;
+
+            if ((newVersion || newChannelVersion || newCommit) && !isDowngrade) {
                 logger.info('Update available...');
                 return true;
             }
