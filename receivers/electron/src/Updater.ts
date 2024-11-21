@@ -362,7 +362,10 @@ export class Updater {
         }
 
         try {
-            const channel = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion ? 'stable' : Updater.localPackageJson.channel;
+            const newCommit = (Updater.localPackageJson.channel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
+            let channel = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion ? 'stable' : Updater.localPackageJson.channel;
+            channel = newCommit ? 'stable' : channel;
+
             const fileInfo = Updater.releasesJson.currentReleases[channel][process.platform][process.arch]
             const file = fileInfo.url.toString().split('/').pop();
 
