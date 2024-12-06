@@ -26,6 +26,7 @@
         <activity
             android:name=".MainActivity"
             android:theme="@style/Theme.Main"
+            android:launchMode="singleInstance"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -41,6 +42,7 @@
         <activity
             android:name=".PlayerActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
+            android:launchMode="singleInstance"
             android:theme="@style/Theme.Player" />
 
         <receiver
