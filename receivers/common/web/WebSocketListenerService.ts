@@ -1,8 +1,7 @@
-import { FCastSession, Opcode } from './FCastSession';
+import { FCastSession, Opcode } from 'common/FCastSession';
 import { EventEmitter } from 'node:events';
-import { dialog } from 'electron';
-import Main from './Main';
-import { WebSocket, WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'modules/ws';
+import { Main, errorHandler } from 'src/Main';
 
 export class WebSocketListenerService {
     public static PORT = 46898;
@@ -45,23 +44,7 @@ export class WebSocketListenerService {
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
-        Main.logger.error("Server error:", err);
-
-        const restartPrompt = await dialog.showMessageBox({
-            type: 'error',
-            title: 'Failed to start',
-            message: 'The application failed to start properly.',
-            buttons: ['Restart', 'Close'],
-            defaultId: 0,
-            cancelId: 1
-        });
-
-        if (restartPrompt.response === 0) {
-            Main.application.relaunch();
-            Main.application.exit(0);
-        } else {
-            Main.application.exit(0);
-        }
+        errorHandler(err);
     }
 
     private handleConnection(socket: WebSocket) {

@@ -1,8 +1,7 @@
 import * as net from 'net';
-import { FCastSession, Opcode } from './FCastSession';
+import { FCastSession, Opcode } from 'common/FCastSession';
 import { EventEmitter } from 'node:events';
-import { dialog } from 'electron';
-import Main from './Main';
+import { Main, errorHandler } from 'src/Main';
 
 export class TcpListenerService {
     public static PORT = 46899;
@@ -35,6 +34,7 @@ export class TcpListenerService {
     }
 
     send(opcode: number, message = null) {
+        // Main.logger.info(`Sending message ${JSON.stringify(message)}`);
         this.sessions.forEach(session => {
             try {
                 session.send(opcode, message);
@@ -46,23 +46,7 @@ export class TcpListenerService {
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
-        Main.logger.error("Server error:", err);
-
-        const restartPrompt = await dialog.showMessageBox({
-            type: 'error',
-            title: 'Failed to start',
-            message: 'The application failed to start properly.',
-            buttons: ['Restart', 'Close'],
-            defaultId: 0,
-            cancelId: 1
-        });
-
-        if (restartPrompt.response === 0) {
-            Main.application.relaunch();
-            Main.application.exit(0);
-        } else {
-            Main.application.exit(0);
-        }
+        errorHandler(err);
     }
 
     private handleConnection(socket: net.Socket) {

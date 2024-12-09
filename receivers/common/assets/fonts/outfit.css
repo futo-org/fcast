@@ -1,0 +1,18 @@
+@font-face {
+  font-family: Outfit;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("Outfit/Outfit-VariableFont_wght.ttf") format("truetype");
+}
+
+/* static fonts */
+@font-face { font-family: "OutfitThin"; font-style: normal; font-weight: 100; font-display: swap; src: url("Outfit/static/Outfit-Thin.ttf") format("truetype"); }
+@font-face { font-family: "OutfitExtraLight"; font-style: normal; font-weight: 200; font-display: swap; src: url("Outfit/static/Outfit-ExtraLight.ttf") format("truetype"); }
+@font-face { font-family: "OutfitLight"; font-style: normal; font-weight: 300; font-display: swap; src: url("Outfit/static/Outfit-Light.ttf") format("truetype"); }
+@font-face { font-family: "OutfitRegular"; font-style: normal; font-weight: 400; font-display: swap; src: url("Outfit/static/Outfit-Regular.ttf") format("truetype"); }
+@font-face { font-family: "OutfitMedium"; font-style: normal; font-weight: 500; font-display: swap; src: url("Outfit/static/Outfit-Medium.ttf") format("truetype"); }
+@font-face { font-family: "OutfitSemiBold"; font-style: normal; font-weight: 600; font-display: swap; src: url("Outfit/static/Outfit-SemiBold.ttf") format("truetype"); }
+@font-face { font-family: "OutfitBold"; font-style: normal; font-weight: 700; font-display: swap; src: url("Outfit/static/Outfit-Bold.ttf") format("truetype"); }
+@font-face { font-family: "OutfitExtraBold"; font-style: normal; font-weight: 800; font-display: swap; src: url("Outfit/static/Outfit-ExtraBold.ttf") format("truetype"); }
+@font-face { font-family: "OutfitBlack"; font-style: normal; font-weight: 900; font-display: swap; src: url("Outfit/static/Outfit-Black.ttf") format("truetype"); }

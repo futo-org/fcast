@@ -1,7 +1,7 @@
 FROM node:22.10.0-bookworm
 
 RUN dpkg --add-architecture i386
-RUN apt update && apt install -y zip dpkg fakeroot rpm wget p7zip-full unzip rsync jq awscli
+RUN apt update && apt install -y zip dpkg fakeroot rpm wget p7zip-full unzip jq awscli
 RUN wget https://github.com/ebourg/jsign/releases/download/6.0/jsign_6.0_all.deb
 RUN apt install -y ./jsign_6.0_all.deb
 

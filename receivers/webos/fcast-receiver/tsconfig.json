@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "node",
+    "sourceMap": false,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "removeComments": false,
+    "noImplicitAny": false,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "src/*": ["./src/*"],
+      "lib/*": ["./lib/*"],
+      "modules/*": ["./node_modules/*"],
+      "common/*": ["../../common/web/*"],
+    }
+  },
+  "exclude": [ "node_modules", "test" ]
+}

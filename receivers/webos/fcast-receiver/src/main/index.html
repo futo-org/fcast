@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>FCast Receiver</title>
+	<meta charset="UTF-8">
+    <link rel="stylesheet" href="../assets/fonts/outfit.css" />
+    <link rel="stylesheet" href="../assets/fonts/inter.css" />
+    <link rel="stylesheet" href="./common.css" />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./preload.js"></script>
+</head>
+
+<body>
+    <div id="main-container">
+        <video id="video-player" class="video" autoplay loop>
+            <source src="../assets/video/background.mp4" type="video/mp4">
+        </video>
+        <div id="ui-container">
+            <div id="overlay">
+                <div id="main-view" >
+                    <div id="title-container">
+                        <div id="title-icon"></div>
+                        <div id="title-text" class="non-selectable">FCast</div>
+                    </div>
+
+                    <div id="connection-status">
+                        <div id="waiting-for-connection" class="non-selectable">Waiting for a connection</div>
+                        <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                    </div>
+                </div>
+                <div id="detail-view" class="card">
+                    <div class="non-selectable card-title">Manual connection information</div>
+                    <div class="card-title-separator"></div>
+                    <div>
+                        <div id="ips">IPs</div><br />
+                        <div>Port<br>46899 (TCP), 46898 (WS)</div>
+                    </div>
+                    <div id="automatic-discovery" class="non-selectable">Automatic discovery is available via mDNS</div>
+                     <canvas id="qr-code"></canvas>
+                    <div id="scan-to-connect" class="non-selectable">Scan to connect</div>
+                </div>
+            </div>
+
+            <div id="window-can-be-closed" class="non-selectable">App will continue to run in the background when app is closed</div>
+        </div>
+    </div>
+    <script src="./renderer.js"></script>
+</body>
+
+</html>

@@ -1,8 +1,8 @@
 import * as net from 'net';
-import * as log4js from "log4js";
+import * as log4js from "modules/log4js";
 import { EventEmitter } from 'node:events';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
-import { WebSocket } from 'ws';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
+import { WebSocket } from 'modules/ws';
 const logger = log4js.getLogger();
 
 enum SessionState {

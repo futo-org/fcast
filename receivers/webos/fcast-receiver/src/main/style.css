@@ -1,0 +1,23 @@
+.card-title {
+    font-family: InterBold;
+}
+
+#overlay {
+    font-family: InterRegular;
+}
+
+#title-text {
+    font-family: OutfitExtraBold;
+}
+
+#manual-connection-info {
+    font-family: InterBold;
+}
+
+#scan-to-connect {
+    font-family: InterBold;
+}
+
+#window-can-be-closed {
+    font-family: InterRegular;
+}

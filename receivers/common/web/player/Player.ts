@@ -1,5 +1,5 @@
-import dashjs from 'dashjs';
-import Hls from 'hls.js';
+import dashjs from 'modules/dashjs';
+import Hls from 'modules/hls.js';
 
 export enum PlayerType {
     Html,

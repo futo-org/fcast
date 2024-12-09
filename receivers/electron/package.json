@@ -6,7 +6,7 @@
   "author": "FUTO",
   "license": "MIT",
   "scripts": {
-    "build": "rm -rf dist/ && webpack --config ./webpack.config.js && rsync -r src/player/* dist/player --exclude *.ts && rsync -r src/main/* dist/main --exclude *.ts && cp assets/icons/app/icon.ico dist/ && cp assets/icons/app/icon.png dist/ && cp assets/icons/app/icon512.png dist/",
+    "build": "rm -rf dist/ && webpack --config ./webpack.config.js",
     "start": "electron-forge start",
     "test": "jest",
     "package": "electron-forge package",
@@ -32,6 +32,7 @@
     "@types/workerpool": "^6.1.1",
     "@types/ws": "^8.5.10",
     "@types/yargs": "^17.0.33",
+    "copy-webpack-plugin": "^12.0.2",
     "electron": "^32.2.1",
     "eslint": "^9.10.0",
     "globals": "^15.9.0",
@@ -55,9 +56,9 @@
     "https": "^1.0.0",
     "log4js": "^6.9.1",
     "qrcode": "^1.5.3",
-    "url": "^0.11.3",
-    "uuid": "^9.0.1",
-    "ws": "^8.14.2",
+    "url": "^0.11.4",
+    "uuid": "^11.0.3",
+    "ws": "^8.18.0",
     "yargs": "^17.7.2"
   }
 }
