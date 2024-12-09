@@ -409,7 +409,7 @@ body {
 
     width: fit-content;
 
-    transition: bottom 0.2s ease-in-out;
+    /* transition: bottom 0.2s ease-in-out; */
 }
 
 .speedMenu {

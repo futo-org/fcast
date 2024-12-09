@@ -103,6 +103,8 @@ let playerPrevTime: number = 0;
 let lastPlayerUpdateGenerationTime = 0;
 let isLive = false;
 let isLivePosition = false;
+let captionsBaseHeight = 160;
+let captionsContentHeight = 0;
 
 function onPlay(_event, value: PlayMessage) {
     console.log("Handle play message renderer", JSON.stringify(value));
@@ -190,6 +192,15 @@ function onPlay(_event, value: PlayMessage) {
 
                 subtitle.textContent = e.text;
                 videoCaptions.appendChild(subtitle);
+
+                captionsContentHeight = subtitle.getBoundingClientRect().height - 34;
+                const captionsHeight = captionsBaseHeight + captionsContentHeight;
+
+                if (player.isCaptionsEnabled()) {
+                    videoCaptions.setAttribute("style", `display: block; bottom: ${captionsHeight}px;`);
+                } else {
+                    videoCaptions.setAttribute("style", `display: none; bottom: ${captionsHeight}px;`);
+                }
             });
 
             dashPlayer.on(dashjs.MediaPlayer.events.CUE_EXIT, (e: any) => {
@@ -416,30 +427,36 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             break;
         }
 
-        case PlayerControlEvent.UiFadeOut:
+        case PlayerControlEvent.UiFadeOut: {
             document.body.style.cursor = "none";
             playerControls.setAttribute("style", "opacity: 0");
+            captionsBaseHeight = 75;
+            const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
             if (player.isCaptionsEnabled()) {
-                videoCaptions.setAttribute("style", "display: block; bottom: 75px;");
+                videoCaptions.setAttribute("style", `display: block; transition: bottom 0.2s ease-in-out; bottom: ${captionsHeight}px;`);
             } else {
-                videoCaptions.setAttribute("style", "display: none; bottom: 75px;");
+                videoCaptions.setAttribute("style", `display: none; bottom: ${captionsHeight}px;`);
             }
 
 
             break;
+        }
 
-        case PlayerControlEvent.UiFadeIn:
+        case PlayerControlEvent.UiFadeIn: {
             document.body.style.cursor = "default";
             playerControls.setAttribute("style", "opacity: 1");
+            captionsBaseHeight = 160;
+            const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
             if (player.isCaptionsEnabled()) {
-                videoCaptions.setAttribute("style", "display: block; bottom: 160px;");
+                videoCaptions.setAttribute("style", `display: block; transition: bottom 0.2s ease-in-out; bottom: ${captionsHeight}px;`);
             } else {
-                videoCaptions.setAttribute("style", "display: none; bottom: 160px;");
+                videoCaptions.setAttribute("style", `display: none; bottom: ${captionsHeight}px;`);
             }
 
             break;
+        }
 
         case PlayerControlEvent.SetCaptions:
             if (player.isCaptionsEnabled()) {
