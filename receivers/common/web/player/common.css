@@ -408,7 +408,7 @@ body {
     padding: 0px 5px;
 
     width: fit-content;
-
+    user-select: none;
     /* transition: bottom 0.2s ease-in-out; */
 }
 
