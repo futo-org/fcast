@@ -4,8 +4,8 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 
 // Build issues:
 // * Must use '--no-minify' when packaging since packaging would break otherwise...
-// const buildMode = 'production';
-const buildMode = 'development';
+const buildMode = 'production';
+// const buildMode = 'development';
 
 // const TARGET = 'electron';
 const TARGET = 'webOS';
