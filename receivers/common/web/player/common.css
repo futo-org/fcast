@@ -44,6 +44,11 @@ body {
     transition: opacity 0.1s ease-in-out;
 }
 
+.iconSize {
+    width: 24px;
+    height: 24px;
+}
+
 .volumeContainer {
     position: relative;
     height: 24px;
@@ -252,8 +257,6 @@ body {
 }
 
 .play {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
     flex-shrink: 0;
 
@@ -266,8 +269,6 @@ body {
 }
 
 .pause {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
     flex-shrink: 0;
 
@@ -280,8 +281,6 @@ body {
 }
 
 .volume_high {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
     flex-shrink: 0;
 
@@ -294,8 +293,6 @@ body {
 }
 
 .volume_low {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
     flex-shrink: 0;
 
@@ -308,8 +305,6 @@ body {
 }
 
 .mute {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
     flex-shrink: 0;
 
@@ -322,8 +317,6 @@ body {
 }
 
 .speed {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
 
     background-image: url("../assets/icons/player/icon24_speed.svg");
@@ -335,8 +328,6 @@ body {
 }
 
 .captions_off {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
 
     background-image: url("../assets/icons/player/icon24_cc_off.svg");
@@ -348,8 +339,6 @@ body {
 }
 
 .captions_on {
-    width: 24px;
-    height: 24px;
     cursor: pointer;
 
     background-image: url("../assets/icons/player/icon24_cc_on.svg");

@@ -86,6 +86,7 @@ if (TARGET === 'electron') {
                 playService.cancel();
             }
 
+            history.pushState({}, '', '../main_window/index.html');
             window.open('../player/index.html');
         }
     });

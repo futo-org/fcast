@@ -1,6 +1,6 @@
 import * as net from 'net';
 import { FCastSession, Opcode } from 'common/FCastSession';
-import { EventEmitter } from 'node:events';
+import { EventEmitter } from 'events';
 import { Main, errorHandler } from 'src/Main';
 
 export class TcpListenerService {

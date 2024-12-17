@@ -1,6 +1,6 @@
 import * as net from 'net';
 import * as log4js from "modules/log4js";
-import { EventEmitter } from 'node:events';
+import { EventEmitter } from 'events';
 import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
 import { WebSocket } from 'modules/ws';
 const logger = log4js.getLogger();

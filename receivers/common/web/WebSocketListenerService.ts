@@ -1,5 +1,5 @@
 import { FCastSession, Opcode } from 'common/FCastSession';
-import { EventEmitter } from 'node:events';
+import { EventEmitter } from 'events';
 import { WebSocket, WebSocketServer } from 'modules/ws';
 import { Main, errorHandler } from 'src/Main';
 

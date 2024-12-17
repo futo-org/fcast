@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "node",
+    "target": "ES2015",
+    "module": "ES2015",
+    "moduleResolution": "node10",
     "sourceMap": false,
     "emitDecoratorMetadata": true,
     "esModuleInterop": true,

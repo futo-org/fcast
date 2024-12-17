@@ -123,7 +123,7 @@ if (TARGET === 'electron') {
                 setSpeedService.cancel();
 
                 // window.open('../main_window/index.html');
-                window.webOS.platformBack();
+                history.back();
             }
         },
         onFailure: (message: any) => {

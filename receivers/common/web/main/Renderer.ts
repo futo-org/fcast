@@ -1,5 +1,6 @@
 
 import QRCode from 'modules/qrcode';
+import { onQRCodeRendered } from 'src/main/Renderer';
 
 window.targetAPI.onDeviceInfo(renderIPsAndQRCode);
 
@@ -45,4 +46,6 @@ function renderIPsAndQRCode() {
     (e) => {
         console.log(`Error rendering QR Code: ${e}`)
     });
+
+    onQRCodeRendered();
 }

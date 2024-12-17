@@ -23,10 +23,17 @@
                 <div id="progressBarInteractiveArea" class="progressBarInteractiveArea" ></div>
             </div>
 
-            <div class="leftButtonContainer">
-                <div id="action" class="play"></div>
+            <div class="positionContainer">
+                <div id="liveBadge" class="liveBadge" style="display: none">LIVE</div>
+                <div id="position" class="position">00:00</div>
+                <!-- <div id="durationSeparator" class="duration">/&nbsp&nbsp</div> -->
+                <div id="durationSeparator" class="duration"></div>
+            </div>
 
-                <div id="volume" class="volume_high"></div>
+            <div class="leftButtonContainer">
+                <div id="action" class="play iconSize"></div>
+
+                <div id="volume" class="volume_high iconSize"></div>
                 <div class="volumeContainer">
                     <div id="volumeBar" ref="volumeBar" class="volumeBar" ></div>
                     <div id="volumeBarProgress" class="volumeBarProgress" ></div>
@@ -34,17 +41,18 @@
                     <div id="volumeBarInteractiveArea" class="volumeBarInteractiveArea" ></div>
                 </div>
 
-                <div class="positionContainer">
+                <!-- <div class="positionContainer">
                     <div id="liveBadge" class="liveBadge" style="display: none">LIVE</div>
                     <div id="position" class="position">00:00</div>
                     <div id="duration" class="duration">/&nbsp&nbsp00:00</div>
-                </div>
+                </div> -->
             </div>
 
             <div class="buttonContainer">
-                <!-- <div id="fullscreen" class="fullscreen_on"></div> -->
-                <div id="speed" class="speed"></div>
-                <div id="captions" class="captions_off"></div>
+                <!-- <div id="fullscreen" class="fullscreen_on iconSize"></div> -->
+                <div id="speed" class="speed iconSize"></div>
+                <div id="captions" class="captions_off iconSize"></div>
+                <div id="duration" class="duration">00:00</div>
             </div>
 
             <div id="speedMenu" class="speedMenu" style="display: none">

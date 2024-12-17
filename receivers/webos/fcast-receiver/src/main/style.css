@@ -4,10 +4,17 @@
 
 #overlay {
     font-family: InterRegular;
+    font-size: 28px;
 }
 
 #title-text {
     font-family: OutfitExtraBold;
+    font-size: 140px;
+}
+
+#title-icon {
+    width: 124px;
+    height: 124px;
 }
 
 #manual-connection-info {
@@ -20,4 +27,33 @@
 
 #window-can-be-closed {
     font-family: InterRegular;
+    font-size: 24px;
+}
+
+.lds-ring {
+    width: 120px;
+    height: 120px;
+}
+.lds-ring div {
+    width: 104px;
+    height: 104px;
+}
+
+#loading-screen {
+    height: 100%;
+    width: 100%;
+    object-fit: cover;
+    background-color: black;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#loading-text {
+    font-size: 100px;
+    font-weight: 800;
+    text-align: center;
+    color: white;
+    padding-right: 20px;
 }

@@ -2,7 +2,13 @@ import dashjs from 'modules/dashjs';
 import Hls, { LevelLoadedData } from 'modules/hls.js';
 import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { Player, PlayerType } from './Player';
-import { targetPlayerCtrlStateUpdate, targetKeyDownEventListener } from 'src/player/Renderer';
+import {
+    targetPlayerCtrlStateUpdate,
+    targetKeyDownEventListener,
+    captionsBaseHeightCollapsed,
+    captionsBaseHeightExpanded,
+    captionsLineHeight
+} from 'src/player/Renderer';
 
 function formatDuration(duration: number) {
     const totalSeconds = Math.floor(duration);
@@ -85,6 +91,7 @@ const playerCtrlVolumeBarInteractiveArea = document.getElementById("volumeBarInt
 
 const playerCtrlLiveBadge = document.getElementById("liveBadge");
 const playerCtrlPosition = document.getElementById("position");
+const playerCtrlDurationSeparator = document.getElementById("durationSeparator");
 const playerCtrlDuration = document.getElementById("duration");
 
 const playerCtrlCaptions = document.getElementById("captions");
@@ -103,7 +110,7 @@ let playerPrevTime: number = 0;
 let lastPlayerUpdateGenerationTime = 0;
 let isLive = false;
 let isLivePosition = false;
-let captionsBaseHeight = 160;
+let captionsBaseHeight = 0;
 let captionsContentHeight = 0;
 
 function onPlay(_event, value: PlayMessage) {
@@ -115,6 +122,7 @@ function onPlay(_event, value: PlayMessage) {
     lastPlayerUpdateGenerationTime = 0;
     isLive = false;
     isLivePosition = false;
+    captionsBaseHeight = captionsBaseHeightExpanded;
 
     if (player) {
         if (player.getSource() === value.url) {
@@ -193,7 +201,7 @@ function onPlay(_event, value: PlayMessage) {
                 subtitle.textContent = e.text;
                 videoCaptions.appendChild(subtitle);
 
-                captionsContentHeight = subtitle.getBoundingClientRect().height - 34;
+                captionsContentHeight = subtitle.getBoundingClientRect().height - captionsLineHeight;
                 const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
                 if (player.isCaptionsEnabled()) {
@@ -293,7 +301,17 @@ function onPlay(_event, value: PlayMessage) {
                 console.error("Player error", {source, lineno, colno, error});
             };
 
-            videoElement.onloadedmetadata = () => { onPlayerLoad(value, currentPlaybackRate, currentVolume); };
+            videoElement.onloadedmetadata = (ev) => {
+                if (videoElement.duration === Infinity) {
+                    isLive = true;
+                    isLivePosition = true;
+                }
+                else {
+                    isLive = false;
+                    isLivePosition = false;
+                }
+
+                onPlayerLoad(value, currentPlaybackRate, currentVolume); };
         }
     }
 
@@ -327,6 +345,11 @@ enum PlayerControlEvent {
 
 // UI update handlers
 function playerCtrlStateUpdate(event: PlayerControlEvent) {
+    const handledCase = targetPlayerCtrlStateUpdate(event);
+    if (handledCase) {
+        return;
+    }
+
     switch (event) {
         case PlayerControlEvent.Load: {
             playerCtrlProgressBarBuffer.setAttribute("style", "width: 0px");
@@ -340,14 +363,16 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             if (isLive) {
                 playerCtrlLiveBadge.setAttribute("style", "display: block");
                 playerCtrlPosition.setAttribute("style", "display: none");
+                playerCtrlDurationSeparator.setAttribute("style", "display: none");
                 playerCtrlDuration.setAttribute("style", "display: none");
             }
             else {
                 playerCtrlLiveBadge.setAttribute("style", "display: none");
                 playerCtrlPosition.setAttribute("style", "display: block");
+                playerCtrlDurationSeparator.setAttribute("style", "display: block");
                 playerCtrlDuration.setAttribute("style", "display: block");
                 playerCtrlPosition.textContent = formatDuration(player.getCurrentTime());
-                playerCtrlDuration.innerHTML = `/&nbsp&nbsp${formatDuration(player.getDuration())}`;
+                playerCtrlDuration.innerHTML = formatDuration(player.getDuration());
             }
 
             if (player.isCaptionsSupported()) {
@@ -364,12 +389,12 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         case PlayerControlEvent.Pause:
-            playerCtrlAction.setAttribute("class", "play");
+            playerCtrlAction.setAttribute("class", "play iconSize");
             stopUiHideTimer();
             break;
 
         case PlayerControlEvent.Play:
-            playerCtrlAction.setAttribute("class", "pause");
+            playerCtrlAction.setAttribute("class", "pause iconSize");
             startUiHideTimer();
             break;
 
@@ -378,16 +403,16 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             const volume = Math.round(player.getVolume() * playerCtrlVolumeBar.offsetWidth);
 
             if (player.isMuted()) {
-                playerCtrlVolume.setAttribute("class", "mute");
+                playerCtrlVolume.setAttribute("class", "mute iconSize");
                 playerCtrlVolumeBarProgress.setAttribute("style", `width: 0px`);
                 playerCtrlVolumeBarHandle.setAttribute("style", `left: 0px`);
             }
             else if (player.getVolume() >= 0.5) {
-                playerCtrlVolume.setAttribute("class", "volume_high");
+                playerCtrlVolume.setAttribute("class", "volume_high iconSize");
                 playerCtrlVolumeBarProgress.setAttribute("style", `width: ${volume}px`);
                 playerCtrlVolumeBarHandle.setAttribute("style", `left: ${volume}px`);
             } else {
-                playerCtrlVolume.setAttribute("class", "volume_low");
+                playerCtrlVolume.setAttribute("class", "volume_low iconSize");
                 playerCtrlVolumeBarProgress.setAttribute("style", `width: ${volume}px`);
                 playerCtrlVolumeBarHandle.setAttribute("style", `left: ${volume}px`);
             }
@@ -430,7 +455,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         case PlayerControlEvent.UiFadeOut: {
             document.body.style.cursor = "none";
             playerControls.setAttribute("style", "opacity: 0");
-            captionsBaseHeight = 75;
+            captionsBaseHeight = captionsBaseHeightCollapsed;
             const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
             if (player.isCaptionsEnabled()) {
@@ -446,7 +471,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         case PlayerControlEvent.UiFadeIn: {
             document.body.style.cursor = "default";
             playerControls.setAttribute("style", "opacity: 1");
-            captionsBaseHeight = 160;
+            captionsBaseHeight = captionsBaseHeightExpanded;
             const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
             if (player.isCaptionsEnabled()) {
@@ -460,10 +485,10 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
         case PlayerControlEvent.SetCaptions:
             if (player.isCaptionsEnabled()) {
-                playerCtrlCaptions.setAttribute("class", "captions_on");
+                playerCtrlCaptions.setAttribute("class", "captions_on iconSize");
                 videoCaptions.setAttribute("style", "display: block");
             } else {
-                playerCtrlCaptions.setAttribute("class", "captions_off");
+                playerCtrlCaptions.setAttribute("class", "captions_off iconSize");
                 videoCaptions.setAttribute("style", "display: none");
             }
 
@@ -498,14 +523,13 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         default:
-            targetPlayerCtrlStateUpdate(event);
             break;
     }
 }
 
 function scrubbingMouseUIHandler(e: MouseEvent) {
-    const progressBarOffset = e.offsetX - 8;
-    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - 16;
+    const progressBarOffset = e.offsetX - playerCtrlProgressBar.offsetLeft;
+    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
     let time = isLive ? Math.round((1 - (progressBarOffset / progressBarWidth)) * player.getDuration()) : Math.round((progressBarOffset / progressBarWidth) * player.getDuration());
     time = Math.min(player.getDuration(), Math.max(0.0, time));
 
@@ -546,8 +570,8 @@ PlayerCtrlProgressBarInteractiveArea.onmouseleave = () => { playerCtrlProgressBa
 PlayerCtrlProgressBarInteractiveArea.onmousemove = (e: MouseEvent) => { scrubbingMouseHandler(e) };
 
 function scrubbingMouseHandler(e: MouseEvent) {
-    const progressBarOffset = e.offsetX - 8;
-    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - 16;
+    const progressBarOffset = e.offsetX - playerCtrlProgressBar.offsetLeft;
+    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
     let time = Math.round((progressBarOffset / progressBarWidth) * player.getDuration());
     time = Math.min(player.getDuration(), Math.max(0.0, time));
 
@@ -578,8 +602,8 @@ playerCtrlVolumeBarInteractiveArea.onwheel = (e: WheelEvent) => {
 
 function volumeChangeMouseHandler(e: MouseEvent) {
     if (volumeChanging && e.buttons === 1) {
-        const volumeBarOffsetX = e.offsetX - 8;
-        const volumeBarWidth = playerCtrlVolumeBarInteractiveArea.offsetWidth - 16;
+        const volumeBarOffsetX = e.offsetX - playerCtrlVolumeBar.offsetLeft;
+        const volumeBarWidth = playerCtrlVolumeBarInteractiveArea.offsetWidth - (playerCtrlVolumeBar.offsetLeft * 2);
         const volume = volumeBarOffsetX / volumeBarWidth;
         volumeChangeHandler(volume);
     }
@@ -761,8 +785,25 @@ function keyDownEventListener(event: any) {
 document.addEventListener('keydown', keyDownEventListener);
 
 export {
-    videoElement,
     PlayerControlEvent,
+    videoElement,
+    videoCaptions,
+    playerCtrlProgressBar,
+    playerCtrlProgressBarBuffer,
+    playerCtrlProgressBarProgress,
+    playerCtrlProgressBarHandle,
+    playerCtrlVolumeBar,
+    playerCtrlVolumeBarProgress,
+    playerCtrlVolumeBarHandle,
+    playerCtrlLiveBadge,
+    playerCtrlPosition,
+    playerCtrlDuration,
+    playerCtrlCaptions,
+    player,
+    isLive,
+    captionsBaseHeight,
+    captionsLineHeight,
     onPlay,
     playerCtrlStateUpdate,
+    formatDuration,
 };

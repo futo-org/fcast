@@ -12,6 +12,10 @@
 </head>
 
 <body>
+    <div id="loading-screen">
+        <div id="loading-text" class="non-selectable">Loading FCast</div>
+        <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+    </div>
     <div id="main-container">
         <video id="video-player" class="video" autoplay loop>
             <source src="../assets/video/background.mp4" type="video/mp4">
@@ -42,7 +46,7 @@
                 </div>
             </div>
 
-            <div id="window-can-be-closed" class="non-selectable">App will continue to run in the background when app is closed</div>
+            <div id="window-can-be-closed" class="non-selectable">App will continue to listen for connections when suspended in the background</div>
         </div>
     </div>
     <script src="./renderer.js"></script>

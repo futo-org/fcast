@@ -1,5 +1,7 @@
 import 'common/main/Renderer';
 
+export function onQRCodeRendered() {}
+
 const updateView = document.getElementById("update-view");
 const updateViewTitle = document.getElementById("update-view-title");
 const updateText = document.getElementById("update-text");

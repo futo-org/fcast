@@ -13,7 +13,7 @@ import { NetworkService } from 'common/NetworkService';
 import { Opcode } from 'common/FCastSession';
 import * as os from 'os';
 import * as log4js from "log4js";
-import { EventEmitter } from 'node:events';
+import { EventEmitter } from 'events';
 
 export class Main {
     static tcpListenerService: TcpListenerService;
@@ -32,24 +32,16 @@ export class Main {
                 },
             });
             Main.logger = log4js.getLogger();
-            // Main.logger.info(`Starting application: ${app.name} | ${app.getAppPath()}`);
-            // Main.logger.info(`Version: ${app.getVersion()}`);
-            // Main.logger.info(`Commit: ${Updater.getCommit()}`);
-            // Main.logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
             Main.logger.info(`OS: ${process.platform} ${process.arch}`);
 
             const serviceId = 'com.futo.fcast.receiver.service';
             const service = new Service(serviceId);
 
-
-            // let keepAlive;
-            // service.activityManager.create("keepAlive", function(activity) {
-            //     keepAlive = activity;
-            // });
-            // // When you&#39;re done, complete the activity
-            // service.activityManager.complete(keepAlive, function(activity) {
-            //     Main.logger.info("completed activity");
-            // });
+            // Service will timeout and casting will disconnect if not forced to be kept alive
+            let keepAlive;
+            service.activityManager.create("keepAlive", function(activity) {
+                keepAlive = activity;
+            });
 
             service.register("getDeviceInfo", (message: any) => {
                 Main.logger.info("In getDeviceInfo callback");
@@ -197,22 +189,14 @@ export class Main {
                     await NetworkService.proxyPlayIfRequired(message);
                     emitter.emit('play', message);
 
-                    service.call("luna://com.webos.applicationManager/launch", { playData: message }, (_response) => {
-                        console.log(`Relaunching FCast Receiver with args: ${JSON.stringify(message)}`);
+                    const appId = 'com.futo.fcast.receiver';
+                    service.call("luna://com.webos.applicationManager/launch", {
+                        'id': appId,
+                        'params': { playData: message }
+                    }, (response: any) => {
+                        Main.logger.info(`Launch response: ${JSON.stringify(response)}`);
+                        Main.logger.info(`Relaunching FCast Receiver with args: ${JSON.stringify(message)}`);
                     });
-                    // const appId = 'com.futo.fcast.receiver';
-                    // window.webOSDev.launch({
-                    //     id: appId,
-                    //     params: {
-                    //         playData: message,
-                    //     },
-                    //     onSuccess: function () {
-                    //         console.log(`Service: Launching application...`);
-                    //     },
-                    //     onFailure: function (message: any) {
-                    //         console.error(`Service: launch ${JSON.stringify(message)}`);
-                    //     },
-                    // });
                 });
                 l.emitter.on("pause", () => emitter.emit('pause'));
                 l.emitter.on("resume", () => emitter.emit('resume'));
