@@ -9,8 +9,10 @@ buildWebOS:
     - npm install -g @webos-tools/cli
   script:
     - cd fcast-receiver
+    - npm install
     - npm run build
     - cd ../fcast-receiver-service
+    - npm install
     - npm run build
     - cd ../
     - ares-package fcast-receiver/dist/ fcast-receiver-service/dist/ --no-minify
