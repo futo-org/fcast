@@ -2,6 +2,7 @@ stages:
   - buildDockerContainers
   - buildAndDeployAndroid
   - buildAndDeployElectron
+  - buildWebOSReceiver
 
 variables:
   ANDROID_VERSION_NAME:
