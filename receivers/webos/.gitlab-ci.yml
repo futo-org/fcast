@@ -1,7 +1,7 @@
 
 buildWebOS:
   stage: buildWebOSReceiver
-  image: node:current-bookworm
+  image: node:22.11.0-bookworm
   tags:
     - fcast-instance-runner
   before_script:
@@ -22,5 +22,5 @@ buildWebOS:
     access: all
     expire_in: "30 days"
     paths:
-      - receivers/webos/com.futo.fcast.receiver_1.0.0_all.ipk
+      - receivers/webos/*.ipk
   when: manual
