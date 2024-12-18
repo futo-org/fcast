@@ -1,7 +1,7 @@
 
 buildWebOS:
   stage: buildWebOSReceiver
-  image: node:current-bookworm
+  image: node:22.11.0-bookworm
   tags:
     - fcast-instance-runner
   before_script:
