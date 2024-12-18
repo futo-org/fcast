@@ -43,8 +43,13 @@ function renderIPsAndQRCode() {
         },
         errorCorrectionLevel : "M",
     },
-    (e) => {
-        console.log(`Error rendering QR Code: ${e}`)
+    (err) => {
+        if (err) {
+            console.error(`Error rendering QR Code: ${err}`);
+        }
+        else {
+            console.log(`Rendered QR Code`);
+        }
     });
 
     onQRCodeRendered();

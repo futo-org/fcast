@@ -17,11 +17,22 @@ import {
     playerCtrlVolumeBarProgress,
     videoCaptions,
     formatDuration,
+    skipBack,
+    skipForward,
 } from 'common/player/Renderer';
 
 const captionsBaseHeightCollapsed = 150;
 const captionsBaseHeightExpanded = 320;
 const captionsLineHeight = 68;
+
+enum RemoteKeyCode {
+    Stop = 413,
+    Rewind = 412,
+    Play = 415,
+    Pause = 19,
+    FastForward = 417,
+    Back = 461,
+}
 
 export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean {
     let handledCase = false;
@@ -74,11 +85,57 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function targetKeyDownEventListener(event: any) {
-    switch (event.code) {
+export function targetKeyDownEventListener(event: any): boolean {
+    let handledCase = false;
+
+    switch (event.keyCode) {
+        case RemoteKeyCode.Stop:
+            // history.back();
+            window.open('../main_window/index.html');
+            handledCase = true;
+            break;
+
+        case RemoteKeyCode.Rewind:
+            skipBack();
+            event.preventDefault();
+            handledCase = true;
+            break;
+
+        case RemoteKeyCode.Play:
+            if (player.isPaused()) {
+                player.play();
+            }
+            event.preventDefault();
+            handledCase = true;
+            break;
+        case RemoteKeyCode.Pause:
+            if (!player.isPaused()) {
+                player.pause();
+            }
+            event.preventDefault();
+            handledCase = true;
+            break;
+
+        case RemoteKeyCode.FastForward:
+            skipForward();
+            event.preventDefault();
+            handledCase = true;
+            break;
+
+        // WebOS 22 and earlier does not work well using the history API,
+        // so manually handling page navigation...
+        case RemoteKeyCode.Back:
+            // history.back();
+            window.open('../main_window/index.html');
+            event.preventDefault();
+            handledCase = true;
+            break;
+
         default:
             break;
     }
+
+    return handledCase;
 };
 
 if (window.webOSAPI.pendingPlay !== null) {

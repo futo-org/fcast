@@ -9,5 +9,6 @@
   "icon": "assets/icons/icon.png",
   "largeIcon": "assets/icons/largeIcon.png",
   "iconColor": "#0a62f5",
-  "splashBackground": "assets/images/splash.png"
+  "splashBackground": "assets/images/splash.png",
+  "disableBackHistoryAPI": "true"
 }

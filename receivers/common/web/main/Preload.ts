@@ -33,7 +33,19 @@ if (TARGET === 'electron') {
     require('lib/webOSTVjs-1.2.10/webOSTV.js');
     require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
     const serviceId = 'com.futo.fcast.receiver.service';
-    let onDeviceInfoCb: any;
+    let onDeviceInfoCb = () => { console.log('Main: Callback not set while fetching device info'); };
+
+    const keepAliveService = window.webOS.service.request(`luna://${serviceId}/`, {
+        method:"keepAlive",
+        parameters: {},
+        onSuccess: (message: any) => {
+            console.log(`Main: keepAlive ${JSON.stringify(message)}`);
+        },
+        onFailure: (message: any) => {
+            console.error(`Main: keepAlive ${JSON.stringify(message)}`);
+        },
+        // onComplete: (message) => {},
+    });
 
     const getDeviceInfoService = window.webOS.service.request(`luna://${serviceId}/`, {
         method:"getDeviceInfo",
@@ -58,9 +70,16 @@ if (TARGET === 'electron') {
                 console.log('Main: Registered play handler with service');
             }
             else {
-                console.log(`Main: Playing ${JSON.stringify(message)}`);
-                getDeviceInfoService.cancel();
-                playService.cancel();
+                if (message.value !== undefined && message.value.playData !== undefined) {
+                    console.log(`Main: Playing ${JSON.stringify(message)}`);
+                    getDeviceInfoService.cancel();
+                    playService.cancel();
+
+                    // WebOS 22 and earlier does not work well using the history API,
+                    // so manually handling page navigation...
+                    // history.pushState({}, '', '../main_window/index.html');
+                    window.open('../player/index.html');
+                }
             }
         },
         onFailure: (message: any) => {
@@ -71,14 +90,14 @@ if (TARGET === 'electron') {
     });
 
     window.targetAPI = {
-        onDeviceInfo: (callback: any) => onDeviceInfoCb = callback,
+        onDeviceInfo: (callback: () => void) => onDeviceInfoCb = callback,
         getDeviceInfo: () => deviceInfo,
     };
 
     document.addEventListener('webOSRelaunch', (args: any) => {
         console.log(`Relaunching FCast Receiver with args: ${JSON.stringify(args)}`);
 
-        if (args.playData !== null) {
+        if (args.playData !== undefined) {
             if (getDeviceInfoService !== undefined) {
                 getDeviceInfoService.cancel();
             }
@@ -86,7 +105,9 @@ if (TARGET === 'electron') {
                 playService.cancel();
             }
 
-            history.pushState({}, '', '../main_window/index.html');
+            // WebOS 22 and earlier does not work well using the history API,
+            // so manually handling page navigation...
+            // history.pushState({}, '', '../main_window/index.html');
             window.open('../player/index.html');
         }
     });

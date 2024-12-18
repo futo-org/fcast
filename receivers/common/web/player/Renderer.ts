@@ -258,6 +258,14 @@ function onPlay(_event, value: PlayMessage) {
             hlsPlayer.on(Hls.Events.LEVEL_LOADED, (eventName, level: LevelLoadedData) => {
                 isLive = level.details.live;
                 isLivePosition = isLive ? true : false;
+
+                // Event can fire after video load and play initialization
+                if (isLive && playerCtrlLiveBadge.style.display === "none") {
+                    playerCtrlLiveBadge.style.display = "block";
+                    playerCtrlPosition.style.display = "none";
+                    playerCtrlDurationSeparator.style.display = "none";
+                    playerCtrlDuration.style.display = "none";
+                }
             });
 
             player = new Player(PlayerType.Hls, videoElement, hlsPlayer);
@@ -717,6 +725,10 @@ const volumeIncrement = 0.1;
 
 function keyDownEventListener(event: any) {
     // console.log("KeyDown", event);
+    const handledCase = targetKeyDownEventListener(event);
+    if (handledCase) {
+        return;
+    }
 
     switch (event.code) {
         case 'KeyF':
@@ -729,15 +741,11 @@ function keyDownEventListener(event: any) {
             event.preventDefault();
             break;
         case 'ArrowLeft':
-            // Skip back
-            player.setCurrentTime(Math.max(player.getCurrentTime() - skipInterval, 0));
+            skipBack();
             event.preventDefault();
             break;
         case 'ArrowRight':
-            // Skip forward
-            if (!isLivePosition) {
-                player.setCurrentTime(Math.min(player.getCurrentTime() + skipInterval, player.getDuration()));
-            }
+            skipForward();
             event.preventDefault();
             break;
         case "Home":
@@ -756,7 +764,7 @@ function keyDownEventListener(event: any) {
         case 'KeyK':
         case 'Space':
         case 'Enter':
-            // Pause/Continue
+            // Play/pause toggle
             if (player.isPaused()) {
                 player.play();
             } else {
@@ -777,8 +785,17 @@ function keyDownEventListener(event: any) {
             volumeChangeHandler(Math.max(player.getVolume() - volumeIncrement, 0));
             break;
         default:
-            targetKeyDownEventListener(event);
             break;
+    }
+}
+
+function skipBack() {
+    player.setCurrentTime(Math.max(player.getCurrentTime() - skipInterval, 0));
+}
+
+function skipForward() {
+    if (!isLivePosition) {
+        player.setCurrentTime(Math.min(player.getCurrentTime() + skipInterval, player.getDuration()));
     }
 }
 
@@ -806,4 +823,6 @@ export {
     onPlay,
     playerCtrlStateUpdate,
     formatDuration,
+    skipBack,
+    skipForward,
 };

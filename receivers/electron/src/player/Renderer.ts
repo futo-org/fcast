@@ -42,20 +42,26 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function targetKeyDownEventListener(event: any) {
+export function targetKeyDownEventListener(event: any): boolean {
+    let handledCase = false;
+
     switch (event.code) {
         case 'KeyF':
         case 'F11':
             playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen);
             event.preventDefault();
+            handledCase = true;
             break;
         case 'Escape':
             playerCtrlStateUpdate(PlayerControlEvent.ExitFullscreen);
             event.preventDefault();
+            handledCase = true;
             break;
         default:
             break;
     }
+
+    return handledCase
 };
 
 export {

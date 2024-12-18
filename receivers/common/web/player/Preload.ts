@@ -40,11 +40,23 @@ if (TARGET === 'electron') {
     let onSeekCb, onSetVolumeCb, onSetSpeedCb;
     let playerWindowOpen = false;
 
+    const keepAliveService = window.webOS.service.request(`luna://${serviceId}/`, {
+        method:"keepAlive",
+        parameters: {},
+        onSuccess: (message: any) => {
+            console.log(`Player: keepAlive ${JSON.stringify(message)}`);
+        },
+        onFailure: (message: any) => {
+            console.error(`Player: keepAlive ${JSON.stringify(message)}`);
+        },
+        // onComplete: (message) => {},
+    });
+
     const playService = window.webOS.service.request(`luna://${serviceId}/`, {
         method:"play",
         parameters: {},
         onSuccess: (message: any) => {
-            console.log(JSON.stringify(message));
+            // console.log(JSON.stringify(message));
             if (message.value.subscribed === true) {
                 console.log('Player: Registered play handler with service');
             }
@@ -122,8 +134,10 @@ if (TARGET === 'electron') {
                 setVolumeService.cancel();
                 setSpeedService.cancel();
 
-                // window.open('../main_window/index.html');
-                history.back();
+                // WebOS 22 and earlier does not work well using the history API,
+                // so manually handling page navigation...
+                // history.back();
+                window.open('../main_window/index.html');
             }
         },
         onFailure: (message: any) => {
