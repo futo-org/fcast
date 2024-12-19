@@ -37,16 +37,10 @@ export class Main {
             const serviceId = 'com.futo.fcast.receiver.service';
             const service = new Service(serviceId);
 
-            // Not compatible with WebOS 22 and earlier simulator?
             // Service will timeout and casting will disconnect if not forced to be kept alive
-            // let keepAlive;
-            // service.activityManager.create("keepAlive", function(activity) {
-            //     keepAlive = activity;
-            // });
-
-            service.register("keepAlive", (_message: any) => {
-                Main.logger.info("In keepAlive callback");
-                // Do not respond to keep service alive
+            let keepAlive;
+            service.activityManager.create("keepAlive", function(activity) {
+                keepAlive = activity;
             });
 
             service.register("getDeviceInfo", (message: any) => {
@@ -198,7 +192,7 @@ export class Main {
                     const appId = 'com.futo.fcast.receiver';
                     service.call("luna://com.webos.applicationManager/launch", {
                         'id': appId,
-                        'params': { playData: message }
+                        'params': { timestamp: Date.now(), playData: message }
                     }, (response: any) => {
                         Main.logger.info(`Launch response: ${JSON.stringify(response)}`);
                         Main.logger.info(`Relaunching FCast Receiver with args: ${JSON.stringify(message)}`);

@@ -13,6 +13,8 @@ declare global {
     }
 }
 
+let preloadData: Record<string, any> = {};
+
 // @ts-ignore
 if (TARGET === 'electron') {
     // @ts-ignore
@@ -39,18 +41,6 @@ if (TARGET === 'electron') {
     let onPlayCb, onPauseCb, onResumeCb;
     let onSeekCb, onSetVolumeCb, onSetSpeedCb;
     let playerWindowOpen = false;
-
-    const keepAliveService = window.webOS.service.request(`luna://${serviceId}/`, {
-        method:"keepAlive",
-        parameters: {},
-        onSuccess: (message: any) => {
-            console.log(`Player: keepAlive ${JSON.stringify(message)}`);
-        },
-        onFailure: (message: any) => {
-            console.error(`Player: keepAlive ${JSON.stringify(message)}`);
-        },
-        // onComplete: (message) => {},
-    });
 
     const playService = window.webOS.service.request(`luna://${serviceId}/`, {
         method:"play",
@@ -248,7 +238,21 @@ if (TARGET === 'electron') {
         pendingPlay: null
     };
 
+    preloadData = {
+        playerWindowOpen: playerWindowOpen,
+        playService: playService,
+        pauseService: pauseService,
+        resumeService: resumeService,
+        stopService: stopService,
+        seekService: seekService,
+        setVolumeService: setVolumeService,
+        setSpeedService: setSpeedService,
+    };
 } else {
     // @ts-ignore
     console.log(`Attempting to run FCast player on unsupported target: ${TARGET}`);
 }
+
+export {
+    preloadData
+};

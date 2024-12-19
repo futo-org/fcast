@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export {};
 
 declare global {
     interface Window {
@@ -13,6 +12,7 @@ declare global {
 }
 
 let deviceInfo: any;
+let preloadData: Record<string, any> = {};
 
 // @ts-ignore
 if (TARGET === 'electron') {
@@ -35,18 +35,6 @@ if (TARGET === 'electron') {
     const serviceId = 'com.futo.fcast.receiver.service';
     let onDeviceInfoCb = () => { console.log('Main: Callback not set while fetching device info'); };
 
-    const keepAliveService = window.webOS.service.request(`luna://${serviceId}/`, {
-        method:"keepAlive",
-        parameters: {},
-        onSuccess: (message: any) => {
-            console.log(`Main: keepAlive ${JSON.stringify(message)}`);
-        },
-        onFailure: (message: any) => {
-            console.error(`Main: keepAlive ${JSON.stringify(message)}`);
-        },
-        // onComplete: (message) => {},
-    });
-
     const getDeviceInfoService = window.webOS.service.request(`luna://${serviceId}/`, {
         method:"getDeviceInfo",
         parameters: {},
@@ -62,56 +50,19 @@ if (TARGET === 'electron') {
         // onComplete: (message) => {},
     });
 
-    const playService = window.webOS.service.request(`luna://${serviceId}/`, {
-        method:"play",
-        parameters: {},
-        onSuccess: (message: any) => {
-            if (message.value.subscribed === true) {
-                console.log('Main: Registered play handler with service');
-            }
-            else {
-                if (message.value !== undefined && message.value.playData !== undefined) {
-                    console.log(`Main: Playing ${JSON.stringify(message)}`);
-                    getDeviceInfoService.cancel();
-                    playService.cancel();
-
-                    // WebOS 22 and earlier does not work well using the history API,
-                    // so manually handling page navigation...
-                    // history.pushState({}, '', '../main_window/index.html');
-                    window.open('../player/index.html');
-                }
-            }
-        },
-        onFailure: (message: any) => {
-            console.error(`Main: play ${JSON.stringify(message)}`);
-        },
-        subscribe: true,
-        resubscribe: true
-    });
-
     window.targetAPI = {
         onDeviceInfo: (callback: () => void) => onDeviceInfoCb = callback,
         getDeviceInfo: () => deviceInfo,
     };
 
-    document.addEventListener('webOSRelaunch', (args: any) => {
-        console.log(`Relaunching FCast Receiver with args: ${JSON.stringify(args)}`);
-
-        if (args.playData !== undefined) {
-            if (getDeviceInfoService !== undefined) {
-                getDeviceInfoService.cancel();
-            }
-            if (playService !== undefined) {
-                playService.cancel();
-            }
-
-            // WebOS 22 and earlier does not work well using the history API,
-            // so manually handling page navigation...
-            // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html');
-        }
-    });
+    preloadData = {
+        getDeviceInfoService: getDeviceInfoService,
+    };
 } else {
     // @ts-ignore
     console.log(`Attempting to run FCast player on unsupported target: ${TARGET}`);
 }
+
+export {
+    preloadData
+};
