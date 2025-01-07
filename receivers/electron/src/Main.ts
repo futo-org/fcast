@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as log4js from "log4js";
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { ToastIcon } from 'common/components/Toast';
 const cp = require('child_process');
 
 export class Main {
@@ -24,6 +25,7 @@ export class Main {
     static discoveryService: DiscoveryService;
     static tray: Tray;
     static logger: log4js.Logger;
+    private static startupStorageClear = true;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -189,6 +191,9 @@ export class Main {
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
             l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
+
+            l.emitter.on('connect', (message) => Main.mainWindow?.webContents?.send('connect', message));
+            l.emitter.on('disconnect', (message) => Main.mainWindow?.webContents?.send('disconnect', message));
             l.start();
 
             ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
@@ -293,6 +298,11 @@ export class Main {
             }
         });
 
+        if (Main.startupStorageClear) {
+            Main.mainWindow.webContents.send('startup-storage-clear');
+            Main.startupStorageClear = false;
+        }
+
         Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
@@ -393,6 +403,7 @@ export function getComputerName() {
 
 export async function errorHandler(err: NodeJS.ErrnoException) {
     Main.logger.error("Application error:", err);
+    Main.mainWindow.webContents.send("toast", { message: err, icon: ToastIcon.ERROR });
 
     const restartPrompt = await dialog.showMessageBox({
         type: 'error',

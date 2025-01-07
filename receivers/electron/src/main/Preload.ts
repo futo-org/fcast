@@ -1,6 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { contextBridge, ipcRenderer } from 'electron';
 import 'common/main/Preload';
+import { toast } from 'common/components/Toast';
+
+ipcRenderer.on("toast", (_event, value: any) => {
+    toast(value.message, value.icon, value.duration);
+});
 
 contextBridge.exposeInMainWorld('electronAPI', {
     updaterProgress: () => ipcRenderer.invoke('updater-progress'),

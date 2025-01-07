@@ -68,3 +68,24 @@
     color: white;
     padding-right: 20px;
 }
+
+#connection-check {
+    width: 104px;
+    height: 104px;
+}
+
+#toast-notification {
+    gap: unset;
+    top: -250px;
+}
+
+#toast-icon {
+    width: 88px;
+    height: 88px;
+    margin-right: 20px;
+}
+
+#toast-text {
+    font-family: InterRegular;
+    font-size: 28px;
+}

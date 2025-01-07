@@ -14,12 +14,14 @@ import { Opcode } from 'common/FCastSession';
 import * as os from 'os';
 import * as log4js from "log4js";
 import { EventEmitter } from 'events';
+import { ToastIcon } from 'common/components/Toast';
 
 export class Main {
     static tcpListenerService: TcpListenerService;
     static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
     static logger: log4js.Logger;
+    static emitter: EventEmitter;
 
 	static {
 		try {
@@ -38,9 +40,43 @@ export class Main {
             const service = new Service(serviceId);
 
             // Service will timeout and casting will disconnect if not forced to be kept alive
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             let keepAlive;
             service.activityManager.create("keepAlive", function(activity) {
                 keepAlive = activity;
+            });
+
+            const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
+
+            let startupStorageClearClosureCb = null;
+            service.register("startup-storage-clear", (message: any) => {
+                if (message.isSubscription) {
+                    startupStorageClearClosureCb = voidCb.bind(this, message);
+                    Main.emitter.on('startup-storage-clear', startupStorageClearClosureCb);
+                }
+
+                message.respond({ returnValue: true, value: { subscribed: true }});
+            },
+            (message: any) => {
+                Main.logger.info('Canceled startup-storage-clear service subscriber');
+                Main.emitter.off('startup-storage-clear', startupStorageClearClosureCb);
+                message.respond({ returnValue: true, value: message.payload });
+            });
+
+            let toastClosureCb = null;
+            const toastCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
+            service.register("toast", (message: any) => {
+                if (message.isSubscription) {
+                    toastClosureCb = toastCb.bind(this, message);
+                    Main.emitter.on('toast', toastClosureCb);
+                }
+
+                message.respond({ returnValue: true, value: { subscribed: true }});
+            },
+            (message: any) => {
+                Main.logger.info('Canceled toast service subscriber');
+                Main.emitter.off('toast', toastClosureCb);
+                message.respond({ returnValue: true, value: message.payload });
             });
 
             service.register("getDeviceInfo", (message: any) => {
@@ -52,13 +88,45 @@ export class Main {
                 });
             });
 
+            let connectClosureCb = null;
+            const connectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
+            service.register("connect", (message: any) => {
+                if (message.isSubscription) {
+                    connectClosureCb = connectCb.bind(this, message);
+                    Main.emitter.on('connect', connectClosureCb);
+                }
+
+                message.respond({ returnValue: true, value: { subscribed: true }});
+            },
+            (message: any) => {
+                Main.logger.info('Canceled connect service subscriber');
+                Main.emitter.off('connect', connectClosureCb);
+                message.respond({ returnValue: true, value: message.payload });
+            });
+
+            let disconnectClosureCb = null;
+            const disconnectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
+            service.register("disconnect", (message: any) => {
+                if (message.isSubscription) {
+                    disconnectClosureCb = disconnectCb.bind(this, message);
+                    Main.emitter.on('disconnect', disconnectClosureCb);
+                }
+
+                message.respond({ returnValue: true, value: { subscribed: true }});
+            },
+            (message: any) => {
+                Main.logger.info('Canceled disconnect service subscriber');
+                Main.emitter.off('disconnect', disconnectClosureCb);
+                message.respond({ returnValue: true, value: message.payload });
+            });
+
             Main.discoveryService = new DiscoveryService();
             Main.discoveryService.start();
 
             Main.tcpListenerService = new TcpListenerService();
             Main.webSocketListenerService = new WebSocketListenerService();
 
-            const emitter = new EventEmitter();
+            Main.emitter = new EventEmitter();
             let playData: PlayMessage = null;
 
             let playClosureCb = null;
@@ -70,7 +138,6 @@ export class Main {
             let pauseClosureCb: any = null;
             let resumeClosureCb: any = null;
             let stopClosureCb: any  = null;
-            const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
 
             let seekClosureCb = null;
             const seekCb = (message: any, seekMessage: SeekMessage) => { message.respond({ returnValue: true, value: seekMessage }); };
@@ -86,42 +153,42 @@ export class Main {
             service.register("play", (message: any) => {
                 if (message.isSubscription) {
                     playClosureCb = playCb.bind(this, message);
-                    emitter.on('play', playClosureCb);
+                    Main.emitter.on('play', playClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true, playData: playData }});
             },
             (message: any) => {
                 Main.logger.info('Canceled play service subscriber');
-                emitter.off('play', playClosureCb);
+                Main.emitter.off('play', playClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
             service.register("pause", (message: any) => {
                 if (message.isSubscription) {
                     pauseClosureCb = voidCb.bind(this, message);
-                    emitter.on('pause', pauseClosureCb);
+                    Main.emitter.on('pause', pauseClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
                 Main.logger.info('Canceled pause service subscriber');
-                emitter.off('pause', pauseClosureCb);
+                Main.emitter.off('pause', pauseClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
             service.register("resume", (message: any) => {
                 if (message.isSubscription) {
                     resumeClosureCb = voidCb.bind(this, message);
-                    emitter.on('resume', resumeClosureCb);
+                    Main.emitter.on('resume', resumeClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
                 Main.logger.info('Canceled resume service subscriber');
-                emitter.off('resume', resumeClosureCb);
+                Main.emitter.off('resume', resumeClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
@@ -130,56 +197,56 @@ export class Main {
 
                 if (message.isSubscription) {
                     stopClosureCb = voidCb.bind(this, message);
-                    emitter.on('stop', stopClosureCb);
+                    Main.emitter.on('stop', stopClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
                 Main.logger.info('Canceled stop service subscriber');
-                emitter.off('stop', stopClosureCb);
+                Main.emitter.off('stop', stopClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
             service.register("seek", (message: any) => {
                 if (message.isSubscription) {
                     seekClosureCb = seekCb.bind(this, message);
-                    emitter.on('seek', seekClosureCb);
+                    Main.emitter.on('seek', seekClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
                 Main.logger.info('Canceled seek service subscriber');
-                emitter.off('seek', seekClosureCb);
+                Main.emitter.off('seek', seekClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
             service.register("setvolume", (message: any) => {
                 if (message.isSubscription) {
                     setVolumeClosureCb = setVolumeCb.bind(this, message);
-                    emitter.on('setvolume', setVolumeClosureCb);
+                    Main.emitter.on('setvolume', setVolumeClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
                 Main.logger.info('Canceled setvolume service subscriber');
-                emitter.off('setvolume', setVolumeClosureCb);
+                Main.emitter.off('setvolume', setVolumeClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
             service.register("setspeed", (message: any) => {
                 if (message.isSubscription) {
                     setSpeedClosureCb = setSpeedCb.bind(this, message);
-                    emitter.on('setspeed', setSpeedClosureCb);
+                    Main.emitter.on('setspeed', setSpeedClosureCb);
                 }
 
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
                 Main.logger.info('Canceled setspeed service subscriber');
-                emitter.off('setspeed', setSpeedClosureCb);
+                Main.emitter.off('setspeed', setSpeedClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
@@ -187,7 +254,7 @@ export class Main {
             listeners.forEach(l => {
                 l.emitter.on("play", async (message) => {
                     await NetworkService.proxyPlayIfRequired(message);
-                    emitter.emit('play', message);
+                    Main.emitter.emit('play', message);
 
                     const appId = 'com.futo.fcast.receiver';
                     service.call("luna://com.webos.applicationManager/launch", {
@@ -198,12 +265,15 @@ export class Main {
                         Main.logger.info(`Relaunching FCast Receiver with args: ${JSON.stringify(message)}`);
                     });
                 });
-                l.emitter.on("pause", () => emitter.emit('pause'));
-                l.emitter.on("resume", () => emitter.emit('resume'));
-                l.emitter.on("stop", () => emitter.emit('stop'));
-                l.emitter.on("seek", (message) => emitter.emit('seek', message));
-                l.emitter.on("setvolume", (message) => emitter.emit('setvolume', message));
-                l.emitter.on("setspeed", (message) => emitter.emit('setspeed', message));
+                l.emitter.on("pause", () => Main.emitter.emit('pause'));
+                l.emitter.on("resume", () => Main.emitter.emit('resume'));
+                l.emitter.on("stop", () => Main.emitter.emit('stop'));
+                l.emitter.on("seek", (message) => Main.emitter.emit('seek', message));
+                l.emitter.on("setvolume", (message) => Main.emitter.emit('setvolume', message));
+                l.emitter.on("setspeed", (message) => Main.emitter.emit('setspeed', message));
+
+                l.emitter.on('connect', (message) => Main.emitter.emit('connect', message));
+                l.emitter.on('disconnect', (message) => Main.emitter.emit('disconnect', message));
                 l.start();
             });
 
@@ -235,9 +305,12 @@ export class Main {
 
                 message.respond({ returnValue: true, value: { success: true } });
             });
+
+            this.emitter.emit('startup-storage-clear');
         }
         catch (err)  {
             Main.logger.error("Error initializing service:", err);
+            Main.emitter.emit('toast', { message: `Error initializing service: ${err}`, icon: ToastIcon.ERROR });
         }
 
 	}
@@ -249,4 +322,5 @@ export function getComputerName() {
 
 export async function errorHandler(err: NodeJS.ErrnoException) {
     Main.logger.error("Application error:", err);
+    Main.emitter.emit('toast', { message: err, icon: ToastIcon.ERROR });
 }

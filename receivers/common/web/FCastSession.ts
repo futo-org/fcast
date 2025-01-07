@@ -202,8 +202,15 @@ export class FCastSession {
                 case Opcode.SetSpeed:
                     this.emitter.emit("setspeed", JSON.parse(body) as SetSpeedMessage);
                     break;
+                case Opcode.Version:
+                    this.emitter.emit("version", JSON.parse(body) as VersionMessage);
+                    break;
                 case Opcode.Ping:
                     this.send(Opcode.Pong);
+                    this.emitter.emit("ping");
+                    break;
+                case Opcode.Pong:
+                    this.emitter.emit("pong");
                     break;
             }
         } catch (e) {
@@ -228,5 +235,8 @@ export class FCastSession {
         this.emitter.on("seek", (body: SeekMessage) => { emitter.emit("seek", body) });
         this.emitter.on("setvolume", (body: SetVolumeMessage) => { emitter.emit("setvolume", body) });
         this.emitter.on("setspeed", (body: SetSpeedMessage) => { emitter.emit("setspeed", body) });
+        this.emitter.on("version", (body: VersionMessage) => { emitter.emit("version", body) });
+        this.emitter.on("ping", () => { emitter.emit("ping") });
+        this.emitter.on("pong", () => { emitter.emit("pong") });
     }
 }

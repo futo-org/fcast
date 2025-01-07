@@ -1,12 +1,55 @@
 
 import QRCode from 'modules/qrcode';
 import { onQRCodeRendered } from 'src/main/Renderer';
+import { toast, ToastIcon } from '../components/Toast';
+
+const connectionStatusText = document.getElementById("connection-status-text");
+const connectionStatusSpinner = document.getElementById("connection-spinner");
+const connectionStatusCheck = document.getElementById("connection-check");
+let connections = JSON.parse(localStorage.getItem('connections')) ?? [];
+if (connections.length > 0) {
+    connections.forEach(connection => {
+        onConnect(connection);
+    });
+}
+
+window.targetAPI.onStartupStorageClear((_event, value: any) => {
+    localStorage.clear();
+    localStorage.setItem('connections', JSON.stringify(connections));
+});
 
 window.targetAPI.onDeviceInfo(renderIPsAndQRCode);
+window.targetAPI.onConnect((_event, value: any) => {
+    connections.push(value.id);
+    localStorage.setItem('connections', JSON.stringify(connections));
+    onConnect(value);
+});
+window.targetAPI.onDisconnect((_event, value: any) => {
+    console.log(`Device disconnected: ${JSON.stringify(value)}`);
+    const index = connections.indexOf(value.id);
+    if (index != -1) {
+        connections.splice(index, 1);
+        localStorage.setItem('connections', JSON.stringify(connections));
+    }
+
+    if (connections.length === 0) {
+        connectionStatusText.textContent = 'Waiting for a connection';
+        connectionStatusSpinner.style.display = 'inline-block';
+        connectionStatusCheck.style.display = 'none';
+        toast("Device disconnected", ToastIcon.INFO);
+    }
+});
 
 if(window.targetAPI.getDeviceInfo()) {
     console.log("device info already present");
     renderIPsAndQRCode();
+}
+
+function onConnect(value: any) {
+    console.log(`Device connected: ${JSON.stringify(value)}`);
+    connectionStatusText.textContent = 'Connected: Ready to cast';
+    connectionStatusSpinner.style.display = 'none';
+    connectionStatusCheck.style.display = 'inline-block';
 }
 
 function renderIPsAndQRCode() {
@@ -46,6 +89,7 @@ function renderIPsAndQRCode() {
     (err) => {
         if (err) {
             console.error(`Error rendering QR Code: ${err}`);
+            toast(`Error rendering QR Code: ${err}`, ToastIcon.ERROR);
         }
         else {
             console.log(`Rendered QR Code`);
