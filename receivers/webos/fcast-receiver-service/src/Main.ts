@@ -47,6 +47,7 @@ export class Main {
             });
 
             const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
+            const objectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
 
             let startupStorageClearClosureCb = null;
             service.register("startup-storage-clear", (message: any) => {
@@ -64,10 +65,9 @@ export class Main {
             });
 
             let toastClosureCb = null;
-            const toastCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
             service.register("toast", (message: any) => {
                 if (message.isSubscription) {
-                    toastClosureCb = toastCb.bind(this, message);
+                    toastClosureCb = objectCb.bind(this, message);
                     Main.emitter.on('toast', toastClosureCb);
                 }
 
@@ -89,10 +89,9 @@ export class Main {
             });
 
             let connectClosureCb = null;
-            const connectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
             service.register("connect", (message: any) => {
                 if (message.isSubscription) {
-                    connectClosureCb = connectCb.bind(this, message);
+                    connectClosureCb = objectCb.bind(this, message);
                     Main.emitter.on('connect', connectClosureCb);
                 }
 
@@ -105,10 +104,9 @@ export class Main {
             });
 
             let disconnectClosureCb = null;
-            const disconnectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
             service.register("disconnect", (message: any) => {
                 if (message.isSubscription) {
-                    disconnectClosureCb = disconnectCb.bind(this, message);
+                    disconnectClosureCb = objectCb.bind(this, message);
                     Main.emitter.on('disconnect', disconnectClosureCb);
                 }
 
