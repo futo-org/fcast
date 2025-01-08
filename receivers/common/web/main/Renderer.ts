@@ -6,22 +6,19 @@ import { toast, ToastIcon } from '../components/Toast';
 const connectionStatusText = document.getElementById("connection-status-text");
 const connectionStatusSpinner = document.getElementById("connection-spinner");
 const connectionStatusCheck = document.getElementById("connection-check");
-let connections = JSON.parse(localStorage.getItem('connections')) ?? [];
-if (connections.length > 0) {
-    connections.forEach(connection => {
-        onConnect(connection);
-    });
-}
+let connections = [];
 
-window.targetAPI.onStartupStorageClear((_event, value: any) => {
-    localStorage.clear();
-    localStorage.setItem('connections', JSON.stringify(connections));
+// Window might be re-created while devices are still connected
+window.targetAPI.onPing((_event, value: any) => {
+    if (connections.length === 0) {
+        connections.push(value.id);
+        onConnect(value.id);
+    }
 });
 
 window.targetAPI.onDeviceInfo(renderIPsAndQRCode);
 window.targetAPI.onConnect((_event, value: any) => {
     connections.push(value.id);
-    localStorage.setItem('connections', JSON.stringify(connections));
     onConnect(value);
 });
 window.targetAPI.onDisconnect((_event, value: any) => {
@@ -29,7 +26,6 @@ window.targetAPI.onDisconnect((_event, value: any) => {
     const index = connections.indexOf(value.id);
     if (index != -1) {
         connections.splice(index, 1);
-        localStorage.setItem('connections', JSON.stringify(connections));
     }
 
     if (connections.length === 0) {

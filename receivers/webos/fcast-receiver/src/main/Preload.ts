@@ -15,7 +15,6 @@ enum RemoteKeyCode {
 }
 
 try {
-    const startupStorageClearService = registerService('startup-storage-clear', () => { preloadData.onStartupStorageClearCb(); });
     const toastService = registerService('toast', (message: any) => { toast(message.value.message, message.value.icon, message.value.duration); });
     const getDeviceInfoService = registerService('getDeviceInfo', (message: any) => {
         console.log(`Main: getDeviceInfo ${JSON.stringify(message)}`);
@@ -24,14 +23,15 @@ try {
     }, false);
     const onConnectService = registerService('connect', (message: any) => { preloadData.onConnectCb(null, message.value); });
     const onDisconnectService = registerService('disconnect', (message: any) => { preloadData.onDisconnectCb(null, message.value); });
+    const onPingService = registerService('ping', (message: any) => { preloadData.onPingCb(null, message.value); });
     const playService = registerService('play', (message: any) => {
         if (message.value !== undefined && message.value.playData !== undefined) {
             console.log(`Main: Playing ${JSON.stringify(message)}`);
             getDeviceInfoService.cancel();
-            startupStorageClearService.cancel();
             toastService.cancel();
             onConnectService.cancel();
             onDisconnectService.cancel();
+            onPingService.cancel();
             playService.cancel();
 
             // WebOS 22 and earlier does not work well using the history API,
@@ -49,11 +49,11 @@ try {
         const lastTimestamp = localStorage.getItem('lastTimestamp');
         if (params.playData !== undefined && params.timestamp != lastTimestamp) {
             localStorage.setItem('lastTimestamp', params.timestamp);
-            startupStorageClearService?.cancel();
             toastService?.cancel();
             getDeviceInfoService?.cancel();
             onConnectService?.cancel();
             onDisconnectService?.cancel();
+            onPingService?.cancel();
             playService?.cancel();
 
             // WebOS 22 and earlier does not work well using the history API,

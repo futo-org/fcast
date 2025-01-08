@@ -49,21 +49,6 @@ export class Main {
             const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
             const objectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
 
-            let startupStorageClearClosureCb = null;
-            service.register("startup-storage-clear", (message: any) => {
-                if (message.isSubscription) {
-                    startupStorageClearClosureCb = voidCb.bind(this, message);
-                    Main.emitter.on('startup-storage-clear', startupStorageClearClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled startup-storage-clear service subscriber');
-                Main.emitter.off('startup-storage-clear', startupStorageClearClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
             let toastClosureCb = null;
             service.register("toast", (message: any) => {
                 if (message.isSubscription) {
@@ -115,6 +100,21 @@ export class Main {
             (message: any) => {
                 Main.logger.info('Canceled disconnect service subscriber');
                 Main.emitter.off('disconnect', disconnectClosureCb);
+                message.respond({ returnValue: true, value: message.payload });
+            });
+
+            let pingClosureCb = null;
+            service.register("ping", (message: any) => {
+                if (message.isSubscription) {
+                    pingClosureCb = objectCb.bind(this, message);
+                    Main.emitter.on('ping', pingClosureCb);
+                }
+
+                message.respond({ returnValue: true, value: { subscribed: true }});
+            },
+            (message: any) => {
+                Main.logger.info('Canceled ping service subscriber');
+                Main.emitter.off('ping', pingClosureCb);
                 message.respond({ returnValue: true, value: message.payload });
             });
 
@@ -272,6 +272,7 @@ export class Main {
 
                 l.emitter.on('connect', (message) => Main.emitter.emit('connect', message));
                 l.emitter.on('disconnect', (message) => Main.emitter.emit('disconnect', message));
+                l.emitter.on('ping', (message) => Main.emitter.emit('ping', message));
                 l.start();
             });
 
@@ -303,8 +304,6 @@ export class Main {
 
                 message.respond({ returnValue: true, value: { success: true } });
             });
-
-            this.emitter.emit('startup-storage-clear');
         }
         catch (err)  {
             Main.logger.error("Error initializing service:", err);

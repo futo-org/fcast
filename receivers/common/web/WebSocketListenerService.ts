@@ -68,6 +68,7 @@ export class WebSocketListenerService {
 
                 heartbeatRetries += 1;
                 session.send(Opcode.Ping);
+                this.emitter.emit('ping', { id: connectionId });
             } catch (e) {
                 Main.logger.warn(`Error while pinging sender device ${socket.remoteAddress}:${socket.remotePort}.`, e);
                 socket.destroy();

@@ -25,7 +25,6 @@ export class Main {
     static discoveryService: DiscoveryService;
     static tray: Tray;
     static logger: log4js.Logger;
-    private static startupStorageClear = true;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -194,6 +193,7 @@ export class Main {
 
             l.emitter.on('connect', (message) => Main.mainWindow?.webContents?.send('connect', message));
             l.emitter.on('disconnect', (message) => Main.mainWindow?.webContents?.send('disconnect', message));
+            l.emitter.on('ping', (message) => Main.mainWindow?.webContents?.send('ping', message));
             l.start();
 
             ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
@@ -297,11 +297,6 @@ export class Main {
                 preload: path.join(__dirname, 'main/preload.js')
             }
         });
-
-        if (Main.startupStorageClear) {
-            Main.mainWindow.webContents.send('startup-storage-clear');
-            Main.startupStorageClear = false;
-        }
 
         Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
         Main.mainWindow.on('closed', () => {
