@@ -70,7 +70,6 @@ export class TcpListenerService {
 
                 heartbeatRetries += 1;
                 session.send(Opcode.Ping);
-                this.emitter.emit('ping', { id: connectionId });
             } catch (e) {
                 Main.logger.warn(`Error while pinging sender device ${socket.remoteAddress}:${socket.remotePort}.`, e);
                 socket.destroy();
@@ -98,9 +97,16 @@ export class TcpListenerService {
                 this.sessions.splice(index, 1);
             }
             this.emitter.emit('disconnect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+            this.emitter.removeListener('ping', pingListener);
         });
 
         this.emitter.emit('connect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+        const pingListener = (message: any) => {
+            if (!message) {
+                this.emitter.emit('ping', { id: connectionId });
+            }
+        }
+        this.emitter.prependListener('ping', pingListener);
 
         try {
             Main.logger.info('Sending version');

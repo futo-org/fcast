@@ -10,7 +10,7 @@ let connections = [];
 
 // Window might be re-created while devices are still connected
 window.targetAPI.onPing((_event, value: any) => {
-    if (connections.length === 0) {
+    if (value && connections.length === 0) {
         connections.push(value.id);
         onConnect(value.id);
     }
