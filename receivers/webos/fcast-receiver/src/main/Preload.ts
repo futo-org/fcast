@@ -97,7 +97,7 @@ function registerService(method: string, callback: (message: any) => void, subsc
         method: method,
         parameters: {},
         onSuccess: (message: any) => {
-            if (message.value.subscribed === true) {
+            if (message.value?.subscribed === true) {
                 console.log(`Main: Registered ${method} handler with service`);
             }
             else {
