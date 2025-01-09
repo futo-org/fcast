@@ -46,23 +46,11 @@ export class Main {
                 keepAlive = activity;
             });
 
+            // TODO: Fix issue of emitting events to non-existent subscribers after multiple page changes
             const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
             const objectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
 
-            let toastClosureCb = null;
-            service.register("toast", (message: any) => {
-                if (message.isSubscription) {
-                    toastClosureCb = objectCb.bind(this, message);
-                    Main.emitter.on('toast', toastClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled toast service subscriber');
-                Main.emitter.off('toast', toastClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
+            registerService(service, 'toast', (message: any) => { return objectCb.bind(this, message) });
 
             service.register("getDeviceInfo", (message: any) => {
                 Main.logger.info("In getDeviceInfo callback");
@@ -73,50 +61,9 @@ export class Main {
                 });
             });
 
-            let connectClosureCb = null;
-            service.register("connect", (message: any) => {
-                if (message.isSubscription) {
-                    connectClosureCb = objectCb.bind(this, message);
-                    Main.emitter.on('connect', connectClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled connect service subscriber');
-                Main.emitter.off('connect', connectClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
-            let disconnectClosureCb = null;
-            service.register("disconnect", (message: any) => {
-                if (message.isSubscription) {
-                    disconnectClosureCb = objectCb.bind(this, message);
-                    Main.emitter.on('disconnect', disconnectClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled disconnect service subscriber');
-                Main.emitter.off('disconnect', disconnectClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
-            let pingClosureCb = null;
-            service.register("ping", (message: any) => {
-                if (message.isSubscription) {
-                    pingClosureCb = objectCb.bind(this, message);
-                    Main.emitter.on('ping', pingClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled ping service subscriber');
-                Main.emitter.off('ping', pingClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
+            registerService(service, 'connect', (message: any) => { return objectCb.bind(this, message) });
+            registerService(service, 'disconnect', (message: any) => { return objectCb.bind(this, message) });
+            registerService(service, 'ping', (message: any) => { return objectCb.bind(this, message) });
 
             Main.discoveryService = new DiscoveryService();
             Main.discoveryService.start();
@@ -133,22 +80,13 @@ export class Main {
                 message.respond({ returnValue: true, value: { playData: playData } });
             };
 
-            let pauseClosureCb: any = null;
-            let resumeClosureCb: any = null;
             let stopClosureCb: any  = null;
-
-            let seekClosureCb = null;
             const seekCb = (message: any, seekMessage: SeekMessage) => { message.respond({ returnValue: true, value: seekMessage }); };
-
-            let setVolumeClosureCb = null;
             const setVolumeCb = (message: any, volumeMessage: SetVolumeMessage) => { message.respond({ returnValue: true, value: volumeMessage }); };
-
-            let setSpeedClosureCb = null;
             const setSpeedCb = (message: any, speedMessage: SetSpeedMessage) => { message.respond({ returnValue: true, value: speedMessage }); };
 
             // Note: When logging the `message` object, do NOT use JSON.stringify, you can log messages directly. Seems to be a circular reference causing errors...
-            // const playService = service.register("play", (message) => {
-            service.register("play", (message: any) => {
+            service.register('play', (message: any) => {
                 if (message.isSubscription) {
                     playClosureCb = playCb.bind(this, message);
                     Main.emitter.on('play', playClosureCb);
@@ -162,35 +100,10 @@ export class Main {
                 message.respond({ returnValue: true, value: message.payload });
             });
 
-            service.register("pause", (message: any) => {
-                if (message.isSubscription) {
-                    pauseClosureCb = voidCb.bind(this, message);
-                    Main.emitter.on('pause', pauseClosureCb);
-                }
+            registerService(service, 'pause', (message: any) => { return voidCb.bind(this, message) });
+            registerService(service, 'resume', (message: any) => { return voidCb.bind(this, message) });
 
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled pause service subscriber');
-                Main.emitter.off('pause', pauseClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
-            service.register("resume", (message: any) => {
-                if (message.isSubscription) {
-                    resumeClosureCb = voidCb.bind(this, message);
-                    Main.emitter.on('resume', resumeClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled resume service subscriber');
-                Main.emitter.off('resume', resumeClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
-            service.register("stop", (message: any) => {
+            service.register('stop', (message: any) => {
                 playData = null;
 
                 if (message.isSubscription) {
@@ -206,47 +119,9 @@ export class Main {
                 message.respond({ returnValue: true, value: message.payload });
             });
 
-            service.register("seek", (message: any) => {
-                if (message.isSubscription) {
-                    seekClosureCb = seekCb.bind(this, message);
-                    Main.emitter.on('seek', seekClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled seek service subscriber');
-                Main.emitter.off('seek', seekClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
-            service.register("setvolume", (message: any) => {
-                if (message.isSubscription) {
-                    setVolumeClosureCb = setVolumeCb.bind(this, message);
-                    Main.emitter.on('setvolume', setVolumeClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled setvolume service subscriber');
-                Main.emitter.off('setvolume', setVolumeClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
-
-            service.register("setspeed", (message: any) => {
-                if (message.isSubscription) {
-                    setSpeedClosureCb = setSpeedCb.bind(this, message);
-                    Main.emitter.on('setspeed', setSpeedClosureCb);
-                }
-
-                message.respond({ returnValue: true, value: { subscribed: true }});
-            },
-            (message: any) => {
-                Main.logger.info('Canceled setspeed service subscriber');
-                Main.emitter.off('setspeed', setSpeedClosureCb);
-                message.respond({ returnValue: true, value: message.payload });
-            });
+            registerService(service, 'seek', (message: any) => { return seekCb.bind(this, message) });
+            registerService(service, 'setvolume', (message: any) => { return setVolumeCb.bind(this, message) });
+            registerService(service, 'setspeed', (message: any) => { return setSpeedCb.bind(this, message) });
 
             const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
             listeners.forEach(l => {
@@ -320,4 +195,21 @@ export function getComputerName() {
 export async function errorHandler(err: NodeJS.ErrnoException) {
     Main.logger.error("Application error:", err);
     Main.emitter.emit('toast', { message: err, icon: ToastIcon.ERROR });
+}
+
+function registerService(service: Service, method: string, callback: (message: any) => any) {
+    let callbackRef = null;
+    service.register(method, (message: any) => {
+        if (message.isSubscription) {
+            callbackRef = callback(message);
+            Main.emitter.on(method, callbackRef);
+        }
+
+        message.respond({ returnValue: true, value: { subscribed: true }});
+    },
+    (message: any) => {
+        Main.logger.info(`Canceled ${method} service subscriber`);
+        Main.emitter.off(method, callbackRef);
+        message.respond({ returnValue: true, value: message.payload });
+    });
 }

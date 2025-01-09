@@ -26,13 +26,13 @@ window.targetAPI.onDisconnect((_event, value: any) => {
     const index = connections.indexOf(value.id);
     if (index != -1) {
         connections.splice(index, 1);
-    }
 
-    if (connections.length === 0) {
-        connectionStatusText.textContent = 'Waiting for a connection';
-        connectionStatusSpinner.style.display = 'inline-block';
-        connectionStatusCheck.style.display = 'none';
-        toast("Device disconnected", ToastIcon.INFO);
+        if (connections.length === 0) {
+            connectionStatusText.textContent = 'Waiting for a connection';
+            connectionStatusSpinner.style.display = 'inline-block';
+            connectionStatusCheck.style.display = 'none';
+            toast("Device disconnected", ToastIcon.INFO);
+        }
     }
 });
 
