@@ -67,7 +67,7 @@ body:
       description: In the application, select More > Settings, scroll to the bottom and locate the value next to "Version Name".
       placeholder: "278"
     validations:
-      required: true
+      required: false
 
   - type: dropdown
     id: os
@@ -121,7 +121,7 @@ body:
         - "Apple Podcasts"
         - "Other"
     validations:
-      required: true
+      required: false
 
   - type: input
     id: plugin-version
