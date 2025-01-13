@@ -68,9 +68,6 @@ body:
       placeholder: "278"
     validations:
       required: true
-      condition:
-        field: sender
-        value: "Grayjay"
 
   - type: dropdown
     id: os
@@ -125,9 +122,6 @@ body:
         - "Other"
     validations:
       required: true
-      condition:
-        field: sender
-        value: "Grayjay"
 
   - type: input
     id: plugin-version
@@ -135,10 +129,6 @@ body:
       label: Plugin Version
       description: In the application, select Sources > [the broken plugin], write down the value under "Version".
       placeholder: "12"
-    validations:
-      condition:
-        field: sender
-        value: "Grayjay"
 
   - type: checkboxes
     id: login
@@ -148,10 +138,6 @@ body:
       - label: While logged in
       - label: While logged out
       - label: N/A
-    validations:
-      condition:
-        field: sender
-        value: "Grayjay"
 
   - type: dropdown
     id: vpn
