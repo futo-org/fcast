@@ -1,0 +1,179 @@
+name: Bug Report
+description: Let us know about an unexpected error, a crash, or an incorrect behavior.
+labels: ["Bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Thank you for taking the time to fill out this bug report.
+
+        The [fcast](https://github.com/futo-org/fcast) issue tracker is reserved for issues relating to the FCast. Use the `Documentation` issue type to report problems with the documentation in our code repositories, inside the application, or on [https://fcast.org](https://fcast.org)
+
+        For general usage questions, please see: [The Official FUTO FCast Zulip Channel](https://chat.futo.org/#narrow/stream/67-FCast)
+
+        ## Filing a bug report
+
+        To fix your issues faster, we need clear reproduction cases - ideally allowing us to make it happen locally.
+        * Please include all needed context. For example, Device, OS, Application, your Grayjay Configurations and Plugin versioning info.
+        * if you've found out a particular series of UI interactions can introduce buggy behavior, please label those steps 1-n with markdown
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen?
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+
+  - type: textarea
+    id: replication-steps
+    attributes:
+      label: Replication steps
+      description: To fix your issues faster, we need clear reproduction cases - ideally allowing us to make it happen locally.
+      placeholder: |
+        1. Start Youtube video inside Grayjay
+        2. Click on casting button
+        3. Select FCast receiver
+        ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sender
+    attributes:
+      label: Which sender are you using?
+      multiple: false
+      options:
+        - "Grayjay"
+        - "Terminal"
+        - "Other"
+    validations:
+      required: true
+
+  - type: input
+    id: fcast-version
+    attributes:
+      label: FCast Receiver Version
+      description: What is receivers version? For Electron receiver, you can right click the tray icon and select About.
+      placeholder: "41"
+    validations:
+      required: true
+
+  - type: input
+    id: grayjay-version
+    attributes:
+      label: Grayjay Version
+      description: In the application, select More > Settings, scroll to the bottom and locate the value next to "Version Name".
+      placeholder: "278"
+    validations:
+      required: true
+      condition:
+        field: sender
+        value: "Grayjay"
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Which operating system are you using on your receiver?
+      multiple: false
+      options:
+        - "Linux"
+        - "MacOS"
+        - "Windows"
+        - "Android"
+        - "AndroidTV"
+        - "Roku"
+        - "WebOS"
+        - "TizenOS"
+        - "tvOS"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Which protocol did you use to cast?
+      multiple: false
+      options:
+        - "FCast"
+        - "Chromecast"
+        - "Airplay"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: What plugins are you seeing the problem on?
+      multiple: true
+      options:
+        - "All"
+        - "Youtube"
+        - "Odysee"
+        - "Rumble"
+        - "Kick"
+        - "Twitch"
+        - "PeerTube"
+        - "Patreon"
+        - "Nebula"
+        - "BiliBili (CN)"
+        - "Bitchute"
+        - "SoundCloud"
+        - "Dailymotion"
+        - "Apple Podcasts"
+        - "Other"
+    validations:
+      required: true
+      condition:
+        field: sender
+        value: "Grayjay"
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin Version
+      description: In the application, select Sources > [the broken plugin], write down the value under "Version".
+      placeholder: "12"
+    validations:
+      condition:
+        field: sender
+        value: "Grayjay"
+
+  - type: checkboxes
+    id: login
+    attributes:
+      label: When do you experience the issue?
+      options:
+      - label: While logged in
+      - label: While logged out
+      - label: N/A
+    validations:
+      condition:
+        field: sender
+        value: "Grayjay"
+
+  - type: dropdown
+    id: vpn
+    attributes:
+      label: Are you using a VPN?
+      multiple: false
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Please copy and paste any relevant log output. This will be automatically formatted into code, so no need for backticks.
+        Logs currently are only easily user-accessible for the Electron receiver.
+        Electron logs can be found in the following locations:
+
+        - **Windows**: `%USERPROFILE%\AppData\Roaming\fcast-receiver\logs\fcast-receiver.log`
+        - **MacOS**: `~/Library/Logs/fcast-receiver/fcast-receiver.log`
+        - **Linux**: `~/.config/fcast-receiver/logs/fcast-receiver.log`
+      render: shell
