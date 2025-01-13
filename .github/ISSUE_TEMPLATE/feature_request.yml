@@ -9,7 +9,7 @@ body:
 
         The [fcast](https://github.com/futo-org/fcast) issue tracker is reserved for issues relating to the FCast. Use the `Documentation` issue type to report problems with the documentation in our code repositories, inside the application, or on [https://fcast.org](https://fcast.org)
 
-        For discussion related to enhancements, please see: [The FUTO Grayjay Zulip Channel](https://chat.futo.org/#narrow/stream/46-Grayjay)
+        For discussion related to enhancements, please see: [The FUTO FCast Zulip Channel](https://chat.futo.org/#narrow/stream/67-FCast)
 
   - type: textarea
     id: fcast-use-case
