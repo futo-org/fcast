@@ -36,6 +36,11 @@
     font-family: InterBold;
 }
 
+.app-download {
+    font-weight: bold;
+    font-family: InterBold;
+}
+
 #window-can-be-closed {
     font-family: InterRegular;
     font-size: 24px;
