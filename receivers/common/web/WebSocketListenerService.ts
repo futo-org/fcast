@@ -6,7 +6,6 @@ import { v4 as uuidv4 } from 'modules/uuid';
 
 export class WebSocketListenerService {
     public static PORT = 46898;
-    private static TIMEOUT = 2500;
 
     emitter = new EventEmitter();
 
@@ -57,22 +56,6 @@ export class WebSocketListenerService {
         this.sessions.push(session);
 
         const connectionId = uuidv4();
-        let heartbeatRetries = 0;
-        socket.setTimeout(WebSocketListenerService.TIMEOUT);
-        socket.on('timeout', () => {
-            try {
-                if (heartbeatRetries > 3) {
-                    Main.logger.warn(`Could not ping device ${socket.remoteAddress}:${socket.remotePort}. Disconnecting...`);
-                    socket.destroy();
-                }
-
-                heartbeatRetries += 1;
-                session.send(Opcode.Ping);
-            } catch (e) {
-                Main.logger.warn(`Error while pinging sender device ${socket.remoteAddress}:${socket.remotePort}.`, e);
-                socket.destroy();
-            }
-        });
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error.`, err);
@@ -81,7 +64,6 @@ export class WebSocketListenerService {
 
         socket.on('message', data => {
             try {
-                heartbeatRetries = 0;
                 if (data instanceof Buffer) {
                     session.processBytes(data);
                 } else {
@@ -100,11 +82,11 @@ export class WebSocketListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
-            this.emitter.emit('disconnect', { id: connectionId, type: 'ws', data: { url: socket.url() }});
+            this.emitter.emit('disconnect', { id: connectionId, type: 'ws', data: { url: socket.url }});
             this.emitter.removeListener('ping', pingListener);
         });
 
-        this.emitter.emit('connect', { id: connectionId, type: 'ws', data: { url: socket.url() }});
+        this.emitter.emit('connect', { id: connectionId, type: 'ws', data: { url: socket.url }});
         const pingListener = (message: any) => {
             if (!message) {
                 this.emitter.emit('ping', { id: connectionId });
