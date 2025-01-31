@@ -6,9 +6,7 @@
   "license": "MIT",
   "scripts": {
     "build": "rm -rf dist/ && webpack --config ./webpack.config.js",
-    "test": "jest",
-    "package": "electron-forge package",
-    "make": "electron-forge make"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
     "@eslint/js": "^9.10.0",
