@@ -1,21 +1,20 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog } from 'electron';
-import { TcpListenerService } from './TcpListenerService';
-import { PlayMessage, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from './Packets';
-import { DiscoveryService } from './DiscoveryService';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
+import { DiscoveryService } from 'common/DiscoveryService';
+import { TcpListenerService } from 'common/TcpListenerService';
+import { WebSocketListenerService } from 'common/WebSocketListenerService';
+import { NetworkService } from 'common/NetworkService';
+import { Opcode } from 'common/FCastSession';
 import { Updater } from './Updater';
-import { WebSocketListenerService } from './WebSocketListenerService';
-import { Opcode } from './FCastSession';
 import * as os from 'os';
 import * as path from 'path';
-import * as http from 'http';
-import * as url from 'url';
 import * as log4js from "log4js";
-import { AddressInfo } from 'ws';
-import { v4 as uuidv4 } from 'uuid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { ToastIcon } from 'common/components/Toast';
+const cp = require('child_process');
 
-export default class Main {
+export class Main {
     static shouldOpenMainWindow = true;
     static startFullscreen = false;
     static playerWindow: Electron.BrowserWindow;
@@ -25,11 +24,6 @@ export default class Main {
     static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
     static tray: Tray;
-    static key: string = null;
-    static cert: string = null;
-    static proxyServer: http.Server;
-    static proxyServerAddress: AddressInfo;
-    static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
     static logger: log4js.Logger;
 
     private static toggleMainWindow() {
@@ -80,7 +74,7 @@ export default class Main {
     }
 
     private static createTray() {
-        const icon = (process.platform === 'win32') ? path.join(__dirname, 'icon.ico') : path.join(__dirname, 'icon.png');
+        const icon = (process.platform === 'win32') ? path.join(__dirname, 'assets/icons/app/icon.ico') : path.join(__dirname, 'assets/icons/app/icon.png');
         const trayicon = nativeImage.createFromPath(icon)
         const tray = new Tray(trayicon.resize({ width: 16 }));
         const contextMenu = Menu.buildFromTemplate([
@@ -175,13 +169,13 @@ export default class Main {
 
                     Main.playerWindow.loadFile(path.join(__dirname, 'player/index.html'));
                     Main.playerWindow.on('ready-to-show', async () => {
-                        Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
+                        Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
                     });
                     Main.playerWindow.on('closed', () => {
                         Main.playerWindow = null;
                     });
                 } else {
-                    Main.playerWindow?.webContents?.send("play", await Main.proxyPlayIfRequired(message));
+                    Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
                 }
             });
 
@@ -196,6 +190,10 @@ export default class Main {
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
             l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
+
+            l.emitter.on('connect', (message) => Main.mainWindow?.webContents?.send('connect', message));
+            l.emitter.on('disconnect', (message) => Main.mainWindow?.webContents?.send('disconnect', message));
+            l.emitter.on('ping', (message) => Main.mainWindow?.webContents?.send('ping', message));
             l.start();
 
             ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
@@ -283,116 +281,6 @@ export default class Main {
         }
     }
 
-
-    private static setupProxyServer(): Promise<void> {
-        return new Promise<void>((resolve, reject) => {
-            try {
-                Main.logger.info(`Proxy server starting`);
-
-                const port = 0;
-                Main.proxyServer = http.createServer((req, res) => {
-                    Main.logger.info(`Request received`);
-                    const requestUrl = `http://${req.headers.host}${req.url}`;
-
-                    const proxyInfo = Main.proxiedFiles.get(requestUrl);
-
-                    if (!proxyInfo) {
-                        res.writeHead(404);
-                        res.end('Not found');
-                        return;
-                    }
-
-                    const omitHeaders = new Set([
-                        'host',
-                        'connection',
-                        'keep-alive',
-                        'proxy-authenticate',
-                        'proxy-authorization',
-                        'te',
-                        'trailers',
-                        'transfer-encoding',
-                        'upgrade'
-                    ]);
-
-                    const filteredHeaders = Object.fromEntries(Object.entries(req.headers)
-                        .filter(([key]) => !omitHeaders.has(key.toLowerCase()))
-                        .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value]));
-
-                    const parsedUrl = url.parse(proxyInfo.url);
-                    const options: http.RequestOptions = {
-                        ... parsedUrl,
-                        method: req.method,
-                        headers: { ...filteredHeaders, ...proxyInfo.headers }
-                    };
-
-                    const proxyReq = http.request(options, (proxyRes) => {
-                        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-                        proxyRes.pipe(res, { end: true });
-                    });
-
-                    req.pipe(proxyReq, { end: true });
-                    proxyReq.on('error', (e) => {
-                        Main.logger.error(`Problem with request: ${e.message}`);
-                        res.writeHead(500);
-                        res.end();
-                    });
-                });
-                Main.proxyServer.on('error', e => {
-                    reject(e);
-                });
-                Main.proxyServer.listen(port, '127.0.0.1', () => {
-                    Main.proxyServerAddress = Main.proxyServer.address() as AddressInfo;
-                    Main.logger.info(`Proxy server running at http://127.0.0.1:${Main.proxyServerAddress.port}/`);
-                    resolve();
-                });
-            } catch (e) {
-                reject(e);
-            }
-        });
-    }
-
-    static streamingMediaTypes = [
-        "application/vnd.apple.mpegurl",
-        "application/x-mpegURL",
-        "application/dash+xml"
-    ];
-
-    static async proxyPlayIfRequired(message: PlayMessage): Promise<PlayMessage> {
-        if (message.headers && message.url && !Main.streamingMediaTypes.find(v => v === message.container.toLocaleLowerCase())) {
-            return { ...message, url: await Main.proxyFile(message.url, message.headers) };
-        }
-        return message;
-    }
-
-    static async proxyFile(url: string, headers: { [key: string]: string }): Promise<string> {
-        if (!Main.proxyServer) {
-            await Main.setupProxyServer();
-        }
-
-        const proxiedUrl = `http://127.0.0.1:${Main.proxyServerAddress.port}/${uuidv4()}`;
-        Main.logger.info("Proxied url", { proxiedUrl, url, headers });
-        Main.proxiedFiles.set(proxiedUrl, { url: url, headers: headers });
-        return proxiedUrl;
-    }
-
-    static getAllIPv4Addresses() {
-        const interfaces = os.networkInterfaces();
-        const ipv4Addresses: string[] = [];
-
-        for (const interfaceName in interfaces) {
-            const addresses = interfaces[interfaceName];
-            if (!addresses) continue;
-
-            for (const addressInfo of addresses) {
-                if (addressInfo.family === 'IPv4' && !addressInfo.internal) {
-                    ipv4Addresses.push(addressInfo.address);
-                }
-            }
-        }
-
-        return ipv4Addresses;
-    }
-
     static openMainWindow() {
         if (Main.mainWindow) {
             Main.mainWindow.focus();
@@ -419,7 +307,7 @@ export default class Main {
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
-            Main.mainWindow.webContents.send("device-info", {name: os.hostname(), addresses: Main.getAllIPv4Addresses()});
+            Main.mainWindow.webContents.send("device-info", {name: os.hostname(), addresses: NetworkService.getAllIPv4Addresses()});
         });
     }
 
@@ -469,5 +357,62 @@ export default class Main {
             Main.logger.error(`Error starting application: ${err}`);
             app.exit();
         }
+    }
+}
+
+export function getComputerName() {
+    switch (process.platform) {
+        case "win32":
+            return process.env.COMPUTERNAME;
+        case "darwin":
+            return cp.execSync("scutil --get ComputerName").toString().trim();
+        case "linux": {
+            let hostname: string;
+
+            // Some distro's don't work with `os.hostname()`, but work with `hostnamectl` and vice versa...
+            try {
+                hostname = os.hostname();
+            }
+            catch (err) {
+                Main.logger.warn('Error fetching hostname, trying different method...');
+                Main.logger.warn(err);
+
+                try {
+                    hostname = cp.execSync("hostnamectl hostname").toString().trim();
+                }
+                catch (err2) {
+                    Main.logger.warn('Error fetching hostname again, using generic name...');
+                    Main.logger.warn(err2);
+
+                    hostname = 'linux device';
+                }
+            }
+
+            return hostname;
+        }
+
+        default:
+            return os.hostname();
+    }
+}
+
+export async function errorHandler(err: NodeJS.ErrnoException) {
+    Main.logger.error("Application error:", err);
+    Main.mainWindow.webContents.send("toast", { message: err, icon: ToastIcon.ERROR });
+
+    const restartPrompt = await dialog.showMessageBox({
+        type: 'error',
+        title: 'Failed to start',
+        message: 'The application failed to start properly.',
+        buttons: ['Restart', 'Close'],
+        defaultId: 0,
+        cancelId: 1
+    });
+
+    if (restartPrompt.response === 0) {
+        Main.application.relaunch();
+        Main.application.exit(0);
+    } else {
+        Main.application.exit(0);
     }
 }

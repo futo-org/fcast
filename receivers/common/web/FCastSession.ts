@@ -1,8 +1,8 @@
 import * as net from 'net';
-import * as log4js from "log4js";
-import { EventEmitter } from 'node:events';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from './Packets';
-import { WebSocket } from 'ws';
+import * as log4js from "modules/log4js";
+import { EventEmitter } from 'events';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
+import { WebSocket } from 'modules/ws';
 const logger = log4js.getLogger();
 
 enum SessionState {
@@ -61,7 +61,31 @@ export class FCastSession {
 
         const size = 1 + data.length;
         const header = Buffer.alloc(4 + 1);
-        header.writeUint32LE(size, 0);
+
+        // Web OS 22 and earlier node versions do not support `writeUint32LE`,
+        // so manually checking endianness and writing as LE
+        // @ts-ignore
+        if (TARGET === 'webOS') {
+            let uInt32 = new Uint32Array([0x11223344]);
+            let uInt8 = new Uint8Array(uInt32.buffer);
+
+            if(uInt8[0] === 0x44) {
+                // LE
+                header[0] = size & 0xFF;
+                header[1] = size & 0xFF00;
+                header[2] = size & 0xFF0000;
+                header[3] = size & 0xFF000000;
+            } else if (uInt8[0] === 0x11) {
+                // BE
+                header[0] = size & 0xFF000000;
+                header[1] = size & 0xFF0000;
+                header[2] = size & 0xFF00;
+                header[3] = size & 0xFF;
+            }
+        } else {
+            header.writeUint32LE(size, 0);
+        }
+
         header[4] = opcode;
 
         let packet: Buffer;
@@ -178,8 +202,15 @@ export class FCastSession {
                 case Opcode.SetSpeed:
                     this.emitter.emit("setspeed", JSON.parse(body) as SetSpeedMessage);
                     break;
+                case Opcode.Version:
+                    this.emitter.emit("version", JSON.parse(body) as VersionMessage);
+                    break;
                 case Opcode.Ping:
                     this.send(Opcode.Pong);
+                    this.emitter.emit("ping");
+                    break;
+                case Opcode.Pong:
+                    this.emitter.emit("pong");
                     break;
             }
         } catch (e) {
@@ -204,5 +235,8 @@ export class FCastSession {
         this.emitter.on("seek", (body: SeekMessage) => { emitter.emit("seek", body) });
         this.emitter.on("setvolume", (body: SetVolumeMessage) => { emitter.emit("setvolume", body) });
         this.emitter.on("setspeed", (body: SetSpeedMessage) => { emitter.emit("setspeed", body) });
+        this.emitter.on("version", (body: VersionMessage) => { emitter.emit("version", body) });
+        this.emitter.on("ping", () => { emitter.emit("ping") });
+        this.emitter.on("pong", () => { emitter.emit("pong") });
     }
 }

@@ -1,8 +1,8 @@
-import { FCastSession, Opcode } from './FCastSession';
-import { EventEmitter } from 'node:events';
-import { dialog } from 'electron';
-import Main from './Main';
-import { WebSocket, WebSocketServer } from 'ws';
+import { FCastSession, Opcode } from 'common/FCastSession';
+import { EventEmitter } from 'events';
+import { WebSocket, WebSocketServer } from 'modules/ws';
+import { Main, errorHandler } from 'src/Main';
+import { v4 as uuidv4 } from 'modules/uuid';
 
 export class WebSocketListenerService {
     public static PORT = 46898;
@@ -45,23 +45,7 @@ export class WebSocketListenerService {
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
-        Main.logger.error("Server error:", err);
-
-        const restartPrompt = await dialog.showMessageBox({
-            type: 'error',
-            title: 'Failed to start',
-            message: 'The application failed to start properly.',
-            buttons: ['Restart', 'Close'],
-            defaultId: 0,
-            cancelId: 1
-        });
-
-        if (restartPrompt.response === 0) {
-            Main.application.relaunch();
-            Main.application.exit(0);
-        } else {
-            Main.application.exit(0);
-        }
+        errorHandler(err);
     }
 
     private handleConnection(socket: WebSocket) {
@@ -70,6 +54,8 @@ export class WebSocketListenerService {
         const session = new FCastSession(socket, (data) => socket.send(data));
         session.bindEvents(this.emitter);
         this.sessions.push(session);
+
+        const connectionId = uuidv4();
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error.`, err);
@@ -96,7 +82,17 @@ export class WebSocketListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
+            this.emitter.emit('disconnect', { id: connectionId, type: 'ws', data: { url: socket.url }});
+            this.emitter.removeListener('ping', pingListener);
         });
+
+        this.emitter.emit('connect', { id: connectionId, type: 'ws', data: { url: socket.url }});
+        const pingListener = (message: any) => {
+            if (!message) {
+                this.emitter.emit('ping', { id: connectionId });
+            }
+        }
+        this.emitter.prependListener('ping', pingListener);
 
         try {
             Main.logger.info('Sending version');

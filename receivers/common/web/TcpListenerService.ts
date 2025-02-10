@@ -1,11 +1,12 @@
 import * as net from 'net';
-import { FCastSession, Opcode } from './FCastSession';
-import { EventEmitter } from 'node:events';
-import { dialog } from 'electron';
-import Main from './Main';
+import { FCastSession, Opcode } from 'common/FCastSession';
+import { EventEmitter } from 'events';
+import { Main, errorHandler } from 'src/Main';
+import { v4 as uuidv4 } from 'modules/uuid';
 
 export class TcpListenerService {
     public static PORT = 46899;
+    private static TIMEOUT = 2500;
 
     emitter = new EventEmitter();
 
@@ -35,6 +36,7 @@ export class TcpListenerService {
     }
 
     send(opcode: number, message = null) {
+        // Main.logger.info(`Sending message ${JSON.stringify(message)}`);
         this.sessions.forEach(session => {
             try {
                 session.send(opcode, message);
@@ -46,23 +48,7 @@ export class TcpListenerService {
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
-        Main.logger.error("Server error:", err);
-
-        const restartPrompt = await dialog.showMessageBox({
-            type: 'error',
-            title: 'Failed to start',
-            message: 'The application failed to start properly.',
-            buttons: ['Restart', 'Close'],
-            defaultId: 0,
-            cancelId: 1
-        });
-
-        if (restartPrompt.response === 0) {
-            Main.application.relaunch();
-            Main.application.exit(0);
-        } else {
-            Main.application.exit(0);
-        }
+        errorHandler(err);
     }
 
     private handleConnection(socket: net.Socket) {
@@ -72,6 +58,24 @@ export class TcpListenerService {
         session.bindEvents(this.emitter);
         this.sessions.push(session);
 
+        const connectionId = uuidv4();
+        let heartbeatRetries = 0;
+        socket.setTimeout(TcpListenerService.TIMEOUT);
+        socket.on('timeout', () => {
+            try {
+                if (heartbeatRetries > 3) {
+                    Main.logger.warn(`Could not ping device ${socket.remoteAddress}:${socket.remotePort}. Disconnecting...`);
+                    socket.destroy();
+                }
+
+                heartbeatRetries += 1;
+                session.send(Opcode.Ping);
+            } catch (e) {
+                Main.logger.warn(`Error while pinging sender device ${socket.remoteAddress}:${socket.remotePort}.`, e);
+                socket.destroy();
+            }
+        });
+
         socket.on("error", (err) => {
             Main.logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
             socket.destroy();
@@ -79,6 +83,7 @@ export class TcpListenerService {
 
         socket.on("data", buffer => {
             try {
+                heartbeatRetries = 0;
                 session.processBytes(buffer);
             } catch (e) {
                 Main.logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
@@ -91,7 +96,17 @@ export class TcpListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
+            this.emitter.emit('disconnect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+            this.emitter.removeListener('ping', pingListener);
         });
+
+        this.emitter.emit('connect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+        const pingListener = (message: any) => {
+            if (!message) {
+                this.emitter.emit('ping', { id: connectionId });
+            }
+        }
+        this.emitter.prependListener('ping', pingListener);
 
         try {
             Main.logger.info('Sending version');

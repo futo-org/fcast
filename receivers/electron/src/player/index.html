@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <meta charset="UTF-8">
-        <link rel="stylesheet" href="../../assets/fonts/inter.css" />
-        <link rel="stylesheet" href="./style.css" />
         <title>FCast Receiver</title>
+        <meta charset="UTF-8">
+        <link rel="stylesheet" href="../assets/fonts/inter.css" />
+        <link rel="stylesheet" href="./common.css" />
+        <link rel="stylesheet" href="./style.css" />
     </head>
     <body>
         <video id="videoPlayer" autoplay preload="auto"></video>
@@ -22,9 +23,9 @@
             </div>
 
             <div class="leftButtonContainer">
-                <div id="action" class="play"></div>
+                <div id="action" class="play iconSize"></div>
 
-                <div id="volume" class="volume_high"></div>
+                <div id="volume" class="volume_high iconSize"></div>
                 <div class="volumeContainer">
                     <div id="volumeBar" ref="volumeBar" class="volumeBar" ></div>
                     <div id="volumeBarProgress" class="volumeBarProgress" ></div>
@@ -35,14 +36,15 @@
                 <div class="positionContainer">
                     <div id="liveBadge" class="liveBadge" style="display: none">LIVE</div>
                     <div id="position" class="position">00:00</div>
-                    <div id="duration" class="duration">/&nbsp&nbsp00:00</div>
+                    <div id="durationSeparator" class="duration">/&nbsp&nbsp</div>
+                    <div id="duration" class="duration">00:00</div>
                 </div>
             </div>
 
             <div class="buttonContainer">
-                <div id="fullscreen" class="fullscreen_on"></div>
-                <div id="speed" class="speed"></div>
-                <div id="captions" class="captions_off"></div>
+                <div id="fullscreen" class="fullscreen_on iconSize"></div>
+                <div id="speed" class="speed iconSize"></div>
+                <div id="captions" class="captions_off iconSize"></div>
             </div>
 
             <div id="speedMenu" class="speedMenu" style="display: none">

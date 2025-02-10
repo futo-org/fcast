@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>FCast Receiver</title>
+        <meta charset="UTF-8">
+        <link rel="stylesheet" href="../assets/fonts/inter.css" />
+        <link rel="stylesheet" href="./common.css" />
+        <link rel="stylesheet" href="./style.css" />
+        <script src="./preload.js"></script>
+    </head>
+    <body>
+        <video id="videoPlayer" autoplay preload="auto"></video>
+        <div id="videoCaptions" class="captionsContainer"></div>
+
+        <div id="controls" class="container">
+            <div class="progressBarContainer">
+                <div id="progressBar" ref="progressBar" class="progressBar" ></div>
+                <div id="progressBarBuffer" class="progressBarBuffer" ></div>
+                <div id="progressBarProgress" class="progressBarProgress" ></div>
+                <div id="progressBarPosition" class="progressBarPosition" ></div>
+                <!-- <div class="progressBarChapterContainer"></div> -->
+                <div id="progressBarHandle" class="progressBarHandle" ></div>
+                <div id="progressBarInteractiveArea" class="progressBarInteractiveArea" ></div>
+            </div>
+
+            <div class="positionContainer">
+                <div id="liveBadge" class="liveBadge" style="display: none">LIVE</div>
+                <div id="position" class="position">00:00</div>
+                <!-- <div id="durationSeparator" class="duration">/&nbsp&nbsp</div> -->
+                <div id="durationSeparator" class="duration"></div>
+            </div>
+
+            <div class="leftButtonContainer">
+                <div id="action" class="play iconSize"></div>
+
+                <div id="volume" class="volume_high iconSize"></div>
+                <div class="volumeContainer">
+                    <div id="volumeBar" ref="volumeBar" class="volumeBar" ></div>
+                    <div id="volumeBarProgress" class="volumeBarProgress" ></div>
+                    <div id="volumeBarHandle" class="volumeBarHandle" ></div>
+                    <div id="volumeBarInteractiveArea" class="volumeBarInteractiveArea" ></div>
+                </div>
+
+                <!-- <div class="positionContainer">
+                    <div id="liveBadge" class="liveBadge" style="display: none">LIVE</div>
+                    <div id="position" class="position">00:00</div>
+                    <div id="duration" class="duration">/&nbsp&nbsp00:00</div>
+                </div> -->
+            </div>
+
+            <div class="buttonContainer">
+                <!-- <div id="fullscreen" class="fullscreen_on iconSize"></div> -->
+                <div id="speed" class="speed iconSize"></div>
+                <div id="captions" class="captions_off iconSize"></div>
+                <div id="duration" class="duration">00:00</div>
+            </div>
+
+            <div id="speedMenu" class="speedMenu" style="display: none">
+                <div class="speedMenuTitle">Playback speed</div>
+                <div class="speedMenuSeparator"></div>
+                <div id="speedMenuEntry_0.25" class="speedMenuEntry">
+                    <div id="speedMenuEntry_0.25_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">0.25</div>
+                </div>
+                <div id="speedMenuEntry_0.50" class="speedMenuEntry">
+                    <div id="speedMenuEntry_0.50_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">0.5</div>
+                </div>
+                <div id="speedMenuEntry_0.75" class="speedMenuEntry">
+                    <div id="speedMenuEntry_0.75_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">0.75</div>
+                </div>
+                <div id="speedMenuEntry_1.00" class="speedMenuEntry">
+                    <div id="speedMenuEntry_1.00_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">1.0</div>
+                </div>
+                <div id="speedMenuEntry_1.25" class="speedMenuEntry">
+                    <div id="speedMenuEntry_1.25_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">1.25</div>
+                </div>
+                <div id="speedMenuEntry_1.50" class="speedMenuEntry">
+                    <div id="speedMenuEntry_1.50_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">1.5</div>
+                </div>
+                <div id="speedMenuEntry_1.75" class="speedMenuEntry">
+                    <div id="speedMenuEntry_1.75_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">1.75</div>
+                </div>
+                <div id="speedMenuEntry_2.00" class="speedMenuEntry">
+                    <div id="speedMenuEntry_2.00_enabled" class="speedMenuEntryEnabled"></div>
+                    <div class="speedMenuEntryText">2.0</div>
+                </div>
+            </div>
+        </div>
+
+        <script src="./renderer.js"></script>
+    </body>
+</html>

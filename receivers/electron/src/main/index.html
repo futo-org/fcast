@@ -1,16 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <link rel="stylesheet" href="../../assets/fonts/outfit.css" />
-    <link rel="stylesheet" href="../../assets/fonts/inter.css" />
-    <link rel="stylesheet" href="./style.css" />
     <title>FCast Receiver</title>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="../assets/fonts/outfit.css" />
+    <link rel="stylesheet" href="../assets/fonts/inter.css" />
+    <link rel="stylesheet" href="./common.css" />
+    <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
     <div id="main-container">
         <video id="video-player" class="video" autoplay loop>
-            <source src="../../assets/video/background.mp4" type="video/mp4">
+            <source src="../assets/video/background.mp4" type="video/mp4">
         </video>
         <div id="ui-container">
             <div id="overlay">
@@ -21,8 +22,9 @@
                     </div>
 
                     <div id="connection-status">
-                        <div id="waiting-for-connection" class="non-selectable">Waiting for a connection</div>
-                        <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                        <div id="connection-status-text" class="non-selectable">Waiting for a connection</div>
+                        <div id="connection-spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                        <div id="connection-check"><div id="connection-check-mark"></div></div>
                     </div>
 
                     <div id="update-view" class="card">
@@ -54,6 +56,10 @@
                 </div>
             </div>
 
+            <div id="toast-notification">
+                <div id="toast-icon"></div>
+                <div id="toast-text"></div>
+            </div>
             <div id="window-can-be-closed" class="non-selectable">App will continue to run as tray app when the window is closed</div>
         </div>
     </div>

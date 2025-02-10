@@ -1,0 +1,14 @@
+{
+  "id": "com.futo.fcast.receiver",
+  "version": "1.0.0",
+  "vendor": "FUTO",
+  "type": "web",
+  "main": "main_window/index.html",
+  "title": "FCast Receiver",
+  "appDescription": "FCast Receiver",
+  "icon": "assets/icons/icon.png",
+  "largeIcon": "assets/icons/largeIcon.png",
+  "iconColor": "#0a62f5",
+  "splashBackground": "assets/images/splash.png",
+  "disableBackHistoryAPI": true
+}
