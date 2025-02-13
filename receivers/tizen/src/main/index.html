@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>FCast Receiver</title>
+	<meta charset="UTF-8">
+    <script type="text/javascript" src="$WEBAPIS/webapis/webapis.js"></script>
+    <link rel="stylesheet" href="../assets/fonts/outfit.css" />
+    <link rel="stylesheet" href="../assets/fonts/inter.css" />
+    <link rel="stylesheet" href="./common.css" />
+    <link rel="stylesheet" href="./style.css" />
+</head>
+
+<body>
+    <div id="loading-screen">
+        <div id="loading-text" class="non-selectable">Loading FCast</div>
+        <div id="spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+    </div>
+    <div id="main-container">
+        <video id="video-player" class="video" autoplay loop>
+            <source src="../assets/video/background.mp4" type="video/mp4">
+        </video>
+        <div id="ui-container">
+            <div id="overlay">
+                <div id="main-view" >
+                    <div id="title-container">
+                        <div id="title-icon"></div>
+                        <div id="title-text" class="non-selectable">FCast</div>
+                    </div>
+
+                    <div id="connection-status">
+                        <div id="connection-status-text" class="non-selectable">Waiting for a connection</div>
+                        <div id="connection-spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                        <div id="connection-check"><div id="connection-check-mark"></div></div>
+                    </div>
+                </div>
+                <div id="detail-view" class="card">
+                    <div class="non-selectable card-title">Manual connection information</div>
+                    <div class="card-title-separator"></div>
+                    <div>
+                        <div id="ips">IPs</div><br />
+                        <div id="ip-ports">Port<br>46899 (TCP), 46898 (WS)</div>
+                    </div>
+                    <div id="automatic-discovery" class="non-selectable">Automatic discovery is available via mDNS</div>
+                     <canvas id="qr-code"></canvas>
+                     <div id="scan-to-connect" class="non-selectable">Scan with a FCast sender app.</div>
+                     <div id="app-download" class="non-selectable app-download">Need a sender app?<br>Download Grayjay at <u class="app-download">https://grayjay.app</u></div>
+                </div>
+            </div>
+
+            <div id="toast-notification">
+                <div id="toast-icon"></div>
+                <div id="toast-text"></div>
+            </div>
+            <div id="window-can-be-closed" class="non-selectable">App will continue to listen for connections when suspended in the background</div>
+        </div>
+    </div>
+    <script src="./preload.js"></script>
+    <script src="./renderer.js"></script>
+</body>
+
+</html>

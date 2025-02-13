@@ -1,0 +1,182 @@
+/* WebOS custom player styles */
+
+.container {
+    height: 240px;
+}
+
+.iconSize {
+    width: 48px;
+    height: 48px;
+    background-size: cover;
+}
+
+#volume {
+    display: none;
+}
+
+.volumeContainer {
+    height: 48px;
+    width: 184px;
+
+    display: none;
+}
+
+.volumeBar {
+    left: 16px;
+    top: 20px;
+    height: 8px;
+    width: 152px;
+}
+
+.volumeBarInteractiveArea {
+    height: 48px;
+    width: 184px;
+}
+
+.volumeBarHandle {
+    left: 168px;
+    top: 8px;
+    width: 32px;
+    height: 32px;
+    box-shadow: 0px 64px 128px 0px rgba(0, 0, 0, 0.56), 0px 4px 42px 0px rgba(0, 0, 0, 0.55);
+}
+
+.volumeBarProgress {
+    left: 16px;
+    top: 20px;
+    height: 8px;
+    width: 152px;
+}
+
+.progressBarContainer {
+    bottom: 120px;
+    left: 32px;
+    right: 32px;
+    height: 8px;
+    padding-top: 20px;
+    padding-bottom: 20px;
+}
+
+.progressBarInteractiveArea {
+    height: 8px;
+
+    padding-top: 20px;
+    padding-bottom: 20px;
+}
+.progressBarChapterContainer {
+    bottom: 146px;
+    left: 48px;
+    right: 48px;
+    height: 8px;
+}
+
+.progressBar {
+    left: 16px;
+    width: calc(100% - 32px);
+    height: 8px;
+}
+
+.progressBarBuffer {
+    left: 16px;
+    bottom: 8px;
+    height: 8px;
+}
+
+.progressBarProgress {
+    left: 16px;
+    bottom: 16px;
+    height: 8px;
+}
+
+.progressBarPosition {
+    bottom: 50px;
+    padding: 4px 10px;
+
+    font-family: InterRegular;
+    font-size: 28px;
+}
+
+.progressBarHandle {
+    bottom: 20px;
+    width: 40px;
+    height: 40px;
+    margin-left: -16px;
+    margin-bottom: -16px;
+}
+
+.positionContainer {
+    position: absolute;
+    bottom: 48px;
+    left: 48px;
+    height: 48px;
+
+    font-family: InterRegular;
+    font-size: 28px;
+    flex-grow: unset;
+}
+
+.position {
+    font-family: InterRegular;
+    font-size: 28px;
+    /* margin-right: 20px; */
+}
+
+#duration {
+    font-family: InterRegular;
+    font-size: 28px;
+}
+
+.liveBadge {
+    padding: 4px 10px;
+    border-radius: 8px;
+    margin-right: 20px;
+    cursor: pointer;
+}
+
+.leftButtonContainer {
+    bottom: 48px;
+    left: 48px;
+    height: 48px;
+    /* right: 320px; */
+    right: 32px;
+    gap: 48px;
+
+    justify-content: center;
+}
+
+.buttonContainer {
+    bottom: 48px;
+    right: 48px;
+    height: 48px;
+    gap: 48px;
+}
+
+.captionsContainer {
+    /* display: none; */
+    /* position: relative; */
+    /* top: -200px; */
+    bottom: 320px;
+    /* margin: auto; */
+    /* text-align: center; */
+
+    /* font-family: InterVariable; */
+    font-family: InterRegular;
+    font-size: 56px;
+    /* font-style: normal; */
+    /* font-weight: 400; */
+
+    /* background-color: rgba(0, 0, 0, 0.5); */
+    padding: 0px 10px;
+
+    /* width: fit-content; */
+    /* user-select: none; */
+    /* transition: bottom 0.2s ease-in-out; */
+}
+
+#speed {
+    display: none;
+}
+
+#captions {
+    display: none;
+}

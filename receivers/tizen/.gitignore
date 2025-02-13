@@ -1,0 +1,10 @@
+/.metadata/
+dist
+
+FCastReceiver/.buildResult
+FCastReceiver/.settings
+FCastReceiver/.sign
+
+FCastReceiverService/.vs
+FCastReceiverService/bin
+FCastReceiverService/obj
