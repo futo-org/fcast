@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { toast, ToastIcon } from '../components/Toast';
 
 declare global {
     interface Window {
@@ -31,27 +30,21 @@ if (TARGET === 'electron') {
     });
 
 // @ts-ignore
-} else if (TARGET === 'webOS') {
-    try {
-        preloadData = {
-            onDeviceInfoCb: () => { console.log('Main: Callback not set while fetching device info'); },
-            onConnectCb: (_, value: any) => { console.log('Main: Callback not set while calling onConnect'); },
-            onDisconnectCb: (_, value: any) => { console.log('Main: Callback not set while calling onDisconnect'); },
-            onPingCb: (_, value: any) => { console.log('Main: Callback not set while calling onPing'); },
-        };
+} else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
+    preloadData = {
+        onDeviceInfoCb: () => { console.log('Main: Callback not set while fetching device info'); },
+        onConnectCb: (_, value: any) => { console.log('Main: Callback not set while calling onConnect'); },
+        onDisconnectCb: (_, value: any) => { console.log('Main: Callback not set while calling onDisconnect'); },
+        onPingCb: (_, value: any) => { console.log('Main: Callback not set while calling onPing'); },
+    };
 
-        window.targetAPI = {
-            onDeviceInfo: (callback: () => void) => preloadData.onDeviceInfoCb = callback,
-            onConnect: (callback: (_, value: any) => void) => preloadData.onConnectCb = callback,
-            onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
-            onPing: (callback: (_, value: any) => void) => preloadData.onPingCb = callback,
-            getDeviceInfo: () => preloadData.deviceInfo,
-        };
-    }
-    catch (err) {
-        console.error(`Main: preload ${JSON.stringify(err)}`);
-        toast(`Main: preload ${JSON.stringify(err)}`, ToastIcon.ERROR);
-    }
+    window.targetAPI = {
+        onDeviceInfo: (callback: () => void) => preloadData.onDeviceInfoCb = callback,
+        onConnect: (callback: (_, value: any) => void) => preloadData.onConnectCb = callback,
+        onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
+        onPing: (callback: (_, value: any) => void) => preloadData.onPingCb = callback,
+        getDeviceInfo: () => preloadData.deviceInfo,
+    };
 } else {
     // @ts-ignore
     console.log(`Attempting to run FCast player on unsupported target: ${TARGET}`);

@@ -6,6 +6,7 @@ export {};
 declare global {
     interface Window {
       electronAPI: any;
+      tizenOSAPI: any;
       webOSAPI: any;
       webOS: any;
       targetAPI: any;
@@ -32,7 +33,7 @@ if (TARGET === 'electron') {
     });
 
 // @ts-ignore
-} else if (TARGET === 'webOS') {
+} else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
     preloadData = {
         sendPlaybackErrorCb: () => { console.error('Player: Callback "send_playback_error" not set'); },
         sendPlaybackUpdateCb: () => { console.error('Player: Callback "send_playback_update" not set'); },

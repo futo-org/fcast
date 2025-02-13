@@ -1,7 +1,7 @@
 import * as net from 'net';
 import * as log4js from "modules/log4js";
 import { EventEmitter } from 'events';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
+import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
 import { WebSocket } from 'modules/ws';
 const logger = log4js.getLogger();
 
@@ -10,23 +10,6 @@ enum SessionState {
     WaitingForLength,
     WaitingForData,
     Disconnected,
-};
-
-export enum Opcode {
-    None = 0,
-    Play = 1,
-    Pause = 2,
-    Resume = 3,
-    Stop = 4,
-    Seek = 5,
-    PlaybackUpdate = 6,
-    VolumeUpdate = 7,
-    SetVolume = 8,
-    PlaybackError = 9,
-    SetSpeed = 10,
-    Version = 11,
-    Ping = 12,
-    Pong = 13
 };
 
 const LENGTH_BYTES = 4;

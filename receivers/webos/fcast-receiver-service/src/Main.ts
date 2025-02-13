@@ -5,12 +5,11 @@
 const Service = __non_webpack_require__('webos-service');
 // const Service = require('webos-service');
 
-import { PlayMessage, PlaybackErrorMessage, PlaybackUpdateMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage } from 'common/Packets';
+import { Opcode, PlayMessage, PlaybackErrorMessage, PlaybackUpdateMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { NetworkService } from 'common/NetworkService';
-import { Opcode } from 'common/FCastSession';
 import * as os from 'os';
 import * as log4js from "log4js";
 import { EventEmitter } from 'events';
