@@ -1,5 +1,6 @@
 import * as net from 'net';
-import { FCastSession, Opcode } from 'common/FCastSession';
+import { FCastSession } from 'common/FCastSession';
+import { Opcode } from 'common/Packets';
 import { EventEmitter } from 'events';
 import { Main, errorHandler } from 'src/Main';
 import { v4 as uuidv4 } from 'modules/uuid';

@@ -1,4 +1,5 @@
-import { FCastSession, Opcode } from 'common/FCastSession';
+import { FCastSession } from 'common/FCastSession';
+import { Opcode } from 'common/Packets';
 import { EventEmitter } from 'events';
 import { WebSocket, WebSocketServer } from 'modules/ws';
 import { Main, errorHandler } from 'src/Main';
@@ -52,10 +53,9 @@ export class WebSocketListenerService {
         Main.logger.info('New WebSocket connection');
 
         const session = new FCastSession(socket, (data) => socket.send(data));
+        const connectionId = uuidv4();
         session.bindEvents(this.emitter);
         this.sessions.push(session);
-
-        const connectionId = uuidv4();
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error.`, err);

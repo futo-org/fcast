@@ -1,3 +1,20 @@
+export enum Opcode {
+    None = 0,
+    Play = 1,
+    Pause = 2,
+    Resume = 3,
+    Stop = 4,
+    Seek = 5,
+    PlaybackUpdate = 6,
+    VolumeUpdate = 7,
+    SetVolume = 8,
+    PlaybackError = 9,
+    SetSpeed = 10,
+    Version = 11,
+    Ping = 12,
+    Pong = 13
+};
+
 export class PlayMessage {
     constructor(
         public container: string,
