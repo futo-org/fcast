@@ -17,14 +17,14 @@ cd .buildResult
 
 tizen security-profiles add --active --force --name default --author $CERT_PATH/author/default/author.p12 --password $CERT_AUTHOR_PASSWORD --dist $CERT_PATH/SamsungCertificate/default/distributor.p12 --dist-password $CERT_DIST_PASSWORD
 tizen cli-config "profiles.path=/home/ubuntu/tizen-studio-data/profile/profiles.xml"
-sed -i "s/$CERT_PATH\/author\/default\/author.pwd/$CERT_AUTHOR_PASSWORD/g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
-sed -i "s/$CERT_PATH\/SamsungCertificate\/default\/distributor.pwd/$CERT_DIST_PASSWORD/g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
+sed -i "s|$CERT_PATH/author/default/author.pwd|$CERT_AUTHOR_PASSWORD|g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
+sed -i "s|$CERT_PATH/SamsungCertificate/default/distributor.pwd|$CERT_DIST_PASSWORD|g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
 ../../scripts/package.sh tizen package -t wgt -s default -- .
 
 tizen security-profiles add --active --force --name default --author $CERT_PATH/author/default/author.p12 --password $CERT_AUTHOR_PASSWORD --dist $CERT_PATH/SamsungCertificate/default/distributor.p12 --dist-password $CERT_DIST_PASSWORD
 tizen cli-config "profiles.path=/home/ubuntu/tizen-studio-data/profile/profiles.xml"
-sed -i "s/$CERT_PATH\/author\/default\/author.pwd/$CERT_AUTHOR_PASSWORD/g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
-sed -i "s/$CERT_PATH\/SamsungCertificate\/default\/distributor.pwd/$CERT_DIST_PASSWORD/g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
+sed -i "s|$CERT_PATH/author/default/author.pwd|$CERT_AUTHOR_PASSWORD|g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
+sed -i "s|$CERT_PATH/SamsungCertificate/default/distributor.pwd|$CERT_DIST_PASSWORD|g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
 ../../scripts/package.sh tizen package -t wgt -s default -r ../../FCastReceiverService/bin/Release/netcoreapp2.1/com.futo.FCastReceiverService-1.0.0.tpk -- FCastReceiver.wgt
 
 cd ../../
