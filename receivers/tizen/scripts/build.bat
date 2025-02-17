@@ -1,3 +1,5 @@
+@REM Local development build script
+
 cd FCastReceiver
 cmd /C tizen build-web -- .
 cd .buildResult

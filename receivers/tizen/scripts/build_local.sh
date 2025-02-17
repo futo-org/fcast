@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Local development build script
+npm run build
+cd FCastReceiverService
+dotnet build -c Release
+cd ..
 cd FCastReceiver
 tizen build-web -- .
 cd .buildResult
