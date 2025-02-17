@@ -3,6 +3,7 @@ stages:
   - buildAndDeployAndroid
   - buildAndDeployElectron
   - buildWebOSReceiver
+  - buildTizenOSReceiver
 
 variables:
   ANDROID_VERSION_NAME:
