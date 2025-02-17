@@ -16,3 +16,4 @@ include:
   - local: 'receivers/android/.gitlab-ci.yml'
   - local: 'receivers/electron/.gitlab-ci.yml'
   - local: 'receivers/webos/.gitlab-ci.yml'
+  - local: 'receivers/tizen/.gitlab-ci.yml'
