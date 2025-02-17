@@ -1,6 +1,7 @@
 /.metadata/
 dist
 
+.env
 FCastReceiver/.buildResult
 FCastReceiver/.settings
 FCastReceiver/.sign
