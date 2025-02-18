@@ -11,6 +11,10 @@ import {
 } from 'src/player/Renderer';
 
 function formatDuration(duration: number) {
+    if (isNaN(duration)) {
+        return '00:00';
+    }
+
     const totalSeconds = Math.floor(duration);
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -407,15 +411,15 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             break;
 
         case PlayerControlEvent.VolumeChange: {
-            // console.log(`VolumeChange: isMute ${player.isMuted()}, volume: ${player.getVolume()}`);
-            const volume = Math.round(player.getVolume() * playerCtrlVolumeBar.offsetWidth);
+            // console.log(`VolumeChange: isMute ${player?.isMuted()}, volume: ${player?.getVolume()}`);
+            const volume = Math.round(player?.getVolume() * playerCtrlVolumeBar.offsetWidth);
 
-            if (player.isMuted()) {
+            if (player?.isMuted()) {
                 playerCtrlVolume.setAttribute("class", "mute iconSize");
                 playerCtrlVolumeBarProgress.setAttribute("style", `width: 0px`);
                 playerCtrlVolumeBarHandle.setAttribute("style", `left: 0px`);
             }
-            else if (player.getVolume() >= 0.5) {
+            else if (player?.getVolume() >= 0.5) {
                 playerCtrlVolume.setAttribute("class", "volume_high iconSize");
                 playerCtrlVolumeBarProgress.setAttribute("style", `width: ${volume}px`);
                 playerCtrlVolumeBarHandle.setAttribute("style", `left: ${volume}px`);
@@ -466,7 +470,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             captionsBaseHeight = captionsBaseHeightCollapsed;
             const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
-            if (player.isCaptionsEnabled()) {
+            if (player?.isCaptionsEnabled()) {
                 videoCaptions.setAttribute("style", `display: block; transition: bottom 0.2s ease-in-out; bottom: ${captionsHeight}px;`);
             } else {
                 videoCaptions.setAttribute("style", `display: none; bottom: ${captionsHeight}px;`);
@@ -482,7 +486,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             captionsBaseHeight = captionsBaseHeightExpanded;
             const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
-            if (player.isCaptionsEnabled()) {
+            if (player?.isCaptionsEnabled()) {
                 videoCaptions.setAttribute("style", `display: block; transition: bottom 0.2s ease-in-out; bottom: ${captionsHeight}px;`);
             } else {
                 videoCaptions.setAttribute("style", `display: none; bottom: ${captionsHeight}px;`);
@@ -492,7 +496,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         case PlayerControlEvent.SetCaptions:
-            if (player.isCaptionsEnabled()) {
+            if (player?.isCaptionsEnabled()) {
                 playerCtrlCaptions.setAttribute("class", "captions_on iconSize");
                 videoCaptions.setAttribute("style", "display: block");
             } else {
@@ -514,7 +518,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         case PlayerControlEvent.SetPlaybackRate: {
-            const rate = player.getPlaybackRate().toFixed(2);
+            const rate = player?.getPlaybackRate().toFixed(2);
             const entryElement = document.getElementById(`speedMenuEntry_${rate}_enabled`);
 
             playbackRates.forEach(r => {
@@ -538,8 +542,8 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 function scrubbingMouseUIHandler(e: MouseEvent) {
     const progressBarOffset = e.offsetX - playerCtrlProgressBar.offsetLeft;
     const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
-    let time = isLive ? Math.round((1 - (progressBarOffset / progressBarWidth)) * player.getDuration()) : Math.round((progressBarOffset / progressBarWidth) * player.getDuration());
-    time = Math.min(player.getDuration(), Math.max(0.0, time));
+    let time = isLive ? Math.round((1 - (progressBarOffset / progressBarWidth)) * player?.getDuration()) : Math.round((progressBarOffset / progressBarWidth) * player?.getDuration());
+    time = Math.min(player?.getDuration(), Math.max(0.0, time));
 
     if (scrubbing && isLive && e.buttons === 1) {
         isLivePosition = false;
@@ -556,14 +560,14 @@ function scrubbingMouseUIHandler(e: MouseEvent) {
 
 // Receiver generated event handlers
 playerCtrlAction.onclick = () => {
-    if (player.isPaused()) {
-        player.play();
+    if (player?.isPaused()) {
+        player?.play();
     } else {
-        player.pause();
+        player?.pause();
     }
 };
 
-playerCtrlVolume.onclick = () => { player.setMute(!player.isMuted()); };
+playerCtrlVolume.onclick = () => { player?.setMute(!player?.isMuted()); };
 
 PlayerCtrlProgressBarInteractiveArea.onmousedown = (e: MouseEvent) => { scrubbing = true; scrubbingMouseHandler(e) };
 PlayerCtrlProgressBarInteractiveArea.onmouseup = () => { scrubbing = false; };
@@ -580,11 +584,11 @@ PlayerCtrlProgressBarInteractiveArea.onmousemove = (e: MouseEvent) => { scrubbin
 function scrubbingMouseHandler(e: MouseEvent) {
     const progressBarOffset = e.offsetX - playerCtrlProgressBar.offsetLeft;
     const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
-    let time = Math.round((progressBarOffset / progressBarWidth) * player.getDuration());
-    time = Math.min(player.getDuration(), Math.max(0.0, time));
+    let time = Math.round((progressBarOffset / progressBarWidth) * player?.getDuration());
+    time = Math.min(player?.getDuration(), Math.max(0.0, time));
 
     if (scrubbing && e.buttons === 1) {
-        player.setCurrentTime(time);
+        player?.setCurrentTime(time);
     }
 
     scrubbingMouseUIHandler(e);
@@ -602,9 +606,9 @@ playerCtrlVolumeBarInteractiveArea.onwheel = (e: WheelEvent) => {
     const delta = -e.deltaY;
 
     if (delta > 0 ) {
-        volumeChangeHandler(Math.min(player.getVolume() + volumeIncrement, 1));
+        volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
     } else if (delta < 0) {
-        volumeChangeHandler(Math.max(player.getVolume() - volumeIncrement, 0));
+        volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
     }
 };
 
@@ -618,14 +622,14 @@ function volumeChangeMouseHandler(e: MouseEvent) {
 }
 
 function volumeChangeHandler(volume: number) {
-    if (!player.isMuted() && volume <= 0) {
-        player.setMute(true);
+    if (!player?.isMuted() && volume <= 0) {
+        player?.setMute(true);
     }
-    else if (player.isMuted() && volume > 0) {
-        player.setMute(false);
+    else if (player?.isMuted() && volume > 0) {
+        player?.setMute(false);
     }
 
-    player.setVolume(volume);
+    player?.setVolume(volume);
 }
 
 playerCtrlLiveBadge.onclick = () => { setLivePosition(); };
@@ -634,22 +638,22 @@ function setLivePosition() {
     if (!isLivePosition) {
         isLivePosition = true;
 
-        player.setCurrentTime(player.getDuration() - livePositionDelta);
+        player?.setCurrentTime(player?.getDuration() - livePositionDelta);
         playerCtrlLiveBadge.setAttribute("style", `background-color: red`);
 
-        if (player.isPaused()) {
-            player.play();
+        if (player?.isPaused()) {
+            player?.play();
         }
     }
 }
 
-playerCtrlCaptions.onclick = () => { player.enableCaptions(!player.isCaptionsEnabled()); playerCtrlStateUpdate(PlayerControlEvent.SetCaptions); };
+playerCtrlCaptions.onclick = () => { player?.enableCaptions(!player?.isCaptionsEnabled()); playerCtrlStateUpdate(PlayerControlEvent.SetCaptions); };
 playerCtrlSpeed.onclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleSpeedMenu); };
 
 playbackRates.forEach(r => {
     const entry = document.getElementById(`speedMenuEntry_${r}`);
     entry.onclick = () => {
-        player.setPlaybackRate(parseFloat(r));
+        player?.setPlaybackRate(parseFloat(r));
         playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
         playerCtrlStateUpdate(PlayerControlEvent.ToggleSpeedMenu);
     };
@@ -657,10 +661,10 @@ playbackRates.forEach(r => {
 
 videoElement.onclick = () => {
     if (!playerCtrlSpeedMenuShown) {
-        if (player.isPaused()) {
-            player.play();
+        if (player?.isPaused()) {
+            player?.play();
         } else {
-            player.pause();
+            player?.pause();
         }
     }
 };
@@ -749,7 +753,7 @@ function keyDownEventListener(event: any) {
             event.preventDefault();
             break;
         case "Home":
-            player.setCurrentTime(0);
+            player?.setCurrentTime(0);
             event.preventDefault();
             break;
         case "End":
@@ -757,7 +761,7 @@ function keyDownEventListener(event: any) {
                 setLivePosition();
             }
             else {
-                player.setCurrentTime(player.getDuration());
+                player?.setCurrentTime(player?.getDuration());
             }
             event.preventDefault();
             break;
@@ -765,24 +769,24 @@ function keyDownEventListener(event: any) {
         case 'Space':
         case 'Enter':
             // Play/pause toggle
-            if (player.isPaused()) {
-                player.play();
+            if (player?.isPaused()) {
+                player?.play();
             } else {
-                player.pause();
+                player?.pause();
             }
             event.preventDefault();
             break;
         case 'KeyM':
             // Mute toggle
-            player.setMute(!player.isMuted());
+            player?.setMute(!player?.isMuted());
             break;
         case 'ArrowUp':
             // Volume up
-            volumeChangeHandler(Math.min(player.getVolume() + volumeIncrement, 1));
+            volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
             break;
         case 'ArrowDown':
             // Volume down
-            volumeChangeHandler(Math.max(player.getVolume() - volumeIncrement, 0));
+            volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
             break;
         default:
             break;
@@ -790,12 +794,12 @@ function keyDownEventListener(event: any) {
 }
 
 function skipBack() {
-    player.setCurrentTime(Math.max(player.getCurrentTime() - skipInterval, 0));
+    player?.setCurrentTime(Math.max(player?.getCurrentTime() - skipInterval, 0));
 }
 
 function skipForward() {
     if (!isLivePosition) {
-        player.setCurrentTime(Math.min(player.getCurrentTime() + skipInterval, player.getDuration()));
+        player?.setCurrentTime(Math.min(player?.getCurrentTime() + skipInterval, player?.getDuration()));
     }
 }
 
