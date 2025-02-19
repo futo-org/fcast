@@ -31,3 +31,8 @@ cd ../
 ```sh
 ares-package fcast-receiver/dist/ fcast-receiver-service/dist/ --no-minify
 ```
+
+## Debugging
+* Install: `ares-install --device tv ./com.futo.fcast.receiver_1.0.0_all.ipk`
+* Web app debug: `ares-inspect --device tv --app com.futo.fcast.receiver -o`
+* Service debug: `ares-inspect --device tv -s com.futo.fcast.receiver.service`

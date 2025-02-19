@@ -1,6 +1,6 @@
 {
     "name": "com.futo.fcast.receiver.service",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "FCast network service",
     "author": "FUTO",
     "license": "MIT",
@@ -38,5 +38,8 @@
         "url": "^0.11.3",
         "uuid": "^9.0.1",
         "ws": "^8.14.2"
+    },
+    "optionalDependencies": {
+        "utf-8-validate": "^6.0.5"
     }
 }

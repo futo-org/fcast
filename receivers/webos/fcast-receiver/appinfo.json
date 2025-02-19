@@ -1,6 +1,6 @@
 {
   "id": "com.futo.fcast.receiver",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "vendor": "FUTO",
   "type": "web",
   "main": "main_window/index.html",
