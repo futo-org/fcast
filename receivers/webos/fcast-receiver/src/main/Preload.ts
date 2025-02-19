@@ -27,6 +27,7 @@ try {
     const playService = registerService('play', (message: any) => {
         if (message.value !== undefined && message.value.playData !== undefined) {
             console.log(`Main: Playing ${JSON.stringify(message)}`);
+            sessionStorage.setItem('playData', JSON.stringify(message.value.playData));
             getDeviceInfoService.cancel();
             toastService.cancel();
             onConnectService.cancel();
@@ -37,18 +38,18 @@ try {
             // WebOS 22 and earlier does not work well using the history API,
             // so manually handling page navigation...
             // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html');
+            window.open('../player/index.html', '_self');
         }
      });
 
-    const launchHandler = (args: any) => {
-        // args don't seem to be passed in via event despite what documentation says...
+    const launchHandler = () => {
         const params = window.webOSDev.launchParams();
         console.log(`Main: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
 
-        const lastTimestamp = localStorage.getItem('lastTimestamp');
+        const lastTimestamp = Number(localStorage.getItem('lastTimestamp'));
         if (params.playData !== undefined && params.timestamp != lastTimestamp) {
             localStorage.setItem('lastTimestamp', params.timestamp);
+            sessionStorage.setItem('playData', JSON.stringify(params.playData));
             toastService?.cancel();
             getDeviceInfoService?.cancel();
             onConnectService?.cancel();
@@ -59,12 +60,12 @@ try {
             // WebOS 22 and earlier does not work well using the history API,
             // so manually handling page navigation...
             // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html');
+            window.open('../player/index.html', '_self');
         }
     };
 
-    document.addEventListener('webOSLaunch', (ags) => { launchHandler(ags)});
-    document.addEventListener('webOSRelaunch', (ags) => { launchHandler(ags)});
+    document.addEventListener('webOSLaunch', launchHandler);
+    document.addEventListener('webOSRelaunch', launchHandler);
 
     // Cannot go back to a state where user was previously casting a video, so exit.
     // window.onpopstate = () => {

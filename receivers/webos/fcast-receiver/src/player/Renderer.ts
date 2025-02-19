@@ -91,7 +91,7 @@ export function targetKeyDownEventListener(event: any): boolean {
     switch (event.keyCode) {
         case RemoteKeyCode.Stop:
             // history.back();
-            window.open('../main_window/index.html');
+            window.open('../main_window/index.html', '_self');
             handledCase = true;
             break;
 
@@ -126,7 +126,7 @@ export function targetKeyDownEventListener(event: any): boolean {
         // so manually handling page navigation...
         case RemoteKeyCode.Back:
             // history.back();
-            window.open('../main_window/index.html');
+            window.open('../main_window/index.html', '_self');
             event.preventDefault();
             handledCase = true;
             break;

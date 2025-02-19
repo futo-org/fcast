@@ -8,10 +8,8 @@ require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
 
 try {
     const serviceId = 'com.futo.fcast.receiver.service';
-    let playerWindowOpen = false;
-
     window.webOSAPI = {
-        pendingPlay: null
+        pendingPlay: JSON.parse(sessionStorage.getItem('playData'))
     };
 
     preloadData.sendPlaybackErrorCb = (error: PlaybackErrorMessage) => {
@@ -58,10 +56,6 @@ try {
             }
 
             if (message.value.playData !== null) {
-                if (!playerWindowOpen) {
-                    playerWindowOpen = true;
-                }
-
                 if (preloadData.onPlayCb === undefined) {
                     window.webOSAPI.pendingPlay = message.value.playData;
                 }
@@ -80,7 +74,6 @@ try {
     const pauseService = registerService('pause', () => { preloadData.onPauseCb(); });
     const resumeService = registerService('resume', () => { preloadData.onResumeCb(); });
     const stopService = registerService('stop', () => {
-        playerWindowOpen = false;
         playService.cancel();
         pauseService.cancel();
         resumeService.cancel();
@@ -92,23 +85,22 @@ try {
         // WebOS 22 and earlier does not work well using the history API,
         // so manually handling page navigation...
         // history.back();
-        window.open('../main_window/index.html');
+        window.open('../main_window/index.html', '_self');
      });
 
     const seekService = registerService('seek', (message: any) => { preloadData.onSeekCb(null, message.value); });
     const setVolumeService = registerService('setvolume', (message: any) => { preloadData.onSetVolumeCb(null, message.value); });
     const setSpeedService = registerService('setspeed', (message: any) => { preloadData.onSetSpeedCb(null, message.value); });
 
-    const launchHandler = (args: any) => {
+    const launchHandler = () => {
         // args don't seem to be passed in via event despite what documentation says...
         const params = window.webOSDev.launchParams();
         console.log(`Player: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
 
-        const lastTimestamp = localStorage.getItem('lastTimestamp');
+        const lastTimestamp = Number(localStorage.getItem('lastTimestamp'));
         if (params.playData !== undefined && params.timestamp != lastTimestamp) {
             localStorage.setItem('lastTimestamp', params.timestamp);
-            playerWindowOpen = false;
-
+            sessionStorage.setItem('playData', JSON.stringify(params.playData));
             playService?.cancel();
             pauseService?.cancel();
             resumeService?.cancel();
@@ -120,12 +112,12 @@ try {
             // WebOS 22 and earlier does not work well using the history API,
             // so manually handling page navigation...
             // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html');
+            window.open('../player/index.html', '_self');
         }
     };
 
-    document.addEventListener('webOSLaunch', (ags) => { launchHandler(ags)});
-    document.addEventListener('webOSRelaunch', (ags) => { launchHandler(ags)});
+    document.addEventListener('webOSLaunch', launchHandler);
+    document.addEventListener('webOSRelaunch', launchHandler);
 
 }
 catch (err) {

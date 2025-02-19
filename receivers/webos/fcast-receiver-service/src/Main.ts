@@ -45,7 +45,6 @@ export class Main {
                 keepAlive = activity;
             });
 
-            // TODO: Fix issue of emitting events to non-existent subscribers after multiple page changes
             const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
             const objectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
 
@@ -95,7 +94,7 @@ export class Main {
             },
             (message: any) => {
                 Main.logger.info('Canceled play service subscriber');
-                Main.emitter.off('play', playClosureCb);
+                Main.emitter.removeAllListeners('play');
                 message.respond({ returnValue: true, value: message.payload });
             });
 
@@ -114,7 +113,7 @@ export class Main {
             },
             (message: any) => {
                 Main.logger.info('Canceled stop service subscriber');
-                Main.emitter.off('stop', stopClosureCb);
+                Main.emitter.removeAllListeners('stop');
                 message.respond({ returnValue: true, value: message.payload });
             });
 
@@ -208,7 +207,7 @@ function registerService(service: Service, method: string, callback: (message: a
     },
     (message: any) => {
         Main.logger.info(`Canceled ${method} service subscriber`);
-        Main.emitter.off(method, callbackRef);
+        Main.emitter.removeAllListeners(method);
         message.respond({ returnValue: true, value: message.payload });
     });
 }
