@@ -36,16 +36,17 @@ export class FCastSession {
 
         let data: Uint8Array;
         if (json) {
-            const utf8Encode = new TextEncoder();
-            data = utf8Encode.encode(json);
+            // Do NOT use the TextEncoder utility class, it does not exist in the NodeJS runtime
+            // for webOS 6.0 and earlier...
+            data = Buffer.from(json, 'utf8');
         } else  {
-            data = new Uint8Array(0);
+            data = Buffer.alloc(0);
         }
 
         const size = 1 + data.length;
         const header = Buffer.alloc(4 + 1);
 
-        // Web OS 22 and earlier node versions do not support `writeUint32LE`,
+        // webOS 22 and earlier node versions do not support `writeUint32LE`,
         // so manually checking endianness and writing as LE
         // @ts-ignore
         if (TARGET === 'webOS') {
