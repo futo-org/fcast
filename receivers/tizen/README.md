@@ -26,6 +26,13 @@ npm install
 
 For signing the build artifact you must export the following environment variables or set them in your `.env` file:
 ```
+# .env
+
+# Submission requirements need app title to match what is in the web apps' config.xml.
+# However, this results in the build artifact name to contain a space. Seems to be weird
+# issues with variable expansion/quoting when running the build script in the GitLab CI
+# vs running locally, so allowing artifact name to be defined via a environment variable...
+ARTIFACT_NAME="'FCast Receiver.wgt'"
 CERT_PATH=/app/receivers/tizen/PATH_TO_CERTS
 CERT_IDENTITY=YOUR_IDENTITY
 CERT_AUTHOR_PASSWORD=YOUR_PASSWORD
