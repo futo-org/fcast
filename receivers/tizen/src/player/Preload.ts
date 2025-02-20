@@ -14,7 +14,7 @@ preloadData.sendPlaybackErrorCb = (error: PlaybackErrorMessage) => {
         { key: 'data', value: JSON.stringify(error) }
     ]);
 };
-preloadData.sendPlaybackUpdateCb = (update: PlaybackUpdateMessage) => {    
+preloadData.sendPlaybackUpdateCb = (update: PlaybackUpdateMessage) => {
     servicePort.sendMessage([
         { key: 'opcode', value: Opcode.PlaybackUpdate.toString() },
         { key: 'data', value: JSON.stringify(update) }
@@ -27,7 +27,6 @@ preloadData.sendVolumeUpdateCb = (update: VolumeUpdateMessage) => {
     ]);
 };
 
-let playerWindowOpen = false;
 window.tizenOSAPI = {
     pendingPlay: JSON.parse(sessionStorage.getItem('playData'))
 };
@@ -55,10 +54,6 @@ const ipcListener = ipcPort.addMessagePortListener((data) => {
 
         case 'play':
             if (message !== null) {
-                if (!playerWindowOpen) {
-                    playerWindowOpen = true;
-                }
-
                 if (preloadData.onPlayCb === undefined) {
                     window.tizenOSAPI.pendingPlay = message;
                 }
@@ -77,7 +72,6 @@ const ipcListener = ipcPort.addMessagePortListener((data) => {
             break;
 
         case 'stop':
-            playerWindowOpen = false;
             window.open('../main_window/index.html', '_self');
             break;
 

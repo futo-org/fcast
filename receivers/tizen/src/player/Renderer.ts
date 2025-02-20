@@ -95,7 +95,7 @@ export function targetKeyDownEventListener(event: any): boolean {
 
     switch (event.keyCode) {
         case RemoteKeyCode.Stop:
-            window.open('../main_window/index.html');
+            window.open('../main_window/index.html', '_self');
             handledCase = true;
             break;
 
@@ -142,7 +142,7 @@ export function targetKeyDownEventListener(event: any): boolean {
             break;
 
         case RemoteKeyCode.Back:
-            window.open('../main_window/index.html');
+            window.open('../main_window/index.html', '_self');
             event.preventDefault();
             handledCase = true;
             break;

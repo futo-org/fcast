@@ -27,7 +27,7 @@ namespace FCastReceiverService
         protected override void OnCreate()
         {
             base.OnCreate();
-            
+
             Serilog.Log.Information($"Starting: {Program.Current.ApplicationInfo.ApplicationId}");
             Serilog.Log.Information($"Version: 1.0.0");
             Serilog.Log.Information($"Manufacturer: {SystemInformation.Manufacturer}");
@@ -68,6 +68,7 @@ namespace FCastReceiverService
 
             // Older Tizen models seem to throw exceptions when accessing standard .NET APIs for
             // Querying network interface information or using HttpListeners...
+            // May need to investigate further however, perhaps its only an issue when running in emulator
 
             // No API to get Tizen version, so have to go by OS image build date...
             // Format: YYYYMMDD_HHMMSS
