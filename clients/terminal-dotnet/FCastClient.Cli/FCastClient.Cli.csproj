@@ -5,7 +5,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NestedArgs" Version="1.0.0" />
+    <PackageReference Include="NestedArgs" Version="1.0.2" />
   </ItemGroup>
 
   <PropertyGroup>
