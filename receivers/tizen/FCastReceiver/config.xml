@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets" id="http://futo.org/FCastReceiver" version="1.0.0" viewmodes="maximized">
     <access origin="*" subdomains="true"></access>
-    <tizen:application id="qL5oFoTHoJ.FCastReceiver" package="qL5oFoTHoJ" required_version="5.0"/>
+    <tizen:application id="ql5ofothoj.fcastreceiver" package="ql5ofothoj" required_version="5.0"/>
     <content src="index.html"/>
     <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
     <icon src="icon.png"/>
