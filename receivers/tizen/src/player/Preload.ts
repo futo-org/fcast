@@ -4,7 +4,7 @@ import { toast, ToastIcon } from 'common/components/Toast';
 import * as tizen from 'tizen-common-web';
 
 
-const serviceId = 'qL5oFoTHoJ.FCastReceiverService.dll';
+const serviceId = 'ql5ofothoj.FCastReceiverService.dll';
 // const serviceId = 'com.futo.FCastReceiverService';
 const servicePort = tizen.messageport.requestRemoteMessagePort(serviceId, 'ipcPort');
 

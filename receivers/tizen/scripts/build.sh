@@ -26,6 +26,6 @@ tizen cli-config "profiles.path=/home/ubuntu/tizen-studio-data/profile/profiles.
 sed -i "s|$CERT_PATH/author/$CERT_IDENTITY/author.pwd|$CERT_AUTHOR_PASSWORD|g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
 sed -i "s|$CERT_PATH/SamsungCertificate/$CERT_IDENTITY/distributor.pwd|$CERT_DIST_PASSWORD|g" /home/ubuntu/tizen-studio-data/profile/profiles.xml
 mv "FCast Receiver.wgt" FCastReceiver.wgt
-../../scripts/package.sh tizen package -t wgt -s $CERT_IDENTITY -r ../../FCastReceiverService/bin/Release/netcoreapp2.1/com.futo.FCastReceiverService-1.0.0.tpk -- FCastReceiver.wgt
+../../scripts/package.sh tizen package -t wgt -s $CERT_IDENTITY -r ../../FCastReceiverService/bin/Release/netcoreapp2.1/com.futo.fcastreceiverservice-1.0.0.tpk -- FCastReceiver.wgt
 
 cd ../../
