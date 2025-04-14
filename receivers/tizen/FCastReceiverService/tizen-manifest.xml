@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<manifest package="com.futo.FCastReceiverService" version="1.0.0" api-version="5" xmlns="http://tizen.org/ns/packages">
+    <author href="https://futo.org">FUTO</author>
+    <profile name="tv" />
+    <service-application appid="com.futo.FCastReceiverService" exec="FCastReceiverService.dll" multiple="false" nodisplay="true" taskmanage="false" type="dotnet" auto-restart="true" on-boot="true">
+        <label>FCastReceiverService</label>
+        <icon>icon.png</icon>
+        <background-category value="background-network" />
+        <splash-screens />
+    </service-application>
+    <shortcut-list />
+    <privileges>
+        <privilege>http://tizen.org/privilege/network.get</privilege>
+        <privilege>http://tizen.org/privilege/internet</privilege>
+        <privilege>http://tizen.org/privilege/appmanager.launch</privilege>
+    </privileges>
+    <provides-appdefined-privileges />
+    <feature name="http://tizen.org/feature/network.service_discovery.dnssd">true</feature>
+</manifest>

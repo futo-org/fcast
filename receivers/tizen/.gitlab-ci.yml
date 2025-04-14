@@ -1,0 +1,34 @@
+
+buildTizenOSDockerContainer:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd receivers/tizen
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/receiver-tizen-dev:latest .
+    - docker push $CI_REGISTRY/videostreaming/fcast/receiver-tizen-dev:latest
+  when: manual
+
+buildTizenOSReceiver:
+  stage: buildTizenOSReceiver
+  image: gitlab.futo.org:5050/videostreaming/fcast/receiver-tizen-dev:latest
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd receivers/tizen
+  script:
+    - npm install
+    - scripts/build.sh
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - receivers/tizen/FCastReceiver/.buildResult/FCastReceiver.wgt
+  when: manual
