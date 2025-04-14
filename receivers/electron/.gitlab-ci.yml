@@ -17,7 +17,7 @@ buildElectronDockerContainer:
 buildMac:
   stage: buildAndDeployElectron
   tags:
-    - m1-macos
+    - tart-installed
   before_script:
     - cd receivers/electron
   script:
