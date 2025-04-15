@@ -16,7 +16,7 @@ buildElectronDockerContainer:
 
 buildMac:
   stage: buildAndDeployElectron
-  image: ghcr.io/cirruslabs/macos-sonoma-xcode:latest
+  image: ghcr.io/cirruslabs/macos-ventura-xcode:13.4.1
   tags:
     - tart-installed
   before_script:
