@@ -5,3 +5,4 @@
 
 node_modules/
 .wrangler/
+.secure_files/

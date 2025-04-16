@@ -20,6 +20,7 @@ buildMac:
   tags:
     - tart-installed
   before_script:
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
     - cd receivers/electron
   script:
     - npm install

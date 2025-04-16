@@ -1,0 +1,19 @@
+
+# Todo: Codesign fails for local CI, works when steps replicated in VM GUI
+# Run command: `cirrus run --artifacts-dir receivers/electron/out`
+task:
+  name: buildReceiverMac
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+  buildReceiverMac_script:
+    - source .secure_files/.env
+    - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
+    - security unlock-keychain -p "admin" ~/Library/Keychains/login.keychain
+    - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$CERTIFICATES_PASSWORD" -T /usr/bin/codesign
+    - cd receivers/electron
+    - npm install
+    - npm run build
+    - npm run make -- --platform="darwin" --arch="arm64"
+    - npm run make -- --platform="darwin" --arch="x64"
+  binary_artifacts:
+    path: receivers/electron/out/*
