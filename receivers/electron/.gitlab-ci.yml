@@ -21,6 +21,9 @@ buildMac:
     - tart-installed
   before_script:
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+    - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
+    - security unlock-keychain -p "admin" ~/Library/Keychains/login.keychain
+    - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$FCAST_CERTIFICATES_PASSWORD" -T /usr/bin/codesign
     - cd receivers/electron
   script:
     - npm install

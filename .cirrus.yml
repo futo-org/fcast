@@ -9,7 +9,7 @@ task:
     - source .secure_files/.env
     - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
     - security unlock-keychain -p "admin" ~/Library/Keychains/login.keychain
-    - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$CERTIFICATES_PASSWORD" -T /usr/bin/codesign
+    - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$FCAST_CERTIFICATES_PASSWORD" -T /usr/bin/codesign
     - cd receivers/electron
     - npm install
     - npm run build
