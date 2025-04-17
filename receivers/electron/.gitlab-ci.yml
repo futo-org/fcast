@@ -26,6 +26,13 @@ buildMac:
     - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$FCAST_CERTIFICATES_PASSWORD" -T /usr/bin/codesign
     # Keychain ignores access control, causing to prompt for access and failing in CI environments...: https://stackoverflow.com/a/40039594
     - "security set-key-partition-list -S apple-tool:,apple: -s -k admin ~/Library/Keychains/login.keychain"
+
+    - mkdir -p ~/.ssh/
+    - cp ./.secure_files/id_ed25519 ~/.ssh/id_ed25519
+    - cp ./.secure_files/id_ed25519.pub ~/.ssh/id_ed25519.pub
+    - chmod 700 ~/.ssh/
+    - chmod 600 ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519.pub
     - cd receivers/electron
   script:
     - npm install
