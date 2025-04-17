@@ -40,7 +40,7 @@ buildMac:
     - npm run build
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
-    - scp -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
+    - scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
   artifacts:
     untracked: false
     when: on_success
