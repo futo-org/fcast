@@ -349,6 +349,23 @@ export class Main {
 
             Main.startFullscreen = argv.fullscreen;
             Main.shouldOpenMainWindow = !argv.noMainWindow;
+
+            const lock = Main.application.requestSingleInstanceLock()
+            if (!lock) {
+                Main.application.quit();
+                return;
+            }
+            Main.application.on('second-instance', () => {
+                if (Main.mainWindow) {
+                    if (Main.mainWindow.isMinimized()) {
+                        Main.mainWindow.restore();
+                    }
+                    Main.mainWindow.focus();
+                }
+                else {
+                    Main.openMainWindow();
+                }
+            })
             Main.application.on('ready', Main.onReady);
             Main.application.on('window-all-closed', () => { });
         }
