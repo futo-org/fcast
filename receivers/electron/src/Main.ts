@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog } from 'electron';
+import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
@@ -278,6 +278,11 @@ export class Main {
         if (Updater.checkForUpdatesOnStart) {
             Main.checkForUpdates(true);
         }
+
+        Main.mainWindow.webContents.setWindowOpenHandler((details) => {
+            shell.openExternal(details.url);
+            return { action: "deny" };
+        });
     }
 
     static openMainWindow() {
