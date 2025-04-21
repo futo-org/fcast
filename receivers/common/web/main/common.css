@@ -136,6 +136,7 @@ body, html {
 
 #connection-status-text, #ips, #automatic-discovery {
     margin-top: 20px;
+    white-space: pre;
 }
 
 #connection-spinner {

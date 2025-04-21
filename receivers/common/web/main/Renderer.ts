@@ -33,6 +33,10 @@ window.targetAPI.onDisconnect((_event, value: any) => {
             connectionStatusCheck.style.display = 'none';
             toast("Device disconnected", ToastIcon.INFO);
         }
+        else {
+            connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
+            toast("A device has disconnected", ToastIcon.INFO);
+        }
     }
 });
 
@@ -43,7 +47,7 @@ if(window.targetAPI.getDeviceInfo()) {
 
 function onConnect(value: any) {
     console.log(`Device connected: ${JSON.stringify(value)}`);
-    connectionStatusText.textContent = 'Connected: Ready to cast';
+    connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
     connectionStatusSpinner.style.display = 'none';
     connectionStatusCheck.style.display = 'inline-block';
 }
