@@ -45,6 +45,12 @@ body, html {
     margin-bottom: 3px;
 }
 
+.iconSize {
+    width: 32px;
+    height: 32px;
+    background-size: cover;
+}
+
 #ui-container {
     display: flex;
     flex-direction: column;
@@ -134,9 +140,83 @@ body, html {
     font-weight: bold;
 }
 
-#connection-status-text, #ips, #automatic-discovery {
+#connection-error {
+    display: none;
+}
+
+#connection-error-icon {
+    width: 84px;
+    height: 84px;
+    margin: auto;
+    margin-top: 20px;
+
+    background-image: url(../assets/icons/app/error.svg);
+    background-size: cover;
+}
+
+#connection-error-text {
+    margin-top: 20px;
+    font-weight: bold;
+}
+
+#connection-status-text {
     margin-top: 20px;
     white-space: pre;
+}
+
+#ips {
+    display: flex;
+    margin-top: 20px;
+    white-space: pre;
+    gap: 10px;
+    justify-content: center;
+}
+
+#ips-iface-icon {
+    display: flex;
+    flex-direction: column;
+}
+
+#ips-iface-text {
+    display: flex;
+    flex-direction: column;
+    margin-right: 20px;
+    align-items: start;
+}
+
+#ips-iface-name {
+    display: flex;
+    flex-direction: column;
+    align-items: start;
+}
+
+.ip-entry-text {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+.ip-wired-icon {
+    background-image: url(../assets/icons/app/network-light.svg);
+}
+
+.ip-wireless-4-icon {
+    background-image: url(../assets/icons/app/wifi-strength-4.svg);
+}
+
+.ip-wireless-3-icon {
+    background-image: url(../assets/icons/app/wifi-strength-3.svg);
+}
+
+.ip-wireless-2-icon {
+    background-image: url(../assets/icons/app/wifi-strength-2.svg);
+}
+
+.ip-wireless-1-icon {
+    background-image: url(../assets/icons/app/wifi-strength-1.svg);
+}
+
+.ip-wireless-0-icon {
+    background-image: url(../assets/icons/app/wifi-strength-outline.svg);
 }
 
 #connection-spinner {

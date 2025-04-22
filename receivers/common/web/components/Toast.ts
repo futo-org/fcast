@@ -1,5 +1,6 @@
 export enum ToastIcon {
     INFO,
+    WARNING,
     ERROR,
 }
 
@@ -38,6 +39,10 @@ function renderToast(message: string, icon: ToastIcon = ToastIcon.INFO, duration
     switch (icon) {
         case ToastIcon.INFO:
             toastIcon.style.backgroundImage = 'url(../assets/icons/app/info.svg)';
+            break;
+
+        case ToastIcon.WARNING:
+            toastIcon.style.backgroundImage = 'url(../assets/icons/app/warning.svg)';
             break;
 
         case ToastIcon.ERROR:

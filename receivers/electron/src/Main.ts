@@ -206,30 +206,30 @@ export class Main {
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
             });
+        });
 
-            ipcMain.on('send-download-request', async () => {
-                if (!Updater.isDownloading) {
-                    try {
-                        await Updater.downloadUpdate();
-                        Main.mainWindow.webContents.send("download-complete");
-                    } catch (err) {
-                        await dialog.showMessageBox({
-                            type: 'error',
-                            title: 'Failed to download update',
-                            message: err,
-                            buttons: ['OK'],
-                            defaultId: 0
-                        });
+        ipcMain.on('send-download-request', async () => {
+            if (!Updater.isDownloading) {
+                try {
+                    await Updater.downloadUpdate();
+                    Main.mainWindow.webContents.send("download-complete");
+                } catch (err) {
+                    await dialog.showMessageBox({
+                        type: 'error',
+                        title: 'Failed to download update',
+                        message: err,
+                        buttons: ['OK'],
+                        defaultId: 0
+                    });
 
-                        Main.logger.error('Failed to download update:', err);
-                        Main.mainWindow.webContents.send("download-failed");
-                    }
+                    Main.logger.error('Failed to download update:', err);
+                    Main.mainWindow.webContents.send("download-failed");
                 }
-            });
+            }
+        });
 
-            ipcMain.on('send-restart-request', async () => {
-                Updater.restart();
-            });
+        ipcMain.on('send-restart-request', async () => {
+            Updater.restart();
         });
 
         ipcMain.handle('updater-progress', async () => { return Updater.updateProgress; });
@@ -302,16 +302,27 @@ export class Main {
             }
         });
 
+        let networkStateChangeListener = null;
         Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
+            clearInterval(networkStateChangeListener);
         });
 
         Main.mainWindow.maximize();
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
-            Main.mainWindow.webContents.send("device-info", {name: os.hostname(), addresses: NetworkService.getAllIPv4Addresses()});
+            NetworkService.networkStateChangeListener(true, (interfaces: any) => {
+                Main.mainWindow.webContents.send("device-info", { name: os.hostname(), interfaces: interfaces });
+
+                networkStateChangeListener = setInterval(() => {
+                    NetworkService.networkStateChangeListener(false, (interfaces: any) => {
+                        Main.mainWindow.webContents.send("device-info", { name: os.hostname(), interfaces: interfaces });
+                    });
+                },
+                NetworkService.networkStateChangeListenerTimeout);
+            });
         });
     }
 
