@@ -1,8 +1,8 @@
 const webpack = require('webpack');
 const path = require('path');
 const CopyWebpackPlugin = require("copy-webpack-plugin");
-// const buildMode = 'production';
-const buildMode = 'development';
+const buildMode = 'production';
+// const buildMode = 'development';
 
 const TARGET = 'electron';
 // const TARGET = 'webOS';
