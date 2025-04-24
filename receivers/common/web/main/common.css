@@ -252,7 +252,6 @@ body, html {
     /* display: inline-block; */
     display: none;
     position: relative;
-    margin: 18px;
     padding: 10px;
 
     background-color: #019BE7;
@@ -441,6 +440,7 @@ body, html {
     #connection-check {
         width: 124px;
         height: 124px;
+        margin: 32px;
     }
 
     #toast-notification {
@@ -547,6 +547,7 @@ body, html {
     #connection-check {
         width: 104px;
         height: 104px;
+        margin: 28px;
     }
 
     #toast-notification {
@@ -649,6 +650,7 @@ body, html {
     #connection-check {
         width: 84px;
         height: 84px;
+        margin: 24px;
     }
 
     #toast-notification {
@@ -749,6 +751,7 @@ body, html {
     #connection-check {
         width: 64px;
         height: 64px;
+        margin: 20px;
     }
 
     #toast-notification {
