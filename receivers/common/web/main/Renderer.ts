@@ -7,6 +7,7 @@ const connectionStatusText = document.getElementById("connection-status-text");
 const connectionStatusSpinner = document.getElementById("connection-spinner");
 const connectionStatusCheck = document.getElementById("connection-check");
 let connections = [];
+let renderedConnectionInfo = false;
 let renderedAddresses = null;
 
 // Window might be re-created while devices are still connected
@@ -66,8 +67,8 @@ function renderIPsAndQRCode() {
         toast("Network connections has changed, please reconnect sender devices to receiver if you experience issues", ToastIcon.WARNING);
     }
     else if (addresses.length === 0) {
-        connInfo.setAttribute("style", "display: none");
-        connError.setAttribute("style", "display: block");
+        connInfo.style.display = 'none';
+        connError.style.display = 'block';
 
         if (renderedAddresses !== null) {
             toast("Lost network connection, please reconnect to a network", ToastIcon.ERROR);
@@ -78,8 +79,8 @@ function renderIPsAndQRCode() {
     }
 
     if (renderedAddresses !== null && renderedAddresses.length === 0) {
-        connInfo.setAttribute("style", "display: block");
-        connError.setAttribute("style", "display: none");
+        connInfo.style.display = 'block';
+        connError.style.display = 'none';
     }
 
     renderIPs(value.interfaces);
@@ -123,6 +124,12 @@ function renderIPsAndQRCode() {
             console.log(`Rendered QR Code`);
         }
     });
+
+    if (!renderedConnectionInfo) {
+        const connInfoLoading = document.getElementById('connection-information-loading');
+        connInfoLoading.style.display = 'none';
+        connInfo.style.display = 'block';
+    }
 
     onQRCodeRendered();
 }

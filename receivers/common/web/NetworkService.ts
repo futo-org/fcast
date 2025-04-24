@@ -1,11 +1,9 @@
 import { PlayMessage, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
-import * as os from 'os';
 import * as http from 'http';
 import * as url from 'url';
 import { AddressInfo } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
 import { Main } from 'src/Main';
-import si from 'modules/systeminformation';
 
 export class NetworkService {
     static key: string = null;
@@ -13,8 +11,6 @@ export class NetworkService {
     static proxyServer: http.Server;
     static proxyServerAddress: AddressInfo;
     static proxiedFiles: Map<string, { url: string, headers: { [key: string]: string } }> = new Map();
-    static networkStateChangeListenerTimeout = 2500;
-    private static networkStateChangeListenerInterfaces = [];
 
     private static setupProxyServer(): Promise<void> {
         return new Promise<void>((resolve, reject) => {
@@ -105,56 +101,5 @@ export class NetworkService {
         Main.logger.info("Proxied url", { proxiedUrl, url, headers });
         NetworkService.proxiedFiles.set(proxiedUrl, { url: url, headers: headers });
         return proxiedUrl;
-    }
-
-    static async networkStateChangeListener(forceUpdate: boolean, networkChangedCb: (networkInfo: any) => void) {
-        const queriedInterfaces: si.Systeminformation.NetworkInterfacesData[] = await new Promise<si.Systeminformation.NetworkInterfacesData[]>((resolve, reject) => {
-            si.networkInterfaces((data) => {
-                // console.log(data);
-
-                if (Array.isArray(data)) {
-                    resolve(data);
-                }
-                else {
-                    resolve([data]);
-                }
-            });
-        });
-
-        const wifiConnections: si.Systeminformation.WifiConnectionData[] = await new Promise<si.Systeminformation.WifiConnectionData[]>((resolve, reject) => {
-            si.wifiConnections((data) => {
-                // console.log(data);
-
-                if (Array.isArray(data)) {
-                    resolve(data);
-                }
-                else {
-                    resolve([data]);
-                }
-            });
-        });
-
-        const interfaces = [];
-        for (const iface of queriedInterfaces) {
-            if (iface.ip4 !== '' && !iface.internal && !iface.virtual) {
-                const isWireless = wifiConnections.some(e => {
-                    if (e.iface === iface.iface) {
-                        interfaces.push({ type: 'wireless', name: e.ssid, address: iface.ip4, signalLevel: e.quality });
-                        return true;
-                    }
-
-                    return false;
-                });
-
-                if (!isWireless) {
-                    interfaces.push({ type: 'wired', name: iface.ifaceName, address: iface.ip4 });
-                }
-            }
-        }
-
-        if (forceUpdate || (JSON.stringify(interfaces) !== JSON.stringify(NetworkService.networkStateChangeListenerInterfaces))) {
-            NetworkService.networkStateChangeListenerInterfaces = interfaces;
-            networkChangedCb(interfaces);
-        }
     }
 }

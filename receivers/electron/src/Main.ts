@@ -302,27 +302,28 @@ export class Main {
             }
         });
 
-        let networkStateChangeListener = null;
         Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
-            clearInterval(networkStateChangeListener);
         });
 
         Main.mainWindow.maximize();
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
-            NetworkService.networkStateChangeListener(true, (interfaces: any) => {
-                Main.mainWindow.webContents.send("device-info", { name: os.hostname(), interfaces: interfaces });
-
-                networkStateChangeListener = setInterval(() => {
-                    NetworkService.networkStateChangeListener(false, (interfaces: any) => {
-                        Main.mainWindow.webContents.send("device-info", { name: os.hostname(), interfaces: interfaces });
-                    });
-                },
-                NetworkService.networkStateChangeListenerTimeout);
+            const networkWorker = new BrowserWindow({
+                show: false,
+                webPreferences: {
+                    nodeIntegration: true,
+                    contextIsolation: false,
+                    preload: path.join(__dirname, 'main/networkWorker.js')
+                }
             });
+
+            ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
+                Main.mainWindow.webContents.send("device-info", { name: os.hostname(), interfaces: value });
+            });
+            networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
         });
     }
 

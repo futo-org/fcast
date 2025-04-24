@@ -72,9 +72,13 @@ body, html {
     gap: 15vw;
 
     font-family: InterVariable;
-    font-size: 20px;
+    font-size: 28px;
     font-style: normal;
     font-weight: 400;
+}
+
+#main-view {
+    padding: 25px;
 }
 
 #title-container {
@@ -85,7 +89,7 @@ body, html {
 
 #title-text {
     font-family: Outfit;
-    font-size: 100px;
+    font-size: 140px;
     font-weight: 800;
     text-align: center;
 
@@ -96,12 +100,12 @@ body, html {
 }
 
 #title-icon {
-    width: 84px;
-    height: 84px;
+    width: 124px;
+    height: 124px;
 
     background-image: url(../assets/icons/app/icon.svg);
     background-size: cover;
-    margin-right: 15px;
+    margin-right: 25px;
 }
 
 #connection-status {
@@ -109,35 +113,13 @@ body, html {
     text-align: center;
 }
 
-#main-view {
-    padding: 25px;
-}
-
-#manual-connection-info {
-    font-weight: 700;
-    line-height: 24px;
-    margin: 10px;
-}
-
-#manual-connection-info-separator {
-    height: 1px;
-    background: #2E2E2E;
-    margin-top: 3px;
-    margin-bottom: 3px;
-}
-
-#qr-code {
-    display: flex;
-    margin: 20px auto;
-    flex-direction: column;
-    align-items: center;
-    padding: 20px;
-    background-color: white;
-}
-
-#scan-to-connect {
+#connection-status-text {
     margin-top: 20px;
-    font-weight: bold;
+    white-space: pre;
+}
+
+#connection-spinner {
+    padding: 20px;
 }
 
 #connection-error {
@@ -159,9 +141,37 @@ body, html {
     font-weight: bold;
 }
 
-#connection-status-text {
+#connection-information-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+#connection-information-loading-text {
+    width: auto;
+    height: auto;
+    margin: 10px 20px;
+}
+
+#connection-information {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+#scan-to-connect {
     margin-top: 20px;
-    white-space: pre;
+    font-weight: bold;
+}
+
+#qr-code {
+    display: flex;
+    margin: 20px auto;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    background-color: white;
 }
 
 #ips {
@@ -219,10 +229,6 @@ body, html {
     background-image: url(../assets/icons/app/wifi-strength-outline.svg);
 }
 
-#connection-spinner {
-    padding: 20px;
-}
-
 #window-can-be-closed {
     color: #666666;
     position: absolute;
@@ -230,7 +236,7 @@ body, html {
     margin-bottom: 20px;
 
     font-family: InterVariable;
-    font-size: 18px;
+    font-size: 24px;
     font-style: normal;
     font-weight: 400;
 }
@@ -238,15 +244,15 @@ body, html {
 .lds-ring {
     display: inline-block;
     position: relative;
-    width: 80px;
-    height: 80px;
+    width: 120px;
+    height: 120px;
 }
 .lds-ring div {
     box-sizing: border-box;
     display: block;
     position: absolute;
-    width: 64px;
-    height: 64px;
+    width: 104px;
+    height: 104px;
     margin: 8px;
     border: 8px solid #fff;
     border-radius: 50%;
@@ -275,8 +281,8 @@ body, html {
     /* display: inline-block; */
     display: none;
     position: relative;
-    width: 64px;
-    height: 64px;
+    width: 104px;
+    height: 104px;
     margin: 18px;
     padding: 10px;
 
@@ -329,8 +335,8 @@ body, html {
 }
 
 #toast-icon {
-    width: 48px;
-    height: 48px;
+    width: 88px;
+    height: 88px;
     background-image: url(../assets/icons/app/info.svg);
     background-size: cover;
     flex-shrink: 0;
@@ -345,7 +351,7 @@ body, html {
     word-break: break-word;
 
     font-family: InterVariable;
-    font-size: 20px;
+    font-size: 28px;
     font-style: normal;
     font-weight: 400;
 }

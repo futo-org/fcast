@@ -63,6 +63,7 @@ module.exports = [
         entry: {
             preload: './src/main/Preload.ts',
             renderer: './src/main/Renderer.ts',
+            networkWorker: './src/main/NetworkWorker.ts'
         },
         target: 'electron-renderer',
         module: {

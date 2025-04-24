@@ -47,6 +47,14 @@
                     <div class="non-selectable card-title">Connection Information</div>
                     <div class="card-title-separator"></div>
 
+                    <div id="connection-information-loading">
+                        <div id="connection-information-loading-text" class="lds-ring">Fetching Network Info...</div>
+                        <div id="connection-information-loading-spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+                    </div>
+                    <div id="connection-error">
+                        <div id="connection-error-icon"></div>
+                        <div id="connection-error-text">Device not connected to a network</div>
+                    </div>
                     <div id="connection-information">
                         <div id="scan-to-connect" class="non-selectable">Scan with a FCast sender app</div>
                         <canvas id="qr-code"></canvas>
@@ -63,10 +71,6 @@
                             </div><br />
                             <div id="ip-ports">Port<br>46899 (TCP), 46898 (WS)</div>
                         </div>
-                    </div>
-                    <div id="connection-error">
-                        <div id="connection-error-icon"></div>
-                        <div id="connection-error-text">Device not connected to a network</div>
                     </div>
                 </div>
             </div>
