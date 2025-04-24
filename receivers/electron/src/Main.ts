@@ -155,8 +155,6 @@ export class Main {
                     Main.playerWindow = new BrowserWindow({
                         fullscreen: true,
                         autoHideMenuBar: true,
-                        minWidth: 515,
-                        minHeight: 290,
                         icon: path.join(__dirname, 'icon512.png'),
                         webPreferences: {
                             preload: path.join(__dirname, 'player/preload.js')
@@ -295,8 +293,6 @@ export class Main {
             fullscreen: Main.startFullscreen,
             autoHideMenuBar: true,
             icon: path.join(__dirname, 'icon512.png'),
-            minWidth: 1100,
-            minHeight: 800,
             webPreferences: {
                 preload: path.join(__dirname, 'main/preload.js')
             }

@@ -25,7 +25,6 @@ body, html {
     text-align: center;
 
     background-color: rgba(20, 20, 20, 0.5);
-    padding: 25px;
     border-radius: 10px;
     border: 1px solid #2E2E2E;
     scrollbar-width: thin;
@@ -34,8 +33,6 @@ body, html {
 
 .card-title {
     font-weight: 700;
-    line-height: 24px;
-    margin: 10px;
 }
 
 .card-title-separator {
@@ -46,8 +43,6 @@ body, html {
 }
 
 .iconSize {
-    width: 32px;
-    height: 32px;
     background-size: cover;
 }
 
@@ -69,10 +64,8 @@ body, html {
     align-items: center;
     justify-content: center;
     color: white;
-    gap: 15vw;
 
     font-family: InterVariable;
-    font-size: 28px;
     font-style: normal;
     font-weight: 400;
 }
@@ -89,7 +82,6 @@ body, html {
 
 #title-text {
     font-family: Outfit;
-    font-size: 140px;
     font-weight: 800;
     text-align: center;
 
@@ -100,16 +92,11 @@ body, html {
 }
 
 #title-icon {
-    width: 124px;
-    height: 124px;
-
     background-image: url(../assets/icons/app/icon.svg);
     background-size: cover;
-    margin-right: 25px;
 }
 
 #connection-status {
-    padding: 25px;
     text-align: center;
 }
 
@@ -130,7 +117,6 @@ body, html {
     width: 84px;
     height: 84px;
     margin: auto;
-    margin-top: 20px;
 
     background-image: url(../assets/icons/app/error.svg);
     background-size: cover;
@@ -150,7 +136,6 @@ body, html {
 #connection-information-loading-text {
     width: auto;
     height: auto;
-    margin: 10px 20px;
 }
 
 #connection-information {
@@ -161,16 +146,13 @@ body, html {
 }
 
 #scan-to-connect {
-    margin-top: 20px;
     font-weight: bold;
 }
 
 #qr-code {
     display: flex;
-    margin: 20px auto;
     flex-direction: column;
     align-items: center;
-    padding: 20px;
     background-color: white;
 }
 
@@ -198,11 +180,6 @@ body, html {
     display: flex;
     flex-direction: column;
     align-items: start;
-}
-
-.ip-entry-text {
-    margin-top: 4px;
-    margin-bottom: 4px;
 }
 
 .ip-wired-icon {
@@ -233,10 +210,8 @@ body, html {
     color: #666666;
     position: absolute;
     bottom: 0;
-    margin-bottom: 20px;
 
     font-family: InterVariable;
-    font-size: 24px;
     font-style: normal;
     font-weight: 400;
 }
@@ -244,15 +219,11 @@ body, html {
 .lds-ring {
     display: inline-block;
     position: relative;
-    width: 120px;
-    height: 120px;
 }
 .lds-ring div {
     box-sizing: border-box;
     display: block;
     position: absolute;
-    width: 104px;
-    height: 104px;
     margin: 8px;
     border: 8px solid #fff;
     border-radius: 50%;
@@ -281,8 +252,6 @@ body, html {
     /* display: inline-block; */
     display: none;
     position: relative;
-    width: 104px;
-    height: 104px;
     margin: 18px;
     padding: 10px;
 
@@ -379,5 +348,420 @@ body, html {
     }
     100% {
         opacity: 0;
+    }
+}
+
+/* Display scaling (Minimum supported resolution is 960x540) */
+@media only screen and ((min-width: 2560px) or (min-height: 1440px)) {
+    .card {
+        padding: 25px;
+    }
+
+    .card-title {
+        line-height: 24px;
+        margin: 10px;
+    }
+
+    .card-title-separator {
+        margin: 5px 0px;
+        margin-top: 10px;
+    }
+
+    .iconSize {
+        width: 48px;
+        height: 48px;
+    }
+
+    #overlay {
+        gap: 15vw;
+        font-size: 32px;
+    }
+
+    #title-text {
+        font-size: 180px;
+    }
+
+    #title-icon {
+        width: 164px;
+        height: 164px;
+        margin-right: 30px;
+    }
+
+    #connection-status {
+        padding: 35px;
+    }
+
+    #connection-error-icon {
+        margin-top: 20px;
+    }
+
+    #connection-information-loading-text {
+        margin: 20px;
+    }
+
+    #scan-to-connect {
+        margin-top: 20px;
+    }
+
+    #qr-code {
+        width: 384px;
+        height: 384px;
+        margin: 25px auto;
+        padding: 20px;
+    }
+
+    #connection-details-separator {
+        margin-top: 15px;
+    }
+
+    #ips {
+        margin-top: 20px;
+        gap: 15px;
+    }
+
+    .ip-entry-text {
+        margin-top: 4.5px;
+        margin-bottom: 4.5px;
+    }
+
+    #window-can-be-closed {
+        margin-bottom: 20px;
+        font-size: 28px;
+    }
+
+    .lds-ring {
+        width: 140px;
+        height: 140px;
+    }
+    .lds-ring div {
+        width: 124px;
+        height: 124px;
+    }
+
+    #connection-check {
+        width: 124px;
+        height: 124px;
+    }
+
+    #toast-notification {
+        padding: 16px;
+        top: -225px;
+    }
+
+    #toast-icon {
+        width: 108px;
+        height: 108px;
+        margin: 5px 10px;
+    }
+
+    #toast-text {
+        font-size: 32px;
+    }
+}
+
+@media only screen and ((max-width: 2559px) or (max-height: 1439px)) {
+    .card {
+        padding: 25px;
+    }
+
+    .card-title {
+        line-height: 24px;
+        margin: 10px;
+    }
+
+    .card-title-separator {
+        margin: 3px 0px;
+    }
+
+    .iconSize {
+        width: 48px;
+        height: 48px;
+    }
+
+    #overlay {
+        gap: 15vw;
+        font-size: 28px;
+    }
+
+    #title-text {
+        font-size: 140px;
+    }
+
+    #title-icon {
+        width: 124px;
+        height: 124px;
+        margin-right: 25px;
+    }
+
+    #connection-status {
+        padding: 25px;
+    }
+
+    #connection-error-icon {
+        margin-top: 20px;
+    }
+
+    #connection-information-loading-text {
+        margin: 20px;
+    }
+
+    #scan-to-connect {
+        margin-top: 20px;
+    }
+
+    #qr-code {
+        width: 256px;
+        height: 256px;
+        margin: 20px auto;
+        padding: 16px;
+    }
+
+    #connection-details-separator {
+        margin-top: 15px;
+    }
+
+    #ips {
+        margin-top: 20px;
+        gap: 15px;
+    }
+
+    .ip-entry-text {
+        margin-top: 7px;
+        margin-bottom: 7px;
+    }
+
+    #window-can-be-closed {
+        margin-bottom: 20px;
+        font-size: 24px;
+    }
+
+    .lds-ring {
+        width: 120px;
+        height: 120px;
+    }
+    .lds-ring div {
+        width: 104px;
+        height: 104px;
+    }
+
+    #connection-check {
+        width: 104px;
+        height: 104px;
+    }
+
+    #toast-notification {
+        padding: 16px;
+        top: -200px;
+    }
+
+    #toast-icon {
+        width: 88px;
+        height: 88px;
+        margin: 5px 10px;
+    }
+
+    #toast-text {
+        font-size: 28px;
+    }
+}
+
+@media only screen and ((max-width: 1919px) or (max-height: 1079px)) {
+    .card {
+        padding: 15px;
+    }
+
+    .card-title {
+        line-height: 20px;
+        margin: 5px;
+        margin-bottom: 10px;
+    }
+
+    .card-title-separator {
+        margin: 3px 0px;
+    }
+
+    .iconSize {
+        width: 32px;
+        height: 32px;
+    }
+
+    #overlay {
+        gap: 12.5vw;
+        font-size: 20px;
+    }
+
+    #title-text {
+        font-size: 100px;
+    }
+
+    #title-icon {
+        width: 84px;
+        height: 84px;
+        margin-right: 15px;
+    }
+
+    #connection-status {
+        padding: 15px;
+    }
+
+    #connection-error-icon {
+        margin-top: 10px;
+    }
+
+    #connection-information-loading-text {
+        margin: 10px;
+    }
+
+    #scan-to-connect {
+        margin-top: 10px;
+    }
+
+    #qr-code {
+        width: 192px;
+        height: 192px;
+        margin: 15px auto;
+        padding: 12px;
+    }
+
+    #ips {
+        margin-top: 10px;
+    }
+
+    .ip-entry-text {
+        margin-top: 4px;
+        margin-bottom: 4px;
+    }
+
+    #window-can-be-closed {
+        margin-bottom: 15px;
+        font-size: 18px;
+    }
+
+    .lds-ring {
+        width: 100px;
+        height: 100px;
+    }
+    .lds-ring div {
+        width: 84px;
+        height: 84px;
+    }
+
+    #connection-check {
+        width: 84px;
+        height: 84px;
+    }
+
+    #toast-notification {
+        padding: 12px;
+        top: -150px;
+    }
+
+    #toast-icon {
+        width: 68px;
+        height: 68px;
+    }
+
+    #toast-text {
+        font-size: 20px;
+    }
+}
+
+@media only screen and ((max-width: 1279px) or (max-height: 719px)) {
+    .card {
+        padding: 15px;
+    }
+
+    .card-title {
+        line-height: 18px;
+        margin: 5px;
+    }
+
+    .card-title-separator {
+        margin: 3px 0px;
+    }
+
+    .iconSize {
+        width: 24px;
+        height: 24px;
+    }
+
+    #overlay {
+        gap: 10vw;
+        font-size: 18px;
+    }
+
+    #title-text {
+        font-size: 80px;
+    }
+
+    #title-icon {
+        width: 64px;
+        height: 64px;
+        margin-right: 15px;
+    }
+
+    #connection-status {
+        padding: 15px;
+    }
+
+    #connection-error-icon {
+        margin-top: 10px;
+    }
+
+    #connection-information-loading-text {
+        margin: 10px;
+    }
+
+    #scan-to-connect {
+        margin-top: 10px;
+    }
+
+    #qr-code {
+        width: 128px;
+        height: 128px;
+        margin: 15px auto;
+        padding: 8px;
+    }
+
+    #ips {
+        margin-top: 10px;
+    }
+
+    .ip-entry-text {
+        margin-top: 1.5px;
+        margin-bottom: 1.5px;
+    }
+
+    #window-can-be-closed {
+        margin-bottom: 10px;
+        font-size: 16px;
+    }
+
+    .lds-ring {
+        width: 80px;
+        height: 80px;
+    }
+    .lds-ring div {
+        width: 64px;
+        height: 64px;
+    }
+
+    #connection-check {
+        width: 64px;
+        height: 64px;
+    }
+
+    #toast-notification {
+        padding: 8px;
+        top: -125px;
+    }
+
+    #toast-icon {
+        width: 48px;
+        height: 48px;
+    }
+
+    #toast-text {
+        font-size: 18px;
     }
 }

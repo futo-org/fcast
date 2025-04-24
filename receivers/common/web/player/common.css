@@ -405,11 +405,10 @@ body {
     position: absolute;
     bottom: 80px;
     right: 60px;
-    height: calc(55vh);
     max-height: 368px;
 
     background-color: #141414;
-    padding: 12px;
+    padding: 8px;
     border-radius: 10px;
     border: 1px solid #2E2E2E;
     scrollbar-width: thin;
@@ -427,11 +426,13 @@ body {
     font-weight: 700;
     line-height: 24px;
     margin: 10px;
+    user-select: none;
 }
 
 .speedMenuEntry {
     display: flex;
-    padding: 10px 15px;
+    padding: 5px 10px;
+    user-select: none;
 }
 
 .speedMenuEntry:hover {

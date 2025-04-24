@@ -3,12 +3,16 @@ import QRCode from 'modules/qrcode';
 import { onQRCodeRendered } from 'src/main/Renderer';
 import { toast, ToastIcon } from '../components/Toast';
 
-const connectionStatusText = document.getElementById("connection-status-text");
-const connectionStatusSpinner = document.getElementById("connection-spinner");
-const connectionStatusCheck = document.getElementById("connection-check");
+const connectionStatusText = document.getElementById('connection-status-text');
+const connectionStatusSpinner = document.getElementById('connection-spinner');
+const connectionStatusCheck = document.getElementById('connection-check');
 let connections = [];
 let renderedConnectionInfo = false;
 let renderedAddresses = null;
+let qrCodeUrl = null;
+let qrWidth = null;
+
+window.addEventListener('resize', (event) => calculateQRCodeWidth());
 
 // Window might be re-created while devices are still connected
 window.targetAPI.onPing((_event, value: any) => {
@@ -33,17 +37,17 @@ window.targetAPI.onDisconnect((_event, value: any) => {
             connectionStatusText.textContent = 'Waiting for a connection';
             connectionStatusSpinner.style.display = 'inline-block';
             connectionStatusCheck.style.display = 'none';
-            toast("Device disconnected", ToastIcon.INFO);
+            toast('Device disconnected', ToastIcon.INFO);
         }
         else {
             connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
-            toast("A device has disconnected", ToastIcon.INFO);
+            toast('A device has disconnected', ToastIcon.INFO);
         }
     }
 });
 
 if(window.targetAPI.getDeviceInfo()) {
-    console.log("device info already present");
+    console.log('device info already present');
     renderIPsAndQRCode();
 }
 
@@ -56,7 +60,7 @@ function onConnect(value: any) {
 
 function renderIPsAndQRCode() {
     const value = window.targetAPI.getDeviceInfo();
-    console.log("device info", value);
+    console.log(`Network Interface Info: ${value}`);
 
     const addresses = [];
     value.interfaces.forEach((e) => addresses.push(e.address));
@@ -64,14 +68,14 @@ function renderIPsAndQRCode() {
     const connError = document.getElementById('connection-error');
 
     if (renderedAddresses !== null && addresses.length > 0) {
-        toast("Network connections has changed, please reconnect sender devices to receiver if you experience issues", ToastIcon.WARNING);
+        toast('Network connections has changed, please reconnect sender devices to receiver if you experience issues', ToastIcon.WARNING);
     }
     else if (addresses.length === 0) {
         connInfo.style.display = 'none';
         connError.style.display = 'block';
 
         if (renderedAddresses !== null) {
-            toast("Lost network connection, please reconnect to a network", ToastIcon.ERROR);
+            toast('Lost network connection, please reconnect to a network', ToastIcon.ERROR);
         }
 
         renderedAddresses = []
@@ -102,36 +106,15 @@ function renderIPsAndQRCode() {
     const json = JSON.stringify(fcastConfig);
     let base64 = btoa(json);
     base64 = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const url = `fcast://r/${base64}`;
-    console.log("qr", {json, url, base64});
+    qrCodeUrl = `fcast://r/${base64}`;
+    console.log('QR Code:', {json, qrCodeUrl, base64});
 
-    const qrCodeElement = document.getElementById('qr-code');
-    QRCode.toCanvas(qrCodeElement, url, {
-        margin: 0,
-        width: 256,
-        color: {
-            dark : "#000000",
-            light : "#ffffff",
-        },
-        errorCorrectionLevel : "M",
-    },
-    (err) => {
-        if (err) {
-            console.error(`Error rendering QR Code: ${err}`);
-            toast(`Error rendering QR Code: ${err}`, ToastIcon.ERROR);
-        }
-        else {
-            console.log(`Rendered QR Code`);
-        }
-    });
-
+    calculateQRCodeWidth();
     if (!renderedConnectionInfo) {
         const connInfoLoading = document.getElementById('connection-information-loading');
         connInfoLoading.style.display = 'none';
         connInfo.style.display = 'block';
     }
-
-    onQRCodeRendered();
 }
 
 function renderIPs(interfaces: any) {
@@ -148,7 +131,7 @@ function renderIPs(interfaces: any) {
         ipsNameColumn.innerHTML = '';
 
         for (const iface of interfaces) {
-            const ipIcon = document.createElement("div");
+            const ipIcon = document.createElement('div');
             let icon = 'iconSize ';
             if (iface.type === 'wired') {
                 icon += 'ip-wired-icon';
@@ -172,15 +155,63 @@ function renderIPs(interfaces: any) {
             ipIcon.className = icon;
             ipsIconColumn.append(ipIcon);
 
-            const ipText = document.createElement("div");
+            const ipText = document.createElement('div');
             ipText.className = 'ip-entry-text';
             ipText.textContent = iface.address;
             ipsTextColumn.append(ipText);
 
-            const ipName = document.createElement("div");
+            const ipName = document.createElement('div');
             ipName.className = 'ip-entry-text';
             ipName.textContent = iface.name;
             ipsNameColumn.append(ipName);
         }
     }
+}
+
+function calculateQRCodeWidth() {
+    if (qrCodeUrl !== null) {
+        let changedQrWidth = null;
+
+        if ((window.innerWidth >= 2560) || (window.innerHeight >= 1440)) {
+            changedQrWidth = 384;
+        }
+        if ((window.innerWidth >= 1920 && window.innerWidth < 2560) || (window.innerHeight >= 1080 && window.innerHeight < 1440)) {
+            changedQrWidth = 256;
+        }
+        if ((window.innerWidth >= 1280 && window.innerWidth < 1920) || (window.innerHeight >= 720 && window.innerHeight < 1080)) {
+            changedQrWidth = 192;
+        }
+        if (window.innerWidth < 1280 || window.innerHeight < 720) {
+            changedQrWidth = 128;
+        }
+
+        if (qrWidth !== changedQrWidth) {
+            qrWidth = changedQrWidth;
+            renderQRCode(qrCodeUrl);
+        }
+    }
+}
+
+function renderQRCode(url: string) {
+    const qrCodeElement = document.getElementById('qr-code');
+    QRCode.toCanvas(qrCodeElement, url, {
+        margin: 0,
+        width: qrWidth,
+        color: {
+            dark : '#000000',
+            light : '#ffffff',
+        },
+        errorCorrectionLevel : 'M',
+    },
+    (err) => {
+        if (err) {
+            console.error(`Error rendering QR Code: ${err}`);
+            toast(`Error rendering QR Code: ${err}`, ToastIcon.ERROR);
+        }
+        else {
+            console.log(`Rendered QR Code`);
+        }
+    });
+
+    onQRCodeRendered();
 }

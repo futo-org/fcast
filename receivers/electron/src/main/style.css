@@ -2,12 +2,10 @@
     display: inline-block;
     align-items: center;
     justify-content: center;
-    padding: 16px;
     gap: 6px;
-    flex: 1 0 0;
+    flex: 1 0 30%;
     border-radius: 6px;
 
-    margin: 20px 10px;
     cursor: pointer;
     user-select: none;
 }
@@ -36,13 +34,12 @@
     background: #3E3E3E;
 }
 
-#update-text {
-    margin-top: 20px;
-    width: 320px;
-}
-
 #update-view {
     display: none;
+}
+
+#update-button {
+    margin-left: -4%;
 }
 
 #restart-button {
@@ -52,12 +49,12 @@
 #update-button-container {
     display: flex;
     flex-direction: row;
+    margin: auto;
 }
 
 #progress-bar {
     display: none;
 
-    width: 320px;
     height: 40px;
     margin-top: 20px;
     border-radius: 50px;
@@ -80,5 +77,55 @@
     }
     to {
         background-position: 0 0;
+    }
+}
+
+/* Display scaling (Minimum supported resolution is 960x540) */
+@media only screen and ((min-width: 2560px) or (min-height: 1440px)) {
+    .button {
+        padding: 12px 35px;
+        margin: 20px;
+        margin-top: 25px;
+        margin-bottom: 15px;
+    }
+
+    #update-text {
+        margin-top: 20px;
+    }
+}
+
+@media only screen and ((max-width: 2559px) or (max-height: 1439px)) {
+    .button {
+        padding: 12px 30px;
+        margin: 20px 15px;
+        margin-bottom: 10px;
+    }
+
+    #update-text {
+        margin-top: 20px;
+    }
+}
+
+@media only screen and ((max-width: 1919px) or (max-height: 1079px)) {
+    .button {
+        padding: 8px 25px;
+        margin: 20px 10px;
+        margin-bottom: 10px;
+    }
+
+    #update-text {
+        margin-top: 10px;
+    }
+}
+
+@media only screen and ((max-width: 1279px) or (max-height: 719px)) {
+    .button {
+        padding: 8px 20px;
+        margin: 15px 10px;
+        margin-bottom: 5px;
+    }
+
+    #update-text {
+        margin-top: 10px;
     }
 }
