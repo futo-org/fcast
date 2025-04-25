@@ -47,7 +47,7 @@ export class WebSocketListenerService {
     }
 
     disconnect(connectionId: string) {
-        this.sessionMap[connectionId].close();
+        this.sessionMap[connectionId]?.close();
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {

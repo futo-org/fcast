@@ -48,7 +48,7 @@ export class TcpListenerService {
     }
 
     disconnect(connectionId: string) {
-        this.sessionMap[connectionId].socket.destroy();
+        this.sessionMap[connectionId]?.socket.destroy();
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
