@@ -1,12 +1,12 @@
 
 import QRCode from 'modules/qrcode';
+import * as connectionMonitor from '../ConnectionMonitor';
 import { onQRCodeRendered } from 'src/main/Renderer';
 import { toast, ToastIcon } from '../components/Toast';
 
 const connectionStatusText = document.getElementById('connection-status-text');
 const connectionStatusSpinner = document.getElementById('connection-spinner');
 const connectionStatusCheck = document.getElementById('connection-check');
-let connections = [];
 let renderedConnectionInfo = false;
 let renderedAddresses = null;
 let qrCodeUrl = null;
@@ -14,25 +14,15 @@ let qrWidth = null;
 
 window.addEventListener('resize', (event) => calculateQRCodeWidth());
 
-// Window might be re-created while devices are still connected
-window.targetAPI.onPing((_event, value: any) => {
-    if (value && !connections.includes(value.id)) {
-        connections.push(value.id);
-        onConnect(value.id);
-    }
-});
-
-window.targetAPI.onDeviceInfo(renderIPsAndQRCode);
-window.targetAPI.onConnect((_event, value: any) => {
-    connections.push(value.id);
-    onConnect(value);
-});
-window.targetAPI.onDisconnect((_event, value: any) => {
-    console.log(`Device disconnected: ${JSON.stringify(value)}`);
-    const index = connections.indexOf(value.id);
-    if (index != -1) {
-        connections.splice(index, 1);
-
+connectionMonitor.setUiUpdateCallbacks({
+    onConnect: (connections: string[], connectionInfo: any) => {
+        console.log(`Device connected: ${JSON.stringify(connectionInfo)}`);
+        connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
+        connectionStatusSpinner.style.display = 'none';
+        connectionStatusCheck.style.display = 'inline-block';
+    },
+    onDisconnect: (connections: string[], connectionInfo: any) => {
+        console.log(`Device disconnected: ${JSON.stringify(connectionInfo)}`);
         if (connections.length === 0) {
             connectionStatusText.textContent = 'Waiting for a connection';
             connectionStatusSpinner.style.display = 'inline-block';
@@ -43,19 +33,14 @@ window.targetAPI.onDisconnect((_event, value: any) => {
             connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
             toast('A device has disconnected', ToastIcon.INFO);
         }
-    }
+    },
 });
+
+window.targetAPI.onDeviceInfo(renderIPsAndQRCode);
 
 if(window.targetAPI.getDeviceInfo()) {
     console.log('device info already present');
     renderIPsAndQRCode();
-}
-
-function onConnect(value: any) {
-    console.log(`Device connected: ${JSON.stringify(value)}`);
-    connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
-    connectionStatusSpinner.style.display = 'none';
-    connectionStatusCheck.style.display = 'inline-block';
 }
 
 function renderIPsAndQRCode() {

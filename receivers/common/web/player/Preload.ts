@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, Opcode } from 'common/Packets';
 export {};
 
 declare global {
@@ -28,8 +28,11 @@ if (TARGET === 'electron') {
         onPause: (callback: any) => electronAPI.ipcRenderer.on("pause", callback),
         onResume: (callback: any) => electronAPI.ipcRenderer.on("resume", callback),
         onSeek: (callback: any) => electronAPI.ipcRenderer.on("seek", callback),
-        onSetVolume: (callback: any) => electronAPI.ipcRenderer.on("setvolume", callback),
-        onSetSpeed: (callback: any) => electronAPI.ipcRenderer.on("setspeed", callback)
+        sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
+        disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
+        onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
+        onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
+        onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
     });
 
 // @ts-ignore

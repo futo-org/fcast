@@ -188,9 +188,18 @@ export class Main {
             l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
 
-            l.emitter.on('connect', (message) => Main.mainWindow?.webContents?.send('connect', message));
-            l.emitter.on('disconnect', (message) => Main.mainWindow?.webContents?.send('disconnect', message));
-            l.emitter.on('ping', (message) => Main.mainWindow?.webContents?.send('ping', message));
+            l.emitter.on('connect', (message) => {
+                Main.mainWindow?.webContents?.send('connect', message);
+                Main.playerWindow?.webContents?.send('connect', message);
+            });
+            l.emitter.on('disconnect', (message) => {
+                Main.mainWindow?.webContents?.send('disconnect', message);
+                Main.playerWindow?.webContents?.send('disconnect', message);
+            });
+            l.emitter.on('ping', (message) => {
+                Main.mainWindow?.webContents?.send('ping', message);
+                Main.playerWindow?.webContents?.send('ping', message);
+            });
             l.start();
 
             ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
@@ -203,6 +212,15 @@ export class Main {
 
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
+            });
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ipcMain.on('send-session-message', (event: IpcMainEvent, value: any) => {
+                l.send(value.opcode, value.message);
+            });
+
+            ipcMain.on('disconnect-device', (event: IpcMainEvent, value: string) => {
+                l.disconnect(value);
             });
         });
 

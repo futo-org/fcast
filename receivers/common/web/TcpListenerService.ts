@@ -7,12 +7,11 @@ import { v4 as uuidv4 } from 'modules/uuid';
 
 export class TcpListenerService {
     public static PORT = 46899;
-    private static TIMEOUT = 2500;
-
     emitter = new EventEmitter();
 
     private server: net.Server;
     private sessions: FCastSession[] = [];
+    private sessionMap = {};
 
     start() {
         if (this.server != null) {
@@ -48,6 +47,10 @@ export class TcpListenerService {
         });
     }
 
+    disconnect(connectionId: string) {
+        this.sessionMap[connectionId].socket.destroy();
+    }
+
     private async handleServerError(err: NodeJS.ErrnoException) {
         errorHandler(err);
     }
@@ -60,22 +63,7 @@ export class TcpListenerService {
         this.sessions.push(session);
 
         const connectionId = uuidv4();
-        let heartbeatRetries = 0;
-        socket.setTimeout(TcpListenerService.TIMEOUT);
-        socket.on('timeout', () => {
-            try {
-                if (heartbeatRetries > 3) {
-                    Main.logger.warn(`Could not ping device ${socket.remoteAddress}:${socket.remotePort}. Disconnecting...`);
-                    socket.destroy();
-                }
-
-                heartbeatRetries += 1;
-                session.send(Opcode.Ping);
-            } catch (e) {
-                Main.logger.warn(`Error while pinging sender device ${socket.remoteAddress}:${socket.remotePort}.`, e);
-                socket.destroy();
-            }
-        });
+        this.sessionMap[connectionId] = session;
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
@@ -84,7 +72,6 @@ export class TcpListenerService {
 
         socket.on("data", buffer => {
             try {
-                heartbeatRetries = 0;
                 session.processBytes(buffer);
             } catch (e) {
                 Main.logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);

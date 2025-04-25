@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { Opcode } from 'common/Packets';
 
 declare global {
     interface Window {
@@ -22,11 +23,13 @@ if (TARGET === 'electron') {
     })
 
     electronAPI.contextBridge.exposeInMainWorld('targetAPI', {
-        onDeviceInfo: (callback: any) => electronAPI.ipcRenderer.on("device-info", callback),
-        onConnect: (callback: any) => electronAPI.ipcRenderer.on("connect", callback),
-        onDisconnect: (callback: any) => electronAPI.ipcRenderer.on("disconnect", callback),
-        onPing: (callback: any) => electronAPI.ipcRenderer.on("ping", callback),
+        onDeviceInfo: (callback: any) => electronAPI.ipcRenderer.on('device-info', callback),
         getDeviceInfo: () => preloadData.deviceInfo,
+        sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
+        disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
+        onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
+        onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
+        onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
     });
 
 // @ts-ignore

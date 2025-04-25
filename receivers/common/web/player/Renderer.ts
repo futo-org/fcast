@@ -2,6 +2,8 @@ import dashjs from 'modules/dashjs';
 import Hls, { LevelLoadedData } from 'modules/hls.js';
 import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { Player, PlayerType } from './Player';
+import * as connectionMonitor from '../ConnectionMonitor';
+import { toast, ToastIcon } from '../components/Toast';
 import {
     targetPlayerCtrlStateUpdate,
     targetKeyDownEventListener,
@@ -329,6 +331,17 @@ function onPlay(_event, value: PlayMessage) {
     window.targetAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
     window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
 };
+
+connectionMonitor.setUiUpdateCallbacks({
+    onConnect: (connections: string[], connectionInfo: any) => {
+        console.log(`Device connected: ${JSON.stringify(connectionInfo)}`);
+        toast('Device connected', ToastIcon.INFO);
+    },
+    onDisconnect: (connections: string[], connectionInfo: any) => {
+        console.log(`Device disconnected: ${JSON.stringify(connectionInfo)}`);
+        toast('Device disconnected. If you experience playback issues, please reconnect.', ToastIcon.INFO);
+    },
+});
 
 window.targetAPI.onPlay(onPlay);
 

@@ -293,6 +293,7 @@ body, html {
     position: relative;
     top: -200px;
     max-width: 70%;
+    width: fit-content;
 
     background: #F0F0F0;
     border: 3px solid rgba(0, 0, 0, 0.08);

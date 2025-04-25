@@ -12,6 +12,7 @@ export class WebSocketListenerService {
 
     private server: WebSocketServer;
     private sessions: FCastSession[] = [];
+    private sessionMap = {};
 
     start() {
         if (this.server != null) {
@@ -45,6 +46,10 @@ export class WebSocketListenerService {
         });
     }
 
+    disconnect(connectionId: string) {
+        this.sessionMap[connectionId].close();
+    }
+
     private async handleServerError(err: NodeJS.ErrnoException) {
         errorHandler(err);
     }
@@ -54,6 +59,8 @@ export class WebSocketListenerService {
 
         const session = new FCastSession(socket, (data) => socket.send(data));
         const connectionId = uuidv4();
+        this.sessionMap[connectionId] = session;
+
         session.bindEvents(this.emitter);
         this.sessions.push(session);
 
