@@ -89,6 +89,10 @@
         margin-bottom: 15px;
     }
 
+    #update-view {
+        margin: 0px 80px;
+    }
+
     #update-text {
         margin-top: 20px;
     }
@@ -101,6 +105,10 @@
         margin-bottom: 10px;
     }
 
+    #update-view {
+        margin: 0px 40px;
+    }
+
     #update-text {
         margin-top: 20px;
     }
@@ -111,6 +119,10 @@
         padding: 8px 25px;
         margin: 20px 10px;
         margin-bottom: 10px;
+    }
+
+    #update-view {
+        margin: 0px 20px;
     }
 
     #update-text {
