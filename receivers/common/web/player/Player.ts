@@ -8,13 +8,15 @@ export enum PlayerType {
 }
 
 export class Player {
-    private player: dashjs.MediaPlayerClass | HTMLVideoElement
-    private hlsPlayer: Hls | undefined
-    public playerType: PlayerType
+    private player: dashjs.MediaPlayerClass | HTMLVideoElement;
+    private hlsPlayer: Hls | undefined;
+    private source: string;
+    public playerType: PlayerType;
 
-    constructor(playerType: PlayerType, player: dashjs.MediaPlayerClass | HTMLVideoElement, hlsPlayer?: Hls) {
+    constructor(playerType: PlayerType, player: dashjs.MediaPlayerClass | HTMLVideoElement, source: string, hlsPlayer?: Hls) {
         this.playerType = playerType;
         this.player = player;
+        this.source = source;
         this.hlsPlayer = playerType === PlayerType.Hls ? hlsPlayer : null;
     }
 
@@ -162,12 +164,7 @@ export class Player {
     }
 
     getSource(): string {
-        if (this.playerType === PlayerType.Dash) {
-            const videoPlayer = this.player as dashjs.MediaPlayerClass;
-            return videoPlayer.getSource() instanceof String ? videoPlayer.getSource() as string : JSON.stringify(videoPlayer.getSource());
-        } else { // HLS, HTML
-            return (this.player as HTMLVideoElement).src;
-        }
+        return this.source;
     }
 
     getBufferLength(): number {

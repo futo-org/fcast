@@ -122,22 +122,10 @@ function onPlay(_event, value: PlayMessage) {
     const currentVolume = player ? player.getVolume() : null;
     const currentPlaybackRate = player ? player.getPlaybackRate() : null;
 
-    playerPrevTime = 0;
-    lastPlayerUpdateGenerationTime = 0;
-    isLive = false;
-    isLivePosition = false;
-    captionsBaseHeight = captionsBaseHeightExpanded;
-
     if (player) {
-        if (player.getSource() === value.url) {
+        if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
             if (value.time) {
-                if (Math.abs(value.time - player.getCurrentTime()) < 5000) {
-                    console.warn(`Skipped changing video URL because URL and time is (nearly) unchanged: ${value.url}, ${player.getSource()}, ${formatDuration(value.time)}, ${formatDuration(player.getCurrentTime())}`);
-                } else {
-                    console.info(`Skipped changing video URL because URL is the same, but time was changed, seeking instead: ${value.url}, ${player.getSource()}, ${formatDuration(value.time)}, ${formatDuration(player.getCurrentTime())}`);
-
-                    player.setCurrentTime(value.time);
-                }
+                console.info('Skipped changing video URL because URL is the same. Discarding time and using current receiver time instead');
             }
             return;
         }
@@ -145,11 +133,18 @@ function onPlay(_event, value: PlayMessage) {
         player.destroy();
     }
 
+    playerPrevTime = 0;
+    lastPlayerUpdateGenerationTime = 0;
+    isLive = false;
+    isLivePosition = false;
+    captionsBaseHeight = captionsBaseHeightExpanded;
+
     if ((value.url || value.content) && value.container && videoElement) {
         if (value.container === 'application/dash+xml') {
             console.log("Loading dash player");
             const dashPlayer = dashjs.MediaPlayer().create();
-            player = new Player(PlayerType.Dash, dashPlayer);
+            const source = value.content ? value.content : value.url;
+            player = new Player(PlayerType.Dash, dashPlayer, source);
 
             dashPlayer.extend("RequestModifier", () => {
                 return {
@@ -272,7 +267,7 @@ function onPlay(_event, value: PlayMessage) {
                 }
             });
 
-            player = new Player(PlayerType.Hls, videoElement, hlsPlayer);
+            player = new Player(PlayerType.Hls, videoElement, value.url, hlsPlayer);
 
             // value.url = "https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_dv_atmos/main.m3u8?ref=developerinsider.co";
             hlsPlayer.loadSource(value.url);
@@ -281,7 +276,7 @@ function onPlay(_event, value: PlayMessage) {
 
         } else {
             console.log("Loading html player");
-            player = new Player(PlayerType.Html, videoElement);
+            player = new Player(PlayerType.Html, videoElement, value.url);
 
             videoElement.src = value.url;
             videoElement.load();
