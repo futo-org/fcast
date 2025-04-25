@@ -19,6 +19,9 @@ buildMac:
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
     - tart-installed
+  variables:
+    FCAST_CHANNEL: "stable"
+    FCAST_CHANNEL_VERSION: "1"
   before_script:
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
     - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
@@ -55,6 +58,9 @@ buildWindowsAndLinux:
   image: gitlab.futo.org:5050/videostreaming/fcast/receiver-electron-dev:latest
   tags:
     - fcast-instance-runner
+  variables:
+    FCAST_CHANNEL: "stable"
+    FCAST_CHANNEL_VERSION: "1"
   before_script:
     - cd receivers/electron
   script:
