@@ -16,7 +16,7 @@ window.addEventListener('resize', (event) => calculateQRCodeWidth());
 
 // Window might be re-created while devices are still connected
 window.targetAPI.onPing((_event, value: any) => {
-    if (value && connections.length === 0) {
+    if (value && !connections.includes(value.id)) {
         connections.push(value.id);
         onConnect(value.id);
     }

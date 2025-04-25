@@ -53,7 +53,7 @@ export class TcpListenerService {
     }
 
     private handleConnection(socket: net.Socket) {
-        Main.logger.info(`new connection from ${socket.remoteAddress}:${socket.remotePort}`);
+        Main.logger.info(`New connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);
@@ -97,11 +97,16 @@ export class TcpListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
-            this.emitter.emit('disconnect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+            if (!this.sessions.some(e => e.socket.remoteAddress === socket.remoteAddress)) {
+                this.emitter.emit('disconnect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+            }
             this.emitter.removeListener('ping', pingListener);
         });
 
-        this.emitter.emit('connect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+        // Sometimes the sender may reconnect under a different port, so suppress connect/disconnect event emission
+        if (!this.sessions.some(e => e.socket.remoteAddress === socket.remoteAddress)) {
+            this.emitter.emit('connect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
+        }
         const pingListener = (message: any) => {
             if (!message) {
                 this.emitter.emit('ping', { id: connectionId });
