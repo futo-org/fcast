@@ -46,9 +46,15 @@ if(window.targetAPI.getDeviceInfo()) {
 function renderIPsAndQRCode() {
     const value = window.targetAPI.getDeviceInfo();
     console.log(`Network Interface Info: ${value}`);
+    renderIPs(value.interfaces);
 
     const addresses = [];
     value.interfaces.forEach((e) => addresses.push(e.address));
+    if (JSON.stringify(addresses) === JSON.stringify(renderedAddresses)) {
+        return;
+    }
+    renderedAddresses = addresses;
+
     const connInfo = document.getElementById('connection-information');
     const connError = document.getElementById('connection-error');
 
@@ -71,13 +77,6 @@ function renderIPsAndQRCode() {
         connInfo.style.display = 'block';
         connError.style.display = 'none';
     }
-
-    renderIPs(value.interfaces);
-
-    if (JSON.stringify(addresses) === JSON.stringify(renderedAddresses)) {
-        return;
-    }
-    renderedAddresses = addresses;
 
     const fcastConfig = {
         name: value.name,
