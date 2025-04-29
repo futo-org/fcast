@@ -50,6 +50,10 @@ export class TcpListenerService {
         this.sessionMap[sessionId]?.socket.destroy();
     }
 
+    public getSessions(): string[] {
+        return Object.keys(this.sessionMap);
+    }
+
     private async handleServerError(err: NodeJS.ErrnoException) {
         errorHandler(err);
     }

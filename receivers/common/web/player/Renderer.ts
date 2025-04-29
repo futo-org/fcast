@@ -333,10 +333,12 @@ function onPlay(_event, value: PlayMessage) {
 };
 
 connectionMonitor.setUiUpdateCallbacks({
-    onConnect: (connections: string[], connectionInfo: any) => {
-        toast('Device connected', ToastIcon.INFO);
+    onConnect: (connections: string[], initialUpdate: boolean = false) => {
+        if (!initialUpdate) {
+            toast('Device connected', ToastIcon.INFO);
+        }
     },
-    onDisconnect: (connections: string[], connectionInfo: any) => {
+    onDisconnect: (connections: string[]) => {
         toast('Device disconnected. If you experience playback issues, please reconnect.', ToastIcon.INFO);
     },
 });

@@ -15,12 +15,12 @@ let qrWidth = null;
 window.addEventListener('resize', (event) => calculateQRCodeWidth());
 
 connectionMonitor.setUiUpdateCallbacks({
-    onConnect: (connections: string[], connectionInfo: any) => {
+    onConnect: (connections: string[], initialUpdate: boolean = false) => {
         connectionStatusText.textContent = connections.length > 1 ? 'Multiple devices connected:\r\n Ready to cast' : 'Connected: Ready to cast';
         connectionStatusSpinner.style.display = 'none';
         connectionStatusCheck.style.display = 'inline-block';
     },
-    onDisconnect: (connections: string[], connectionInfo: any) => {
+    onDisconnect: (connections: string[]) => {
         if (connections.length === 0) {
             connectionStatusText.textContent = 'Waiting for a connection';
             connectionStatusSpinner.style.display = 'inline-block';

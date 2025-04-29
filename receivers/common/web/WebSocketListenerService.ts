@@ -49,6 +49,10 @@ export class WebSocketListenerService {
         this.sessionMap[sessionId]?.close();
     }
 
+    public getSessions(): string[] {
+        return Object.keys(this.sessionMap);
+    }
+
     private async handleServerError(err: NodeJS.ErrnoException) {
         errorHandler(err);
     }

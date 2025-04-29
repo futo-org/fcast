@@ -1,27 +1,27 @@
 import { Opcode } from 'common/Packets';
 
 const connectionPingTimeout = 2500;
-const connections = [];
 const heartbeatRetries = {};
+let connections = [];
 let uiUpdateCallbacks = {
     onConnect: null,
     onDisconnect: null,
 }
 
+// Window might be re-created while devices are still connected
 export function setUiUpdateCallbacks(callbacks: any) {
     uiUpdateCallbacks = callbacks;
+
+    window.targetAPI.getSessions().then((sessions: string[]) => {
+        connections = sessions;
+        if (connections.length > 0) {
+            uiUpdateCallbacks.onConnect(connections, true);
+        }
+    });
 }
 
-// Window might be re-created while devices are still connected
 function onPingPong(value: any) {
-    if (value) {
-        heartbeatRetries[value.sessionId] = 0;
-
-        if (!connections.includes(value.sessionId)) {
-            connections.push(value.sessionId);
-            uiUpdateCallbacks.onConnect(connections, value.sessionId);
-        }
-    }
+    heartbeatRetries[value.sessionId] = 0;
 }
 window.targetAPI.onPing((_event, value: any) => onPingPong(value));
 window.targetAPI.onPong((_event, value: any) => onPingPong(value));
@@ -29,7 +29,7 @@ window.targetAPI.onPong((_event, value: any) => onPingPong(value));
 window.targetAPI.onConnect((_event, value: any) => {
     console.log(`Device connected: ${JSON.stringify(value)}`);
     connections.push(value.sessionId);
-    uiUpdateCallbacks.onConnect(connections, value);
+    uiUpdateCallbacks.onConnect(connections);
 });
 window.targetAPI.onDisconnect((_event, value: any) => {
     console.log(`Device disconnected: ${JSON.stringify(value)}`);

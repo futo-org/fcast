@@ -28,6 +28,7 @@ if (TARGET === 'electron') {
         onPause: (callback: any) => electronAPI.ipcRenderer.on("pause", callback),
         onResume: (callback: any) => electronAPI.ipcRenderer.on("resume", callback),
         onSeek: (callback: any) => electronAPI.ipcRenderer.on("seek", callback),
+        getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
         sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
         disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),

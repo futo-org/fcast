@@ -25,6 +25,7 @@ if (TARGET === 'electron') {
     electronAPI.contextBridge.exposeInMainWorld('targetAPI', {
         onDeviceInfo: (callback: any) => electronAPI.ipcRenderer.on('device-info', callback),
         getDeviceInfo: () => preloadData.deviceInfo,
+        getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
         sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
         disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),

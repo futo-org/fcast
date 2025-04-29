@@ -281,6 +281,10 @@ export class Main {
             window.setFullScreen(false);
         });
 
+        ipcMain.handle('get-sessions', () => {
+            return [].concat(Main.tcpListenerService.getSessions(), Main.webSocketListenerService.getSessions());
+        });
+
         if (Main.shouldOpenMainWindow) {
             Main.openMainWindow();
         }
