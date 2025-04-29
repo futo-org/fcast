@@ -36,7 +36,7 @@ export class Main {
 
     private static async checkForUpdates(silent: boolean) {
         if (Updater.updateDownloaded) {
-            Main.mainWindow.webContents.send("download-complete");
+            Main.mainWindow?.webContents?.send("download-complete");
             return;
         }
 
@@ -44,7 +44,7 @@ export class Main {
             const updateAvailable = await Updater.checkForUpdates();
 
             if (updateAvailable) {
-                Main.mainWindow.webContents.send("update-available");
+                Main.mainWindow?.webContents?.send("update-available");
             }
             else {
                 if (!silent) {
@@ -232,7 +232,7 @@ export class Main {
             if (!Updater.isDownloading) {
                 try {
                     await Updater.downloadUpdate();
-                    Main.mainWindow.webContents.send("download-complete");
+                    Main.mainWindow?.webContents?.send("download-complete");
                 } catch (err) {
                     await dialog.showMessageBox({
                         type: 'error',
@@ -243,7 +243,7 @@ export class Main {
                     });
 
                     Main.logger.error('Failed to download update:', err);
-                    Main.mainWindow.webContents.send("download-failed");
+                    Main.mainWindow?.webContents?.send("download-failed");
                 }
             }
         });
@@ -299,7 +299,7 @@ export class Main {
             Main.checkForUpdates(true);
         }
 
-        Main.mainWindow.webContents.setWindowOpenHandler((details) => {
+        Main.mainWindow?.webContents?.setWindowOpenHandler((details) => {
             shell.openExternal(details.url);
             return { action: "deny" };
         });
@@ -339,7 +339,7 @@ export class Main {
             });
 
             ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
-                Main.mainWindow.webContents.send("device-info", { name: os.hostname(), interfaces: value });
+                Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: value });
             });
             networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
         });
@@ -449,7 +449,7 @@ export function getComputerName() {
 
 export async function errorHandler(err: NodeJS.ErrnoException) {
     Main.logger.error("Application error:", err);
-    Main.mainWindow.webContents.send("toast", { message: err, icon: ToastIcon.ERROR });
+    Main.mainWindow?.webContents?.send("toast", { message: err, icon: ToastIcon.ERROR });
 
     const restartPrompt = await dialog.showMessageBox({
         type: 'error',
