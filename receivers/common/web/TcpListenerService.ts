@@ -10,7 +10,7 @@ export class TcpListenerService {
 
     private server: net.Server;
     private sessions: FCastSession[] = [];
-    private sessionMap = {};
+    private sessionMap = new Map();
 
     start() {
         if (this.server != null) {
@@ -47,11 +47,12 @@ export class TcpListenerService {
     }
 
     disconnect(sessionId: string) {
-        this.sessionMap[sessionId]?.socket.destroy();
+        this.sessionMap.get(sessionId)?.socket.destroy();
+        this.sessionMap.delete(sessionId);
     }
 
     public getSessions(): string[] {
-        return Object.keys(this.sessionMap);
+        return [...this.sessionMap.keys()];
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
@@ -64,11 +65,11 @@ export class TcpListenerService {
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);
         this.sessions.push(session);
-        this.sessionMap[session.sessionId] = session;
+        this.sessionMap.set(session.sessionId, session);
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
-            socket.destroy();
+            this.disconnect(session.sessionId);
         });
 
         socket.on("data", buffer => {
