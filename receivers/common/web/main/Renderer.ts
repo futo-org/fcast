@@ -45,7 +45,7 @@ if(window.targetAPI.getDeviceInfo()) {
 
 function renderIPsAndQRCode() {
     const value = window.targetAPI.getDeviceInfo();
-    console.log(`Network Interface Info: ${value}`);
+    console.log(`Network Interface Info: ${JSON.stringify(value)}`);
     renderIPs(value.interfaces);
 
     const addresses = [];
@@ -53,7 +53,6 @@ function renderIPsAndQRCode() {
     if (JSON.stringify(addresses) === JSON.stringify(renderedAddresses)) {
         return;
     }
-    renderedAddresses = addresses;
 
     const connInfo = document.getElementById('connection-information');
     const connError = document.getElementById('connection-error');
@@ -78,6 +77,7 @@ function renderIPsAndQRCode() {
         connError.style.display = 'none';
     }
 
+    renderedAddresses = addresses;
     const fcastConfig = {
         name: value.name,
         addresses: addresses,
