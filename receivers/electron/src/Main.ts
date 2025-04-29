@@ -200,6 +200,10 @@ export class Main {
                 Main.mainWindow?.webContents?.send('ping', message);
                 Main.playerWindow?.webContents?.send('ping', message);
             });
+            l.emitter.on('pong', (message) => {
+                Main.mainWindow?.webContents?.send('pong', message);
+                Main.playerWindow?.webContents?.send('pong', message);
+            });
             l.start();
 
             ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {

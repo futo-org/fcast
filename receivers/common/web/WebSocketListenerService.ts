@@ -3,7 +3,6 @@ import { Opcode } from 'common/Packets';
 import { EventEmitter } from 'events';
 import { WebSocket, WebSocketServer } from 'modules/ws';
 import { Main, errorHandler } from 'src/Main';
-import { v4 as uuidv4 } from 'modules/uuid';
 
 export class WebSocketListenerService {
     public static PORT = 46898;
@@ -46,8 +45,8 @@ export class WebSocketListenerService {
         });
     }
 
-    disconnect(connectionId: string) {
-        this.sessionMap[connectionId]?.close();
+    disconnect(sessionId: string) {
+        this.sessionMap[sessionId]?.close();
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
@@ -58,11 +57,9 @@ export class WebSocketListenerService {
         Main.logger.info('New WebSocket connection');
 
         const session = new FCastSession(socket, (data) => socket.send(data));
-        const connectionId = uuidv4();
-        this.sessionMap[connectionId] = session;
-
         session.bindEvents(this.emitter);
         this.sessions.push(session);
+        this.sessionMap[session.sessionId] = session;
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error.`, err);
@@ -89,18 +86,10 @@ export class WebSocketListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
-            this.emitter.emit('disconnect', { id: connectionId, type: 'ws', data: { url: socket.url }});
-            this.emitter.removeListener('ping', pingListener);
+            this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'ws', data: { url: socket.url }});
         });
 
-        this.emitter.emit('connect', { id: connectionId, type: 'ws', data: { url: socket.url }});
-        const pingListener = (message: any) => {
-            if (!message) {
-                this.emitter.emit('ping', { id: connectionId });
-            }
-        }
-        this.emitter.prependListener('ping', pingListener);
-
+        this.emitter.emit('connect', { sessionId: session.sessionId, type: 'ws', data: { url: socket.url }});
         try {
             Main.logger.info('Sending version');
             session.send(Opcode.Version, {version: 2});

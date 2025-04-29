@@ -33,6 +33,7 @@ if (TARGET === 'electron') {
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
         onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
+        onPong: (callback: any) => electronAPI.ipcRenderer.on('pong', callback),
     });
 
 // @ts-ignore

@@ -3,7 +3,6 @@ import { FCastSession } from 'common/FCastSession';
 import { Opcode } from 'common/Packets';
 import { EventEmitter } from 'events';
 import { Main, errorHandler } from 'src/Main';
-import { v4 as uuidv4 } from 'modules/uuid';
 
 export class TcpListenerService {
     public static PORT = 46899;
@@ -47,8 +46,8 @@ export class TcpListenerService {
         });
     }
 
-    disconnect(connectionId: string) {
-        this.sessionMap[connectionId]?.socket.destroy();
+    disconnect(sessionId: string) {
+        this.sessionMap[sessionId]?.socket.destroy();
     }
 
     private async handleServerError(err: NodeJS.ErrnoException) {
@@ -61,9 +60,7 @@ export class TcpListenerService {
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);
         this.sessions.push(session);
-
-        const connectionId = uuidv4();
-        this.sessionMap[connectionId] = session;
+        this.sessionMap[session.sessionId] = session;
 
         socket.on("error", (err) => {
             Main.logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
@@ -84,23 +81,10 @@ export class TcpListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
-            if (!this.sessions.some(e => e.socket.remoteAddress === socket.remoteAddress)) {
-                this.emitter.emit('disconnect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
-            }
-            this.emitter.removeListener('ping', pingListener);
+            this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         });
 
-        // Sometimes the sender may reconnect under a different port, so suppress connect/disconnect event emission
-        if (!this.sessions.some(e => e.socket.remoteAddress === socket.remoteAddress)) {
-            this.emitter.emit('connect', { id: connectionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
-        }
-        const pingListener = (message: any) => {
-            if (!message) {
-                this.emitter.emit('ping', { id: connectionId });
-            }
-        }
-        this.emitter.prependListener('ping', pingListener);
-
+        this.emitter.emit('connect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         try {
             Main.logger.info('Sending version');
             session.send(Opcode.Version, {version: 2});

@@ -3,6 +3,7 @@ import * as log4js from "modules/log4js";
 import { EventEmitter } from 'events';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
 import { WebSocket } from 'modules/ws';
+import { v4 as uuidv4 } from 'modules/uuid';
 const logger = log4js.getLogger();
 
 enum SessionState {
@@ -16,6 +17,7 @@ const LENGTH_BYTES = 4;
 const MAXIMUM_PACKET_LENGTH = 32000;
 
 export class FCastSession {
+    public sessionId: string;
     buffer: Buffer = Buffer.alloc(MAXIMUM_PACKET_LENGTH);
     bytesRead = 0;
     packetLength = 0;
@@ -25,6 +27,7 @@ export class FCastSession {
     emitter = new EventEmitter();
 
     constructor(socket: net.Socket | WebSocket, writer: (data: Buffer) => void) {
+        this.sessionId = uuidv4();
         this.socket = socket;
         this.writer = writer;
         this.state = SessionState.WaitingForLength;
@@ -220,7 +223,7 @@ export class FCastSession {
         this.emitter.on("setvolume", (body: SetVolumeMessage) => { emitter.emit("setvolume", body) });
         this.emitter.on("setspeed", (body: SetSpeedMessage) => { emitter.emit("setspeed", body) });
         this.emitter.on("version", (body: VersionMessage) => { emitter.emit("version", body) });
-        this.emitter.on("ping", () => { emitter.emit("ping") });
-        this.emitter.on("pong", () => { emitter.emit("pong") });
+        this.emitter.on("ping", () => { emitter.emit("ping", { sessionId: this.sessionId }) });
+        this.emitter.on("pong", () => { emitter.emit("pong", { sessionId: this.sessionId }) });
     }
 }
