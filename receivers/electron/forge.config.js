@@ -137,7 +137,7 @@ module.exports = {
             'else\n' +
             '\tbin="$0.app"\n' +
             'fi\n' +
-            '"$bin" --no-sandbox $*'
+            '"$bin" --no-sandbox --password-store=basic $*'
           );
           fs.chmodSync(`./out/${APPLICATION_NAME}-${packageResults.platform}-${packageResults.arch}/${APPLICATION_NAME}`, 0o755);
           break;
