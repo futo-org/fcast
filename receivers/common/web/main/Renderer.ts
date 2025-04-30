@@ -52,6 +52,7 @@ function renderIPsAndQRCode() {
         return;
     }
 
+    const connInfoLoading = document.getElementById('connection-information-loading');
     const connInfo = document.getElementById('connection-information');
     const connError = document.getElementById('connection-error');
 
@@ -59,6 +60,7 @@ function renderIPsAndQRCode() {
         toast('Network connections has changed, please reconnect sender devices to receiver if you experience issues', ToastIcon.WARNING);
     }
     else if (addresses.length === 0) {
+        connInfoLoading.style.display = 'none';
         connInfo.style.display = 'none';
         connError.style.display = 'block';
 
@@ -93,7 +95,6 @@ function renderIPsAndQRCode() {
 
     calculateQRCodeWidth();
     if (!renderedConnectionInfo) {
-        const connInfoLoading = document.getElementById('connection-information-loading');
         connInfoLoading.style.display = 'none';
         connInfo.style.display = 'block';
     }
