@@ -285,6 +285,11 @@ export class Main {
             return [].concat(Main.tcpListenerService.getSessions(), Main.webSocketListenerService.getSessions());
         });
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
+            Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: value });
+        });
+
         if (Main.shouldOpenMainWindow) {
             Main.openMainWindow();
         }
@@ -324,27 +329,25 @@ export class Main {
             }
         });
 
+        const networkWorker = new BrowserWindow({
+            show: true,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false,
+                preload: path.join(__dirname, 'main/networkWorker.js')
+            }
+        });
+
         Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
+            networkWorker.close();
         });
 
         Main.mainWindow.maximize();
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
-            const networkWorker = new BrowserWindow({
-                show: false,
-                webPreferences: {
-                    nodeIntegration: true,
-                    contextIsolation: false,
-                    preload: path.join(__dirname, 'main/networkWorker.js')
-                }
-            });
-
-            ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
-                Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: value });
-            });
             networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
         });
     }
