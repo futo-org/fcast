@@ -30,7 +30,7 @@ function networkStateChangeListener(forceUpdate: boolean) {
                         });
 
                         if (!isWireless) {
-                            interfaces.push({ type: 'wired', name: iface.ifaceName, address: iface.ip4 });
+                            interfaces.push({ type: 'wired', name: iface.iface, address: iface.ip4 });
                         }
                     }
                 }
