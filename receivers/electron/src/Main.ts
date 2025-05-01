@@ -341,7 +341,10 @@ export class Main {
         Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
-            networkWorker.close();
+
+            if (!networkWorker.isDestoryed()) {
+                networkWorker.close();
+            }
         });
 
         Main.mainWindow.maximize();

@@ -28,6 +28,8 @@ if (TARGET === 'electron') {
         onPause: (callback: any) => electronAPI.ipcRenderer.on("pause", callback),
         onResume: (callback: any) => electronAPI.ipcRenderer.on("resume", callback),
         onSeek: (callback: any) => electronAPI.ipcRenderer.on("seek", callback),
+        onSetVolume: (callback: any) => electronAPI.ipcRenderer.on("setvolume", callback),
+        onSetSpeed: (callback: any) => electronAPI.ipcRenderer.on("setspeed", callback),
         getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
         sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
         disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
@@ -61,7 +63,7 @@ if (TARGET === 'electron') {
         onResume: (callback: any) => { preloadData.onResumeCb = callback; },
         onSeek: (callback: any) => { preloadData.onSeekCb = callback; },
         onSetVolume: (callback: any) => { preloadData.onSetVolumeCb = callback; },
-        onSetSpeed: (callback: any) => { preloadData.onSetSpeedCb = callback; }
+        onSetSpeed: (callback: any) => { preloadData.onSetSpeedCb = callback; },
     };
 } else {
     // @ts-ignore
