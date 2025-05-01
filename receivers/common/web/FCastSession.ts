@@ -35,7 +35,7 @@ export class FCastSession {
 
     send(opcode: number, message = null) {
         const json = message ? JSON.stringify(message) : null;
-        logger.info(`send (opcode: ${opcode}, body: ${json})`);
+        logger.info(`send: (session: ${this.sessionId}, opcode: ${opcode}, body: ${json})`);
 
         let data: Uint8Array;
         if (json) {
@@ -164,7 +164,7 @@ export class FCastSession {
     }
 
     private handlePacket(opcode: number, body: string | undefined) {
-        logger.info(`handlePacket (opcode: ${opcode}, body: ${body})`);
+        logger.info(`handlePacket: (session: ${this.sessionId}, opcode: ${opcode}, body: ${body})`);
 
         try {
             switch (opcode) {
