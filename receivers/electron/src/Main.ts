@@ -24,6 +24,8 @@ export class Main {
     static discoveryService: DiscoveryService;
     static tray: Tray;
 
+    private static cachedInterfaces = null;
+
     private static toggleMainWindow() {
         if (Main.mainWindow) {
             Main.mainWindow.close();
@@ -286,6 +288,7 @@ export class Main {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
+            Main.cachedInterfaces = value;
             Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: value });
         });
 
@@ -350,6 +353,10 @@ export class Main {
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
+            if (Main.cachedInterfaces) {
+                Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: Main.cachedInterfaces });
+            }
+
             networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
         });
     }
