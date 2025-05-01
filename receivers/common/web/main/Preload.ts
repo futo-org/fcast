@@ -1,6 +1,18 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Opcode } from 'common/Packets';
+import { Logger, LoggerType } from 'common/Logger';
+const logger = new Logger('MainWindow', LoggerType.FRONTEND);
+
+// Cannot directly pass the object to the renderer for some reason...
+const loggerInterface = {
+    trace: (message?: any, ...optionalParams: any[]) => { logger.trace(message, ...optionalParams); },
+    debug: (message?: any, ...optionalParams: any[]) => { logger.debug(message, ...optionalParams); },
+    info: (message?: any, ...optionalParams: any[]) => { logger.info(message, ...optionalParams); },
+    warn: (message?: any, ...optionalParams: any[]) => { logger.warn(message, ...optionalParams); },
+    error: (message?: any, ...optionalParams: any[]) => { logger.error(message, ...optionalParams); },
+    fatal: (message?: any, ...optionalParams: any[]) => { logger.fatal(message, ...optionalParams); },
+};
 
 declare global {
     interface Window {
@@ -32,15 +44,16 @@ if (TARGET === 'electron') {
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
         onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
         onPong: (callback: any) => electronAPI.ipcRenderer.on('pong', callback),
+        logger: loggerInterface,
     });
 
 // @ts-ignore
 } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
     preloadData = {
-        onDeviceInfoCb: () => { console.log('Main: Callback not set while fetching device info'); },
-        onConnectCb: (_, value: any) => { console.log('Main: Callback not set while calling onConnect'); },
-        onDisconnectCb: (_, value: any) => { console.log('Main: Callback not set while calling onDisconnect'); },
-        onPingCb: (_, value: any) => { console.log('Main: Callback not set while calling onPing'); },
+        onDeviceInfoCb: () => { logger.error('Main: Callback not set while fetching device info'); },
+        onConnectCb: (_, value: any) => { logger.error('Main: Callback not set while calling onConnect'); },
+        onDisconnectCb: (_, value: any) => { logger.error('Main: Callback not set while calling onDisconnect'); },
+        onPingCb: (_, value: any) => { logger.error('Main: Callback not set while calling onPing'); },
     };
 
     window.targetAPI = {
@@ -49,10 +62,11 @@ if (TARGET === 'electron') {
         onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
         onPing: (callback: (_, value: any) => void) => preloadData.onPingCb = callback,
         getDeviceInfo: () => preloadData.deviceInfo,
+        logger: loggerInterface,
     };
 } else {
     // @ts-ignore
-    console.log(`Attempting to run FCast player on unsupported target: ${TARGET}`);
+    logger.warn(`Attempting to run FCast player on unsupported target: ${TARGET}`);
 }
 
 export {

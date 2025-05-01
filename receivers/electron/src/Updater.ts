@@ -2,13 +2,14 @@ import * as fs from 'fs';
 import * as https from 'https';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import * as log4js from "log4js";
 import { app } from 'electron';
 import { Store } from './Store';
 import sudo from 'sudo-prompt';
+import { Logger, LoggerType } from 'common/Logger';
+
 const cp = require('child_process');
 const extract = require('extract-zip');
-const logger = log4js.getLogger();
+const logger = new Logger('Updater', LoggerType.BACKEND);
 
 enum UpdateState {
     Copy = 'copy',
@@ -193,7 +194,7 @@ export class Updater {
     // Also does not work very well on Mac...
     private static relaunch(binPath: string) {
         logger.info(`Relaunching app binary: ${binPath}`);
-        log4js.shutdown();
+        logger.shutdown();
 
         let proc;
         if (process.platform === 'win32') {
@@ -394,7 +395,8 @@ export class Updater {
 
             logger.info('Extraction complete.');
             const updateInfo: UpdateInfo = {
-                updateState: UpdateState.Copy,
+                // updateState: UpdateState.Copy,
+                updateState: UpdateState.Cleanup,
                 installPath: Updater.installPath,
                 tempPath: path.dirname(destination),
                 currentVersion: Updater.releasesJson.currentVersion,

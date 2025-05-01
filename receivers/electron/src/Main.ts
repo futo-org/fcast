@@ -4,14 +4,15 @@ import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { NetworkService } from 'common/NetworkService';
+import { Logger, LoggerType } from 'common/Logger';
 import { Updater } from './Updater';
 import * as os from 'os';
 import * as path from 'path';
-import * as log4js from "log4js";
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { ToastIcon } from 'common/components/Toast';
 const cp = require('child_process');
+let logger = null;
 
 export class Main {
     static shouldOpenMainWindow = true;
@@ -23,7 +24,6 @@ export class Main {
     static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
     static tray: Tray;
-    static logger: log4js.Logger;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -68,7 +68,7 @@ export class Main {
                 });
             }
 
-            Main.logger.error('Failed to check for updates:', err);
+            logger.error('Failed to check for updates:', err);
         }
     }
 
@@ -180,8 +180,8 @@ export class Main {
             l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
             l.emitter.on("stop", () => {
-                    Main.playerWindow?.close();
-                    Main.playerWindow = null;
+                Main.playerWindow?.close();
+                Main.playerWindow = null;
             });
 
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
@@ -242,7 +242,7 @@ export class Main {
                         defaultId: 0
                     });
 
-                    Main.logger.error('Failed to download update:', err);
+                    logger.error('Failed to download update:', err);
                     Main.mainWindow?.webContents?.send("download-failed");
                 }
             }
@@ -342,7 +342,7 @@ export class Main {
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
 
-            if (!networkWorker.isDestoryed()) {
+            if (!networkWorker.isDestroyed()) {
                 networkWorker.close();
             }
         });
@@ -366,27 +366,28 @@ export class Main {
             })
             .options({
                 'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
-                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" }
+                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" },
+                'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', default: 'INFO', desc: "Defines the verbosity level of the logger" },
             })
             .parseSync();
 
             const isUpdating = Updater.isUpdating();
             const fileLogType = isUpdating ? 'fileSync' : 'file';
-            log4js.configure({
+            Logger.initialize({
                 appenders: {
                     out: { type: 'stdout' },
                     log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'a', maxLogSize: '5M' },
                 },
                 categories: {
-                    default: { appenders: ['out', 'log'], level: 'info' },
+                    default: { appenders: ['out', 'log'], level: argv.log },
                 },
             });
-            Main.logger = log4js.getLogger();
-            Main.logger.info(`Starting application: ${app.name} | ${app.getAppPath()}`);
-            Main.logger.info(`Version: ${app.getVersion()}`);
-            Main.logger.info(`Commit: ${Updater.getCommit()}`);
-            Main.logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
-            Main.logger.info(`OS: ${process.platform} ${process.arch}`);
+            logger = new Logger('Main', LoggerType.BACKEND);
+            logger.info(`Starting application: ${app.name} | ${app.getAppPath()}`);
+            logger.info(`Version: ${app.getVersion()}`);
+            logger.info(`Commit: ${Updater.getCommit()}`);
+            logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
+            logger.info(`OS: ${process.platform} ${process.arch}`);
 
             if (isUpdating) {
                 await Updater.processUpdate();
@@ -415,7 +416,7 @@ export class Main {
             Main.application.on('window-all-closed', () => { });
         }
         catch (err) {
-            Main.logger.error(`Error starting application: ${err}`);
+            logger.error(`Error starting application: ${err}`);
             app.exit();
         }
     }
@@ -435,15 +436,15 @@ export function getComputerName() {
                 hostname = os.hostname();
             }
             catch (err) {
-                Main.logger.warn('Error fetching hostname, trying different method...');
-                Main.logger.warn(err);
+                logger.warn('Error fetching hostname, trying different method...');
+                logger.warn(err);
 
                 try {
                     hostname = cp.execSync("hostnamectl hostname").toString().trim();
                 }
                 catch (err2) {
-                    Main.logger.warn('Error fetching hostname again, using generic name...');
-                    Main.logger.warn(err2);
+                    logger.warn('Error fetching hostname again, using generic name...');
+                    logger.warn(err2);
 
                     hostname = 'linux device';
                 }
@@ -458,7 +459,7 @@ export function getComputerName() {
 }
 
 export async function errorHandler(err: NodeJS.ErrnoException) {
-    Main.logger.error("Application error:", err);
+    logger.error("Application error:", err);
     Main.mainWindow?.webContents?.send("toast", { message: err, icon: ToastIcon.ERROR });
 
     const restartPrompt = await dialog.showMessageBox({

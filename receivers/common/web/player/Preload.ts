@@ -1,7 +1,18 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, Opcode } from 'common/Packets';
-export {};
+import { Logger, LoggerType } from 'common/Logger';
+const logger = new Logger('PlayerWindow', LoggerType.FRONTEND);
+
+// Cannot directly pass the object to the renderer for some reason...
+const loggerInterface = {
+    trace: (message?: any, ...optionalParams: any[]) => { logger.trace(message, ...optionalParams); },
+    debug: (message?: any, ...optionalParams: any[]) => { logger.debug(message, ...optionalParams); },
+    info: (message?: any, ...optionalParams: any[]) => { logger.info(message, ...optionalParams); },
+    warn: (message?: any, ...optionalParams: any[]) => { logger.warn(message, ...optionalParams); },
+    error: (message?: any, ...optionalParams: any[]) => { logger.error(message, ...optionalParams); },
+    fatal: (message?: any, ...optionalParams: any[]) => { logger.fatal(message, ...optionalParams); },
+};
 
 declare global {
     interface Window {
@@ -37,21 +48,22 @@ if (TARGET === 'electron') {
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
         onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
         onPong: (callback: any) => electronAPI.ipcRenderer.on('pong', callback),
+        logger: loggerInterface,
     });
 
 // @ts-ignore
 } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
     preloadData = {
-        sendPlaybackErrorCb: () => { console.error('Player: Callback "send_playback_error" not set'); },
-        sendPlaybackUpdateCb: () => { console.error('Player: Callback "send_playback_update" not set'); },
-        sendVolumeUpdateCb: () => { console.error('Player: Callback "send_volume_update" not set'); },
-        // onPlayCb: () => { console.error('Player: Callback "play" not set'); },
+        sendPlaybackErrorCb: () => { logger.error('Player: Callback "send_playback_error" not set'); },
+        sendPlaybackUpdateCb: () => { logger.error('Player: Callback "send_playback_update" not set'); },
+        sendVolumeUpdateCb: () => { logger.error('Player: Callback "send_volume_update" not set'); },
+        // onPlayCb: () => { logger.error('Player: Callback "play" not set'); },
         onPlayCb: undefined,
-        onPauseCb: () => { console.error('Player: Callback "pause" not set'); },
-        onResumeCb: () => { console.error('Player: Callback "resume" not set'); },
-        onSeekCb: () => { console.error('Player: Callback "onseek" not set'); },
-        onSetVolumeCb: () => { console.error('Player: Callback "setvolume" not set'); },
-        onSetSpeedCb: () => { console.error('Player: Callback "setspeed" not set'); },
+        onPauseCb: () => { logger.error('Player: Callback "pause" not set'); },
+        onResumeCb: () => { logger.error('Player: Callback "resume" not set'); },
+        onSeekCb: () => { logger.error('Player: Callback "onseek" not set'); },
+        onSetVolumeCb: () => { logger.error('Player: Callback "setvolume" not set'); },
+        onSetSpeedCb: () => { logger.error('Player: Callback "setspeed" not set'); },
     };
 
     window.targetAPI = {
@@ -64,10 +76,11 @@ if (TARGET === 'electron') {
         onSeek: (callback: any) => { preloadData.onSeekCb = callback; },
         onSetVolume: (callback: any) => { preloadData.onSetVolumeCb = callback; },
         onSetSpeed: (callback: any) => { preloadData.onSetSpeedCb = callback; },
+        logger: loggerInterface,
     };
 } else {
     // @ts-ignore
-    console.log(`Attempting to run FCast player on unsupported target: ${TARGET}`);
+    logger.warn(`Attempting to run FCast player on unsupported target: ${TARGET}`);
 }
 
 export {

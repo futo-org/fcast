@@ -1,5 +1,7 @@
 import { ipcRenderer } from 'electron';
 import si from 'modules/systeminformation';
+import { Logger, LoggerType } from 'common/Logger';
+const logger = new Logger('NetworkWorker', LoggerType.FRONTEND);
 
 const networkStateChangeListenerTimeout = 2500;
 let networkStateChangeListenerInterfaces = [];
@@ -10,11 +12,11 @@ setInterval(networkStateChangeListener, networkStateChangeListenerTimeout);
 function networkStateChangeListener(forceUpdate: boolean) {
     new Promise<void>((resolve) => {
         si.networkInterfaces((data) => {
-            // console.log(data);
+            // logger.info(data);
             const queriedInterfaces = Array.isArray(data) ? data : [data];
 
             si.wifiConnections((data) => {
-                // console.log(data);
+                // logger.info(data);
                 const wifiConnections = Array.isArray(data) ? data : [data];
 
                 const interfaces = [];

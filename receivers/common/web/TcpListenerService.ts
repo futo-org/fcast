@@ -1,8 +1,10 @@
 import * as net from 'net';
 import { FCastSession } from 'common/FCastSession';
 import { Opcode } from 'common/Packets';
+import { Logger, LoggerType } from 'common/Logger';
 import { EventEmitter } from 'events';
-import { Main, errorHandler } from 'src/Main';
+import { errorHandler } from 'src/Main';
+const logger = new Logger('TcpListenerService', LoggerType.BACKEND);
 
 export class TcpListenerService {
     public static PORT = 46899;
@@ -35,12 +37,12 @@ export class TcpListenerService {
     }
 
     send(opcode: number, message = null) {
-        // Main.logger.info(`Sending message ${JSON.stringify(message)}`);
+        // logger.info(`Sending message ${JSON.stringify(message)}`);
         this.sessions.forEach(session => {
             try {
                 session.send(opcode, message);
             } catch (e) {
-                Main.logger.warn("Failed to send error.", e);
+                logger.warn("Failed to send error.", e);
                 session.close();
             }
         });
@@ -60,7 +62,7 @@ export class TcpListenerService {
     }
 
     private handleConnection(socket: net.Socket) {
-        Main.logger.info(`New connection from ${socket.remoteAddress}:${socket.remotePort}`);
+        logger.info(`New connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);
@@ -68,7 +70,7 @@ export class TcpListenerService {
         this.sessionMap.set(session.sessionId, session);
 
         socket.on("error", (err) => {
-            Main.logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
+            logger.warn(`Error from ${socket.remoteAddress}:${socket.remotePort}.`, err);
             this.disconnect(session.sessionId);
         });
 
@@ -76,7 +78,7 @@ export class TcpListenerService {
             try {
                 session.processBytes(buffer);
             } catch (e) {
-                Main.logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
+                logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
                 socket.end();
             }
         });
@@ -91,10 +93,10 @@ export class TcpListenerService {
 
         this.emitter.emit('connect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         try {
-            Main.logger.info('Sending version');
+            logger.info('Sending version');
             session.send(Opcode.Version, {version: 2});
         } catch (e) {
-            Main.logger.info('Failed to send version', e);
+            logger.info('Failed to send version', e);
         }
     }
 }

@@ -7,6 +7,7 @@ let uiUpdateCallbacks = {
     onConnect: null,
     onDisconnect: null,
 }
+const logger = window.targetAPI.logger;
 
 // Window might be re-created while devices are still connected
 export function setUiUpdateCallbacks(callbacks: any) {
@@ -27,12 +28,12 @@ window.targetAPI.onPing((_event, value: any) => onPingPong(value));
 window.targetAPI.onPong((_event, value: any) => onPingPong(value));
 
 window.targetAPI.onConnect((_event, value: any) => {
-    console.log(`Device connected: ${JSON.stringify(value)}`);
+    logger.info(`Device connected: ${JSON.stringify(value)}`);
     connections.push(value.sessionId);
     uiUpdateCallbacks.onConnect(connections);
 });
 window.targetAPI.onDisconnect((_event, value: any) => {
-    console.log(`Device disconnected: ${JSON.stringify(value)}`);
+    logger.info(`Device disconnected: ${JSON.stringify(value)}`);
     const index = connections.indexOf(value.sessionId);
     if (index != -1) {
         connections.splice(index, 1);
@@ -46,7 +47,7 @@ setInterval(() => {
 
         for (const sessionId of connections) {
             if (heartbeatRetries[sessionId] > 3) {
-                console.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
+                logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
                 window.targetAPI.disconnectDevice(sessionId);
             }
 

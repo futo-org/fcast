@@ -1,5 +1,7 @@
 import mdns from 'modules/mdns-js';
-import { Main, getComputerName } from 'src/Main';
+import { Logger, LoggerType } from 'common/Logger';
+import { getComputerName } from 'src/Main';
+const logger = new Logger('DiscoveryService', LoggerType.BACKEND);
 
 export class DiscoveryService {
     private serviceTcp: any;
@@ -11,13 +13,7 @@ export class DiscoveryService {
         }
 
         const name = `FCast-${getComputerName()}`;
-        // Cannot reference Main during static class initialization
-        // @ts-ignore
-        if (TARGET === 'webOS') {
-            console.log(`Discovery service started: ${name}`);
-        } else {
-            Main.logger.info(`Discovery service started: ${name}`);
-        }
+        logger.info(`Discovery service started: ${name}`);
 
         this.serviceTcp = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name });
         this.serviceTcp.start();

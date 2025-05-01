@@ -12,6 +12,8 @@ import {
     captionsLineHeight
 } from 'src/player/Renderer';
 
+const logger = window.targetAPI.logger;
+
 function formatDuration(duration: number) {
     if (isNaN(duration)) {
         return '00:00';
@@ -120,7 +122,7 @@ let captionsBaseHeight = 0;
 let captionsContentHeight = 0;
 
 function onPlay(_event, value: PlayMessage) {
-    console.log("Handle play message renderer", JSON.stringify(value));
+    logger.info("Handle play message renderer", JSON.stringify(value));
     const currentVolume = player ? player.getVolume() : null;
     const currentPlaybackRate = player ? player.getPlaybackRate() : null;
 
@@ -143,7 +145,7 @@ function onPlay(_event, value: PlayMessage) {
 
     if ((value.url || value.content) && value.container && videoElement) {
         if (value.container === 'application/dash+xml') {
-            console.log("Loading dash player");
+            logger.info("Loading dash player");
             const dashPlayer = dashjs.MediaPlayer().create();
             const source = value.content ? value.content : value.url;
             player = new Player(PlayerType.Dash, dashPlayer, source);
@@ -236,7 +238,7 @@ function onPlay(_event, value: PlayMessage) {
             }
 
         } else if ((value.container === 'application/vnd.apple.mpegurl' || value.container === 'application/x-mpegURL') && !videoElement.canPlayType(value.container)) {
-            console.log("Loading hls player");
+            logger.info("Loading hls player");
 
             const config = {
                 xhrSetup: function (xhr: XMLHttpRequest) {
@@ -277,7 +279,7 @@ function onPlay(_event, value: PlayMessage) {
             // hlsPlayer.subtitleDisplay = true;
 
         } else {
-            console.log("Loading html player");
+            logger.info("Loading html player");
             player = new Player(PlayerType.Html, videoElement, value.url);
 
             videoElement.src = value.url;
@@ -307,7 +309,7 @@ function onPlay(_event, value: PlayMessage) {
             };
 
             videoElement.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
-                console.error("Player error", {source, lineno, colno, error});
+                logger.error("Player error", {source, lineno, colno, error});
             };
 
             videoElement.onloadedmetadata = (ev) => {
@@ -419,7 +421,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             break;
 
         case PlayerControlEvent.VolumeChange: {
-            // console.log(`VolumeChange: isMute ${player?.isMuted()}, volume: ${player?.getVolume()}`);
+            // logger.info(`VolumeChange: isMute ${player?.isMuted()}, volume: ${player?.getVolume()}`);
             const volume = Math.round(player?.getVolume() * playerCtrlVolumeBar.offsetWidth);
 
             if (player?.isMuted()) {
@@ -440,7 +442,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         case PlayerControlEvent.TimeUpdate: {
-            // console.log(`TimeUpdate: Position: ${player.getCurrentTime()}, Duration: ${player.getDuration()}`);
+            // logger.info(`TimeUpdate: Position: ${player.getCurrentTime()}, Duration: ${player.getDuration()}`);
 
             if (isLive) {
                 if (isLivePosition && player.getDuration() - player.getCurrentTime() > livePositionWindow) {
@@ -736,7 +738,7 @@ const skipInterval = 10;
 const volumeIncrement = 0.1;
 
 function keyDownEventListener(event: any) {
-    // console.log("KeyDown", event);
+    // logger.info("KeyDown", event);
     const handledCase = targetKeyDownEventListener(event);
     if (handledCase) {
         return;

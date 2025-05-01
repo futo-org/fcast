@@ -1,6 +1,8 @@
 import dashjs from 'modules/dashjs';
 import Hls from 'modules/hls.js';
 
+const logger = window.targetAPI.logger;
+
 export enum PlayerType {
     Html,
     Dash,
@@ -26,7 +28,7 @@ export class Player {
                 try {
                     (this.player as dashjs.MediaPlayerClass).destroy();
                 } catch (e) {
-                    console.warn("Failed to destroy dash player", e);
+                    logger.warn("Failed to destroy dash player", e);
                 }
                 this.player = null;
                 this.playerType = null;
@@ -37,7 +39,7 @@ export class Player {
                 try {
                     this.hlsPlayer.destroy();
                 } catch (e) {
-                    console.warn("Failed to destroy hls player", e);
+                    logger.warn("Failed to destroy hls player", e);
                 }
                 // fall through
 
@@ -65,7 +67,7 @@ export class Player {
         }
     }
 
-    play() { console.log("Player: play"); this.player.play(); }
+    play() { logger.info("Player: play"); this.player.play(); }
 
     isPaused(): boolean {
         if (this.playerType === PlayerType.Dash) {
@@ -74,7 +76,7 @@ export class Player {
             return (this.player as HTMLVideoElement).paused;
         }
     }
-    pause() { console.log("Player: pause"); this.player.pause(); }
+    pause() { logger.info("Player: pause"); this.player.pause(); }
 
     getVolume(): number {
         if (this.playerType === PlayerType.Dash) {
@@ -84,7 +86,7 @@ export class Player {
         }
     }
     setVolume(value: number) {
-        console.log(`Player: setVolume ${value}`);
+        logger.info(`Player: setVolume ${value}`);
         const sanitizedVolume = Math.min(1.0, Math.max(0.0, value));
 
         if (this.playerType === PlayerType.Dash) {
@@ -102,7 +104,7 @@ export class Player {
         }
     }
     setMute(value: boolean) {
-        console.log(`Player: setMute ${value}`);
+        logger.info(`Player: setMute ${value}`);
 
         if (this.playerType === PlayerType.Dash) {
             (this.player as dashjs.MediaPlayerClass).setMute(value);
@@ -119,7 +121,7 @@ export class Player {
         }
     }
     setPlaybackRate(value: number) {
-        console.log(`Player: setPlaybackRate ${value}`);
+        logger.info(`Player: setPlaybackRate ${value}`);
         const sanitizedSpeed = Math.min(16.0, Math.max(0.0, value));
 
         if (this.playerType === PlayerType.Dash) {
@@ -147,7 +149,7 @@ export class Player {
         }
     }
     setCurrentTime(value: number) {
-        // console.log(`Player: setCurrentTime ${value}`);
+        // logger.info(`Player: setCurrentTime ${value}`);
         const sanitizedTime = Math.min(this.getDuration(), Math.max(0.0, value));
 
         if (this.playerType === PlayerType.Dash) {

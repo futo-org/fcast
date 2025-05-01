@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import storage from 'electron-json-storage';
 import { app } from 'electron';
-import * as log4js from "log4js";
-const logger = log4js.getLogger();
+import { Logger, LoggerType } from 'common/Logger';
+const logger = new Logger('Store', LoggerType.BACKEND);
 
 export class Store {
     private static storeVersion = 1;

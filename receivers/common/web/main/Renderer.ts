@@ -12,6 +12,7 @@ let renderedAddresses = null;
 let qrCodeUrl = null;
 let qrWidth = null;
 
+const logger = window.targetAPI.logger;
 window.addEventListener('resize', (event) => calculateQRCodeWidth());
 
 connectionMonitor.setUiUpdateCallbacks({
@@ -37,13 +38,13 @@ connectionMonitor.setUiUpdateCallbacks({
 window.targetAPI.onDeviceInfo(renderIPsAndQRCode);
 
 if(window.targetAPI.getDeviceInfo()) {
-    console.log('device info already present');
+    logger.info('device info already present');
     renderIPsAndQRCode();
 }
 
 function renderIPsAndQRCode() {
     const value = window.targetAPI.getDeviceInfo();
-    console.log(`Network Interface Info: ${JSON.stringify(value)}`);
+    logger.info(`Network Interface Info: ${JSON.stringify(value)}`);
     renderIPs(value.interfaces);
 
     const addresses = [];
@@ -91,7 +92,7 @@ function renderIPsAndQRCode() {
     let base64 = btoa(json);
     base64 = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     qrCodeUrl = `fcast://r/${base64}`;
-    console.log('QR Code:', {json, qrCodeUrl, base64});
+    logger.info('QR Code:', {json, qrCodeUrl, base64});
 
     calculateQRCodeWidth();
     if (!renderedConnectionInfo) {
@@ -188,11 +189,11 @@ function renderQRCode(url: string) {
     },
     (err) => {
         if (err) {
-            console.error(`Error rendering QR Code: ${err}`);
+            logger.error(`Error rendering QR Code: ${err}`);
             toast(`Error rendering QR Code: ${err}`, ToastIcon.ERROR);
         }
         else {
-            console.log(`Rendered QR Code`);
+            logger.info(`Rendered QR Code`);
         }
     });
 

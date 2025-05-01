@@ -3,7 +3,8 @@ import * as http from 'http';
 import * as url from 'url';
 import { AddressInfo } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
-import { Main } from 'src/Main';
+import { Logger, LoggerType } from 'common/Logger';
+const logger = new Logger('NetworkService', LoggerType.BACKEND);
 
 export class NetworkService {
     static key: string = null;
@@ -15,11 +16,11 @@ export class NetworkService {
     private static setupProxyServer(): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             try {
-                Main.logger.info(`Proxy server starting`);
+                logger.info(`Proxy server starting`);
 
                 const port = 0;
                 NetworkService.proxyServer = http.createServer((req, res) => {
-                    Main.logger.info(`Request received`);
+                    logger.info(`Request received`);
                     const requestUrl = `http://${req.headers.host}${req.url}`;
 
                     const proxyInfo = NetworkService.proxiedFiles.get(requestUrl);
@@ -60,7 +61,7 @@ export class NetworkService {
 
                     req.pipe(proxyReq, { end: true });
                     proxyReq.on('error', (e) => {
-                        Main.logger.error(`Problem with request: ${e.message}`);
+                        logger.error(`Problem with request: ${e.message}`);
                         res.writeHead(500);
                         res.end();
                     });
@@ -70,7 +71,7 @@ export class NetworkService {
                 });
                 NetworkService.proxyServer.listen(port, '127.0.0.1', () => {
                     NetworkService.proxyServerAddress = NetworkService.proxyServer.address() as AddressInfo;
-                    Main.logger.info(`Proxy server running at http://127.0.0.1:${NetworkService.proxyServerAddress.port}/`);
+                    logger.info(`Proxy server running at http://127.0.0.1:${NetworkService.proxyServerAddress.port}/`);
                     resolve();
                 });
             } catch (e) {
@@ -98,7 +99,7 @@ export class NetworkService {
         }
 
         const proxiedUrl = `http://127.0.0.1:${NetworkService.proxyServerAddress.port}/${uuidv4()}`;
-        Main.logger.info("Proxied url", { proxiedUrl, url, headers });
+        logger.info("Proxied url", { proxiedUrl, url, headers });
         NetworkService.proxiedFiles.set(proxiedUrl, { url: url, headers: headers });
         return proxiedUrl;
     }

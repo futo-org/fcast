@@ -1,5 +1,6 @@
 import 'common/main/Renderer';
 
+const logger = window.targetAPI.logger;
 export function onQRCodeRendered() {}
 
 const updateView = document.getElementById("update-view");
@@ -14,7 +15,7 @@ const progressBarProgress = document.getElementById("progress-bar-progress");
 let updaterProgressUIUpdateTimer = null;
 
 window.electronAPI.onUpdateAvailable(() => {
-    console.log(`Received UpdateAvailable event`);
+    logger.info(`Received UpdateAvailable event`);
     updateViewTitle.textContent = 'FCast update available';
 
     updateText.textContent = 'Do you wish to update now?';
@@ -26,7 +27,7 @@ window.electronAPI.onUpdateAvailable(() => {
 });
 
 window.electronAPI.onDownloadComplete(() => {
-    console.log(`Received DownloadComplete event`);
+    logger.info(`Received DownloadComplete event`);
     window.clearTimeout(updaterProgressUIUpdateTimer);
     updateViewTitle.textContent = 'FCast update ready';
 
@@ -39,7 +40,7 @@ window.electronAPI.onDownloadComplete(() => {
 });
 
 window.electronAPI.onDownloadFailed(() => {
-    console.log(`Received DownloadFailed event`);
+    logger.info(`Received DownloadFailed event`);
     window.clearTimeout(updaterProgressUIUpdateTimer);
     updateView.setAttribute("style", "display: none");
 });
