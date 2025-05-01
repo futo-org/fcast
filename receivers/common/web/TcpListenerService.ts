@@ -88,6 +88,8 @@ export class TcpListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
+
+            this.sessionMap.delete(session.sessionId);
             this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         });
 

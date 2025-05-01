@@ -93,6 +93,8 @@ export class WebSocketListenerService {
             if (index != -1) {
                 this.sessions.splice(index, 1);
             }
+
+            this.sessionMap.delete(session.sessionId);
             this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'ws', data: { url: socket.url }});
         });
 
