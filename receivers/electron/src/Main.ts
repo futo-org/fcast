@@ -10,7 +10,6 @@ import * as os from 'os';
 import * as path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { ToastIcon } from 'common/components/Toast';
 const cp = require('child_process');
 let logger = null;
 
@@ -389,6 +388,8 @@ export class Main {
             logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
             logger.info(`OS: ${process.platform} ${process.arch}`);
 
+            process.setUncaughtExceptionCaptureCallback(async (error) => await errorHandler(error));
+
             if (isUpdating) {
                 await Updater.processUpdate();
             }
@@ -458,14 +459,14 @@ export function getComputerName() {
     }
 }
 
-export async function errorHandler(err: NodeJS.ErrnoException) {
-    logger.error("Application error:", err);
-    Main.mainWindow?.webContents?.send("toast", { message: err, icon: ToastIcon.ERROR });
+export async function errorHandler(error: Error) {
+    logger.error(error);
+    logger.shutdown();
 
     const restartPrompt = await dialog.showMessageBox({
         type: 'error',
         title: 'Failed to start',
-        message: 'The application failed to start properly.',
+        message: `The application failed to start properly:\n\n${error.stack}}`,
         buttons: ['Restart', 'Close'],
         defaultId: 0,
         cancelId: 1
