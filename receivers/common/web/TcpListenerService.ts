@@ -36,16 +36,27 @@ export class TcpListenerService {
         server.close();
     }
 
-    send(opcode: number, message = null) {
+    send(opcode: number, message = null, sessionId = null) {
         // logger.info(`Sending message ${JSON.stringify(message)}`);
-        this.sessions.forEach(session => {
+
+        if (sessionId) {
             try {
-                session.send(opcode, message);
+                this.sessionMap.get(sessionId)?.send(opcode, message);
             } catch (e) {
                 logger.warn("Failed to send error.", e);
-                session.close();
+                this.sessionMap.get(sessionId)?.close();
             }
-        });
+        }
+        else {
+            this.sessions.forEach(session => {
+                try {
+                    session.send(opcode, message);
+                } catch (e) {
+                    logger.warn("Failed to send error.", e);
+                    session.close();
+                }
+            });
+        }
     }
 
     disconnect(sessionId: string) {

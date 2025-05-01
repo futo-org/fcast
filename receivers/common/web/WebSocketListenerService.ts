@@ -36,15 +36,25 @@ export class WebSocketListenerService {
         server.close();
     }
 
-    send(opcode: number, message = null) {
-        this.sessions.forEach(session => {
+    send(opcode: number, message = null, sessionId = null) {
+        if (sessionId) {
             try {
-                session.send(opcode, message);
+                this.sessionMap.get(sessionId)?.send(opcode, message);
             } catch (e) {
                 logger.warn("Failed to send error.", e);
-                session.close();
+                this.sessionMap.get(sessionId)?.close();
             }
-        });
+        }
+        else {
+            this.sessions.forEach(session => {
+                try {
+                    session.send(opcode, message);
+                } catch (e) {
+                    logger.warn("Failed to send error.", e);
+                    session.close();
+                }
+            });
+        }
     }
 
     disconnect(sessionId: string) {

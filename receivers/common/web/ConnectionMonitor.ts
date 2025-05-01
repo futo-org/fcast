@@ -48,7 +48,7 @@ export class ConnectionMonitor {
                         }
 
                         ConnectionMonitor.logger.debug(`Pinging session ${sessionId} with ${ConnectionMonitor.heartbeatRetries.get(sessionId)} retries left`);
-                        ConnectionMonitor.backendConnections.get(sessionId).send(Opcode.Ping, null);
+                        ConnectionMonitor.backendConnections.get(sessionId).send(Opcode.Ping, null, sessionId);
                         ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) === undefined ? 1 : ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
                     }
                 }
