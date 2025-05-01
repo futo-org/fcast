@@ -42,12 +42,8 @@ if (TARGET === 'electron') {
         onSetVolume: (callback: any) => electronAPI.ipcRenderer.on("setvolume", callback),
         onSetSpeed: (callback: any) => electronAPI.ipcRenderer.on("setspeed", callback),
         getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
-        sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
-        disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
-        onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
-        onPong: (callback: any) => electronAPI.ipcRenderer.on('pong', callback),
         logger: loggerInterface,
     });
 
@@ -64,6 +60,9 @@ if (TARGET === 'electron') {
         onSeekCb: () => { logger.error('Player: Callback "onseek" not set'); },
         onSetVolumeCb: () => { logger.error('Player: Callback "setvolume" not set'); },
         onSetSpeedCb: () => { logger.error('Player: Callback "setspeed" not set'); },
+        getSessionsCb: () => { logger.error('Player: Callback "getSessions" not set'); },
+        onConnectCb: () => { logger.error('Player: Callback "onConnect" not set'); },
+        onDisconnectCb: () => { logger.error('Player: Callback "onDisconnect" not set'); },
     };
 
     window.targetAPI = {
@@ -76,6 +75,9 @@ if (TARGET === 'electron') {
         onSeek: (callback: any) => { preloadData.onSeekCb = callback; },
         onSetVolume: (callback: any) => { preloadData.onSetVolumeCb = callback; },
         onSetSpeed: (callback: any) => { preloadData.onSetSpeedCb = callback; },
+        getSessions: (callback: any) => { preloadData.getSessionsCb = callback; },
+        onConnect: (callback: any) => { preloadData.onConnectCb = callback; },
+        onDisconnect: (callback: any) => { preloadData.onDisconnectCb = callback; },
         logger: loggerInterface,
     };
 } else {

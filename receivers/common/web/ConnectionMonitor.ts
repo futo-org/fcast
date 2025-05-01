@@ -1,57 +1,73 @@
 import { Opcode } from 'common/Packets';
-
-const connectionPingTimeout = 2500;
-const heartbeatRetries = {};
-let connections = [];
-let uiUpdateCallbacks = {
-    onConnect: null,
-    onDisconnect: null,
-}
-const logger = window.targetAPI.logger;
+import { Logger, LoggerType } from 'common/Logger';
 
 // Window might be re-created while devices are still connected
 export function setUiUpdateCallbacks(callbacks: any) {
-    uiUpdateCallbacks = callbacks;
+    const logger = window.targetAPI.logger;
+    let frontendConnections = [];
+
+    window.targetAPI.onConnect((_event, value: any) => {
+        frontendConnections.push(value.sessionId);
+        callbacks.onConnect(frontendConnections);
+    });
+    window.targetAPI.onDisconnect((_event, value: any) => {
+        const index = frontendConnections.indexOf(value.sessionId);
+        if (index != -1) {
+            frontendConnections.splice(index, 1);
+            callbacks.onDisconnect(frontendConnections, value.sessionId);
+        }
+    });
 
     window.targetAPI.getSessions().then((sessions: string[]) => {
-        connections = sessions;
-        if (connections.length > 0) {
-            uiUpdateCallbacks.onConnect(connections, true);
+        logger.info('Window created with current sessions:', sessions);
+        frontendConnections = sessions;
+
+        if (frontendConnections.length > 0) {
+            callbacks.onConnect(frontendConnections, true);
         }
     });
 }
 
-function onPingPong(value: any) {
-    heartbeatRetries[value.sessionId] = 0;
-}
-window.targetAPI.onPing((_event, value: any) => onPingPong(value));
-window.targetAPI.onPong((_event, value: any) => onPingPong(value));
+export class ConnectionMonitor {
+    private static initialized = false;
+    private static connectionPingTimeout = 2500;
+    private static heartbeatRetries = new Map();
+    private static backendConnections = new Map();
+    private static logger;
 
-window.targetAPI.onConnect((_event, value: any) => {
-    logger.info(`Device connected: ${JSON.stringify(value)}`);
-    connections.push(value.sessionId);
-    uiUpdateCallbacks.onConnect(connections);
-});
-window.targetAPI.onDisconnect((_event, value: any) => {
-    logger.info(`Device disconnected: ${JSON.stringify(value)}`);
-    const index = connections.indexOf(value.sessionId);
-    if (index != -1) {
-        connections.splice(index, 1);
-        uiUpdateCallbacks.onDisconnect(connections, value.sessionId);
-    }
-});
+    constructor() {
+        if (!ConnectionMonitor.initialized) {
+            ConnectionMonitor.logger = new Logger('ConnectionMonitor', LoggerType.BACKEND);
 
-setInterval(() => {
-    if (connections.length > 0) {
-        window.targetAPI.sendSessionMessage(Opcode.Ping, null);
+            setInterval(() => {
+                if (ConnectionMonitor.backendConnections.size > 0) {
+                    for (const sessionId in ConnectionMonitor.backendConnections) {
+                        if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
+                            ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
+                            ConnectionMonitor.backendConnections.get(sessionId).disconnect(sessionId);
+                        }
 
-        for (const sessionId of connections) {
-            if (heartbeatRetries[sessionId] > 3) {
-                logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
-                window.targetAPI.disconnectDevice(sessionId);
-            }
+                        ConnectionMonitor.backendConnections.get(sessionId).send(Opcode.Ping, null);
+                        ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) === undefined ? 1 : ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
+                    }
+                }
+            }, ConnectionMonitor.connectionPingTimeout);
 
-            heartbeatRetries[sessionId] = heartbeatRetries[sessionId] === undefined ? 1 : heartbeatRetries[sessionId] + 1;
+            ConnectionMonitor.initialized = true;
         }
     }
-}, connectionPingTimeout);
+
+    public static onPingPong(value: any) {
+        ConnectionMonitor.heartbeatRetries[value.sessionId] = 0;
+    }
+
+    public static onConnect(listener: any, value: any) {
+        ConnectionMonitor.logger.info(`Device connected: ${JSON.stringify(value)}`);
+        ConnectionMonitor.backendConnections.set(value.sessionId, listener);
+    }
+
+    public static onDisconnect(listener: any, value: any) {
+        ConnectionMonitor.logger.info(`Device disconnected: ${JSON.stringify(value)}`);
+        ConnectionMonitor.backendConnections.delete(value.sessionId);
+    }
+}

@@ -4,6 +4,7 @@ import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { NetworkService } from 'common/NetworkService';
+import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { Updater } from './Updater';
 import * as os from 'os';
@@ -22,6 +23,7 @@ export class Main {
     static tcpListenerService: TcpListenerService;
     static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
+    static connectionMonitor: ConnectionMonitor;
     static tray: Tray;
 
     private static cachedInterfaces = null;
@@ -143,6 +145,7 @@ export class Main {
     private static onReady() {
         Main.createTray();
 
+        Main.connectionMonitor = new ConnectionMonitor();
         Main.discoveryService = new DiscoveryService();
         Main.discoveryService.start();
 
@@ -190,20 +193,20 @@ export class Main {
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
 
             l.emitter.on('connect', (message) => {
+                ConnectionMonitor.onConnect(l, message);
                 Main.mainWindow?.webContents?.send('connect', message);
                 Main.playerWindow?.webContents?.send('connect', message);
             });
             l.emitter.on('disconnect', (message) => {
+                ConnectionMonitor.onDisconnect(l, message);
                 Main.mainWindow?.webContents?.send('disconnect', message);
                 Main.playerWindow?.webContents?.send('disconnect', message);
             });
             l.emitter.on('ping', (message) => {
-                Main.mainWindow?.webContents?.send('ping', message);
-                Main.playerWindow?.webContents?.send('ping', message);
+                ConnectionMonitor.onPingPong(message);
             });
             l.emitter.on('pong', (message) => {
-                Main.mainWindow?.webContents?.send('pong', message);
-                Main.playerWindow?.webContents?.send('pong', message);
+                ConnectionMonitor.onPingPong(message);
             });
             l.start();
 
@@ -217,15 +220,6 @@ export class Main {
 
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
-            });
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ipcMain.on('send-session-message', (event: IpcMainEvent, value: any) => {
-                l.send(value.opcode, value.message);
-            });
-
-            ipcMain.on('disconnect-device', (event: IpcMainEvent, value: string) => {
-                l.disconnect(value);
             });
         });
 

@@ -38,12 +38,8 @@ if (TARGET === 'electron') {
         onDeviceInfo: (callback: any) => electronAPI.ipcRenderer.on('device-info', callback),
         getDeviceInfo: () => preloadData.deviceInfo,
         getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
-        sendSessionMessage: (opcode: Opcode, message: any) => electronAPI.ipcRenderer.send('send-session-message', { opcode: opcode, message: message }),
-        disconnectDevice: (session: string) => electronAPI.ipcRenderer.send('disconnect-device', session),
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
-        onPing: (callback: any) => electronAPI.ipcRenderer.on('ping', callback),
-        onPong: (callback: any) => electronAPI.ipcRenderer.on('pong', callback),
         logger: loggerInterface,
     });
 
@@ -51,17 +47,17 @@ if (TARGET === 'electron') {
 } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
     preloadData = {
         onDeviceInfoCb: () => { logger.error('Main: Callback not set while fetching device info'); },
+        getSessionsCb: () => { logger.error('Main: Callback not set while calling getSessions'); },
         onConnectCb: (_, value: any) => { logger.error('Main: Callback not set while calling onConnect'); },
         onDisconnectCb: (_, value: any) => { logger.error('Main: Callback not set while calling onDisconnect'); },
-        onPingCb: (_, value: any) => { logger.error('Main: Callback not set while calling onPing'); },
     };
 
     window.targetAPI = {
         onDeviceInfo: (callback: () => void) => preloadData.onDeviceInfoCb = callback,
+        getDeviceInfo: () => preloadData.deviceInfo,
+        getSessions: (callback: () => void) => preloadData.getSessionsCb = callback,
         onConnect: (callback: (_, value: any) => void) => preloadData.onConnectCb = callback,
         onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
-        onPing: (callback: (_, value: any) => void) => preloadData.onPingCb = callback,
-        getDeviceInfo: () => preloadData.deviceInfo,
         logger: loggerInterface,
     };
 } else {
