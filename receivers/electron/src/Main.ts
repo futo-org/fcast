@@ -184,8 +184,8 @@ export class Main {
             l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
             l.emitter.on("stop", () => {
-                Main.playerWindow?.close();
-                Main.playerWindow = null;
+                    Main.playerWindow?.close();
+                    Main.playerWindow = null;
             });
 
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
@@ -193,20 +193,31 @@ export class Main {
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
 
             l.emitter.on('connect', (message) => {
-                ConnectionMonitor.onConnect(l, message);
+                // Websocket clients currently don't have ping-pong commands supported
+                if (l instanceof TcpListenerService) {
+                    ConnectionMonitor.onConnect(l, message);
+                }
+
                 Main.mainWindow?.webContents?.send('connect', message);
                 Main.playerWindow?.webContents?.send('connect', message);
             });
             l.emitter.on('disconnect', (message) => {
-                ConnectionMonitor.onDisconnect(l, message);
+                if (l instanceof TcpListenerService) {
+                    ConnectionMonitor.onDisconnect(l, message);
+                }
+
                 Main.mainWindow?.webContents?.send('disconnect', message);
                 Main.playerWindow?.webContents?.send('disconnect', message);
             });
             l.emitter.on('ping', (message) => {
-                ConnectionMonitor.onPingPong(message);
+                if (l instanceof TcpListenerService) {
+                    ConnectionMonitor.onPingPong(message);
+                }
             });
             l.emitter.on('pong', (message) => {
-                ConnectionMonitor.onPingPong(message);
+                if (l instanceof TcpListenerService) {
+                    ConnectionMonitor.onPingPong(message);
+                }
             });
             l.start();
 
