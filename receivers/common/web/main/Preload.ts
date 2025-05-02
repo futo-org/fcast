@@ -55,7 +55,7 @@ if (TARGET === 'electron') {
     window.targetAPI = {
         onDeviceInfo: (callback: () => void) => preloadData.onDeviceInfoCb = callback,
         getDeviceInfo: () => preloadData.deviceInfo,
-        getSessions: (callback: () => void) => preloadData.getSessionsCb = callback,
+        getSessions: (callback: () => any) => preloadData.getSessionsCb = callback,
         onConnect: (callback: (_, value: any) => void) => preloadData.onConnectCb = callback,
         onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
         logger: loggerInterface,

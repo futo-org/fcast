@@ -11,7 +11,6 @@ export class TcpListenerService {
     emitter = new EventEmitter();
 
     private server: net.Server;
-    private sessions: FCastSession[] = [];
     private sessionMap = new Map();
 
     start() {
@@ -48,20 +47,26 @@ export class TcpListenerService {
             }
         }
         else {
-            this.sessions.forEach(session => {
+            for (const session of this.sessionMap.values()) {
                 try {
                     session.send(opcode, message);
                 } catch (e) {
                     logger.warn("Failed to send error.", e);
                     session.close();
                 }
-            });
+            }
         }
     }
 
     disconnect(sessionId: string) {
         this.sessionMap.get(sessionId)?.socket.destroy();
         this.sessionMap.delete(sessionId);
+    }
+
+    public getSenders(): string[] {
+        const senders = [];
+        this.sessionMap.forEach((sender) => { senders.push(sender.socket.remoteAddress); });
+        return senders;
     }
 
     public getSessions(): string[] {
@@ -77,7 +82,6 @@ export class TcpListenerService {
 
         const session = new FCastSession(socket, (data) => socket.write(data));
         session.bindEvents(this.emitter);
-        this.sessions.push(session);
         this.sessionMap.set(session.sessionId, session);
 
         socket.on("error", (err) => {
@@ -95,11 +99,6 @@ export class TcpListenerService {
         });
 
         socket.on("close", () => {
-            const index = this.sessions.indexOf(session);
-            if (index != -1) {
-                this.sessions.splice(index, 1);
-            }
-
             this.sessionMap.delete(session.sessionId);
             this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         });

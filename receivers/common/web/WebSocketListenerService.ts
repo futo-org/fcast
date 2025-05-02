@@ -12,7 +12,6 @@ export class WebSocketListenerService {
     emitter = new EventEmitter();
 
     private server: WebSocketServer;
-    private sessions: FCastSession[] = [];
     private sessionMap = new Map();
 
     start() {
@@ -46,20 +45,19 @@ export class WebSocketListenerService {
             }
         }
         else {
-            this.sessions.forEach(session => {
+            for (const session of this.sessionMap.values()) {
                 try {
                     session.send(opcode, message);
                 } catch (e) {
                     logger.warn("Failed to send error.", e);
                     session.close();
                 }
-            });
+            }
         }
     }
 
     disconnect(sessionId: string) {
         this.sessionMap.get(sessionId)?.close();
-        this.sessionMap.delete(sessionId);
     }
 
     public getSessions(): string[] {
@@ -70,12 +68,11 @@ export class WebSocketListenerService {
         errorHandler(err);
     }
 
-    private handleConnection(socket: WebSocket) {
+    private handleConnection(socket: WebSocket, request: any) {
         logger.info('New WebSocket connection');
 
         const session = new FCastSession(socket, (data) => socket.send(data));
         session.bindEvents(this.emitter);
-        this.sessions.push(session);
         this.sessionMap.set(session.sessionId, session);
 
         socket.on("error", (err) => {
@@ -97,13 +94,6 @@ export class WebSocketListenerService {
         });
 
         socket.on("close", () => {
-            logger.info('WebSocket connection closed');
-
-            const index = this.sessions.indexOf(session);
-            if (index != -1) {
-                this.sessions.splice(index, 1);
-            }
-
             this.sessionMap.delete(session.sessionId);
             this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'ws', data: { url: socket.url }});
         });

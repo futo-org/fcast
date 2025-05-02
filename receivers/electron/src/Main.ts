@@ -193,31 +193,22 @@ export class Main {
             l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
 
             l.emitter.on('connect', (message) => {
-                // Websocket clients currently don't have ping-pong commands supported
-                if (l instanceof TcpListenerService) {
-                    ConnectionMonitor.onConnect(l, message);
-                }
-
-                Main.mainWindow?.webContents?.send('connect', message);
-                Main.playerWindow?.webContents?.send('connect', message);
+                ConnectionMonitor.onConnect(l, message, l instanceof WebSocketListenerService, () => {
+                    Main.mainWindow?.webContents?.send('connect', message);
+                    Main.playerWindow?.webContents?.send('connect', message);
+                });
             });
             l.emitter.on('disconnect', (message) => {
-                if (l instanceof TcpListenerService) {
-                    ConnectionMonitor.onDisconnect(l, message);
-                }
-
-                Main.mainWindow?.webContents?.send('disconnect', message);
-                Main.playerWindow?.webContents?.send('disconnect', message);
+                ConnectionMonitor.onDisconnect(l, message, l instanceof WebSocketListenerService, () => {
+                    Main.mainWindow?.webContents?.send('disconnect', message);
+                    Main.playerWindow?.webContents?.send('disconnect', message);
+                });
             });
             l.emitter.on('ping', (message) => {
-                if (l instanceof TcpListenerService) {
-                    ConnectionMonitor.onPingPong(message);
-                }
+                ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
             });
             l.emitter.on('pong', (message) => {
-                if (l instanceof TcpListenerService) {
-                    ConnectionMonitor.onPingPong(message);
-                }
+                ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
             });
             l.start();
 
@@ -287,8 +278,9 @@ export class Main {
             window.setFullScreen(false);
         });
 
+        // Having to mix and match session ids and ip addresses until querying websocket remote addresses is fixed
         ipcMain.handle('get-sessions', () => {
-            return [].concat(Main.tcpListenerService.getSessions(), Main.webSocketListenerService.getSessions());
+            return [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions());
         });
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -477,8 +469,8 @@ export async function errorHandler(error: Error) {
 
     const restartPrompt = await dialog.showMessageBox({
         type: 'error',
-        title: 'Failed to start',
-        message: `The application failed to start properly:\n\n${error.stack}}`,
+        title: 'Application Error',
+        message: `The application encountered an error:\n\n${error.stack}}`,
         buttons: ['Restart', 'Close'],
         defaultId: 0,
         cancelId: 1
