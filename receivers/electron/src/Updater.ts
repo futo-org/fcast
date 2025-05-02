@@ -395,8 +395,7 @@ export class Updater {
 
             logger.info('Extraction complete.');
             const updateInfo: UpdateInfo = {
-                // updateState: UpdateState.Copy,
-                updateState: UpdateState.Cleanup,
+                updateState: UpdateState.Copy,
                 installPath: Updater.installPath,
                 tempPath: path.dirname(destination),
                 currentVersion: Updater.releasesJson.currentVersion,
