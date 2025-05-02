@@ -173,7 +173,10 @@ def generate_releases_json(artifact_version, delta_info):
         all_versions.append(current_version)
 
     if compare_versions(artifact_version.version, current_version) < 0 or \
-        (artifact_version.channel != 'stable' and int(artifact_version.channel_version) < int(channel_current_versions[artifact_version.channel])):
+        (artifact_version.channel != 'stable' and
+         compare_versions(artifact_version.version, channel_current_versions[artifact_version.channel].get('version', '0.0.0')) <= 0 and
+         int(artifact_version.channel_version) <= int(channel_current_versions[artifact_version.channel].get('channelVersion', 0))):
+
         print('Uploading older release, skipping release json generation...')
         return
 
@@ -212,7 +215,7 @@ def generate_releases_json(artifact_version, delta_info):
             current_releases[package.channel] = os_dict
 
             if package.channel != 'stable':
-                channel_current_versions[package.channel] = max(int(package.channel_version), channel_current_versions.get(package.channel, 0))
+                channel_current_versions[package.channel] = { 'version': artifact_version.version, 'channelVersion': package.channel_version }
 
     if artifact_version.channel == 'stable' and max([artifact_version.version, current_version], key=cmp_to_key(compare_versions)):
         releases['currentVersion'] = artifact_version.version
