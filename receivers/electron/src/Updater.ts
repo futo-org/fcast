@@ -43,6 +43,12 @@ interface UpdateInfo {
     error?: string
 }
 
+interface UpdateConditions {
+    newVersion: boolean,
+    newChannelVersion: boolean,
+    newCommit: boolean,
+}
+
 export class Updater {
     private static readonly supportedReleasesJsonVersion = '1';
 
@@ -52,6 +58,7 @@ export class Updater {
     private static updateMetadataPath = path.join(Updater.updateDataPath, './update.json');
     private static baseUrl: string = 'https://dl.fcast.org/electron';
     private static isRestarting: boolean = false;
+    private static updateConditions: UpdateConditions;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private static localPackageJson: any = null;
@@ -213,6 +220,22 @@ export class Updater {
         return;
     }
 
+    private static compareVersions(v1: string, v2: string): number {
+        const v1Parts = v1.split('.').map(Number);
+        const v2Parts = v2.split('.').map(Number);
+
+        for (let i = 0; i < v1Parts.length; i++) {
+            if (v1Parts[i] > v2Parts[i]) {
+                return 1;
+            }
+            else if (v1Parts[i] < v2Parts[i]) {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
+
     public static restart() {
         if (!Updater.isRestarting) {
             Updater.isRestarting = true;
@@ -335,17 +358,31 @@ export class Updater {
                 currentChannelVersion: currentChannelVersion
             });
 
-            const newVersion = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion;
+            const newVersion = Updater.compareVersions(Updater.localPackageJson.version, Updater.releasesJson.currentVersion) < 0;
+
+            // Note: Major version updates are not captured in this check (e.g. 1.0.0-beta-4 -> 2.0.0-beta-1 being a valid update yet rejected)
             const newChannelVersion = (Updater.updateChannel !== 'stable' && localChannelVersion < currentChannelVersion);
 
             // Allow for update promotion to stable, while still getting updates from the subscribed channel
-            const newCommit = (Updater.updateChannel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
+            const newCommit = (
+                Updater.updateChannel !== 'stable' &&
+                Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit &&
+                Updater.localPackageJson.version === Updater.releasesJson.currentVersion &&
+                localChannelVersion === currentChannelVersion
+            );
+
+            Updater.updateConditions = {
+                newVersion: newVersion,
+                newChannelVersion: newChannelVersion,
+                newCommit: newCommit,
+            };
 
             // Prevent downgrading to sub channel if on stable
-            const isDowngrade = Updater.releaseChannel === 'stable' && newChannelVersion;
+            const isUpdateToStable = newVersion || newCommit;
+            const isDowngrade = Updater.releaseChannel === 'stable' && !isUpdateToStable && newChannelVersion;
 
             if ((newVersion || newChannelVersion || newCommit) && !isDowngrade) {
-                logger.info('Update available...');
+                logger.info('Update available...', Updater.updateConditions);
                 return true;
             }
         }
@@ -367,10 +404,7 @@ export class Updater {
         }
 
         try {
-            const newCommit = (Updater.updateChannel !== 'stable' && Updater.localPackageJson.commit !== Updater.releasesJson.currentCommit);
-            let channel = Updater.localPackageJson.version !== Updater.releasesJson.currentVersion ? 'stable' : Updater.updateChannel;
-            channel = newCommit ? 'stable' : channel;
-
+            const channel = (Updater.updateConditions.newVersion || Updater.updateConditions.newCommit) ? 'stable' : Updater.updateChannel;
             const fileInfo = Updater.releasesJson.currentReleases[channel][process.platform][process.arch]
             const file = fileInfo.url.toString().split('/').pop();
 
