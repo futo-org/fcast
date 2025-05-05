@@ -15,9 +15,11 @@ export class DiscoveryService {
         const name = `FCast-${getComputerName()}`;
         logger.info(`Discovery service started: ${name}`);
 
-        this.serviceTcp = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name });
+        // Note that txt field must be populated, otherwise certain mdns stacks have undefined behavior/issues
+        // when connecting to the receiver
+        this.serviceTcp = mdns.createAdvertisement(mdns.tcp('_fcast'), 46899, { name: name, txt: {} });
         this.serviceTcp.start();
-        this.serviceWs = mdns.createAdvertisement(mdns.tcp('_fcast-ws'), 46898, { name: name });
+        this.serviceWs = mdns.createAdvertisement(mdns.tcp('_fcast-ws'), 46898, { name: name, txt: {} });
         this.serviceWs.start();
     }
 
