@@ -1,21 +1,19 @@
 
 buildWebOS:
   stage: buildWebOSReceiver
-  image: node:22.11.0-bookworm
+  image: node:16.20.2-bullseye
   tags:
     - fcast-instance-runner
   before_script:
     - cd receivers/webos
     - npm install -g @webos-tools/cli
-  script:
     - cd fcast-receiver
     - npm install
-    - npm run build
     - cd ../fcast-receiver-service
     - npm install
-    - npm run build
-    - cd ../
-    - ares-package fcast-receiver/dist/ fcast-receiver-service/dist/ --no-minify
+    - cd ..
+  script:
+    - scripts/build.sh
   artifacts:
     untracked: false
     when: on_success

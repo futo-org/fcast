@@ -1,4 +1,5 @@
 fcast-receiver/dist
 fcast-receiver-service/dist
 
+.env
 *.ipk

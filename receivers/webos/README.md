@@ -6,33 +6,38 @@ The TV receiver player is a simplified player compared to the Electron receiver 
 
 # How to build
 
-From `receivers/webos` directory:
+## Preparing for build
 
-## Prerequisites
-```sh
-npm install -g @webos-tools/cli
-cd fcast-receiver
-npm install
-cd ../fcast-receiver-service
-npm install
-cd ../
+A docker file is provided to setup your build and debug environment for a local TV device. From the root of the repository:
+
+### Build
+```bash
+source receivers/webos/.env && docker build -t fcast/receiver-webos-dev:latest \
+    --build-arg TV_IP=$TV_IP --build-arg PASSPHRASE=$PASSPHRASE receivers/webos/
 ```
 
-## Build
-```sh
-cd fcast-receiver
-npm run build
-cd ../fcast-receiver-service
-npm run build
-cd ../
+Note that you must have the key server enabled during the build process.
+
+To populate the container build arguments, you must export the following environment variables or set them in your `.env` file in `receivers/webos/.env`:
+```
+TV_IP=YOUR_TV_IP_ADDRESS
+PASSPHRASE=YOUR_TV_PASSPHRASE
 ```
 
-## Packaging
-```sh
-ares-package fcast-receiver/dist/ fcast-receiver-service/dist/ --no-minify
+This information is found in the development app.
+
+### Run
+```bash
+docker run --rm -it -w /app/receivers/webos --entrypoint='bash' --network host \
+    -v .:/app fcast/receiver-webos-dev:latest
 ```
 
-## Debugging
-* Install: `ares-install --device tv ./com.futo.fcast.receiver_1.0.0_all.ipk`
-* Web app debug: `ares-inspect --device tv --app com.futo.fcast.receiver -o`
-* Service debug: `ares-inspect --device tv -s com.futo.fcast.receiver.service`
+Note that you must enable host networking support in your docker engine. Also, the production application
+from the LG store must be uninstalled in order to run and debug the development version.
+
+## Commands
+
+* Build app: `scripts/build.sh`
+* Debug app: `scripts/debug.sh`
+
+Build artifact .ipk will be located in `receivers/webos`
