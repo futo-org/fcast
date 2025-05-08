@@ -62,6 +62,7 @@ module.exports = [
                         from: '**',
                         to: '../assets/[path][name][ext]',
                         context: path.resolve(__dirname, 'assets'),
+                        globOptions: { ignore: ['**/*.svg'] }
                     },
                     {
                         from: '**',
