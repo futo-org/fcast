@@ -12,7 +12,7 @@ A docker file is provided to setup your build and debug environment for a local 
 
 ### Build
 ```bash
-source receivers/webos/.env && docker build -t fcast/receiver-webos-dev:latest \
+source receivers/webos/.env && docker build --no-cache -t fcast/receiver-webos-dev:latest \
     --build-arg TV_IP=$TV_IP --build-arg PASSPHRASE=$PASSPHRASE receivers/webos/
 ```
 
