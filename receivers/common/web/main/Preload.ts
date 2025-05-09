@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Opcode } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
 const logger = new Logger('MainWindow', LoggerType.FRONTEND);
 
@@ -55,7 +54,14 @@ if (TARGET === 'electron') {
     window.targetAPI = {
         onDeviceInfo: (callback: () => void) => preloadData.onDeviceInfoCb = callback,
         getDeviceInfo: () => preloadData.deviceInfo,
-        getSessions: (callback: () => any) => preloadData.getSessionsCb = callback,
+        getSessions: (callback?: () => Promise<[any]>) => {
+            if (callback) {
+                preloadData.getSessionsCb = callback;
+            }
+            else {
+                return preloadData.getSessionsCb();
+            }
+        },
         onConnect: (callback: (_, value: any) => void) => preloadData.onConnectCb = callback,
         onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
         logger: loggerInterface,

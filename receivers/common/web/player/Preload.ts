@@ -75,7 +75,14 @@ if (TARGET === 'electron') {
         onSeek: (callback: any) => { preloadData.onSeekCb = callback; },
         onSetVolume: (callback: any) => { preloadData.onSetVolumeCb = callback; },
         onSetSpeed: (callback: any) => { preloadData.onSetSpeedCb = callback; },
-        getSessions: (callback: any) => { preloadData.getSessionsCb = callback; },
+        getSessions: (callback?: () => Promise<[any]>) => {
+            if (callback) {
+                preloadData.getSessionsCb = callback;
+            }
+            else {
+                return preloadData.getSessionsCb();
+            }
+        },
         onConnect: (callback: any) => { preloadData.onConnectCb = callback; },
         onDisconnect: (callback: any) => { preloadData.onDisconnectCb = callback; },
         logger: loggerInterface,

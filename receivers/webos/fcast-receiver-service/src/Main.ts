@@ -10,30 +10,23 @@ import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { NetworkService } from 'common/NetworkService';
+import { ConnectionMonitor } from 'common/ConnectionMonitor';
+import { Logger, LoggerType } from 'common/Logger';
 import * as os from 'os';
-import * as log4js from "log4js";
 import { EventEmitter } from 'events';
 import { ToastIcon } from 'common/components/Toast';
+const logger = new Logger('Main', LoggerType.BACKEND);
 
 export class Main {
     static tcpListenerService: TcpListenerService;
     static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
-    static logger: log4js.Logger;
+    static connectionMonitor: ConnectionMonitor;
     static emitter: EventEmitter;
 
 	static {
 		try {
-            log4js.configure({
-                appenders: {
-                    console: { type: 'console' },
-                },
-                categories: {
-                    default: { appenders: ['console'], level: 'info' },
-                },
-            });
-            Main.logger = log4js.getLogger();
-            Main.logger.info(`OS: ${process.platform} ${process.arch}`);
+            logger.info(`OS: ${process.platform} ${process.arch}`);
 
             const serviceId = 'com.futo.fcast.receiver.service';
             const service = new Service(serviceId);
@@ -50,19 +43,18 @@ export class Main {
 
             registerService(service, 'toast', (message: any) => { return objectCb.bind(this, message) });
 
-            service.register("getDeviceInfo", (message: any) => {
-                Main.logger.info("In getDeviceInfo callback");
-
+            // getDeviceInfo and network-changed handled in frontend
+            service.register("get_sessions", (message: any) => {
                 message.respond({
                     returnValue: true,
-                    value: { name: os.hostname(), addresses: NetworkService.getAllIPv4Addresses() }
+                    value: [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions())
                 });
             });
 
             registerService(service, 'connect', (message: any) => { return objectCb.bind(this, message) });
             registerService(service, 'disconnect', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'ping', (message: any) => { return objectCb.bind(this, message) });
 
+            Main.connectionMonitor = new ConnectionMonitor();
             Main.discoveryService = new DiscoveryService();
             Main.discoveryService.start();
 
@@ -93,7 +85,7 @@ export class Main {
                 message.respond({ returnValue: true, value: { subscribed: true, playData: playData }});
             },
             (message: any) => {
-                Main.logger.info('Canceled play service subscriber');
+                logger.info('Canceled play service subscriber');
                 Main.emitter.removeAllListeners('play');
                 message.respond({ returnValue: true, value: message.payload });
             });
@@ -112,7 +104,7 @@ export class Main {
                 message.respond({ returnValue: true, value: { subscribed: true }});
             },
             (message: any) => {
-                Main.logger.info('Canceled stop service subscriber');
+                logger.info('Canceled stop service subscriber');
                 Main.emitter.removeAllListeners('stop');
                 message.respond({ returnValue: true, value: message.payload });
             });
@@ -132,8 +124,8 @@ export class Main {
                         'id': appId,
                         'params': { timestamp: Date.now(), playData: message }
                     }, (response: any) => {
-                        Main.logger.info(`Launch response: ${JSON.stringify(response)}`);
-                        Main.logger.info(`Relaunching FCast Receiver with args: ${JSON.stringify(message)}`);
+                        logger.info(`Launch response: ${JSON.stringify(response)}`);
+                        logger.info(`Relaunching FCast Receiver with args: ${JSON.stringify(message)}`);
                     });
                 });
                 l.emitter.on("pause", () => Main.emitter.emit('pause'));
@@ -143,9 +135,22 @@ export class Main {
                 l.emitter.on("setvolume", (message) => Main.emitter.emit('setvolume', message));
                 l.emitter.on("setspeed", (message) => Main.emitter.emit('setspeed', message));
 
-                l.emitter.on('connect', (message) => Main.emitter.emit('connect', message));
-                l.emitter.on('disconnect', (message) => Main.emitter.emit('disconnect', message));
-                l.emitter.on('ping', (message) => Main.emitter.emit('ping', message));
+                l.emitter.on('connect', (message) => {
+                    ConnectionMonitor.onConnect(l, message, l instanceof WebSocketListenerService, () => {
+                        Main.emitter.emit('connect', message);
+                    });
+                });
+                l.emitter.on('disconnect', (message) => {
+                    ConnectionMonitor.onDisconnect(l, message, l instanceof WebSocketListenerService, () => {
+                        Main.emitter.emit('disconnect', message);
+                    });
+                });
+                l.emitter.on('ping', (message) => {
+                    ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
+                });
+                l.emitter.on('pong', (message) => {
+                    ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
+                });
                 l.start();
             });
 
@@ -159,7 +164,7 @@ export class Main {
             });
 
             service.register("send_playback_update", (message: any) => {
-                // Main.logger.info("In send_playback_update callback");
+                // logger.info("In send_playback_update callback");
 
                 listeners.forEach(l => {
                     const value: PlaybackUpdateMessage = message.payload.update;
@@ -179,7 +184,7 @@ export class Main {
             });
         }
         catch (err)  {
-            Main.logger.error("Error initializing service:", err);
+            logger.error("Error initializing service:", err);
             Main.emitter.emit('toast', { message: `Error initializing service: ${err}`, icon: ToastIcon.ERROR });
         }
 
@@ -190,9 +195,12 @@ export function getComputerName() {
     return os.hostname();
 }
 
-export async function errorHandler(err: NodeJS.ErrnoException) {
-    Main.logger.error("Application error:", err);
-    Main.emitter.emit('toast', { message: err, icon: ToastIcon.ERROR });
+export async function errorHandler(error: Error) {
+    logger.error(error);
+    logger.shutdown();
+
+    logger.error("Application error:", error);
+    Main.emitter.emit('toast', { message: error, icon: ToastIcon.ERROR });
 }
 
 function registerService(service: Service, method: string, callback: (message: any) => any) {
@@ -206,7 +214,7 @@ function registerService(service: Service, method: string, callback: (message: a
         message.respond({ returnValue: true, value: { subscribed: true }});
     },
     (message: any) => {
-        Main.logger.info(`Canceled ${method} service subscriber`);
+        logger.info(`Canceled ${method} service subscriber`);
         Main.emitter.removeAllListeners(method);
         message.respond({ returnValue: true, value: message.payload });
     });

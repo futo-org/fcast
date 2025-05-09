@@ -5,9 +5,12 @@ import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from
 import { toast, ToastIcon } from 'common/components/Toast';
 require('lib/webOSTVjs-1.2.10/webOSTV.js');
 require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
+const logger = window.targetAPI.logger;
 
 try {
     const serviceId = 'com.futo.fcast.receiver.service';
+    let getSessions = null;
+
     window.webOSAPI = {
         pendingPlay: JSON.parse(sessionStorage.getItem('playData'))
     };
@@ -18,7 +21,7 @@ try {
             parameters: { error },
             onSuccess: () => {},
             onFailure: (message: any) => {
-                console.error(`Player: send_playback_error ${JSON.stringify(message)}`);
+                logger.error(`Player: send_playback_error ${JSON.stringify(message)}`);
             },
         });
     };
@@ -27,11 +30,11 @@ try {
             method: 'send_playback_update',
             parameters: { update },
             // onSuccess: (message: any) => {
-            //     console.log(`Player: send_playback_update ${JSON.stringify(message)}`);
+            //     logger.info(`Player: send_playback_update ${JSON.stringify(message)}`);
             // },
             onSuccess: () => {},
             onFailure: (message: any) => {
-                console.error(`Player: send_playback_update ${JSON.stringify(message)}`);
+                logger.error(`Player: send_playback_update ${JSON.stringify(message)}`);
             },
         });
     };
@@ -41,7 +44,7 @@ try {
             parameters: { update },
             onSuccess: () => {},
             onFailure: (message: any) => {
-                console.error(`Player: send_volume_update ${JSON.stringify(message)}`);
+                logger.error(`Player: send_volume_update ${JSON.stringify(message)}`);
             },
         });
     };
@@ -50,9 +53,9 @@ try {
         method:"play",
         parameters: {},
         onSuccess: (message: any) => {
-            // console.log(JSON.stringify(message));
+            // logger.info(JSON.stringify(message));
             if (message.value.subscribed === true) {
-                console.log('Player: Registered play handler with service');
+                logger.info('Player: Registered play handler with service');
             }
 
             if (message.value.playData !== null) {
@@ -65,15 +68,15 @@ try {
             }
         },
         onFailure: (message: any) => {
-            console.error(`Player: play ${JSON.stringify(message)}`);
+            logger.error(`Player: play ${JSON.stringify(message)}`);
         },
         subscribe: true,
         resubscribe: true
     });
 
-    const pauseService = registerService('pause', () => { preloadData.onPauseCb(); });
-    const resumeService = registerService('resume', () => { preloadData.onResumeCb(); });
-    const stopService = registerService('stop', () => {
+    const pauseService = requestService('pause', () => { preloadData.onPauseCb(); });
+    const resumeService = requestService('resume', () => { preloadData.onResumeCb(); });
+    const stopService = requestService('stop', () => {
         playService.cancel();
         pauseService.cancel();
         resumeService.cancel();
@@ -81,6 +84,9 @@ try {
         seekService.cancel();
         setVolumeService.cancel();
         setSpeedService.cancel();
+        getSessions?.cancel();
+        onConnectService.cancel();
+        onDisconnectService.cancel();
 
         // WebOS 22 and earlier does not work well using the history API,
         // so manually handling page navigation...
@@ -88,14 +94,23 @@ try {
         window.open('../main_window/index.html', '_self');
      });
 
-    const seekService = registerService('seek', (message: any) => { preloadData.onSeekCb(null, message.value); });
-    const setVolumeService = registerService('setvolume', (message: any) => { preloadData.onSetVolumeCb(null, message.value); });
-    const setSpeedService = registerService('setspeed', (message: any) => { preloadData.onSetSpeedCb(null, message.value); });
+    const seekService = requestService('seek', (message: any) => { preloadData.onSeekCb(null, message.value); });
+    const setVolumeService = requestService('setvolume', (message: any) => { preloadData.onSetVolumeCb(null, message.value); });
+    const setSpeedService = requestService('setspeed', (message: any) => { preloadData.onSetSpeedCb(null, message.value); });
+
+    window.targetAPI.getSessions(() => {
+        return new Promise((resolve, reject) => {
+            getSessions = requestService('get_sessions', (message: any) => resolve(message.value), (message: any) => reject(message), false);
+        });
+    });
+
+    const onConnectService = requestService('connect', (message: any) => { preloadData.onConnectCb(null, message.value); });
+    const onDisconnectService = requestService('disconnect', (message: any) => { preloadData.onDisconnectCb(null, message.value); });
 
     const launchHandler = () => {
         // args don't seem to be passed in via event despite what documentation says...
         const params = window.webOSDev.launchParams();
-        console.log(`Player: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
+        logger.info(`Player: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
 
         const lastTimestamp = Number(localStorage.getItem('lastTimestamp'));
         if (params.playData !== undefined && params.timestamp != lastTimestamp) {
@@ -108,6 +123,9 @@ try {
             seekService?.cancel();
             setVolumeService?.cancel();
             setSpeedService?.cancel();
+            getSessions?.cancel();
+            onConnectService?.cancel();
+            onDisconnectService?.cancel();
 
             // WebOS 22 and earlier does not work well using the history API,
             // so manually handling page navigation...
@@ -121,27 +139,30 @@ try {
 
 }
 catch (err) {
-    console.error(`Player: preload ${JSON.stringify(err)}`);
-    toast(`Player: preload ${JSON.stringify(err)}`, ToastIcon.ERROR);
+    logger.error(`Player: preload ${JSON.stringify(err)}`);
+    toast(`Error starting the video player (preload): ${JSON.stringify(err)}`, ToastIcon.ERROR);
 }
 
-function registerService(method: string, callback: (message: any) => void, subscribe: boolean = true): any {
+function requestService(method: string, successCallback: (message: any) => void, failureCallback?: (message: any) => void, subscribe: boolean = true): any {
     const serviceId = 'com.futo.fcast.receiver.service';
 
     return window.webOS.service.request(`luna://${serviceId}/`, {
         method: method,
         parameters: {},
         onSuccess: (message: any) => {
-            if (message.value.subscribed === true) {
-                console.log(`Player: Registered ${method} handler with service`);
+            if (message.value?.subscribed === true) {
+                logger.info(`Player: Registered ${method} handler with service`);
             }
             else {
-                callback(message);
+                successCallback(message);
             }
         },
         onFailure: (message: any) => {
-            console.error(`Player: ${method} ${JSON.stringify(message)}`);
-            // toast(`Player: ${method} ${JSON.stringify(message)}`, ToastIcon.ERROR);
+            logger.error(`Main: ${method} ${JSON.stringify(message)}`);
+
+            if (failureCallback) {
+                failureCallback(message);
+            }
         },
         // onComplete: (message) => {},
         subscribe: subscribe,

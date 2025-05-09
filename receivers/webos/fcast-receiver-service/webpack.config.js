@@ -18,7 +18,7 @@ module.exports = [
         entry: {
             main: './src/Main.ts',
         },
-        target: 'node',
+        target: 'node8.12',
         module: {
             rules: [
                 {

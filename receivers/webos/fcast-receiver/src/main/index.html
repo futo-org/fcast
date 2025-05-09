@@ -1,15 +1,14 @@
 <!DOCTYPE html>
 <html>
-
 <head>
 	<title>FCast Receiver</title>
 	<meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="stylesheet" href="../assets/fonts/outfit.css" />
     <link rel="stylesheet" href="../assets/fonts/inter.css" />
     <link rel="stylesheet" href="./common.css" />
     <link rel="stylesheet" href="./style.css" />
 </head>
-
 <body>
     <div id="loading-screen">
         <div id="loading-text" class="non-selectable">Loading FCast</div>
@@ -34,16 +33,34 @@
                     </div>
                 </div>
                 <div id="detail-view" class="card">
-                    <div class="non-selectable card-title">Manual connection information</div>
+                    <div class="non-selectable card-title">Connection Information</div>
                     <div class="card-title-separator"></div>
-                    <div>
-                        <div id="ips">IPs</div><br />
-                        <div id="ip-ports">Port<br>46899 (TCP), 46898 (WS)</div>
+
+                    <div id="connection-information-loading">
+                        <div id="connection-information-loading-text" class="lds-ring">Fetching Network Info...</div>
+                        <div id="connection-information-loading-spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
                     </div>
-                    <div id="automatic-discovery" class="non-selectable">Automatic discovery is available via mDNS</div>
-                     <canvas id="qr-code"></canvas>
-                    <div id="scan-to-connect" class="non-selectable">Scan with a FCast sender app.</div>
-                    <div id="app-download" class="non-selectable app-download">Need a sender app?<br>Download Grayjay at <u class="app-download">https://grayjay.app</u></div>
+                    <div id="connection-error">
+                        <div id="connection-error-icon"></div>
+                        <div id="connection-error-text">Device not connected to a network</div>
+                    </div>
+                    <div id="connection-information">
+                        <div id="scan-to-connect" class="non-selectable">Scan with a FCast sender app</div>
+                        <canvas id="qr-code"></canvas>
+                        <div id="app-download" class="non-selectable app-download">Need a sender app?<br>Download Grayjay at <a href="https://grayjay.app" target="_blank">https://grayjay.app</a></div>
+
+                        <br />
+                        <div id="connection-details" class="non-selectable card-title">Connection Details</div>
+                        <div id="connection-details-separator" class="card-title-separator"></div>
+                        <div>
+                            <div id="ips">
+                                <div id="ips-iface-icon"></div>
+                                <div id="ips-iface-text"></div>
+                                <div id="ips-iface-name"></div>
+                            </div><br />
+                            <div id="ip-ports">Port<br>46899 (TCP), 46898 (WS)</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -57,5 +74,4 @@
     <script src="./preload.js"></script>
     <script src="./renderer.js"></script>
 </body>
-
 </html>

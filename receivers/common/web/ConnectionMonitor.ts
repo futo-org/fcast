@@ -1,6 +1,13 @@
 import { Opcode } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
 
+// Required for webOS since preload declared interface is not available on the backend
+declare global {
+    interface Window {
+      targetAPI: any;
+    }
+}
+
 // Window might be re-created while devices are still connected
 export function setUiUpdateCallbacks(callbacks: any) {
     const logger = window.targetAPI.logger;

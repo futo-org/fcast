@@ -157,7 +157,14 @@ export class Logger {
 
         // @ts-ignore
         } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
-
+            this.funcTable = {
+                trace: (message?: any, ...optionalParams: any[]) => console.trace(message, ...optionalParams),
+                debug: (message?: any, ...optionalParams: any[]) => console.log(message, ...optionalParams),
+                info: (message?: any, ...optionalParams: any[]) => console.log(message, ...optionalParams),
+                warn: (message?: any, ...optionalParams: any[]) => console.warn(message, ...optionalParams),
+                error: (message?: any, ...optionalParams: any[]) => console.error(message, ...optionalParams),
+                fatal: (message?: any, ...optionalParams: any[]) => console.error(message, ...optionalParams),
+            };
         } else {
             // @ts-ignore
             console.warn(`Attempting to initialize logger on unsupported target: ${TARGET}`);
