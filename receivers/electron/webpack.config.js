@@ -152,5 +152,53 @@ module.exports = [
                 TARGET: JSON.stringify(TARGET)
             })
         ]
+    },
+    {
+        mode: buildMode,
+        entry: {
+            // Player preload is intentionally reused
+            preload: './src/player/Preload.ts',
+            renderer: './src/viewer/Renderer.ts',
+        },
+        target: 'electron-renderer',
+        module: {
+            rules: [
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, '../common/web'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                }
+            ],
+        },
+        resolve: {
+            alias: {
+                'src': path.resolve(__dirname, 'src'),
+                'modules': path.resolve(__dirname, 'node_modules'),
+                'common': path.resolve(__dirname, '../common/web'),
+            },
+            extensions: ['.tsx', '.ts', '.js'],
+        },
+        output: {
+            filename: '[name].js',
+            path: path.resolve(__dirname, 'dist/viewer'),
+        },
+        plugins: [
+            new CopyWebpackPlugin({
+                patterns: [
+                    {
+                        from: '../common/web/viewer/common.css',
+                        to: '[name][ext]',
+                    },
+                    {
+                        from: './src/viewer/*',
+                        to: '[name][ext]',
+                        globOptions: { ignore: ['**/*.ts'] }
+                    }
+                ],
+            }),
+            new webpack.DefinePlugin({
+                TARGET: JSON.stringify(TARGET)
+            })
+        ]
     }
 ];

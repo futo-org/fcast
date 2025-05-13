@@ -1,4 +1,5 @@
-import { PlayMessage, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
+import { PlayMessage } from 'common/Packets';
+import { streamingMediaTypes } from 'common/MimeTypes';
 import * as http from 'http';
 import * as url from 'url';
 import { AddressInfo } from 'modules/ws';
@@ -80,14 +81,8 @@ export class NetworkService {
         });
     }
 
-    static streamingMediaTypes = [
-        "application/vnd.apple.mpegurl",
-        "application/x-mpegURL",
-        "application/dash+xml"
-    ];
-
     static async proxyPlayIfRequired(message: PlayMessage): Promise<PlayMessage> {
-        if (message.headers && message.url && !NetworkService.streamingMediaTypes.find(v => v === message.container.toLocaleLowerCase())) {
+        if (message.headers && message.url && !streamingMediaTypes.find(v => v === message.container.toLocaleLowerCase())) {
             return { ...message, url: await NetworkService.proxyFile(message.url, message.headers) };
         }
         return message;

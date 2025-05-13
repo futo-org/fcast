@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
+import { supportedPlayerTypes } from 'common/MimeTypes';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
@@ -168,7 +169,8 @@ export class Main {
                     Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
                     Main.playerWindow.show();
 
-                    Main.playerWindow.loadFile(path.join(__dirname, 'player/index.html'));
+                    const rendererPath = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
+                    Main.playerWindow.loadFile(path.join(__dirname, `${rendererPath}/index.html`));
                     Main.playerWindow.on('ready-to-show', async () => {
                         Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
                     });
