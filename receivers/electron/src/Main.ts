@@ -28,6 +28,7 @@ export class Main {
     static tray: Tray;
 
     private static cachedInterfaces = null;
+    private static playerWindowContentViewer = null;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -156,7 +157,9 @@ export class Main {
         const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
         listeners.forEach(l => {
             l.emitter.on("play", async (message) => {
-                if (Main.playerWindow == null) {
+                const contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
+
+                if (!Main.playerWindow) {
                     Main.playerWindow = new BrowserWindow({
                         fullscreen: true,
                         autoHideMenuBar: true,
@@ -169,25 +172,34 @@ export class Main {
                     Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
                     Main.playerWindow.show();
 
-                    const rendererPath = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
-                    Main.playerWindow.loadFile(path.join(__dirname, `${rendererPath}/index.html`));
+                    Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
                     Main.playerWindow.on('ready-to-show', async () => {
                         Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
                     });
                     Main.playerWindow.on('closed', () => {
                         Main.playerWindow = null;
+                        Main.playerWindowContentViewer = null;
+                    });
+                }
+                else if (Main.playerWindow && contentViewer !== Main.playerWindowContentViewer) {
+                    Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
+                    Main.playerWindow.on('ready-to-show', async () => {
+                        Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
                     });
                 } else {
                     Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
                 }
+
+                Main.playerWindowContentViewer = contentViewer;
             });
 
             l.emitter.on("pause", () => Main.playerWindow?.webContents?.send("pause"));
             l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
             l.emitter.on("stop", () => {
-                    Main.playerWindow?.close();
-                    Main.playerWindow = null;
+                Main.playerWindow?.close();
+                Main.playerWindow = null;
+                Main.playerWindowContentViewer = null;
             });
 
             l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
