@@ -7,20 +7,19 @@ export const streamingMediaTypes = [
 
 export const supportedPlayerTypes = streamingMediaTypes.concat([
     'audio/aac',
-    'audio/midi',
-    'audio/x-midi',
+    'audio/flac',
     'audio/mpeg',
+    'audio/mp4',
     'audio/ogg',
     'audio/wav',
     'audio/webm',
     'audio/3gpp',
     'audio/3gpp2',
-    'video/x-msvideo',
     'video/mp4',
     'video/mpeg',
     'video/ogg',
-    'video/mp2t',
     'video/webm',
+    'video/x-matroska',
     'video/3gpp',
     'video/3gpp2'
 ]);
@@ -34,7 +33,6 @@ export const supportedImageTypes = [
     'image/jpeg',
     'image/png',
     'image/svg+xml',
-    'image/tiff',
     'image/vnd.microsoft.icon',
     'image/webp'
 ];
