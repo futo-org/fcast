@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "build": "rm -rf dist/ && webpack --config ./webpack.config.js",
-    "start": "electron-forge start",
+    "start": "electron-forge start --",
     "test": "jest",
     "package": "electron-forge package",
     "make": "electron-forge make"
