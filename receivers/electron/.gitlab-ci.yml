@@ -16,7 +16,7 @@ buildElectronDockerContainer:
 
 buildMac:
   stage: buildAndDeployElectron
-  image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
+  image: cirruslabs-ventura-xcode-13-4-1
   tags:
     - tart-installed
   variables:
