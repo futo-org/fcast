@@ -3,7 +3,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using FCastClient;
+using FCastSender;
 using NestedArgs;
 
 internal class Program
@@ -120,7 +120,7 @@ internal class Program
                 .Build())
             .Build();
 
-        CommandMatches matches = rootCommand.Parse(args);
+        CommandMatches matches = rootCommand.Parse(args).Matches;
         Console.WriteLine(matches.ToString());
 
         var host = matches.Value("host")!;
@@ -191,7 +191,7 @@ internal class Program
                         Headers = headers
                     }, cancellationToken);
                 }
-                
+
                 break;
             }
             case "seek":

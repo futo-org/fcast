@@ -1,4 +1,4 @@
-﻿namespace FCastClient;
+﻿namespace FCastSender;
 
 using System;
 using System.Buffers.Binary;

@@ -12,7 +12,7 @@ dotnet build
 
 # Usage
 
-Example usage of the fcast client.
+Example usage of the fcast sender.
 
 ```
 # Play a mp4 video URL (1.0 playbackspeed explicit)
