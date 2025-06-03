@@ -1,27 +1,26 @@
-mod models;
-mod fcastsession;
-mod transport;
-
 use clap::{App, Arg, SubCommand};
-use tiny_http::{Server, Response, ListenAddr, Header};
-use tungstenite::stream::MaybeTlsStream;
-use url::Url;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
-use std::{thread, fs};
 use std::time::Instant;
+use std::{fs, thread};
 use std::{io::Read, net::TcpStream};
-use std::sync::atomic::{ AtomicBool, Ordering};
 use std::{sync::Arc, time::Duration};
+use tiny_http::{Header, ListenAddr, Response, Server};
+use tungstenite::stream::MaybeTlsStream;
+use url::Url;
 
-use crate::fcastsession::Opcode;
-use crate::models::{SetVolumeMessage, SetSpeedMessage};
-use crate::{models::{PlayMessage, SeekMessage}, fcastsession::FCastSession};
+use fcast::fcastsession::Opcode;
+use fcast::{
+    fcastsession::FCastSession,
+    models::v2::PlayMessage,
+    models::{SeekMessage, SetSpeedMessage, SetVolumeMessage},
+};
 
-fn main()  {
+fn main() {
     if let Err(e) = run() {
         println!("Failed due to error: {}", e)
     }
@@ -30,127 +29,151 @@ fn main()  {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::new("Media Control")
         .about("Control media playback")
-        .arg(Arg::with_name("connection_type")
-            .short('c')
-            .long("connection_type")
-            .value_name("CONNECTION_TYPE")
-            .help("Type of connection: tcp or ws (websocket)")
-            .required(false)
-            .default_value("tcp")
-            .takes_value(true))
-        .arg(Arg::with_name("host")
-            .short('h')
-            .long("host")
-            .value_name("Host")
-            .help("The host address to send the command to")
-            .required(true)
-            .takes_value(true))
-        .arg(Arg::with_name("port")
-            .short('p')
-            .long("port")
-            .value_name("PORT")
-            .help("The port to send the command to")
-            .required(false)
-            .takes_value(true))
-        .subcommand(SubCommand::with_name("play")
-            .about("Play media")
-            .arg(Arg::with_name("mime_type")
-                .short('m')
-                .long("mime_type")
-                .value_name("MIME_TYPE")
-                .help("Mime type (e.g., video/mp4)")
-                .required_unless_present("file")
-                .takes_value(true)
-            )
-            .arg(Arg::with_name("file")
-                .short('f')
-                .long("file")
-                .value_name("File")
-                .help("File content to play")
-                .required(false)
-                .takes_value(true))
-            .arg(Arg::with_name("url")
-                .short('u')
-                .long("url")
-                .value_name("URL")
-                .help("URL to the content")
-                .required(false)
-                .takes_value(true)
-            )
-            .arg(Arg::with_name("content")
+        .arg(
+            Arg::with_name("connection_type")
                 .short('c')
-                .long("content")
-                .value_name("CONTENT")
-                .help("The actual content")
+                .long("connection_type")
+                .value_name("CONNECTION_TYPE")
+                .help("Type of connection: tcp or ws (websocket)")
                 .required(false)
-                .takes_value(true)
-            )
-            .arg(Arg::with_name("timestamp")
-                .short('t')
-                .long("timestamp")
-                .value_name("TIMESTAMP")
-                .help("Timestamp to start playing")
-                .required(false)
-                .default_value("0")
-                .takes_value(true)
-            )
-            .arg(Arg::with_name("speed")
-                .short('s')
-                .long("speed")
-                .value_name("SPEED")
-                .help("Factor to multiply playback speed by")
-                .required(false)
-                .default_value("1")
-                .takes_value(true)
-            )
-            .arg(Arg::with_name("header")
-                .short('H')
-                .long("header")
-                .value_name("HEADER")
-                .help("Custom request headers in key:value format")
-                .required(false)
-                .multiple_occurrences(true)
-            )
+                .default_value("tcp")
+                .takes_value(true),
         )
-        .subcommand(SubCommand::with_name("seek")
-            .about("Seek to a timestamp")
-            .arg(Arg::with_name("timestamp")
-                .short('t')
-                .long("timestamp")
-                .value_name("TIMESTAMP")
-                .help("Timestamp to start playing")
-                .required(true)
-                .takes_value(true)
-            ),
+        .arg(
+            Arg::with_name("host")
+                .short('h')
+                .long("host")
+                .value_name("Host")
+                .help("The host address to send the command to")
+                .default_value("127.0.0.1")
+                .required(false)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("port")
+                .short('p')
+                .long("port")
+                .value_name("PORT")
+                .help("The port to send the command to")
+                .required(false)
+                .takes_value(true),
+        )
+        .subcommand(
+            SubCommand::with_name("play")
+                .about("Play media")
+                .arg(
+                    Arg::with_name("mime_type")
+                        .short('m')
+                        .long("mime_type")
+                        .value_name("MIME_TYPE")
+                        .help("Mime type (e.g., video/mp4)")
+                        .required_unless_present("file")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("file")
+                        .short('f')
+                        .long("file")
+                        .value_name("File")
+                        .help("File content to play")
+                        .required(false)
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("url")
+                        .short('u')
+                        .long("url")
+                        .value_name("URL")
+                        .help("URL to the content")
+                        .required(false)
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("content")
+                        .short('c')
+                        .long("content")
+                        .value_name("CONTENT")
+                        .help("The actual content")
+                        .required(false)
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("timestamp")
+                        .short('t')
+                        .long("timestamp")
+                        .value_name("TIMESTAMP")
+                        .help("Timestamp to start playing")
+                        .required(false)
+                        .default_value("0")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("speed")
+                        .short('s')
+                        .long("speed")
+                        .value_name("SPEED")
+                        .help("Factor to multiply playback speed by")
+                        .required(false)
+                        .default_value("1")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("header")
+                        .short('H')
+                        .long("header")
+                        .value_name("HEADER")
+                        .help("Custom request headers in key:value format")
+                        .required(false)
+                        .multiple_occurrences(true),
+                ),
+        )
+        .subcommand(
+            SubCommand::with_name("seek")
+                .about("Seek to a timestamp")
+                .arg(
+                    Arg::with_name("timestamp")
+                        .short('t')
+                        .long("timestamp")
+                        .value_name("TIMESTAMP")
+                        .help("Timestamp to start playing")
+                        .required(true)
+                        .takes_value(true),
+                ),
         )
         .subcommand(SubCommand::with_name("pause").about("Pause media"))
         .subcommand(SubCommand::with_name("resume").about("Resume media"))
         .subcommand(SubCommand::with_name("stop").about("Stop media"))
         .subcommand(SubCommand::with_name("listen").about("Listen to incoming events"))
-        .subcommand(SubCommand::with_name("setvolume").about("Set the volume")
-            .arg(Arg::with_name("volume")
-            .short('v')
-            .long("volume")
-            .value_name("VOLUME")
-            .help("Volume level (0-1)")
-            .required(true)
-            .takes_value(true)))
-        .subcommand(SubCommand::with_name("setspeed").about("Set the playback speed")
-            .arg(Arg::with_name("speed")
-            .short('s')
-            .long("speed")
-            .value_name("SPEED")
-            .help("Factor to multiply playback speed by")
-            .required(true)
-            .takes_value(true))
+        .subcommand(
+            SubCommand::with_name("setvolume")
+                .about("Set the volume")
+                .arg(
+                    Arg::with_name("volume")
+                        .short('v')
+                        .long("volume")
+                        .value_name("VOLUME")
+                        .help("Volume level (0-1)")
+                        .required(true)
+                        .takes_value(true),
+                ),
+        )
+        .subcommand(
+            SubCommand::with_name("setspeed")
+                .about("Set the playback speed")
+                .arg(
+                    Arg::with_name("speed")
+                        .short('s')
+                        .long("speed")
+                        .value_name("SPEED")
+                        .help("Factor to multiply playback speed by")
+                        .required(true)
+                        .takes_value(true),
+                ),
         );
 
     let matches = app.get_matches();
 
-    let host = match matches.value_of("host") {
-        Some(s) => s,
-        _ => return Err("Host is required.".into())
-    };
+    let host = matches.value_of("host").expect("host has default value");
 
     let connection_type = matches.value_of("connection_type").unwrap_or("tcp");
 
@@ -159,8 +182,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => match connection_type {
             "tcp" => "46899",
             "ws" => "46898",
-            _ => return Err("Unknown connection type, cannot automatically determine port.".into())
-        }
+            _ => {
+                return Err("Unknown connection type, cannot automatically determine port.".into())
+            }
+        },
     };
 
     let local_ip: Option<IpAddr>;
@@ -169,24 +194,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("Connecting via TCP to host={} port={}...", host, port);
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
             local_ip = Some(stream.local_addr()?.ip());
-            FCastSession::new(stream)
-        },
+            FCastSession::connect(stream)?
+        }
         "ws" => {
             println!("Connecting via WebSocket to host={} port={}...", host, port);
             let url = Url::parse(format!("ws://{}:{}", host, port).as_str())?;
             let (stream, _) = tungstenite::connect(url)?;
             local_ip = match stream.get_ref() {
                 MaybeTlsStream::Plain(ref stream) => Some(stream.local_addr()?.ip()),
-                _ => return Err("Established connection type is not plain.".into())
+                _ => return Err("Established connection type is not plain.".into()),
             };
-            FCastSession::new(stream)
+            FCastSession::connect(stream)?
         }
         _ => return Err("Invalid connection type.".into()),
     };
 
     println!("Connection established.");
 
-    
     let mut join_handle: Option<JoinHandle<Result<(), String>>> = None;
     if let Some(play_matches) = matches.subcommand_matches("play") {
         let file_path = play_matches.value_of("file");
@@ -197,7 +221,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if file_path.is_none() {
                     return Err("MIME type is required.".into());
                 }
-                match file_path.unwrap().split('.').last() {
+                match file_path.unwrap().split('.').next_back() {
                     Some("mkv") => "video/x-matroska".to_string(),
                     Some("mov") => "video/quicktime".to_string(),
                     Some("mp4") | Some("m4v") => "video/mp4".to_string(),
@@ -210,68 +234,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         let time = match play_matches.value_of("timestamp") {
             Some(s) => s.parse::<f64>().ok(),
-            _ => None
+            _ => None,
         };
 
         let speed = match play_matches.value_of("speed") {
             Some(s) => s.parse::<f64>().ok(),
-            _ => None
+            _ => None,
         };
 
-        let headers = play_matches.values_of("header")
-        .map(|values| values
-            .filter_map(|s| {
-                let mut parts = s.splitn(2, ':');
-                if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                    Some((key.trim().to_string(), value.trim().to_string()))
-                } else {
-                    None
-                }
-            }
-        ).collect::<HashMap<String, String>>());
+        let headers = play_matches.values_of("header").map(|values| {
+            values
+                .filter_map(|s| {
+                    let mut parts = s.splitn(2, ':');
+                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        Some((key.trim().to_string(), value.trim().to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<HashMap<String, String>>()
+        });
 
         let mut play_message = if let Some(file_path) = file_path {
             match local_ip {
                 Some(lip) => {
                     let running = Arc::new(AtomicBool::new(true));
-                    let r = running.clone();            
+                    let r = running.clone();
 
                     ctrlc::set_handler(move || {
-                        println!("Ctrl+C triggered, server will stop when onging request finishes...");
+                        println!(
+                            "Ctrl+C triggered, server will stop when onging request finishes..."
+                        );
                         r.store(false, Ordering::SeqCst);
-                    }).expect("Error setting Ctrl-C handler");
-            
+                    })
+                    .expect("Error setting Ctrl-C handler");
+
                     println!("Waiting for Ctrl+C...");
 
                     let result = host_file_and_get_url(&lip, file_path, &mime_type, &running)?;
                     let url = result.0;
                     join_handle = Some(result.1);
 
-                    PlayMessage::new(
-                       mime_type,
-                        Some(url),
-                        None,
-                        time,
-                        speed,
-                        headers
-                    )
-                },
-                _ => return Err("Local IP was not able to be resolved.".into())
+                    PlayMessage::new(mime_type, Some(url), None, time, speed, headers)
+                }
+                _ => return Err("Local IP was not able to be resolved.".into()),
             }
         } else {
             PlayMessage::new(
                 mime_type,
-                match play_matches.value_of("url") {
-                    Some(s) => Some(s.to_string()),
-                    _ => None
-                },
-                match play_matches.value_of("content") {
-                    Some(s) => Some(s.to_string()),
-                    _ => None
-                },
+                play_matches.value_of("url").map(|s| s.to_owned()),
+                play_matches.value_of("content").map(|s| s.to_owned()),
                 time,
                 speed,
-                headers
+                headers,
             )
         };
 
@@ -290,20 +305,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else if let Some(seek_matches) = matches.subcommand_matches("seek") {
         let seek_message = SeekMessage::new(match seek_matches.value_of("timestamp") {
             Some(s) => s.parse::<f64>()?,
-            _ => return Err("Timestamp is required.".into())
+            _ => return Err("Timestamp is required.".into()),
         });
         println!("Sent seek {:?}", seek_message);
         session.send_message(Opcode::Seek, &seek_message)?;
-    } else if let Some(_) = matches.subcommand_matches("pause") {
+    } else if matches.subcommand_matches("pause").is_some() {
         println!("Sent pause");
         session.send_empty(Opcode::Pause)?;
-    } else if let Some(_) = matches.subcommand_matches("resume") {
+    } else if matches.subcommand_matches("resume").is_some() {
         println!("Sent resume");
         session.send_empty(Opcode::Resume)?;
-    } else if let Some(_) = matches.subcommand_matches("stop") {
+    } else if matches.subcommand_matches("stop").is_some() {
         println!("Sent stop");
         session.send_empty(Opcode::Stop)?;
-    } else if let Some(_) = matches.subcommand_matches("listen") {
+    } else if matches.subcommand_matches("listen").is_some() {
         println!("Starter listening to events...");
 
         let running = Arc::new(AtomicBool::new(true));
@@ -312,7 +327,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ctrlc::set_handler(move || {
             println!("Ctrl+C triggered...");
             r.store(false, Ordering::SeqCst);
-        }).expect("Error setting Ctrl-C handler");
+        })
+        .expect("Error setting Ctrl-C handler");
 
         println!("Waiting for Ctrl+C...");
 
@@ -322,14 +338,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else if let Some(setvolume_matches) = matches.subcommand_matches("setvolume") {
         let setvolume_message = SetVolumeMessage::new(match setvolume_matches.value_of("volume") {
             Some(s) => s.parse::<f64>()?,
-            _ => return Err("Timestamp is required.".into())
+            _ => return Err("Timestamp is required.".into()),
         });
         println!("Sent setvolume {:?}", setvolume_message);
         session.send_message(Opcode::SetVolume, &setvolume_message)?;
     } else if let Some(setspeed_matches) = matches.subcommand_matches("setspeed") {
         let setspeed_message = SetSpeedMessage::new(match setspeed_matches.value_of("speed") {
             Some(s) => s.parse::<f64>()?,
-            _ => return Err("Speed is required.".into())
+            _ => return Err("Speed is required.".into()),
         });
         println!("Sent setspeed {:?}", setspeed_message);
         session.send_message(Opcode::SetSpeed, &setspeed_message)?;
@@ -340,7 +356,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Waiting on other threads...");
     if let Some(v) = join_handle {
-        if let Err(_) = v.join() {
+        if v.join().is_err() {
             return Err("Failed to join thread.".into());
         }
     }
@@ -364,19 +380,19 @@ impl ServerState {
     }
 }
 
-fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String, running: &Arc<AtomicBool>) -> Result<(String, thread::JoinHandle<Result<(), String>>), String> {
+fn host_file_and_get_url(
+    local_ip: &IpAddr,
+    file_path: &str,
+    mime_type: &String,
+    running: &Arc<AtomicBool>,
+) -> Result<(String, thread::JoinHandle<Result<(), String>>), String> {
     let local_ip_str = if local_ip.is_ipv6() {
         format!("[{}]", local_ip)
     } else {
         format!("{}", local_ip)
     };
-    let server = {
-        let this = Server::http(format!("{local_ip_str}:0"));
-        match this {
-            Ok(t) => Ok(t),
-            Err(e) => Err((|e| format!("Failed to create server: {}", e))(e)),
-        }
-    }?;
+    let server = Server::http(format!("{local_ip_str}:0"))
+        .map_err(|err| format!("Failed to create server: {err}"))?;
 
     let url = match server.server_addr() {
         ListenAddr::IP(addr) => format!("http://{local_ip_str}:{}/", addr.port()),
@@ -399,14 +415,9 @@ fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String,
             }
 
             let should_break = {
-                let state = {
-                    let this = state.lock();
-                    match this {
-                        Ok(t) => Ok(t),
-                        Err(e) => Err((|e| format!("Mutex error: {}", e))(e)),
-                    }
-                }?;
-                state.active_connections == 0 && state.last_request_time.elapsed() > Duration::from_secs(300)
+                let state = state.lock().unwrap();
+                state.active_connections == 0
+                    && state.last_request_time.elapsed() > Duration::from_secs(300)
             };
 
             if should_break {
@@ -418,34 +429,18 @@ fn host_file_and_get_url(local_ip: &IpAddr, file_path: &str, mime_type: &String,
                 Ok(Some(request)) => {
                     println!("Request received.");
 
-                    let mut state = {
-                        let this = state.lock();
-                        match this {
-                            Ok(t) => Ok(t),
-                            Err(e) => Err((|e| format!("Mutex error: {}", e))(e)),
-                        }
-                    }?;
+                    let mut state = state.lock().unwrap();
                     state.active_connections += 1;
                     state.last_request_time = Instant::now();
 
-                    let file = {
-                        let this = fs::File::open(&file_path_clone);
-                        match this {
-                            Ok(t) => Ok(t),
-                            Err(e) => Err((|_| "Failed to open file.".to_string())(e)),
-                        }
-                    }?;
+                    let file = fs::File::open(&file_path_clone)
+                        .map_err(|_| "Failed to open file.".to_owned())?;
 
-                    let content_type_header = {
-                        let this = Header::from_str(format!("Content-Type: {}", mime_type_clone).as_str());
-                        match this {
-                            Ok(t) => Ok(t),
-                            Err(e) => Err((|_| "Failed to open file.".to_string())(e)),
-                        }
-                    }?;
+                    let content_type_header =
+                        Header::from_str(format!("Content-Type: {}", mime_type_clone).as_str())
+                            .map_err(|_| "Failed to open file.".to_owned())?;
 
-                    let response = Response::from_file(file)
-                        .with_header(content_type_header);
+                    let response = Response::from_file(file).with_header(content_type_header);
 
                     if let Err(e) = request.respond(response) {
                         println!("Failed to respond to request: {}", e);
