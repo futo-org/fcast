@@ -1,4 +1,4 @@
-import { PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
+import { EventMessage, EventType, KeyEvent, MediaItem, MediaItemEvent, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { supportedImageTypes } from 'common/MimeTypes';
 import * as connectionMonitor from '../ConnectionMonitor';
 import { toast, ToastIcon } from '../components/Toast';
@@ -11,6 +11,12 @@ const genericViewer = document.getElementById('viewer-generic') as HTMLIFrameEle
 
 function onPlay(_event, value: PlayMessage) {
     logger.info("Handle play message renderer", JSON.stringify(value));
+    const playMediaItem = new MediaItem(
+            value.container, value.url, value.content,
+            value.time, value.volume, value.speed,
+            null, null, value.headers, value.metadata
+        );
+    window.targetAPI.emitEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, playMediaItem)));
     const src = value.url ? value.url : value.content;
 
     if (src && value.container && supportedImageTypes.find(v => v === value.container.toLocaleLowerCase()) && imageViewer) {
@@ -59,3 +65,14 @@ connectionMonitor.setUiUpdateCallbacks({
 });
 
 window.targetAPI.onPlay(onPlay);
+
+document.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
+        window.targetAPI.emitEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, false)));
+    }
+});
+document.addEventListener('keyup', (event: KeyboardEvent) => {
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
+        window.targetAPI.emitEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    }
+});

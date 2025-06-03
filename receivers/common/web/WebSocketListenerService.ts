@@ -1,25 +1,20 @@
+import { ListenerService } from 'common/ListenerService';
 import { FCastSession } from 'common/FCastSession';
-import { Opcode } from 'common/Packets';
+import { Opcode, PROTOCOL_VERSION, VersionMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
-import { EventEmitter } from 'events';
 import { WebSocket, WebSocketServer } from 'modules/ws';
-import { errorHandler } from 'src/Main';
 const logger = new Logger('WebSocketListenerService', LoggerType.BACKEND);
 
-export class WebSocketListenerService {
-    public static PORT = 46898;
-
-    emitter = new EventEmitter();
-
+export class WebSocketListenerService extends ListenerService {
+    public readonly PORT = 46898;
     private server: WebSocketServer;
-    private sessionMap = new Map();
 
     start() {
         if (this.server != null) {
             return;
         }
 
-        this.server = new WebSocketServer({ port: WebSocketListenerService.PORT })
+        this.server = new WebSocketServer({ port: this.PORT })
             .on("connection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }
@@ -35,37 +30,8 @@ export class WebSocketListenerService {
         server.close();
     }
 
-    send(opcode: number, message = null, sessionId = null) {
-        if (sessionId) {
-            try {
-                this.sessionMap.get(sessionId)?.send(opcode, message);
-            } catch (e) {
-                logger.warn("Failed to send error.", e);
-                this.sessionMap.get(sessionId)?.close();
-            }
-        }
-        else {
-            for (const session of this.sessionMap.values()) {
-                try {
-                    session.send(opcode, message);
-                } catch (e) {
-                    logger.warn("Failed to send error.", e);
-                    session.close();
-                }
-            }
-        }
-    }
-
     disconnect(sessionId: string) {
         this.sessionMap.get(sessionId)?.close();
-    }
-
-    public getSessions(): string[] {
-        return [...this.sessionMap.keys()];
-    }
-
-    private async handleServerError(err: NodeJS.ErrnoException) {
-        errorHandler(err);
     }
 
     private handleConnection(socket: WebSocket, request: any) {
@@ -101,9 +67,9 @@ export class WebSocketListenerService {
         this.emitter.emit('connect', { sessionId: session.sessionId, type: 'ws', data: { url: socket.url }});
         try {
             logger.info('Sending version');
-            session.send(Opcode.Version, {version: 2});
+            session.send(Opcode.Version, new VersionMessage(PROTOCOL_VERSION));
         } catch (e) {
-            logger.info('Failed to send version');
+            logger.info('Failed to send version', e);
         }
     }
 }

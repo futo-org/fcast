@@ -1,6 +1,6 @@
 import dashjs from 'modules/dashjs';
 import Hls, { LevelLoadedData } from 'modules/hls.js';
-import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
+import { EventMessage, EventType, KeyEvent, MediaItem, MediaItemEvent, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { Player, PlayerType } from './Player';
 import * as connectionMonitor from '../ConnectionMonitor';
 import { toast, ToastIcon } from '../components/Toast';
@@ -35,7 +35,7 @@ function formatDuration(duration: number) {
 }
 
 function sendPlaybackUpdate(updateState: number) {
-    const updateMessage = new PlaybackUpdateMessage(Date.now(), player.getCurrentTime(), player.getDuration(), updateState, player.getPlaybackRate());
+    const updateMessage = new PlaybackUpdateMessage(Date.now(), updateState, player.getCurrentTime(), player.getDuration(), player.getPlaybackRate());
 
     if (updateMessage.generationTime > lastPlayerUpdateGenerationTime) {
         lastPlayerUpdateGenerationTime = updateMessage.generationTime;
@@ -73,6 +73,7 @@ function onPlayerLoad(value: PlayMessage, currentPlaybackRate?: number, currentV
         window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
     }
 
+    window.targetAPI.emitEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
     player.play();
 }
 
@@ -120,11 +121,18 @@ let isLive = false;
 let isLivePosition = false;
 let captionsBaseHeight = 0;
 let captionsContentHeight = 0;
+let cachedPlayMediaItem: MediaItem = null;
 
 function onPlay(_event, value: PlayMessage) {
     logger.info("Handle play message renderer", JSON.stringify(value));
     const currentVolume = player ? player.getVolume() : null;
     const currentPlaybackRate = player ? player.getPlaybackRate() : null;
+    cachedPlayMediaItem = new MediaItem(
+        value.container, value.url, value.content,
+        value.time, value.volume, value.speed,
+        null, null, value.headers, value.metadata
+    );
+    window.targetAPI.emitEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, cachedPlayMediaItem)));
 
     if (player) {
         if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
@@ -167,7 +175,10 @@ function onPlay(_event, value: PlayMessage) {
             // Player event handlers
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { sendPlaybackUpdate(1); playerCtrlStateUpdate(PlayerControlEvent.Play); });
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => { sendPlaybackUpdate(2); playerCtrlStateUpdate(PlayerControlEvent.Pause); });
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ENDED, () => { sendPlaybackUpdate(0) });
+            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ENDED, () => {
+                sendPlaybackUpdate(0);
+                window.targetAPI.emitEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
+            });
             dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
 
@@ -290,7 +301,10 @@ function onPlay(_event, value: PlayMessage) {
         if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
             videoElement.onplay = () => { sendPlaybackUpdate(1); playerCtrlStateUpdate(PlayerControlEvent.Play); };
             videoElement.onpause = () => { sendPlaybackUpdate(2); playerCtrlStateUpdate(PlayerControlEvent.Pause); };
-            videoElement.onended = () => { sendPlaybackUpdate(0) };
+            videoElement.onended = () => {
+                sendPlaybackUpdate(0);
+                window.targetAPI.emitEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
+            };
             videoElement.ontimeupdate = () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
 
@@ -737,69 +751,82 @@ document.addEventListener('click', (event: MouseEvent) => {
 const skipInterval = 10;
 const volumeIncrement = 0.1;
 
-function keyDownEventListener(event: any) {
+function keyDownEventListener(event: KeyboardEvent) {
     // logger.info("KeyDown", event);
-    const handledCase = targetKeyDownEventListener(event);
-    if (handledCase) {
-        return;
+    let handledCase = targetKeyDownEventListener(event);
+
+    if (!handledCase) {
+        switch (event.code) {
+            case 'KeyF':
+            case 'F11':
+                playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen);
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'Escape':
+                playerCtrlStateUpdate(PlayerControlEvent.ExitFullscreen);
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'ArrowLeft':
+                skipBack();
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'ArrowRight':
+                skipForward();
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case "Home":
+                player?.setCurrentTime(0);
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case "End":
+                if (isLive) {
+                    setLivePosition();
+                }
+                else {
+                    player?.setCurrentTime(player?.getDuration());
+                }
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'KeyK':
+            case 'Space':
+            case 'Enter':
+                // Play/pause toggle
+                if (player?.isPaused()) {
+                    player?.play();
+                } else {
+                    player?.pause();
+                }
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'KeyM':
+                // Mute toggle
+                player?.setMute(!player?.isMuted());
+                handledCase = true;
+                break;
+            case 'ArrowUp':
+                // Volume up
+                volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
+                handledCase = true;
+                break;
+            case 'ArrowDown':
+                // Volume down
+                volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
+                handledCase = true;
+                break;
+            default:
+                break;
+        }
     }
 
-    switch (event.code) {
-        case 'KeyF':
-        case 'F11':
-            playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen);
-            event.preventDefault();
-            break;
-        case 'Escape':
-            playerCtrlStateUpdate(PlayerControlEvent.ExitFullscreen);
-            event.preventDefault();
-            break;
-        case 'ArrowLeft':
-            skipBack();
-            event.preventDefault();
-            break;
-        case 'ArrowRight':
-            skipForward();
-            event.preventDefault();
-            break;
-        case "Home":
-            player?.setCurrentTime(0);
-            event.preventDefault();
-            break;
-        case "End":
-            if (isLive) {
-                setLivePosition();
-            }
-            else {
-                player?.setCurrentTime(player?.getDuration());
-            }
-            event.preventDefault();
-            break;
-        case 'KeyK':
-        case 'Space':
-        case 'Enter':
-            // Play/pause toggle
-            if (player?.isPaused()) {
-                player?.play();
-            } else {
-                player?.pause();
-            }
-            event.preventDefault();
-            break;
-        case 'KeyM':
-            // Mute toggle
-            player?.setMute(!player?.isMuted());
-            break;
-        case 'ArrowUp':
-            // Volume up
-            volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
-            break;
-        case 'ArrowDown':
-            // Volume down
-            volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
-            break;
-        default:
-            break;
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
+        window.targetAPI.emitEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, handledCase)));
     }
 }
 
@@ -814,6 +841,11 @@ function skipForward() {
 }
 
 document.addEventListener('keydown', keyDownEventListener);
+document.addEventListener('keyup', (event: KeyboardEvent) => {
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
+        window.targetAPI.emitEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    }
+});
 
 export {
     PlayerControlEvent,

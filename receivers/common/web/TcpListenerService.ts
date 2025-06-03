@@ -1,17 +1,13 @@
 import * as net from 'net';
+import { ListenerService } from 'common/ListenerService';
 import { FCastSession } from 'common/FCastSession';
-import { Opcode } from 'common/Packets';
+import { Opcode, PROTOCOL_VERSION, VersionMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
-import { EventEmitter } from 'events';
-import { errorHandler } from 'src/Main';
 const logger = new Logger('TcpListenerService', LoggerType.BACKEND);
 
-export class TcpListenerService {
-    public static PORT = 46899;
-    emitter = new EventEmitter();
-
+export class TcpListenerService extends ListenerService {
+    public readonly PORT = 46899;
     private server: net.Server;
-    private sessionMap = new Map();
 
     start() {
         if (this.server != null) {
@@ -19,7 +15,7 @@ export class TcpListenerService {
         }
 
         this.server = net.createServer()
-            .listen(TcpListenerService.PORT)
+            .listen(this.PORT)
             .on("connection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }
@@ -35,29 +31,6 @@ export class TcpListenerService {
         server.close();
     }
 
-    send(opcode: number, message = null, sessionId = null) {
-        // logger.info(`Sending message ${JSON.stringify(message)}`);
-
-        if (sessionId) {
-            try {
-                this.sessionMap.get(sessionId)?.send(opcode, message);
-            } catch (e) {
-                logger.warn("Failed to send error.", e);
-                this.sessionMap.get(sessionId)?.close();
-            }
-        }
-        else {
-            for (const session of this.sessionMap.values()) {
-                try {
-                    session.send(opcode, message);
-                } catch (e) {
-                    logger.warn("Failed to send error.", e);
-                    session.close();
-                }
-            }
-        }
-    }
-
     disconnect(sessionId: string) {
         this.sessionMap.get(sessionId)?.socket.destroy();
         this.sessionMap.delete(sessionId);
@@ -67,14 +40,6 @@ export class TcpListenerService {
         const senders = [];
         this.sessionMap.forEach((sender) => { senders.push(sender.socket.remoteAddress); });
         return senders;
-    }
-
-    public getSessions(): string[] {
-        return [...this.sessionMap.keys()];
-    }
-
-    private async handleServerError(err: NodeJS.ErrnoException) {
-        errorHandler(err);
     }
 
     private handleConnection(socket: net.Socket) {
@@ -106,7 +71,7 @@ export class TcpListenerService {
         this.emitter.emit('connect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         try {
             logger.info('Sending version');
-            session.send(Opcode.Version, {version: 2});
+            session.send(Opcode.Version, new VersionMessage(PROTOCOL_VERSION));
         } catch (e) {
             logger.info('Failed to send version', e);
         }

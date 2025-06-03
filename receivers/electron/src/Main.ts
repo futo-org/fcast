@@ -1,5 +1,5 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
-import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
+import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, ContentObject, ContentType, PlaylistContent } from 'common/Packets';
 import { supportedPlayerTypes } from 'common/MimeTypes';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
@@ -8,12 +8,23 @@ import { NetworkService } from 'common/NetworkService';
 import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { Updater } from './Updater';
+import * as http from 'http';
+import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 const cp = require('child_process');
 let logger = null;
+
+class AppCache {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    public interfaces: any = null;
+    public appName: string = null;
+    public appVersion: string = null;
+    public playMessage: PlayMessage = null;
+    public subscribedKeys = new Set<string>();
+}
 
 export class Main {
     static shouldOpenMainWindow = true;
@@ -26,8 +37,8 @@ export class Main {
     static discoveryService: DiscoveryService;
     static connectionMonitor: ConnectionMonitor;
     static tray: Tray;
+    static cache: AppCache = new AppCache();
 
-    private static cachedInterfaces = null;
     private static playerWindowContentViewer = null;
 
     private static toggleMainWindow() {
@@ -156,7 +167,31 @@ export class Main {
 
         const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
         listeners.forEach(l => {
-            l.emitter.on("play", async (message) => {
+            l.emitter.on("play", async (message: PlayMessage) => {
+                Main.cache.playMessage = message;
+                l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message));
+
+                // todo: finish implementation (player window playlist context, main process media caching)
+                if (message.container === 'application/json') {
+                    const json: ContentObject = message.url ? await fetchJSON(message.url) : JSON.parse(message.content);
+
+                    if (json && json.contentType !== undefined) {
+                        switch (json.contentType) {
+                            case ContentType.Playlist: {
+                                const playlist = json as PlaylistContent;
+                                const offset = playlist.offset ? playlist.offset : 0;
+
+                                message = new PlayMessage(playlist.items[offset].container, playlist.items[offset].url, playlist.items[offset].content,
+                                    playlist.items[offset].time, playlist.items[offset].volume, playlist.items[offset].speed,
+                                    playlist.items[offset].headers, playlist.items[offset].metadata);
+                                break;
+                            }
+
+                            default:
+                                break;
+                        }
+                    }
+                }
                 const contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
 
                 if (!Main.playerWindow) {
@@ -224,6 +259,26 @@ export class Main {
             l.emitter.on('pong', (message) => {
                 ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
             });
+            l.emitter.on('initial', (message) => {
+                logger.info(`Received 'Initial' message from sender: ${message}`);
+            });
+            l.emitter.on("setplaylistitem", (message) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
+            l.emitter.on('subscribeevent', (message) => {
+                const subscribeData = l.subscribeEvent(message.sessionId, message.body.event);
+
+                if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                    Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                    Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                }
+            });
+            l.emitter.on('unsubscribeevent', (message) => {
+                const unsubscribeData = l.unsubscribeEvent(message.sessionId, message.body.event);
+
+                if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                    Main.mainWindow?.webContents?.send("event-subscribed-keys-update", unsubscribeData);
+                    Main.playerWindow?.webContents?.send("event-subscribed-keys-update", unsubscribeData);
+                }
+            });
             l.start();
 
             ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
@@ -236,6 +291,10 @@ export class Main {
 
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
                 l.send(Opcode.VolumeUpdate, value);
+            });
+
+            ipcMain.on('emit-event', (event: IpcMainEvent, value: EventMessage) => {
+                l.send(Opcode.Event, value);
             });
         });
 
@@ -299,7 +358,7 @@ export class Main {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
-            Main.cachedInterfaces = value;
+            Main.cache.interfaces = value;
             Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: value });
         });
 
@@ -364,8 +423,8 @@ export class Main {
         Main.mainWindow.show();
 
         Main.mainWindow.on('ready-to-show', () => {
-            if (Main.cachedInterfaces) {
-                Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: Main.cachedInterfaces });
+            if (Main.cache.interfaces) {
+                Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: Main.cache.interfaces });
             }
 
             networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
@@ -375,6 +434,8 @@ export class Main {
     static async main(app: Electron.App) {
         try {
             Main.application = app;
+            Main.cache.appName = app.name;
+            Main.cache.appVersion = app.getVersion();
 
             const argv = yargs(hideBin(process.argv))
             .version(app.getVersion())
@@ -477,6 +538,18 @@ export function getComputerName() {
     }
 }
 
+export function getAppName() {
+    return Main.cache.appName;
+}
+
+export function getAppVersion() {
+    return Main.cache.appVersion;
+}
+
+export function getPlayMessage() {
+    return Main.cache.playMessage;
+}
+
 export async function errorHandler(error: Error) {
     logger.error(error);
     logger.shutdown();
@@ -496,4 +569,28 @@ export async function errorHandler(error: Error) {
     } else {
         Main.application.exit(0);
     }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function fetchJSON(url: string): Promise<any> {
+    const protocol = url.startsWith('https') ? https : http;
+
+    return new Promise((resolve, reject) => {
+        protocol.get(url, (res) => {
+            let data = '';
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
+
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(data));
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        }).on('error', (err) => {
+            reject(err);
+        });
+    });
 }

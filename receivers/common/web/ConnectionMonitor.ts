@@ -58,14 +58,18 @@ export class ConnectionMonitor {
             setInterval(() => {
                 if (ConnectionMonitor.backendConnections.size > 0) {
                     for (const sessionId of ConnectionMonitor.backendConnections.keys()) {
-                        if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
-                            ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
-                            ConnectionMonitor.backendConnections.get(sessionId).disconnect(sessionId);
-                        }
+                        const listener = ConnectionMonitor.backendConnections.get(sessionId);
 
-                        ConnectionMonitor.logger.debug(`Pinging session ${sessionId} with ${ConnectionMonitor.heartbeatRetries.get(sessionId)} retries left`);
-                        ConnectionMonitor.backendConnections.get(sessionId).send(Opcode.Ping, null, sessionId);
-                        ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
+                        if (listener.getSessionProtocolVersion(sessionId) >= 2) {
+                            if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
+                                ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
+                                listener.disconnect(sessionId);
+                            }
+
+                            ConnectionMonitor.logger.debug(`Pinging session ${sessionId} with ${ConnectionMonitor.heartbeatRetries.get(sessionId)} retries left`);
+                            listener.send(Opcode.Ping, null, sessionId);
+                            ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
+                        }
                     }
                 }
             }, ConnectionMonitor.connectionPingTimeout);

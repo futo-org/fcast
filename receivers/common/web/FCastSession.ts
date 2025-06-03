@@ -1,7 +1,8 @@
 import * as net from 'net';
 import { EventEmitter } from 'events';
-import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage } from 'common/Packets';
+import { Opcode, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, InitialSenderMessage, SetPlaylistItemMessage, SubscribeEventMessage, UnsubscribeEventMessage, PROTOCOL_VERSION, InitialReceiverMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
+import { getComputerName, getAppName, getAppVersion, getPlayMessage } from 'src/Main';
 import { WebSocket } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
 const logger = new Logger('FCastSession', LoggerType.BACKEND);
@@ -18,6 +19,7 @@ const MAXIMUM_PACKET_LENGTH = 32000;
 
 export class FCastSession {
     public sessionId: string;
+    public protocolVersion: number;
     buffer: Buffer = Buffer.alloc(MAXIMUM_PACKET_LENGTH);
     bytesRead = 0;
     packetLength = 0;
@@ -26,14 +28,25 @@ export class FCastSession {
     state: SessionState;
     emitter = new EventEmitter();
 
+    private sentInitialMessage: boolean;
+
     constructor(socket: net.Socket | WebSocket, writer: (data: Buffer) => void) {
         this.sessionId = uuidv4();
+        // Not all senders send a version message to the receiver on connection. Choosing version 2
+        // as the base version since most/all current senders support this version.
+        this.protocolVersion = 2;
+        this.sentInitialMessage = false;
         this.socket = socket;
         this.writer = writer;
         this.state = SessionState.WaitingForLength;
     }
 
     send(opcode: number, message = null) {
+        if (!this.isSupportedOpcode(opcode)) {
+            return;
+        }
+
+        message = this.stripUnsupportedFields(opcode, message);
         const json = message ? JSON.stringify(message) : null;
         logger.info(`send: (session: ${this.sessionId}, opcode: ${opcode}, body: ${json})`);
 
@@ -189,15 +202,41 @@ export class FCastSession {
                 case Opcode.SetSpeed:
                     this.emitter.emit("setspeed", JSON.parse(body) as SetSpeedMessage);
                     break;
-                case Opcode.Version:
-                    this.emitter.emit("version", JSON.parse(body) as VersionMessage);
+                case Opcode.Version: {
+                    const versionMessage = JSON.parse(body) as VersionMessage;
+                    this.protocolVersion = (versionMessage.version > 0 && versionMessage.version <= PROTOCOL_VERSION) ?  versionMessage.version : this.protocolVersion;
+                    if (!this.sentInitialMessage && this.protocolVersion >= 3) {
+                        this.send(Opcode.Initial, new InitialReceiverMessage(
+                            getComputerName(),
+                            getAppName(),
+                            getAppVersion(),
+                            getPlayMessage(),
+                        ));
+
+                        this.sentInitialMessage = true;
+                    }
+
+                    this.emitter.emit("version", versionMessage);
                     break;
+                }
                 case Opcode.Ping:
                     this.send(Opcode.Pong);
                     this.emitter.emit("ping");
                     break;
                 case Opcode.Pong:
                     this.emitter.emit("pong");
+                    break;
+                case Opcode.Initial:
+                    this.emitter.emit("initial", JSON.parse(body) as InitialSenderMessage);
+                    break;
+                case Opcode.SetPlaylistItem:
+                    this.emitter.emit("setplaylistitem", JSON.parse(body) as SetPlaylistItemMessage);
+                    break;
+                case Opcode.SubscribeEvent:
+                    this.emitter.emit("subscribeevent", JSON.parse(body) as SubscribeEventMessage);
+                    break;
+                case Opcode.UnsubscribeEvent:
+                    this.emitter.emit("unsubscribeevent", JSON.parse(body) as UnsubscribeEventMessage);
                     break;
             }
         } catch (e) {
@@ -222,5 +261,72 @@ export class FCastSession {
         this.emitter.on("version", (body: VersionMessage) => { emitter.emit("version", body) });
         this.emitter.on("ping", () => { emitter.emit("ping", { sessionId: this.sessionId }) });
         this.emitter.on("pong", () => { emitter.emit("pong", { sessionId: this.sessionId }) });
+        this.emitter.on("initial", (body: InitialSenderMessage) => { emitter.emit("initial", body) });
+        this.emitter.on("setplaylistitem", (body: SetPlaylistItemMessage) => { emitter.emit("setplaylistitem", body) });
+        this.emitter.on("subscribeevent", (body: SubscribeEventMessage) => { emitter.emit("subscribeevent", { sessionId: this.sessionId, body: body }) });
+        this.emitter.on("unsubscribeevent", (body: UnsubscribeEventMessage) => { emitter.emit("unsubscribeevent", { sessionId: this.sessionId, body: body }) });
+    }
+
+    private isSupportedOpcode(opcode: number) {
+        switch (this.protocolVersion) {
+            case 1:
+                return opcode <= 8;
+
+            case 2:
+                return opcode <= 13;
+
+            case 3:
+                return opcode <= 19;
+
+            default:
+                return false;
+        }
+    }
+
+    private stripUnsupportedFields(opcode: number, message: any = null): any {
+        switch (this.protocolVersion) {
+            case 1: {
+                switch (opcode) {
+                    case Opcode.Play:
+                        delete message.speed;
+                        delete message.headers;
+                        break;
+                    case Opcode.PlaybackUpdate:
+                        delete message.generationTime;
+                        delete message.duration;
+                        delete message.speed;
+                        break;
+                    case Opcode.VolumeUpdate:
+                        delete message.generationTime;
+                        break;
+                    default:
+                        break;
+                }
+
+                // fallthrough
+            }
+            case 2: {
+                switch (opcode) {
+                    case Opcode.Play:
+                        delete message.volume;
+                        delete message.metadata;
+                        break;
+                    case Opcode.PlaybackUpdate:
+                        delete message.itemIndex;
+                        break;
+                    default:
+                        break;
+                }
+
+                // fallthrough
+            }
+            case 3:
+                break;
+
+            default:
+                break;
+        }
+
+        return message;
     }
 }

@@ -6,6 +6,7 @@ import { app } from 'electron';
 import { Store } from './Store';
 import sudo from 'sudo-prompt';
 import { Logger, LoggerType } from 'common/Logger';
+import { fetchJSON } from './Main';
 
 const cp = require('child_process');
 const extract = require('extract-zip');
@@ -89,28 +90,6 @@ export class Updater {
 
         Updater.releaseChannel = Updater.localPackageJson.channel;
         Store.set('updater', updaterSettings);
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    private static async fetchJSON(url: string): Promise<any> {
-        return new Promise((resolve, reject) => {
-            https.get(url, (res) => {
-                let data = '';
-                res.on('data', (chunk) => {
-                    data += chunk;
-                });
-
-                res.on('end', () => {
-                    try {
-                        resolve(JSON.parse(data));
-                    } catch (err) {
-                        reject(err);
-                    }
-                });
-            }).on('error', (err) => {
-                reject(err);
-            });
-        });
     }
 
     private static async downloadFile(url: string, destination: string): Promise<void> {
@@ -345,7 +324,7 @@ export class Updater {
         logger.info('Checking for updates...');
 
         try {
-            Updater.releasesJson = await Updater.fetchJSON(`${Updater.baseUrl}/releases_v${Updater.supportedReleasesJsonVersion}.json`.toString()) as ReleaseInfo;
+            Updater.releasesJson = await fetchJSON(`${Updater.baseUrl}/releases_v${Updater.supportedReleasesJsonVersion}.json`.toString()) as ReleaseInfo;
 
             const localChannelVersion: number = Updater.localPackageJson.channelVersion ? Updater.localPackageJson.channelVersion : 0;
             const currentChannelVersion: number = Updater.releasesJson.channelCurrentVersions[Updater.updateChannel] ? Updater.releasesJson.channelCurrentVersions[Updater.updateChannel] : 0;
