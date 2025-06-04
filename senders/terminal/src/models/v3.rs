@@ -123,7 +123,8 @@ pub struct MediaItem {
     /// Indicates if the receiver should preload the media item
     pub cache: Option<bool>,
     /// Indicates how long the item content is presented on screen in seconds
-    pub showDuration: Option<f64>,
+    #[serde(rename = "showDuration")]
+    pub show_duration: Option<f64>,
     /// HTTP request headers to add to the play request Map<string, string>
     pub headers: Option<HashMap<String, String>>,
     pub metadata: Option<MetadataObject>,
@@ -160,7 +161,8 @@ pub enum PlaybackState {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PlaybackUpdateMessage {
     // The time the packet was generated (unix time milliseconds)
-    pub generationTime: u64,
+    #[serde(rename = "generationTime")]
+    pub generation_time: u64,
     // The playback state
     pub state: PlaybackState,
     // The current time playing in seconds
@@ -170,7 +172,8 @@ pub struct PlaybackUpdateMessage {
     // The playback speed factor
     pub speed: Option<f64>,
     // The playlist item index currently being played on receiver
-    pub itemIndex: Option<u64>,
+    #[serde(rename = "itemIndex")]
+    pub item_index: Option<u64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -568,7 +571,7 @@ mod tests {
         volume: None,
         speed: None,
         cache: None,
-        showDuration: None,
+        show_duration: None,
         headers: None,
         metadata: None,
     };

@@ -53,8 +53,8 @@ where
             let bytes_to_read = buf.len().min(self.buffer.len());
             assert!(buf.len() >= bytes_to_read);
             assert!(self.buffer.len() >= bytes_to_read);
-            for i in 0..bytes_to_read {
-                buf[i] = self.buffer.pop_front().unwrap(); // Safe unwrap as bounds was checked previously
+            for b in buf.iter_mut().take(bytes_to_read) {
+                *b = self.buffer.pop_front().unwrap(); // Safe unwrap as bounds was checked previously
             }
         } else {
             match self.inner.read() {
