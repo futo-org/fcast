@@ -179,6 +179,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .required(true)
                         .takes_value(true),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("set_playlist_item")
+                .about("")
+                .arg(
+                    Arg::with_name("item_index")
+                        .short('i')
+                        .long("item_index")
+                        .value_name("INDEX")
+                        .help("Index of the item in the playlist that should be play")
+                        .required(true)
+                        .takes_value(true),
+                )
         );
 
     let matches = app.get_matches();
@@ -375,6 +388,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
         println!("Sent setspeed {:?}", setspeed_message);
         session.send_message(Opcode::SetSpeed, &setspeed_message)?;
+    } else if let Some(set_playlist_item_matches) = matches.subcommand_matches("set_playlist_item") {
+        let message = v3::SetPlaylistItemMessage {
+            item_index: set_playlist_item_matches.value_of("item_index").expect("item_index required").parse::<u64>()?,
+        };
+        session.send_message(Opcode::SetPlaylistItem, &message)?;
+        println!("Sent set_playlist_item {message:?}");
     } else {
         println!("Invalid command. Use --help for more information.");
         std::process::exit(1);

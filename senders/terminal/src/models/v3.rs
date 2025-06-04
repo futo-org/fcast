@@ -227,7 +227,7 @@ pub struct PlayUpdateMessage {
 #[derive(Serialize, Debug)]
 pub struct SetPlaylistItemMessage {
     #[serde(rename = "itemIndex")]
-    pub item_index: Option<u64>,
+    pub item_index: u64,
 }
 
 #[derive(Deserialize, Debug)]
