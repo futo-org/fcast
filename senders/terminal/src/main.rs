@@ -1,4 +1,5 @@
 use clap::{App, Arg, SubCommand};
+use fcast::models::v3;
 use fcast::transport::WebSocket;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -17,7 +18,6 @@ use url::Url;
 use fcast::fcastsession::Opcode;
 use fcast::{
     fcastsession::FCastSession,
-    models::v2::PlayMessage,
     models::{SeekMessage, SetSpeedMessage, SetVolumeMessage},
 };
 
@@ -56,6 +56,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .long("port")
                 .value_name("PORT")
                 .help("The port to send the command to")
+                .required(false)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("subscribe")
+                .short('s')
+                .long("subscribe")
+                .value_name("SUBSCRIPTIONS")
+                .help("A comma separated list of events to subscribe to (e.g. MediaItemStart,KeyDown). \
+                       Available events: [MediaItemStart, MediaItemEnd, MediaItemChange, KeyDown, KeyUp]")
                 .required(false)
                 .takes_value(true),
         )
@@ -213,6 +223,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connection established.");
 
+    if let Some(subscriptions) = matches.value_of("subscribe") {
+        let subs = subscriptions.split(',');
+        for sub in subs {
+            let event = match sub.to_lowercase().as_str() {
+                "mediaitemstart" => v3::EventType::MediaItemStart,
+                "mediaitemend" => v3::EventType::MediaItemEnd,
+                "mediaitemchange" => v3::EventType::MediaItemChange,
+                "keydown" => v3::EventType::KeyDown,
+                "keyup" => v3::EventType::KeyUp,
+                _ => {
+                    println!("Invalid event in subscriptions list: {sub}");
+                    continue;
+                }
+            };
+            session.subscribe(event)?;
+            println!("Subscribed to {event:?} events");
+        }
+    }
+
     let mut join_handle: Option<JoinHandle<Result<(), String>>> = None;
     if let Some(play_matches) = matches.subcommand_matches("play") {
         let file_path = play_matches.value_of("file");
@@ -257,7 +286,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .collect::<HashMap<String, String>>()
         });
 
-        let mut play_message = if let Some(file_path) = file_path {
+        #[allow(unused_assignments)]
+        let mut url = None;
+        let mut content = None;
+
+        if let Some(file_path) = file_path {
             match local_ip {
                 Some(lip) => {
                     let running = Arc::new(AtomicBool::new(true));
@@ -274,36 +307,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Waiting for Ctrl+C...");
 
                     let result = host_file_and_get_url(&lip, file_path, &mime_type, &running)?;
-                    let url = result.0;
+                    url = Some(result.0);
                     join_handle = Some(result.1);
-
-                    PlayMessage::new(mime_type, Some(url), None, time, speed, headers)
                 }
                 _ => return Err("Local IP was not able to be resolved.".into()),
             }
         } else {
-            PlayMessage::new(
-                mime_type,
-                play_matches.value_of("url").map(|s| s.to_owned()),
-                play_matches.value_of("content").map(|s| s.to_owned()),
-                time,
-                speed,
-                headers,
-            )
-        };
+            url = play_matches.value_of("url").map(|s| s.to_owned());
+            content = play_matches.value_of("content").map(|s| s.to_owned());
+        }
 
-        if play_message.content.is_none() && play_message.url.is_none() {
+        if content.is_none() && url.is_none() {
             println!("Reading content from stdin...");
 
             let mut buffer = String::new();
             std::io::stdin().read_to_string(&mut buffer)?;
-            play_message.content = Some(buffer);
+            content = Some(buffer);
         }
 
-        let json = serde_json::to_string(&play_message);
-        println!("Sent play {:?}", json);
-
-        session.send_message(Opcode::Play, &play_message)?;
+        session.send_play_message(mime_type, url, content, time, speed, headers)?;
     } else if let Some(seek_matches) = matches.subcommand_matches("seek") {
         let seek_message = SeekMessage::new(match seek_matches.value_of("timestamp") {
             Some(s) => s.parse::<f64>()?,

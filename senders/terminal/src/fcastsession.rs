@@ -1,18 +1,30 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
-    models::v2::PlaybackUpdateMessage,
-    models::{PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage},
+    models::{
+        v2::{self, PlaybackUpdateMessage},
+        v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage,
+    },
     transport::Transport,
 };
 use serde::Serialize;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
+enum ProtoVersion {
+    V2,
+    V3,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum SessionState {
-    Idle = 0,
+    Idle,
+    Connected(ProtoVersion),
     Disconnected,
 }
 
@@ -32,7 +44,6 @@ pub enum Opcode {
     Version = 11,
     Ping = 12,
     Pong = 13,
-
     Initial = 14,
     PlayUpdate = 15,
     SetPlaylistItem = 16,
@@ -58,7 +69,6 @@ impl Opcode {
             11 => Opcode::Version,
             12 => Opcode::Ping,
             13 => Opcode::Pong,
-
             14 => Opcode::Initial,
             15 => Opcode::PlayUpdate,
             16 => Opcode::SetPlaylistItem,
@@ -103,10 +113,25 @@ impl<'a> FCastSession<'a> {
         }
 
         let msg: VersionMessage =
-            serde_json::from_str(&body.ok_or("Version messages required body".to_owned())?)?;
+            serde_json::from_str(&body.ok_or("Version requires body".to_owned())?)?;
 
         if msg.version == 3 {
-            todo!("Send/recv initial message");
+            let initial = v3::InitialSenderMessage {
+                display_name: None,
+                app_name: Some(env!("CARGO_PKG_NAME").to_owned()),
+                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            };
+            session.send_message(Opcode::Initial, initial)?;
+            let (opcode, body) = session.read_packet()?;
+            if opcode != Opcode::Initial {
+                return Err(format!("Expected Opcode::Initial, got {opcode:?}").into());
+            }
+            let inital_receiver: v3::InitialReceiverMessage =
+                serde_json::from_str(&body.ok_or("InitialReceiverMessage requires body")?)?;
+            dbg!(inital_receiver);
+            session.state = SessionState::Connected(ProtoVersion::V3);
+        } else {
+            session.state = SessionState::Connected(ProtoVersion::V2);
         }
 
         Ok(session)
@@ -175,6 +200,32 @@ impl<'a> FCastSession<'a> {
         Ok(())
     }
 
+    pub fn subscribe(&mut self, event: v3::EventType) -> Result<(), Box<dyn std::error::Error>> {
+        if self.state != SessionState::Connected(ProtoVersion::V3) {
+            return Err(format!(
+                "Cannot subscribe to events in the current state ({:?})",
+                self.state
+            ).into());
+        }
+
+        let obj = match event {
+            v3::EventType::MediaItemStart => v3::EventSubscribeObject::MediaItemStart,
+            v3::EventType::MediaItemEnd => v3::EventSubscribeObject::MediaItemEnd,
+            v3::EventType::MediaItemChange => v3::EventSubscribeObject::MediaItemChanged,
+            v3::EventType::KeyDown => v3::EventSubscribeObject::KeyDown {
+                keys: v3::KeyNames::all(),
+            },
+            v3::EventType::KeyUp => v3::EventSubscribeObject::KeyUp {
+                keys: v3::KeyNames::all(),
+            },
+        };
+
+        self.send_message(
+            Opcode::SubscribeEvent,
+            v3::SubscribeEventMessage { event: obj },
+        )
+    }
+
     pub fn send_empty(&mut self, opcode: Opcode) -> Result<(), Box<dyn std::error::Error>> {
         let json = String::new();
         let data = json.as_bytes();
@@ -197,6 +248,46 @@ impl<'a> FCastSession<'a> {
         while running.load(Ordering::SeqCst) {
             let (opcode, body) = self.read_packet()?;
             self.handle_packet(opcode, body)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn send_play_message(
+        &mut self,
+        mime_type: String,
+        url: Option<String>,
+        content: Option<String>,
+        time: Option<f64>,
+        speed: Option<f64>,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self.state {
+            SessionState::Connected(ProtoVersion::V2) => {
+                let msg = v2::PlayMessage {
+                    container: mime_type,
+                    url,
+                    content,
+                    time,
+                    speed,
+                    headers,
+                };
+                self.send_message(Opcode::Play, msg)?;
+            }
+            SessionState::Connected(ProtoVersion::V3) => {
+                let msg = v3::PlayMessage {
+                    container: mime_type,
+                    url,
+                    content,
+                    time,
+                    volume: Some(1.0),
+                    speed,
+                    headers,
+                    metadata: None,
+                };
+                self.send_message(Opcode::Play, msg)?;
+            }
+            _ => return Err("invalid state for sending play message".into()),
         }
 
         Ok(())
@@ -266,6 +357,30 @@ impl<'a> FCastSession<'a> {
                 println!("Received ping");
                 self.send_empty(Opcode::Pong)?;
                 println!("Sent pong");
+            }
+            Opcode::PlayUpdate => {
+                if let Some(body_str) = body {
+                    if let Ok(play_update_msg) =
+                        serde_json::from_str::<v3::PlayUpdateMessage>(&body_str)
+                    {
+                        println!("Received play update {play_update_msg:?}");
+                    } else {
+                        println!("Received play update with malformed body.");
+                    }
+                } else {
+                    println!("Received play update with no body.");
+                }
+            }
+            Opcode::Event => {
+                if let Some(body_str) = body {
+                    if let Ok(event_msg) = serde_json::from_str::<v3::EventMessage>(&body_str) {
+                        println!("Received event {event_msg:?}");
+                    } else {
+                        println!("Received event with malformed body.");
+                    }
+                } else {
+                    println!("Received event with no body.");
+                }
             }
             _ => {
                 println!("Error handling packet");

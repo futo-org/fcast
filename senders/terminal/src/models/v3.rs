@@ -218,6 +218,18 @@ pub enum KeyNames {
     Enter,
 }
 
+impl KeyNames {
+    pub fn all() -> Vec<String> {
+        vec![
+            "ArrowLeft".to_owned(),
+            "ArrowRight".to_owned(),
+            "ArrowUp".to_owned(),
+            "ArrowDown".to_owned(),
+            "Enter".to_owned(),
+        ]
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum EventSubscribeObject {
     MediaItemStart,
@@ -292,14 +304,14 @@ impl<'de> Deserialize<'de> for EventSubscribeObject {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SubscribeEventMessage {
-    event: EventSubscribeObject,
+    pub event: EventSubscribeObject,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct UnsubscribeEventMessage {
-    event: EventSubscribeObject,
+    pub event: EventSubscribeObject,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
