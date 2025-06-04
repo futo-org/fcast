@@ -53,7 +53,6 @@ impl Serialize for MetadataObject {
     }
 }
 
-// TODO: handle errors
 impl<'de> Deserialize<'de> for MetadataObject {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
