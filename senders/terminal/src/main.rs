@@ -78,7 +78,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .long("mime_type")
                         .value_name("MIME_TYPE")
                         .help("Mime type (e.g., video/mp4)")
-                        .required_unless_present("file")
                         .takes_value(true),
                 )
                 .arg(
@@ -246,21 +245,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(play_matches) = matches.subcommand_matches("play") {
         let file_path = play_matches.value_of("file");
 
+        fn default_mime_type() -> String {
+            println!("No mime type provided via the `--mime_type` argument. Using default (application/octet-stream)");
+            "application/octet-stream".to_string()
+        }
+
         let mime_type = match play_matches.value_of("mime_type") {
             Some(s) => s.to_string(),
-            _ => {
-                if file_path.is_none() {
-                    return Err("MIME type is required.".into());
-                }
-                match file_path.unwrap().split('.').next_back() {
+            _ => match file_path {
+                Some(path) => match path.split('.').next_back() {
                     Some("mkv") => "video/x-matroska".to_string(),
                     Some("mov") => "video/quicktime".to_string(),
                     Some("mp4") | Some("m4v") => "video/mp4".to_string(),
                     Some("mpg") | Some("mpeg") => "video/mpeg".to_string(),
                     Some("webm") => "video/webm".to_string(),
-                    _ => return Err("MIME type is required.".into()),
-                }
-            }
+                    _ => default_mime_type(),
+                },
+                None => default_mime_type(),
+            },
         };
 
         let time = match play_matches.value_of("timestamp") {
