@@ -370,6 +370,7 @@ impl<'a> FCastSession<'a> {
                 self.send_empty(Opcode::Pong)?;
                 println!("Sent pong");
             }
+            Opcode::Pong => println!("Received pong"),
             Opcode::PlayUpdate => {
                 if let Some(body_str) = body {
                     if let Ok(play_update_msg) =
