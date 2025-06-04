@@ -1,4 +1,5 @@
 use clap::{App, Arg, SubCommand};
+use fcast::transport::WebSocket;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -204,6 +205,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 MaybeTlsStream::Plain(ref stream) => Some(stream.local_addr()?.ip()),
                 _ => return Err("Established connection type is not plain.".into()),
             };
+            let stream = WebSocket::new(stream);
             FCastSession::connect(stream)?
         }
         _ => return Err("Invalid connection type.".into()),
