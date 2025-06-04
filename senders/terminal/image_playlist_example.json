@@ -1,0 +1,14 @@
+{
+    "contentType": 0,
+    "items": [
+        {
+            "container": "image/jpeg",
+            "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Everest%2C_Himalayas.jpg/640px-Everest%2C_Himalayas.jpg"
+        },
+        {
+            "container": "image/png",
+            "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/62/NTV7_Testpattern.png/640px-NTV7_Testpattern.png"
+        }
+    ],
+    "offset": 0
+}

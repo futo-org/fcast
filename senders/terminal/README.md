@@ -50,4 +50,13 @@ cat dash.mpd | ./fcast -h localhost play --mime_type application/dash+xml
 
 # Set speed to double
 ./fcast -h localhost setspeed -s 2.0
+
+# Receive keyboard events
+./fcast -h localhost -s KeyDown,KeyUp listen
+
+# Show image playlist
+cat image_playlist_example.json | ./fcast -h localhost play --mime_type application/json
+
+# Play from video playlist
+cat image_playlist_example.json | ./fcast -h localhost play --mime_type application/json
 ```
