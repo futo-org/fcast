@@ -63,7 +63,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Arg::with_name("subscribe")
                 .short('s')
                 .long("subscribe")
-                .value_name("SUBSCRIPTIONS")
+                .value_name("EVENTS")
                 .help("A comma separated list of events to subscribe to (e.g. MediaItemStart,KeyDown). \
                        Available events: [MediaItemStart, MediaItemEnd, MediaItemChange, KeyDown, KeyUp]")
                 .required(false)

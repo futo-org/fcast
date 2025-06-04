@@ -149,7 +149,7 @@ pub struct PlaylistContent {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Serialize_repr, Debug)]
+#[derive(Serialize_repr, Deserialize_repr, Debug)]
 #[repr(u8)]
 pub enum PlaybackState {
     Idle = 0,
@@ -157,7 +157,7 @@ pub enum PlaybackState {
     Paused = 2,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct PlaybackUpdateMessage {
     // The time the packet was generated (unix time milliseconds)
     pub generationTime: u64,

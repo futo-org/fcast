@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     models::{
-        v2::{self, PlaybackUpdateMessage},
+        v2,
         v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage,
     },
     transport::Transport,
@@ -303,12 +303,26 @@ impl<'a> FCastSession<'a> {
         match opcode {
             Opcode::PlaybackUpdate => {
                 if let Some(body_str) = body {
-                    if let Ok(playback_update_msg) =
-                        serde_json::from_str::<PlaybackUpdateMessage>(body_str.as_str())
-                    {
-                        println!("Received playback update {:?}", playback_update_msg);
-                    } else {
-                        println!("Received playback update with malformed body.");
+                    match self.state {
+                        SessionState::Connected(ProtoVersion::V2) => {
+                            if let Ok(playback_update_msg) =
+                                serde_json::from_str::<v2::PlaybackUpdateMessage>(body_str.as_str())
+                            {
+                                println!("Received playback update {:?}", playback_update_msg);
+                            } else {
+                                println!("Received playback update with malformed body.");
+                            }
+                        }
+                        SessionState::Connected(ProtoVersion::V3) => {
+                            if let Ok(playback_update_msg) =
+                                serde_json::from_str::<v3::PlaybackUpdateMessage>(body_str.as_str())
+                            {
+                                println!("Received playback update {:?}", playback_update_msg);
+                            } else {
+                                println!("Received playback update with malformed body.");
+                            }
+                        }
+                        _ => unreachable!(),
                     }
                 } else {
                     println!("Received playback update with no body.");
