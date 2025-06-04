@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{de, Deserialize, Serialize};
+use serde::{de, ser, Deserialize, Serialize};
 use serde_json::{json, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -69,13 +69,32 @@ impl<'de> Deserialize<'de> for MetadataObject {
         let rest = Value::Object(map);
 
         match type_ {
-            0 => Ok(Self::Generic {
-                title: rest.get("title").map(|v| v.as_str().unwrap().to_owned()),
-                thumbnail_url: rest
-                    .get("thumbnailUrl")
-                    .map(|v| v.as_str().unwrap().to_owned()),
-                custom: rest.get("custom").unwrap().clone(),
-            }),
+            0 => {
+                let title = match rest.get("title") {
+                    Some(t) => Some(
+                        t.as_str()
+                            .ok_or(de::Error::custom("`title` is not a string"))?
+                            .to_owned(),
+                    ),
+                    None => None,
+                };
+                let thumbnail_url = match rest.get("thumbnailUrl") {
+                    Some(t) => Some(
+                        t.as_str()
+                            .ok_or(de::Error::custom("`thumbnailUrl` is not a string"))?
+                            .to_owned(),
+                    ),
+                    None => None,
+                };
+                Ok(Self::Generic {
+                    title,
+                    thumbnail_url,
+                    custom: rest
+                        .get("custom")
+                        .ok_or(de::Error::missing_field("custom"))?
+                        .clone(),
+                })
+            }
             _ => Err(de::Error::custom(format!("Unknown metadata type {type_}"))),
         }
     }
@@ -352,7 +371,10 @@ impl Serialize for EventObject {
         match self {
             EventObject::MediaItem { variant, item } => {
                 map.insert("type".to_owned(), json!(*variant as u8));
-                map.insert("item".to_owned(), serde_json::to_value(item).unwrap());
+                map.insert(
+                    "item".to_owned(),
+                    serde_json::to_value(item).map_err(ser::Error::custom)?,
+                );
             }
             EventObject::Key {
                 variant,
@@ -361,9 +383,18 @@ impl Serialize for EventObject {
                 handled,
             } => {
                 map.insert("type".to_owned(), json!(*variant as u8));
-                map.insert("key".to_owned(), serde_json::to_value(key).unwrap());
-                map.insert("repeat".to_owned(), serde_json::to_value(repeat).unwrap());
-                map.insert("handled".to_owned(), serde_json::to_value(handled).unwrap());
+                map.insert(
+                    "key".to_owned(),
+                    serde_json::to_value(key).map_err(ser::Error::custom)?,
+                );
+                map.insert(
+                    "repeat".to_owned(),
+                    serde_json::to_value(repeat).map_err(ser::Error::custom)?,
+                );
+                map.insert(
+                    "handled".to_owned(),
+                    serde_json::to_value(handled).map_err(ser::Error::custom)?,
+                );
             }
         }
 
@@ -395,7 +426,7 @@ impl<'de> Deserialize<'de> for EventObject {
                 let item = get_from_map!(rest, "item")?;
                 Ok(Self::MediaItem {
                     variant,
-                    item: MediaItem::deserialize(item).unwrap(),
+                    item: MediaItem::deserialize(item).map_err(de::Error::custom)?,
                 })
             }
             3 | 4 => {
@@ -406,9 +437,16 @@ impl<'de> Deserialize<'de> for EventObject {
                 };
                 Ok(Self::Key {
                     variant,
-                    key: get_from_map!(rest, "key")?.as_str().unwrap().to_owned(),
-                    repeat: get_from_map!(rest, "repeat")?.as_bool().unwrap(),
-                    handled: get_from_map!(rest, "handled")?.as_bool().unwrap(),
+                    key: get_from_map!(rest, "key")?
+                        .as_str()
+                        .ok_or(de::Error::custom("`key` is not a string"))?
+                        .to_owned(),
+                    repeat: get_from_map!(rest, "repeat")?
+                        .as_bool()
+                        .ok_or(de::Error::custom("`repeat` is not a bool"))?,
+                    handled: get_from_map!(rest, "handled")?
+                        .as_bool()
+                        .ok_or(de::Error::custom("`handled` is not a bool"))?,
                 })
             }
             _ => Err(de::Error::custom(format!("Unknown event type {type_}"))),

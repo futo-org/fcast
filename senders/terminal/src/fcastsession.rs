@@ -7,10 +7,7 @@ use std::{
 };
 
 use crate::{
-    models::{
-        v2,
-        v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage,
-    },
+    models::{v2, v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage},
     transport::Transport,
 };
 use serde::Serialize;
@@ -205,7 +202,8 @@ impl<'a> FCastSession<'a> {
             return Err(format!(
                 "Cannot subscribe to events in the current state ({:?})",
                 self.state
-            ).into());
+            )
+            .into());
         }
 
         let obj = match event {
