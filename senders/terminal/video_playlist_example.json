@@ -1,0 +1,14 @@
+{
+    "contentType": 0,
+    "items": [
+        {
+            "container": "video/webm",
+            "url": "https://upload.wikimedia.org/wikipedia/commons/7/70/EVEREST.webm"
+        },
+        {
+            "container": "image/png",
+            "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/62/NTV7_Testpattern.png/640px-NTV7_Testpattern.png"
+        }
+    ],
+    "offset": 0
+}
