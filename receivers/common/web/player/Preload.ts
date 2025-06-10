@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, Opcode } from 'common/Packets';
+import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, EventMessage, PlayMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
 const logger = new Logger('PlayerWindow', LoggerType.FRONTEND);
 
@@ -25,25 +25,40 @@ declare global {
 }
 
 let preloadData: Record<string, any> = {};
+preloadData.subscribedKeys = {
+    keyDown: new Set<string>(),
+    keyUp: new Set<string>(),
+};
 
 // @ts-ignore
 if (TARGET === 'electron') {
     // @ts-ignore
     const electronAPI = __non_webpack_require__('electron');
 
+    electronAPI.ipcRenderer.on("event-subscribed-keys-update", (_event, value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+        preloadData.subscribedKeys.keyDown = value.keyDown;
+        preloadData.subscribedKeys.keyUp = value.keyUp;
+    })
+
     electronAPI.contextBridge.exposeInMainWorld('targetAPI', {
-        sendPlaybackError: (error: PlaybackErrorMessage) => electronAPI.ipcRenderer.send('send-playback-error', error),
         sendPlaybackUpdate: (update: PlaybackUpdateMessage) => electronAPI.ipcRenderer.send('send-playback-update', update),
         sendVolumeUpdate: (update: VolumeUpdateMessage) => electronAPI.ipcRenderer.send('send-volume-update', update),
+        sendPlaybackError: (error: PlaybackErrorMessage) => electronAPI.ipcRenderer.send('send-playback-error', error),
+        sendEvent: (message: EventMessage) => electronAPI.ipcRenderer.send('send-event', message),
         onPlay: (callback: any) => electronAPI.ipcRenderer.on("play", callback),
         onPause: (callback: any) => electronAPI.ipcRenderer.on("pause", callback),
         onResume: (callback: any) => electronAPI.ipcRenderer.on("resume", callback),
         onSeek: (callback: any) => electronAPI.ipcRenderer.on("seek", callback),
         onSetVolume: (callback: any) => electronAPI.ipcRenderer.on("setvolume", callback),
         onSetSpeed: (callback: any) => electronAPI.ipcRenderer.on("setspeed", callback),
+        onSetPlaylistItem: (callback: any) => electronAPI.ipcRenderer.on("setplaylistitem", callback),
+
+        sendPlayRequest: (message: PlayMessage, playlistIndex: number) => electronAPI.ipcRenderer.send('play-request', message, playlistIndex),
         getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
+        getSubscribedKeys: () => preloadData.subscribedKeys,
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
+        onPlayPlaylist: (callback: any) => electronAPI.ipcRenderer.on('play-playlist', callback),
         logger: loggerInterface,
     });
 

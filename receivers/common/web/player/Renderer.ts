@@ -1,9 +1,11 @@
 import dashjs from 'modules/dashjs';
 import Hls, { LevelLoadedData } from 'modules/hls.js';
-import { PlaybackUpdateMessage, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
+import { EventMessage, EventType, KeyEvent, MediaItem, MediaItemEvent, PlaybackState, PlaybackUpdateMessage, PlaylistContent, PlayMessage, SeekMessage, SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { Player, PlayerType } from './Player';
-import * as connectionMonitor from '../ConnectionMonitor';
-import { toast, ToastIcon } from '../components/Toast';
+import * as connectionMonitor from 'common/ConnectionMonitor';
+import { supportedAudioTypes } from 'common/MimeTypes';
+import { mediaItemFromPlayMessage, playMessageFromMediaItem } from 'common/UtilityFrontend';
+import { toast, ToastIcon } from 'common/components/Toast';
 import {
     targetPlayerCtrlStateUpdate,
     targetKeyDownEventListener,
@@ -34,8 +36,9 @@ function formatDuration(duration: number) {
     }
 }
 
-function sendPlaybackUpdate(updateState: number) {
-    const updateMessage = new PlaybackUpdateMessage(Date.now(), player.getCurrentTime(), player.getDuration(), updateState, player.getPlaybackRate());
+function sendPlaybackUpdate(updateState: PlaybackState) {
+    const updateMessage = new PlaybackUpdateMessage(Date.now(), updateState, player.getCurrentTime(), player.getDuration(), player.getPlaybackRate());
+    playbackState = updateState;
 
     if (updateMessage.generationTime > lastPlayerUpdateGenerationTime) {
         lastPlayerUpdateGenerationTime = updateMessage.generationTime;
@@ -43,40 +46,53 @@ function sendPlaybackUpdate(updateState: number) {
     }
 };
 
-function onPlayerLoad(value: PlayMessage, currentPlaybackRate?: number, currentVolume?: number) {
+function onPlayerLoad(value: PlayMessage) {
     playerCtrlStateUpdate(PlayerControlEvent.Load);
+    loadingSpinner.style.display = 'none';
 
-    // Subtitles break when seeking post stream initialization for the DASH player.
-    // Its currently done on player initialization.
-    if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
-        if (value.time) {
-            player.setCurrentTime(value.time);
+    if (player.getAutoplay()) {
+        if (!supportedAudioTypes.find(v => v === value.container.toLocaleLowerCase())) {
+            idleIcon.style.display = 'none';
+            idleBackground.style.display = 'none';
         }
-    }
+        else {
+            idleIcon.style.display = 'block';
+            idleBackground.style.display = 'block';
+        }
 
-    if (value.speed) {
-        player.setPlaybackRate(value.speed);
-    } else if (currentPlaybackRate) {
-        player.setPlaybackRate(currentPlaybackRate);
-    } else {
-        player.setPlaybackRate(1.0);
-    }
-    playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
+        // Subtitles break when seeking post stream initialization for the DASH player.
+        // Its currently done on player initialization.
+        if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
+            if (value.time) {
+                player.setCurrentTime(value.time);
+            }
+        }
+        if (value.speed) {
+            player.setPlaybackRate(value.speed);
+            playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
+        }
+        if (value.volume) {
+            volumeChangeHandler(value.volume);
+        }
+        else {
+            // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+            // getting out-of-sync with the sender on 1st playback.
+            volumeChangeHandler(1.0);
+            window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
+        }
+        playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
 
-    if (currentVolume) {
-        volumeChangeHandler(currentVolume);
+        playbackState = PlaybackState.Playing;
+        logger.info('Media playback start:', cachedPlayMediaItem);
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
+        player.play();
     }
-    else {
-        // FCast PlayMessage does not contain volume field and could result in the receiver
-        // getting out-of-sync with the sender on 1st playback.
-        volumeChangeHandler(1.0);
-        window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
-    }
-
-    player.play();
 }
 
 // HTML elements
+const idleIcon = document.getElementById('title-icon');
+const loadingSpinner = document.getElementById('loading-spinner');
+const idleBackground = document.getElementById('idle-background');
 const videoElement = document.getElementById("videoPlayer") as HTMLVideoElement;
 const videoCaptions = document.getElementById("videoCaptions") as HTMLDivElement;
 
@@ -111,20 +127,38 @@ let playerCtrlSpeedMenuShown = false;
 
 const playbackRates = ["0.25", "0.50", "0.75", "1.00", "1.25", "1.50", "1.75", "2.00"];
 const playbackUpdateInterval = 1.0;
+const playerVolumeUpdateInterval = 0.01;
 const livePositionDelta = 5.0;
 const livePositionWindow = livePositionDelta * 4;
 let player: Player;
-let playerPrevTime: number = 0;
+let playbackState: PlaybackState = PlaybackState.Idle;
+let playerPrevTime: number = 1;
+let playerPrevVolume: number = 1;
 let lastPlayerUpdateGenerationTime = 0;
 let isLive = false;
 let isLivePosition = false;
 let captionsBaseHeight = 0;
 let captionsContentHeight = 0;
 
+let cachedPlaylist: PlaylistContent = null;
+let cachedPlayMediaItem: MediaItem = null;
+let showDurationTimeout: number = null;
+let playlistIndex = 0;
+let isMediaItem = false;
+let playItemCached = false;
+
 function onPlay(_event, value: PlayMessage) {
-    logger.info("Handle play message renderer", JSON.stringify(value));
-    const currentVolume = player ? player.getVolume() : null;
-    const currentPlaybackRate = player ? player.getPlaybackRate() : null;
+    if (!playItemCached) {
+        cachedPlayMediaItem = mediaItemFromPlayMessage(value);
+        isMediaItem = false;
+    }
+    window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, cachedPlayMediaItem)));
+    logger.info('Media playback changed:', cachedPlayMediaItem);
+    playItemCached = false;
+
+    idleIcon.style.display = 'none';
+    loadingSpinner.style.display = 'block';
+    idleBackground.style.display = 'block';
 
     if (player) {
         if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
@@ -137,6 +171,7 @@ function onPlay(_event, value: PlayMessage) {
         player.destroy();
     }
 
+    playbackState = PlaybackState.Idle;
     playerPrevTime = 0;
     lastPlayerUpdateGenerationTime = 0;
     isLive = false;
@@ -144,60 +179,48 @@ function onPlay(_event, value: PlayMessage) {
     captionsBaseHeight = captionsBaseHeightExpanded;
 
     if ((value.url || value.content) && value.container && videoElement) {
+        player = new Player(videoElement, value);
+        logger.info(`Loaded ${PlayerType[player.playerType]} player`);
+
         if (value.container === 'application/dash+xml') {
-            logger.info("Loading dash player");
-            const dashPlayer = dashjs.MediaPlayer().create();
-            const source = value.content ? value.content : value.url;
-            player = new Player(PlayerType.Dash, dashPlayer, source);
-
-            dashPlayer.extend("RequestModifier", () => {
-                return {
-                    modifyRequestHeader: function (xhr) {
-                        if (value.headers) {
-                            for (const [key, val] of Object.entries(value.headers)) {
-                                xhr.setRequestHeader(key, val);
-                            }
-                        }
-
-                        return xhr;
-                    }
-                };
-            }, true);
-
             // Player event handlers
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { sendPlaybackUpdate(1); playerCtrlStateUpdate(PlayerControlEvent.Play); });
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => { sendPlaybackUpdate(2); playerCtrlStateUpdate(PlayerControlEvent.Pause); });
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ENDED, () => { sendPlaybackUpdate(0) });
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { mediaStartHandler(value); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => { sendPlaybackUpdate(PlaybackState.Paused); playerCtrlStateUpdate(PlayerControlEvent.Pause); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ENDED, () => { mediaEndHandler(); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
 
-                if (Math.abs(dashPlayer.time() - playerPrevTime) >= playbackUpdateInterval) {
-                    sendPlaybackUpdate(dashPlayer.isPaused() ? 2 : 1);
-                    playerPrevTime = dashPlayer.time();
+                if (Math.abs(player.dashPlayer.time() - playerPrevTime) >= playbackUpdateInterval) {
+                    sendPlaybackUpdate(playbackState);
+                    playerPrevTime = player.dashPlayer.time();
                 }
             });
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_RATE_CHANGED, () => { sendPlaybackUpdate(dashPlayer.isPaused() ? 2 : 1) });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_RATE_CHANGED, () => { sendPlaybackUpdate(playbackState); });
 
             // Buffering UI update when paused
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PROGRESS, () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PROGRESS, () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); });
 
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_VOLUME_CHANGED, () => {
-                const updateVolume = dashPlayer.isMuted() ? 0 : dashPlayer.getVolume();
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_VOLUME_CHANGED, () => {
+                const updateVolume = player.dashPlayer.isMuted() ? 0 : player.dashPlayer.getVolume();
                 playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
-                window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
+
+                if (Math.abs(updateVolume - playerPrevVolume) >= playerVolumeUpdateInterval) {
+                    window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
+                    playerPrevVolume = updateVolume;
+                }
             });
 
-            dashPlayer.on(dashjs.MediaPlayer.events.ERROR, (data) => { window.targetAPI.sendPlaybackError({
+            player.dashPlayer.on(dashjs.MediaPlayer.events.ERROR, (data) => { window.targetAPI.sendPlaybackError({
                 message: `DashJS ERROR: ${JSON.stringify(data)}`
             })});
 
-            dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ERROR, (data) => { window.targetAPI.sendPlaybackError({
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ERROR, (data) => { window.targetAPI.sendPlaybackError({
                 message: `DashJS PLAYBACK_ERROR: ${JSON.stringify(data)}`
             })});
 
-            dashPlayer.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => { onPlayerLoad(value, currentPlaybackRate, currentVolume); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => { onPlayerLoad(value); });
 
-            dashPlayer.on(dashjs.MediaPlayer.events.CUE_ENTER, (e: any) => {
+            player.dashPlayer.on(dashjs.MediaPlayer.events.CUE_ENTER, (e: any) => {
                 const subtitle = document.createElement("p")
                 subtitle.setAttribute("id", "subtitle-" + e.cueID)
 
@@ -214,11 +237,11 @@ function onPlay(_event, value: PlayMessage) {
                 }
             });
 
-            dashPlayer.on(dashjs.MediaPlayer.events.CUE_EXIT, (e: any) => {
+            player.dashPlayer.on(dashjs.MediaPlayer.events.CUE_EXIT, (e: any) => {
                 document.getElementById("subtitle-" + e.cueID)?.remove();
             });
 
-            dashPlayer.updateSettings({
+            player.dashPlayer.updateSettings({
                 // debug: {
                 //     logLevel: dashjs.LogLevel.LOG_LEVEL_INFO
                 // },
@@ -229,36 +252,14 @@ function onPlay(_event, value: PlayMessage) {
                 }
             });
 
-            if (value.content) {
-                dashPlayer.initialize(videoElement, `data:${value.container};base64,` + window.btoa(value.content), true, value.time);
-                // dashPlayer.initialize(videoElement, "https://dash.akamaized.net/akamai/test/caption_test/ElephantsDream/elephants_dream_480p_heaac5_1_https.mpd", true);
-            } else {
-                // value.url = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
-                dashPlayer.initialize(videoElement, value.url, true, value.time);
-            }
-
         } else if ((value.container === 'application/vnd.apple.mpegurl' || value.container === 'application/x-mpegURL') && !videoElement.canPlayType(value.container)) {
-            logger.info("Loading hls player");
-
-            const config = {
-                xhrSetup: function (xhr: XMLHttpRequest) {
-                    if (value.headers) {
-                        for (const [key, val] of Object.entries(value.headers)) {
-                            xhr.setRequestHeader(key, val);
-                        }
-                    }
-                },
-            };
-
-            const hlsPlayer = new Hls(config);
-
-            hlsPlayer.on(Hls.Events.ERROR, (eventName, data) => {
+            player.hlsPlayer.on(Hls.Events.ERROR, (eventName, data) => {
                 window.targetAPI.sendPlaybackError({
                     message: `HLS player error: ${JSON.stringify(data)}`
                 });
             });
 
-            hlsPlayer.on(Hls.Events.LEVEL_LOADED, (eventName, level: LevelLoadedData) => {
+            player.hlsPlayer.on(Hls.Events.LEVEL_LOADED, (eventName, level: LevelLoadedData) => {
                 isLive = level.details.live;
                 isLivePosition = isLive ? true : false;
 
@@ -271,41 +272,32 @@ function onPlay(_event, value: PlayMessage) {
                 }
             });
 
-            player = new Player(PlayerType.Hls, videoElement, value.url, hlsPlayer);
-
-            // value.url = "https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_dv_atmos/main.m3u8?ref=developerinsider.co";
-            hlsPlayer.loadSource(value.url);
-            hlsPlayer.attachMedia(videoElement);
-            // hlsPlayer.subtitleDisplay = true;
-
-        } else {
-            logger.info("Loading html player");
-            player = new Player(PlayerType.Html, videoElement, value.url);
-
-            videoElement.src = value.url;
-            videoElement.load();
         }
 
         // Player event handlers
         if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
-            videoElement.onplay = () => { sendPlaybackUpdate(1); playerCtrlStateUpdate(PlayerControlEvent.Play); };
-            videoElement.onpause = () => { sendPlaybackUpdate(2); playerCtrlStateUpdate(PlayerControlEvent.Pause); };
-            videoElement.onended = () => { sendPlaybackUpdate(0) };
+            videoElement.onplay = () => { mediaStartHandler(value); };
+            videoElement.onpause = () => { sendPlaybackUpdate(PlaybackState.Paused); playerCtrlStateUpdate(PlayerControlEvent.Pause); };
+            videoElement.onended = () => { mediaEndHandler(); };
             videoElement.ontimeupdate = () => {
                 playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
 
                 if (Math.abs(videoElement.currentTime - playerPrevTime) >= playbackUpdateInterval) {
-                    sendPlaybackUpdate(videoElement.paused ? 2 : 1);
+                    sendPlaybackUpdate(playbackState);
                     playerPrevTime = videoElement.currentTime;
                 }
             };
             // Buffering UI update when paused
             videoElement.onprogress = () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); };
-            videoElement.onratechange = () => { sendPlaybackUpdate(videoElement.paused ? 2 : 1) };
+            videoElement.onratechange = () => { sendPlaybackUpdate(playbackState); };
             videoElement.onvolumechange = () => {
                 const updateVolume = videoElement.muted ? 0 : videoElement.volume;
                 playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
-                window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
+
+                if (Math.abs(updateVolume - playerPrevVolume) >= playerVolumeUpdateInterval) {
+                    window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
+                    playerPrevVolume = updateVolume;
+                }
             };
 
             videoElement.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
@@ -322,8 +314,16 @@ function onPlay(_event, value: PlayMessage) {
                     isLivePosition = false;
                 }
 
-                onPlayerLoad(value, currentPlaybackRate, currentVolume); };
+                onPlayerLoad(value);
+            };
         }
+
+        player.setAutoPlay(true);
+        player.load();
+    }
+
+    if (isMediaItem && cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
+        showDurationTimeout = window.setTimeout(mediaEndHandler, cachedPlayMediaItem.showDuration * 1000);
     }
 
     // Sender generated event handlers
@@ -332,7 +332,43 @@ function onPlay(_event, value: PlayMessage) {
     window.targetAPI.onSeek((_event, value: SeekMessage) => { player.setCurrentTime(value.time); });
     window.targetAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
     window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
-};
+}
+
+function onPlayPlaylist(_event, value: PlaylistContent) {
+    logger.info('Handle play playlist message', JSON.stringify(value));
+    cachedPlaylist = value;
+
+    const offset = value.offset ? value.offset : 0;
+    const volume = value.items[offset].volume ? value.items[offset].volume : value.volume;
+    const speed = value.items[offset].speed ? value.items[offset].speed : value.speed;
+    const playMessage = new PlayMessage(
+        value.items[offset].container, value.items[offset].url, value.items[offset].content,
+        value.items[offset].time, volume, speed, value.items[offset].headers, value.items[offset].metadata
+    );
+
+    isMediaItem = true;
+    cachedPlayMediaItem = value.items[offset];
+    playItemCached = true;
+    window.targetAPI.sendPlayRequest(playMessage, playlistIndex);
+}
+
+window.targetAPI.onSetPlaylistItem((_event, value: SetPlaylistItemMessage) => {
+    if (value.itemIndex >= 0 && value.itemIndex < cachedPlaylist.items.length) {
+        logger.info(`Setting playlist item to index ${value.itemIndex}`);
+        playlistIndex = value.itemIndex;
+        cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
+        playItemCached = true;
+        window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
+
+        if (showDurationTimeout) {
+            window.clearTimeout(showDurationTimeout);
+            showDurationTimeout = null;
+        }
+    }
+    else {
+        logger.warn(`Playlist index out of bounds ${value.itemIndex}, ignoring...`);
+    }
+});
 
 connectionMonitor.setUiUpdateCallbacks({
     onConnect: (connections: string[], initialUpdate: boolean = false) => {
@@ -346,6 +382,7 @@ connectionMonitor.setUiUpdateCallbacks({
 });
 
 window.targetAPI.onPlay(onPlay);
+window.targetAPI.onPlayPlaylist(onPlayPlaylist);
 
 let scrubbing = false;
 let volumeChanging = false;
@@ -669,7 +706,7 @@ playbackRates.forEach(r => {
     };
 });
 
-videoElement.onclick = () => {
+function videoClickedHandler() {
     if (!playerCtrlSpeedMenuShown) {
         if (player?.isPaused()) {
             player?.play();
@@ -677,7 +714,67 @@ videoElement.onclick = () => {
             player?.pause();
         }
     }
-};
+}
+
+videoElement.onclick = () => { videoClickedHandler(); };
+idleBackground.onclick = () => { videoClickedHandler(); };
+idleIcon.onclick = () => { videoClickedHandler(); };
+
+function mediaStartHandler(message: PlayMessage) {
+    if (playbackState === PlaybackState.Idle) {
+        logger.info('Media playback start:', cachedPlayMediaItem);
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
+
+        if (!supportedAudioTypes.find(v => v === message.container.toLocaleLowerCase())) {
+            idleIcon.style.display = 'none';
+            idleBackground.style.display = 'none';
+        }
+        else {
+            idleIcon.style.display = 'block';
+            idleBackground.style.display = 'block';
+        }
+    }
+
+    sendPlaybackUpdate(PlaybackState.Playing);
+    playerCtrlStateUpdate(PlayerControlEvent.Play);
+}
+
+function mediaEndHandler() {
+    if (showDurationTimeout) {
+        window.clearTimeout(showDurationTimeout);
+        showDurationTimeout = null;
+    }
+
+    if (isMediaItem) {
+        playlistIndex++;
+
+        if (playlistIndex < cachedPlaylist.items.length) {
+            cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
+            playItemCached = true;
+            window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
+        }
+        else {
+            logger.info('End of playlist:', cachedPlayMediaItem);
+            sendPlaybackUpdate(PlaybackState.Idle);
+            window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
+
+            idleIcon.style.display = 'block';
+            idleBackground.style.display = 'block';
+            player.setAutoPlay(false);
+            player.stop();
+        }
+    }
+    else {
+        logger.info('Media playback ended:', cachedPlayMediaItem);
+        sendPlaybackUpdate(PlaybackState.Idle);
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
+
+        idleIcon.style.display = 'block';
+        idleBackground.style.display = 'block';
+        player.setAutoPlay(false);
+        player.stop();
+    }
+}
 
 // Component hiding
 let uiHideTimer = null;
@@ -737,69 +834,71 @@ document.addEventListener('click', (event: MouseEvent) => {
 const skipInterval = 10;
 const volumeIncrement = 0.1;
 
-function keyDownEventListener(event: any) {
+function keyDownEventListener(event: KeyboardEvent) {
     // logger.info("KeyDown", event);
-    const handledCase = targetKeyDownEventListener(event);
-    if (handledCase) {
-        return;
+    let handledCase = targetKeyDownEventListener(event);
+
+    if (!handledCase) {
+        switch (event.code) {
+            case 'ArrowLeft':
+                skipBack();
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'ArrowRight':
+                skipForward();
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case "Home":
+                player?.setCurrentTime(0);
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case "End":
+                if (isLive) {
+                    setLivePosition();
+                }
+                else {
+                    player?.setCurrentTime(player?.getDuration());
+                }
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'KeyK':
+            case 'Space':
+            case 'Enter':
+                // Play/pause toggle
+                if (player?.isPaused()) {
+                    player?.play();
+                } else {
+                    player?.pause();
+                }
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'KeyM':
+                // Mute toggle
+                player?.setMute(!player?.isMuted());
+                handledCase = true;
+                break;
+            case 'ArrowUp':
+                // Volume up
+                volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
+                handledCase = true;
+                break;
+            case 'ArrowDown':
+                // Volume down
+                volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
+                handledCase = true;
+                break;
+            default:
+                break;
+        }
     }
 
-    switch (event.code) {
-        case 'KeyF':
-        case 'F11':
-            playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen);
-            event.preventDefault();
-            break;
-        case 'Escape':
-            playerCtrlStateUpdate(PlayerControlEvent.ExitFullscreen);
-            event.preventDefault();
-            break;
-        case 'ArrowLeft':
-            skipBack();
-            event.preventDefault();
-            break;
-        case 'ArrowRight':
-            skipForward();
-            event.preventDefault();
-            break;
-        case "Home":
-            player?.setCurrentTime(0);
-            event.preventDefault();
-            break;
-        case "End":
-            if (isLive) {
-                setLivePosition();
-            }
-            else {
-                player?.setCurrentTime(player?.getDuration());
-            }
-            event.preventDefault();
-            break;
-        case 'KeyK':
-        case 'Space':
-        case 'Enter':
-            // Play/pause toggle
-            if (player?.isPaused()) {
-                player?.play();
-            } else {
-                player?.pause();
-            }
-            event.preventDefault();
-            break;
-        case 'KeyM':
-            // Mute toggle
-            player?.setMute(!player?.isMuted());
-            break;
-        case 'ArrowUp':
-            // Volume up
-            volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
-            break;
-        case 'ArrowDown':
-            // Volume down
-            volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
-            break;
-        default:
-            break;
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, handledCase)));
     }
 }
 
@@ -814,6 +913,11 @@ function skipForward() {
 }
 
 document.addEventListener('keydown', keyDownEventListener);
+document.addEventListener('keyup', (event: KeyboardEvent) => {
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    }
+});
 
 export {
     PlayerControlEvent,

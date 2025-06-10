@@ -3,6 +3,7 @@ import QRCode from 'modules/qrcode';
 import * as connectionMonitor from '../ConnectionMonitor';
 import { onQRCodeRendered } from 'src/main/Renderer';
 import { toast, ToastIcon } from '../components/Toast';
+import { EventMessage, EventType, KeyEvent } from 'common/Packets';
 
 const connectionStatusText = document.getElementById('connection-status-text');
 const connectionStatusSpinner = document.getElementById('connection-spinner');
@@ -199,3 +200,14 @@ function renderQRCode(url: string) {
 
     onQRCodeRendered();
 }
+
+document.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, false)));
+    }
+});
+document.addEventListener('keyup', (event: KeyboardEvent) => {
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    }
+});

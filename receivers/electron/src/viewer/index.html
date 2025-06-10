@@ -8,7 +8,10 @@
         <link rel="stylesheet" href="./common.css" />
     </head>
     <body>
+        <!-- Empty video element as a workaround to fix issue with white border outline without it... -->
+        <video id="video-player" class="video"></video>
         <div id="viewer" class="viewer">
+            <div id="title-icon"></div>
             <img id="viewer-image" class="viewer" />
             <iframe id="viewer-generic" class="viewer"></iframe>
         </div>>

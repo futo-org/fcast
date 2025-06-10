@@ -1,11 +1,21 @@
 
 export const streamingMediaTypes = [
-    "application/vnd.apple.mpegurl",
-    "application/x-mpegURL",
-    "application/dash+xml"
+    'application/vnd.apple.mpegurl',
+    'application/x-mpegURL',
+    'application/dash+xml',
 ];
 
-export const supportedPlayerTypes = streamingMediaTypes.concat([
+export const supportedVideoTypes = [
+    'video/mp4',
+    'video/mpeg',
+    'video/ogg',
+    'video/webm',
+    'video/x-matroska',
+    'video/3gpp',
+    'video/3gpp2',
+];
+
+export const supportedAudioTypes = [
     'audio/aac',
     'audio/flac',
     'audio/mpeg',
@@ -15,14 +25,7 @@ export const supportedPlayerTypes = streamingMediaTypes.concat([
     'audio/webm',
     'audio/3gpp',
     'audio/3gpp2',
-    'video/mp4',
-    'video/mpeg',
-    'video/ogg',
-    'video/webm',
-    'video/x-matroska',
-    'video/3gpp',
-    'video/3gpp2'
-]);
+];
 
 export const supportedImageTypes = [
     'image/apng',
@@ -36,3 +39,8 @@ export const supportedImageTypes = [
     'image/vnd.microsoft.icon',
     'image/webp'
 ];
+
+export const supportedPlayerTypes = streamingMediaTypes.concat(
+    supportedVideoTypes,
+    supportedAudioTypes,
+);

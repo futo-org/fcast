@@ -1,3 +1,4 @@
+import { PlayMessage } from 'common/Packets';
 import dashjs from 'modules/dashjs';
 import Hls from 'modules/hls.js';
 
@@ -10,28 +11,69 @@ export enum PlayerType {
 }
 
 export class Player {
-    private player: dashjs.MediaPlayerClass | HTMLVideoElement;
-    private hlsPlayer: Hls | undefined;
+    private player: HTMLVideoElement;
+    private playMessage: PlayMessage;
     private source: string;
-    public playerType: PlayerType;
 
-    constructor(playerType: PlayerType, player: dashjs.MediaPlayerClass | HTMLVideoElement, source: string, hlsPlayer?: Hls) {
-        this.playerType = playerType;
+    // Todo: use a common event handler interface instead of exposing internal players
+    public playerType: PlayerType;
+    public dashPlayer: dashjs.MediaPlayerClass = null;
+    public hlsPlayer: Hls = null;
+
+    constructor(player: HTMLVideoElement, message: PlayMessage) {
         this.player = player;
-        this.source = source;
-        this.hlsPlayer = playerType === PlayerType.Hls ? hlsPlayer : null;
+        this.playMessage = message;
+
+        if (message.container === 'application/dash+xml') {
+            this.playerType = PlayerType.Dash;
+            this.source = message.content ? message.content : message.url;
+            this.dashPlayer = dashjs.MediaPlayer().create();
+
+            this.dashPlayer.extend("RequestModifier", () => {
+                return {
+                    modifyRequestHeader: function (xhr) {
+                        if (message.headers) {
+                            for (const [key, val] of Object.entries(message.headers)) {
+                                xhr.setRequestHeader(key, val);
+                            }
+                        }
+
+                        return xhr;
+                    }
+                };
+            }, true);
+
+        } else if ((message.container === 'application/vnd.apple.mpegurl' || message.container === 'application/x-mpegURL') && !player.canPlayType(message.container)) {
+            this.playerType = PlayerType.Hls;
+            this.source = message.url;
+
+            const config = {
+                xhrSetup: function (xhr: XMLHttpRequest) {
+                    if (message.headers) {
+                        for (const [key, val] of Object.entries(message.headers)) {
+                            xhr.setRequestHeader(key, val);
+                        }
+                    }
+                },
+            };
+
+            this.hlsPlayer = new Hls(config);
+
+        } else {
+            this.playerType = PlayerType.Html;
+            this.source = message.url;
+        }
     }
 
-    destroy() {
+    public destroy() {
         switch (this.playerType) {
             case PlayerType.Dash:
                 try {
-                    (this.player as dashjs.MediaPlayerClass).destroy();
+                    this.dashPlayer.destroy();
                 } catch (e) {
                     logger.warn("Failed to destroy dash player", e);
                 }
-                this.player = null;
-                this.playerType = null;
+
                 break;
 
             case PlayerType.Hls:
@@ -41,158 +83,231 @@ export class Player {
                 } catch (e) {
                     logger.warn("Failed to destroy hls player", e);
                 }
-                // fall through
+                // fallthrough
 
             case PlayerType.Html: {
-                const videoPlayer = this.player as HTMLVideoElement;
+                this.player.src = "";
+                // this.player.onerror = null;
+                this.player.onloadedmetadata = null;
+                this.player.ontimeupdate = null;
+                this.player.onplay = null;
+                this.player.onpause = null;
+                this.player.onended = null;
+                this.player.ontimeupdate = null;
+                this.player.onratechange = null;
+                this.player.onvolumechange = null;
 
-                videoPlayer.src = "";
-                // videoPlayer.onerror = null;
-                videoPlayer.onloadedmetadata = null;
-                videoPlayer.ontimeupdate = null;
-                videoPlayer.onplay = null;
-                videoPlayer.onpause = null;
-                videoPlayer.onended = null;
-                videoPlayer.ontimeupdate = null;
-                videoPlayer.onratechange = null;
-                videoPlayer.onvolumechange = null;
-
-                this.player = null;
-                this.playerType = null;
                 break;
             }
 
             default:
                 break;
         }
+
+        this.player = null;
+        this.playerType = null;
+        this.dashPlayer = null;
+        this.hlsPlayer = null;
+        this.playMessage = null;
+        this.source = null;
     }
 
-    play() { logger.info("Player: play"); this.player.play(); }
-
-    isPaused(): boolean {
+    /**
+     * Load media specified in the PlayMessage provided on object initialization
+     */
+    public load() {
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).isPaused();
-        } else { // HLS, HTML
-            return (this.player as HTMLVideoElement).paused;
+            if (this.playMessage.content) {
+                this.dashPlayer.initialize(this.player, `data:${this.playMessage.container};base64,` + window.btoa(this.playMessage.content), true, this.playMessage.time);
+                // dashPlayer.initialize(videoElement, "https://dash.akamaized.net/akamai/test/caption_test/ElephantsDream/elephants_dream_480p_heaac5_1_https.mpd", true);
+            } else {
+                // value.url = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
+                this.dashPlayer.initialize(this.player, this.playMessage.url, true, this.playMessage.time);
+            }
+        } else if (this.playerType === PlayerType.Hls) {
+            // value.url = "https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_dv_atmos/main.m3u8?ref=developerinsider.co";
+            this.hlsPlayer.loadSource(this.playMessage.url);
+            this.hlsPlayer.attachMedia(this.player);
+            // hlsPlayer.subtitleDisplay = true;
+        } else { // HTML
+            this.player.src = this.playMessage.url;
+            this.player.load();
         }
     }
-    pause() { logger.info("Player: pause"); this.player.pause(); }
 
-    getVolume(): number {
+    public play() {
+        logger.info("Player: play");
+
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).getVolume();
+            this.dashPlayer.play();
         } else { // HLS, HTML
-            return (this.player as HTMLVideoElement).volume;
+            this.player.play();
         }
     }
-    setVolume(value: number) {
-        logger.info(`Player: setVolume ${value}`);
+
+    public isPaused(): boolean {
+        if (this.playerType === PlayerType.Dash) {
+            return this.dashPlayer.isPaused();
+        } else { // HLS, HTML
+            return this.player.paused;
+        }
+    }
+
+    public pause() {
+        logger.info("Player: pause");
+
+        if (this.playerType === PlayerType.Dash) {
+            this.dashPlayer.pause();
+        } else { // HLS, HTML
+            this.player.pause();
+        }
+    }
+
+    public stop() {
+        const playbackRate = this.getPlaybackRate();
+        const volume = this.getVolume();
+
+        if (this.playerType === PlayerType.Dash) {
+            if (this.playMessage.content) {
+                this.dashPlayer.initialize(this.player, `data:${this.playMessage.container};base64,` + window.btoa(this.playMessage.content), false);
+            } else {
+                this.dashPlayer.initialize(this.player, this.playMessage.url, false);
+            }
+        } else if (this.playerType === PlayerType.Hls) {
+            this.hlsPlayer.loadSource(this.source);
+        } else {
+            this.player.load();
+        }
+
+        this.setPlaybackRate(playbackRate);
+        this.setVolume(volume);
+    }
+
+    public getVolume(): number {
+        if (this.playerType === PlayerType.Dash) {
+            return this.dashPlayer.getVolume();
+        } else { // HLS, HTML
+            return this.player.volume;
+        }
+    }
+    public setVolume(value: number) {
+        // logger.info(`Player: setVolume ${value}`);
         const sanitizedVolume = Math.min(1.0, Math.max(0.0, value));
 
         if (this.playerType === PlayerType.Dash) {
-            (this.player as dashjs.MediaPlayerClass).setVolume(sanitizedVolume);
+            this.dashPlayer.setVolume(sanitizedVolume);
         } else { // HLS, HTML
-            (this.player as HTMLVideoElement).volume = sanitizedVolume;
+            this.player.volume = sanitizedVolume;
         }
     }
 
-    isMuted(): boolean {
+    public isMuted(): boolean {
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).isMuted();
+            return this.dashPlayer.isMuted();
         } else { // HLS, HTML
-            return (this.player as HTMLVideoElement).muted;
+            return this.player.muted;
         }
     }
-    setMute(value: boolean) {
+    public setMute(value: boolean) {
         logger.info(`Player: setMute ${value}`);
 
         if (this.playerType === PlayerType.Dash) {
-            (this.player as dashjs.MediaPlayerClass).setMute(value);
+            this.dashPlayer.setMute(value);
         } else { // HLS, HTML
-            (this.player as HTMLVideoElement).muted = value;
+            this.player.muted = value;
         }
     }
 
-    getPlaybackRate(): number {
+    public getPlaybackRate(): number {
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).getPlaybackRate();
+            return this.dashPlayer.getPlaybackRate();
         } else { // HLS, HTML
-            return (this.player as HTMLVideoElement).playbackRate;
+            return this.player.playbackRate;
         }
     }
-    setPlaybackRate(value: number) {
+    public setPlaybackRate(value: number) {
         logger.info(`Player: setPlaybackRate ${value}`);
         const sanitizedSpeed = Math.min(16.0, Math.max(0.0, value));
 
         if (this.playerType === PlayerType.Dash) {
-            (this.player as dashjs.MediaPlayerClass).setPlaybackRate(sanitizedSpeed);
+            this.dashPlayer.setPlaybackRate(sanitizedSpeed);
         } else { // HLS, HTML
-            (this.player as HTMLVideoElement).playbackRate = sanitizedSpeed;
+            this.player.playbackRate = sanitizedSpeed;
         }
     }
 
-    getDuration(): number {
+    public getDuration(): number {
         if (this.playerType === PlayerType.Dash) {
-            const videoPlayer = this.player as dashjs.MediaPlayerClass;
-            return isFinite(videoPlayer.duration()) ? videoPlayer.duration() : 0;
+            return isFinite(this.dashPlayer.duration()) ? this.dashPlayer.duration() : 0;
         } else { // HLS, HTML
-            const videoPlayer = this.player as HTMLVideoElement;
-            return isFinite(videoPlayer.duration) ? videoPlayer.duration : 0;
+            return isFinite(this.player.duration) ? this.player.duration : 0;
         }
     }
 
-    getCurrentTime(): number {
+    public getCurrentTime(): number {
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).time();
+            return this.dashPlayer.time();
         } else { // HLS, HTML
-            return (this.player as HTMLVideoElement).currentTime;
+            return this.player.currentTime;
         }
     }
-    setCurrentTime(value: number) {
+    public setCurrentTime(value: number) {
         // logger.info(`Player: setCurrentTime ${value}`);
         const sanitizedTime = Math.min(this.getDuration(), Math.max(0.0, value));
 
         if (this.playerType === PlayerType.Dash) {
-            (this.player as dashjs.MediaPlayerClass).seek(sanitizedTime);
-            const videoPlayer = this.player as dashjs.MediaPlayerClass;
+            this.dashPlayer.seek(sanitizedTime);
 
-            if (!videoPlayer.isSeeking()) {
-                videoPlayer.seek(sanitizedTime);
+            if (!this.dashPlayer.isSeeking()) {
+                this.dashPlayer.seek(sanitizedTime);
             }
 
         } else { // HLS, HTML
-            (this.player as HTMLVideoElement).currentTime = sanitizedTime;
+            this.player.currentTime = sanitizedTime;
         }
     }
 
-    getSource(): string {
+    public getSource(): string {
         return this.source;
     }
 
-    getBufferLength(): number {
+    public getAutoplay(): boolean {
         if (this.playerType === PlayerType.Dash) {
-            const dashPlayer = this.player as dashjs.MediaPlayerClass;
+            return this.dashPlayer.getAutoPlay();
+        } else { // HLS, HTML
+            return this.player.autoplay;
+        }
+    }
 
-            let dashBufferLength = dashPlayer.getBufferLength("video")
-                ?? dashPlayer.getBufferLength("audio")
-                ?? dashPlayer.getBufferLength("text")
-                ?? dashPlayer.getBufferLength("image")
+    public setAutoPlay(value: boolean) {
+        if (this.playerType === PlayerType.Dash) {
+            return this.dashPlayer.setAutoPlay(value);
+        } else { // HLS, HTML
+            return this.player.autoplay = value;
+        }
+    }
+
+    public getBufferLength(): number {
+        if (this.playerType === PlayerType.Dash) {
+            let dashBufferLength = this.dashPlayer.getBufferLength("video")
+                ?? this.dashPlayer.getBufferLength("audio")
+                ?? this.dashPlayer.getBufferLength("text")
+                ?? this.dashPlayer.getBufferLength("image")
                 ?? 0;
             if (Number.isNaN(dashBufferLength))
                 dashBufferLength = 0;
 
-            dashBufferLength += dashPlayer.time();
+            dashBufferLength += this.dashPlayer.time();
             return dashBufferLength;
         } else { // HLS, HTML
-            const videoPlayer = this.player as HTMLVideoElement;
             let maxBuffer = 0;
 
-            if (videoPlayer.buffered) {
-                for (let i = 0; i < videoPlayer.buffered.length; i++) {
-                    const start = videoPlayer.buffered.start(i);
-                    const end = videoPlayer.buffered.end(i);
+            if (this.player.buffered) {
+                for (let i = 0; i < this.player.buffered.length; i++) {
+                    const start = this.player.buffered.start(i);
+                    const end = this.player.buffered.end(i);
 
-                    if (videoPlayer.currentTime >= start && videoPlayer.currentTime <= end) {
+                    if (this.player.currentTime >= start && this.player.currentTime <= end) {
                         maxBuffer = end;
                     }
                 }
@@ -202,9 +317,9 @@ export class Player {
         }
     }
 
-    isCaptionsSupported(): boolean {
+    public isCaptionsSupported(): boolean {
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).getTracksFor('text').length > 0;
+            return this.dashPlayer.getTracksFor('text').length > 0;
         } else if (this.playerType === PlayerType.Hls) {
             return this.hlsPlayer.allSubtitleTracks.length > 0;
         } else {
@@ -212,9 +327,9 @@ export class Player {
         }
     }
 
-    isCaptionsEnabled(): boolean {
+    public isCaptionsEnabled(): boolean {
         if (this.playerType === PlayerType.Dash) {
-            return (this.player as dashjs.MediaPlayerClass).isTextEnabled();
+            return this.dashPlayer.isTextEnabled();
         } else if (this.playerType === PlayerType.Hls) {
             return this.hlsPlayer.subtitleDisplay;
         } else {
@@ -222,9 +337,9 @@ export class Player {
         }
     }
 
-    enableCaptions(enable: boolean) {
+    public enableCaptions(enable: boolean) {
         if (this.playerType === PlayerType.Dash) {
-            (this.player as dashjs.MediaPlayerClass).enableText(enable);
+            this.dashPlayer.enableText(enable);
         } else if (this.playerType === PlayerType.Hls) {
             this.hlsPlayer.subtitleDisplay = enable;
         }
