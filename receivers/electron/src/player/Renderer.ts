@@ -41,8 +41,7 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
     return handledCase;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function targetKeyDownEventListener(event: any): boolean {
+export function targetKeyDownEventListener(event: KeyboardEvent): boolean {
     let handledCase = false;
 
     switch (event.code) {

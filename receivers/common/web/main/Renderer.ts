@@ -203,11 +203,11 @@ function renderQRCode(url: string) {
 
 document.addEventListener('keydown', (event: KeyboardEvent) => {
     if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
-        window.targetAPI.emitEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, false)));
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, false)));
     }
 });
 document.addEventListener('keyup', (event: KeyboardEvent) => {
     if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
-        window.targetAPI.emitEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
     }
 });

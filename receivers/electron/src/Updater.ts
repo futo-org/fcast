@@ -1,12 +1,11 @@
 import * as fs from 'fs';
-import * as https from 'https';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
 import { Store } from './Store';
 import sudo from 'sudo-prompt';
 import { Logger, LoggerType } from 'common/Logger';
-import { fetchJSON } from './Main';
+import { fetchJSON, downloadFile } from 'common/UtilityBackend';
 
 const cp = require('child_process');
 const extract = require('extract-zip');
@@ -90,30 +89,6 @@ export class Updater {
 
         Updater.releaseChannel = Updater.localPackageJson.channel;
         Store.set('updater', updaterSettings);
-    }
-
-    private static async downloadFile(url: string, destination: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const file = fs.createWriteStream(destination);
-            https.get(url, (response) => {
-                const downloadSize = Number(response.headers['content-length']);
-                logger.info(`Update size: ${downloadSize} bytes`);
-                response.pipe(file);
-                let downloadedBytes = 0;
-
-                response.on('data', (chunk) => {
-                    downloadedBytes += chunk.length;
-                    Updater.updateProgress = downloadedBytes / downloadSize;
-                });
-                file.on('finish', () => {
-                    file.close();
-                    resolve();
-                });
-            }).on('error', (err) => {
-                file.close();
-                reject(err);
-            });
-        });
     }
 
     private static async applyUpdate(src: string, dst: string) {
@@ -390,7 +365,9 @@ export class Updater {
             const destination = path.join(Updater.updateDataPath, file);
             logger.info(`Downloading '${fileInfo.url}' to '${destination}'.`);
             Updater.isDownloading = true;
-            await Updater.downloadFile(fileInfo.url.toString(), destination);
+            await downloadFile(fileInfo.url.toString(), destination, null, (downloadedBytes: number, downloadSize: number) => {
+                Updater.updateProgress = downloadedBytes / downloadSize;
+            });
 
             const downloadedFile = await fs.promises.readFile(destination);
             const hash = crypto.createHash('sha256').end(downloadedFile).digest('hex');

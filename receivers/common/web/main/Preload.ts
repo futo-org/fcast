@@ -38,7 +38,6 @@ if (TARGET === 'electron') {
         preloadData.deviceInfo = value;
     })
     electronAPI.ipcRenderer.on("event-subscribed-keys-update", (_event, value: { keyDown: Set<string>, keyUp: Set<string> }) => {
-        logger.info('MAIN WINDOW Updated key subscriptions', value);
         preloadData.subscribedKeys.keyDown = value.keyDown;
         preloadData.subscribedKeys.keyUp = value.keyUp;
     })
@@ -50,7 +49,7 @@ if (TARGET === 'electron') {
         getSubscribedKeys: () => preloadData.subscribedKeys,
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),
-        emitEvent: (message: EventMessage) => electronAPI.ipcRenderer.send('emit-event', message),
+        sendEvent: (message: EventMessage) => electronAPI.ipcRenderer.send('send-event', message),
         logger: loggerInterface,
     });
 

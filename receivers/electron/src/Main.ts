@@ -1,5 +1,5 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
-import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, ContentObject, ContentType, PlaylistContent } from 'common/Packets';
+import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, ContentObject, ContentType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage } from 'common/Packets';
 import { supportedPlayerTypes } from 'common/MimeTypes';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
@@ -7,9 +7,9 @@ import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { NetworkService } from 'common/NetworkService';
 import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
+import { fetchJSON } from 'common/UtilityBackend';
+import { MediaCache } from 'common/MediaCache';
 import { Updater } from './Updater';
-import * as http from 'http';
-import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import yargs from 'yargs';
@@ -23,6 +23,8 @@ class AppCache {
     public appName: string = null;
     public appVersion: string = null;
     public playMessage: PlayMessage = null;
+    public playerVolume: number = null;
+    public playlist: PlaylistContent = null;
     public subscribedKeys = new Set<string>();
 }
 
@@ -40,6 +42,8 @@ export class Main {
     static cache: AppCache = new AppCache();
 
     private static playerWindowContentViewer = null;
+    private static listeners = [];
+    private static mediaCache: MediaCache = null;
 
     private static toggleMainWindow() {
         if (Main.mainWindow) {
@@ -155,6 +159,80 @@ export class Main {
         this.tray = tray;
     }
 
+    private static async play(message: PlayMessage) {
+        Main.listeners.forEach(l => l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message)));
+        Main.cache.playMessage = message;
+
+        // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+        // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
+        // is cached in the play message when volume is not set in v3 PlayMessage.
+        message.volume = message.volume || message.volume === undefined ? Main.cache.playerVolume : message.volume;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let rendererMessage: any = await NetworkService.proxyPlayIfRequired(message);
+        let rendererEvent = 'play';
+        let contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
+
+        if (message.container === 'application/json') {
+            const json: ContentObject = message.url ? await fetchJSON(message.url) : JSON.parse(message.content);
+
+            if (json && json.contentType !== undefined) {
+                switch (json.contentType) {
+                    case ContentType.Playlist: {
+                        rendererMessage = json as PlaylistContent;
+                        rendererEvent = 'play-playlist';
+                        Main.cache.playlist = rendererMessage;
+
+                        if ((rendererMessage.forwardCache && rendererMessage.forwardCache > 0) || (rendererMessage.backwardCache && rendererMessage.backwardCache > 0)) {
+                            Main.mediaCache?.destroy();
+                            Main.mediaCache = new MediaCache(rendererMessage);
+                        }
+
+                        const offset = rendererMessage.offset ? rendererMessage.offset : 0;
+                        contentViewer = supportedPlayerTypes.find(v => v === rendererMessage.items[offset].container.toLocaleLowerCase()) ? 'player' : 'viewer';
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+            }
+        }
+
+        if (!Main.playerWindow) {
+            Main.playerWindow = new BrowserWindow({
+                fullscreen: true,
+                autoHideMenuBar: true,
+                icon: path.join(__dirname, 'icon512.png'),
+                webPreferences: {
+                    preload: path.join(__dirname, 'player/preload.js')
+                }
+            });
+
+            Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
+            Main.playerWindow.show();
+
+            Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
+            Main.playerWindow.on('ready-to-show', async () => {
+                Main.playerWindow?.webContents?.send(rendererEvent, rendererMessage);
+            });
+            Main.playerWindow.on('closed', () => {
+                Main.playerWindow = null;
+                Main.playerWindowContentViewer = null;
+            });
+        }
+        else if (Main.playerWindow && contentViewer !== Main.playerWindowContentViewer) {
+            Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
+            Main.playerWindow.on('ready-to-show', async () => {
+                Main.playerWindow?.webContents?.send(rendererEvent, rendererMessage);
+            });
+        } else {
+            Main.playerWindow?.webContents?.send(rendererEvent, rendererMessage);
+        }
+
+        Main.playerWindowContentViewer = contentViewer;
+    }
+
     private static onReady() {
         Main.createTray();
 
@@ -165,69 +243,9 @@ export class Main {
         Main.tcpListenerService = new TcpListenerService();
         Main.webSocketListenerService = new WebSocketListenerService();
 
-        const listeners = [Main.tcpListenerService, Main.webSocketListenerService];
-        listeners.forEach(l => {
-            l.emitter.on("play", async (message: PlayMessage) => {
-                Main.cache.playMessage = message;
-                l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message));
-
-                // todo: finish implementation (player window playlist context, main process media caching)
-                if (message.container === 'application/json') {
-                    const json: ContentObject = message.url ? await fetchJSON(message.url) : JSON.parse(message.content);
-
-                    if (json && json.contentType !== undefined) {
-                        switch (json.contentType) {
-                            case ContentType.Playlist: {
-                                const playlist = json as PlaylistContent;
-                                const offset = playlist.offset ? playlist.offset : 0;
-
-                                message = new PlayMessage(playlist.items[offset].container, playlist.items[offset].url, playlist.items[offset].content,
-                                    playlist.items[offset].time, playlist.items[offset].volume, playlist.items[offset].speed,
-                                    playlist.items[offset].headers, playlist.items[offset].metadata);
-                                break;
-                            }
-
-                            default:
-                                break;
-                        }
-                    }
-                }
-                const contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
-
-                if (!Main.playerWindow) {
-                    Main.playerWindow = new BrowserWindow({
-                        fullscreen: true,
-                        autoHideMenuBar: true,
-                        icon: path.join(__dirname, 'icon512.png'),
-                        webPreferences: {
-                            preload: path.join(__dirname, 'player/preload.js')
-                        }
-                    });
-
-                    Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
-                    Main.playerWindow.show();
-
-                    Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
-                    Main.playerWindow.on('ready-to-show', async () => {
-                        Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
-                    });
-                    Main.playerWindow.on('closed', () => {
-                        Main.playerWindow = null;
-                        Main.playerWindowContentViewer = null;
-                    });
-                }
-                else if (Main.playerWindow && contentViewer !== Main.playerWindowContentViewer) {
-                    Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
-                    Main.playerWindow.on('ready-to-show', async () => {
-                        Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
-                    });
-                } else {
-                    Main.playerWindow?.webContents?.send("play", await NetworkService.proxyPlayIfRequired(message));
-                }
-
-                Main.playerWindowContentViewer = contentViewer;
-            });
-
+        Main.listeners = [Main.tcpListenerService, Main.webSocketListenerService];
+        Main.listeners.forEach(l => {
+            l.emitter.on("play", (message: PlayMessage) => Main.play(message));
             l.emitter.on("pause", () => Main.playerWindow?.webContents?.send("pause"));
             l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
@@ -237,9 +255,12 @@ export class Main {
                 Main.playerWindowContentViewer = null;
             });
 
-            l.emitter.on("seek", (message) => Main.playerWindow?.webContents?.send("seek", message));
-            l.emitter.on("setvolume", (message) => Main.playerWindow?.webContents?.send("setvolume", message));
-            l.emitter.on("setspeed", (message) => Main.playerWindow?.webContents?.send("setspeed", message));
+            l.emitter.on("seek", (message: SeekMessage) => Main.playerWindow?.webContents?.send("seek", message));
+            l.emitter.on("setvolume", (message: SetVolumeMessage) => {
+                Main.cache.playerVolume = message.volume;
+                Main.playerWindow?.webContents?.send("setvolume", message);
+            });
+            l.emitter.on("setspeed", (message: SetSpeedMessage) => Main.playerWindow?.webContents?.send("setspeed", message));
 
             l.emitter.on('connect', (message) => {
                 ConnectionMonitor.onConnect(l, message, l instanceof WebSocketListenerService, () => {
@@ -262,7 +283,7 @@ export class Main {
             l.emitter.on('initial', (message) => {
                 logger.info(`Received 'Initial' message from sender: ${message}`);
             });
-            l.emitter.on("setplaylistitem", (message) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
+            l.emitter.on("setplaylistitem", (message: SetPlaylistItemMessage) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
             l.emitter.on('subscribeevent', (message) => {
                 const subscribeData = l.subscribeEvent(message.sessionId, message.body.event);
 
@@ -290,14 +311,36 @@ export class Main {
             });
 
             ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
+                Main.cache.playerVolume = value.volume;
                 l.send(Opcode.VolumeUpdate, value);
             });
 
-            ipcMain.on('emit-event', (event: IpcMainEvent, value: EventMessage) => {
+            ipcMain.on('send-event', (event: IpcMainEvent, value: EventMessage) => {
                 l.send(Opcode.Event, value);
             });
         });
 
+        ipcMain.on('play-request', (event: IpcMainEvent, value: PlayMessage, playlistIndex: number) => {
+            logger.debug(`Received play request for index ${playlistIndex}:`, value);
+
+            if (Main.cache.playlist.forwardCache && Main.cache.playlist.forwardCache > 0) {
+                if (Main.mediaCache.has(playlistIndex)) {
+                    value.url = Main.mediaCache.getUrl(playlistIndex);
+                }
+
+                Main.mediaCache.cacheForwardItems(playlistIndex + 1, Main.cache.playlist.forwardCache, playlistIndex);
+            }
+
+            if (Main.cache.playlist.backwardCache && Main.cache.playlist.backwardCache > 0) {
+                if (Main.mediaCache.has(playlistIndex)) {
+                    value.url = Main.mediaCache.getUrl(playlistIndex);
+                }
+
+                Main.mediaCache.cacheBackwardItems(playlistIndex - 1, Main.cache.playlist.backwardCache, playlistIndex);
+            }
+
+            Main.play(value);
+        });
         ipcMain.on('send-download-request', async () => {
             if (!Updater.isDownloading) {
                 try {
@@ -569,28 +612,4 @@ export async function errorHandler(error: Error) {
     } else {
         Main.application.exit(0);
     }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function fetchJSON(url: string): Promise<any> {
-    const protocol = url.startsWith('https') ? https : http;
-
-    return new Promise((resolve, reject) => {
-        protocol.get(url, (res) => {
-            let data = '';
-            res.on('data', (chunk) => {
-                data += chunk;
-            });
-
-            res.on('end', () => {
-                try {
-                    resolve(JSON.parse(data));
-                } catch (err) {
-                    reject(err);
-                }
-            });
-        }).on('error', (err) => {
-            reject(err);
-        });
-    });
 }

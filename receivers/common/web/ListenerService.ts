@@ -1,6 +1,7 @@
 import { FCastSession } from 'common/FCastSession';
 import { Opcode, EventSubscribeObject, EventType, KeyEvent, KeyDownEvent, KeyUpEvent } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
+import { deepEqual } from 'common/UtilityBackend';
 import { EventEmitter } from 'events';
 import { errorHandler } from 'src/Main';
 const logger = new Logger('ListenerService', LoggerType.BACKEND);
@@ -63,7 +64,7 @@ export abstract class ListenerService {
         if (this.eventSubscribers.has(sessionId)) {
             let sessionSubscriptions = this.eventSubscribers.get(sessionId);
 
-            const index = sessionSubscriptions.findIndex((obj) => ListenerService.deepEqual(obj, event));
+            const index = sessionSubscriptions.findIndex((obj) => deepEqual(obj, event));
             if (index != -1) {
                 sessionSubscriptions.splice(index, 1);
             }
@@ -134,13 +135,5 @@ export abstract class ListenerService {
 
     protected async handleServerError(err: NodeJS.ErrnoException) {
         errorHandler(err);
-    }
-
-    private static deepEqual(x, y) {
-        const ok = Object.keys, tx = typeof x, ty = typeof y;
-        return x && y && tx === 'object' && tx === ty ? (
-            ok(x).length === ok(y).length &&
-            ok(x).every(key => this.deepEqual(x[key], y[key]))
-        ) : (x === y);
     }
 }
