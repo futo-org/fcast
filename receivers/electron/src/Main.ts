@@ -165,7 +165,7 @@ export class Main {
         // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
         // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
         // is cached in the play message when volume is not set in v3 PlayMessage.
-        message.volume = message.volume || message.volume === undefined ? Main.cache.playerVolume : message.volume;
+        message.volume = message.volume === undefined ? Main.cache.playerVolume : message.volume;
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let rendererMessage: any = await NetworkService.proxyPlayIfRequired(message);
