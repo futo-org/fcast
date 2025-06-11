@@ -52,8 +52,7 @@ export class MediaCache {
 
         // @ts-ignore
         if (TARGET === 'electron') {
-            // this.quota = Math.min(Math.floor(os.freemem() / 4), 4 * 1024 * 1024 * 1024); // 4GB
-            this.quota = Math.min(Math.floor(os.freemem() / 4), 35 * 1024 * 1024); // 4GB
+            this.quota = Math.min(Math.floor(os.freemem() / 4), 4 * 1024 * 1024 * 1024); // 4GB
 
         // @ts-ignore
         } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
