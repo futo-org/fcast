@@ -365,7 +365,7 @@ export class Updater {
             const destination = path.join(Updater.updateDataPath, file);
             logger.info(`Downloading '${fileInfo.url}' to '${destination}'.`);
             Updater.isDownloading = true;
-            await downloadFile(fileInfo.url.toString(), destination, null, (downloadedBytes: number, downloadSize: number) => {
+            await downloadFile(fileInfo.url.toString(), destination, false, null, null, (downloadedBytes: number, downloadSize: number) => {
                 Updater.updateProgress = downloadedBytes / downloadSize;
             });
 

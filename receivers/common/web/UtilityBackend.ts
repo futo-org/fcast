@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as url from 'url';
 import { http, https } from 'modules/follow-redirects';
 import * as memfs from 'modules/memfs';
 import { Logger, LoggerType } from 'common/Logger';
@@ -35,14 +36,22 @@ export async function fetchJSON(url: string): Promise<any> {
     });
 }
 
-export async function downloadFile(url: string, destination: string, startCb: (downloadSize: number) => boolean = null, progressCb: (downloadedBytes: number, downloadSize: number) => void = null, finishCb: (downloadedBytes: number) => void = null, inMemory: boolean = false): Promise<void> {
+export async function downloadFile(downloadUrl: string, destination: string, inMemory: boolean = false, requestHeaders: { [key: string]: string } = null,
+                                   startCb: (downloadSize: number) => boolean = null,
+                                   progressCb: (downloadedBytes: number, downloadSize: number) => void = null): Promise<void> {
     return new Promise((resolve, reject) => {
         const file = inMemory ? memfs.fs.createWriteStream(destination) : fs.createWriteStream(destination);
-        const protocol = url.startsWith('https') ? https : http;
+        const protocol = downloadUrl.startsWith('https') ? https : http;
 
-        protocol.get(url, (response) => {
+        const parsedUrl = url.parse(downloadUrl);
+        const options = protocol.RequestOptions = {
+            ...parsedUrl,
+            headers: requestHeaders
+        };
+
+        protocol.get(options, (response) => {
             const downloadSize = Number(response.headers['content-length']);
-            logger.info(`Downloading file ${url} to ${destination} with size: ${downloadSize} bytes`);
+            logger.info(`Downloading file ${downloadUrl} to ${destination} with size: ${downloadSize} bytes`);
             if (startCb) {
                 if (!startCb(downloadSize)) {
                     file.close();
@@ -61,9 +70,6 @@ export async function downloadFile(url: string, destination: string, startCb: (d
             });
             file.on('finish', () => {
                 file.close();
-                if (finishCb) {
-                    finishCb(downloadedBytes);
-                }
                 resolve();
             });
         }).on('error', (err) => {

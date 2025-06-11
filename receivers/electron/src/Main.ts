@@ -24,7 +24,6 @@ class AppCache {
     public appVersion: string = null;
     public playMessage: PlayMessage = null;
     public playerVolume: number = null;
-    public playlist: PlaylistContent = null;
     public subscribedKeys = new Set<string>();
 }
 
@@ -181,7 +180,6 @@ export class Main {
                     case ContentType.Playlist: {
                         rendererMessage = json as PlaylistContent;
                         rendererEvent = 'play-playlist';
-                        Main.cache.playlist = rendererMessage;
 
                         if ((rendererMessage.forwardCache && rendererMessage.forwardCache > 0) || (rendererMessage.backwardCache && rendererMessage.backwardCache > 0)) {
                             Main.mediaCache?.destroy();
@@ -322,23 +320,8 @@ export class Main {
 
         ipcMain.on('play-request', (event: IpcMainEvent, value: PlayMessage, playlistIndex: number) => {
             logger.debug(`Received play request for index ${playlistIndex}:`, value);
-
-            if (Main.cache.playlist.forwardCache && Main.cache.playlist.forwardCache > 0) {
-                if (Main.mediaCache.has(playlistIndex)) {
-                    value.url = Main.mediaCache.getUrl(playlistIndex);
-                }
-
-                Main.mediaCache.cacheForwardItems(playlistIndex + 1, Main.cache.playlist.forwardCache, playlistIndex);
-            }
-
-            if (Main.cache.playlist.backwardCache && Main.cache.playlist.backwardCache > 0) {
-                if (Main.mediaCache.has(playlistIndex)) {
-                    value.url = Main.mediaCache.getUrl(playlistIndex);
-                }
-
-                Main.mediaCache.cacheBackwardItems(playlistIndex - 1, Main.cache.playlist.backwardCache, playlistIndex);
-            }
-
+            value.url = Main.mediaCache.has(playlistIndex) ? Main.mediaCache.getUrl(playlistIndex) : value.url;
+            Main.mediaCache.cacheItems(playlistIndex);
             Main.play(value);
         });
         ipcMain.on('send-download-request', async () => {
