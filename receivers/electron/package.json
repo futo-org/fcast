@@ -49,7 +49,6 @@
     "@vscode/sudo-prompt": "^9.3.1",
     "bufferutil": "^4.0.8",
     "dashjs": "^4.7.4",
-    "electron-json-storage": "^4.6.0",
     "extract-zip": "^2.0.1",
     "follow-redirects": "^1.15.9",
     "hls.js": "^1.5.15",

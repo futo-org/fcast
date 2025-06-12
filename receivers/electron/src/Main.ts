@@ -9,6 +9,7 @@ import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { fetchJSON } from 'common/UtilityBackend';
 import { MediaCache } from 'common/MediaCache';
+import { Store } from 'common/Store';
 import { Updater } from './Updater';
 import * as os from 'os';
 import * as path from 'path';
@@ -475,6 +476,11 @@ export class Main {
             })
             .parseSync();
 
+            // Using singleton classes for better compatibility running on webOS
+            const jsonPath = path.join(app.getPath('userData'), 'UserSettings.json');
+            new Store(jsonPath);
+
+            new Updater();
             const isUpdating = Updater.isUpdating();
             const fileLogType = isUpdating ? 'fileSync' : 'file';
             Logger.initialize({

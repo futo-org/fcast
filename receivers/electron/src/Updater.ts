@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
-import { Store } from './Store';
 import sudo from 'sudo-prompt';
+import { Store } from 'common/Store';
 import { Logger, LoggerType } from 'common/Logger';
 import { fetchJSON, downloadFile } from 'common/UtilityBackend';
 
@@ -50,6 +50,7 @@ interface UpdateConditions {
 }
 
 export class Updater {
+    private static instance: Store = null;
     private static readonly supportedReleasesJsonVersion = '1';
 
     private static appPath: string = app.getAppPath();
@@ -73,22 +74,27 @@ export class Updater {
     public static releaseChannel = 'stable';
     public static updateChannel = 'stable';
 
-    static {
-        Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
+    constructor() {
+        if (!Updater.instance) {
+            Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
 
-        let updaterSettings = Store.get('updater');
-        if (updaterSettings !== null) {
-            Updater.updateChannel = updaterSettings.channel === undefined ? Updater.localPackageJson.channel : updaterSettings.channel;
-            Updater.checkForUpdatesOnStart = updaterSettings.checkForUpdatesOnStart === undefined ? true : updaterSettings.checkForUpdatesOnStart;
+            let updaterSettings = Store.settings.updater;
+            if (updaterSettings !== null) {
+                Updater.updateChannel = updaterSettings.channel === undefined ? Updater.localPackageJson.channel : updaterSettings.channel;
+                Updater.checkForUpdatesOnStart = updaterSettings.checkForUpdatesOnStart === undefined ? true : updaterSettings.checkForUpdatesOnStart;
+            }
+
+            updaterSettings = {
+                'channel': Updater.updateChannel,
+                'checkForUpdatesOnStart': Updater.checkForUpdatesOnStart,
+            }
+
+            Updater.releaseChannel = Updater.localPackageJson.channel;
+            Store.settings.updater = updaterSettings;
+            Store.saveSettings();
+
+            Updater.instance = this;
         }
-
-        updaterSettings = {
-            'channel': Updater.updateChannel,
-            'checkForUpdatesOnStart': Updater.checkForUpdatesOnStart,
-        }
-
-        Updater.releaseChannel = Updater.localPackageJson.channel;
-        Store.set('updater', updaterSettings);
     }
 
     private static async applyUpdate(src: string, dst: string) {
