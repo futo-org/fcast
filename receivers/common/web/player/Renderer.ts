@@ -48,17 +48,9 @@ function sendPlaybackUpdate(updateState: PlaybackState) {
 
 function onPlayerLoad(value: PlayMessage) {
     playerCtrlStateUpdate(PlayerControlEvent.Load);
-    loadingSpinner.style.display = 'none';
 
     if (player.getAutoplay()) {
-        if (!supportedAudioTypes.find(v => v === value.container.toLocaleLowerCase())) {
-            idleIcon.style.display = 'none';
-            idleBackground.style.display = 'none';
-        }
-        else {
-            idleIcon.style.display = 'block';
-            idleBackground.style.display = 'block';
-        }
+        setIdleScreenVisible(false, false, value);
 
         // Subtitles break when seeking post stream initialization for the DASH player.
         // Its currently done on player initialization.
@@ -86,6 +78,9 @@ function onPlayerLoad(value: PlayMessage) {
         logger.info('Media playback start:', cachedPlayMediaItem);
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
         player.play();
+    }
+    else {
+        setIdleScreenVisible(true, false, value);
     }
 }
 
@@ -156,10 +151,6 @@ function onPlay(_event, value: PlayMessage) {
     logger.info('Media playback changed:', cachedPlayMediaItem);
     playItemCached = false;
 
-    idleIcon.style.display = 'none';
-    loadingSpinner.style.display = 'block';
-    idleBackground.style.display = 'block';
-
     if (player) {
         if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
             if (value.time) {
@@ -171,6 +162,7 @@ function onPlay(_event, value: PlayMessage) {
         player.destroy();
     }
 
+    setIdleScreenVisible(true, true);
     playbackState = PlaybackState.Idle;
     playerPrevTime = 0;
     lastPlayerUpdateGenerationTime = 0;
@@ -720,11 +712,20 @@ videoElement.onclick = () => { videoClickedHandler(); };
 idleBackground.onclick = () => { videoClickedHandler(); };
 idleIcon.onclick = () => { videoClickedHandler(); };
 
-function mediaStartHandler(message: PlayMessage) {
-    if (playbackState === PlaybackState.Idle) {
-        logger.info('Media playback start:', cachedPlayMediaItem);
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
+function setIdleScreenVisible(visible: boolean, loading: boolean = false, message?: PlayMessage) {
+    if (visible) {
+        idleBackground.style.display = 'block';
 
+        if (loading) {
+            idleIcon.style.display = 'none';
+            loadingSpinner.style.display = 'block';
+        }
+        else {
+            idleIcon.style.display = 'block';
+            loadingSpinner.style.display = 'none';
+        }
+    }
+    else {
         if (!supportedAudioTypes.find(v => v === message.container.toLocaleLowerCase())) {
             idleIcon.style.display = 'none';
             idleBackground.style.display = 'none';
@@ -732,7 +733,19 @@ function mediaStartHandler(message: PlayMessage) {
         else {
             idleIcon.style.display = 'block';
             idleBackground.style.display = 'block';
+
         }
+
+        loadingSpinner.style.display = 'none';
+    }
+}
+
+function mediaStartHandler(message: PlayMessage) {
+    if (playbackState === PlaybackState.Idle) {
+        logger.info('Media playback start:', cachedPlayMediaItem);
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
+
+        setIdleScreenVisible(false, false, message)
     }
 
     sendPlaybackUpdate(PlaybackState.Playing);
@@ -758,8 +771,7 @@ function mediaEndHandler() {
             sendPlaybackUpdate(PlaybackState.Idle);
             window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
 
-            idleIcon.style.display = 'block';
-            idleBackground.style.display = 'block';
+            setIdleScreenVisible(true);
             player.setAutoPlay(false);
             player.stop();
         }
@@ -769,8 +781,7 @@ function mediaEndHandler() {
         sendPlaybackUpdate(PlaybackState.Idle);
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
 
-        idleIcon.style.display = 'block';
-        idleBackground.style.display = 'block';
+        setIdleScreenVisible(true);
         player.setAutoPlay(false);
         player.stop();
     }
