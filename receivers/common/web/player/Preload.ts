@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, EventMessage, PlayMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
+import { toast, ToastIcon } from 'common/components/Toast';
 const logger = new Logger('PlayerWindow', LoggerType.FRONTEND);
 
 // Cannot directly pass the object to the renderer for some reason...
@@ -35,9 +36,13 @@ if (TARGET === 'electron') {
     // @ts-ignore
     const electronAPI = __non_webpack_require__('electron');
 
-    electronAPI.ipcRenderer.on("event-subscribed-keys-update", (_event, value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+    electronAPI.ipcRenderer.on('event-subscribed-keys-update', (_event, value: { keyDown: Set<string>, keyUp: Set<string> }) => {
         preloadData.subscribedKeys.keyDown = value.keyDown;
         preloadData.subscribedKeys.keyUp = value.keyUp;
+    })
+
+    electronAPI.ipcRenderer.on('toast', (_event, message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
+        toast(message, icon, duration);
     })
 
     electronAPI.contextBridge.exposeInMainWorld('targetAPI', {

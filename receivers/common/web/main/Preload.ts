@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { toast, ToastIcon } from 'common/components/Toast';
 import { Logger, LoggerType } from 'common/Logger';
 import { EventMessage } from 'common/Packets';
 const logger = new Logger('MainWindow', LoggerType.FRONTEND);
@@ -34,12 +35,16 @@ if (TARGET === 'electron') {
     // @ts-ignore
     const electronAPI = __non_webpack_require__('electron');
 
-    electronAPI.ipcRenderer.on("device-info", (_event, value: any) => {
+    electronAPI.ipcRenderer.on('device-info', (_event, value: any) => {
         preloadData.deviceInfo = value;
     })
-    electronAPI.ipcRenderer.on("event-subscribed-keys-update", (_event, value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+    electronAPI.ipcRenderer.on('event-subscribed-keys-update', (_event, value: { keyDown: Set<string>, keyUp: Set<string> }) => {
         preloadData.subscribedKeys.keyDown = value.keyDown;
         preloadData.subscribedKeys.keyUp = value.keyUp;
+    })
+
+    electronAPI.ipcRenderer.on('toast', (_event, message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
+        toast(message, icon, duration);
     })
 
     electronAPI.contextBridge.exposeInMainWorld('targetAPI', {

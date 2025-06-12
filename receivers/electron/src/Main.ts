@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
+import { ToastIcon } from 'common/components/Toast';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, ContentObject, ContentType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage } from 'common/Packets';
 import { supportedPlayerTypes } from 'common/MimeTypes';
 import { DiscoveryService } from 'common/DiscoveryService';
@@ -9,7 +10,7 @@ import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { fetchJSON } from 'common/UtilityBackend';
 import { MediaCache } from 'common/MediaCache';
-import { Store } from 'common/Store';
+import { Settings } from 'common/Settings';
 import { Updater } from './Updater';
 import * as os from 'os';
 import * as path from 'path';
@@ -464,6 +465,14 @@ export class Main {
             Main.cache.appName = app.name;
             Main.cache.appVersion = app.getVersion();
 
+            // Using singleton classes for better compatibility running on webOS
+            const jsonPath = path.join(app.getPath('userData'), 'UserSettings.json');
+            new Settings(jsonPath);
+
+            if (Settings.json.network.ignoreCertificateErrors) {
+                app.commandLine.appendSwitch('ignore-certificate-errors');
+            }
+
             const argv = yargs(hideBin(process.argv))
             .version(app.getVersion())
             .parserConfiguration({
@@ -475,10 +484,6 @@ export class Main {
                 'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', default: 'INFO', desc: "Defines the verbosity level of the logger" },
             })
             .parseSync();
-
-            // Using singleton classes for better compatibility running on webOS
-            const jsonPath = path.join(app.getPath('userData'), 'UserSettings.json');
-            new Store(jsonPath);
 
             new Updater();
             const isUpdating = Updater.isUpdating();
@@ -524,6 +529,11 @@ export class Main {
                     Main.openMainWindow();
                 }
             })
+
+            Main.application.on('certificate-error', (_event, _webContents, url, error, certificate) => {
+                toast('Could not playback media (certificate error)', ToastIcon.ERROR);
+                logger.error('Could not playback media (certificate error):', { url: url, error: error, certificate: certificate });
+            });
             Main.application.on('ready', Main.onReady);
             Main.application.on('window-all-closed', () => { });
         }
@@ -532,6 +542,11 @@ export class Main {
             app.exit();
         }
     }
+}
+
+export function toast(message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) {
+    Main.mainWindow?.webContents?.send('toast', message, icon, duration);
+    Main.playerWindow?.webContents?.send('toast', message, icon, duration);
 }
 
 export function getComputerName() {

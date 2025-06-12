@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
 import sudo from 'sudo-prompt';
-import { Store } from 'common/Store';
+import { Settings } from 'common/Settings';
 import { Logger, LoggerType } from 'common/Logger';
 import { fetchJSON, downloadFile } from 'common/UtilityBackend';
 
@@ -50,7 +50,7 @@ interface UpdateConditions {
 }
 
 export class Updater {
-    private static instance: Store = null;
+    private static instance: Updater = null;
     private static readonly supportedReleasesJsonVersion = '1';
 
     private static appPath: string = app.getAppPath();
@@ -78,7 +78,7 @@ export class Updater {
         if (!Updater.instance) {
             Updater.localPackageJson = JSON.parse(fs.readFileSync(path.join(Updater.appPath, './package.json'), 'utf8'));
 
-            let updaterSettings = Store.settings.updater;
+            let updaterSettings = Settings.json.updater;
             if (updaterSettings !== null) {
                 Updater.updateChannel = updaterSettings.channel === undefined ? Updater.localPackageJson.channel : updaterSettings.channel;
                 Updater.checkForUpdatesOnStart = updaterSettings.checkForUpdatesOnStart === undefined ? true : updaterSettings.checkForUpdatesOnStart;
@@ -90,8 +90,8 @@ export class Updater {
             }
 
             Updater.releaseChannel = Updater.localPackageJson.channel;
-            Store.settings.updater = updaterSettings;
-            Store.saveSettings();
+            Settings.json.updater = updaterSettings;
+            Settings.save();
 
             Updater.instance = this;
         }
