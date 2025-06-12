@@ -345,14 +345,14 @@ function onPlay(_event, value: PlayMessage) {
     if (isMediaItem && cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
         showDurationTimeout = window.setTimeout(mediaEndHandler, cachedPlayMediaItem.showDuration * 1000);
     }
-
-    // Sender generated event handlers
-    window.targetAPI.onPause(() => { player.pause(); });
-    window.targetAPI.onResume(() => { player.play(); });
-    window.targetAPI.onSeek((_event, value: SeekMessage) => { player.setCurrentTime(value.time); });
-    window.targetAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
-    window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
 }
+
+// Sender generated event handlers
+window.targetAPI.onPause(() => { player?.pause(); });
+window.targetAPI.onResume(() => { player?.play(); });
+window.targetAPI.onSeek((_event, value: SeekMessage) => { player?.setCurrentTime(value.time); });
+window.targetAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
+window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player?.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
 
 function onPlayPlaylist(_event, value: PlaylistContent) {
     logger.info('Handle play playlist message', JSON.stringify(value));
