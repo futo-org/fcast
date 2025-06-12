@@ -5,6 +5,7 @@ export enum LoggerType {
 }
 
 export class Logger {
+    private static initialized = false;
     private static log4js = null;
     private static ipcLoggerTags = {
         trace: [],
@@ -88,6 +89,8 @@ export class Logger {
                 logger.fatal(value.message, ...value.optionalParams);
             });
         }
+
+        Logger.initialized = true;
     }
 
     constructor(tag: string = 'default', type: LoggerType = LoggerType.FRONTEND) {
@@ -102,7 +105,7 @@ export class Logger {
                 }
 
                 const logger = Logger.log4js.getLogger(tag);
-                this.funcTable = {
+                const initializedFuncTable = {
                     trace: (message?: any, ...optionalParams: any[]) => {
                         logger.trace(message, ...optionalParams);
                     },
@@ -122,6 +125,69 @@ export class Logger {
                         logger.fatal(message, ...optionalParams);
                     },
                 };
+
+                if (Logger.initialized) {
+                    this.funcTable = initializedFuncTable;
+                }
+                else {
+                    this.funcTable = {
+                        trace: (message?: any, ...optionalParams: any[]) => {
+                            if (Logger.initialized) {
+                                this.funcTable = initializedFuncTable;
+                                this.trace(message, ...optionalParams);
+                                return;
+                            }
+
+                            console.trace(message, ...optionalParams);
+                        },
+                        debug: (message?: any, ...optionalParams: any[]) => {
+                            if (Logger.initialized) {
+                                this.funcTable = initializedFuncTable;
+                                this.debug(message, ...optionalParams);
+                                return;
+                            }
+
+                            console.debug(message, ...optionalParams);
+                        },
+                        info: (message?: any, ...optionalParams: any[]) => {
+                            if (Logger.initialized) {
+                                this.funcTable = initializedFuncTable;
+                                this.info(message, ...optionalParams);
+                                return;
+                            }
+
+                            console.info(message, ...optionalParams);
+                        },
+                        warn: (message?: any, ...optionalParams: any[]) => {
+                            if (Logger.initialized) {
+                                this.funcTable = initializedFuncTable;
+                                this.warn(message, ...optionalParams);
+                                return;
+                            }
+
+                            console.warn(message, ...optionalParams);
+                        },
+                        error: (message?: any, ...optionalParams: any[]) => {
+                            if (Logger.initialized) {
+                                this.funcTable = initializedFuncTable;
+                                this.error(message, ...optionalParams);
+                                return;
+                            }
+
+                            console.error(message, ...optionalParams);
+                        },
+                        fatal: (message?: any, ...optionalParams: any[]) => {
+                            if (Logger.initialized) {
+                                this.funcTable = initializedFuncTable;
+                                this.fatal(message, ...optionalParams);
+                                return;
+                            }
+
+                            console.error(message, ...optionalParams);
+                        },
+                    };
+                }
+
             }
             else if (type === LoggerType.FRONTEND) {
                 // @ts-ignore
