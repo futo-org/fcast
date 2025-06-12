@@ -202,13 +202,23 @@ function onPlay(_event, value: PlayMessage) {
                 }
             });
 
-            player.dashPlayer.on(dashjs.MediaPlayer.events.ERROR, (data) => { window.targetAPI.sendPlaybackError({
-                message: `DashJS ERROR: ${JSON.stringify(data)}`
-            })});
+            player.dashPlayer.on(dashjs.MediaPlayer.events.ERROR, (data) => {
+                toast('Media playback error, please close the player and reconnect sender devices if you experience issues', ToastIcon.WARNING);
+                logger.error('Dash player error:', data);
 
-            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ERROR, (data) => { window.targetAPI.sendPlaybackError({
-                message: `DashJS PLAYBACK_ERROR: ${JSON.stringify(data)}`
-            })});
+                window.targetAPI.sendPlaybackError({
+                    message: JSON.stringify(data)
+                });
+            });
+
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ERROR, (data) => {
+                toast('Media playback error, please close the player and reconnect sender devices if you experience issues', ToastIcon.WARNING);
+                logger.error('Dash player playback error:', data);
+
+                window.targetAPI.sendPlaybackError({
+                    message: JSON.stringify(data)
+                });
+            });
 
             player.dashPlayer.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => { onPlayerLoad(value); });
 
@@ -245,10 +255,22 @@ function onPlay(_event, value: PlayMessage) {
             });
 
         } else if ((value.container === 'application/vnd.apple.mpegurl' || value.container === 'application/x-mpegURL') && !videoElement.canPlayType(value.container)) {
-            player.hlsPlayer.on(Hls.Events.ERROR, (eventName, data) => {
-                window.targetAPI.sendPlaybackError({
-                    message: `HLS player error: ${JSON.stringify(data)}`
-                });
+            player.hlsPlayer.on(Hls.Events.ERROR, (_eventName, data) => {
+                if (data.fatal) {
+                    toast('Media playback error, please close the player and reconnect sender devices if you experience issues', ToastIcon.WARNING);
+                    logger.error('HLS player error:', data);
+
+                    window.targetAPI.sendPlaybackError({
+                        message: JSON.stringify(data)
+                    });
+
+                    if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                        player.hlsPlayer.recoverMediaError();
+                    }
+                }
+                else {
+                    logger.warn('HLS non-fatal error:', data);
+                }
             });
 
             player.hlsPlayer.on(Hls.Events.LEVEL_LOADED, (eventName, level: LevelLoadedData) => {
@@ -263,7 +285,6 @@ function onPlay(_event, value: PlayMessage) {
                     playerCtrlDuration.style.display = "none";
                 }
             });
-
         }
 
         // Player event handlers
@@ -292,8 +313,15 @@ function onPlay(_event, value: PlayMessage) {
                 }
             };
 
-            videoElement.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
-                logger.error("Player error", {source, lineno, colno, error});
+            // parameters seem to always be undefined...
+            // videoElement.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
+            videoElement.onerror = () => {
+                toast('Media playback error, please close the player and reconnect sender devices if you experience issues', ToastIcon.WARNING);
+                logger.error('Html player error:', { playMessage: value, videoError: videoElement.error });
+
+                window.targetAPI.sendPlaybackError({
+                    message: JSON.stringify({ playMessage: value, videoError: videoElement.error })
+                });
             };
 
             videoElement.onloadedmetadata = (ev) => {

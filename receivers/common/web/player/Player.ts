@@ -87,7 +87,7 @@ export class Player {
 
             case PlayerType.Html: {
                 this.player.src = "";
-                // this.player.onerror = null;
+                this.player.onerror = null;
                 this.player.onloadedmetadata = null;
                 this.player.ontimeupdate = null;
                 this.player.onplay = null;
