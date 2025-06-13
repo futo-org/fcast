@@ -15,6 +15,14 @@ export const supportedVideoTypes = [
     'video/3gpp2',
 ];
 
+export const supportedVideoExtensions = [
+    '.mp4', '.m4v',
+    '.webm',
+    '.mkv',
+    '.3gp',
+    '.3g2',
+];
+
 export const supportedAudioTypes = [
     'audio/aac',
     'audio/flac',
@@ -38,6 +46,18 @@ export const supportedImageTypes = [
     'image/svg+xml',
     'image/vnd.microsoft.icon',
     'image/webp'
+];
+
+export const supportedImageExtensions = [
+    '.apng',
+    '.avif',
+    '.bmp',
+    '.gif',
+    '.ico',
+    '.jpeg', '.jpg', '.jpe', '.jif', '.jfif', '.jfi',
+    '.png',
+    '.svg',
+    '.webp'
 ];
 
 export const supportedPlayerTypes = streamingMediaTypes.concat(

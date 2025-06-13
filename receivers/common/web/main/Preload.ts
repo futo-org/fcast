@@ -43,6 +43,24 @@ if (TARGET === 'electron') {
         preloadData.subscribedKeys.keyUp = value.keyUp;
     })
 
+    electronAPI.ipcRenderer.on('update-background', (_event, path: string, isVideo: boolean) => {
+        const imageBackground = document.getElementById('image-background') as HTMLImageElement;
+        const videoBackground = document.getElementById('video-player') as HTMLVideoElement;
+
+        if (isVideo) {
+            videoBackground.src = path;
+
+            imageBackground.style.display = 'none';
+            videoBackground.style.display = 'block';
+        }
+        else {
+            imageBackground.src = path;
+
+            imageBackground.style.display = 'block';
+            videoBackground.style.display = 'none';
+        }
+    })
+
     electronAPI.ipcRenderer.on('toast', (_event, message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
         toast(message, icon, duration);
     })

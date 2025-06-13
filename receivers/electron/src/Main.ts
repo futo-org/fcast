@@ -1,19 +1,21 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
 import { ToastIcon } from 'common/components/Toast';
-import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, ContentObject, ContentType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage } from 'common/Packets';
+import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { MediaCache } from 'common/MediaCache';
+import { supportedImageExtensions, supportedVideoExtensions } from 'common/MimeTypes';
 import { Settings } from 'common/Settings';
+import { preparePlayMessage } from 'common/UtilityBackend';
 import { Updater } from './Updater';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { preparePlayMessage } from 'common/UtilityBackend';
 const cp = require('child_process');
 let logger = null;
 
@@ -425,6 +427,25 @@ export class Main {
             }
 
             networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
+        });
+
+        Main.mainWindow.webContents.once('dom-ready', () => {
+            if (Settings.json.ui.mainWindowBackground !== '') {
+                if (fs.existsSync(Settings.json.ui.mainWindowBackground)) {
+                    if (supportedVideoExtensions.find(ext => ext === path.extname(Settings.json.ui.mainWindowBackground).toLocaleLowerCase())) {
+                        Main.mainWindow?.webContents?.send("update-background", Settings.json.ui.mainWindowBackground, true);
+                    }
+                    else if (supportedImageExtensions.find(ext => ext === path.extname(Settings.json.ui.mainWindowBackground).toLocaleLowerCase())) {
+                        Main.mainWindow?.webContents?.send("update-background", Settings.json.ui.mainWindowBackground, false);
+                    }
+                    else {
+                        logger.warn(`Custom background at ${Settings.json.ui.mainWindowBackground} is not of a supported file format. Ignoring...`);
+                    }
+                }
+                else {
+                    logger.warn(`Custom background at ${Settings.json.ui.mainWindowBackground} does not exist. Ignoring...`);
+                }
+            }
         });
     }
 
