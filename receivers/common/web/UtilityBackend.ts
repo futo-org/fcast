@@ -3,6 +3,9 @@ import * as url from 'url';
 import { http, https } from 'modules/follow-redirects';
 import * as memfs from 'modules/memfs';
 import { Logger, LoggerType } from 'common/Logger';
+import { supportedPlayerTypes } from 'common/MimeTypes';
+import { NetworkService } from 'common/NetworkService';
+import { ContentObject, ContentType, PlaylistContent, PlayMessage } from 'common/Packets';
 const logger = new Logger('UtilityBackend', LoggerType.BACKEND);
 
 export function deepEqual(x, y) {
@@ -11,6 +14,44 @@ export function deepEqual(x, y) {
         ok(x).length === ok(y).length &&
         ok(x).every(key => deepEqual(x[key], y[key]))
     ) : (x === y);
+}
+
+export async function preparePlayMessage(message: PlayMessage, cachedPlayerVolume: number, mediaCacheInitializationCb: ((playMessage: PlaylistContent) => void)) {
+    // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+    // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
+    // is cached in the play message when volume is not set in v3 PlayMessage.
+    message.volume = message.volume === undefined ? cachedPlayerVolume : message.volume;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let rendererMessage: any = await NetworkService.proxyPlayIfRequired(message);
+    let rendererEvent = 'play';
+    let contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
+
+    if (message.container === 'application/json') {
+        const json: ContentObject = message.url ? await fetchJSON(message.url) : JSON.parse(message.content);
+
+        if (json && json.contentType !== undefined) {
+            switch (json.contentType) {
+                case ContentType.Playlist: {
+                    rendererMessage = json as PlaylistContent;
+                    rendererEvent = 'play-playlist';
+
+                    if ((rendererMessage.forwardCache && rendererMessage.forwardCache > 0) || (rendererMessage.backwardCache && rendererMessage.backwardCache > 0)) {
+                        mediaCacheInitializationCb(rendererMessage);
+                    }
+
+                    const offset = rendererMessage.offset ? rendererMessage.offset : 0;
+                    contentViewer = supportedPlayerTypes.find(v => v === rendererMessage.items[offset].container.toLocaleLowerCase()) ? 'player' : 'viewer';
+                    break;
+                }
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    return { rendererEvent: rendererEvent, rendererMessage: rendererMessage, contentViewer: contentViewer };
 }
 
 export async function fetchJSON(url: string): Promise<any> {

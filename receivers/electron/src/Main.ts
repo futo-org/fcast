@@ -1,14 +1,11 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
 import { ToastIcon } from 'common/components/Toast';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, ContentObject, ContentType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage } from 'common/Packets';
-import { supportedPlayerTypes } from 'common/MimeTypes';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
-import { NetworkService } from 'common/NetworkService';
 import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
-import { fetchJSON } from 'common/UtilityBackend';
 import { MediaCache } from 'common/MediaCache';
 import { Settings } from 'common/Settings';
 import { Updater } from './Updater';
@@ -16,6 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { preparePlayMessage } from 'common/UtilityBackend';
 const cp = require('child_process');
 let logger = null;
 
@@ -163,41 +161,10 @@ export class Main {
     private static async play(message: PlayMessage) {
         Main.listeners.forEach(l => l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message)));
         Main.cache.playMessage = message;
-
-        // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
-        // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
-        // is cached in the play message when volume is not set in v3 PlayMessage.
-        message.volume = message.volume === undefined ? Main.cache.playerVolume : message.volume;
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let rendererMessage: any = await NetworkService.proxyPlayIfRequired(message);
-        let rendererEvent = 'play';
-        let contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
-
-        if (message.container === 'application/json') {
-            const json: ContentObject = message.url ? await fetchJSON(message.url) : JSON.parse(message.content);
-
-            if (json && json.contentType !== undefined) {
-                switch (json.contentType) {
-                    case ContentType.Playlist: {
-                        rendererMessage = json as PlaylistContent;
-                        rendererEvent = 'play-playlist';
-
-                        if ((rendererMessage.forwardCache && rendererMessage.forwardCache > 0) || (rendererMessage.backwardCache && rendererMessage.backwardCache > 0)) {
-                            Main.mediaCache?.destroy();
-                            Main.mediaCache = new MediaCache(rendererMessage);
-                        }
-
-                        const offset = rendererMessage.offset ? rendererMessage.offset : 0;
-                        contentViewer = supportedPlayerTypes.find(v => v === rendererMessage.items[offset].container.toLocaleLowerCase()) ? 'player' : 'viewer';
-                        break;
-                    }
-
-                    default:
-                        break;
-                }
-            }
-        }
+        const messageInfo = await preparePlayMessage(message, Main.cache.playerVolume, (playMessage: PlaylistContent) => {
+            Main.mediaCache?.destroy();
+            Main.mediaCache = new MediaCache(playMessage);
+        });
 
         if (!Main.playerWindow) {
             Main.playerWindow = new BrowserWindow({
@@ -212,25 +179,25 @@ export class Main {
             Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
             Main.playerWindow.show();
 
-            Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
+            Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
             Main.playerWindow.on('ready-to-show', async () => {
-                Main.playerWindow?.webContents?.send(rendererEvent, rendererMessage);
+                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
             });
             Main.playerWindow.on('closed', () => {
                 Main.playerWindow = null;
                 Main.playerWindowContentViewer = null;
             });
         }
-        else if (Main.playerWindow && contentViewer !== Main.playerWindowContentViewer) {
-            Main.playerWindow.loadFile(path.join(__dirname, `${contentViewer}/index.html`));
+        else if (Main.playerWindow && messageInfo.contentViewer !== Main.playerWindowContentViewer) {
+            Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
             Main.playerWindow.on('ready-to-show', async () => {
-                Main.playerWindow?.webContents?.send(rendererEvent, rendererMessage);
+                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
             });
         } else {
-            Main.playerWindow?.webContents?.send(rendererEvent, rendererMessage);
+            Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
         }
 
-        Main.playerWindowContentViewer = contentViewer;
+        Main.playerWindowContentViewer = messageInfo.contentViewer;
     }
 
     private static onReady() {
