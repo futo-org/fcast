@@ -12,7 +12,7 @@ export class DiscoveryService {
             return;
         }
 
-        const name = `FCast-${getComputerName()}`;
+        const name = getComputerName();
         logger.info(`Discovery service started: ${name}`);
 
         // Note that txt field must be populated, otherwise certain mdns stacks have undefined behavior/issues

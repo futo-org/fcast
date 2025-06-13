@@ -448,9 +448,9 @@ export class Main {
                 'boolean-negation': false
             })
             .options({
-                'no-main-window': { type: 'boolean', default: false, desc: "Start minimized to tray" },
-                'fullscreen': { type: 'boolean', default: false, desc: "Start application in fullscreen" },
-                'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', default: 'INFO', desc: "Defines the verbosity level of the logger" },
+                'no-main-window': { type: 'boolean', desc: "Start minimized to tray" },
+                'fullscreen': { type: 'boolean', desc: "Start application in fullscreen" },
+                'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', desc: "Defines the verbosity level of the logger" },
             })
             .parseSync();
 
@@ -463,7 +463,7 @@ export class Main {
                     log: { type: fileLogType, filename: path.join(app.getPath('logs'), 'fcast-receiver.log'), flags: 'a', maxLogSize: '5M' },
                 },
                 categories: {
-                    default: { appenders: ['out', 'log'], level: argv.log },
+                    default: { appenders: ['out', 'log'], level: argv.log === undefined ? Settings.json.log.level : argv.log },
                 },
             });
             logger = new Logger('Main', LoggerType.BACKEND);
@@ -479,8 +479,8 @@ export class Main {
                 await Updater.processUpdate();
             }
 
-            Main.startFullscreen = argv.fullscreen;
-            Main.shouldOpenMainWindow = !argv.noMainWindow;
+            Main.startFullscreen = argv.fullscreen === undefined ? Settings.json.ui.fullscreen : argv.fullscreen;
+            Main.shouldOpenMainWindow = argv.noMainWindow === undefined ? !Settings.json.ui.noMainWindow : !argv.noMainWindow;
 
             const lock = Main.application.requestSingleInstanceLock()
             if (!lock) {
@@ -519,11 +519,15 @@ export function toast(message: string, icon: ToastIcon = ToastIcon.INFO, duratio
 }
 
 export function getComputerName() {
+    if (Settings.json.network.deviceName !== '') {
+        return Settings.json.network.deviceName;
+    }
+
     switch (process.platform) {
         case "win32":
-            return process.env.COMPUTERNAME;
+            return `FCast-${process.env.COMPUTERNAME}`;
         case "darwin":
-            return cp.execSync("scutil --get ComputerName").toString().trim();
+            return `FCast-${cp.execSync("scutil --get ComputerName").toString().trim()}`;
         case "linux": {
             let hostname: string;
 
@@ -546,11 +550,11 @@ export function getComputerName() {
                 }
             }
 
-            return hostname;
+            return `FCast-${hostname}`;
         }
 
         default:
-            return os.hostname();
+            return `FCast-${os.hostname()}`;
     }
 }
 
