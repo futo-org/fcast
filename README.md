@@ -40,6 +40,8 @@ A "receiver", in this context, is a software implementation running on various p
 - Receivers
   - [**Android**](receivers/android) native.
   - [**MacOS, Windows, Linux**](receivers/electron) electron.
+  - [**webOS**](receivers/webos)
+  - [**Tizen**](receivers/tizen)
   - Apple TV (future)
 
 - Senders
@@ -56,4 +58,4 @@ This project is licensed under the MIT License - see the LICENSE.md file for det
 
 ## Documentation
 
-Click [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-1) to see the protocol documentation.
+Click [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-3) to see the protocol documentation.
