@@ -291,8 +291,8 @@ export class Main {
 
         ipcMain.on('play-request', (event: IpcMainEvent, value: PlayMessage, playlistIndex: number) => {
             logger.debug(`Received play request for index ${playlistIndex}:`, value);
-            value.url = Main.mediaCache.has(playlistIndex) ? Main.mediaCache.getUrl(playlistIndex) : value.url;
-            Main.mediaCache.cacheItems(playlistIndex);
+            value.url = Main.mediaCache?.has(playlistIndex) ? Main.mediaCache?.getUrl(playlistIndex) : value.url;
+            Main.mediaCache?.cacheItems(playlistIndex);
             Main.play(value);
         });
         ipcMain.on('send-download-request', async () => {
