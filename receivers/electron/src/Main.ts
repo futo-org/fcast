@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
 import { ToastIcon } from 'common/components/Toast';
-import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage } from 'common/Packets';
+import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage, MetadataType, GenericMediaMetadata } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
 import { WebSocketListenerService } from 'common/WebSocketListenerService';
@@ -18,6 +18,8 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 const cp = require('child_process');
 let logger = null;
+
+const APPLICATION_TITLE = 'FCast Receiver';
 
 class AppCache {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -125,7 +127,7 @@ export class Main {
 
                     await dialog.showMessageBox({
                         type: 'info',
-                        title: 'Fcast Receiver',
+                        title: APPLICATION_TITLE,
                         message: aboutMessage,
                         buttons: ['OK'],
                         defaultId: 0
@@ -168,11 +170,18 @@ export class Main {
             Main.mediaCache = new MediaCache(playMessage);
         });
 
+        let windowTitle = APPLICATION_TITLE;
+        if (message.metadata?.type === MetadataType.Generic) {
+            const metadata = message.metadata as GenericMediaMetadata;
+            windowTitle = metadata.title ? `${metadata.title} - ${APPLICATION_TITLE}` : APPLICATION_TITLE;
+        }
+
         if (!Main.playerWindow) {
             Main.playerWindow = new BrowserWindow({
                 fullscreen: true,
                 autoHideMenuBar: true,
                 icon: path.join(__dirname, 'icon512.png'),
+                title: windowTitle,
                 webPreferences: {
                     preload: path.join(__dirname, 'player/preload.js')
                 }
@@ -191,11 +200,13 @@ export class Main {
             });
         }
         else if (Main.playerWindow && messageInfo.contentViewer !== Main.playerWindowContentViewer) {
+            Main.playerWindow.setTitle(windowTitle);
             Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
             Main.playerWindow.on('ready-to-show', async () => {
                 Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
             });
         } else {
+            Main.playerWindow.setTitle(windowTitle);
             Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
         }
 

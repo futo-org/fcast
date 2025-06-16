@@ -1,6 +1,6 @@
 import dashjs from 'modules/dashjs';
 import Hls, { LevelLoadedData } from 'modules/hls.js';
-import { EventMessage, EventType, KeyEvent, MediaItem, MediaItemEvent, PlaybackState, PlaybackUpdateMessage, PlaylistContent, PlayMessage, SeekMessage, SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
+import { EventMessage, EventType, GenericMediaMetadata, KeyEvent, MediaItem, MediaItemEvent, MetadataType, PlaybackState, PlaybackUpdateMessage, PlaylistContent, PlayMessage, SeekMessage, SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { Player, PlayerType } from './Player';
 import * as connectionMonitor from 'common/ConnectionMonitor';
 import { supportedAudioTypes } from 'common/MimeTypes';
@@ -88,12 +88,16 @@ function onPlayerLoad(value: PlayMessage) {
 const idleIcon = document.getElementById('title-icon');
 const loadingSpinner = document.getElementById('loading-spinner');
 const idleBackground = document.getElementById('idle-background');
+const thumbnailImage = document.getElementById('thumbnailImage') as HTMLImageElement;
 const videoElement = document.getElementById("videoPlayer") as HTMLVideoElement;
 const videoCaptions = document.getElementById("videoCaptions") as HTMLDivElement;
+const mediaTitle = document.getElementById("mediaTitle");
 
 const playerControls = document.getElementById("controls");
 
+const playerCtrlPlayPrevious = document.getElementById("playPrevious");
 const playerCtrlAction = document.getElementById("action");
+const playerCtrlPlayNext = document.getElementById("playNext");
 const playerCtrlVolume = document.getElementById("volume");
 
 const playerCtrlProgressBar = document.getElementById("progressBar");
@@ -141,6 +145,7 @@ let showDurationTimeout: number = null;
 let playlistIndex = 0;
 let isMediaItem = false;
 let playItemCached = false;
+let mediaTitleTimeoutHandle = null;
 
 function onPlay(_event, value: PlayMessage) {
     if (!playItemCached) {
@@ -372,10 +377,10 @@ function onPlayPlaylist(_event, value: PlaylistContent) {
     window.targetAPI.sendPlayRequest(playMessage, playlistIndex);
 }
 
-window.targetAPI.onSetPlaylistItem((_event, value: SetPlaylistItemMessage) => {
-    if (value.itemIndex >= 0 && value.itemIndex < cachedPlaylist.items.length) {
-        logger.info(`Setting playlist item to index ${value.itemIndex}`);
-        playlistIndex = value.itemIndex;
+function setPlaylistItem(index: number) {
+    if (index >= 0 && index < cachedPlaylist.items.length) {
+        logger.info(`Setting playlist item to index ${index}`);
+        playlistIndex = index;
         cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
         playItemCached = true;
         window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
@@ -386,9 +391,9 @@ window.targetAPI.onSetPlaylistItem((_event, value: SetPlaylistItemMessage) => {
         }
     }
     else {
-        logger.warn(`Playlist index out of bounds ${value.itemIndex}, ignoring...`);
+        logger.warn(`Playlist index out of bounds ${index}, ignoring...`);
     }
-});
+}
 
 connectionMonitor.setUiUpdateCallbacks({
     onConnect: (connections: string[], initialUpdate: boolean = false) => {
@@ -403,6 +408,7 @@ connectionMonitor.setUiUpdateCallbacks({
 
 window.targetAPI.onPlay(onPlay);
 window.targetAPI.onPlayPlaylist(onPlayPlaylist);
+window.targetAPI.onSetPlaylistItem((_event, value: SetPlaylistItemMessage) => { setPlaylistItem(value.itemIndex); });
 
 let scrubbing = false;
 let volumeChanging = false;
@@ -431,6 +437,15 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
     switch (event) {
         case PlayerControlEvent.Load: {
+            if (isMediaItem) {
+                playerCtrlPlayPrevious.style.display = 'block';
+                playerCtrlPlayNext.style.display = 'block';
+            }
+            else {
+                playerCtrlPlayPrevious.style.display = 'none';
+                playerCtrlPlayNext.style.display = 'none';
+            }
+
             playerCtrlProgressBarBuffer.setAttribute("style", "width: 0px");
             playerCtrlProgressBarProgress.setAttribute("style", "width: 0px");
             playerCtrlProgressBarHandle.setAttribute("style", `left: ${playerCtrlProgressBar.offsetLeft}px`);
@@ -440,30 +455,54 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             playerCtrlVolumeBarHandle.setAttribute("style", `left: ${volume + 8}px`);
 
             if (isLive) {
-                playerCtrlLiveBadge.setAttribute("style", "display: block");
-                playerCtrlPosition.setAttribute("style", "display: none");
-                playerCtrlDurationSeparator.setAttribute("style", "display: none");
-                playerCtrlDuration.setAttribute("style", "display: none");
+                playerCtrlLiveBadge.style.display = 'block';
+                playerCtrlPosition.style.display = 'none';
+                playerCtrlDurationSeparator.style.display = 'none';
+                playerCtrlDuration.style.display = 'none';
             }
             else {
-                playerCtrlLiveBadge.setAttribute("style", "display: none");
-                playerCtrlPosition.setAttribute("style", "display: block");
-                playerCtrlDurationSeparator.setAttribute("style", "display: block");
-                playerCtrlDuration.setAttribute("style", "display: block");
+                playerCtrlLiveBadge.style.display = 'none';
+                playerCtrlPosition.style.display = 'block';
+                playerCtrlDurationSeparator.style.display = 'block';
+                playerCtrlDuration.style.display = 'block';
+
                 playerCtrlPosition.textContent = formatDuration(player.getCurrentTime());
                 playerCtrlDuration.innerHTML = formatDuration(player.getDuration());
             }
 
             if (player.isCaptionsSupported()) {
-                playerCtrlCaptions.setAttribute("style", "display: block");
-                videoCaptions.setAttribute("style", "display: block");
+                playerCtrlCaptions.style.display = 'block';
+                videoCaptions.style.display = 'block';
             }
             else {
-                playerCtrlCaptions.setAttribute("style", "display: none");
-                videoCaptions.setAttribute("style", "display: none");
+                playerCtrlCaptions.style.display = 'none';
+                videoCaptions.style.display = 'none';
                 player.enableCaptions(false);
             }
             playerCtrlStateUpdate(PlayerControlEvent.SetCaptions);
+
+            if (supportedAudioTypes.find(v => v === cachedPlayMediaItem.container.toLocaleLowerCase())) {
+                if (cachedPlayMediaItem.metadata && cachedPlayMediaItem.metadata?.type === MetadataType.Generic) {
+                    const metadata = cachedPlayMediaItem.metadata as GenericMediaMetadata;
+
+                    if (metadata.title) {
+                        mediaTitle.innerHTML = metadata.title;
+
+                        captionsContentHeight = mediaTitle.getBoundingClientRect().height - captionsLineHeight;
+                        const captionsHeight = captionsBaseHeightExpanded + captionsContentHeight;
+                        mediaTitle.setAttribute("style", `display: block; bottom: ${captionsHeight}px;`);
+
+                        if (mediaTitleTimeoutHandle) {
+                            clearTimeout(mediaTitleTimeoutHandle);
+                        }
+
+                        mediaTitleTimeoutHandle = setTimeout(() => {
+                            mediaTitle.style.display = 'none';
+                        }, 5000);
+                    }
+                }
+            }
+
             break;
         }
 
@@ -533,7 +572,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
         case PlayerControlEvent.UiFadeOut: {
             document.body.style.cursor = "none";
-            playerControls.setAttribute("style", "opacity: 0");
+            playerControls.style.opacity = '0';
             captionsBaseHeight = captionsBaseHeightCollapsed;
             const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
@@ -543,13 +582,12 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                 videoCaptions.setAttribute("style", `display: none; bottom: ${captionsHeight}px;`);
             }
 
-
             break;
         }
 
         case PlayerControlEvent.UiFadeIn: {
             document.body.style.cursor = "default";
-            playerControls.setAttribute("style", "opacity: 1");
+            playerControls.style.opacity = '1';
             captionsBaseHeight = captionsBaseHeightExpanded;
             const captionsHeight = captionsBaseHeight + captionsContentHeight;
 
@@ -565,19 +603,19 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         case PlayerControlEvent.SetCaptions:
             if (player?.isCaptionsEnabled()) {
                 playerCtrlCaptions.setAttribute("class", "captions_on iconSize");
-                videoCaptions.setAttribute("style", "display: block");
+                videoCaptions.style.display = 'block';
             } else {
                 playerCtrlCaptions.setAttribute("class", "captions_off iconSize");
-                videoCaptions.setAttribute("style", "display: none");
+                videoCaptions.style.display = 'none';
             }
 
             break;
 
         case PlayerControlEvent.ToggleSpeedMenu: {
             if (playerCtrlSpeedMenuShown) {
-                playerCtrlSpeedMenu.setAttribute("style", "display: none");
+                playerCtrlSpeedMenu.style.display = 'none';
             } else {
-                playerCtrlSpeedMenu.setAttribute("style", "display: block");
+                playerCtrlSpeedMenu.style.display = 'block';
             }
 
             playerCtrlSpeedMenuShown = !playerCtrlSpeedMenuShown;
@@ -590,12 +628,12 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
             playbackRates.forEach(r => {
                 const entry = document.getElementById(`speedMenuEntry_${r}_enabled`);
-                entry.setAttribute("style", "opacity: 0");
+                entry.style.opacity = '0';
             });
 
             // Ignore updating GUI for custom rates
             if (entryElement !== null) {
-                entryElement.setAttribute("style", "opacity: 1");
+                entryElement.style.opacity = '1';
             }
 
             break;
@@ -634,6 +672,8 @@ playerCtrlAction.onclick = () => {
     }
 };
 
+playerCtrlPlayPrevious.onclick = () => { setPlaylistItem(playlistIndex - 1); }
+playerCtrlPlayNext.onclick = () => { setPlaylistItem(playlistIndex + 1); }
 playerCtrlVolume.onclick = () => { player?.setMute(!player?.isMuted()); };
 
 PlayerCtrlProgressBarInteractiveArea.onmousedown = (e: MouseEvent) => { scrubbing = true; scrubbingMouseHandler(e) };
@@ -738,11 +778,13 @@ function videoClickedHandler() {
 
 videoElement.onclick = () => { videoClickedHandler(); };
 idleBackground.onclick = () => { videoClickedHandler(); };
+thumbnailImage.onclick = () => { videoClickedHandler(); };
 idleIcon.onclick = () => { videoClickedHandler(); };
 
 function setIdleScreenVisible(visible: boolean, loading: boolean = false, message?: PlayMessage) {
     if (visible) {
         idleBackground.style.display = 'block';
+        thumbnailImage.style.display = 'none';
 
         if (loading) {
             idleIcon.style.display = 'none';
@@ -757,11 +799,26 @@ function setIdleScreenVisible(visible: boolean, loading: boolean = false, messag
         if (!supportedAudioTypes.find(v => v === message.container.toLocaleLowerCase())) {
             idleIcon.style.display = 'none';
             idleBackground.style.display = 'none';
+            thumbnailImage.style.display = 'none';
         }
         else {
-            idleIcon.style.display = 'block';
-            idleBackground.style.display = 'block';
+            let displayThumbnail = false;
+            if (message?.metadata?.type === MetadataType.Generic) {
+                const metadata = message.metadata as GenericMediaMetadata;
+                displayThumbnail = metadata.thumbnailUrl ? true : false;
+                thumbnailImage.src = metadata.thumbnailUrl;
+            }
 
+            if (displayThumbnail) {
+                idleIcon.style.display = 'none';
+                idleBackground.style.display = 'none';
+                thumbnailImage.style.display = 'block';
+            }
+            else {
+                idleIcon.style.display = 'block';
+                idleBackground.style.display = 'block';
+                thumbnailImage.style.display = 'none';
+            }
         }
 
         loadingSpinner.style.display = 'none';
