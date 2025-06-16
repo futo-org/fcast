@@ -1,4 +1,4 @@
-import { videoElement, PlayerControlEvent, playerCtrlStateUpdate } from 'common/player/Renderer';
+import { videoElement, PlayerControlEvent, playerCtrlStateUpdate, idleBackground, thumbnailImage, idleIcon } from 'common/player/Renderer';
 
 const captionsBaseHeightCollapsed = 75;
 const captionsBaseHeightExpanded = 160;
@@ -7,6 +7,9 @@ const captionsLineHeight = 34;
 const playerCtrlFullscreen = document.getElementById("fullscreen");
 playerCtrlFullscreen.onclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
 videoElement.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+idleBackground.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+thumbnailImage.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+idleIcon.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
 
 export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean {
     let handledCase = false;

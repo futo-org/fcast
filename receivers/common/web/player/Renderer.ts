@@ -1017,6 +1017,9 @@ document.addEventListener('keyup', (event: KeyboardEvent) => {
 
 export {
     PlayerControlEvent,
+    idleBackground,
+    thumbnailImage,
+    idleIcon,
     videoElement,
     videoCaptions,
     playerCtrlProgressBar,
