@@ -81,11 +81,9 @@ let uiHideTimer = new Timer(() => {
     uiVisible = false;
     playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
 }, 3000);
-
+let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 50, false);
 let showDurationTimer = new Timer(mediaEndHandler, 0, false);
-let mediaTitleShowTimer = new Timer(() => {
-    mediaTitle.style.display = 'none';
-}, 5000);
+let mediaTitleShowTimer = new Timer(() => { mediaTitle.style.display = 'none'; }, 5000);
 
 function formatDuration(duration: number) {
     if (isNaN(duration)) {
@@ -119,6 +117,7 @@ function sendPlaybackUpdate(updateState: PlaybackState) {
 
 function onPlayerLoad(value: PlayMessage) {
     playerCtrlStateUpdate(PlayerControlEvent.Load);
+    loadingTimer.stop();
 
     if (player.getAutoplay()) {
         // Subtitles break when seeking post stream initialization for the DASH player.
@@ -779,7 +778,7 @@ function setIdleScreenVisible(visible: boolean, loading: boolean = false, messag
 
         if (loading) {
             idleIcon.style.display = 'none';
-            loadingSpinner.style.display = 'block';
+            loadingTimer.start();
         }
         else {
             idleIcon.style.display = 'block';
