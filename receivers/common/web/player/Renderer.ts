@@ -81,7 +81,7 @@ let uiHideTimer = new Timer(() => {
     uiVisible = false;
     playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
 }, 3000);
-let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 50, false);
+let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 100, false);
 let showDurationTimer = new Timer(mediaEndHandler, 0, false);
 let mediaTitleShowTimer = new Timer(() => { mediaTitle.style.display = 'none'; }, 5000);
 
@@ -158,6 +158,7 @@ function onPlay(_event, value: PlayMessage) {
     window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, cachedPlayMediaItem)));
     logger.info('Media playback changed:', cachedPlayMediaItem);
     playItemCached = false;
+    showDurationTimer.stop();
 
     if (player) {
         if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
