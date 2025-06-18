@@ -191,7 +191,7 @@ export class Main {
             Main.playerWindow.show();
 
             Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
-            Main.playerWindow.on('ready-to-show', async () => {
+            Main.playerWindow.once('ready-to-show', async () => {
                 Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
             });
             Main.playerWindow.on('closed', () => {
@@ -202,7 +202,7 @@ export class Main {
         else if (Main.playerWindow && messageInfo.contentViewer !== Main.playerWindowContentViewer) {
             Main.playerWindow.setTitle(windowTitle);
             Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
-            Main.playerWindow.on('ready-to-show', async () => {
+            Main.playerWindow.once('ready-to-show', async () => {
                 Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
             });
         } else {
