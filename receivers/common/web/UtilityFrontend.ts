@@ -22,11 +22,13 @@ export class Timer {
     private delay: number;
     private startTime: number;
     private remainingTime: number;
+    public started: boolean;
 
     constructor(callback: () => void, delay: number, autoStart: boolean = true) {
         this.handle = null;
         this.callback = callback;
         this.delay = delay;
+        this.started = false;
 
         if (autoStart) {
             this.start();
@@ -40,6 +42,7 @@ export class Timer {
             window.clearTimeout(this.handle);
         }
 
+        this.started = true;
         this.startTime = Date.now();
         this.remainingTime = null;
         this.handle = window.setTimeout(this.callback, this.delay);
@@ -64,6 +67,7 @@ export class Timer {
             window.clearTimeout(this.handle);
             this.handle = null;
             this.remainingTime = null;
+            this.started = false;
         }
     }
 }

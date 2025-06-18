@@ -1,0 +1,26 @@
+
+.fullscreen_on {
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+
+    background-image: url("../assets/icons/player/icon24_fullscreen_on.svg");
+    transition: background-image 0.1s ease-in-out;
+}
+
+.fullscreen_on:hover {
+    background-image: url("../assets/icons/player/icon24_fullscreen_on_active.svg");
+}
+
+.fullscreen_off {
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+
+    background-image: url("../assets/icons/player/icon24_fullscreen_off.svg");
+    transition: background-image 0.1s ease-in-out;
+}
+
+.fullscreen_off:hover {
+    background-image: url("../assets/icons/player/icon24_fullscreen_off_active.svg");
+}

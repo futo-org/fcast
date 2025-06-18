@@ -1,4 +1,11 @@
-import { PlayerControlEvent, playerCtrlStateUpdate } from 'common/viewer/Renderer';
+import { PlayerControlEvent, playerCtrlStateUpdate, idleBackground, idleIcon, imageViewer, genericViewer } from 'common/viewer/Renderer';
+
+const playerCtrlFullscreen = document.getElementById("fullscreen");
+playerCtrlFullscreen.onclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+idleBackground.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+idleIcon.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+imageViewer.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
+genericViewer.ondblclick = () => { playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen); };
 
 export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean {
     let handledCase = false;
@@ -7,13 +14,13 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
         case PlayerControlEvent.ToggleFullscreen: {
             window.electronAPI.toggleFullScreen();
 
-            // window.electronAPI.isFullScreen().then((isFullScreen: boolean) => {
-            //     if (isFullScreen) {
-            //         playerCtrlFullscreen.setAttribute("class", "fullscreen_on");
-            //     } else {
-            //         playerCtrlFullscreen.setAttribute("class", "fullscreen_off");
-            //     }
-            // });
+            window.electronAPI.isFullScreen().then((isFullScreen: boolean) => {
+                if (isFullScreen) {
+                    playerCtrlFullscreen.setAttribute("class", "fullscreen_on");
+                } else {
+                    playerCtrlFullscreen.setAttribute("class", "fullscreen_off");
+                }
+            });
 
             handledCase = true;
             break;
@@ -21,7 +28,7 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
 
         case PlayerControlEvent.ExitFullscreen:
             window.electronAPI.exitFullScreen();
-            // playerCtrlFullscreen.setAttribute("class", "fullscreen_off");
+            playerCtrlFullscreen.setAttribute("class", "fullscreen_off");
 
             handledCase = true;
             break;
