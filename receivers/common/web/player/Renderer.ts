@@ -4,7 +4,7 @@ import { EventMessage, EventType, GenericMediaMetadata, KeyEvent, MediaItem, Med
 import { Player, PlayerType } from './Player';
 import * as connectionMonitor from 'common/ConnectionMonitor';
 import { supportedAudioTypes } from 'common/MimeTypes';
-import { mediaItemFromPlayMessage, playMessageFromMediaItem } from 'common/UtilityFrontend';
+import { mediaItemFromPlayMessage, playMessageFromMediaItem, Timer } from 'common/UtilityFrontend';
 import { toast, ToastIcon } from 'common/components/Toast';
 import {
     targetPlayerCtrlStateUpdate,
@@ -15,78 +15,6 @@ import {
 } from 'src/player/Renderer';
 
 const logger = window.targetAPI.logger;
-
-function formatDuration(duration: number) {
-    if (isNaN(duration)) {
-        return '00:00';
-    }
-
-    const totalSeconds = Math.floor(duration);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = Math.floor(totalSeconds % 60);
-
-    const paddedMinutes = String(minutes).padStart(2, '0');
-    const paddedSeconds = String(seconds).padStart(2, '0');
-
-    if (hours > 0) {
-        return `${hours}:${paddedMinutes}:${paddedSeconds}`;
-    } else {
-        return `${paddedMinutes}:${paddedSeconds}`;
-    }
-}
-
-function sendPlaybackUpdate(updateState: PlaybackState) {
-    const updateMessage = new PlaybackUpdateMessage(Date.now(), updateState, player.getCurrentTime(), player.getDuration(), player.getPlaybackRate());
-    playbackState = updateState;
-
-    if (updateMessage.generationTime > lastPlayerUpdateGenerationTime) {
-        lastPlayerUpdateGenerationTime = updateMessage.generationTime;
-        window.targetAPI.sendPlaybackUpdate(updateMessage);
-    }
-};
-
-function onPlayerLoad(value: PlayMessage) {
-    playerCtrlStateUpdate(PlayerControlEvent.Load);
-
-    if (player.getAutoplay()) {
-        setIdleScreenVisible(false, false, value);
-
-        // Subtitles break when seeking post stream initialization for the DASH player.
-        // Its currently done on player initialization.
-        if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
-            if (value.time) {
-                player.setCurrentTime(value.time);
-            }
-        }
-        if (value.speed) {
-            player.setPlaybackRate(value.speed);
-            playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
-        }
-        if (value.volume !== null && value.volume >= 0) {
-            volumeChangeHandler(value.volume);
-        }
-        else {
-            // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
-            // getting out-of-sync with the sender on 1st playback.
-            volumeChangeHandler(1.0);
-            window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
-        }
-        playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
-
-        playbackState = PlaybackState.Playing;
-        logger.info('Media playback start:', cachedPlayMediaItem);
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
-        player.play();
-
-        if (isMediaItem && cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
-            showDurationTimeout = window.setTimeout(mediaEndHandler, cachedPlayMediaItem.showDuration * 1000);
-        }
-    }
-    else {
-        setIdleScreenVisible(true, false, value);
-    }
-}
 
 // HTML elements
 const idleIcon = document.getElementById('title-icon');
@@ -145,11 +73,83 @@ let captionsContentHeight = 0;
 
 let cachedPlaylist: PlaylistContent = null;
 let cachedPlayMediaItem: MediaItem = null;
-let showDurationTimeout: number = null;
 let playlistIndex = 0;
 let isMediaItem = false;
 let playItemCached = false;
-let mediaTitleTimeoutHandle = null;
+
+let uiHideTimer = new Timer(() => {
+    uiVisible = false;
+    playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
+}, 3000);
+
+let showDurationTimer = new Timer(mediaEndHandler, 0, false);
+let mediaTitleShowTimer = new Timer(() => {
+    mediaTitle.style.display = 'none';
+}, 5000);
+
+function formatDuration(duration: number) {
+    if (isNaN(duration)) {
+        return '00:00';
+    }
+
+    const totalSeconds = Math.floor(duration);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+
+    const paddedMinutes = String(minutes).padStart(2, '0');
+    const paddedSeconds = String(seconds).padStart(2, '0');
+
+    if (hours > 0) {
+        return `${hours}:${paddedMinutes}:${paddedSeconds}`;
+    } else {
+        return `${paddedMinutes}:${paddedSeconds}`;
+    }
+}
+
+function sendPlaybackUpdate(updateState: PlaybackState) {
+    const updateMessage = new PlaybackUpdateMessage(Date.now(), updateState, player?.getCurrentTime(), player?.getDuration(), player?.getPlaybackRate());
+    playbackState = updateState;
+
+    if (updateMessage.generationTime > lastPlayerUpdateGenerationTime) {
+        lastPlayerUpdateGenerationTime = updateMessage.generationTime;
+        window.targetAPI.sendPlaybackUpdate(updateMessage);
+    }
+};
+
+function onPlayerLoad(value: PlayMessage) {
+    playerCtrlStateUpdate(PlayerControlEvent.Load);
+
+    if (player.getAutoplay()) {
+        // Subtitles break when seeking post stream initialization for the DASH player.
+        // Its currently done on player initialization.
+        if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
+            if (value.time) {
+                player.setCurrentTime(value.time);
+            }
+        }
+        if (value.speed) {
+            player.setPlaybackRate(value.speed);
+            playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
+        }
+        if (value.volume !== null && value.volume >= 0) {
+            volumeChangeHandler(value.volume);
+        }
+        else {
+            // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+            // getting out-of-sync with the sender on 1st playback.
+            volumeChangeHandler(1.0);
+            window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
+        }
+        playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
+
+        mediaPlayHandler(value);
+        player.play();
+    }
+    else {
+        setIdleScreenVisible(true, false, value);
+    }
+}
 
 function onPlay(_event, value: PlayMessage) {
     if (!playItemCached) {
@@ -169,10 +169,11 @@ function onPlay(_event, value: PlayMessage) {
         }
 
         player.destroy();
+        player = null;
     }
 
     setIdleScreenVisible(true, true);
-    playbackState = PlaybackState.Idle;
+    sendPlaybackUpdate(PlaybackState.Idle);
     playerPrevTime = 0;
     lastPlayerUpdateGenerationTime = 0;
     isLive = false;
@@ -185,7 +186,7 @@ function onPlay(_event, value: PlayMessage) {
 
         if (value.container === 'application/dash+xml') {
             // Player event handlers
-            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { mediaStartHandler(value); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => { mediaPlayHandler(value); });
             player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PAUSED, () => { sendPlaybackUpdate(PlaybackState.Paused); playerCtrlStateUpdate(PlayerControlEvent.Pause); });
             player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_ENDED, () => { mediaEndHandler(); });
             player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_TIME_UPDATED, () => {
@@ -298,7 +299,7 @@ function onPlay(_event, value: PlayMessage) {
 
         // Player event handlers
         if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
-            videoElement.onplay = () => { mediaStartHandler(value); };
+            videoElement.onplay = () => { mediaPlayHandler(value); };
             videoElement.onpause = () => { sendPlaybackUpdate(PlaybackState.Paused); playerCtrlStateUpdate(PlayerControlEvent.Pause); };
             videoElement.onended = () => { mediaEndHandler(); };
             videoElement.ontimeupdate = () => {
@@ -384,11 +385,7 @@ function setPlaylistItem(index: number) {
         cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
         playItemCached = true;
         window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
-
-        if (showDurationTimeout) {
-            window.clearTimeout(showDurationTimeout);
-            showDurationTimeout = null;
-        }
+        showDurationTimer.stop();
     }
     else {
         logger.warn(`Playlist index out of bounds ${index}, ignoring...`);
@@ -491,14 +488,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                         captionsContentHeight = mediaTitle.getBoundingClientRect().height - captionsLineHeight;
                         const captionsHeight = captionsBaseHeightExpanded + captionsContentHeight;
                         mediaTitle.setAttribute("style", `display: block; bottom: ${captionsHeight}px;`);
-
-                        if (mediaTitleTimeoutHandle) {
-                            clearTimeout(mediaTitleTimeoutHandle);
-                        }
-
-                        mediaTitleTimeoutHandle = setTimeout(() => {
-                            mediaTitle.style.display = 'none';
-                        }, 5000);
+                        mediaTitleShowTimer.start();
                     }
                 }
             }
@@ -509,11 +499,12 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         case PlayerControlEvent.Pause:
             playerCtrlAction.setAttribute("class", "play iconSize");
             stopUiHideTimer();
+            showDurationTimer.pause();
             break;
 
         case PlayerControlEvent.Play:
             playerCtrlAction.setAttribute("class", "pause iconSize");
-            startUiHideTimer();
+            uiHideTimer.start();
             break;
 
         case PlayerControlEvent.VolumeChange: {
@@ -825,12 +816,18 @@ function setIdleScreenVisible(visible: boolean, loading: boolean = false, messag
     }
 }
 
-function mediaStartHandler(message: PlayMessage) {
+function mediaPlayHandler(message: PlayMessage) {
     if (playbackState === PlaybackState.Idle) {
         logger.info('Media playback start:', cachedPlayMediaItem);
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
+        setIdleScreenVisible(false, false, message);
 
-        setIdleScreenVisible(false, false, message)
+        if (isMediaItem && cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
+            showDurationTimer.start(cachedPlayMediaItem.showDuration * 1000);
+        }
+    }
+    else {
+        showDurationTimer.resume();
     }
 
     sendPlaybackUpdate(PlaybackState.Playing);
@@ -838,10 +835,7 @@ function mediaStartHandler(message: PlayMessage) {
 }
 
 function mediaEndHandler() {
-    if (showDurationTimeout) {
-        window.clearTimeout(showDurationTimeout);
-        showDurationTimeout = null;
-    }
+    showDurationTimer.stop();
 
     if (isMediaItem) {
         playlistIndex++;
@@ -873,24 +867,10 @@ function mediaEndHandler() {
 }
 
 // Component hiding
-let uiHideTimer = null;
 let uiVisible = true;
 
-function startUiHideTimer() {
-    if (uiHideTimer === null) {
-        uiHideTimer = window.setTimeout(() => {
-            uiHideTimer = null;
-            uiVisible = false;
-            playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
-        }, 3000);
-    }
-}
-
 function stopUiHideTimer() {
-    if (uiHideTimer) {
-        window.clearTimeout(uiHideTimer);
-        uiHideTimer = null;
-    }
+    uiHideTimer.stop();
 
     if (!uiVisible) {
         uiVisible = true;
@@ -899,11 +879,7 @@ function stopUiHideTimer() {
 }
 
 document.onmouseout = () => {
-    if (uiHideTimer) {
-        window.clearTimeout(uiHideTimer);
-        uiHideTimer = null;
-    }
-
+    uiHideTimer.stop();
     uiVisible = false;
     playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
 }
@@ -912,7 +888,7 @@ document.onmousemove = () => {
     stopUiHideTimer();
 
     if (player && !player.isPaused()) {
-        startUiHideTimer();
+        uiHideTimer.start();
     }
 };
 
