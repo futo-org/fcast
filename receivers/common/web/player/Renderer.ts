@@ -78,6 +78,10 @@ function onPlayerLoad(value: PlayMessage) {
         logger.info('Media playback start:', cachedPlayMediaItem);
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
         player.play();
+
+        if (isMediaItem && cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
+            showDurationTimeout = window.setTimeout(mediaEndHandler, cachedPlayMediaItem.showDuration * 1000);
+        }
     }
     else {
         setIdleScreenVisible(true, false, value);
@@ -345,10 +349,6 @@ function onPlay(_event, value: PlayMessage) {
 
         player.setAutoPlay(true);
         player.load();
-    }
-
-    if (isMediaItem && cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
-        showDurationTimeout = window.setTimeout(mediaEndHandler, cachedPlayMediaItem.showDuration * 1000);
     }
 }
 
