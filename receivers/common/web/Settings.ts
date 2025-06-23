@@ -43,7 +43,15 @@ export class Settings {
             // @ts-ignore
             if (TARGET === 'electron') {
                 Settings.path = path;
-                Settings.json = JSON.parse(fs.readFileSync(path, { encoding: 'utf8', flag: 'r' })) as Settings;
+
+                try {
+                    Settings.json = JSON.parse(fs.readFileSync(path, { encoding: 'utf8', flag: 'r' })) as Settings;
+                }
+                catch (err) {
+                    logger.error('Error reading settings JSON file, resetting to default settings.\n', err);
+                    Settings.json = {} as Settings;
+                }
+
                 logger.info('Read settings file:', Settings.json);
                 Settings.setDefault();
 
