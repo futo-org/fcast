@@ -123,9 +123,9 @@ impl<'a> FCastSession<'a> {
             if opcode != Opcode::Initial {
                 return Err(format!("Expected Opcode::Initial, got {opcode:?}").into());
             }
-            let inital_receiver: v3::InitialReceiverMessage =
+            let initial_receiver: v3::InitialReceiverMessage =
                 serde_json::from_str(&body.ok_or("InitialReceiverMessage requires body")?)?;
-            println!("Got inital message from sender: {inital_receiver:?}");
+            println!("Got initial message from sender: {initial_receiver:?}");
             session.state = SessionState::Connected(ProtoVersion::V3);
         } else {
             session.state = SessionState::Connected(ProtoVersion::V2);
@@ -259,6 +259,7 @@ impl<'a> FCastSession<'a> {
         time: Option<f64>,
         speed: Option<f64>,
         headers: Option<HashMap<String, String>>,
+        volume: Option<f64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match self.state {
             SessionState::Connected(ProtoVersion::V2) => {
@@ -278,7 +279,7 @@ impl<'a> FCastSession<'a> {
                     url,
                     content,
                     time,
-                    volume: Some(1.0),
+                    volume,
                     speed,
                     headers,
                     metadata: None,
