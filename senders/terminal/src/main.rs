@@ -326,7 +326,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                     ctrlc::set_handler(move || {
                         println!(
-                            "Ctrl+C triggered, server will stop when onging request finishes..."
+                            "Ctrl+C triggered, server will stop when ongoing request finishes..."
                         );
                         r.store(false, Ordering::SeqCst);
                     })
