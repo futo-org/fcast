@@ -70,6 +70,11 @@ export class ConnectionMonitor {
                             listener.send(Opcode.Ping, null, sessionId);
                             ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
                         }
+                        else if (listener.getSessionProtocolVersion(sessionId) === undefined) {
+                            ConnectionMonitor.logger.warn(`Session ${sessionId} was not found in the list of active sessions. Removing...`);
+                            ConnectionMonitor.backendConnections.delete(sessionId);
+                            ConnectionMonitor.heartbeatRetries.delete(sessionId);
+                        }
                     }
                 }
             }, ConnectionMonitor.connectionPingTimeout);

@@ -82,7 +82,7 @@ export abstract class ListenerService {
     }
 
     public getSessionProtocolVersion(sessionId: string) {
-        return this.sessionMap.get(sessionId).protocolVersion;
+        return this.sessionMap.get(sessionId)?.protocolVersion;
     }
 
     private isSubscribedToEvent(sessionId: string, event: EventSubscribeObject) {
