@@ -58,5 +58,5 @@ cat dash.mpd | ./fcast -h localhost play --mime_type application/dash+xml
 cat image_playlist_example.json | ./fcast -h localhost play --mime_type application/json
 
 # Play from video playlist
-cat image_playlist_example.json | ./fcast -h localhost play --mime_type application/json
+cat video_playlist_example.json | ./fcast -h localhost play --mime_type application/json
 ```
