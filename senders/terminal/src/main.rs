@@ -135,6 +135,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .help("Custom request headers in key:value format")
                         .required(false)
                         .multiple_occurrences(true),
+                )
+                .arg(
+                    Arg::with_name("volume")
+                        .short('v')
+                        .long("volume")
+                        .value_name("VOLUME")
+                        .help("The desired volume")
+                        .takes_value(true)
                 ),
         )
         .subcommand(
@@ -301,6 +309,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .collect::<HashMap<String, String>>()
         });
 
+        let volume = match play_matches.value_of("volume") {
+            Some(v) => v.parse::<f64>().ok(),
+            _ => None,
+        };
+
         #[allow(unused_assignments)]
         let mut url = None;
         let mut content = None;
@@ -340,7 +353,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             content = Some(buffer);
         }
 
-        session.send_play_message(mime_type, url, content, time, speed, headers)?;
+        session.send_play_message(mime_type, url, content, time, speed, headers, volume)?;
     } else if let Some(seek_matches) = matches.subcommand_matches("seek") {
         let seek_message = SeekMessage::new(match seek_matches.value_of("timestamp") {
             Some(s) => s.parse::<f64>()?,
