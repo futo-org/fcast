@@ -15,7 +15,7 @@ pub enum MetadataObject {
     Generic {
         title: Option<String>,
         thumbnail_url: Option<String>,
-        custom: Value,
+        custom: Option<Value>,
     },
 }
 
@@ -46,7 +46,9 @@ impl Serialize for MetadataObject {
                         None => Value::Null,
                     },
                 );
-                map.insert("custom".to_owned(), custom.clone());
+                if let Some(custom) = custom {
+                    map.insert("custom".to_owned(), custom.clone());
+                }
                 map.serialize(serializer)
             }
         }
@@ -90,8 +92,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
                     thumbnail_url,
                     custom: rest
                         .get("custom")
-                        .ok_or(de::Error::missing_field("custom"))?
-                        .clone(),
+                        .cloned(),
                 })
             }
             _ => Err(de::Error::custom(format!("Unknown metadata type {type_}"))),
@@ -476,7 +477,7 @@ mod tests {
             &serde_json::to_string(&MetadataObject::Generic {
                 title: Some(s!("abc")),
                 thumbnail_url: Some(s!("def")),
-                custom: serde_json::Value::Null,
+                custom: Some(serde_json::Value::Null),
             })
             .unwrap(),
             r#"{"custom":null,"thumbnailUrl":"def","title":"abc","type":0}"#
@@ -485,10 +486,19 @@ mod tests {
             &serde_json::to_string(&MetadataObject::Generic {
                 title: None,
                 thumbnail_url: None,
-                custom: serde_json::Value::Null,
+                custom: Some(serde_json::Value::Null),
             })
             .unwrap(),
             r#"{"custom":null,"thumbnailUrl":null,"title":null,"type":0}"#
+        );
+        assert_eq!(
+            &serde_json::to_string(&MetadataObject::Generic {
+                title: Some(s!("abc")),
+                thumbnail_url: Some(s!("def")),
+                custom: None,
+            })
+            .unwrap(),
+            r#"{"thumbnailUrl":"def","title":"abc","type":0}"#
         );
     }
 
@@ -502,7 +512,7 @@ mod tests {
             MetadataObject::Generic {
                 title: Some(s!("abc")),
                 thumbnail_url: Some(s!("def")),
-                custom: serde_json::Value::Null,
+                custom: Some(serde_json::Value::Null),
             }
         );
         assert_eq!(
@@ -510,7 +520,15 @@ mod tests {
             MetadataObject::Generic {
                 title: None,
                 thumbnail_url: None,
-                custom: serde_json::Value::Null,
+                custom: Some(serde_json::Value::Null),
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<MetadataObject>(r#"{"type":0}"#).unwrap(),
+            MetadataObject::Generic {
+                title: None,
+                thumbnail_url: None,
+                custom: None,
             }
         );
         assert!(serde_json::from_str::<MetadataObject>(r#"{"type":1"#).is_err());
