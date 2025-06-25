@@ -140,6 +140,7 @@ function onPlayPlaylist(_event, value: PlaylistContent) {
         value.items[offset].time, volume, speed, value.items[offset].headers, value.items[offset].metadata
     );
 
+    playlistIndex = offset;
     isMediaItem = true;
     cachedPlayMediaItem = value.items[offset];
     playItemCached = true;
