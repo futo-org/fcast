@@ -35,10 +35,7 @@ export async function preparePlayMessage(message: PlayMessage, cachedPlayerVolum
                 case ContentType.Playlist: {
                     rendererMessage = json as PlaylistContent;
                     rendererEvent = 'play-playlist';
-
-                    if ((rendererMessage.forwardCache && rendererMessage.forwardCache > 0) || (rendererMessage.backwardCache && rendererMessage.backwardCache > 0)) {
-                        mediaCacheInitializationCb(rendererMessage);
-                    }
+                    mediaCacheInitializationCb(rendererMessage);
 
                     const offset = rendererMessage.offset ? rendererMessage.offset : 0;
                     contentViewer = supportedPlayerTypes.find(v => v === rendererMessage.items[offset].container.toLocaleLowerCase()) ? 'player' : 'viewer';
