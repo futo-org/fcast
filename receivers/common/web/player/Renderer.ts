@@ -12,7 +12,8 @@ import {
     targetKeyDownEventListener,
     captionsBaseHeightCollapsed,
     captionsBaseHeightExpanded,
-    captionsLineHeight
+    captionsLineHeight,
+    targetKeyUpEventListener
 } from 'src/player/Renderer';
 
 const logger = window.targetAPI.logger;
@@ -912,74 +913,6 @@ document.addEventListener('click', (event: MouseEvent) => {
 const skipInterval = 10;
 const volumeIncrement = 0.1;
 
-function keyDownEventListener(event: KeyboardEvent) {
-    // logger.info("KeyDown", event);
-    let handledCase = targetKeyDownEventListener(event);
-
-    if (!handledCase) {
-        switch (event.code) {
-            case 'ArrowLeft':
-                skipBack();
-                event.preventDefault();
-                handledCase = true;
-                break;
-            case 'ArrowRight':
-                skipForward();
-                event.preventDefault();
-                handledCase = true;
-                break;
-            case "Home":
-                player?.setCurrentTime(0);
-                event.preventDefault();
-                handledCase = true;
-                break;
-            case "End":
-                if (isLive) {
-                    setLivePosition();
-                }
-                else {
-                    player?.setCurrentTime(player?.getDuration());
-                }
-                event.preventDefault();
-                handledCase = true;
-                break;
-            case 'KeyK':
-            case 'Space':
-            case 'Enter':
-                // Play/pause toggle
-                if (player?.isPaused()) {
-                    player?.play();
-                } else {
-                    player?.pause();
-                }
-                event.preventDefault();
-                handledCase = true;
-                break;
-            case 'KeyM':
-                // Mute toggle
-                player?.setMute(!player?.isMuted());
-                handledCase = true;
-                break;
-            case 'ArrowUp':
-                // Volume up
-                volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
-                handledCase = true;
-                break;
-            case 'ArrowDown':
-                // Volume down
-                volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
-                handledCase = true;
-                break;
-            default:
-                break;
-        }
-    }
-
-    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, handledCase)));
-    }
-}
-
 function skipBack() {
     player?.setCurrentTime(Math.max(player?.getCurrentTime() - skipInterval, 0));
 }
@@ -990,10 +923,94 @@ function skipForward() {
     }
 }
 
-document.addEventListener('keydown', keyDownEventListener);
+document.addEventListener('keydown', (event: KeyboardEvent) => {
+    // logger.info("KeyDown", event.key);
+    let result = targetKeyDownEventListener(event);
+    let handledCase = result.handledCase;
+
+    // @ts-ignore
+    let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
+
+    if (!handledCase) {
+        switch (event.key.toLowerCase()) {
+            case 'arrowleft':
+                skipBack();
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'arrowright':
+                skipForward();
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case "home":
+                player?.setCurrentTime(0);
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case "end":
+                if (isLive) {
+                    setLivePosition();
+                }
+                else {
+                    player?.setCurrentTime(player?.getDuration());
+                }
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'k':
+            case ' ':
+            case 'enter':
+                // Play/pause toggle
+                if (player?.isPaused()) {
+                    player?.play();
+                } else {
+                    player?.pause();
+                }
+                event.preventDefault();
+                handledCase = true;
+                break;
+            case 'm':
+                // Mute toggle
+                player?.setMute(!player?.isMuted());
+                handledCase = true;
+                break;
+            case 'arrowup':
+                // Volume up
+                volumeChangeHandler(Math.min(player?.getVolume() + volumeIncrement, 1));
+                handledCase = true;
+                break;
+            case 'arrowdown':
+                // Volume down
+                volumeChangeHandler(Math.max(player?.getVolume() - volumeIncrement, 0));
+                handledCase = true;
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, key, event.repeat, handledCase)));
+    }
+});
 document.addEventListener('keyup', (event: KeyboardEvent) => {
-    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    // logger.info("KeyUp", event);
+    let result = targetKeyUpEventListener(event);
+    let handledCase = result.handledCase;
+
+    // @ts-ignore
+    let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
+
+    if (!handledCase) {
+        switch (event.key) {
+            default:
+                break;
+        }
+    }
+
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, key, event.repeat, handledCase)));
     }
 });
 
@@ -1020,6 +1037,7 @@ export {
     captionsBaseHeight,
     captionsLineHeight,
     onPlay,
+    onPlayPlaylist,
     playerCtrlStateUpdate,
     formatDuration,
     skipBack,

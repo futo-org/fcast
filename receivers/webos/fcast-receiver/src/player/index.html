@@ -10,7 +10,12 @@
         <script src="./preload.js"></script>
     </head>
     <body>
+        <div id="title-icon"></div>
+        <div id="loading-spinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+        <div id="idle-background"></div>
+        <img id="thumbnailImage" />
         <video id="videoPlayer" autoplay preload="auto"></video>
+        <div id="mediaTitle" class="captionsContainer"></div>
         <div id="videoCaptions" class="captionsContainer"></div>
 
         <div id="controls" class="container">
@@ -32,7 +37,9 @@
             </div>
 
             <div class="leftButtonContainer">
+                <div id="playPrevious" class="playPrevious iconSize"></div>
                 <div id="action" class="play iconSize"></div>
+                <div id="playNext" class="playNext iconSize"></div>
 
                 <div id="volume" class="volume_high iconSize"></div>
                 <div class="volumeContainer">

@@ -75,32 +75,48 @@ if (TARGET === 'electron') {
 
 // @ts-ignore
 } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
-    preloadData = {
-        sendPlaybackErrorCb: () => { logger.error('Player: Callback "send_playback_error" not set'); },
-        sendPlaybackUpdateCb: () => { logger.error('Player: Callback "send_playback_update" not set'); },
-        sendVolumeUpdateCb: () => { logger.error('Player: Callback "send_volume_update" not set'); },
-        // onPlayCb: () => { logger.error('Player: Callback "play" not set'); },
-        onPlayCb: undefined,
-        onPauseCb: () => { logger.error('Player: Callback "pause" not set'); },
-        onResumeCb: () => { logger.error('Player: Callback "resume" not set'); },
-        onSeekCb: () => { logger.error('Player: Callback "onseek" not set'); },
-        onSetVolumeCb: () => { logger.error('Player: Callback "setvolume" not set'); },
-        onSetSpeedCb: () => { logger.error('Player: Callback "setspeed" not set'); },
-        getSessionsCb: () => { logger.error('Player: Callback "getSessions" not set'); },
-        onConnectCb: () => { logger.error('Player: Callback "onConnect" not set'); },
-        onDisconnectCb: () => { logger.error('Player: Callback "onDisconnect" not set'); },
+    preloadData.sendPlaybackUpdateCb = (update: PlaybackUpdateMessage) => { logger.error('Player: Callback "send_playback_update" not set'); };
+    preloadData.sendVolumeUpdateCb = (update: VolumeUpdateMessage) => { logger.error('Player: Callback "send_volume_update" not set'); };
+    preloadData.sendPlaybackErrorCb = (error: PlaybackErrorMessage) => { logger.error('Player: Callback "send_playback_error" not set'); };
+    preloadData.sendEventCb = (message: EventMessage) => { logger.error('Player: Callback "onSendEventCb" not set'); };
+    // preloadData.onPlayCb = () => { logger.error('Player: Callback "play" not set'); };
+    preloadData.onPlayCb = undefined;
+    preloadData.onPauseCb = () => { logger.error('Player: Callback "pause" not set'); };
+    preloadData.onResumeCb = () => { logger.error('Player: Callback "resume" not set'); };
+    preloadData.onSeekCb = () => { logger.error('Player: Callback "onseek" not set'); };
+    preloadData.onSetVolumeCb = () => { logger.error('Player: Callback "setvolume" not set'); };
+    preloadData.onSetSpeedCb = () => { logger.error('Player: Callback "setspeed" not set'); };
+    preloadData.onSetPlaylistItemCb = () => { logger.error('Player: Callback "onSetPlaylistItem" not set'); };
+
+    preloadData.sendPlayRequestCb = () => { logger.error('Player: Callback "sendPlayRequest" not set'); };
+    preloadData.getSessionsCb = () => { logger.error('Player: Callback "getSessions" not set'); };
+    preloadData.onConnectCb = () => { logger.error('Player: Callback "onConnect" not set'); };
+    preloadData.onDisconnectCb = () => { logger.error('Player: Callback "onDisconnect" not set'); };
+    preloadData.onPlayPlaylistCb = () => { logger.error('Player: Callback "onPlayPlaylist" not set'); };
+
+    preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+        preloadData.subscribedKeys.keyDown = value.keyDown;
+        preloadData.subscribedKeys.keyUp = value.keyUp;
+    };
+
+    preloadData.onToast = (message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
+        toast(message, icon, duration);
     };
 
     window.targetAPI = {
-        sendPlaybackError: (error: PlaybackErrorMessage) => { preloadData.sendPlaybackErrorCb(error); },
         sendPlaybackUpdate: (update: PlaybackUpdateMessage) => { preloadData.sendPlaybackUpdateCb(update); },
         sendVolumeUpdate: (update: VolumeUpdateMessage) => { preloadData.sendVolumeUpdateCb(update); },
+        sendPlaybackError: (error: PlaybackErrorMessage) => { preloadData.sendPlaybackErrorCb(error); },
+        sendEvent: (message: EventMessage) =>  { preloadData.sendEventCb(message); },
         onPlay: (callback: any) => { preloadData.onPlayCb = callback; },
         onPause: (callback: any) => { preloadData.onPauseCb = callback; },
         onResume: (callback: any) => { preloadData.onResumeCb = callback; },
         onSeek: (callback: any) => { preloadData.onSeekCb = callback; },
         onSetVolume: (callback: any) => { preloadData.onSetVolumeCb = callback; },
         onSetSpeed: (callback: any) => { preloadData.onSetSpeedCb = callback; },
+        onSetPlaylistItem: (callback: any) => { preloadData.onSetPlaylistItemCb = callback; },
+
+        sendPlayRequest: (message: PlayMessage, playlistIndex: number) => { preloadData.sendPlayRequestCb(message, playlistIndex); },
         getSessions: (callback?: () => Promise<[any]>) => {
             if (callback) {
                 preloadData.getSessionsCb = callback;
@@ -109,8 +125,10 @@ if (TARGET === 'electron') {
                 return preloadData.getSessionsCb();
             }
         },
+        getSubscribedKeys: () => preloadData.subscribedKeys,
         onConnect: (callback: any) => { preloadData.onConnectCb = callback; },
         onDisconnect: (callback: any) => { preloadData.onDisconnectCb = callback; },
+        onPlayPlaylist: (callback: any) => { preloadData.onPlayPlaylistCb = callback; },
         logger: loggerInterface,
     };
 } else {

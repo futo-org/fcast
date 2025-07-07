@@ -6,6 +6,7 @@ import { toast, ToastIcon } from 'common/components/Toast';
 import {
     targetPlayerCtrlStateUpdate,
     targetKeyDownEventListener,
+    targetKeyUpEventListener,
 } from 'src/viewer/Renderer';
 
 const logger = window.targetAPI.logger;
@@ -328,9 +329,13 @@ document.onmousemove = () => {
     uiHideTimer.start();
 };
 
-function keyDownEventListener(event: KeyboardEvent) {
+document.addEventListener('keydown', (event: KeyboardEvent) => {
     // logger.info("KeyDown", event);
-    let handledCase = targetKeyDownEventListener(event);
+    let result = targetKeyDownEventListener(event);
+    let handledCase = result.handledCase;
+
+    // @ts-ignore
+    let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
 
     if (!handledCase) {
         switch (event.code) {
@@ -371,15 +376,27 @@ function keyDownEventListener(event: KeyboardEvent) {
         }
     }
 
-    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, handledCase)));
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, key, event.repeat, handledCase)));
     }
-}
-
-document.addEventListener('keydown', keyDownEventListener);
+});
 document.addEventListener('keyup', (event: KeyboardEvent) => {
-    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    // logger.info("KeyUp", event);
+    let result = targetKeyUpEventListener(event);
+    let handledCase = result.handledCase;
+
+    // @ts-ignore
+    let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
+
+    if (!handledCase) {
+        switch (event.key) {
+            default:
+                break;
+        }
+    }
+
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, key, event.repeat, handledCase)));
     }
 });
 
@@ -389,6 +406,9 @@ export {
     idleIcon,
     imageViewer,
     genericViewer,
+    playlistIndex,
     onPlay,
+    onPlayPlaylist,
     playerCtrlStateUpdate,
+    setPlaylistItem,
 };

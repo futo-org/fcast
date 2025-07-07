@@ -84,11 +84,19 @@ if (TARGET === 'electron') {
 
 // @ts-ignore
 } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
-    preloadData = {
-        onDeviceInfoCb: () => { logger.error('Main: Callback not set while fetching device info'); },
-        getSessionsCb: () => { logger.error('Main: Callback not set while calling getSessions'); },
-        onConnectCb: (_, value: any) => { logger.error('Main: Callback not set while calling onConnect'); },
-        onDisconnectCb: (_, value: any) => { logger.error('Main: Callback not set while calling onDisconnect'); },
+    preloadData.onDeviceInfoCb = () => { logger.warn('Main: Callback not set while fetching device info'); };
+    preloadData.getSessionsCb = () => { logger.error('Main: Callback not set while calling getSessions'); };
+    preloadData.onConnectCb = (_, value: any) => { logger.error('Main: Callback not set while calling onConnect'); };
+    preloadData.onDisconnectCb = (_, value: any) => { logger.error('Main: Callback not set while calling onDisconnect'); };
+    preloadData.sendEventCb = (message: EventMessage) => { logger.error('Main: Callback not set while calling onSendEventCb'); };
+
+    preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+        preloadData.subscribedKeys.keyDown = value.keyDown;
+        preloadData.subscribedKeys.keyUp = value.keyUp;
+    };
+
+    preloadData.onToast = (message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
+        toast(message, icon, duration);
     };
 
     window.targetAPI = {
@@ -102,8 +110,10 @@ if (TARGET === 'electron') {
                 return preloadData.getSessionsCb();
             }
         },
+        getSubscribedKeys: () => preloadData.subscribedKeys,
         onConnect: (callback: (_, value: any) => void) => preloadData.onConnectCb = callback,
         onDisconnect: (callback: (_, value: any) => void) => preloadData.onDisconnectCb = callback,
+        sendEvent: (message: EventMessage) =>  { preloadData.sendEventCb(message); },
         logger: loggerInterface,
     };
 } else {

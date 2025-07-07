@@ -1,9 +1,10 @@
 
 import QRCode from 'modules/qrcode';
 import * as connectionMonitor from '../ConnectionMonitor';
-import { onQRCodeRendered } from 'src/main/Renderer';
+import { onQRCodeRendered, targetKeyUpEventListener } from 'src/main/Renderer';
 import { toast, ToastIcon } from '../components/Toast';
 import { EventMessage, EventType, KeyEvent } from 'common/Packets';
+import { targetKeyDownEventListener } from 'src/main/Renderer';
 
 const connectionStatusText = document.getElementById('connection-status-text');
 const connectionStatusSpinner = document.getElementById('connection-spinner');
@@ -203,12 +204,40 @@ function renderQRCode(url: string) {
 }
 
 document.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (window.targetAPI.getSubscribedKeys().keyDown.has(event.key)) {
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, event.key, event.repeat, false)));
+    // logger.info("KeyDown", event);
+    let result = targetKeyDownEventListener(event);
+    let handledCase = result.handledCase;
+
+    // @ts-ignore
+    let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
+
+    if (!handledCase) {
+        switch (event.key) {
+            default:
+                break;
+        }
+    }
+
+    if (window.targetAPI.getSubscribedKeys().keyDown.has(key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, key, event.repeat, handledCase)));
     }
 });
 document.addEventListener('keyup', (event: KeyboardEvent) => {
-    if (window.targetAPI.getSubscribedKeys().keyUp.has(event.key)) {
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, event.key, event.repeat, false)));
+    // logger.info("KeyUp", event);
+    let result = targetKeyUpEventListener(event);
+    let handledCase = result.handledCase;
+
+    // @ts-ignore
+    let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
+
+    if (!handledCase) {
+        switch (event.key) {
+            default:
+                break;
+        }
+    }
+
+    if (window.targetAPI.getSubscribedKeys().keyUp.has(key)) {
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, key, event.repeat, handledCase)));
     }
 });
