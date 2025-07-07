@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Receptor FCast</string>
+    <string name="general_failure">A operação falhou de um modo genérico</string>
+    <string name="aborted">A operação falhou pois foi abortada ativamente</string>
+    <string name="blocked">A operação falhou pois foi bloqueada</string>
+    <string name="conflict">A operação falhou pois conflita (ou é inconsistente) com outro pacote que já está instalado no dispositivo</string>
+    <string name="incompatible">A operação falhou pois é fundamentalmente incompatível com este dispositivo</string>
+    <string name="invalid">A operação falhou pois um ou mais dos APKs eram inválidos</string>
+    <string name="not_enough_storage">A operação falhou por causa de problemas de armazenamento</string>
+    <string name="downloading_update">Baixando a atualização...</string>
+    <string name="installing_update">Instalando a atualização...</string>
+    <string name="success">Sucesso</string>
+    <string name="failed_to_update_with_error">Falhou em atualizar pacote com erro</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">Há uma atualização nova para o receptor do FCast, você quer atualizar?</string>
+    <string name="never">Nunca</string>
+    <string name="close">Fechar</string>
+    <string name="update">Atualizar</string>
+    <string name="checking_for_updates">Buscando atualizações...</string>
+    <string name="no_updates_available">Não há atualizações disponíveis</string>
+    <string name="permission_dialog_title">Sobrepor outros apps</string> <!-- Adapted to just use the translation from AOSP, Display over other apps -->
+    <string name="permission_dialog_message">Este app precisa da permissão para sobrepor outros apps para que possa exibir conteúdo em cima de outros apps. Por favor conceda a permissão.</string>
+    <string name="permission_dialog_positive_button">Permitir</string>
+    <string name="permission_dialog_negative_button">Cancelar</string>
+    <string name="waiting_for_media">Aguardando mídia</string>
+</resources>

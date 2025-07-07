@@ -78,6 +78,9 @@ android {
     buildFeatures {
         buildConfig true
     }
+    lint {
+        disable "MissingTranslation"
+    }
 }
 
 dependencies {
