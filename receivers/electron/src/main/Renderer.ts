@@ -3,6 +3,16 @@ import 'common/main/Renderer';
 const logger = window.targetAPI.logger;
 export function onQRCodeRendered() {}
 
+export function targetKeyDownEventListener(_event: KeyboardEvent): { handledCase: boolean, key: string } {
+    // unused in Electron currently
+    return { handledCase: false, key: '', };
+};
+
+export function targetKeyUpEventListener(_event: KeyboardEvent): { handledCase: boolean, key: string } {
+    // unused in Electron currently
+    return { handledCase: false, key: '', };
+};
+
 const updateView = document.getElementById("update-view");
 const updateViewTitle = document.getElementById("update-view-title");
 const updateText = document.getElementById("update-text");

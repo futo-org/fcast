@@ -26,6 +26,8 @@ PASSPHRASE=YOUR_TV_PASSPHRASE
 
 This information is found in the development app.
 
+Note that you may have to periodically rebuild the container to keep key information up-to-date with the TV device.
+
 ### Run
 ```bash
 docker run --rm -it -w /app/receivers/webos --entrypoint='bash' --network host \

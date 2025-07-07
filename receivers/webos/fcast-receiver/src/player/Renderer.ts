@@ -1,6 +1,7 @@
 import {
     isLive,
     onPlay,
+    onPlayPlaylist,
     player,
     PlayerControlEvent,
     playerCtrlCaptions,
@@ -20,19 +21,12 @@ import {
     skipBack,
     skipForward,
 } from 'common/player/Renderer';
+import { RemoteKeyCode } from 'lib/common';
+import * as common from 'lib/common';
 
 const captionsBaseHeightCollapsed = 150;
 const captionsBaseHeightExpanded = 320;
 const captionsLineHeight = 68;
-
-enum RemoteKeyCode {
-    Stop = 413,
-    Rewind = 412,
-    Play = 415,
-    Pause = 19,
-    FastForward = 417,
-    Back = 461,
-}
 
 export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean {
     let handledCase = false;
@@ -84,21 +78,23 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
     return handledCase;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function targetKeyDownEventListener(event: any): boolean {
+export function targetKeyDownEventListener(event: KeyboardEvent): { handledCase: boolean, key: string }  {
     let handledCase = false;
+    let key = '';
 
     switch (event.keyCode) {
         case RemoteKeyCode.Stop:
             // history.back();
             window.open('../main_window/index.html', '_self');
             handledCase = true;
+            key = 'Stop';
             break;
 
         case RemoteKeyCode.Rewind:
             skipBack();
             event.preventDefault();
             handledCase = true;
+            key = 'Rewind';
             break;
 
         case RemoteKeyCode.Play:
@@ -107,6 +103,7 @@ export function targetKeyDownEventListener(event: any): boolean {
             }
             event.preventDefault();
             handledCase = true;
+            key = 'Play';
             break;
         case RemoteKeyCode.Pause:
             if (!player.isPaused()) {
@@ -114,12 +111,14 @@ export function targetKeyDownEventListener(event: any): boolean {
             }
             event.preventDefault();
             handledCase = true;
+            key = 'Pause';
             break;
 
         case RemoteKeyCode.FastForward:
             skipForward();
             event.preventDefault();
             handledCase = true;
+            key = 'FastForward';
             break;
 
         // WebOS 22 and earlier does not work well using the history API,
@@ -129,17 +128,27 @@ export function targetKeyDownEventListener(event: any): boolean {
             window.open('../main_window/index.html', '_self');
             event.preventDefault();
             handledCase = true;
+            key = 'Back';
             break;
 
         default:
             break;
     }
 
-    return handledCase;
+    return { handledCase: handledCase, key: key };
+};
+
+export function targetKeyUpEventListener(event: KeyboardEvent): { handledCase: boolean, key: string } {
+    return common.targetKeyUpEventListener(event);
 };
 
 if (window.webOSAPI.pendingPlay !== null) {
-    onPlay(null, window.webOSAPI.pendingPlay);
+    if (window.webOSAPI.pendingPlay.rendererEvent === 'play-playlist') {
+        onPlayPlaylist(null, window.webOSAPI.pendingPlay.rendererMessage);
+    }
+    else {
+        onPlay(null, window.webOSAPI.pendingPlay.rendererMessage);
+    }
 }
 
 export {

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>FCast Receiver</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="../assets/fonts/inter.css" />
+        <link rel="stylesheet" href="./common.css" />
+        <link rel="stylesheet" href="./style.css" />
+        <script src="../player/preload.js"></script>
+    </head>
+    <body>
+        <!-- Empty video element as a workaround to fix issue with white border outline without it... -->
+        <video id="idleBackground" class="video"></video>
+        <div id="viewer" class="viewer">
+            <div id="titleIcon"></div>
+            <div id="loadingSpinner" class="lds-ring"><div></div><div></div><div></div><div></div></div>
+            <img id="viewerImage" class="viewer" />
+            <iframe id="viewerGeneric" class="viewer"></iframe>
+        </div>>
+
+        <div id="controls" class="container">
+            <div id="leftButtonContainer" class="buttonContainer">
+                <div id="mediaTitle"></div>
+            </div>
+            <div id="centerButtonContainer" class="buttonContainer">
+                <div id="playPrevious" class="playPrevious iconSize" style="display: none"></div>
+                <div id="action" class="play iconSize" style="display: none"></div>
+                <div id="playlistLength" style="display: none"></div>
+                <div id="playNext" class="playNext iconSize" style="display: none"></div>
+            </div>
+
+            <!-- <div id="rightButtonContainer" class="buttonContainer">
+                <div id="fullscreen" class="fullscreen_on iconSize"></div>
+            </div> -->
+        </div>
+
+        <div id="toast-notification">
+            <div id="toast-icon"></div>
+            <div id="toast-text"></div>
+        </div>
+
+        <script src="./renderer.js"></script>
+    </body>
+</html>

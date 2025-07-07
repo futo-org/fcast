@@ -1,153 +1,139 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { preloadData } from 'common/main/Preload';
-import { toast, ToastIcon } from 'common/components/Toast';
+import { ToastIcon } from 'common/components/Toast';
+import { EventMessage } from 'common/Packets';
+import { callService, requestService } from 'lib/common';
 require('lib/webOSTVjs-1.2.10/webOSTV.js');
 require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
 const logger = window.targetAPI.logger;
 
-enum RemoteKeyCode {
-    Stop = 413,
-    Rewind = 412,
-    Play = 415,
-    Pause = 19,
-    FastForward = 417,
-    Back = 461,
-}
-
 try {
-    let getSessions = null;
+    const serviceId = 'com.futo.fcast.receiver.service';
+    let getSessionsService = null;
+    let networkChangedService = null;
+    let visibilityChangedService = null;
 
-    const toastService = requestService('toast', (message: any) => { toast(message.value.message, message.value.icon, message.value.duration); });
-    const getDeviceInfoService = window.webOS.service.request('luna://com.palm.connectionmanager', {
-        method: 'getStatus',
-        parameters: {},
+    const toastService = requestService('toast', (message: any) => { preloadData.onToastCb(message.value.message, message.value.icon, message.value.duration); });
+    const getDeviceInfoService = window.webOSDev.connection.getStatus({
         onSuccess: (message: any) => {
-            // logger.info('Network info status message', message);
+            logger.info('Network info status message', message);
             const deviceName = 'FCast-LGwebOSTV';
             const connections = [];
+            let fallback = true;
 
             if (message.wired.state !== 'disconnected') {
-                connections.push({ type: 'wired', name: 'Ethernet', address: message.wired.ipAddress })
+                connections.push({ type: 'wired', name: 'Ethernet', address: message.wired.ipAddress });
+                fallback = false;
             }
 
             // wifiDirect never seems to be connected, despite being connected (which is needed for signalLevel...)
             // if (message.wifiDirect.state !== 'disconnected') {
             if (message.wifi.state !== 'disconnected') {
-                connections.push({ type: 'wireless', name: message.wifi.ssid, address: message.wifi.ipAddress, signalLevel: 100 })
+                connections.push({ type: 'wireless', name: message.wifi.ssid, address: message.wifi.ipAddress, signalLevel: 100 });
+                fallback = false;
             }
 
-            preloadData.deviceInfo = { name: deviceName, interfaces: connections };
-            preloadData.onDeviceInfoCb();
+            if (fallback) {
+                networkChangedService = callService('network_changed', { fallback: fallback }, (message: any) => {
+                    logger.info('Fallback network interfaces', message);
+                    for (const ipAddr of message.value) {
+                        connections.push({ type: 'wired', name: 'Ethernet', address: ipAddr });
+                    }
+
+                    preloadData.deviceInfo = { name: deviceName, interfaces: connections };
+                    preloadData.onDeviceInfoCb();
+                }, (message: any) => {
+                    logger.error('Main: preload - error fetching network interfaces', message);
+                    preloadData.onToastCb('Error detecting network interfaces', ToastIcon.ERROR);
+                }, () => {
+                    networkChangedService = null;
+                });
+            }
+            else {
+                networkChangedService = callService('network_changed', { fallback: fallback }, null, null, () => {
+                    networkChangedService = null;
+                });
+                preloadData.deviceInfo = { name: deviceName, interfaces: connections };
+                preloadData.onDeviceInfoCb();
+            }
         },
         onFailure: (message: any) => {
             logger.error(`Main: com.palm.connectionmanager/getStatus ${JSON.stringify(message)}`);
-            toast(`Main: com.palm.connectionmanager/getStatus ${JSON.stringify(message)}`, ToastIcon.ERROR);
-
+            preloadData.onToastCb(`Main: com.palm.connectionmanager/getStatus ${JSON.stringify(message)}`, ToastIcon.ERROR);
         },
-        // onComplete: (message) => {},
         subscribe: true,
         resubscribe: true
     });
 
+    const onEventSubscribedKeysUpdateService = requestService('event_subscribed_keys_update', (message: any) => { preloadData.onEventSubscribedKeysUpdate(message.value); });
     window.targetAPI.getSessions(() => {
         return new Promise((resolve, reject) => {
-            getSessions = requestService('get_sessions', (message: any) => resolve(message.value), (message: any) => reject(message), false);
+            getSessionsService = callService('get_sessions', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
         });
     });
 
     const onConnectService = requestService('connect', (message: any) => { preloadData.onConnectCb(null, message.value); });
     const onDisconnectService = requestService('disconnect', (message: any) => { preloadData.onDisconnectCb(null, message.value); });
-    const playService = requestService('play', (message: any) => {
-        if (message.value !== undefined && message.value.playData !== undefined) {
-            logger.info(`Main: Playing ${JSON.stringify(message)}`);
-            sessionStorage.setItem('playData', JSON.stringify(message.value.playData));
-            getDeviceInfoService.cancel();
-            getSessions?.cancel();
-            toastService.cancel();
-            onConnectService.cancel();
-            onDisconnectService.cancel();
-            playService.cancel();
+    preloadData.sendEventCb = (event: EventMessage) => {
+        window.webOS.service.request(`luna://${serviceId}/`, {
+            method: 'send_event',
+            parameters: { event },
+            onSuccess: () => {},
+            onFailure: (message: any) => { logger.error(`Player: send_event ${JSON.stringify(message)}`); },
+        });
+    };
 
-            // WebOS 22 and earlier does not work well using the history API,
-            // so manually handling page navigation...
-            // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html', '_self');
-        }
+    const playService = requestService('play', (message: any) => {
+        logger.info(`Main: Playing ${JSON.stringify(message)}`);
+        play(message.value);
      });
 
     const launchHandler = () => {
         const params = window.webOSDev.launchParams();
         logger.info(`Main: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
 
+        // WebOS 6.0 and earlier: Timestamp tracking seems to be necessary as launch event is raised regardless if app is in foreground or not
         const lastTimestamp = Number(localStorage.getItem('lastTimestamp'));
-        if (params.playData !== undefined && params.timestamp != lastTimestamp) {
+        if (params.messageInfo !== undefined && params.timestamp != lastTimestamp) {
             localStorage.setItem('lastTimestamp', params.timestamp);
-            sessionStorage.setItem('playData', JSON.stringify(params.playData));
-            toastService?.cancel();
-            getDeviceInfoService?.cancel();
-            getSessions?.cancel();
-            onConnectService?.cancel();
-            onDisconnectService?.cancel();
-            playService?.cancel();
-
-            // WebOS 22 and earlier does not work well using the history API,
-            // so manually handling page navigation...
-            // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html', '_self');
+            play(params.messageInfo);
         }
     };
 
     document.addEventListener('webOSLaunch', launchHandler);
     document.addEventListener('webOSRelaunch', launchHandler);
+    document.addEventListener('visibilitychange', () => {
+        visibilityChangedService = callService('visibility_changed', { hidden: document.hidden, window: 'main' }, null, null, () => {
+            visibilityChangedService = null;
+        })
+    });
 
     // Cannot go back to a state where user was previously casting a video, so exit.
     // window.onpopstate = () => {
     //     window.webOS.platformBack();
     // };
 
-    document.addEventListener('keydown', (event: any) => {
-        // logger.info("KeyDown", event);
+    const play = (messageInfo: any) => {
+        sessionStorage.setItem('playInfo', JSON.stringify(messageInfo));
 
-        switch (event.keyCode) {
-            // WebOS 22 and earlier does not work well using the history API,
-            // so manually handling page navigation...
-            case RemoteKeyCode.Back:
-                window.webOS.platformBack();
-                break;
-            default:
-                break;
-        }
-    });
+        getDeviceInfoService?.cancel();
+        onEventSubscribedKeysUpdateService?.cancel();
+        getSessionsService?.cancel();
+        toastService?.cancel();
+        onConnectService?.cancel();
+        onDisconnectService?.cancel();
+        playService?.cancel();
+        networkChangedService?.cancel();
+        visibilityChangedService?.cancel();
+
+        // WebOS 22 and earlier does not work well using the history API,
+        // so manually handling page navigation...
+        // history.pushState({}, '', '../main_window/index.html');
+        window.open(`../${messageInfo.contentViewer}/index.html`, '_self');
+    };
 }
 catch (err) {
     logger.error(`Main: preload ${JSON.stringify(err)}`);
-    toast(`Error starting the application (preload): ${JSON.stringify(err)}`, ToastIcon.ERROR);
-}
-
-function requestService(method: string, successCallback: (message: any) => void, failureCallback?: (message: any) => void, subscribe: boolean = true): any {
-    const serviceId = 'com.futo.fcast.receiver.service';
-
-    return window.webOS.service.request(`luna://${serviceId}/`, {
-        method: method,
-        parameters: {},
-        onSuccess: (message: any) => {
-            if (message.value?.subscribed === true) {
-                logger.info(`Main: Registered ${method} handler with service`);
-            }
-            else {
-                successCallback(message);
-            }
-        },
-        onFailure: (message: any) => {
-            logger.error(`Main: ${method} ${JSON.stringify(message)}`);
-
-            if (failureCallback) {
-                failureCallback(message);
-            }
-        },
-        // onComplete: (message) => {},
-        subscribe: subscribe,
-        resubscribe: subscribe
-    });
+    preloadData.onToastCb(`Error starting the application: ${JSON.stringify(err)}`, ToastIcon.ERROR);
 }
