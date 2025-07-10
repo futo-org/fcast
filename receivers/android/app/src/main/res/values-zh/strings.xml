@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">FCast接收器</string>
+    <string name="general_failure">操作以一般方式失败</string>
+    <string name="aborted">操作失败，因为它被主动中止</string>
+    <string name="blocked">操作失败，因为被阻止</string>
+    <string name="conflict">操作失败，因为它与设备上已安装的另一个软件包冲突（或不一致）</string>
+    <string name="incompatible">操作失败，因为它与该设备根本不兼容</string>
+    <string name="invalid">操作失败，因为一个或多个 APK 无效</string>
+    <string name="not_enough_storage">由于存储问题，操作失败</string>
+    <string name="downloading_update">正在下载更新…</string>
+    <string name="installing_update">正在安装更新…</string>
+    <string name="success">成功</string>
+    <string name="failed_to_update_with_error">更新包失败并出现错误</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">FCast 接收器有可用的更新，您是否要更新？</string>
+    <string name="never">绝不</string>
+    <string name="close">关闭</string>
+    <string name="update">更新</string>
+    <string name="checking_for_updates">正在检查更新…</string>
+    <string name="no_updates_available">没有可用更新</string>
+    <string name="permission_dialog_title">系统警报窗口权限</string>
+    <string name="permission_dialog_message">此应用需要“系统警报窗口”权限才能在其他应用上方显示内容。请授予此权限。</string>
+    <string name="permission_dialog_positive_button">允许</string>
+    <string name="permission_dialog_negative_button">取消</string>
+    <string name="waiting_for_media">等待媒体</string>
+</resources>

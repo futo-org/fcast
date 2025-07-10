@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">جهاز استقبال FCast</string>
+    <string name="general_failure">فشلت العملية بشكل عام</string>
+    <string name="aborted">فشلت العملية بسبب إلغائها بشكل نشط</string>
+    <string name="blocked">فشلت العملية بسبب حظرها</string>
+    <string name="conflict">فشلت العملية لأنها تتعارض (أو غير متوافقة مع) حزمة أخرى مثبتة بالفعل على الجهاز</string>
+    <string name="incompatible">فشلت العملية لأنها غير متوافقة بشكل أساسي مع هذا الجهاز</string>
+    <string name="invalid">فشلت العملية لأن أحد ملفات APK أو أكثر كان غير صالح</string>
+    <string name="not_enough_storage">فشلت العملية بسبب مشاكل التخزين</string>
+    <string name="downloading_update">جاري تنزيل التحديث…</string>
+    <string name="installing_update">جاري تثبيت التحديث…</string>
+    <string name="success">نجاح</string>
+    <string name="failed_to_update_with_error">فشل تحديث الحزمة بسبب الخطأ</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">هناك تحديث متاح لجهاز الاستقبال FCast، هل ترغب في التحديث؟</string>
+    <string name="never">أبداً</string>
+    <string name="close">يغلق</string>
+    <string name="update">تحديث</string>
+    <string name="checking_for_updates">التحقق من التحديثات…</string>
+    <string name="no_updates_available">لا توجد تحديثات متاحة</string>
+    <string name="permission_dialog_title">إذن نافذة تنبيه النظام</string>
+    <string name="permission_dialog_message">يتطلب هذا التطبيق إذن "نافذة تنبيه النظام" لعرض المحتوى فوق التطبيقات الأخرى. يُرجى منح الإذن.</string>
+    <string name="permission_dialog_positive_button">يسمح</string>
+    <string name="permission_dialog_negative_button">يلغي</string>
+    <string name="waiting_for_media">في انتظار وسائل الإعلام</string>
+</resources>

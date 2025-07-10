@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Receptor FCast</string>
+    <string name="general_failure">La operación falló de forma genérica</string>
+    <string name="aborted">La operación falló porque fue abortada activamente.</string>
+    <string name="blocked">La operación falló porque fue bloqueada</string>
+    <string name="conflict">La operación falló porque entra en conflicto (o es inconsistente) con otro paquete ya instalado en el dispositivo</string>
+    <string name="incompatible">La operación falló porque es fundamentalmente incompatible con este dispositivo.</string>
+    <string name="invalid">La operación falló porque uno o más de los APK no eran válidos</string>
+    <string name="not_enough_storage">La operación falló debido a problemas de almacenamiento.</string>
+    <string name="downloading_update">Descargando actualización…</string>
+    <string name="installing_update">Instalando actualización…</string>
+    <string name="success">Éxito</string>
+    <string name="failed_to_update_with_error">No se pudo actualizar el paquete con error</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">Hay una actualización disponible para el receptor FCast, ¿desea actualizar?</string>
+    <string name="never">Nunca</string>
+    <string name="close">Cerca</string>
+    <string name="update">Actualizar</string>
+    <string name="checking_for_updates">Buscando actualizaciones…</string>
+    <string name="no_updates_available">No hay actualizaciones disponibles</string>
+    <string name="permission_dialog_title">Permiso de la ventana de alerta del sistema</string>
+    <string name="permission_dialog_message">Esta aplicación requiere el permiso de la ventana de alertas del sistema para mostrar contenido sobre otras aplicaciones. Por favor, concédelo.</string>
+    <string name="permission_dialog_positive_button">Permitir</string>
+    <string name="permission_dialog_negative_button">Cancelar</string>
+    <string name="waiting_for_media">Esperando a los medios</string>
+</resources>

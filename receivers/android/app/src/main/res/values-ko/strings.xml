@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">FCast 수신기</string>
+    <string name="general_failure">작업이 일반적인 방식으로 실패했습니다.</string>
+    <string name="aborted">작업이 적극적으로 중단되어 실패했습니다.</string>
+    <string name="blocked">작업이 차단되어 실패했습니다.</string>
+    <string name="conflict">해당 작업은 장치에 이미 설치된 다른 패키지와 충돌하거나 일관성이 없기 때문에 실패했습니다.</string>
+    <string name="incompatible">이 작업은 이 장치와 근본적으로 호환되지 않기 때문에 실패했습니다.</string>
+    <string name="invalid">APK 중 하나 이상이 유효하지 않아 작업이 실패했습니다.</string>
+    <string name="not_enough_storage">저장소 문제로 인해 작업이 실패했습니다.</string>
+    <string name="downloading_update">업데이트를 다운로드하는 중…</string>
+    <string name="installing_update">업데이트를 설치하는 중…</string>
+    <string name="success">성공</string>
+    <string name="failed_to_update_with_error">오류로 인해 패키지를 업데이트하지 못했습니다.</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">FCast 수신기에 대한 업데이트가 있습니다. 업데이트하시겠습니까?</string>
+    <string name="never">절대</string>
+    <string name="close">닫다</string>
+    <string name="update">업데이트</string>
+    <string name="checking_for_updates">업데이트를 확인하는 중…</string>
+    <string name="no_updates_available">업데이트가 없습니다</string>
+    <string name="permission_dialog_title">시스템 알림 창 권한</string>
+    <string name="permission_dialog_message">이 앱은 다른 앱 위에 콘텐츠를 표시하기 위해 시스템 알림 창 권한이 필요합니다. 권한을 부여해 주세요.</string>
+    <string name="permission_dialog_positive_button">허용하다</string>
+    <string name="permission_dialog_negative_button">취소</string>
+    <string name="waiting_for_media">미디어를 기다리는 중</string>
+</resources>
