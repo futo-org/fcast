@@ -39,6 +39,5 @@ buildAndroid:
     access: all
     expire_in: "30 days"
     paths:
-      - /artifacts/$ANDROID_VERSION_CODE/fcast-release.apk
-      - /artifacts/$ANDROID_VERSION_CODE/fcast-playstore-release.aab
+      - /artifacts/$ANDROID_VERSION_CODE/*
   when: manual
