@@ -33,11 +33,17 @@ buildAndroid:
     - cp -rf ./app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk /artifacts/$ANDROID_VERSION_CODE/fcast-release.apk
     - cp -rf ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab /artifacts/$ANDROID_VERSION_CODE/fcast-playstore-release.aab
     - cp -rf ./fcast-version.txt /artifacts/fcast-version.txt
+
+    # Artifact uploads require artifacts to be in project directory
+    - mkdir -p ./$ANDROID_VERSION_CODE
+    - mv ./app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk ./$ANDROID_VERSION_CODE/fcast-release.apk
+    - mv ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab ./$ANDROID_VERSION_CODE/fcast-playstore-release.aab
   artifacts:
     untracked: false
     when: on_success
     access: all
     expire_in: "30 days"
     paths:
-      - /artifacts/$ANDROID_VERSION_CODE/*
+      - receivers/android/$ANDROID_VERSION_CODE/fcast-release.apk
+      - receivers/android/$ANDROID_VERSION_CODE/fcast-playstore-release.aab
   when: manual
