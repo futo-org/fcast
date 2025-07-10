@@ -13,7 +13,7 @@ println("Version Name: $currentVersionName")
 println("Version Code: $currentVersionCode")
 
 def keystoreProperties = new Properties()
-def keystorePropertiesFile = rootProject.file('/opt/key.properties')
+def keystorePropertiesFile = rootProject.file('/certs/key.properties')
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
