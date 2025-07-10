@@ -537,8 +537,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val TAG = "MainActivity"
-        const val VERSION_URL = "https://releases.grayjay.app/fcast-version.txt"
-        const val APK_URL = "https://releases.grayjay.app/fcast-release.apk"
+        const val VERSION_URL = "https://dl.fcast.org/android/fcast-version.txt"
+        const val APK_URL = "https://dl.fcast.org/android/fcast-release.apk"
         const val REQUEST_ID_MULTIPLE_PERMISSIONS = 1
         const val REQUEST_CODE = 2
     }
