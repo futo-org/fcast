@@ -1,27 +1,13 @@
 package com.futo.fcast.receiver
 
-import android.util.Base64
 import android.util.Log
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.DataOutputStream
 import java.io.OutputStream
-import java.math.BigInteger
 import java.net.SocketAddress
 import java.nio.ByteBuffer
-import java.security.KeyFactory
-import java.security.KeyPair
-import java.security.KeyPairGenerator
-import java.security.MessageDigest
-import java.security.PrivateKey
-import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
-import javax.crypto.Cipher
-import javax.crypto.KeyAgreement
-import javax.crypto.spec.DHParameterSpec
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
+
 
 
 enum class SessionState {
@@ -48,8 +34,8 @@ enum class Opcode(val value: Byte) {
     Pong(13);
 
     companion object {
-        private val _map = values().associateBy { it.value }
-        fun find(value: Byte): Opcode = _map[value] ?: Opcode.None
+        private val _map = entries.associateBy { it.value }
+        fun find(value: Byte): Opcode = _map[value] ?: None
     }
 }
 
@@ -111,7 +97,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
     }
 
     fun processBytes(data: ByteBuffer) {
-        Log.i(TAG, "${data.remaining()} bytes received from ${_remoteSocketAddress}")
+        Log.i(TAG, "${data.remaining()} bytes received from $_remoteSocketAddress")
         if (!data.hasArray()) {
             throw IllegalArgumentException("ByteBuffer does not have a backing array")
         }
@@ -132,7 +118,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
             return
         }
 
-        Log.i(TAG, "$count bytes received from ${_remoteSocketAddress}")
+        Log.i(TAG, "$count bytes received from $_remoteSocketAddress")
 
         when (_state) {
             SessionState.WaitingForLength -> handleLengthBytes(data, 0, count)
@@ -166,7 +152,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
             }
 
             if (bytesRemaining > 0) {
-                Log.i(TAG, "$bytesRemaining remaining bytes ${_remoteSocketAddress} pushed to handlePacketBytes")
+                Log.i(TAG, "$bytesRemaining remaining bytes $_remoteSocketAddress pushed to handlePacketBytes")
                 handlePacketBytes(data, offset + bytesToRead, bytesRemaining)
             }
         }
@@ -181,7 +167,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         Log.i(TAG, "Read $bytesToRead bytes from packet")
 
         if (_bytesRead >= _packetLength) {
-            Log.i(TAG, "Packet finished receiving from ${_remoteSocketAddress} of $_packetLength bytes.")
+            Log.i(TAG, "Packet finished receiving from $_remoteSocketAddress of $_packetLength bytes.")
             handleNextPacket()
 
             _state = SessionState.WaitingForLength
@@ -189,14 +175,14 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
             _bytesRead = 0
 
             if (bytesRemaining > 0) {
-                Log.i(TAG, "$bytesRemaining remaining bytes ${_remoteSocketAddress} pushed to handleLengthBytes")
+                Log.i(TAG, "$bytesRemaining remaining bytes $_remoteSocketAddress pushed to handleLengthBytes")
                 handleLengthBytes(data, offset + bytesToRead, bytesRemaining)
             }
         }
     }
 
     private fun handleNextPacket() {
-        Log.i(TAG, "Processing packet of $_bytesRead bytes from ${_remoteSocketAddress}")
+        Log.i(TAG, "Processing packet of $_bytesRead bytes from $_remoteSocketAddress")
 
         val opcode = Opcode.find(_buffer[0])
         val body = if (_packetLength > 1) _buffer.copyOfRange(1, _packetLength)

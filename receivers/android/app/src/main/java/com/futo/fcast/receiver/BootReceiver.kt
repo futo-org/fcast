@@ -19,7 +19,7 @@ class BootReceiver : BroadcastReceiver() {
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     // Show a notification with an action to start the service
-                    showStartServiceNotification(context);
+                    showStartServiceNotification(context)
                 } else {
                     // Directly start the service for older versions
                     val serviceIntent = Intent(context, NetworkService::class.java)

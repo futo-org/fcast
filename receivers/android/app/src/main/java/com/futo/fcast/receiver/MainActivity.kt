@@ -1,16 +1,12 @@
 package com.futo.fcast.receiver
 
-import WebSocketListenerService
 import android.Manifest
-import android.app.Activity
 import android.app.AlertDialog
 import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.graphics.drawable.Animatable
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -34,12 +30,12 @@ import androidx.media3.ui.PlayerView
 import com.google.zxing.BarcodeFormat
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import kotlinx.coroutines.*
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.NetworkInterface
+import androidx.core.net.toUri
 
 
 class MainActivity : AppCompatActivity() {
@@ -153,7 +149,7 @@ class MainActivity : AppCompatActivity() {
             Log.i(TAG, "connection url: $url")
             val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px)
             _imageQr.setImageBitmap(bitmap)
-        } catch (e: java.lang.Exception) {
+        } catch (_: java.lang.Exception) {
             _textScanToConnect.visibility = View.GONE
             _imageQr.visibility = View.GONE
         }
@@ -201,7 +197,7 @@ class MainActivity : AppCompatActivity() {
         _player = ExoPlayer.Builder(this).build()
         _videoBackground.player = _player
 
-        val mediaItem = MediaItem.fromUri(Uri.parse("android.resource://" + packageName + "/" + R.raw.c))
+        val mediaItem = MediaItem.fromUri(("android.resource://" + packageName + "/" + R.raw.c).toUri())
         _player.setMediaItem(mediaItem)
         _player.prepare()
         _player.repeatMode = Player.REPEAT_MODE_ALL
@@ -224,7 +220,7 @@ class MainActivity : AppCompatActivity() {
 
         if (listPermissionsNeeded.isNotEmpty()) {
             val permissionRequestedKey = "NOTIFICATIONS_PERMISSION_REQUESTED"
-            val sharedPref = this.getSharedPreferences(_preferenceFileKey, Context.MODE_PRIVATE)
+            val sharedPref = this.getSharedPreferences(_preferenceFileKey, MODE_PRIVATE)
             val hasRequestedPermission = sharedPref.getBoolean(permissionRequestedKey, false)
             if (!hasRequestedPermission) {
                 ActivityCompat.requestPermissions(this, listPermissionsNeeded.toTypedArray(), REQUEST_ID_MULTIPLE_PERMISSIONS)
@@ -244,7 +240,7 @@ class MainActivity : AppCompatActivity() {
     private fun requestSystemAlertWindowPermission() {
         try {
             val permissionRequestedKey = "SYSTEM_ALERT_WINDOW_PERMISSION_REQUESTED"
-            val sharedPref = this.getSharedPreferences(_preferenceFileKey, Context.MODE_PRIVATE)
+            val sharedPref = this.getSharedPreferences(_preferenceFileKey, MODE_PRIVATE)
             val hasRequestedPermission = sharedPref.getBoolean(permissionRequestedKey, false)
 
             if (!Settings.canDrawOverlays(this)) {
@@ -254,7 +250,8 @@ class MainActivity : AppCompatActivity() {
                         .setMessage(R.string.permission_dialog_message)
                         .setPositiveButton(R.string.permission_dialog_positive_button) { _, _ ->
                             try {
-                                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    "package:$packageName".toUri())
                                 _systemAlertWindowPermissionLauncher.launch(intent)
                             } catch (e: Throwable) {
                                 Log.e("OverlayPermission", "Error requesting overlay permission", e)
@@ -276,7 +273,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Optional system alert window permission missing", Toast.LENGTH_SHORT).show()
                 }
             }
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             Log.e(TAG, "Failed to request system alert window permissions")
         }
     }
@@ -367,7 +364,7 @@ class MainActivity : AppCompatActivity() {
                 _updateSpinner.visibility = View.INVISIBLE
                 setText(resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update))
                 _buttonUpdate.visibility = View.VISIBLE
-            } catch (e: Throwable) {
+            } catch (_: Throwable) {
                 Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show()
                 Log.w(TAG, "Error occurred in update dialog.")
             }
@@ -388,11 +385,11 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         val response = client.newCall(request).execute()
-        if (!response.isSuccessful || response.body == null) {
+        if (!response.isSuccessful) {
             return null
         }
 
-        return response.body?.string()?.trim()?.toInt()
+        return response.body.string().trim().toInt()
     }
 
     private fun update() {
@@ -414,7 +411,7 @@ class MainActivity : AppCompatActivity() {
 
                 val response = client.newCall(request).execute()
                 val body = response.body
-                if (response.isSuccessful && body != null) {
+                if (response.isSuccessful) {
                     inputStream = body.byteStream()
                     val dataLength = body.contentLength()
                     install(inputStream, dataLength)

@@ -1,6 +1,5 @@
 package com.futo.fcast.receiver
 
-import android.content.Context
 import android.graphics.drawable.Animatable
 import android.net.ConnectivityManager
 import android.net.Network
@@ -44,6 +43,7 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.max
+import androidx.core.net.toUri
 
 
 class PlayerActivity : AppCompatActivity() {
@@ -245,7 +245,7 @@ class PlayerActivity : AppCompatActivity() {
         _playerControlView.controllerAutoShow = false
 
         Log.i(TAG, "Attached onConnectionAvailable listener.")
-        _connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        _connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         val netReq = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -398,7 +398,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         if (!playMessage.url.isNullOrEmpty()) {
-            mediaItemBuilder.setUri(Uri.parse(playMessage.url))
+            mediaItemBuilder.setUri(playMessage.url.toUri())
         } else if (!playMessage.content.isNullOrEmpty()) {
             val tempFile = File.createTempFile("content_", ".tmp", cacheDir)
             tempFile.deleteOnExit()
