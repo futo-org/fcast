@@ -30,8 +30,8 @@ buildAndroid:
     - ./gradlew --stacktrace bundlePlaystoreRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
     - echo $ANDROID_VERSION_CODE > ./fcast-version.txt
     - mkdir /artifacts/$ANDROID_VERSION_CODE
-    - cp -rf out/make/app/defaultFlavor/release/app-defaultFlavor-release.apk /artifacts/$ANDROID_VERSION_CODE/fcast-release.apk
-    - cp -rf out/make/app/playstore/release/app-playstore-release.aab /artifacts/$ANDROID_VERSION_CODE/fcast-playstore-release.aab
+    - cp -rf ./app/defaultFlavor/release/app-defaultFlavor-release.apk /artifacts/$ANDROID_VERSION_CODE/fcast-release.apk
+    - cp -rf ./app/playstore/release/app-playstore-release.aab /artifacts/$ANDROID_VERSION_CODE/fcast-playstore-release.aab
     - cp -rf ./fcast-version.txt /artifacts/fcast-version.txt
   artifacts:
     untracked: false
