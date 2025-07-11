@@ -1,0 +1,16 @@
+[workspace]
+members = [ "sender-sdk/chromecast-protocol", "sender-sdk/fcast-sender-sdk", "sender-sdk/fcast-protocol", "sender-sdk/examples/terminal", "sender-sdk/uniffi-bindgen", "sender-sdk/xtask", "senders/terminal"]
+resolver = "2"
+
+[workspace.package]
+license = "MIT"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[workspace.dependencies]
+tokio = { version = "1.46.1", features = [ "rt", "rt-multi-thread", "sync", "macros", "net", "time", "io-util" ] }
+serde = { version = "1.0.219", features = [ "derive" ] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"

@@ -1,6 +1,6 @@
 use clap::{App, Arg, SubCommand};
-use fcast::models::v3;
 use fcast::transport::WebSocket;
+use fcast_protocol::{v3, SeekMessage, SetSpeedMessage, SetVolumeMessage};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -15,11 +15,8 @@ use tiny_http::{Header, ListenAddr, Response, Server};
 use tungstenite::stream::MaybeTlsStream;
 use url::Url;
 
+use fcast::fcastsession::FCastSession;
 use fcast::fcastsession::Opcode;
-use fcast::{
-    fcastsession::FCastSession,
-    models::{SeekMessage, SetSpeedMessage, SetVolumeMessage},
-};
 
 fn main() {
     if let Err(e) = run() {
@@ -355,10 +352,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         session.send_play_message(mime_type, url, content, time, speed, headers, volume)?;
     } else if let Some(seek_matches) = matches.subcommand_matches("seek") {
-        let seek_message = SeekMessage::new(match seek_matches.value_of("timestamp") {
-            Some(s) => s.parse::<f64>()?,
-            _ => return Err("Timestamp is required.".into()),
-        });
+        let seek_message = SeekMessage {
+            time: match seek_matches.value_of("timestamp") {
+                Some(s) => s.parse::<f64>()?,
+                _ => return Err("Timestamp is required.".into()),
+            },
+        };
         println!("Sent seek {:?}", seek_message);
         session.send_message(Opcode::Seek, &seek_message)?;
     } else if matches.subcommand_matches("pause").is_some() {
@@ -388,22 +387,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Ctrl+C received, exiting...");
     } else if let Some(setvolume_matches) = matches.subcommand_matches("setvolume") {
-        let setvolume_message = SetVolumeMessage::new(match setvolume_matches.value_of("volume") {
-            Some(s) => s.parse::<f64>()?,
-            _ => return Err("Timestamp is required.".into()),
-        });
+        let setvolume_message = SetVolumeMessage {
+            volume: match setvolume_matches.value_of("volume") {
+                Some(s) => s.parse::<f64>()?,
+                _ => return Err("Timestamp is required.".into()),
+            },
+        };
         println!("Sent setvolume {:?}", setvolume_message);
         session.send_message(Opcode::SetVolume, &setvolume_message)?;
     } else if let Some(setspeed_matches) = matches.subcommand_matches("setspeed") {
-        let setspeed_message = SetSpeedMessage::new(match setspeed_matches.value_of("speed") {
-            Some(s) => s.parse::<f64>()?,
-            _ => return Err("Speed is required.".into()),
-        });
+        let setspeed_message = SetSpeedMessage {
+            speed: match setspeed_matches.value_of("speed") {
+                Some(s) => s.parse::<f64>()?,
+                _ => return Err("Speed is required.".into()),
+            },
+        };
         println!("Sent setspeed {:?}", setspeed_message);
         session.send_message(Opcode::SetSpeed, &setspeed_message)?;
-    } else if let Some(set_playlist_item_matches) = matches.subcommand_matches("set_playlist_item") {
+    } else if let Some(set_playlist_item_matches) = matches.subcommand_matches("set_playlist_item")
+    {
         let message = v3::SetPlaylistItemMessage {
-            item_index: set_playlist_item_matches.value_of("item_index").expect("item_index required").parse::<u64>()?,
+            item_index: set_playlist_item_matches
+                .value_of("item_index")
+                .expect("item_index required")
+                .parse::<u64>()?,
         };
         session.send_message(Opcode::SetPlaylistItem, &message)?;
         println!("Sent set_playlist_item {message:?}");

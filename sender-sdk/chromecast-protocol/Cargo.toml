@@ -1,0 +1,13 @@
+[package]
+name = "chromecast-protocol"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+prost = "0.14.1"
+
+[build-dependencies]
+prost-build = "0.14.1"

@@ -1,0 +1,70 @@
+[package]
+name = "fcast-sender-sdk"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+# uniffi = { version = "0.29.3", features = [ "cli" ], optional = true }
+uniffi = { version = "0.29.3", optional = true }
+tokio.workspace = true
+log = "0.4.27"
+anyhow = "1.0.98"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+futures = "0.3.31"
+mdns-sd = "0.13.10"
+thiserror.workspace = true
+url = "2.5.4"
+base64 = { version = "0.22.1", optional = true }
+hyper-util = { version = "0.1.14", features = ["server", "http1", "http2", "tokio"], optional = true }
+hyper = { version = "1.6.0", features = ["client", "http1"], optional = true }
+http = { version = "1.3.1", optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+bytes = { version = "1.10.1", optional = true }
+uuid = { version = "1.17.0", features = ["v4"], optional = true }
+bitflags = { version = "2.9.1", features = ["serde"], optional = true }
+tokio-stream = "0.1.17"
+
+# Chromecast
+rustls-pki-types = { version = "1.12.0", optional = true }
+webpki-roots = { version = "1.0.1", optional = true }
+tokio-rustls = { version = "0.26.2", default-features = false, features = [ "logging", "ring" ], optional = true }
+chromecast-protocol = { path = "../chromecast-protocol", optional = true }
+
+# AirPlay2
+num-bigint = { version = "0.4.6", optional = true }
+sha2 = { version = "0.10.9", optional = true }
+aead = { version = "0.5.2", optional = true }
+rand_pcg = { version = "0.9.0", optional = true }
+ed25519-dalek = { version = "2.1.1", optional = true }
+hkdf = { version = "0.12.4", optional = true }
+chacha20poly1305 = { version = "0.10.1", optional = true }
+x25519-dalek = { version = "2.0.1", features = ["getrandom"], optional = true }
+hex-literal = { version = "1.0.0", optional = true }
+
+fcast-protocol = { path = "../fcast-protocol", optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = { version = "0.15.0", optional = true }
+log-panics = { version = "2.1.0", features = ["with-backtrace"], optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+env_logger = { version = "0.11.8", optional = true }
+
+[build-dependencies]
+cfg_aliases = "0.2.1"
+
+[features]
+default = ["fcast", "chromecast", "airplay1", "airplay2", "http-file-server", "uniffi", "logging"]
+fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64"]
+chromecast = ["dep:chromecast-protocol", "dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
+airplay1 = ["dep:serde", "dep:bitflags", "dep:hyper", "dep:http-body-util", "dep:hyper-util", "dep:uuid", "dep:bytes", "dep:http"]
+airplay2 = ["dep:serde", "dep:serde_json", "dep:bitflags", "dep:uuid", "dep:num-bigint", "dep:sha2", "dep:aead", "dep:rand_pcg", "dep:ed25519-dalek", "dep:hkdf", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:hex-literal"]
+http-file-server = ["dep:hyper-util",  "dep:hyper", "dep:http", "dep:http-body-util", "dep:bytes", "dep:uuid"]
+uniffi = ["dep:uniffi"]
+logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
+
+[lib]
+crate-type = ["cdylib", "rlib", "staticlib"]
+name = "fcast_sender_sdk"

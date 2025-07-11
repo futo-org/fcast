@@ -90,9 +90,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
                 Ok(Self::Generic {
                     title,
                     thumbnail_url,
-                    custom: rest
-                        .get("custom")
-                        .cloned(),
+                    custom: rest.get("custom").cloned(),
                 })
             }
             _ => Err(de::Error::custom(format!("Unknown metadata type {type_}"))),
@@ -102,7 +100,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PlayMessage {
-    ///  The MIME type (video/mp4)
+    /// The MIME type (video/mp4)
     pub container: String,
     // The URL to load (optional)
     pub url: Option<String>,
@@ -205,6 +203,7 @@ pub struct InitialSenderMessage {
     pub app_version: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct InitialReceiverMessage {
     #[serde(rename = "displayName")]
@@ -217,6 +216,7 @@ pub struct InitialReceiverMessage {
     pub play_data: Option<PlayMessage>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct PlayUpdateMessage {
     #[serde(rename = "generationTime")]
@@ -240,6 +240,7 @@ pub enum KeyNames {
     Enter,
 }
 
+#[allow(dead_code)]
 impl KeyNames {
     pub fn all() -> Vec<String> {
         vec![
@@ -458,7 +459,7 @@ impl<'de> Deserialize<'de> for EventObject {
 pub struct EventMessage {
     #[serde(rename = "generationTime")]
     pub generation_time: u64,
-    event: EventObject,
+    pub event: EventObject,
 }
 
 #[cfg(test)]

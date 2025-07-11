@@ -7,9 +7,10 @@ use std::{
 };
 
 use crate::{
-    models::{v2, v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage},
+    // models::{v2, v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage},
     transport::Transport,
 };
+use fcast_protocol::{v2, v3, PlaybackErrorMessage, VersionMessage, VolumeUpdateMessage};
 use serde::Serialize;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -98,10 +99,7 @@ impl<'a> FCastSession<'a> {
     pub fn connect<T: Transport + 'a>(stream: T) -> Result<Self, Box<dyn std::error::Error>> {
         let mut session = Self::new(stream);
 
-        session.send_message(
-            Opcode::Version,
-            crate::models::VersionMessage { version: 3 },
-        )?;
+        session.send_message(Opcode::Version, VersionMessage { version: 3 })?;
 
         let (opcode, body) = session.read_packet()?;
 

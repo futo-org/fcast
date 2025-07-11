@@ -1,0 +1,578 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		FEF9DE552DF6C11E00D08D8C /* FCast.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FEF9DE542DF6C11E00D08D8C /* FCast.xcframework */; };
+		FEF9DE582DF6C12D00D08D8C /* fcast.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEF9DE562DF6C12D00D08D8C /* fcast.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		FE492A182DF43428005DA314 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FE492A022DF43426005DA314 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FE492A092DF43426005DA314;
+			remoteInfo = "FCast Sender";
+		};
+		FE492A222DF43428005DA314 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FE492A022DF43426005DA314 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FE492A092DF43426005DA314;
+			remoteInfo = "FCast Sender";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		FE5977C32DF448FF00115F46 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		FE5977C02DF448FF00115F46 /* FCast Sender.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "FCast Sender.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE5977F82DF6A78000115F46 /* FCastSender-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FCastSender-Bridging-Header.h"; sourceTree = "<group>"; };
+		FEF9DE542DF6C11E00D08D8C /* FCast.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = FCast.xcframework; sourceTree = "<group>"; };
+		FEF9DE562DF6C12D00D08D8C /* fcast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = fcast.swift; sourceTree = "<group>"; };
+		FEF9DE572DF6C12D00D08D8C /* fcastFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fcastFFI.h; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		FE492A0C2DF43426005DA314 /* FCast Sender */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "FCast Sender";
+			sourceTree = "<group>";
+		};
+		FE492A1A2DF43428005DA314 /* FCast SenderTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "FCast SenderTests";
+			sourceTree = "<group>";
+		};
+		FE492A242DF43428005DA314 /* FCast SenderUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "FCast SenderUITests";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FE492A072DF43426005DA314 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FEF9DE552DF6C11E00D08D8C /* FCast.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE492A142DF43428005DA314 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE492A1E2DF43428005DA314 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		FE492A012DF43426005DA314 = {
+			isa = PBXGroup;
+			children = (
+				FE5977F82DF6A78000115F46 /* FCastSender-Bridging-Header.h */,
+				FE492A0C2DF43426005DA314 /* FCast Sender */,
+				FE492A1A2DF43428005DA314 /* FCast SenderTests */,
+				FE492A242DF43428005DA314 /* FCast SenderUITests */,
+				FE5977C02DF448FF00115F46 /* FCast Sender.app */,
+				FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */,
+				FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */,
+				FEF9DE542DF6C11E00D08D8C /* FCast.xcframework */,
+				FEF9DE562DF6C12D00D08D8C /* fcast.swift */,
+				FEF9DE572DF6C12D00D08D8C /* fcastFFI.h */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FE492A092DF43426005DA314 /* FCast Sender */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FE492A2B2DF43428005DA314 /* Build configuration list for PBXNativeTarget "FCast Sender" */;
+			buildPhases = (
+				FE492A062DF43426005DA314 /* Sources */,
+				FE492A072DF43426005DA314 /* Frameworks */,
+				FE492A082DF43426005DA314 /* Resources */,
+				FE5977C32DF448FF00115F46 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FE492A0C2DF43426005DA314 /* FCast Sender */,
+			);
+			name = "FCast Sender";
+			packageProductDependencies = (
+			);
+			productName = "FCast Sender";
+			productReference = FE5977C02DF448FF00115F46 /* FCast Sender.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FE492A162DF43428005DA314 /* FCast SenderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FE492A2E2DF43428005DA314 /* Build configuration list for PBXNativeTarget "FCast SenderTests" */;
+			buildPhases = (
+				FE492A132DF43428005DA314 /* Sources */,
+				FE492A142DF43428005DA314 /* Frameworks */,
+				FE492A152DF43428005DA314 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FE492A192DF43428005DA314 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FE492A1A2DF43428005DA314 /* FCast SenderTests */,
+			);
+			name = "FCast SenderTests";
+			packageProductDependencies = (
+			);
+			productName = "FCast SenderTests";
+			productReference = FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		FE492A202DF43428005DA314 /* FCast SenderUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FE492A312DF43428005DA314 /* Build configuration list for PBXNativeTarget "FCast SenderUITests" */;
+			buildPhases = (
+				FE492A1D2DF43428005DA314 /* Sources */,
+				FE492A1E2DF43428005DA314 /* Frameworks */,
+				FE492A1F2DF43428005DA314 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FE492A232DF43428005DA314 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FE492A242DF43428005DA314 /* FCast SenderUITests */,
+			);
+			name = "FCast SenderUITests";
+			packageProductDependencies = (
+			);
+			productName = "FCast SenderUITests";
+			productReference = FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FE492A022DF43426005DA314 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1640;
+				LastUpgradeCheck = 1640;
+				TargetAttributes = {
+					FE492A092DF43426005DA314 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+					FE492A162DF43428005DA314 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = FE492A092DF43426005DA314;
+					};
+					FE492A202DF43428005DA314 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = FE492A092DF43426005DA314;
+					};
+				};
+			};
+			buildConfigurationList = FE492A052DF43426005DA314 /* Build configuration list for PBXProject "FCast Sender" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = FE492A012DF43426005DA314;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FE492A012DF43426005DA314;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FE492A092DF43426005DA314 /* FCast Sender */,
+				FE492A162DF43428005DA314 /* FCast SenderTests */,
+				FE492A202DF43428005DA314 /* FCast SenderUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FE492A082DF43426005DA314 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE492A152DF43428005DA314 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE492A1F2DF43428005DA314 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FE492A062DF43426005DA314 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FEF9DE582DF6C12D00D08D8C /* fcast.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE492A132DF43428005DA314 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE492A1D2DF43428005DA314 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FE492A192DF43428005DA314 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FE492A092DF43426005DA314 /* FCast Sender */;
+			targetProxy = FE492A182DF43428005DA314 /* PBXContainerItemProxy */;
+		};
+		FE492A232DF43428005DA314 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FE492A092DF43426005DA314 /* FCast Sender */;
+			targetProxy = FE492A222DF43428005DA314 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FE492A292DF43428005DA314 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FE492A2A2DF43428005DA314 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		FE492A2C2DF43428005DA314 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-Sender";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "FCastSender-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FE492A2D2DF43428005DA314 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-Sender";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "FCastSender-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FE492A2F2DF43428005DA314 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-SenderTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FCast Sender.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FCast Sender";
+			};
+			name = Debug;
+		};
+		FE492A302DF43428005DA314 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-SenderTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FCast Sender.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FCast Sender";
+			};
+			name = Release;
+		};
+		FE492A322DF43428005DA314 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-SenderUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "FCast Sender";
+			};
+			name = Debug;
+		};
+		FE492A332DF43428005DA314 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-SenderUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "FCast Sender";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FE492A052DF43426005DA314 /* Build configuration list for PBXProject "FCast Sender" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE492A292DF43428005DA314 /* Debug */,
+				FE492A2A2DF43428005DA314 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FE492A2B2DF43428005DA314 /* Build configuration list for PBXNativeTarget "FCast Sender" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE492A2C2DF43428005DA314 /* Debug */,
+				FE492A2D2DF43428005DA314 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FE492A2E2DF43428005DA314 /* Build configuration list for PBXNativeTarget "FCast SenderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE492A2F2DF43428005DA314 /* Debug */,
+				FE492A302DF43428005DA314 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FE492A312DF43428005DA314 /* Build configuration list for PBXNativeTarget "FCast SenderUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE492A322DF43428005DA314 /* Debug */,
+				FE492A332DF43428005DA314 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = FE492A022DF43426005DA314 /* Project object */;
+}
