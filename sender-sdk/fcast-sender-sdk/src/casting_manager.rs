@@ -748,7 +748,6 @@ impl CastingManager {
     }
 }
 
-
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingManager {

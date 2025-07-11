@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use fcast_sender_sdk::{
-    IpAddr,
     airplay2::AirPlay2CastingDevice,
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceEventHandler,
@@ -11,6 +10,7 @@ use fcast_sender_sdk::{
     casting_manager::{CastingManager, CastingManagerEventHandler},
     // chromecast::ChromecastCastingDevice,
     // fcast::FCastCastingDevice,
+    IpAddr,
 };
 use log::info;
 
