@@ -37,7 +37,7 @@ mod http_file_server_prelude {
 use http_file_server_prelude::*;
 
 use log::{debug, error};
-#[cfg(any_protocol)]
+#[cfg(all(feature = "discovery", any_protocol))]
 use mdns_sd::ServiceEvent;
 #[cfg(feature = "fcast")]
 use serde::Deserialize;
@@ -92,7 +92,7 @@ struct FCastNetworkConfig {
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait CastingManagerEventHandler: Send + Sync {}
 
-#[cfg(any_protocol)]
+#[cfg(all(feature = "discovery", any_protocol))]
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait CastingManagerEventHandler: Send + Sync {
     fn device_added(&self, device: Arc<dyn CastingDevice>);
@@ -115,24 +115,24 @@ enum Command {
 }
 
 struct InnerManager {
-    #[cfg(any_protocol)]
+    #[cfg(all(feature = "discovery", any_protocol))]
     event_handler: Arc<dyn CastingManagerEventHandler>,
     file_store_port: Arc<AtomicU16>,
 }
 
 impl InnerManager {
     fn new(
-        #[cfg(any_protocol)] event_handler: Arc<dyn CastingManagerEventHandler>,
+        #[cfg(all(feature = "discovery", any_protocol))] event_handler: Arc<dyn CastingManagerEventHandler>,
         file_store_port: Arc<AtomicU16>,
     ) -> Self {
         Self {
-            #[cfg(any_protocol)]
+            #[cfg(all(feature = "discovery", any_protocol))]
             event_handler,
             file_store_port,
         }
     }
 
-    #[cfg(feature = "fcast")]
+    #[cfg(all(feature = "discovery", feature = "fcast"))]
     fn handle_fcast_mdns_resolved(
         &self,
         devices: &mut HashMap<String, Arc<dyn CastingDevice>>,
@@ -171,10 +171,10 @@ impl InnerManager {
     }
 
     async fn work(self, cmd_rx: Receiver<Command>) -> anyhow::Result<()> {
-        #[cfg(any_protocol)]
+        #[cfg(all(feature = "discovery", any_protocol))]
         let mdns = mdns_sd::ServiceDaemon::new().context("Failed to crate mdns ServiceDaemon")?;
 
-        #[cfg(any_protocol)]
+        #[cfg(all(feature = "discovery", any_protocol))]
         macro_rules! browse {
             ($mdns:expr, $service:expr) => {
                 $mdns
@@ -183,28 +183,30 @@ impl InnerManager {
             };
         }
 
-        #[cfg(feature = "fcast")]
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
         let fcast_mdns_receiver = browse!(mdns, "_fcast._tcp.local.")?;
-        #[cfg(feature = "fcast")]
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
         let fastcast_mdns_receiver = browse!(mdns, "_fastcast._tcp.local.")?;
-        #[cfg(feature = "chromecast")]
+        #[cfg(all(feature = "discovery", feature = "chromecast"))]
         let chromecast_mdns_receiver = browse!(mdns, "_googlecast._tcp.local.")?;
-        #[cfg(any(feature = "airplay1", feature = "airplay2"))]
+        #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
         let airplay_mdns_receiver = browse!(mdns, "_airplay._tcp.local.")?;
 
-        #[cfg(any_protocol)]
+        #[cfg(all(feature = "discovery", any_protocol))]
         let mut devices: HashMap<String, Arc<dyn CastingDevice>> = HashMap::new();
 
         #[cfg(feature = "http-file-server")]
         let file_store: Arc<tokio::sync::RwLock<HashMap<Uuid, Vec<u8>>>> =
             Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-
+        #[cfg(feature = "http-file-server")]
         let listen_addr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0u16);
+        #[cfg(feature = "http-file-server")]
         let tcp_listener = TcpListener::bind(listen_addr).await?;
+        #[cfg(feature = "http-file-server")]
         self.file_store_port
             .store(tcp_listener.local_addr()?.port(), Ordering::Relaxed);
 
-        #[cfg(any_protocol)]
+        #[cfg(all(feature = "discovery", any_protocol))]
         macro_rules! handle_service_event {
             ($event:expr, $on_resolved:expr) => {
                 match $event {
@@ -227,11 +229,11 @@ impl InnerManager {
             #[cfg(feature = "http-file-server")]
             HttpRequester((tokio::net::TcpStream, std::net::SocketAddr)),
             Cmd(Command),
-            #[cfg(feature = "fcast")]
+            #[cfg(all(feature = "discovery", feature = "fcast"))]
             FCastServiceEvent(ServiceEvent),
-            #[cfg(feature = "chromecast")]
+            #[cfg(all(feature = "discovery", feature = "chromecast"))]
             ChromecastServiceEvent(ServiceEvent),
-            #[cfg(any(feature = "airplay1", feature = "airplay2"))]
+            #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
             AirPlayServiceEvent(ServiceEvent),
         }
 
@@ -259,7 +261,7 @@ impl InnerManager {
                 }
             });
 
-        #[cfg(feature = "fcast")]
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
         let fcast_mdns_stream = futures::stream::unfold(
             (fcast_mdns_receiver, fastcast_mdns_receiver),
             |(fcast_mdns_receiver, fastcast_mdns_receiver): (
@@ -279,7 +281,7 @@ impl InnerManager {
             },
         );
 
-        #[cfg(feature = "chromecast")]
+        #[cfg(all(feature = "discovery", feature = "chromecast"))]
         let chromecast_mdns_stream = futures::stream::unfold(
             chromecast_mdns_receiver,
             |chromecast_mdns_receiver: mdns_sd::Receiver<ServiceEvent>| async move {
@@ -291,7 +293,7 @@ impl InnerManager {
             },
         );
 
-        #[cfg(any(feature = "airplay1", feature = "airplay2"))]
+        #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
         let airplay_mdns_stream = futures::stream::unfold(
             airplay_mdns_receiver,
             |airplay_mdns_receiver: mdns_sd::Receiver<ServiceEvent>| async move {
@@ -306,24 +308,24 @@ impl InnerManager {
         tokio::pin!(msg_stream);
         #[cfg(feature = "http-file-server")]
         tokio::pin!(http_conn_stream);
-        #[cfg(feature = "fcast")]
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
         tokio::pin!(fcast_mdns_stream);
-        #[cfg(feature = "chromecast")]
+        #[cfg(all(feature = "discovery", feature = "chromecast"))]
         tokio::pin!(chromecast_mdns_stream);
-        #[cfg(any(feature = "airplay1", feature = "airplay2"))]
+        #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
         tokio::pin!(airplay_mdns_stream);
 
         #[allow(unused_mut)]
         #[cfg(feature = "http-file-server")]
         let mut msg_stream = msg_stream.merge(http_conn_stream);
         #[allow(unused_mut)]
-        #[cfg(feature = "fcast")]
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
         let mut msg_stream = msg_stream.merge(fcast_mdns_stream);
         #[allow(unused_mut)]
-        #[cfg(feature = "chromecast")]
+        #[cfg(all(feature = "discovery", feature = "chromecast"))]
         let mut msg_stream = msg_stream.merge(chromecast_mdns_stream);
         #[allow(unused_mut)]
-        #[cfg(any(feature = "airplay1", feature = "airplay2"))]
+        #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
         let mut msg_stream = msg_stream.merge(airplay_mdns_stream);
 
         while let Some(msg) = msg_stream.next().await {
@@ -417,13 +419,13 @@ impl InnerManager {
                     }
                     Command::Quit => break,
                 },
-                #[cfg(feature = "fcast")]
+                #[cfg(all(feature = "discovery", feature = "fcast"))]
                 InternalMessage::FCastServiceEvent(service_event) => {
                     handle_service_event!(service_event, |service_info: mdns_sd::ServiceInfo| {
                         self.handle_fcast_mdns_resolved(&mut devices, service_info);
                     })
                 }
-                #[cfg(feature = "chromecast")]
+                #[cfg(all(feature = "discovery", feature = "chromecast"))]
                 InternalMessage::ChromecastServiceEvent(service_event) => {
                     handle_service_event!(service_event, |service_info: mdns_sd::ServiceInfo| {
                         let name = service_info
@@ -460,7 +462,7 @@ impl InnerManager {
                         }
                     })
                 }
-                #[cfg(any(feature = "airplay1", feature = "airplay2"))]
+                #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
                 InternalMessage::AirPlayServiceEvent(service_event) => {
                     handle_service_event!(service_event, |service_info: mdns_sd::ServiceInfo| {
                         debug!("Receiver added: {service_info:?}");
@@ -748,7 +750,7 @@ impl CastingManager {
     }
 }
 
-#[cfg(any_protocol)]
+#[cfg(all(feature = "discovery", any_protocol))]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingManager {
     /// Arguments:

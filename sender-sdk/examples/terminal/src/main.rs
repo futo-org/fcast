@@ -7,7 +7,8 @@ use fcast_sender_sdk::{
         CastingDeviceExt, CastingDeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
         GenericMediaEvent, PlaybackState, Source,
     },
-    casting_manager::{CastingManager, CastingManagerEventHandler},
+    // casting_manager::{CastingManager, CastingManagerEventHandler},
+    casting_manager::CastingManager,
     // chromecast::ChromecastCastingDevice,
     // fcast::FCastCastingDevice,
     IpAddr,
@@ -54,33 +55,33 @@ impl CastingDeviceEventHandler for EventHandler {
     }
 }
 
-struct ManagerEventHandler {}
+// struct ManagerEventHandler {}
 
-impl CastingManagerEventHandler for ManagerEventHandler {
-    fn device_added(&self, device: Arc<dyn CastingDevice>) {
-        info!("Device added: {}", device.name());
-    }
+// impl CastingManagerEventHandler for ManagerEventHandler {
+//     fn device_added(&self, device: Arc<dyn CastingDevice>) {
+//         info!("Device added: {}", device.name());
+//     }
 
-    fn device_removed(&self, device: Arc<dyn CastingDevice>) {
-        info!("Device removed: {}", device.name());
-    }
+//     fn device_removed(&self, device: Arc<dyn CastingDevice>) {
+//         info!("Device removed: {}", device.name());
+//     }
 
-    // fn device_connected(&self, device: Arc<dyn CastingDevice>) {
-    //     info!("Device connected: {}", device.name());
-    // }
+//     fn device_connected(&self, device: Arc<dyn CastingDevice>) {
+//         info!("Device connected: {}", device.name());
+//     }
 
-    // fn device_failed_to_run(&self,device:Arc<dyn CastingDevice>,reason:String) {
-    //     todo!()
-    // }
+//     fn device_failed_to_run(&self,device:Arc<dyn CastingDevice>,reason:String) {
+//         todo!()
+//     }
 
-    fn device_changed(&self, device: Arc<dyn CastingDevice>) {
-        todo!()
-    }
+//     fn device_changed(&self, device: Arc<dyn CastingDevice>) {
+//         todo!()
+//     }
 
-    // fn device_disconnected(&self,device:Arc<dyn CastingDevice>) {
-    //     todo!()
-    // }
-}
+//     fn device_disconnected(&self,device:Arc<dyn CastingDevice>) {
+//         todo!()
+//     }
+// }
 
 #[tokio::main]
 async fn main() {

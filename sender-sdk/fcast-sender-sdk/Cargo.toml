@@ -12,7 +12,7 @@ anyhow = "1.0.98"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 futures = "0.3.31"
-mdns-sd = "0.13.10"
+mdns-sd = { version = "0.13.10", optional = true }
 thiserror.workspace = true
 url = "2.5.4"
 base64 = { version = "0.22.1", optional = true }
@@ -55,7 +55,7 @@ env_logger = { workspace = true, optional = true }
 cfg_aliases = "0.2.1"
 
 [features]
-default = ["fcast", "chromecast", "airplay1", "airplay2", "http-file-server", "uniffi", "logging"]
+default = ["fcast", "chromecast", "airplay1", "airplay2", "http-file-server", "uniffi", "logging", "discovery"]
 fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64"]
 chromecast = ["dep:chromecast-protocol", "dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
 airplay1 = ["dep:serde", "dep:bitflags", "dep:hyper", "dep:http-body-util", "dep:hyper-util", "dep:uuid", "dep:bytes", "dep:http"]
@@ -63,6 +63,7 @@ airplay2 = ["dep:serde", "dep:serde_json", "dep:bitflags", "dep:uuid", "dep:num-
 http-file-server = ["dep:hyper-util",  "dep:hyper", "dep:http", "dep:http-body-util", "dep:bytes", "dep:uuid"]
 uniffi = ["dep:uniffi"]
 logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
+discovery = ["dep:mdns-sd"]
 
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
