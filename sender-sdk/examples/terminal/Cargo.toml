@@ -1,11 +1,11 @@
 [package]
 name = "terminal"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 # fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["airplay2", "chromecast", "fcast"] }
 fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["airplay2"] }
-env_logger = "0.11.8"
-log = "0.4.27"
+env_logger.workspace = true
+log.workspace = true
 tokio.workspace = true

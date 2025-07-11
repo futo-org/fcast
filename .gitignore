@@ -8,3 +8,4 @@ node_modules/
 .secure_files/
 
 /target
+/flake*
