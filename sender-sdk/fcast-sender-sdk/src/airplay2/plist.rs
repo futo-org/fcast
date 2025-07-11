@@ -183,6 +183,8 @@ pub enum PlistParseError {
     ExpectedReal,
     #[error("out of bounds")]
     OutOfBounds,
+    #[error("first object is out of bounds")]
+    StartObjectOob,
 }
 
 struct PlistParser<'a> {
@@ -194,17 +196,19 @@ struct PlistParser<'a> {
 }
 
 impl<'a> PlistParser<'a> {
-    pub fn new(plist: &'a [u8], trailer: Trailer) -> Self {
+    pub fn new(plist: &'a [u8], trailer: Trailer) -> Result<Self, PlistParseError> {
         let object_idx = trailer.offset_table_start + trailer.top_object_offset;
-        assert!(object_idx < plist.len() as u64); // TODO: return error
+        if object_idx >= plist.len() as u64 {
+            return Err(PlistParseError::StartObjectOob);
+        }
 
-        Self {
+        Ok(Self {
             plist,
             trailer,
             object_idx: object_idx as usize,
             parsed_objects: 0,
             object_end: 0,
-        }
+        })
     }
 
     fn parse_object_ref(&self, idx: usize) -> Result<usize, PlistParseError> {
@@ -254,7 +258,9 @@ impl<'a> PlistParser<'a> {
 
     fn parse_uid(&mut self, idx: usize) -> Result<Object, PlistParseError> {
         let (marker_hi, marker_lo) = self.marker(idx);
-        assert!(marker_hi == UID_MARKER); // TODO: error
+        if marker_hi != UID_MARKER {
+            return Err(PlistParseError::UnknownObjectType);
+        }
         let n = 2u8.pow(marker_lo as u32);
         let idx = idx + 1 + n as usize;
         self.object_end = idx;
@@ -479,7 +485,7 @@ pub fn info_from_plist(plist: &[u8]) -> Result<InfoPlist, PlistParseError> {
     reader.read_version()?;
     let trailer = reader.read_trailer()?;
     let mut info = InfoPlist::default();
-    let mut parser = PlistParser::new(plist, trailer);
+    let mut parser = PlistParser::new(plist, trailer)?;
     let parsed = parser.parse()?;
     for obj in parsed {
         if let Object::Dict(items) = obj {
@@ -519,7 +525,7 @@ mod tests {
         ($plist:expr) => {{
             let reader = PlistReader::new(&$plist);
             let trailer = reader.read_trailer().unwrap();
-            let mut parser = PlistParser::new(&$plist, trailer);
+            let mut parser = PlistParser::new(&$plist, trailer).unwrap();
             parser.parse()
         }};
     }
