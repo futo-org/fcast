@@ -6,6 +6,10 @@ pub mod protos {
     include!(concat!(env!("OUT_DIR"), "/protos.rs"));
 }
 
+pub const HEARTBEAT_NAMESPACE: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
+pub const RECEIVER_NAMESPACE: &str = "urn:x-cast:com.google.cast.receiver";
+pub const MEDIA_NAMESPACE: &str = "urn:x-cast:com.google.cast.media";
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Volume {
     /// Current stream volume level as a value between 0.0 and 1.0 where 1.0 is the maximum volume.
@@ -204,7 +208,7 @@ pub mod namespaces {
 
     impl Namespace for Heartbeat {
         fn name(&self) -> &'static str {
-            "urn:x-cast:com.google.cast.tp.heartbeat"
+            HEARTBEAT_NAMESPACE
         }
     }
 
@@ -246,7 +250,7 @@ pub mod namespaces {
 
     impl Namespace for Receiver {
         fn name(&self) -> &'static str {
-            "urn:x-cast:com.google.cast.receiver"
+            RECEIVER_NAMESPACE
         }
     }
 
@@ -376,7 +380,7 @@ pub mod namespaces {
 
     impl Namespace for Media {
         fn name(&self) -> &'static str {
-            "urn:x-cast:com.google.cast.media"
+            MEDIA_NAMESPACE
         }
     }
 }

@@ -7,7 +7,7 @@ use crate::{
     AsyncRuntime, AsyncRuntimeError, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
-use chromecast_protocol::namespaces;
+use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use chromecast_protocol::{self as protocol, prost::Message, protos};
 use futures::StreamExt;
 use log::{debug, error, info, warn};
@@ -350,7 +350,7 @@ impl InnerDevice {
                     }
                     let json_payload = packet.payload_utf8();
                     match packet.namespace.as_str() {
-                        "urn:x-cast:com.google.cast.tp.heartbeat" => {
+                        HEARTBEAT_NAMESPACE => {
                             let msg: namespaces::Heartbeat = json::from_str(json_payload)?;
                             match msg {
                                 namespaces::Heartbeat::Ping => {
@@ -364,7 +364,7 @@ impl InnerDevice {
                                 namespaces::Heartbeat::Pong => (),
                             }
                         }
-                        "urn:x-cast:com.google.cast.receiver" => {
+                        RECEIVER_NAMESPACE => {
                             let msg: namespaces::Receiver = json::from_str(json_payload)?;
                             match msg {
                                 namespaces::Receiver::Status { status, .. } => {
@@ -417,7 +417,7 @@ impl InnerDevice {
                                 _ => debug!("Ignored receiver message: {msg:?}"),
                             }
                         }
-                        "urn:x-cast:com.google.cast.media" => {
+                        MEDIA_NAMESPACE => {
                             let msg = match json::from_str::<namespaces::Media>(json_payload) {
                                 Ok(msg) => msg,
                                 Err(err) => {
