@@ -1,6 +1,6 @@
+package com.futo.fcast.receiver
+
 import android.util.Log
-import com.futo.fcast.receiver.FCastSession
-import com.futo.fcast.receiver.NetworkService
 import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer

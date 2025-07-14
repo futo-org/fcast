@@ -1,6 +1,5 @@
 package com.futo.fcast.receiver
 
-import WebSocketListenerService
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -40,14 +39,14 @@ class DiscoveryService(private val _context: Context) {
 
         try {
             _nsdManager?.unregisterService(_registrationListenerTcp)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to unregister TCP Listener.");
+        } catch (_: Throwable) {
+            Log.e(TAG, "Failed to unregister TCP Listener.")
         }
 
         try {
             _nsdManager?.unregisterService(_registrationListenerWs)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to unregister TCP Listener.");
+        } catch (_: Throwable) {
+            Log.e(TAG, "Failed to unregister TCP Listener.")
         }
 
         _nsdManager = null

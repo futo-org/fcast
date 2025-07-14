@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">FCast-Empfänger</string>
+    <string name="general_failure">Der Vorgang ist auf allgemeine Weise fehlgeschlagen</string>
+    <string name="aborted">Der Vorgang ist fehlgeschlagen, da er aktiv abgebrochen wurde</string>
+    <string name="blocked">Der Vorgang ist fehlgeschlagen, weil er blockiert wurde</string>
+    <string name="conflict">Der Vorgang ist fehlgeschlagen, da er mit einem anderen Paket, das bereits auf dem Gerät installiert ist, in Konflikt steht (oder inkonsistent ist).</string>
+    <string name="incompatible">Der Vorgang ist fehlgeschlagen, da er grundsätzlich nicht mit diesem Gerät kompatibel ist</string>
+    <string name="invalid">Der Vorgang ist fehlgeschlagen, da eine oder mehrere APKs ungültig waren</string>
+    <string name="not_enough_storage">Der Vorgang ist aufgrund von Speicherproblemen fehlgeschlagen</string>
+    <string name="downloading_update">Update wird heruntergeladen…</string>
+    <string name="installing_update">Update wird installiert…</string>
+    <string name="success">Erfolg</string>
+    <string name="failed_to_update_with_error">Paket konnte nicht aktualisiert werden. Fehler</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">Für den FCast-Receiver ist ein Update verfügbar. Möchten Sie ein Update durchführen?</string>
+    <string name="never">Niemals</string>
+    <string name="close">Schließen</string>
+    <string name="update">Aktualisieren</string>
+    <string name="checking_for_updates">Suche nach Updates…</string>
+    <string name="no_updates_available">Keine Updates verfügbar</string>
+    <string name="permission_dialog_title">Berechtigung für das Systemwarnungsfenster</string>
+    <string name="permission_dialog_message">Diese App benötigt die Berechtigung „Systemwarnfenster“, um Inhalte über anderen Apps anzuzeigen. Bitte erteilen Sie die Berechtigung.</string>
+    <string name="permission_dialog_positive_button">Erlauben</string>
+    <string name="permission_dialog_negative_button">Stornieren</string>
+    <string name="waiting_for_media">Warten auf Medien</string>
+</resources>

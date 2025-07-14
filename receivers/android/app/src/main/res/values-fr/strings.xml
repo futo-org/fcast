@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Récepteur FCast</string>
+    <string name="general_failure">L\'opération a échoué de manière générique</string>
+    <string name="aborted">L\'opération a échoué car elle a été activement interrompue</string>
+    <string name="blocked">L\'opération a échoué car elle a été bloquée</string>
+    <string name="conflict">L\'opération a échoué car elle est en conflit (ou est incohérente avec) avec un autre package déjà installé sur l\'appareil</string>
+    <string name="incompatible">L\'opération a échoué car elle est fondamentalement incompatible avec cet appareil</string>
+    <string name="invalid">L\'opération a échoué car un ou plusieurs APK n\'étaient pas valides</string>
+    <string name="not_enough_storage">L\'opération a échoué en raison de problèmes de stockage</string>
+    <string name="downloading_update">Téléchargement de la mise à jour…</string>
+    <string name="installing_update">Installation de la mise à jour…</string>
+    <string name="success">Succès</string>
+    <string name="failed_to_update_with_error">Échec de la mise à jour du package avec erreur</string>
+    <string name="there_is_an_update_available_do_you_wish_to_update">Une mise à jour est disponible pour le récepteur FCast, souhaitez-vous effectuer la mise à jour ?</string>
+    <string name="never">Jamais</string>
+    <string name="close">Fermer</string>
+    <string name="update">Mise à jour</string>
+    <string name="checking_for_updates">Vérification des mises à jour…</string>
+    <string name="no_updates_available">Aucune mise à jour disponible</string>
+    <string name="permission_dialog_title">Autorisation de la fenêtre d\'alerte système</string>
+    <string name="permission_dialog_message">Cette application nécessite l\'autorisation de la fenêtre d\'alerte système pour afficher du contenu par-dessus d\'autres applications. Veuillez accorder cette autorisation.</string>
+    <string name="permission_dialog_positive_button">Permettre</string>
+    <string name="permission_dialog_negative_button">Annuler</string>
+    <string name="waiting_for_media">En attente des médias</string>
+</resources>

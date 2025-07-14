@@ -1,3 +1,5 @@
+package com.futo.fcast.receiver
+
 import org.java_websocket.WebSocket
 import java.io.IOException
 import java.io.OutputStream

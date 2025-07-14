@@ -1,8 +1,6 @@
 package com.futo.fcast.receiver
 
-import WebSocketListenerService
 import android.app.*
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -10,10 +8,8 @@ import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
-import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 class NetworkService : Service() {
@@ -48,7 +44,7 @@ class NetworkService : Service() {
                 description = descriptionText
             }
 
-            val notificationManager: NotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val notificationManager: NotificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
         }
 
@@ -72,7 +68,7 @@ class NetworkService : Service() {
                     try {
                         Log.i(TAG, "Sending version ${session.id}")
                         session.send(Opcode.Version, VersionMessage(2))
-                    } catch (e: Throwable) {
+                    } catch (_: Throwable) {
                         Log.e(TAG, "Failed to send version ${session.id}")
                     }
                 }
@@ -122,7 +118,7 @@ class NetworkService : Service() {
 
         try {
             _webSocketListenerService?.stop()
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             //Ignored
         } finally {
             _webSocketListenerService = null
@@ -193,7 +189,7 @@ class NetworkService : Service() {
                             .setAutoCancel(true)
                             .build()
 
-                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
                     }
                 } else {
