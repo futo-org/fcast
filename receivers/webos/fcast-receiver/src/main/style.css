@@ -1,3 +1,9 @@
+/* WebOS custom player styles */
+
+html {
+    overflow: hidden;
+}
+
 .card-title {
     font-family: InterBold;
 }
@@ -25,6 +31,14 @@
 .app-download {
     font-weight: bold;
     font-family: InterBold;
+}
+
+#ips {
+    gap: unset;
+}
+
+#ips-iface-icon {
+    margin-right: 15px;
 }
 
 #window-can-be-closed {

@@ -43,6 +43,21 @@ export class Main {
 
     private static windowVisible: boolean = false;
     private static windowType: string = 'main';
+    private static serviceChannelEvents = [
+        'toast',
+        'connect',
+        'disconnect',
+        'play',
+        'pause',
+        'resume',
+        'stop',
+        'seek',
+        'setvolume',
+        'setspeed',
+        'setplaylistitem',
+        'event_subscribed_keys_update'
+    ];
+    private static serviceChannelEventTimestamps: Map<string, number> = new Map();
 
     private static async play(message: PlayMessage) {
         Main.listeners.forEach(l => l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message)));
@@ -62,6 +77,9 @@ export class Main {
                 logger.info(`Launch response: ${JSON.stringify(response)}`);
                 logger.info(`Relaunching FCast Receiver with args: ${messageInfo.rendererEvent} ${JSON.stringify(messageInfo.rendererMessage)}`);
             });
+
+            Main.windowVisible = true;
+            Main.windowType = 'player';
         }
     }
 
@@ -82,37 +100,124 @@ export class Main {
 
             Main.tcpListenerService = new TcpListenerService();
             Main.webSocketListenerService = new WebSocketListenerService();
-
             Main.emitter = new EventEmitter();
 
-            const voidCb = (message: any) => { message.respond({ returnValue: true, value: {} }); };
-            const objectCb = (message: any, value: any) => { message.respond({ returnValue: true, value: value }); };
+            service.register('service_channel', (message: any) => {
+                if (message.isSubscription) {
+                    Main.serviceChannelEvents.forEach((event) => {
+                        Main.emitter.on(event, (value) => {
+                            const timestamp = Date.now();
+                            const lastTimestamp = Main.serviceChannelEventTimestamps.get(event) ? Main.serviceChannelEventTimestamps.get(event) : -1;
 
-            registerService(service, 'toast', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'connect', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'disconnect', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'play', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'pause', (message: any) => { return voidCb.bind(this, message) });
-            registerService(service, 'resume', (message: any) => { return voidCb.bind(this, message) });
-            registerService(service, 'stop', (message: any) => { return voidCb.bind(this, message) });
-            registerService(service, 'seek', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'setvolume', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'setspeed', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'setplaylistitem', (message: any) => { return objectCb.bind(this, message) });
-            registerService(service, 'event_subscribed_keys_update', (message: any) => { return objectCb.bind(this, message) });
+                            if (lastTimestamp < timestamp) {
+                                Main.serviceChannelEventTimestamps.set(event, timestamp);
+                                message.respond({ returnValue: true, subscriptionId: message.payload.subscriptionId, timestamp: timestamp, event: event, value: value });
+                            }
+                        });
+                    });
+                }
+
+                message.respond({ returnValue: true, subscriptionId: message.payload.subscriptionId, timestamp: Date.now(), event: 'register', value: { subscribed: true }});
+            },
+            (message: any) => {
+                logger.info(`Canceled 'service_channel' service subscriber`);
+                    Main.serviceChannelEvents.forEach((event) => {
+                        Main.emitter.removeAllListeners(event);
+                    });
+
+                message.respond({ returnValue: true, value: {} });
+            });
+
+            service.register('app_channel', (message: any) => {
+                switch (message.payload.event) {
+                    case 'send_playback_error': {
+                        const value: PlaybackErrorMessage = message.payload.value;
+                        Main.listeners.forEach(l => l.send(Opcode.PlaybackError, value));
+                        break;
+                    }
+
+                    case 'send_playback_update': {
+                        const value: PlaybackUpdateMessage = message.payload.value;
+                        Main.listeners.forEach(l => l.send(Opcode.PlaybackUpdate, value));
+                        break;
+                    }
+
+                    case 'send_volume_update': {
+                        const value: VolumeUpdateMessage = message.payload.value;
+                        Main.cache.playerVolume = value.volume;
+                        Main.listeners.forEach(l => l.send(Opcode.VolumeUpdate, value));
+                        break;
+                    }
+
+                    case 'send_event': {
+                        const value: EventMessage = message.payload.value;
+                        Main.listeners.forEach(l => l.send(Opcode.Event, value));
+                        break;
+                    }
+
+                    case 'play_request': {
+                        const value: PlayMessage = message.payload.value.message;
+                        const playlistIndex: number = message.payload.value.playlistIndex;
+
+                        logger.debug(`Received play request for index ${playlistIndex}:`, value);
+                        value.url = Main.mediaCache?.has(playlistIndex) ? Main.mediaCache?.getUrl(playlistIndex) : value.url;
+                        Main.mediaCache?.cacheItems(playlistIndex);
+                        Main.play(value);
+                        break;
+                    }
+
+                    case 'get_sessions': {
+                        // Having to mix and match session ids and ip addresses until querying websocket remote addresses is fixed
+                        message.respond({
+                            returnValue: true,
+                            value: [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions())
+                        });
+                        return;
+                    }
+
+                    case 'network_changed': {
+                        logger.info('Network interfaces have changed', message);
+                        Main.discoveryService.stop();
+                        Main.discoveryService.start();
+
+                        if (message.payload.value.fallback) {
+                            message.respond({
+                                returnValue: true,
+                                value: getAllIPv4Addresses()
+                            });
+                        }
+                        else {
+                            message.respond({ returnValue: true, value: {} });
+                        }
+                        return;
+                    }
+
+                    case 'visibility_changed': {
+                        logger.info('Window visibility has changed', message.payload.value);
+                        Main.windowVisible = !message.payload.value.hidden;
+                        Main.windowType = message.payload.value.window;
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+
+                message.respond({ returnValue: true, value: { success: true } });
+            });
 
             Main.listeners = [Main.tcpListenerService, Main.webSocketListenerService];
             Main.listeners.forEach(l => {
-                l.emitter.on("play", (message: PlayMessage) => Main.play(message));
-                l.emitter.on("pause", () => Main.emitter.emit('pause'));
-                l.emitter.on("resume", () => Main.emitter.emit('resume'));
-                l.emitter.on("stop", () => Main.emitter.emit('stop'));
-                l.emitter.on("seek", (message: SeekMessage) => Main.emitter.emit('seek', message));
-                l.emitter.on("setvolume", (message: SetVolumeMessage) => {
+                l.emitter.on('play', (message: PlayMessage) => Main.play(message));
+                l.emitter.on('pause', () => Main.emitter.emit('pause'));
+                l.emitter.on('resume', () => Main.emitter.emit('resume'));
+                l.emitter.on('stop', () => Main.emitter.emit('stop'));
+                l.emitter.on('seek', (message: SeekMessage) => Main.emitter.emit('seek', message));
+                l.emitter.on('setvolume', (message: SetVolumeMessage) => {
                     Main.cache.playerVolume = message.volume;
                     Main.emitter.emit('setvolume', message);
                 });
-                l.emitter.on("setspeed", (message: SetSpeedMessage) => Main.emitter.emit('setspeed', message));
+                l.emitter.on('setspeed', (message: SetSpeedMessage) => Main.emitter.emit('setspeed', message));
 
                 l.emitter.on('connect', (message) => {
                     ConnectionMonitor.onConnect(l, message, l instanceof WebSocketListenerService, () => {
@@ -133,7 +238,7 @@ export class Main {
                 l.emitter.on('initial', (message) => {
                     logger.info(`Received 'Initial' message from sender: ${message}`);
                 });
-                l.emitter.on("setplaylistitem", (message: SetPlaylistItemMessage) => Main.emitter.emit('setplaylistitem', message));
+                l.emitter.on('setplaylistitem', (message: SetPlaylistItemMessage) => Main.emitter.emit('setplaylistitem', message));
                 l.emitter.on('subscribeevent', (message) => {
                     const subscribeData = l.subscribeEvent(message.sessionId, message.body.event);
 
@@ -149,75 +254,6 @@ export class Main {
                     }
                 });
                 l.start();
-            });
-
-            service.register("send_playback_error", (message: any) => {
-                const value: PlaybackErrorMessage = message.payload.error;
-                Main.listeners.forEach(l => l.send(Opcode.PlaybackError, value));
-                message.respond({ returnValue: true, value: { success: true } });
-            });
-
-            service.register("send_playback_update", (message: any) => {
-                // logger.info("In send_playback_update callback");
-                const value: PlaybackUpdateMessage = message.payload.update;
-                Main.listeners.forEach(l => l.send(Opcode.PlaybackUpdate, value));
-                message.respond({ returnValue: true, value: { success: true } });
-            });
-
-            service.register("send_volume_update", (message: any) => {
-                const value: VolumeUpdateMessage = message.payload.update;
-                Main.cache.playerVolume = value.volume;
-                Main.listeners.forEach(l => l.send(Opcode.VolumeUpdate, value));
-                message.respond({ returnValue: true, value: { success: true } });
-            });
-
-            service.register("send_event", (message: any) => {
-                const value: EventMessage = message.payload.event;
-                Main.listeners.forEach(l => l.send(Opcode.Event, value));
-                message.respond({ returnValue: true, value: { success: true } });
-            });
-
-            service.register("play_request", (message: any) => {
-                const value: PlayMessage = message.payload.message;
-                const playlistIndex: number = message.payload.playlistIndex;
-
-                logger.debug(`Received play request for index ${playlistIndex}:`, value);
-                value.url = Main.mediaCache?.has(playlistIndex) ? Main.mediaCache?.getUrl(playlistIndex) : value.url;
-                Main.mediaCache?.cacheItems(playlistIndex);
-                Main.play(value);
-
-                message.respond({ returnValue: true, value: { success: true } });
-            });
-
-            // Having to mix and match session ids and ip addresses until querying websocket remote addresses is fixed
-            service.register("get_sessions", (message: any) => {
-                message.respond({
-                    returnValue: true,
-                    value: [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions())
-                });
-            });
-
-            service.register("network_changed", (message: any) => {
-                logger.info('Network interfaces have changed', message);
-                Main.discoveryService.stop();
-                Main.discoveryService.start();
-
-                if (message.payload.fallback) {
-                    message.respond({
-                        returnValue: true,
-                        value: getAllIPv4Addresses()
-                    });
-                }
-                else {
-                    message.respond({ returnValue: true, value: {} });
-                }
-            });
-
-            service.register("visibility_changed", (message: any) => {
-                logger.info('Window visibility has changed', message.payload);
-                Main.windowVisible = !message.payload.hidden;
-                Main.windowType = message.payload.window;
-                message.respond({ returnValue: true, value: {} });
             });
         }
         catch (err)  {
@@ -249,23 +285,6 @@ export async function errorHandler(error: Error) {
 
     logger.error("Application error:", error);
     Main.emitter.emit('toast', { message: error, icon: ToastIcon.ERROR });
-}
-
-function registerService(service: Service, method: string, callback: (message: any) => any) {
-    let callbackRef = null;
-    service.register(method, (message: any) => {
-        if (message.isSubscription) {
-            callbackRef = callback(message);
-            Main.emitter.on(method, callbackRef);
-        }
-
-        message.respond({ returnValue: true, value: { subscribed: true }});
-    },
-    (message: any) => {
-        logger.info(`Canceled ${method} service subscriber`);
-        Main.emitter.removeAllListeners(method);
-        message.respond({ returnValue: true, value: message.payload });
-    });
 }
 
 // Fallback for simulator or TV devices that don't work with the luna://com.palm.connectionmanager/getStatus method

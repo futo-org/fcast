@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "vendor": "FUTO",
   "type": "web",
-  "main": "main_window/index.html",
+  "main": "index.html",
   "title": "FCast Receiver",
   "appDescription": "FCast Receiver",
   "icon": "assets/icons/icon.png",
