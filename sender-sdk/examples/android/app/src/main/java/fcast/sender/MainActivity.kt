@@ -32,20 +32,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import fcast.sender.ui.theme.FCastSenderTheme
-import uniffi.fcast.CastConnectionState
-import uniffi.fcast.CastingDevice
-import uniffi.fcast.CastingDeviceEventHandler
-import uniffi.fcast.CastingManager
-import uniffi.fcast.CastingManagerEventHandler
-import uniffi.fcast.GenericKeyEvent
-import uniffi.fcast.GenericMediaEvent
-import uniffi.fcast.PlaybackState
-import uniffi.fcast.Source
-import uniffi.fcast.initLogger
+import uniffi.fcast_sender_sdk.CastConnectionState
+import uniffi.fcast_sender_sdk.CastingDevice
+import uniffi.fcast_sender_sdk.CastingDeviceEventHandler
+import uniffi.fcast_sender_sdk.CastingManager
+import uniffi.fcast_sender_sdk.CastingManagerEventHandler
+import uniffi.fcast_sender_sdk.GenericKeyEvent
+import uniffi.fcast_sender_sdk.GenericMediaEvent
+import uniffi.fcast_sender_sdk.PlaybackState
+import uniffi.fcast_sender_sdk.Source
+import uniffi.fcast_sender_sdk.initLogger
+import uniffi.fcast_sender_sdk.IpAddr
+import uniffi.fcast_sender_sdk.urlFormatIpAddr
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import uniffi.fcast.IpAddr
-import uniffi.fcast.urlFormatIpAddr
 
 data class CastingState(
     var volume: MutableState<Double> = mutableDoubleStateOf(1.0),
@@ -243,7 +243,6 @@ class MainActivity : ComponentActivity() {
         try {
             val device = castingManager.handleUrl(url)
             castingManager.connectDevice(device, eventHandler)
-            activeCastingDevice.value = device
         } catch (e: Exception) {
             println("Failed to connect from url: $e")
         }

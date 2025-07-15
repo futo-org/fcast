@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#101010">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:layout_marginTop="12dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/text_devices"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/discovered_devices"
+                android:layout_marginStart="20dp"
+                android:textSize="14dp"
+                android:textColor="@color/white"
+                android:fontFamily="@font/inter_regular" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/available_devices"
+                    android:layout_marginStart="20dp"
+                    android:textSize="11dp"
+                    android:textColor="@color/gray_ac"
+                    android:fontFamily="@font/inter_medium" />
+
+                <ImageView
+                    android:id="@+id/image_loader"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:scaleType="fitCenter"
+                    app:srcCompat="@drawable/ic_loader_animated"
+                    android:layout_marginStart="5dp"/>
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <Space android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/button_close"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:text="@string/close"
+            android:textSize="14dp"
+            android:fontFamily="@font/inter_regular"
+            android:textColor="@color/colorPrimary"
+            android:background="@color/transparent" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/layout_discovered_devices"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/text_no_devices_found"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="10dp"
+            android:text="@string/no_devices_found_it_may_take_a_while_for_your_device_to_show_up_please_be_patient"
+            android:layout_marginTop="10dp"
+            android:layout_marginBottom="20dp"
+            android:layout_marginStart="20dp"
+            android:layout_marginEnd="20dp"
+            android:textColor="@color/gray_e0" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recycler_devices"
+            android:layout_width="match_parent"
+            android:layout_height="200dp"
+            android:layout_marginStart="20dp"
+            android:layout_marginEnd="20dp"
+            android:layout_marginTop="10dp"
+            android:layout_marginBottom="20dp"/>
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="1px"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:background="@color/gray_ac" />
+
+    <TextView
+        android:id="@+id/text_remembered_devices"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/unable_to_see_the_Device_youre_looking_for_try_add_the_device_manually"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:textSize="9dp"
+        android:ellipsize="end"
+        android:textColor="@color/gray_c3"
+        android:maxLines="3"
+        android:fontFamily="@font/inter_light"
+        android:layout_marginTop="12dp"/>
+
+    <LinearLayout
+        android:id="@+id/layout_remembered_devices_header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="20dp"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp">
+
+        <Space android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:id="@+id/button_qr"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="@drawable/background_border_2e_round_6dp"
+            android:gravity="center">
+
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                app:srcCompat="@drawable/ic_qr"
+                android:layout_marginStart="8dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/scan_qr"
+                android:textSize="12dp"
+                android:textColor="@color/white"
+                android:fontFamily="@font/inter_medium"
+                android:paddingTop="10dp"
+                android:paddingBottom="10dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="12dp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

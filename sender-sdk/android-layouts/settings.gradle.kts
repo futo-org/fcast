@@ -19,4 +19,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "fcast-android-sender-sdk"
+rootProject.name = "fcast-android-sender-sdk-layouts"
