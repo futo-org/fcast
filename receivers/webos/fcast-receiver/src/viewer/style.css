@@ -3,3 +3,11 @@
 html {
     overflow: hidden;
 }
+
+#toast-notification {
+    gap: unset;
+}
+
+#toast-text {
+    font-family: InterRegular;
+}

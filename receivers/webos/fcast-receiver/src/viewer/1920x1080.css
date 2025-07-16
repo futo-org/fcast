@@ -1,204 +1,30 @@
-
-/* @media only screen and ((max-width: 1919px) or (max-height: 1079px)) { */
-    .card {
-        padding: 15px;
-    }
-
-    .card-title {
-        line-height: 20px;
-        margin: 5px;
-        margin-bottom: 10px;
-    }
-
-    .card-title-separator {
-        margin: 3px 0px;
-    }
-
-    .iconSize {
-        width: 32px;
-        height: 32px;
-    }
-
-    #overlay {
-        gap: 12.5vw;
-        font-size: 20px;
-    }
-
-    #title-text {
-        font-size: 100px;
-    }
-
-    #title-icon {
-        width: 84px;
-        height: 84px;
-        margin-right: 15px;
-    }
-
-    #connection-status {
-        padding: 15px;
-    }
-
-    #connection-error-icon {
-        margin-top: 10px;
-    }
-
-    #connection-information-loading-text {
-        margin: 10px;
-    }
-
-    #scan-to-connect {
-        margin-top: 10px;
-    }
-
-    #qr-code {
-        width: 192px;
-        height: 192px;
-        margin: 15px auto;
-        padding: 12px;
-    }
-
-    #ips {
-        margin-top: 10px;
-    }
-
-    .ip-entry-text {
-        margin-top: 4px;
-        margin-bottom: 4px;
-    }
-
-    #window-can-be-closed {
-        margin-bottom: 15px;
-        font-size: 18px;
+/* @media only screen and ((max-width: 2559px) or (max-height: 1439px)) { */
+    #titleIcon {
+        width: 124px;
+        height: 124px;
     }
 
     .lds-ring {
-        width: 100px;
-        height: 100px;
+        width: 120px;
+        height: 120px;
     }
     .lds-ring div {
-        width: 84px;
-        height: 84px;
-    }
-
-    #connection-check {
-        width: 84px;
-        height: 84px;
-        margin: 24px;
+        width: 104px;
+        height: 104px;
     }
 
     #toast-notification {
-        padding: 8px;
-        top: -140px;
+        padding: 12px;
     }
 
     #toast-icon {
         width: 60px;
         height: 60px;
-        margin-right: 15px;
+        margin: 5px 5px;
+        margin-right: 10px;
     }
 
     #toast-text {
-        font-size: 20px;
+        font-size: 22px;
     }
 /* } */
-
-@media only screen and ((max-width: 1279px) or (max-height: 719px)) {
-    .card {
-        padding: 15px;
-    }
-
-    .card-title {
-        line-height: 18px;
-        margin: 5px;
-    }
-
-    .card-title-separator {
-        margin: 3px 0px;
-    }
-
-    .iconSize {
-        width: 24px;
-        height: 24px;
-    }
-
-    #overlay {
-        gap: 10vw;
-        font-size: 18px;
-    }
-
-    #title-text {
-        font-size: 80px;
-    }
-
-    #title-icon {
-        width: 64px;
-        height: 64px;
-        margin-right: 15px;
-    }
-
-    #connection-status {
-        padding: 15px;
-    }
-
-    #connection-error-icon {
-        margin-top: 10px;
-    }
-
-    #connection-information-loading-text {
-        margin: 10px;
-    }
-
-    #scan-to-connect {
-        margin-top: 10px;
-    }
-
-    #qr-code {
-        width: 128px;
-        height: 128px;
-        margin: 15px auto;
-        padding: 8px;
-    }
-
-    #ips {
-        margin-top: 10px;
-    }
-
-    .ip-entry-text {
-        margin-top: 1.5px;
-        margin-bottom: 1.5px;
-    }
-
-    #window-can-be-closed {
-        margin-bottom: 10px;
-        font-size: 16px;
-    }
-
-    .lds-ring {
-        width: 80px;
-        height: 80px;
-    }
-    .lds-ring div {
-        width: 64px;
-        height: 64px;
-    }
-
-    #connection-check {
-        width: 64px;
-        height: 64px;
-        margin: 20px;
-    }
-
-    #toast-notification {
-        padding: 4px;
-        top: -100px;
-    }
-
-    #toast-icon {
-        width: 40px;
-        height: 40px;
-    }
-
-    #toast-text {
-        font-size: 18px;
-    }
-}

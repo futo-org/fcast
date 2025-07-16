@@ -10,14 +10,6 @@ html {
 
 #overlay {
     font-family: InterRegular;
-    /* gap not supported in WebOS 6.0 */
-    gap: unset;
-}
-
-#main-view {
-    /* gap not supported in WebOS 6.0 */
-    gap: unset;
-    margin-right: 15vw;
 }
 
 #title-text {
@@ -33,6 +25,7 @@ html {
     font-family: InterBold;
 }
 
+/* gap not supported in WebOS 6.0 */
 #ips {
     gap: unset;
 }

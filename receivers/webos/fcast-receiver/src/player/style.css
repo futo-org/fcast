@@ -1,5 +1,9 @@
 /* WebOS custom player styles */
 
+html {
+    overflow: hidden;
+}
+
 .container {
     height: 240px;
 }
@@ -179,4 +183,12 @@
 
 #captions {
     display: none;
+}
+
+#toast-notification {
+    gap: unset;
+}
+
+#toast-text {
+    font-family: InterRegular;
 }
