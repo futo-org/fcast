@@ -89,29 +89,39 @@ export class ServiceManager {
 
 // CSS media queries do not work on older webOS versions...
 export function initializeWindowSizeStylesheet() {
-    const resolution = sessionStorage.getItem('resolution');
-
-    if (resolution) {
-        window.onload = () => {
-            if (resolution == '1920x1080') {
-                document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1920x1080.css" />');
-            }
-            else {
-                document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1280x720.css" />');
-            }
+    if (window.innerWidth !== 0 && window.innerHeight !== 0) {
+        if (window.innerWidth >= 1920 && window.innerHeight >= 1080) {
+            document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1920x1080.css" />');
+        }
+        else {
+            document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1280x720.css" />');
         }
     }
     else {
-        window.onresize = () => {
-            if (window.innerWidth >= 1920 && window.innerHeight >= 1080) {
-                sessionStorage.setItem('resolution', '1920x1080');
-                document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1920x1080.css" />');
+        const resolution = sessionStorage.getItem('resolution');
+
+        if (resolution) {
+            window.onload = () => {
+                if (resolution == '1920x1080') {
+                    document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1920x1080.css" />');
+                }
+                else {
+                    document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1280x720.css" />');
+                }
             }
-            else {
-                sessionStorage.setItem('resolution', '1280x720');
-                document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1280x720.css" />');
-            }
-        };
+        }
+        else {
+            window.onresize = () => {
+                if (window.innerWidth >= 1920 && window.innerHeight >= 1080) {
+                    sessionStorage.setItem('resolution', '1920x1080');
+                    document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1920x1080.css" />');
+                }
+                else {
+                    sessionStorage.setItem('resolution', '1280x720');
+                    document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="./1280x720.css" />');
+                }
+            };
+        }
     }
 }
 
