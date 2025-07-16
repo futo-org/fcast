@@ -29,6 +29,7 @@
     "webpack": "^5.99.6",
     "webpack-cli": "^6.0.1"
   },
+  "@comment dependencies.uuid": "Versions > 9.0.1 are broken on webOS",
   "dependencies": {
     "bufferutil": "^4.0.8",
     "dashjs": "^4.7.4",
