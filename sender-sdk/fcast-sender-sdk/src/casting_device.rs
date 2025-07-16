@@ -105,50 +105,18 @@ pub enum GenericMediaEvent {
     Changed,
 }
 
-macro_rules! unhandled {
-    ($name:expr) => {
-        log::debug!("Unhandled event: {}", $name);
-    };
-}
-
 #[allow(unused_variables)]
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait CastingDeviceEventHandler: Send + Sync {
-    fn connection_state_changed(&self, state: CastConnectionState) {
-        unhandled!("connection_state_changed");
-    }
-
-    fn volume_changed(&self, volume: f64) {
-        unhandled!("volume_changed");
-    }
-
-    fn time_changed(&self, time: f64) {
-        unhandled!("time_changed");
-    }
-
-    fn playback_state_changed(&self, state: PlaybackState) {
-        unhandled!("playback_state_changed");
-    }
-
-    fn duration_changed(&self, duration: f64) {
-        unhandled!("duration_changed");
-    }
-
-    fn speed_changed(&self, speed: f64) {
-        unhandled!("speed_changed");
-    }
-
-    fn source_changed(&self, source: Source) {
-        unhandled!("source_changed");
-    }
-
-    fn key_event(&self, event: GenericKeyEvent) {
-        unhandled!("key_event");
-    }
-
-    fn media_event(&self, event: GenericMediaEvent) {
-        unhandled!("media_event");
-    }
+    fn connection_state_changed(&self, state: CastConnectionState);
+    fn volume_changed(&self, volume: f64);
+    fn time_changed(&self, time: f64);
+    fn playback_state_changed(&self, state: PlaybackState);
+    fn duration_changed(&self, duration: f64);
+    fn speed_changed(&self, speed: f64);
+    fn source_changed(&self, source: Source);
+    fn key_event(&self, event: GenericKeyEvent);
+    fn media_event(&self, event: GenericMediaEvent);
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
