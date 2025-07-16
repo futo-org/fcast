@@ -109,6 +109,7 @@ try {
     };
 
     const launchHandler = () => {
+        // Launch handler not supported in simulator due to JSON parsing errors of launch parameters
         const params = window.webOSDev.launchParams();
         logger.info(`Main: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
 

@@ -20,6 +20,8 @@ import {
     formatDuration,
     skipBack,
     skipForward,
+    keyDownEventHandler,
+    keyUpEventHandler,
 } from 'common/player/Renderer';
 import { RemoteKeyCode } from 'lib/common';
 import * as common from 'lib/common';
@@ -27,6 +29,9 @@ import * as common from 'lib/common';
 const captionsBaseHeightCollapsed = 150;
 const captionsBaseHeightExpanded = 320;
 const captionsLineHeight = 68;
+
+window.parent.webOSApp.setKeyDownHandler(keyDownEventHandler);
+window.parent.webOSApp.setKeyUpHandler(keyUpEventHandler);
 
 export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean {
     let handledCase = false;

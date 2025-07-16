@@ -1,6 +1,9 @@
-import { PlayerControlEvent, playerCtrlStateUpdate, onPlay, onPlayPlaylist, setPlaylistItem, playlistIndex } from 'common/viewer/Renderer';
+import { PlayerControlEvent, playerCtrlStateUpdate, onPlay, onPlayPlaylist, setPlaylistItem, playlistIndex, keyDownEventHandler, keyUpEventHandler } from 'common/viewer/Renderer';
 import { RemoteKeyCode } from 'lib/common';
 import * as common from 'lib/common';
+
+window.parent.webOSApp.setKeyDownHandler(keyDownEventHandler);
+window.parent.webOSApp.setKeyUpHandler(keyUpEventHandler);
 
 export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean {
     let handledCase = false;

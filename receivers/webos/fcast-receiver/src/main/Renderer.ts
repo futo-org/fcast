@@ -1,4 +1,4 @@
-import 'common/main/Renderer';
+import  { keyDownEventHandler, keyUpEventHandler } from 'common/main/Renderer';
 import { RemoteKeyCode } from 'lib/common';
 import * as common from 'lib/common';
 
@@ -28,6 +28,9 @@ backgroundVideo.onplaying = () => {
     backgroundVideoLoaded = true;
     backgroundVideo.onplaying = null;
 };
+
+window.parent.webOSApp.setKeyDownHandler(keyDownEventHandler);
+window.parent.webOSApp.setKeyUpHandler(keyUpEventHandler);
 
 export function onQRCodeRendered() {
     qrCodeRendered = true;

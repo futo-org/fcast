@@ -329,7 +329,7 @@ document.onmousemove = () => {
     uiHideTimer.start();
 };
 
-document.addEventListener('keydown', (event: KeyboardEvent) => {
+function keyDownEventHandler(event: KeyboardEvent) {
     // logger.info("KeyDown", event);
     let result = targetKeyDownEventListener(event);
     let handledCase = result.handledCase;
@@ -379,8 +379,9 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
     if (window.targetAPI.getSubscribedKeys().keyDown.has(key)) {
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, key, event.repeat, handledCase)));
     }
-});
-document.addEventListener('keyup', (event: KeyboardEvent) => {
+}
+
+function keyUpEventHandler(event: KeyboardEvent) {
     // logger.info("KeyUp", event);
     let result = targetKeyUpEventListener(event);
     let handledCase = result.handledCase;
@@ -398,7 +399,10 @@ document.addEventListener('keyup', (event: KeyboardEvent) => {
     if (window.targetAPI.getSubscribedKeys().keyUp.has(key)) {
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, key, event.repeat, handledCase)));
     }
-});
+}
+
+document.addEventListener('keydown', keyDownEventHandler);
+document.addEventListener('keyup', keyUpEventHandler);
 
 export {
     PlayerControlEvent,
@@ -411,4 +415,6 @@ export {
     onPlayPlaylist,
     playerCtrlStateUpdate,
     setPlaylistItem,
+    keyDownEventHandler,
+    keyUpEventHandler,
 };
