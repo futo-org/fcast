@@ -1,15 +1,11 @@
-use std::{
-    collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
-    sync::{
-        atomic::{AtomicU16, Ordering},
-        Arc,
-    },
-};
-
 #[cfg(any_protocol)]
 use crate::casting_device::CastProtocolType;
+#[cfg(all(feature = "discovery", any_protocol))]
 use anyhow::Context;
+#[cfg(any(feature = "http-file-server", all(feature = "discovery", any_protocol)))]
+use std::collections::HashMap;
+#[cfg(any(any_protocol, feature = "http-file-server"))]
+use std::sync::Arc;
 
 #[cfg(feature = "http-file-server")]
 mod http_file_server_prelude {
@@ -22,6 +18,11 @@ mod http_file_server_prelude {
         server::conn::auto::Builder,
     };
     pub use std::convert::Infallible;
+    pub use std::{
+        net::{Ipv4Addr, SocketAddr},
+        sync::atomic::{AtomicU16, Ordering},
+    };
+    pub use tokio::net::TcpListener;
     pub use uuid::Uuid;
 
     pub fn empty_response(
@@ -36,15 +37,15 @@ mod http_file_server_prelude {
 #[cfg(feature = "http-file-server")]
 use http_file_server_prelude::*;
 
-use log::{debug, error};
+use log::error;
+#[cfg(any(feature = "http-file-server", any_protocol))]
+use log::debug;
 #[cfg(all(feature = "discovery", any_protocol))]
 use mdns_sd::ServiceEvent;
 #[cfg(feature = "fcast")]
 use serde::Deserialize;
-use tokio::{
-    net::TcpListener,
-    sync::mpsc::{Receiver, Sender},
-};
+#[cfg(any(any_protocol, feature = "http-file-server"))]
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::StreamExt;
 
 #[cfg(feature = "airplay1")]
@@ -56,13 +57,13 @@ use crate::chromecast::ChromecastCastingDevice;
 #[cfg(feature = "fcast")]
 use crate::fcast::FCastCastingDevice;
 #[cfg(any_protocol)]
-use crate::{
-    casting_device::{CastingDevice, CastingDeviceEventHandler, CastingDeviceInfo},
-    IpAddr,
-};
+use crate::casting_device::{CastingDevice, CastingDeviceEventHandler, CastingDeviceInfo};
+#[cfg(any_protocol)]
+use crate::IpAddr;
+#[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
 use crate::{AsyncRuntime, AsyncRuntimeError};
 
-#[cfg(feature = "chromecast")]
+#[cfg(all(feature = "discovery", feature = "chromecast"))]
 const CHROMECAST_FRIENDLY_NAME_TXT: &str = "fn";
 
 /// http://:{port}/{location}
@@ -102,6 +103,7 @@ pub trait CastingManagerEventHandler: Send + Sync {
     fn device_changed(&self, device: Arc<dyn CastingDevice>);
 }
 
+#[cfg(any(any_protocol, feature = "http-file-server"))]
 enum Command {
     #[cfg(any_protocol)]
     Connect {
@@ -117,17 +119,21 @@ enum Command {
 struct InnerManager {
     #[cfg(all(feature = "discovery", any_protocol))]
     event_handler: Arc<dyn CastingManagerEventHandler>,
+    #[cfg(feature = "http-file-server")]
     file_store_port: Arc<AtomicU16>,
 }
 
 impl InnerManager {
     fn new(
-        #[cfg(all(feature = "discovery", any_protocol))] event_handler: Arc<dyn CastingManagerEventHandler>,
-        file_store_port: Arc<AtomicU16>,
+        #[cfg(all(feature = "discovery", any_protocol))] event_handler: Arc<
+            dyn CastingManagerEventHandler,
+        >,
+        #[cfg(feature = "http-file-server")] file_store_port: Arc<AtomicU16>,
     ) -> Self {
         Self {
             #[cfg(all(feature = "discovery", any_protocol))]
             event_handler,
+            #[cfg(feature = "http-file-server")]
             file_store_port,
         }
     }
@@ -170,7 +176,10 @@ impl InnerManager {
         }
     }
 
-    async fn work(self, cmd_rx: Receiver<Command>) -> anyhow::Result<()> {
+    async fn work(
+        self,
+        #[cfg(any(any_protocol, feature = "http-file-server"))] cmd_rx: Receiver<Command>,
+    ) -> anyhow::Result<()> {
         #[cfg(all(feature = "discovery", any_protocol))]
         let mdns = mdns_sd::ServiceDaemon::new().context("Failed to crate mdns ServiceDaemon")?;
 
@@ -228,6 +237,7 @@ impl InnerManager {
         enum InternalMessage {
             #[cfg(feature = "http-file-server")]
             HttpRequester((tokio::net::TcpStream, std::net::SocketAddr)),
+            #[cfg(any(any_protocol, feature = "http-file-server"))]
             Cmd(Command),
             #[cfg(all(feature = "discovery", feature = "fcast"))]
             FCastServiceEvent(ServiceEvent),
@@ -237,8 +247,12 @@ impl InnerManager {
             AirPlayServiceEvent(ServiceEvent),
         }
 
+        let msg_stream = futures::stream::unfold((), async |_| None::<(InternalMessage, ())>);
+        tokio::pin!(msg_stream);
+
+        #[cfg(any(any_protocol, feature = "http-file-server"))]
         #[allow(unused_mut)]
-        let mut msg_stream =
+        let mut cmd_stream =
             futures::stream::unfold(cmd_rx, |mut cmd_rx: Receiver<Command>| async move {
                 match cmd_rx.recv().await {
                     Some(cmd) => Some((InternalMessage::Cmd(cmd), cmd_rx)),
@@ -248,7 +262,13 @@ impl InnerManager {
                     }
                 }
             });
+        #[cfg(any(any_protocol, feature = "http-file-server"))]
+        tokio::pin!(cmd_stream);
+        #[cfg(any(any_protocol, feature = "http-file-server"))]
+        #[allow(unused_mut)]
+        let mut msg_stream = msg_stream.merge(cmd_stream);
 
+        #[cfg(feature = "http-file-server")]
         #[cfg(feature = "http-file-server")]
         let http_conn_stream =
             futures::stream::unfold(tcp_listener, |tcp_listener: TcpListener| async move {
@@ -260,6 +280,11 @@ impl InnerManager {
                     }
                 }
             });
+        #[cfg(feature = "http-file-server")]
+        tokio::pin!(http_conn_stream);
+        #[cfg(feature = "http-file-server")]
+        #[allow(unused_mut)]
+        let mut msg_stream = msg_stream.merge(http_conn_stream);
 
         #[cfg(all(feature = "discovery", feature = "fcast"))]
         let fcast_mdns_stream = futures::stream::unfold(
@@ -280,6 +305,11 @@ impl InnerManager {
                 }
             },
         );
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
+        tokio::pin!(fcast_mdns_stream);
+        #[cfg(all(feature = "discovery", feature = "fcast"))]
+        #[allow(unused_mut)]
+        let mut msg_stream = msg_stream.merge(fcast_mdns_stream);
 
         #[cfg(all(feature = "discovery", feature = "chromecast"))]
         let chromecast_mdns_stream = futures::stream::unfold(
@@ -292,6 +322,11 @@ impl InnerManager {
                 ))
             },
         );
+        #[cfg(all(feature = "discovery", feature = "chromecast"))]
+        tokio::pin!(chromecast_mdns_stream);
+        #[cfg(all(feature = "discovery", feature = "chromecast"))]
+        #[allow(unused_mut)]
+        let mut msg_stream = msg_stream.merge(chromecast_mdns_stream);
 
         #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
         let airplay_mdns_stream = futures::stream::unfold(
@@ -304,28 +339,10 @@ impl InnerManager {
                 ))
             },
         );
-
-        tokio::pin!(msg_stream);
-        #[cfg(feature = "http-file-server")]
-        tokio::pin!(http_conn_stream);
-        #[cfg(all(feature = "discovery", feature = "fcast"))]
-        tokio::pin!(fcast_mdns_stream);
-        #[cfg(all(feature = "discovery", feature = "chromecast"))]
-        tokio::pin!(chromecast_mdns_stream);
         #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
         tokio::pin!(airplay_mdns_stream);
-
-        #[allow(unused_mut)]
-        #[cfg(feature = "http-file-server")]
-        let mut msg_stream = msg_stream.merge(http_conn_stream);
-        #[allow(unused_mut)]
-        #[cfg(all(feature = "discovery", feature = "fcast"))]
-        let mut msg_stream = msg_stream.merge(fcast_mdns_stream);
-        #[allow(unused_mut)]
-        #[cfg(all(feature = "discovery", feature = "chromecast"))]
-        let mut msg_stream = msg_stream.merge(chromecast_mdns_stream);
-        #[allow(unused_mut)]
         #[cfg(all(feature = "discovery", any(feature = "airplay1", feature = "airplay2")))]
+        #[allow(unused_mut)]
         let mut msg_stream = msg_stream.merge(airplay_mdns_stream);
 
         while let Some(msg) = msg_stream.next().await {
@@ -388,6 +405,7 @@ impl InnerManager {
                         }
                     });
                 }
+                #[cfg(any(any_protocol, feature = "http-file-server"))]
                 InternalMessage::Cmd(cmd) => match cmd {
                     #[cfg(any_protocol)]
                     Command::Connect {
@@ -583,6 +601,7 @@ pub enum CastingManagerError {
     NoServices,
     #[error("No valid addresses found in network config")]
     NoAddresses,
+    #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
     #[error("Failed to create async runtime")]
     AsyncRuntime(#[from] AsyncRuntimeError),
     #[error("File server is not running")]
@@ -591,8 +610,11 @@ pub enum CastingManagerError {
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct CastingManager {
+    #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
     runtime: AsyncRuntime,
+    #[cfg(any(any_protocol, feature = "http-file-server"))]
     cmd_tx: Sender<Command>,
+    #[cfg(feature = "http-file-server")]
     file_store_port: Arc<AtomicU16>,
 }
 
@@ -724,28 +746,76 @@ impl CastingManager {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingManager {
     /// Arguments:
-    /// * `manager_event_handler`: The event handler used to communicate changes from the background
-    ///   thread
+    /// * `manager_event_handler`: The event handler used to communicate changes from the background thread
     #[cfg_attr(feature = "uniffi", uniffi::constructor)]
-    pub fn new() -> Result<Self, AsyncRuntimeError> {
+    pub fn new() -> Result<Self, CastingManagerError> {
         // TODO: is 1 thread enough?
+        #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
         let runtime = AsyncRuntime::new(Some(1), "casting-manager-async-runtime")?;
 
+        #[cfg(any(any_protocol, feature = "http-file-server"))]
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<Command>(50);
 
+        #[cfg(feature = "http-file-server")]
         let file_store_port = Arc::new(AtomicU16::new(0));
 
+        #[cfg(feature = "http-file-server")]
         let file_store_port_clone = Arc::clone(&file_store_port);
+        #[cfg(feature = "http-file-server")]
         runtime.spawn(async move {
-            if let Err(err) = InnerManager::new(file_store_port_clone).work(cmd_rx).await {
+            if let Err(err) = InnerManager::new(
+                #[cfg(feature = "http-file-server")]
+                file_store_port_clone,
+            )
+            .work(
+                #[cfg(any(any_protocol, feature = "http-file-server"))]
+                cmd_rx,
+            )
+            .await
+            {
                 error!("Error occurred when working: {err}");
             }
         });
 
         Ok(Self {
+            #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
             runtime,
+            #[cfg(any(any_protocol, feature = "http-file-server"))]
             cmd_tx,
+            #[cfg(feature = "http-file-server")]
             file_store_port,
+        })
+    }
+}
+
+#[cfg(any_protocol)]
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+impl CastingManager {
+    pub fn connect_device(
+        &self,
+        device: Arc<dyn CastingDevice>,
+        event_handler: Arc<dyn CastingDeviceEventHandler>,
+    ) -> Result<(), CastingManagerError> {
+    self.send_command(Command::Connect {
+            device,
+            event_handler,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn device_from_casting_device_info(
+        &self,
+        info: CastingDeviceInfo,
+    ) -> Result<Arc<dyn CastingDevice>, CastingManagerError> {
+        Ok(match info.r#type {
+            #[cfg(feature = "chromecast")]
+            CastProtocolType::Chromecast => Arc::new(ChromecastCastingDevice::new(info)?),
+            #[cfg(feature = "airplay1")]
+            CastProtocolType::AirPlay => Arc::new(AirPlay1CastingDevice::new(info)?),
+            #[cfg(feature = "airplay2")]
+            CastProtocolType::AirPlay2 => Arc::new(AirPlay2CastingDevice::new(info)?),
+            #[cfg(feature = "fcast")]
+            CastProtocolType::FCast => Arc::new(FCastCastingDevice::new(info)?),
         })
     }
 }
@@ -754,20 +824,22 @@ impl CastingManager {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingManager {
     /// Arguments:
-    /// * `manager_event_handler`: The event handler used to communicate changes from the background
-    ///   thread
+    /// * `manager_event_handler`: The event handler used to communicate changes from the background thread
     #[cfg_attr(feature = "uniffi", uniffi::constructor)]
     pub fn new(
         manager_event_handler: Arc<dyn CastingManagerEventHandler>,
-    ) -> Result<Self, AsyncRuntimeError> {
+    ) -> Result<Self, CastingManagerError> {
         // TODO: is 1 thread enough?
+        #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
         let runtime = AsyncRuntime::new(Some(1), "casting-manager-async-runtime")?;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<Command>(50);
 
         let file_store_port = Arc::new(AtomicU16::new(0));
 
+        #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
         let file_store_port_clone = Arc::clone(&file_store_port);
+        #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
         runtime.spawn(async move {
             if let Err(err) = InnerManager::new(manager_event_handler, file_store_port_clone)
                 .work(cmd_rx)
@@ -778,41 +850,15 @@ impl CastingManager {
         });
 
         Ok(Self {
+            #[cfg(any(all(any_protocol, feature = "discovery"), feature = "http-file-server"))]
             runtime,
             cmd_tx,
             file_store_port,
         })
     }
-
-    /// Try to connect to a device.
-    pub fn connect_device(
-        &self,
-        device: Arc<dyn CastingDevice>,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
-    ) -> Result<(), CastingManagerError> {
-        self.send_command(Command::Connect {
-            device,
-            event_handler,
-        })
-    }
-
-    fn device_from_casting_device_info(
-        &self,
-        info: CastingDeviceInfo,
-    ) -> Result<Arc<dyn CastingDevice>, CastingManagerError> {
-        match info.r#type {
-            #[cfg(feature = "chromecast")]
-            CastProtocolType::Chromecast => Ok(Arc::new(ChromecastCastingDevice::new(info)?)),
-            #[cfg(feature = "airplay1")]
-            CastProtocolType::AirPlay => Ok(Arc::new(AirPlay1CastingDevice::new(info)?)),
-            #[cfg(feature = "airplay2")]
-            CastProtocolType::AirPlay2 => Ok(Arc::new(AirPlay2CastingDevice::new(info)?)),
-            #[cfg(feature = "fcast")]
-            CastProtocolType::FCast => Ok(Arc::new(FCastCastingDevice::new(info)?)),
-        }
-    }
 }
 
+#[cfg(any(any_protocol, feature = "http-file-server"))]
 impl CastingManager {
     fn send_command(&self, cmd: Command) -> Result<(), CastingManagerError> {
         let tx = self.cmd_tx.clone();

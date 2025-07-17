@@ -7,8 +7,8 @@ use crate::{
     AsyncRuntime, AsyncRuntimeError, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
-use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use chromecast_protocol::{self as protocol, prost::Message, protos};
+use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use futures::StreamExt;
 use log::{debug, error, info, warn};
 use rustls_pki_types::ServerName;

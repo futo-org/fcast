@@ -4,15 +4,18 @@ pub mod airplay1;
 pub mod airplay2;
 #[cfg(any(feature = "airplay1", feature = "airplay2"))]
 pub(crate) mod airplay_common;
+#[cfg(any(feature = "discovery", feature = "http-file-server"))]
 pub mod casting_manager;
 #[cfg(feature = "chromecast")]
 pub mod chromecast;
 #[cfg(feature = "fcast")]
 pub mod fcast;
+#[cfg(feature = "airplay2")]
 pub(crate) mod utils;
 
-use log::{error, info};
+#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
 use std::future::Future;
+#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
 use tokio::runtime;
 #[cfg(any_protocol)]
 pub mod casting_device;
@@ -21,6 +24,7 @@ mod any_protocol_prelude {
     pub use anyhow::{anyhow, bail};
     pub use std::{net::SocketAddr, str::FromStr, time::Duration};
     pub use tokio::net::TcpStream;
+    pub use log::{error, info};
 }
 
 #[cfg(any_protocol)]
@@ -29,6 +33,7 @@ use any_protocol_prelude::*;
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
 
+#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
 #[derive(thiserror::Error, Debug)]
@@ -37,11 +42,13 @@ pub enum AsyncRuntimeError {
     FailedToBuild(#[from] std::io::Error),
 }
 
+#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
 pub(crate) enum AsyncRuntime {
     Handle(runtime::Handle),
     Runtime(runtime::Runtime),
 }
 
+#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
 impl AsyncRuntime {
     pub fn new(threads: Option<usize>, name: &str) -> Result<Self, AsyncRuntimeError> {
         Ok(match runtime::Handle::try_current() {
@@ -123,6 +130,7 @@ pub enum ParseIpAddrError {
     FailedToParse(#[from] std::net::AddrParseError),
 }
 
+#[allow(dead_code)]
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 fn try_ip_addr_from_str(s: &str) -> Result<IpAddr, ParseIpAddrError> {
@@ -131,6 +139,7 @@ fn try_ip_addr_from_str(s: &str) -> Result<IpAddr, ParseIpAddrError> {
     )?))
 }
 
+#[allow(dead_code)]
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 fn url_format_ip_addr(addr: &IpAddr) -> String {
@@ -163,6 +172,7 @@ fn url_format_ip_addr(addr: &IpAddr) -> String {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 fn octets_from_ip_addr(addr: &IpAddr) -> Vec<u8> {

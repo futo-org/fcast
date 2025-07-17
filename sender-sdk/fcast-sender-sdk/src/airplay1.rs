@@ -186,32 +186,12 @@ impl InnerDevice {
             .connection_state_changed(CastConnectionState::Connecting);
 
         let (used_remote_address, local_address) = {
-            let stream = {
-                'out: loop {
-                    info!("Trying to connect...");
-                    tokio::select! {
-                        stream = tokio::time::timeout(
-                            Duration::from_millis(1000),
-                            TcpStream::connect(addrs.as_slice()),
-                        ) => {
-                            match stream {
-                                Ok(stream) => break 'out stream.context("failed to create stream")?,
-                                Err(_) => info!("Failed to connect, retrying..."),
-                            }
-                        }
-                        cmd = cmd_rx.recv() => {
-                            let cmd = cmd.ok_or(anyhow!("No more commands"))?;
-                            if cmd == Command::Quit {
-                                debug!("Received Quit command in connect loop");
-                                self.event_handler.connection_state_changed(CastConnectionState::Disconnected);
-                                return Ok(());
-                            }
-                            debug!("Received command: `{cmd:?}` in connect loop, ignoring");
-                        }
-                    }
-                }
+            let Some(stream) = crate::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await? else {
+                debug!("Received Quit command in connect loop");
+                self.event_handler
+                    .connection_state_changed(CastConnectionState::Disconnected);
+                return Ok(());
             };
-
             (
                 stream.peer_addr().context("failed to get peer address")?,
                 stream.local_addr().context("failed to get local address")?,
