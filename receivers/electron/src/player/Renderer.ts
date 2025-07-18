@@ -52,7 +52,7 @@ export function targetPlayerCtrlPostStateUpdate(event: PlayerControlEvent) {
     }
 }
 
-export function targetKeyDownEventListener(event: KeyboardEvent): { handledCase: boolean, key: string } {
+export function targetKeyDownEventListener(event: KeyboardEvent) {
     let handledCase = false;
 
     switch (event.code) {
