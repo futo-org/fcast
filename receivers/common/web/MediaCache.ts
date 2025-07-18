@@ -33,6 +33,7 @@ export class MediaCache {
     private cacheWindowEnd: number;
     private pendingDownloads: Set<number>;
     private isDownloading: boolean;
+    private destroyed: boolean;
 
     constructor(playlist: PlaylistContent) {
         MediaCache.instance = this;
@@ -45,6 +46,7 @@ export class MediaCache {
         this.cacheWindowEnd = 0;
         this.pendingDownloads = new Set();
         this.isDownloading = false;
+        this.destroyed = false;
 
         if (!fs.existsSync('/cache')) {
             fs.mkdirSync('/cache');
@@ -80,6 +82,7 @@ export class MediaCache {
         this.cacheWindowEnd = 0;
         this.pendingDownloads.clear();
         this.isDownloading = false;
+        this.destroyed = true;
     }
 
     public static getInstance() {
@@ -176,6 +179,12 @@ export class MediaCache {
             const tempCacheObject = new CacheObject();
             downloadFile(this.playlist.items[itemIndex].url, tempCacheObject.path, true, this.playlist.items[itemIndex].headers,
             (downloadedBytes: number) => {
+                // Case occurs when user changes playlist while items are still downloading in the old media cache instance
+                if (this.destroyed) {
+                    logger.warn('MediaCache instance destroyed, aborting download');
+                    return false;
+                }
+
                 let underQuota = true;
                 if (this.cacheSize + downloadedBytes > this.quota) {
                     underQuota = this.purgeCacheItems(itemIndex, downloadedBytes);
@@ -184,11 +193,19 @@ export class MediaCache {
                 return underQuota;
             }, null)
             .then(() => {
+                if (this.destroyed) {
+                    fs.unlinkSync(tempCacheObject.path);
+                    return;
+                }
+
                 this.finalizeCacheItem(tempCacheObject, itemIndex);
                 this.downloadItems();
             }, (error) => {
                 logger.warn(error);
-                this.downloadItems();
+
+                if (!this.destroyed) {
+                    this.downloadItems();
+                }
             });
         }
         else {
