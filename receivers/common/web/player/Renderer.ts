@@ -217,7 +217,8 @@ function onPlay(_event, value: PlayMessage) {
                 logger.error('Dash player error:', data);
 
                 window.targetAPI.sendPlaybackError({
-                    message: JSON.stringify(data)
+                    // @ts-ignore
+                    message: `type=${data.type}, code=${data.error.code}, message=${data.error.message}, event=${data.event}, eventMessage=${data.event?.message}`
                 });
             });
 
@@ -226,7 +227,7 @@ function onPlay(_event, value: PlayMessage) {
                 logger.error('Dash player playback error:', data);
 
                 window.targetAPI.sendPlaybackError({
-                    message: JSON.stringify(data)
+                    message: `code=${data.error.code}, message=${data.error.message}`
                 });
             });
 
@@ -271,7 +272,7 @@ function onPlay(_event, value: PlayMessage) {
                     logger.error('HLS player error:', data);
 
                     window.targetAPI.sendPlaybackError({
-                        message: JSON.stringify(data)
+                        message: `type=${data.type}, details=${data.details}, fatal=${data.fatal}`
                     });
 
                     if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
@@ -330,7 +331,7 @@ function onPlay(_event, value: PlayMessage) {
                 logger.error('Html player error:', { playMessage: value, videoError: videoElement.error });
 
                 window.targetAPI.sendPlaybackError({
-                    message: JSON.stringify({ playMessage: value, videoError: videoElement.error })
+                    message: `code=${videoElement.error.code}, message=${videoElement.error.message}`
                 });
             };
 
