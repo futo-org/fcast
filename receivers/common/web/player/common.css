@@ -345,6 +345,7 @@ body {
 .playPrevious {
     cursor: pointer;
     flex-shrink: 0;
+    display: none;
 
     background-image: url("../assets/icons/player/icon24_play_previous.svg");
     transition: background-image 0.1s ease-in-out;
@@ -357,6 +358,7 @@ body {
 .playNext {
     cursor: pointer;
     flex-shrink: 0;
+    display: none;
 
     background-image: url("../assets/icons/player/icon24_play_next.svg");
     transition: background-image 0.1s ease-in-out;
@@ -415,6 +417,7 @@ body {
 
 .captions_off {
     cursor: pointer;
+    display: none;
 
     background-image: url("../assets/icons/player/icon24_cc_off.svg");
     transition: background-image 0.1s ease-in-out;
@@ -426,6 +429,7 @@ body {
 
 .captions_on {
     cursor: pointer;
+    display: none;
 
     background-image: url("../assets/icons/player/icon24_cc_on.svg");
     transition: background-image 0.1s ease-in-out;
