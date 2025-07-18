@@ -295,6 +295,8 @@ export class FCastSession {
                         delete message.generationTime;
                         delete message.duration;
                         delete message.speed;
+
+                        message.time = message.time !== null ? message.time : 0;
                         break;
                     case Opcode.VolumeUpdate:
                         delete message.generationTime;
@@ -313,6 +315,10 @@ export class FCastSession {
                         break;
                     case Opcode.PlaybackUpdate:
                         delete message.itemIndex;
+
+                        message.time = message.time !== null ? message.time : 0;
+                        message.duration = message.duration !== null ? message.duration : 0;
+                        message.speed = message.speed !== null ? message.speed : 1;
                         break;
                     default:
                         break;
