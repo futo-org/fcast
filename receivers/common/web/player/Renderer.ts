@@ -8,6 +8,7 @@ import { mediaItemFromPlayMessage, playMessageFromMediaItem, Timer } from 'commo
 import { toast, ToastIcon } from 'common/components/Toast';
 import {
     targetPlayerCtrlStateUpdate,
+    targetPlayerCtrlPostStateUpdate,
     targetKeyDownEventListener,
     captionsBaseHeightCollapsed,
     captionsBaseHeightExpanded,
@@ -635,6 +636,8 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         default:
             break;
     }
+
+    targetPlayerCtrlPostStateUpdate(event);
 }
 
 function scrubbingMouseUIHandler(e: MouseEvent) {

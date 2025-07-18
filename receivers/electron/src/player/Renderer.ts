@@ -44,7 +44,15 @@ export function targetPlayerCtrlStateUpdate(event: PlayerControlEvent): boolean 
     return handledCase;
 }
 
-export function targetKeyDownEventListener(event: KeyboardEvent): boolean {
+export function targetPlayerCtrlPostStateUpdate(event: PlayerControlEvent) {
+    // Currently unused in electron player
+    switch (event) {
+        default:
+            break;
+    }
+}
+
+export function targetKeyDownEventListener(event: KeyboardEvent): { handledCase: boolean, key: string } {
     let handledCase = false;
 
     switch (event.code) {
