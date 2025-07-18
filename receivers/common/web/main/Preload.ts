@@ -69,6 +69,12 @@ if (TARGET === 'electron') {
         onDeviceInfo: (callback: any) => electronAPI.ipcRenderer.on('device-info', callback),
         getDeviceInfo: () => preloadData.deviceInfo,
         getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
+        initializeSubscribedKeys: () => {
+            electronAPI.ipcRenderer.invoke('get-subscribed-keys').then((value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+                preloadData.subscribedKeys.keyDown = value.keyDown;
+                preloadData.subscribedKeys.keyUp = value.keyUp;
+            });
+        },
         getSubscribedKeys: () => preloadData.subscribedKeys,
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),

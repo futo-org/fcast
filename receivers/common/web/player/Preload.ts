@@ -60,6 +60,12 @@ if (TARGET === 'electron') {
 
         sendPlayRequest: (message: PlayMessage, playlistIndex: number) => electronAPI.ipcRenderer.send('play-request', message, playlistIndex),
         getSessions: () => electronAPI.ipcRenderer.invoke('get-sessions'),
+        initializeSubscribedKeys: () => {
+            electronAPI.ipcRenderer.invoke('get-subscribed-keys').then((value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+                preloadData.subscribedKeys.keyDown = value.keyDown;
+                preloadData.subscribedKeys.keyUp = value.keyUp;
+            });
+        },
         getSubscribedKeys: () => preloadData.subscribedKeys,
         onConnect: (callback: any) => electronAPI.ipcRenderer.on('connect', callback),
         onDisconnect: (callback: any) => electronAPI.ipcRenderer.on('disconnect', callback),

@@ -54,10 +54,6 @@ export abstract class ListenerService {
         let sessionSubscriptions = this.eventSubscribers.get(sessionId);
         sessionSubscriptions.push(event);
         this.eventSubscribers.set(sessionId, sessionSubscriptions);
-
-        if (event.type === EventType.KeyDown.valueOf() || event.type === EventType.KeyUp.valueOf()) {
-            return this.getAllSubscribedKeys();
-        }
     }
 
     public unsubscribeEvent(sessionId: string, event: EventSubscribeObject): any {
@@ -71,10 +67,6 @@ export abstract class ListenerService {
 
             this.eventSubscribers.set(sessionId, sessionSubscriptions);
         }
-
-        if (event.type === EventType.KeyDown.valueOf() || event.type === EventType.KeyUp.valueOf()) {
-            return this.getAllSubscribedKeys();
-        }
     }
 
     public getSessions(): string[] {
@@ -83,6 +75,30 @@ export abstract class ListenerService {
 
     public getSessionProtocolVersion(sessionId: string) {
         return this.sessionMap.get(sessionId)?.protocolVersion;
+    }
+
+    public getAllSubscribedKeys(): { keyDown: Set<string>, keyUp: Set<string> } {
+        let keyDown = new Set<string>();
+        let keyUp = new Set<string>();
+
+        for (const session of this.eventSubscribers.values()) {
+            for (const event of session) {
+                switch (event.type) {
+                    case EventType.KeyDown:
+                        keyDown = new Set([...keyDown, ...(event as KeyDownEvent).keys]);
+                        break;
+
+                    case EventType.KeyUp:
+                        keyUp = new Set([...keyUp, ...(event as KeyUpEvent).keys]);
+                        break;
+
+                    default:
+                        break;
+                }
+            }
+        }
+
+        return { keyDown: keyDown, keyUp: keyUp };
     }
 
     private isSubscribedToEvent(sessionId: string, event: EventSubscribeObject) {
@@ -107,30 +123,6 @@ export abstract class ListenerService {
         }
 
         return isSubscribed;
-    }
-
-    private getAllSubscribedKeys(): { keyDown: Set<string>, keyUp: Set<string> } {
-        let keyDown = new Set<string>();
-        let keyUp = new Set<string>();
-
-        for (const session of this.eventSubscribers.values()) {
-            for (const event of session) {
-                switch (event.type) {
-                    case EventType.KeyDown:
-                        keyDown = new Set([...keyDown, ...(event as KeyDownEvent).keys]);
-                        break;
-
-                    case EventType.KeyUp:
-                        keyUp = new Set([...keyUp, ...(event as KeyUpEvent).keys]);
-                        break;
-
-                    default:
-                        break;
-                }
-            }
-        }
-
-        return { keyDown: keyDown, keyUp: keyUp };
     }
 
     protected async handleServerError(err: NodeJS.ErrnoException) {

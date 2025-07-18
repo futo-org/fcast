@@ -14,6 +14,7 @@ let qrCodeUrl = null;
 let qrWidth = null;
 
 const logger = window.targetAPI.logger;
+window.targetAPI.initializeSubscribedKeys();
 window.addEventListener('resize', (event) => calculateQRCodeWidth());
 
 connectionMonitor.setUiUpdateCallbacks({

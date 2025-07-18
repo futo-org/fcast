@@ -16,6 +16,7 @@ import {
 } from 'src/player/Renderer';
 
 const logger = window.targetAPI.logger;
+window.targetAPI.initializeSubscribedKeys();
 
 // HTML elements
 const idleIcon = document.getElementById('title-icon');

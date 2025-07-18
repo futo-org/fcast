@@ -265,19 +265,33 @@ export class Main {
             });
             l.emitter.on("setplaylistitem", (message: SetPlaylistItemMessage) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
             l.emitter.on('subscribeevent', (message) => {
-                const subscribeData = l.subscribeEvent(message.sessionId, message.body.event);
+                l.subscribeEvent(message.sessionId, message.body.event);
 
                 if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                    const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                    const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
+                    const subscribeData = {
+                        keyDown: new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown]),
+                        keyUp: new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp]),
+                    };
+
                     Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
                     Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
                 }
             });
             l.emitter.on('unsubscribeevent', (message) => {
-                const unsubscribeData = l.unsubscribeEvent(message.sessionId, message.body.event);
+                l.unsubscribeEvent(message.sessionId, message.body.event);
 
                 if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
-                    Main.mainWindow?.webContents?.send("event-subscribed-keys-update", unsubscribeData);
-                    Main.playerWindow?.webContents?.send("event-subscribed-keys-update", unsubscribeData);
+                    const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                    const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
+                    const subscribeData = {
+                        keyDown: new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown]),
+                        keyUp: new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp]),
+                    };
+
+                    Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                    Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
                 }
             });
             l.start();
@@ -362,6 +376,17 @@ export class Main {
         // Having to mix and match session ids and ip addresses until querying websocket remote addresses is fixed
         ipcMain.handle('get-sessions', () => {
             return [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions());
+        });
+
+        ipcMain.handle('get-subscribed-keys', () => {
+            const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+            const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
+            const subscribeData = {
+                keyDown: new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown]),
+                keyUp: new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp]),
+            };
+
+            return subscribeData;
         });
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

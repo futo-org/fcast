@@ -9,6 +9,7 @@ import {
 } from 'src/viewer/Renderer';
 
 const logger = window.targetAPI.logger;
+window.targetAPI.initializeSubscribedKeys();
 
 // HTML elements
 const idleBackground = document.getElementById('idleBackground');
