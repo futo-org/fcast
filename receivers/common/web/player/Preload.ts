@@ -19,7 +19,6 @@ declare global {
     interface Window {
       electronAPI: any;
       tizenOSAPI: any;
-      webOSAPI: any;
       webOS: any;
       targetAPI: any;
     }
@@ -90,13 +89,14 @@ if (TARGET === 'electron') {
 
     preloadData.sendPlayRequestCb = () => { logger.error('Player: Callback "sendPlayRequest" not set'); };
     preloadData.getSessionsCb = () => { logger.error('Player: Callback "getSessions" not set'); };
-    preloadData.onConnectCb = () => { logger.error('Player: Callback "onConnect" not set'); };
-    preloadData.onDisconnectCb = () => { logger.error('Player: Callback "onDisconnect" not set'); };
+    preloadData.initializeSubscribedKeysCb = () => { logger.error('Player: Callback "initializeSubscribedKeys" not set'); };
+    preloadData.onConnectCb = () => { logger.warn('Player: Callback "onConnect" not set'); };
+    preloadData.onDisconnectCb = () => { logger.warn('Player: Callback "onDisconnect" not set'); };
     preloadData.onPlayPlaylistCb = () => { logger.error('Player: Callback "onPlayPlaylist" not set'); };
 
-    preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: Set<string>, keyUp: Set<string> }) => {
-        preloadData.subscribedKeys.keyDown = value.keyDown;
-        preloadData.subscribedKeys.keyUp = value.keyUp;
+    preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: string[], keyUp: string[] }) => {
+        preloadData.subscribedKeys.keyDown = new Set(value.keyDown);
+        preloadData.subscribedKeys.keyUp = new Set(value.keyUp);
     };
 
     preloadData.onToast = (message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
@@ -123,6 +123,17 @@ if (TARGET === 'electron') {
             }
             else {
                 return preloadData.getSessionsCb();
+            }
+        },
+        initializeSubscribedKeys: (callback?: () => Promise<{ keyDown: string[], keyUp: string[] }>) => {
+            if (callback) {
+                preloadData.initializeSubscribedKeysCb = callback;
+            }
+            else {
+                preloadData.initializeSubscribedKeysCb().then((value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+                    preloadData.subscribedKeys.keyDown = new Set(value.keyDown);
+                    preloadData.subscribedKeys.keyUp = new Set(value.keyUp);
+                });
             }
         },
         getSubscribedKeys: () => preloadData.subscribedKeys,

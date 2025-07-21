@@ -22,6 +22,8 @@ export class Timer {
     private delay: number;
     private startTime: number;
     private remainingTime: number;
+    private enabled: boolean;
+
     public started: boolean;
 
     constructor(callback: () => void, delay: number, autoStart: boolean = true) {
@@ -29,6 +31,7 @@ export class Timer {
         this.callback = callback;
         this.delay = delay;
         this.started = false;
+        this.enabled = true;
 
         if (autoStart) {
             this.start();
@@ -36,20 +39,22 @@ export class Timer {
     }
 
     public start(delay?: number) {
-        this.delay = delay ? delay : this.delay;
+        if (this.enabled) {
+            this.delay = delay ? delay : this.delay;
 
-        if (this.handle) {
-            window.clearTimeout(this.handle);
+            if (this.handle) {
+                window.clearTimeout(this.handle);
+            }
+
+            this.started = true;
+            this.startTime = Date.now();
+            this.remainingTime = null;
+            this.handle = window.setTimeout(this.callback, this.delay);
         }
-
-        this.started = true;
-        this.startTime = Date.now();
-        this.remainingTime = null;
-        this.handle = window.setTimeout(this.callback, this.delay);
     }
 
     public pause() {
-        if (this.handle) {
+        if (this.enabled && this.handle) {
             window.clearTimeout(this.handle);
             this.handle = null;
             this.remainingTime = this.delay - (Date.now() - this.startTime);
@@ -57,7 +62,7 @@ export class Timer {
     }
 
     public resume() {
-        if (this.remainingTime) {
+        if (this.enabled && this.remainingTime) {
             this.start(this.remainingTime);
         }
     }
@@ -69,5 +74,33 @@ export class Timer {
             this.remainingTime = null;
             this.started = false;
         }
+    }
+
+    public end() {
+        this.stop();
+        this.callback();
+    }
+
+    public enable() {
+        this.enabled = true;
+    }
+
+    public disable() {
+        this.enabled = false;
+        this.stop();
+    }
+
+    public setDelay(delay: number) {
+        this.stop();
+        this.delay = delay;
+    }
+
+    public setCallback(callback: () => void) {
+        this.stop();
+        this.callback = callback;
+    }
+
+    public isPaused(): boolean {
+        return this.remainingTime !== null;
     }
 }

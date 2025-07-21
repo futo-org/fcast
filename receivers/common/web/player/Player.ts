@@ -14,6 +14,8 @@ export class Player {
     private player: HTMLVideoElement;
     private playMessage: PlayMessage;
     private source: string;
+    private playCb: any;
+    private pauseCb: any;
 
     // Todo: use a common event handler interface instead of exposing internal players
     public playerType: PlayerType;
@@ -23,6 +25,8 @@ export class Player {
     constructor(player: HTMLVideoElement, message: PlayMessage) {
         this.player = player;
         this.playMessage = message;
+        this.playCb = null;
+        this.pauseCb = null;
 
         if (message.container === 'application/dash+xml') {
             this.playerType = PlayerType.Dash;
@@ -110,6 +114,8 @@ export class Player {
         this.hlsPlayer = null;
         this.playMessage = null;
         this.source = null;
+        this.playCb = null;
+        this.pauseCb = null;
     }
 
     /**
@@ -143,6 +149,10 @@ export class Player {
         } else { // HLS, HTML
             this.player.play();
         }
+
+        if (this.playCb) {
+            this.playCb();
+        }
     }
 
     public isPaused(): boolean {
@@ -161,6 +171,15 @@ export class Player {
         } else { // HLS, HTML
             this.player.pause();
         }
+
+        if (this.pauseCb) {
+            this.pauseCb();
+        }
+    }
+
+    public setPlayPauseCallback(playCallback: (() => void), pauseCallback: (() => void)) {
+        this.playCb = playCallback;
+        this.pauseCb = pauseCallback;
     }
 
     public stop() {

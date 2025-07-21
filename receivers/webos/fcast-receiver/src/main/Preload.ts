@@ -104,6 +104,12 @@ try {
         });
     });
 
+    window.targetAPI.initializeSubscribedKeys(() => {
+        return new Promise((resolve, reject) => {
+            serviceManager.call('get_subscribed_keys', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
+        });
+    });
+
     preloadData.sendEventCb = (event: EventMessage) => {
         serviceManager.call('send_event', event, null, (message: any) => { logger.error(`Player: send_event ${JSON.stringify(message)}`); });
     };

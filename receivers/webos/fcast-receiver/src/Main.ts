@@ -48,7 +48,8 @@ window.webOSApp = {
         keyUpEventHandler = callback;
         document.addEventListener('keyup', keyUpEventHandler);
     },
-    loadPage: loadPage
+    loadPage: loadPage,
+    pendingPlay: null,
 };
 
 document.addEventListener('webOSLaunch', launchHandlerCallback);

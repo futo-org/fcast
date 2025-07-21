@@ -10,7 +10,6 @@ require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
 declare global {
     interface Window {
         targetAPI: any;
-        webOSAPI: any;
         webOSApp: any;
     }
 }
@@ -20,10 +19,8 @@ const logger = window.targetAPI.logger;
 try {
     initializeWindowSizeStylesheet();
 
-    window.webOSAPI = {
-        pendingPlay: JSON.parse(sessionStorage.getItem('playInfo'))
-    };
-    const contentViewer = window.webOSAPI.pendingPlay?.contentViewer;
+    window.parent.webOSApp.pendingPlay = JSON.parse(sessionStorage.getItem('playInfo'));
+    const contentViewer = window.parent.webOSApp.pendingPlay?.contentViewer;
 
     const serviceManager: ServiceManager = window.parent.webOSApp.serviceManager;
     serviceManager.subscribeToServiceChannel((message: any) => {
@@ -34,12 +31,13 @@ try {
 
             case 'play': {
                 if (contentViewer !== message.value.contentViewer) {
+                    sessionStorage.setItem('playInfo', JSON.stringify(message.value));
                     window.parent.webOSApp.loadPage(`${message.value.contentViewer}/index.html`);
                 }
                 else {
                     if (message.value.rendererEvent === 'play-playlist') {
                         if (preloadData.onPlayCb === undefined) {
-                            window.webOSAPI.pendingPlay = message.value;
+                            window.parent.webOSApp.pendingPlay = message.value;
                         }
                         else {
                             preloadData.onPlayPlaylistCb(null, message.value.rendererMessage);
@@ -47,7 +45,7 @@ try {
                     }
                     else {
                         if (preloadData.onPlayCb === undefined) {
-                            window.webOSAPI.pendingPlay = message.value;
+                            window.parent.webOSApp.pendingPlay = message.value;
                         }
                         else {
                             preloadData.onPlayCb(null, message.value.rendererMessage);
@@ -123,6 +121,11 @@ try {
     window.targetAPI.getSessions(() => {
         return new Promise((resolve, reject) => {
             serviceManager.call('get_sessions', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
+        });
+    });
+    window.targetAPI.initializeSubscribedKeys(() => {
+        return new Promise((resolve, reject) => {
+            serviceManager.call('get_subscribed_keys', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
         });
     });
 

@@ -212,7 +212,7 @@ export function keyDownEventHandler(event: KeyboardEvent) {
     let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
 
     if (!handledCase) {
-        switch (event.key) {
+        switch (event.key.toLowerCase()) {
             default:
                 break;
         }
@@ -232,7 +232,7 @@ export function keyUpEventHandler(event: KeyboardEvent) {
     let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
 
     if (!handledCase) {
-        switch (event.key) {
+        switch (event.key.toLowerCase()) {
             default:
                 break;
         }

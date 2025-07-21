@@ -175,6 +175,22 @@ export class Main {
                         return;
                     }
 
+                    case 'get_subscribed_keys': {
+                        const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                        const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
+                        // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
+                        const subscribeData = {
+                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown])),
+                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp])),
+                        };
+
+                        message.respond({
+                            returnValue: true,
+                            value: subscribeData
+                        });
+                        return;
+                    }
+
                     case 'network_changed': {
                         logger.info('Network interfaces have changed', message);
                         Main.discoveryService.stop();
@@ -240,17 +256,34 @@ export class Main {
                 });
                 l.emitter.on('setplaylistitem', (message: SetPlaylistItemMessage) => Main.emitter.emit('setplaylistitem', message));
                 l.emitter.on('subscribeevent', (message) => {
-                    const subscribeData = l.subscribeEvent(message.sessionId, message.body.event);
+                    l.subscribeEvent(message.sessionId, message.body.event);
 
                     if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                        const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                        const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
+                        // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
+                        const subscribeData = {
+                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown])),
+                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp])),
+                        };
+
+                        console.log('emitting set info ON SUBSCRIBE ONLY', subscribeData)
                         Main.emitter.emit('event_subscribed_keys_update', subscribeData);
                     }
                 });
                 l.emitter.on('unsubscribeevent', (message) => {
-                    const unsubscribeData = l.unsubscribeEvent(message.sessionId, message.body.event);
+                    l.unsubscribeEvent(message.sessionId, message.body.event);
 
                     if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
-                        Main.emitter.emit('event_subscribed_keys_update', unsubscribeData);
+                        const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                        const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
+                        // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
+                        const subscribeData = {
+                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown])),
+                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp])),
+                        };
+
+                        Main.emitter.emit('event_subscribed_keys_update', subscribeData);
                     }
                 });
                 l.start();

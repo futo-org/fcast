@@ -25,7 +25,7 @@
                 <div id="progressBarProgress" class="progressBarProgress" ></div>
                 <div id="progressBarPosition" class="progressBarPosition" ></div>
                 <!-- <div class="progressBarChapterContainer"></div> -->
-                <div id="progressBarHandle" class="progressBarHandle" ></div>
+                <div id="progressBarHandle" class="progressBarHandle progressBarHandleHide" ></div>
                 <div id="progressBarInteractiveArea" class="progressBarInteractiveArea" ></div>
             </div>
 
@@ -37,9 +37,9 @@
             </div>
 
             <div class="leftButtonContainer">
-                <div id="playPrevious" class="playPrevious iconSize"></div>
-                <div id="action" class="play iconSize"></div>
-                <div id="playNext" class="playNext iconSize"></div>
+                <div id="playPreviousContainer" class="buttonFocusContainer"><div id="playPrevious" class="playPrevious iconSize"></div></div>
+                <div id="actionContainer" class="buttonFocusContainer"><div id="action" class="play iconSize"></div></div>
+                <div id="playNextContainer" class="buttonFocusContainer"><div id="playNext" class="playNext iconSize"></div></div>
 
                 <div id="volume" class="volume_high iconSize"></div>
                 <div class="volumeContainer">
@@ -59,7 +59,7 @@
             <div class="buttonContainer">
                 <!-- <div id="fullscreen" class="fullscreen_on iconSize"></div> -->
                 <div id="speed" class="speed iconSize"></div>
-                <div id="captions" class="captions_off iconSize"></div>
+                <div id="captions" class="captions_off iconSize" style="display: none"></div>
                 <div id="duration" class="duration">00:00</div>
             </div>
 

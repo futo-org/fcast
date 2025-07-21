@@ -86,13 +86,14 @@ if (TARGET === 'electron') {
 } else if (TARGET === 'webOS' || TARGET === 'tizenOS') {
     preloadData.onDeviceInfoCb = () => { logger.warn('Main: Callback not set while fetching device info'); };
     preloadData.getSessionsCb = () => { logger.error('Main: Callback not set while calling getSessions'); };
+    preloadData.initializeSubscribedKeysCb = () => { logger.error('Main: Callback not set while calling initializeSubscribedKeys'); };
     preloadData.onConnectCb = (_, value: any) => { logger.error('Main: Callback not set while calling onConnect'); };
     preloadData.onDisconnectCb = (_, value: any) => { logger.error('Main: Callback not set while calling onDisconnect'); };
     preloadData.sendEventCb = (message: EventMessage) => { logger.error('Main: Callback not set while calling onSendEventCb'); };
 
-    preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: Set<string>, keyUp: Set<string> }) => {
-        preloadData.subscribedKeys.keyDown = value.keyDown;
-        preloadData.subscribedKeys.keyUp = value.keyUp;
+    preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: string[], keyUp: string[] }) => {
+        preloadData.subscribedKeys.keyDown = new Set(value.keyDown);
+        preloadData.subscribedKeys.keyUp = new Set(value.keyUp);
     };
 
     preloadData.onToast = (message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
@@ -108,6 +109,17 @@ if (TARGET === 'electron') {
             }
             else {
                 return preloadData.getSessionsCb();
+            }
+        },
+        initializeSubscribedKeys: (callback?: () => Promise<{ keyDown: string[], keyUp: string[] }>) => {
+            if (callback) {
+                preloadData.initializeSubscribedKeysCb = callback;
+            }
+            else {
+                preloadData.initializeSubscribedKeysCb().then((value: { keyDown: Set<string>, keyUp: Set<string> }) => {
+                    preloadData.subscribedKeys.keyDown = new Set(value.keyDown);
+                    preloadData.subscribedKeys.keyUp = new Set(value.keyUp);
+                });
             }
         },
         getSubscribedKeys: () => preloadData.subscribedKeys,

@@ -5,6 +5,7 @@ import * as connectionMonitor from 'common/ConnectionMonitor';
 import { toast, ToastIcon } from 'common/components/Toast';
 import {
     targetPlayerCtrlStateUpdate,
+    targetPlayerCtrlPostStateUpdate,
     targetKeyDownEventListener,
     targetKeyUpEventListener,
 } from 'src/viewer/Renderer';
@@ -34,10 +35,7 @@ let isMediaItem = false;
 let playItemCached = false;
 let imageViewerPlaybackState: PlaybackState = PlaybackState.Idle;
 
-let uiHideTimer = new Timer(() => {
-    uiVisible = false;
-    playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
-}, 3000);
+let uiHideTimer = new Timer(() => { playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut); }, 3000);
 let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 100, false);
 
 let showDurationTimer = new Timer(() => {
@@ -278,12 +276,14 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
             break;
 
         case PlayerControlEvent.UiFadeOut: {
+            uiVisible = false;
             document.body.style.cursor = "none";
             playerControls.style.opacity = '0';
             break;
         }
 
         case PlayerControlEvent.UiFadeIn: {
+            uiVisible = true;
             document.body.style.cursor = "default";
             playerControls.style.opacity = '1';
             break;
@@ -292,6 +292,8 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         default:
             break;
     }
+
+    targetPlayerCtrlPostStateUpdate(event);
 }
 
 // Receiver generated event handlers
@@ -313,17 +315,11 @@ function stopUiHideTimer() {
     uiHideTimer.stop();
 
     if (!uiVisible) {
-        uiVisible = true;
         playerCtrlStateUpdate(PlayerControlEvent.UiFadeIn);
     }
 }
 
-document.onmouseout = () => {
-    uiHideTimer.stop();
-    uiVisible = false;
-    playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
-}
-
+document.onmouseout = () => { uiHideTimer.end(); }
 document.onmousemove = () => {
     stopUiHideTimer();
     uiHideTimer.start();
@@ -337,37 +333,40 @@ function keyDownEventHandler(event: KeyboardEvent) {
     // @ts-ignore
     let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
 
-    if (!handledCase) {
-        switch (event.code) {
-            case 'ArrowLeft':
+    if (!handledCase && isMediaItem) {
+        switch (event.key.toLowerCase()) {
+            case 'arrowleft':
                 setPlaylistItem(playlistIndex - 1);
                 event.preventDefault();
                 handledCase = true;
                 break;
-            case 'ArrowRight':
+            case 'arrowright':
                 setPlaylistItem(playlistIndex + 1);
                 event.preventDefault();
                 handledCase = true;
                 break;
-            case "Home":
+            case "home":
                 setPlaylistItem(0);
                 event.preventDefault();
                 handledCase = true;
                 break;
-            case "End":
+            case "end":
                 setPlaylistItem(cachedPlaylist.items.length - 1);
                 event.preventDefault();
                 handledCase = true;
                 break;
-            case 'KeyK':
-            case 'Space':
-            case 'Enter':
+            case 'k':
+            case ' ':
+            case 'enter':
                 // Play/pause toggle
-                if (imageViewerPlaybackState === PlaybackState.Paused || imageViewerPlaybackState === PlaybackState.Idle) {
-                    playerCtrlStateUpdate(PlayerControlEvent.Play);
-                } else {
-                    playerCtrlStateUpdate(PlayerControlEvent.Pause);
+                if (cachedPlayMediaItem.showDuration && cachedPlayMediaItem.showDuration > 0) {
+                    if (imageViewerPlaybackState === PlaybackState.Paused || imageViewerPlaybackState === PlaybackState.Idle) {
+                        playerCtrlStateUpdate(PlayerControlEvent.Play);
+                    } else {
+                        playerCtrlStateUpdate(PlayerControlEvent.Pause);
+                    }
                 }
+
                 event.preventDefault();
                 handledCase = true;
                 break;
@@ -390,7 +389,7 @@ function keyUpEventHandler(event: KeyboardEvent) {
     let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
 
     if (!handledCase) {
-        switch (event.key) {
+        switch (event.key.toLowerCase()) {
             default:
                 break;
         }
@@ -410,7 +409,12 @@ export {
     idleIcon,
     imageViewer,
     genericViewer,
+    uiHideTimer,
+    showDurationTimer,
+    isMediaItem,
     playlistIndex,
+    cachedPlayMediaItem,
+    imageViewerPlaybackState,
     onPlay,
     onPlayPlaylist,
     playerCtrlStateUpdate,

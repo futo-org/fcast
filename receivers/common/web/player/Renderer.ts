@@ -40,7 +40,7 @@ const playerCtrlProgressBarBuffer = document.getElementById("progressBarBuffer")
 const playerCtrlProgressBarProgress = document.getElementById("progressBarProgress");
 const playerCtrlProgressBarPosition = document.getElementById("progressBarPosition");
 const playerCtrlProgressBarHandle = document.getElementById("progressBarHandle");
-const PlayerCtrlProgressBarInteractiveArea = document.getElementById("progressBarInteractiveArea");
+const playerCtrlProgressBarInteractiveArea = document.getElementById("progressBarInteractiveArea");
 
 const playerCtrlVolumeBar = document.getElementById("volumeBar");
 const playerCtrlVolumeBarProgress = document.getElementById("volumeBarProgress");
@@ -80,10 +80,7 @@ let playlistIndex = 0;
 let isMediaItem = false;
 let playItemCached = false;
 
-let uiHideTimer = new Timer(() => {
-    uiVisible = false;
-    playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
-}, 3000);
+let uiHideTimer = new Timer(() => { playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut); }, 3000);
 let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 100, false);
 let showDurationTimer = new Timer(mediaEndHandler, 0, false);
 let mediaTitleShowTimer = new Timer(() => { mediaTitle.style.display = 'none'; }, 5000);
@@ -567,6 +564,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         case PlayerControlEvent.UiFadeOut: {
+            uiVisible = false;
             document.body.style.cursor = "none";
             playerControls.style.opacity = '0';
             captionsBaseHeight = captionsBaseHeightCollapsed;
@@ -582,6 +580,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
         }
 
         case PlayerControlEvent.UiFadeIn: {
+            uiVisible = true;
             document.body.style.cursor = "default";
             playerControls.style.opacity = '1';
             captionsBaseHeight = captionsBaseHeightExpanded;
@@ -644,7 +643,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
 function scrubbingMouseUIHandler(e: MouseEvent) {
     const progressBarOffset = e.offsetX - playerCtrlProgressBar.offsetLeft;
-    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
+    const progressBarWidth = playerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
     let time = isLive ? Math.round((1 - (progressBarOffset / progressBarWidth)) * player?.getDuration()) : Math.round((progressBarOffset / progressBarWidth) * player?.getDuration());
     time = Math.min(player?.getDuration(), Math.max(0.0, time));
 
@@ -657,7 +656,7 @@ function scrubbingMouseUIHandler(e: MouseEvent) {
     playerCtrlProgressBarPosition.textContent = isLive ? `${livePrefix}${formatDuration(time)}` : formatDuration(time);
 
     let offset = e.offsetX - (playerCtrlProgressBarPosition.offsetWidth / 2);
-    offset = Math.min(PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBarPosition.offsetWidth / 1), Math.max(8, offset));
+    offset = Math.min(playerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBarPosition.offsetWidth / 1), Math.max(8, offset));
     playerCtrlProgressBarPosition.setAttribute("style", `display: block; left: ${offset}px`);
 }
 
@@ -674,21 +673,21 @@ playerCtrlPlayPrevious.onclick = () => { setPlaylistItem(playlistIndex - 1); }
 playerCtrlPlayNext.onclick = () => { setPlaylistItem(playlistIndex + 1); }
 playerCtrlVolume.onclick = () => { player?.setMute(!player?.isMuted()); };
 
-PlayerCtrlProgressBarInteractiveArea.onmousedown = (e: MouseEvent) => { scrubbing = true; scrubbingMouseHandler(e) };
-PlayerCtrlProgressBarInteractiveArea.onmouseup = () => { scrubbing = false; };
-PlayerCtrlProgressBarInteractiveArea.onmouseenter = (e: MouseEvent) => {
+playerCtrlProgressBarInteractiveArea.onmousedown = (e: MouseEvent) => { scrubbing = true; scrubbingMouseHandler(e) };
+playerCtrlProgressBarInteractiveArea.onmouseup = () => { scrubbing = false; };
+playerCtrlProgressBarInteractiveArea.onmouseenter = (e: MouseEvent) => {
     if (e.buttons === 0) {
         volumeChanging = false;
     }
 
     scrubbingMouseUIHandler(e);
 };
-PlayerCtrlProgressBarInteractiveArea.onmouseleave = () => { playerCtrlProgressBarPosition.setAttribute("style", "display: none"); };
-PlayerCtrlProgressBarInteractiveArea.onmousemove = (e: MouseEvent) => { scrubbingMouseHandler(e) };
+playerCtrlProgressBarInteractiveArea.onmouseleave = () => { playerCtrlProgressBarPosition.setAttribute("style", "display: none"); };
+playerCtrlProgressBarInteractiveArea.onmousemove = (e: MouseEvent) => { scrubbingMouseHandler(e) };
 
 function scrubbingMouseHandler(e: MouseEvent) {
     const progressBarOffset = e.offsetX - playerCtrlProgressBar.offsetLeft;
-    const progressBarWidth = PlayerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
+    const progressBarWidth = playerCtrlProgressBarInteractiveArea.offsetWidth - (playerCtrlProgressBar.offsetLeft * 2);
     let time = Math.round((progressBarOffset / progressBarWidth) * player?.getDuration());
     time = Math.min(player?.getDuration(), Math.max(0.0, time));
 
@@ -880,17 +879,11 @@ function stopUiHideTimer() {
     uiHideTimer.stop();
 
     if (!uiVisible) {
-        uiVisible = true;
         playerCtrlStateUpdate(PlayerControlEvent.UiFadeIn);
     }
 }
 
-document.onmouseout = () => {
-    uiHideTimer.stop();
-    uiVisible = false;
-    playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut);
-}
-
+document.onmouseout = () => { uiHideTimer.end(); }
 document.onmousemove = () => {
     stopUiHideTimer();
 
@@ -910,16 +903,62 @@ document.addEventListener('click', (event: MouseEvent) => {
 });
 
 // Add the keydown event listener to the document
-const skipInterval = 10;
+const minSkipInterval = 10;
 const volumeIncrement = 0.1;
 
-function skipBack() {
-    player?.setCurrentTime(Math.max(player?.getCurrentTime() - skipInterval, 0));
+let skipBackRepeat = false;
+let skipBackInterval = minSkipInterval;
+let skipBackIntervalIncrease = false;
+let skipBackTimer = new Timer(() => { skipBackIntervalIncrease = true; }, 2000, false);
+
+let skipForwardRepeat = false;
+let skipForwardInterval = minSkipInterval;
+let skipForwardIntervalIncrease = false;
+let skipForwardTimer = new Timer(() => { skipForwardIntervalIncrease = true; }, 2000, false);
+
+function skipBack(repeat: boolean = false) {
+    if (!skipBackRepeat && repeat) {
+        skipBackRepeat = true;
+        skipBackTimer.start();
+    }
+    else if (skipBackRepeat && skipBackIntervalIncrease && repeat) {
+        skipBackInterval = skipBackInterval === 10 ? 30 : Math.min(skipBackInterval + 30, 300);
+        skipBackIntervalIncrease = false;
+        skipBackTimer.start();
+    }
+    else if (!repeat) {
+        skipBackTimer.stop();
+        skipBackRepeat = false;
+        skipBackIntervalIncrease = false;
+        skipBackInterval = minSkipInterval;
+    }
+
+    player?.setCurrentTime(Math.max(player?.getCurrentTime() - skipBackInterval, 0));
+    // Force time update since player triggered update only occurs in real-time if skipping within loaded buffer
+    playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
 }
 
-function skipForward() {
+function skipForward(repeat: boolean = false) {
+    if (!skipForwardRepeat && repeat) {
+        skipForwardRepeat = true;
+        skipForwardTimer.start();
+    }
+    else if (skipForwardRepeat && skipForwardIntervalIncrease && repeat) {
+        skipForwardInterval = skipForwardInterval === 10 ? 30 : Math.min(skipForwardInterval + 30, 300);
+        skipForwardIntervalIncrease = false;
+        skipForwardTimer.start();
+    }
+    else if (!repeat) {
+        skipForwardTimer.stop();
+        skipForwardRepeat = false;
+        skipForwardIntervalIncrease = false;
+        skipForwardInterval = minSkipInterval;
+    }
+
     if (!isLivePosition) {
-        player?.setCurrentTime(Math.min(player?.getCurrentTime() + skipInterval, player?.getDuration()));
+        player?.setCurrentTime(Math.min(player?.getCurrentTime() + skipForwardInterval, player?.getDuration()));
+        // Force time update since player triggered update only occurs in real-time if skipping within loaded buffer
+        playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate);
     }
 }
 
@@ -934,12 +973,12 @@ function keyDownEventHandler(event: KeyboardEvent) {
     if (!handledCase) {
         switch (event.key.toLowerCase()) {
             case 'arrowleft':
-                skipBack();
+                skipBack(event.repeat);
                 event.preventDefault();
                 handledCase = true;
                 break;
             case 'arrowright':
-                skipForward();
+                skipForward(event.repeat);
                 event.preventDefault();
                 handledCase = true;
                 break;
@@ -1004,7 +1043,7 @@ function keyUpEventHandler(event: KeyboardEvent) {
     let key = (TARGET === 'webOS' && result.key !== '') ? result.key : event.key;
 
     if (!handledCase) {
-        switch (event.key) {
+        switch (event.key.toLowerCase()) {
             default:
                 break;
         }
@@ -1025,25 +1064,18 @@ export {
     idleIcon,
     videoElement,
     videoCaptions,
-    playerCtrlProgressBar,
-    playerCtrlProgressBarBuffer,
-    playerCtrlProgressBarProgress,
     playerCtrlProgressBarHandle,
-    playerCtrlVolumeBar,
-    playerCtrlVolumeBarProgress,
-    playerCtrlVolumeBarHandle,
-    playerCtrlLiveBadge,
-    playerCtrlPosition,
-    playerCtrlDuration,
     playerCtrlCaptions,
     player,
+    uiHideTimer,
     isLive,
+    playlistIndex,
     captionsBaseHeight,
     captionsLineHeight,
     onPlay,
     onPlayPlaylist,
+    setPlaylistItem,
     playerCtrlStateUpdate,
-    formatDuration,
     skipBack,
     skipForward,
     keyDownEventHandler,

@@ -15,6 +15,21 @@ export enum RemoteKeyCode {
     Back = 461,
 }
 
+export enum KeyCode {
+    ArrowUp = 38,
+    ArrowDown = 40,
+    ArrowLeft = 37,
+    ArrowRight = 39,
+    KeyK = 75,
+    Space = 32,
+    Enter = 13,
+}
+
+export enum ControlBarMode {
+    KeyboardMouse,
+    Remote
+}
+
 export class ServiceManager {
     private static serviceChannelSuccessCbHandler?: (message: any) => void;
     private static serviceChannelFailureCbHandler?: (message: any) => void;
