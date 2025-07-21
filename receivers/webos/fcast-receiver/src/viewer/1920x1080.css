@@ -1,0 +1,30 @@
+/* @media only screen and ((max-width: 2559px) or (max-height: 1439px)) { */
+    #titleIcon {
+        width: 124px;
+        height: 124px;
+    }
+
+    .lds-ring {
+        width: 120px;
+        height: 120px;
+    }
+    .lds-ring div {
+        width: 104px;
+        height: 104px;
+    }
+
+    #toast-notification {
+        padding: 12px;
+    }
+
+    #toast-icon {
+        width: 60px;
+        height: 60px;
+        margin: 5px 5px;
+        margin-right: 10px;
+    }
+
+    #toast-text {
+        font-size: 22px;
+    }
+/* } */

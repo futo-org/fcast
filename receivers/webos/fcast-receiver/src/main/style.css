@@ -1,17 +1,15 @@
+/* WebOS custom player styles */
+
+html {
+    overflow: hidden;
+}
+
 .card-title {
     font-family: InterBold;
 }
 
 #overlay {
     font-family: InterRegular;
-    /* gap not supported in WebOS 6.0 */
-    gap: unset;
-}
-
-#main-view {
-    /* gap not supported in WebOS 6.0 */
-    gap: unset;
-    margin-right: 15vw;
 }
 
 #title-text {
@@ -25,6 +23,15 @@
 .app-download {
     font-weight: bold;
     font-family: InterBold;
+}
+
+/* gap not supported in WebOS 6.0 */
+#ips {
+    gap: unset;
+}
+
+#ips-iface-icon {
+    margin-right: 15px;
 }
 
 #window-can-be-closed {

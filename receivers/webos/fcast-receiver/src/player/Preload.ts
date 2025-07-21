@@ -1,171 +1,153 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { preloadData } from 'common/player/Preload';
-import { PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage } from 'common/Packets';
+import { EventMessage, PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, VolumeUpdateMessage } from 'common/Packets';
+import { ServiceManager, initializeWindowSizeStylesheet } from 'lib/common';
 import { toast, ToastIcon } from 'common/components/Toast';
 require('lib/webOSTVjs-1.2.10/webOSTV.js');
 require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
+
+declare global {
+    interface Window {
+        targetAPI: any;
+        webOSApp: any;
+    }
+}
+
 const logger = window.targetAPI.logger;
 
 try {
-    const serviceId = 'com.futo.fcast.receiver.service';
-    let getSessions = null;
+    initializeWindowSizeStylesheet();
 
-    window.webOSAPI = {
-        pendingPlay: JSON.parse(sessionStorage.getItem('playData'))
-    };
+    window.parent.webOSApp.pendingPlay = JSON.parse(sessionStorage.getItem('playInfo'));
+    const contentViewer = window.parent.webOSApp.pendingPlay?.contentViewer;
 
-    preloadData.sendPlaybackErrorCb = (error: PlaybackErrorMessage) => {
-        window.webOS.service.request(`luna://${serviceId}/`, {
-            method: 'send_playback_error',
-            parameters: { error },
-            onSuccess: () => {},
-            onFailure: (message: any) => {
-                logger.error(`Player: send_playback_error ${JSON.stringify(message)}`);
-            },
-        });
-    };
-    preloadData.sendPlaybackUpdateCb = (update: PlaybackUpdateMessage) => {
-        window.webOS.service.request(`luna://${serviceId}/`, {
-            method: 'send_playback_update',
-            parameters: { update },
-            // onSuccess: (message: any) => {
-            //     logger.info(`Player: send_playback_update ${JSON.stringify(message)}`);
-            // },
-            onSuccess: () => {},
-            onFailure: (message: any) => {
-                logger.error(`Player: send_playback_update ${JSON.stringify(message)}`);
-            },
-        });
-    };
-    preloadData.sendVolumeUpdateCb = (update: VolumeUpdateMessage) => {
-        window.webOS.service.request(`luna://${serviceId}/`, {
-            method: 'send_volume_update',
-            parameters: { update },
-            onSuccess: () => {},
-            onFailure: (message: any) => {
-                logger.error(`Player: send_volume_update ${JSON.stringify(message)}`);
-            },
-        });
-    };
+    const serviceManager: ServiceManager = window.parent.webOSApp.serviceManager;
+    serviceManager.subscribeToServiceChannel((message: any) => {
+        switch (message.event) {
+            case 'toast':
+                preloadData.onToastCb(message.value.message, message.value.icon, message.value.duration);
+                break;
 
-    const playService = window.webOS.service.request(`luna://${serviceId}/`, {
-        method:"play",
-        parameters: {},
-        onSuccess: (message: any) => {
-            // logger.info(JSON.stringify(message));
-            if (message.value.subscribed === true) {
-                logger.info('Player: Registered play handler with service');
-            }
-
-            if (message.value.playData !== null) {
-                if (preloadData.onPlayCb === undefined) {
-                    window.webOSAPI.pendingPlay = message.value.playData;
+            case 'play': {
+                if (contentViewer !== message.value.contentViewer) {
+                    sessionStorage.setItem('playInfo', JSON.stringify(message.value));
+                    window.parent.webOSApp.loadPage(`${message.value.contentViewer}/index.html`);
                 }
                 else {
-                    preloadData.onPlayCb(null, message.value.playData);
+                    if (message.value.rendererEvent === 'play-playlist') {
+                        if (preloadData.onPlayCb === undefined) {
+                            window.parent.webOSApp.pendingPlay = message.value;
+                        }
+                        else {
+                            preloadData.onPlayPlaylistCb(null, message.value.rendererMessage);
+                        }
+                    }
+                    else {
+                        if (preloadData.onPlayCb === undefined) {
+                            window.parent.webOSApp.pendingPlay = message.value;
+                        }
+                        else {
+                            preloadData.onPlayCb(null, message.value.rendererMessage);
+                        }
+                    }
                 }
+                break;
             }
-        },
-        onFailure: (message: any) => {
-            logger.error(`Player: play ${JSON.stringify(message)}`);
-        },
-        subscribe: true,
-        resubscribe: true
+
+            case 'pause':
+                preloadData.onPauseCb();
+                break;
+
+            case 'resume':
+                preloadData.onResumeCb();
+                break;
+
+            case 'stop':
+                window.parent.webOSApp.loadPage('main_window/index.html');
+                break;
+
+            case 'seek':
+                preloadData.onSeekCb(null, message.value);
+                break;
+
+            case 'setvolume':
+                preloadData.onSetVolumeCb(null, message.value);
+                break;
+
+            case 'setspeed':
+                preloadData.onSetSpeedCb(null, message.value);
+                break;
+
+            case 'setplaylistitem':
+                preloadData.onSetPlaylistItemCb(null, message.value);
+                break;
+
+            case 'event_subscribed_keys_update':
+                preloadData.onEventSubscribedKeysUpdate(message.value);
+                break;
+
+            case 'connect':
+                preloadData.onConnectCb(null, message.value);
+                break;
+
+            case 'disconnect':
+                preloadData.onDisconnectCb(null, message.value);
+                break;
+
+            // 'play-playlist' is handled in the 'play' message for webOS
+
+            default:
+                break;
+        }
     });
 
-    const pauseService = requestService('pause', () => { preloadData.onPauseCb(); });
-    const resumeService = requestService('resume', () => { preloadData.onResumeCb(); });
-    const stopService = requestService('stop', () => {
-        playService.cancel();
-        pauseService.cancel();
-        resumeService.cancel();
-        stopService.cancel();
-        seekService.cancel();
-        setVolumeService.cancel();
-        setSpeedService.cancel();
-        getSessions?.cancel();
-        onConnectService.cancel();
-        onDisconnectService.cancel();
+    preloadData.sendPlaybackErrorCb = (error: PlaybackErrorMessage) => {
+        serviceManager.call('send_playback_error', error, null, (message: any) => { logger.error(`Player: send_playback_error ${JSON.stringify(message)}`); });
+    };
+    preloadData.sendPlaybackUpdateCb = (update: PlaybackUpdateMessage) => {
+        serviceManager.call('send_playback_update', update, null, (message: any) => { logger.error(`Player: send_playback_update ${JSON.stringify(message)}`); });
+    };
+    preloadData.sendVolumeUpdateCb = (update: VolumeUpdateMessage) => {
+        serviceManager.call('send_volume_update', update, null, (message: any) => { logger.error(`Player: send_volume_update ${JSON.stringify(message)}`); });
+    };
+    preloadData.sendEventCb = (event: EventMessage) => {
+        serviceManager.call('send_event', event, null, (message: any) => { logger.error(`Player: send_event ${JSON.stringify(message)}`); });
+    };
 
-        // WebOS 22 and earlier does not work well using the history API,
-        // so manually handling page navigation...
-        // history.back();
-        window.open('../main_window/index.html', '_self');
-     });
-
-    const seekService = requestService('seek', (message: any) => { preloadData.onSeekCb(null, message.value); });
-    const setVolumeService = requestService('setvolume', (message: any) => { preloadData.onSetVolumeCb(null, message.value); });
-    const setSpeedService = requestService('setspeed', (message: any) => { preloadData.onSetSpeedCb(null, message.value); });
-
+    preloadData.sendPlayRequestCb = (message: PlayMessage, playlistIndex: number) => {
+        serviceManager.call('play_request', { message: message, playlistIndex: playlistIndex }, null, (message: any) => { logger.error(`Player: play_request ${playlistIndex} ${JSON.stringify(message)}`); });
+    };
     window.targetAPI.getSessions(() => {
         return new Promise((resolve, reject) => {
-            getSessions = requestService('get_sessions', (message: any) => resolve(message.value), (message: any) => reject(message), false);
+            serviceManager.call('get_sessions', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
         });
     });
-
-    const onConnectService = requestService('connect', (message: any) => { preloadData.onConnectCb(null, message.value); });
-    const onDisconnectService = requestService('disconnect', (message: any) => { preloadData.onDisconnectCb(null, message.value); });
+    window.targetAPI.initializeSubscribedKeys(() => {
+        return new Promise((resolve, reject) => {
+            serviceManager.call('get_subscribed_keys', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
+        });
+    });
 
     const launchHandler = () => {
         // args don't seem to be passed in via event despite what documentation says...
         const params = window.webOSDev.launchParams();
         logger.info(`Player: (Re)launching FCast Receiver with args: ${JSON.stringify(params)}`);
 
-        const lastTimestamp = Number(localStorage.getItem('lastTimestamp'));
-        if (params.playData !== undefined && params.timestamp != lastTimestamp) {
-            localStorage.setItem('lastTimestamp', params.timestamp);
-            sessionStorage.setItem('playData', JSON.stringify(params.playData));
-            playService?.cancel();
-            pauseService?.cancel();
-            resumeService?.cancel();
-            stopService?.cancel();
-            seekService?.cancel();
-            setVolumeService?.cancel();
-            setSpeedService?.cancel();
-            getSessions?.cancel();
-            onConnectService?.cancel();
-            onDisconnectService?.cancel();
+        // WebOS 6.0 and earlier: Timestamp tracking seems to be necessary as launch event is raised regardless if app is in foreground or not
+        const lastTimestamp = Number(sessionStorage.getItem('lastTimestamp'));
+        if (params.messageInfo !== undefined && params.timestamp != lastTimestamp) {
+            sessionStorage.setItem('lastTimestamp', params.timestamp);
+            sessionStorage.setItem('playInfo', JSON.stringify(params.messageInfo));
 
-            // WebOS 22 and earlier does not work well using the history API,
-            // so manually handling page navigation...
-            // history.pushState({}, '', '../main_window/index.html');
-            window.open('../player/index.html', '_self');
+            window.parent.webOSApp.loadPage(`${params.messageInfo.contentViewer}/index.html`);
         }
     };
 
-    document.addEventListener('webOSLaunch', launchHandler);
-    document.addEventListener('webOSRelaunch', launchHandler);
-
+    window.parent.webOSApp.setLaunchHandler(launchHandler);
+    document.addEventListener('visibilitychange', () => serviceManager.call('visibility_changed', { hidden: document.hidden, window: contentViewer }));
 }
 catch (err) {
-    logger.error(`Player: preload ${JSON.stringify(err)}`);
+    logger.error(`Player: preload`, err);
     toast(`Error starting the video player (preload): ${JSON.stringify(err)}`, ToastIcon.ERROR);
-}
-
-function requestService(method: string, successCallback: (message: any) => void, failureCallback?: (message: any) => void, subscribe: boolean = true): any {
-    const serviceId = 'com.futo.fcast.receiver.service';
-
-    return window.webOS.service.request(`luna://${serviceId}/`, {
-        method: method,
-        parameters: {},
-        onSuccess: (message: any) => {
-            if (message.value?.subscribed === true) {
-                logger.info(`Player: Registered ${method} handler with service`);
-            }
-            else {
-                successCallback(message);
-            }
-        },
-        onFailure: (message: any) => {
-            logger.error(`Main: ${method} ${JSON.stringify(message)}`);
-
-            if (failureCallback) {
-                failureCallback(message);
-            }
-        },
-        // onComplete: (message) => {},
-        subscribe: subscribe,
-        resubscribe: subscribe
-    });
 }

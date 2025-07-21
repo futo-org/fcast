@@ -1,7 +1,12 @@
 /* WebOS custom player styles */
 
+html {
+    overflow: hidden;
+}
+
 .container {
     height: 240px;
+    background: linear-gradient(to top, rgba(0, 0, 0, 1.0) 0%, rgba(0, 0, 0, 0.0) 80%);
 }
 
 .iconSize {
@@ -15,37 +20,7 @@
 }
 
 .volumeContainer {
-    height: 48px;
-    width: 184px;
-
     display: none;
-}
-
-.volumeBar {
-    left: 16px;
-    top: 20px;
-    height: 8px;
-    width: 152px;
-}
-
-.volumeBarInteractiveArea {
-    height: 48px;
-    width: 184px;
-}
-
-.volumeBarHandle {
-    left: 168px;
-    top: 8px;
-    width: 32px;
-    height: 32px;
-    box-shadow: 0px 64px 128px 0px rgba(0, 0, 0, 0.56), 0px 4px 42px 0px rgba(0, 0, 0, 0.55);
-}
-
-.volumeBarProgress {
-    left: 16px;
-    top: 20px;
-    height: 8px;
-    width: 152px;
 }
 
 .progressBarContainer {
@@ -134,21 +109,42 @@
 }
 
 .leftButtonContainer {
-    bottom: 48px;
+    bottom: 24px;
     left: 48px;
-    height: 48px;
-    /* right: 320px; */
-    right: 32px;
-    gap: 48px;
+    height: 96px;
+    right: 48px;
+    /* gap: 48px; */
+    gap: unset;
 
     justify-content: center;
+}
+
+.buttonFocusContainer {
+    margin-right: 28px;
+    padding: 20px;
+    border-radius: 20px;
+}
+
+.buttonFocus {
+    /* background-image: linear-gradient(to bottom, #008BD7 35%, #0069AA); */
+    background-image: linear-gradient(to bottom, #808080 35%, #202020);
+    border: 1px solid #4E4E4E;
+}
+
+.progressBarHandle {
+    border: 1px solid #4E4E4E;
+}
+
+.progressBarHandleHide {
+    display: none;
 }
 
 .buttonContainer {
     bottom: 48px;
     right: 48px;
     height: 48px;
-    gap: 48px;
+    /* gap: 48px; */
+    gap: unset;
 }
 
 .captionsContainer {
@@ -179,4 +175,12 @@
 
 #captions {
     display: none;
+}
+
+#toast-notification {
+    gap: unset;
+}
+
+#toast-text {
+    font-family: InterRegular;
 }

@@ -52,17 +52,17 @@ export function targetPlayerCtrlPostStateUpdate(event: PlayerControlEvent) {
     }
 }
 
-export function targetKeyDownEventListener(event: KeyboardEvent) {
+export function targetKeyDownEventListener(event: KeyboardEvent): { handledCase: boolean, key: string } {
     let handledCase = false;
 
-    switch (event.code) {
-        case 'KeyF':
-        case 'F11':
+    switch (event.key.toLowerCase()) {
+        case 'f':
+        case 'f11':
             playerCtrlStateUpdate(PlayerControlEvent.ToggleFullscreen);
             event.preventDefault();
             handledCase = true;
             break;
-        case 'Escape':
+        case 'escape':
             playerCtrlStateUpdate(PlayerControlEvent.ExitFullscreen);
             event.preventDefault();
             handledCase = true;
@@ -71,7 +71,12 @@ export function targetKeyDownEventListener(event: KeyboardEvent) {
             break;
     }
 
-    return handledCase
+    return { handledCase: handledCase, key: event.key, };
+};
+
+export function targetKeyUpEventListener(_event: KeyboardEvent): { handledCase: boolean, key: string } {
+    // unused in Electron currently
+    return { handledCase: false, key: '', };
 };
 
 export {

@@ -1,0 +1,112 @@
+/* @media only screen and ((max-width: 2559px) or (max-height: 1439px)) { */
+    .card {
+        padding: 25px;
+    }
+
+    .card-title {
+        line-height: 24px;
+        margin: 10px;
+    }
+
+    .card-title-separator {
+        margin: 3px 0px;
+    }
+
+    .iconSize {
+        width: 48px;
+        height: 48px;
+    }
+
+    #overlay {
+        gap: unset;
+        /* gap: 15vw; */
+        font-size: 28px;
+    }
+
+    #main-view {
+        margin-right: 15vw;
+    }
+
+    #title-text {
+        font-size: 140px;
+    }
+
+    #title-icon {
+        width: 124px;
+        height: 124px;
+        margin-right: 25px;
+    }
+
+    #connection-status {
+        padding: 25px;
+    }
+
+    #connection-error-icon {
+        margin-top: 20px;
+    }
+
+    #connection-information-loading-text {
+        margin: 20px;
+    }
+
+    #scan-to-connect {
+        margin-top: 20px;
+    }
+
+    #qr-code {
+        width: 256px;
+        height: 256px;
+        margin: 20px auto;
+        padding: 16px;
+    }
+
+    #connection-details-separator {
+        margin-top: 15px;
+    }
+
+    #ips {
+        margin-top: 20px;
+        gap: 15px;
+    }
+
+    .ip-entry-text {
+        margin-top: 7px;
+        margin-bottom: 7px;
+    }
+
+    #window-can-be-closed {
+        margin-bottom: 20px;
+        font-size: 24px;
+    }
+
+    .lds-ring {
+        width: 120px;
+        height: 120px;
+    }
+    .lds-ring div {
+        width: 104px;
+        height: 104px;
+    }
+
+    #connection-check {
+        width: 104px;
+        height: 104px;
+        margin: 28px;
+    }
+
+    #toast-notification {
+        padding: 12px;
+        top: -175px;
+    }
+
+    #toast-icon {
+        width: 70px;
+        height: 70px;
+        margin: 5px 10px;
+        margin-right: 15px;
+    }
+
+    #toast-text {
+        font-size: 28px;
+    }
+/* } */

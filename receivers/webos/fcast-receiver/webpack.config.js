@@ -15,15 +15,85 @@ module.exports = [
     {
         mode: buildMode,
         entry: {
-            preload: './src/main/Preload.ts',
-            renderer: './src/main/Renderer.ts',
+            main: './src/Main.ts',
         },
-        target: 'web',
+        target: ['web', 'es5'],
         module: {
             rules: [
                 {
                     test: /\.tsx?$/,
                     include: [path.resolve(__dirname, '../../common/web'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                },
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, 'lib'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                }
+            ],
+        },
+        resolve: {
+            alias: {
+                'src': path.resolve(__dirname, 'src'),
+                'lib': path.resolve(__dirname, 'lib'),
+                'modules': path.resolve(__dirname, 'node_modules'),
+                'common': path.resolve(__dirname, '../../common/web'),
+            },
+            extensions: ['.tsx', '.ts', '.js'],
+        },
+        output: {
+            filename: '[name].js',
+            path: path.resolve(__dirname, 'dist'),
+        },
+        plugins: [
+            new CopyWebpackPlugin({
+                patterns: [
+                    // Common assets
+                    {
+                        from: '../common/assets/**',
+                        to: '[path][name][ext]',
+                        context: path.resolve(__dirname, '..', '..', 'common'),
+                        globOptions: { ignore: ['**/*.txt'] }
+                    },
+                    // Target assets
+                    { from: 'appinfo.json', to: '[name][ext]' },
+                    {
+                        from: '**',
+                        to: 'assets/[path][name][ext]',
+                        context: path.resolve(__dirname, 'assets'),
+                        globOptions: { ignore: ['**/*.svg'] }
+                    },
+                    {
+                        from: '**',
+                        to: 'lib/[name][ext]',
+                        context: path.resolve(__dirname, 'lib'),
+                        globOptions: { ignore: ['**/*.txt'] }
+                    },
+                    { from: './src/index.html', to: '[name][ext]' }
+                ],
+            }),
+            new webpack.DefinePlugin({
+                TARGET: JSON.stringify(TARGET)
+            })
+        ]
+    },
+    {
+        mode: buildMode,
+        entry: {
+            preload: './src/main/Preload.ts',
+            renderer: './src/main/Renderer.ts',
+        },
+        target: ['web', 'es5'],
+        module: {
+            rules: [
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, '../../common/web'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                },
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, 'lib'), path.resolve(__dirname, 'src')],
                     use: [{ loader: 'ts-loader' }]
                 }
             ],
@@ -45,30 +115,9 @@ module.exports = [
         plugins: [
             new CopyWebpackPlugin({
                 patterns: [
-                    // Common assets
-                    {
-                        from: '../common/assets/**',
-                        to: '../[path][name][ext]',
-                        context: path.resolve(__dirname, '..', '..', 'common'),
-                        globOptions: { ignore: ['**/*.txt'] }
-                    },
                     {
                         from: '../../common/web/main/common.css',
                         to: '[name][ext]',
-                    },
-                    // Target assets
-                    { from: 'appinfo.json', to: '../[name][ext]' },
-                    {
-                        from: '**',
-                        to: '../assets/[path][name][ext]',
-                        context: path.resolve(__dirname, 'assets'),
-                        globOptions: { ignore: ['**/*.svg'] }
-                    },
-                    {
-                        from: '**',
-                        to: '../lib/[name][ext]',
-                        context: path.resolve(__dirname, 'lib'),
-                        globOptions: { ignore: ['**/*.txt'] }
                     },
                     {
                         from: './src/main/*',
@@ -88,12 +137,17 @@ module.exports = [
             preload: './src/player/Preload.ts',
             renderer: './src/player/Renderer.ts',
         },
-        target: 'web',
+        target: ['web', 'es5'],
         module: {
             rules: [
                 {
                     test: /\.tsx?$/,
                     include: [path.resolve(__dirname, '../../common/web'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                },
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, 'lib'), path.resolve(__dirname, 'src')],
                     use: [{ loader: 'ts-loader' }]
                 }
             ],
@@ -130,4 +184,58 @@ module.exports = [
             })
         ]
     },
+    {
+        mode: buildMode,
+        entry: {
+            // Player preload is intentionally reused
+            preload: './src/player/Preload.ts',
+            renderer: './src/viewer/Renderer.ts',
+        },
+        target: ['web', 'es5'],
+        module: {
+            rules: [
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, '../../common/web'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                },
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, 'lib'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
+                }
+            ],
+        },
+        resolve: {
+            alias: {
+                'src': path.resolve(__dirname, 'src'),
+                'lib': path.resolve(__dirname, 'lib'),
+                'modules': path.resolve(__dirname, 'node_modules'),
+                'common': path.resolve(__dirname, '../../common/web'),
+            },
+            extensions: ['.tsx', '.ts', '.js'],
+        },
+        output: {
+            filename: '[name].js',
+            path: path.resolve(__dirname, 'dist/viewer'),
+        },
+        plugins: [
+            new CopyWebpackPlugin({
+                patterns: [
+                    {
+                        from: '../../common/web/viewer/common.css',
+                        to: '[name][ext]',
+                    },
+                    {
+                        from: './src/viewer/*',
+                        to: '[name][ext]',
+                        globOptions: { ignore: ['**/*.ts'] }
+                    }
+                ],
+            }),
+            new webpack.DefinePlugin({
+                TARGET: JSON.stringify(TARGET)
+            })
+        ]
+    }
 ];
