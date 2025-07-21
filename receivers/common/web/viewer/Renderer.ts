@@ -32,7 +32,7 @@ let cachedPlaylist: PlaylistContent = null;
 let cachedPlayMediaItem: MediaItem = null;
 let playlistIndex = 0;
 let isMediaItem = false;
-let playItemCached = false;
+let isPlaylistPlayRequest = 0;
 let imageViewerPlaybackState: PlaybackState = PlaybackState.Idle;
 
 let uiHideTimer = new Timer(() => { playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut); }, 3000);
@@ -59,16 +59,14 @@ let showDurationTimer = new Timer(() => {
 }, 0, false);
 
 function onPlay(_event, value: PlayMessage) {
-    if (!playItemCached) {
+    if (isPlaylistPlayRequest === 0) {
         cachedPlayMediaItem = mediaItemFromPlayMessage(value);
         isMediaItem = false;
     }
     window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, cachedPlayMediaItem)));
     logger.info('Media playback changed:', cachedPlayMediaItem);
-    playItemCached = false;
+    isPlaylistPlayRequest = isPlaylistPlayRequest <= 0 ? 0 : isPlaylistPlayRequest - 1;
     showDurationTimer.stop();
-
-    window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, cachedPlayMediaItem)));
     const src = value.url ? value.url : value.content;
 
     loadingTimer.start();
@@ -143,7 +141,7 @@ function onPlayPlaylist(_event, value: PlaylistContent) {
     playlistIndex = offset;
     isMediaItem = true;
     cachedPlayMediaItem = value.items[offset];
-    playItemCached = true;
+    isPlaylistPlayRequest++;
     window.targetAPI.sendPlayRequest(playMessage, playlistIndex);
 }
 
@@ -162,7 +160,7 @@ function setPlaylistItem(index: number) {
         logger.info(`Setting playlist item to index ${index}`);
         playlistIndex = index;
         cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
-        playItemCached = true;
+        isPlaylistPlayRequest++;
         window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
         showDurationTimer.stop();
     }
