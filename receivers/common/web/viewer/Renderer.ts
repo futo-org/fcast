@@ -32,7 +32,7 @@ let cachedPlaylist: PlaylistContent = null;
 let cachedPlayMediaItem: MediaItem = null;
 let playlistIndex = 0;
 let isMediaItem = false;
-let isPlaylistPlayRequest = 0;
+let isPlaylistPlayRequestCounter = 0;
 let imageViewerPlaybackState: PlaybackState = PlaybackState.Idle;
 
 let uiHideTimer = new Timer(() => { playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut); }, 3000);
@@ -59,13 +59,13 @@ let showDurationTimer = new Timer(() => {
 }, 0, false);
 
 function onPlay(_event, value: PlayMessage) {
-    if (isPlaylistPlayRequest === 0) {
+    if (isPlaylistPlayRequestCounter === 0) {
         cachedPlayMediaItem = mediaItemFromPlayMessage(value);
         isMediaItem = false;
     }
     window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemChange, cachedPlayMediaItem)));
     logger.info('Media playback changed:', cachedPlayMediaItem);
-    isPlaylistPlayRequest = isPlaylistPlayRequest <= 0 ? 0 : isPlaylistPlayRequest - 1;
+    isPlaylistPlayRequestCounter = isPlaylistPlayRequestCounter <= 0 ? 0 : isPlaylistPlayRequestCounter - 1;
     showDurationTimer.stop();
     const src = value.url ? value.url : value.content;
 
@@ -141,7 +141,7 @@ function onPlayPlaylist(_event, value: PlaylistContent) {
     playlistIndex = offset;
     isMediaItem = true;
     cachedPlayMediaItem = value.items[offset];
-    isPlaylistPlayRequest++;
+    isPlaylistPlayRequestCounter++;
     window.targetAPI.sendPlayRequest(playMessage, playlistIndex);
 }
 
@@ -160,7 +160,7 @@ function setPlaylistItem(index: number) {
         logger.info(`Setting playlist item to index ${index}`);
         playlistIndex = index;
         cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
-        isPlaylistPlayRequest++;
+        isPlaylistPlayRequestCounter++;
         window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
         showDurationTimer.stop();
     }
