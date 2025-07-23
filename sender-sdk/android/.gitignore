@@ -9,4 +9,4 @@
 .cxx
 local.properties
 /src/jniLibs
-/src/kotlin
+/src/kotlin/uniffi

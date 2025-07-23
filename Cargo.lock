@@ -653,8 +653,10 @@ dependencies = [
  "hkdf",
  "http",
  "http-body-util",
+ "http-range",
  "hyper",
  "hyper-util",
+ "libc",
  "log",
  "log-panics",
  "mdns-sd",
@@ -972,6 +974,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-range"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21dec9db110f5f872ed9699c3ecf50cf16f423502706ba5c72462e28d3157573"
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1233,9 +1241,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.172"
+version = "0.2.174"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
+checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 
 [[package]]
 name = "linux-raw-sys"

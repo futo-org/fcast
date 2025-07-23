@@ -1,17 +1,10 @@
 use std::sync::Arc;
 
 use fcast_sender_sdk::{
-    airplay2::AirPlay2CastingDevice,
-    casting_device::{
-        CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceEventHandler,
-        CastingDeviceExt, CastingDeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
+    airplay2::AirPlay2CastingDevice, casting_device::{
+        CastConnectionState, CastingDeviceEventHandler, CastingDeviceInfo, GenericKeyEvent,
         GenericMediaEvent, PlaybackState, Source,
-    },
-    // casting_manager::{CastingManager, CastingManagerEventHandler},
-    casting_manager::CastingManager,
-    // chromecast::ChromecastCastingDevice,
-    // fcast::FCastCastingDevice,
-    IpAddr,
+    }, context::CastContext, IpAddr
 };
 use log::info;
 
@@ -129,22 +122,28 @@ async fn main() {
 
     // let manager = CastingManager::new(Arc::new(ManagerEventHandler {}));
 
-    let dev = AirPlay2CastingDevice::new(CastingDeviceInfo::airplay2(
-        "AirPlay2".to_owned(),
-        // airplay2-receiver python:
-        // vec![IpAddr::v4(192, 168, 1, 133)],
-        // 7000,
-        // UxPlay (uxplay -d -hls -p 1337):
-        vec![IpAddr::v4(192, 168, 1, 133)],
-        1338,
-        // shairport-sync:
-        // vec![IpAddr::v4(192, 168, 1, 133)],
-        // 5000,
-    ))
-    .unwrap();
+    let ctx = CastContext::new().unwrap();
 
-    let work_fut = dev.soft_start(Arc::new(EventHandler {})).unwrap();
-    tokio::spawn(work_fut);
+    // let dev = ctx.create_device(CastingDeviceInfo::airplay2(
+    //     "AirPlay2".to_owned(),
+    //     // airplay2-receiver python:
+    //     // vec![IpAddr::v4(192, 168, 1, 133)],
+    //     // 7000,
+    //     // UxPlay (uxplay -d -hls -p 1337):
+    //     vec![IpAddr::v4(192, 168, 1, 133)],
+    //     1338,
+    //     // shairport-sync:
+    //     // vec![IpAddr::v4(192, 168, 1, 133)],
+    //     // 5000,
+    // ));
+
+    let dev = ctx.create_device_from_info(CastingDeviceInfo::fcast(
+        "AirPlay2".to_owned(),
+        vec![IpAddr::v4(127, 0, 0, 1)],
+        46899,
+    ));
+
+    dev.start(Arc::new(EventHandler {})).unwrap();
 
     info!("Press enter to quit");
     std::io::stdin().read_line(&mut String::new()).unwrap();

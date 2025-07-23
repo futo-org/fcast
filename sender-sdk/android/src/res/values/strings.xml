@@ -1,0 +1,51 @@
+<resources>
+    <string name="loading">Loading</string>
+    <string name="retry">Retry</string>
+    <string name="cancel">Cancel</string>
+    <string name="close">Close</string>
+    <string name="add">Add</string>
+    <string name="confirm">Confirm</string>
+    <string name="scan_qr">Scan QR</string>
+    <string name="no_devices_found_it_may_take_a_while_for_your_device_to_show_up_please_be_patient">No devices found. It may take a while for your device to show up, please be patient</string>
+    <string name="not_ready">Not ready</string>
+    <string name="connect">Connect</string>
+    <string name="stop">Stop</string>
+    <string name="stop_casting">Stop casting</string>
+    <string name="start">Start</string>
+    <string name="add_casting_device">Add Casting Device</string>
+    <string name="error_message_here">Error message here</string>
+    <string name="name">Name</string>
+    <string name="ip">IP</string>
+    <string name="port">Port</string>
+    <string name="discovered_devices">Discovered Devices</string>
+    <string name="available_devices">Available devices</string>
+    <string name="remembered_devices">Remembered Devices</string>
+    <string name="unable_to_see_the_Device_youre_looking_for_try_add_the_device_manually">Unable to see the device you\'re looking for? Try to add the device manually.</string>
+    <string name="there_are_no_remembered_devices">There are no remembered devices</string>
+    <string name="connected_to">Connected to</string>
+    <string name="volume">Volume</string>
+    <string name="add_manually">Add manually</string>
+    <string name="go_back_to_casting_add_dialog">Go back to casting add dialog</string>
+    <string name="view_a_video_about_how_to_cast">View a video about how to cast</string>
+    <string name="view_the_fcast_technical_documentation">View the FCast technical documentation</string>
+    <string name="guide">Guide</string>
+    <string name="how_to_use_fcast_guide">How to use FCast guide</string>
+    <string name="fcast">FCast</string>
+    <string name="open_the_fcast_website">Open the FCast website</string>
+    <string name="fcast_website">FCast Website</string>
+    <string name="fcast_technical_documentation">FCast Technical Documentation</string>
+    <string name="position">Position</string>
+    <string name="cd_cast_button">Cast button</string>
+    <string name="cd_image_device">Device icon</string>
+    <string name="cd_image_loader">Loader</string>
+    <string name="cd_button_close">Close</string>
+    <string name="cd_button_play">Play</string>
+    <string name="cd_button_pause">Pause</string>
+    <string name="cd_button_stop">Stop</string>
+    <string-array name="casting_device_type_array" translatable="false">
+        <item>FCast</item>
+        <item>ChromeCast</item>
+        <item>AirPlay</item>
+    </string-array>
+    <string name="connecting_to_device">Connecting to device</string>
+</resources>

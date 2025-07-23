@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "fcast.sender"
-        minSdk = 25
+        minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
@@ -40,7 +40,6 @@ android {
 }
 
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -51,7 +50,6 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation("net.java.dev.jna:jna:5.12.0@aar")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
-    // implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4") // For async
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -60,4 +58,9 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     implementation(fileTree(mapOf("dir" to "aar", "include" to listOf("*.aar"))))
+
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.2.1")
+    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("com.google.android.material:material:1.12.0")
 }

@@ -1,7 +1,7 @@
 use std::{
-    future::Future,
+    // future::Future,
     net::SocketAddr,
-    pin::Pin,
+    // pin::Pin,
     sync::{Arc, Mutex},
 };
 
@@ -12,22 +12,22 @@ use fcast_protocol::{
     Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage,
 };
 use futures::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info /* warn */};
 use serde::Serialize;
 use tokio::{
-    io::AsyncReadExt,
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::tcp::{ReadHalf, WriteHalf},
+    runtime::Handle,
     sync::mpsc::{Receiver, Sender},
 };
 
 use crate::{
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, CastingDeviceExt, CastingDeviceInfo,
+        CastingDeviceEventHandler, /* CastingDeviceExt, */ CastingDeviceInfo,
         GenericEventSubscriptionGroup, GenericKeyEvent, GenericMediaEvent, PlaybackState, Source,
     },
-    AsyncRuntime, AsyncRuntimeError, IpAddr,
+    /* AsyncRuntime, AsyncRuntimeError, */ IpAddr,
 };
 
 #[derive(Debug, PartialEq)]
@@ -68,7 +68,8 @@ enum Command {
 }
 
 struct State {
-    runtime: AsyncRuntime,
+    // runtime: AsyncRuntime,
+    rt_handle: Handle,
     started: bool,
     command_tx: Option<Sender<Command>>,
     addresses: Vec<IpAddr>,
@@ -77,15 +78,17 @@ struct State {
 }
 
 impl State {
-    pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
-        Ok(Self {
-            runtime: AsyncRuntime::new(Some(1), "fcast-async-runtime")?,
+    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
+    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+        Self {
+            // runtime: AsyncRuntime::new(Some(1), "fcast-async-runtime")?,
+            rt_handle,
             started: false,
             command_tx: None,
             addresses: device_info.addresses,
             name: device_info.name,
             port: device_info.port,
-        })
+        }
     }
 }
 
@@ -94,13 +97,17 @@ pub struct FCastCastingDevice {
     state: Mutex<State>,
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export)]
+// #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl FCastCastingDevice {
-    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
-    pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
-        Ok(Self {
-            state: Mutex::new(State::new(device_info)?),
-        })
+    // #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
+    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+        // Ok(Self {
+        //     state: Mutex::new(State::new(device_info)?),
+        // })
+        Self {
+            state: Mutex::new(State::new(device_info, rt_handle)),
+        }
     }
 }
 
@@ -291,9 +298,9 @@ impl InnerDevice {
         let mut shared_state = SharedState::default();
 
         macro_rules! changed {
-            ($param:ident, $new:expr, $fun:ident) => {
+            ($param:ident, $new:expr, $cb:ident) => {
                 if shared_state.$param != $new {
-                    self.event_handler.$fun($new);
+                    self.event_handler.$cb($new);
                     shared_state.$param = $new;
                 }
             };
@@ -321,7 +328,9 @@ impl InnerDevice {
                         Opcode::Initial,
                         v3::InitialSenderMessage {
                             display_name: None,
-                            app_name: Some("FCast SDK".to_owned()),
+                            app_name: Some(
+                                concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION")).to_owned(),
+                            ),
                             app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                         },
                     )
@@ -641,9 +650,7 @@ impl InnerDevice {
 
 impl FCastCastingDevice {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
-        debug!("Locking state...");
         let state = self.state.lock().unwrap();
-        debug!("Locked state");
         let Some(tx) = &state.command_tx else {
             error!("Missing command tx");
             return Err(CastingDeviceError::FailedToSendCommand);
@@ -652,45 +659,45 @@ impl FCastCastingDevice {
         // TODO: `blocking_send()`? Would need to check for a runtime and use that if it exists.
         //        Can save clones when this function is called from sync environment.
         let tx = tx.clone();
-        debug!("Spawning future...");
-        state.runtime.spawn(async move { tx.send(cmd).await });
+        // state.runtime.spawn(async move { tx.send(cmd).await });
+        state.rt_handle.spawn(async move { tx.send(cmd).await });
 
         Ok(())
     }
 }
 
-impl CastingDeviceExt for FCastCastingDevice {
-    fn soft_start(
-        &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError> {
-        let mut state = self.state.lock().unwrap();
-        if state.started {
-            warn!("Failed to start: already started");
-            return Err(CastingDeviceError::DeviceAlreadyStarted);
-        }
+// impl CastingDeviceExt for FCastCastingDevice {
+//     fn soft_start(
+//         &self,
+//         event_handler: Arc<dyn CastingDeviceEventHandler>,
+//     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError> {
+//         let mut state = self.state.lock().unwrap();
+//         if state.started {
+//             warn!("Failed to start: already started");
+//             return Err(CastingDeviceError::DeviceAlreadyStarted);
+//         }
 
-        let addrs = state
-            .addresses
-            .iter()
-            .map(|a| a.into())
-            .map(|a| SocketAddr::new(a, state.port))
-            .collect::<Vec<SocketAddr>>();
+//         let addrs = state
+//             .addresses
+//             .iter()
+//             .map(|a| a.into())
+//             .map(|a| SocketAddr::new(a, state.port))
+//             .collect::<Vec<SocketAddr>>();
 
-        if addrs.is_empty() {
-            error!("Missing addresses");
-            return Err(CastingDeviceError::MissingAddresses);
-        }
+//         if addrs.is_empty() {
+//             error!("Missing addresses");
+//             return Err(CastingDeviceError::MissingAddresses);
+//         }
 
-        state.started = true;
-        info!("Starting with address list: {addrs:?}...");
+//         state.started = true;
+//         info!("Starting with address list: {addrs:?}...");
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
-        state.command_tx = Some(tx);
+//         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+//         state.command_tx = Some(tx);
 
-        Ok(Box::pin(InnerDevice::new(event_handler).work(addrs, rx)))
-    }
-}
+//         Ok(Box::pin(InnerDevice::new(event_handler).work(addrs, rx)))
+//     }
+// }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingDevice for FCastCastingDevice {
@@ -816,20 +823,32 @@ impl CastingDevice for FCastCastingDevice {
         Ok(())
     }
 
-    // fn start(&self, event_handler: Arc<dyn CastingDeviceEventHandler>) {
-    //     if let Ok(work_fut) = self.soft_start(event_handler) {
-    //         let state = self.state.lock().unwrap();
-    //         state.runtime.spawn(work_fut);
-    //         // state.runtime.spawn(async move {
-    //         //     if let Err(err) = work_fut.await {
-    //         //         error!("Error occurred when working: {err}");
-    //         //     }
-    //         // });
-    //         info!("Started");
-    //     } else {
-    //         error!("Failed to soft start self");
-    //     }
-    // }
+    fn start(
+        &self,
+        event_handler: Arc<dyn CastingDeviceEventHandler>,
+    ) -> Result<(), CastingDeviceError> {
+        let mut state = self.state.lock().unwrap();
+        if state.started {
+            return Err(CastingDeviceError::DeviceAlreadyStarted);
+        }
+
+        let addrs = crate::casting_device::ips_to_socket_addrs(&state.addresses, state.port);
+        if addrs.is_empty() {
+            return Err(CastingDeviceError::MissingAddresses);
+        }
+
+        state.started = true;
+        info!("Starting with address list: {addrs:?}...");
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+        state.command_tx = Some(tx);
+
+        state
+            .rt_handle
+            .spawn(InnerDevice::new(event_handler).work(addrs, rx));
+
+        Ok(())
+    }
 
     fn get_device_info(&self) -> CastingDeviceInfo {
         let state = self.state.lock().unwrap();
@@ -879,31 +898,5 @@ impl CastingDevice for FCastCastingDevice {
             GenericEventSubscriptionGroup::Keys => Command::UnsubscribeToAllKeyEvents,
             GenericEventSubscriptionGroup::Media => Command::UnsubscribeToAllMediaItemEvents,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::casting_device::{CastProtocolType, CastingDeviceInfo};
-
-    use super::FCastCastingDevice;
-
-    fn dummy_device_info() -> CastingDeviceInfo {
-        CastingDeviceInfo {
-            name: "dummy".to_string(),
-            r#type: CastProtocolType::FCast,
-            addresses: vec![],
-            port: 46899,
-        }
-    }
-
-    #[test]
-    fn create_casting_device() {
-        let _dev = FCastCastingDevice::new(dummy_device_info());
-    }
-
-    #[tokio::test]
-    async fn create_casting_device_from_runtime() {
-        let _dev = FCastCastingDevice::new(dummy_device_info());
     }
 }

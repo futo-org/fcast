@@ -48,13 +48,28 @@ fn main() -> Result<()> {
             }
             .run()?;
             let sh = xtask::sh();
-            let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android"));
-            eprintln!("{:?}", sh.current_dir());
-            cmd!(sh, "./gradlew assembleRelease").run()?;
-            sh.copy_file(
-                "build/outputs/aar/fcast-android-sender-sdk-release.aar",
-                "../examples/android/app/aar",
-            )?;
+            {
+                let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android"));
+                sh.create_dir("../examples/android/app/aar")?;
+                sh.create_dir("../examples/android-views/app/aar")?;
+                cmd!(sh, "./gradlew assembleRelease").run()?;
+                sh.copy_file(
+                    "build/outputs/aar/fcast-android-sender-sdk-release.aar",
+                    "../examples/android/app/aar/fcast-android-sender-sdk-release.aar",
+                )?;
+                sh.copy_file(
+                    "build/outputs/aar/fcast-android-sender-sdk-release.aar",
+                    "../examples/android-views/app/aar/fcast-android-sender-sdk-release.aar",
+                )?;
+            }
+            // {
+            //     let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android-layouts"));
+            //     cmd!(sh, "./gradlew assembleRelease").run()?;
+            //     sh.copy_file(
+            //         "build/outputs/aar/fcast-android-sender-sdk-layouts-release.aar",
+            //         "../examples/android-views/app/aar/fcast-android-sender-sdk-layouts-release.aar",
+            //     )?;
+            // }
             Ok(())
         }
     }

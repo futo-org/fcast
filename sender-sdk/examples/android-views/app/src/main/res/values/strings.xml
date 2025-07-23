@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Android Views Example</string>
+    <string name="cast_local_file">Cast local file</string>
+</resources>

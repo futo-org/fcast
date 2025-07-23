@@ -4,14 +4,27 @@ pub mod airplay1;
 pub mod airplay2;
 #[cfg(any(feature = "airplay1", feature = "airplay2"))]
 pub(crate) mod airplay_common;
-#[cfg(any(feature = "discovery", feature = "http-file-server"))]
-pub mod casting_manager;
 #[cfg(feature = "chromecast")]
 pub mod chromecast;
+#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+pub mod context;
+#[cfg(all(any_protocol, feature = "discovery"))]
+pub mod discovery;
 #[cfg(feature = "fcast")]
 pub mod fcast;
 #[cfg(feature = "airplay2")]
 pub(crate) mod utils;
+
+#[cfg(feature = "http-file-server")]
+pub mod file_server;
+
+#[cfg(all(any_protocol, feature = "discovery_types"))]
+#[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
+pub trait DeviceDiscovererEventHandler: Send + Sync {
+    fn device_available(&self, device_info: casting_device::CastingDeviceInfo);
+    fn device_removed(&self, device_name: String);
+    fn device_changed(&self, device_info: casting_device::CastingDeviceInfo);
+}
 
 #[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
 use std::future::Future;
@@ -22,9 +35,9 @@ pub mod casting_device;
 #[cfg(any_protocol)]
 mod any_protocol_prelude {
     pub use anyhow::{anyhow, bail};
+    pub use log::{error, info};
     pub use std::{net::SocketAddr, str::FromStr, time::Duration};
     pub use tokio::net::TcpStream;
-    pub use log::{error, info};
 }
 
 #[cfg(any_protocol)]
@@ -78,6 +91,13 @@ impl AsyncRuntime {
         match self {
             AsyncRuntime::Handle(h) => h.spawn(future),
             AsyncRuntime::Runtime(rt) => rt.spawn(future),
+        }
+    }
+
+    pub fn handle(&self) -> runtime::Handle {
+        match self {
+            AsyncRuntime::Handle(handle) => handle.clone(),
+            AsyncRuntime::Runtime(runtime) => runtime.handle().clone(),
         }
     }
 }
@@ -297,7 +317,7 @@ pub(crate) async fn try_connect_tcp<T>(
             bail!("Exceeded maximum retries ({max_retires})");
         }
 
-        info!("Trying to connect...");
+        info!("Trying to connect to {addrs:?}...");
         tokio::select! {
             stream = tokio::time::timeout(
                 Duration::from_secs(1),

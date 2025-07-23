@@ -1,6 +1,5 @@
 use crate::IpAddr;
-use std::future::Future;
-use std::pin::Pin;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -26,6 +25,13 @@ pub enum CastProtocolType {
     FCast,
 }
 
+pub(crate) fn ips_to_socket_addrs(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> {
+    ips.iter()
+        .map(|a| a.into())
+        .map(|a| SocketAddr::new(a, port))
+        .collect()
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct CastingDeviceInfo {
     pub name: String,
@@ -45,6 +51,95 @@ macro_rules! dev_info_constructor {
             }
         }
     };
+}
+
+#[cfg(feature = "fcast")]
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+pub fn device_info_from_url(url: String) -> Option<CastingDeviceInfo> {
+    #[cfg(feature = "fcast")]
+    #[derive(serde::Deserialize)]
+    struct FCastService {
+        port: u16,
+        r#type: i32,
+    }
+
+    #[cfg(feature = "fcast")]
+    #[derive(serde::Deserialize)]
+    struct FCastNetworkConfig {
+        name: String,
+        addresses: Vec<String>,
+        services: Vec<FCastService>,
+    }
+
+    let url = match url::Url::parse(&url) {
+        Ok(uri) => uri,
+        Err(err) => {
+            log::error!("Invalid URL: {err}");
+            return None;
+        }
+    };
+
+    if url.scheme() != "fcast" {
+        log::error!("Expected URL scheme to be fcast, was {}", url.scheme());
+        return None;
+    }
+
+    if url.host_str() != Some("r") {
+        log::error!("Expected URL type to be r");
+        return None;
+    }
+
+    let connection_info = url.path_segments()?.next()?;
+
+    use base64::{
+        alphabet::URL_SAFE,
+        engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
+        Engine as _,
+    };
+    let b64_engine = GeneralPurpose::new(
+        &URL_SAFE,
+        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+    let json = match b64_engine.decode(connection_info) {
+        Ok(json) => json,
+        Err(err) => {
+            log::error!("Failed to decode base64: {err}");
+            return None;
+        }
+    };
+    let found_info: FCastNetworkConfig = match serde_json::from_slice(&json) {
+        Ok(info) => info,
+        Err(err) => {
+            log::error!("Failed to decode network config json: {err}");
+            return None;
+        }
+    };
+
+    let tcp_service = 'out: {
+        for service in found_info.services {
+            if service.r#type == 0 {
+                break 'out service;
+            }
+        }
+        log::error!("No TCP service found in network config");
+        return None;
+    };
+
+    let addrs = found_info
+        .addresses
+        .iter()
+        .map(|a| a.parse::<std::net::IpAddr>())
+        .map(|a| match a {
+            Ok(a) => Some(IpAddr::from(&a)),
+            Err(_) => None,
+        })
+        .collect::<Option<Vec<IpAddr>>>()?;
+
+    Some(CastingDeviceInfo::fcast(
+        found_info.name,
+        addrs,
+        tcp_service.port,
+    ))
 }
 
 impl CastingDeviceInfo {
@@ -134,17 +229,17 @@ pub enum CastingDeviceError {
 }
 
 /// # Internal. Do not use.
-#[cfg(any_protocol)]
-pub trait CastingDeviceExt: Send + Sync {
-    fn soft_start(
-        &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError>;
-}
+// #[cfg(any_protocol)]
+// pub trait CastingDeviceExt: Send + Sync {
+//     fn soft_start(
+//         &self,
+//         event_handler: Arc<dyn CastingDeviceEventHandler>,
+//     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError>;
+// }
 
 /// A generic interface for casting devices.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-pub trait CastingDevice: Send + Sync + CastingDeviceExt {
+pub trait CastingDevice: Send + Sync /* + CastingDeviceExt */ {
     // NOTE: naming it `protocol` causes iOS builds to fail
     fn casting_protocol(&self) -> CastProtocolType;
     fn is_ready(&self) -> bool;
@@ -183,8 +278,13 @@ pub trait CastingDevice: Send + Sync + CastingDeviceExt {
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError>;
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
+    // TODO: is `disconnect` more appropriate
     fn stop(&self) -> Result<(), CastingDeviceError>;
-    // fn start(&self, event_handler: Arc<dyn CastingDeviceEventHandler>);
+    // TODO: same here but with `connect`
+    fn start(
+        &self,
+        event_handler: Arc<dyn CastingDeviceEventHandler>,
+    ) -> Result<(), CastingDeviceError>;
     fn get_device_info(&self) -> CastingDeviceInfo;
     fn get_addresses(&self) -> Vec<IpAddr>;
     fn set_addresses(&self, addrs: Vec<IpAddr>);

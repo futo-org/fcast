@@ -1,10 +1,10 @@
 use crate::{
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, CastingDeviceExt, CastingDeviceInfo,
-        GenericEventSubscriptionGroup, PlaybackState, Source,
+        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup, PlaybackState,
+        Source,
     },
-    AsyncRuntime, AsyncRuntimeError, IpAddr,
+    IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
 use chromecast_protocol::{self as protocol, prost::Message, protos};
@@ -15,15 +15,14 @@ use rustls_pki_types::ServerName;
 use serde::Serialize;
 use serde_json as json;
 use std::{
-    future::Future,
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    runtime::Handle,
     sync::mpsc::{Receiver, Sender},
 };
 use tokio_rustls::{
@@ -48,7 +47,8 @@ impl RequestId {
 }
 
 struct State {
-    runtime: AsyncRuntime,
+    // runtime: AsyncRuntime,
+    rt_handle: Handle,
     started: bool,
     command_tx: Option<Sender<Command>>,
     addresses: Vec<IpAddr>,
@@ -57,15 +57,21 @@ struct State {
 }
 
 impl State {
-    pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
-        Ok(Self {
-            runtime: AsyncRuntime::new(Some(1), "chromecast-async-runtime")?,
+    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
+    pub fn new(
+        device_info: CastingDeviceInfo,
+        rt_handle: Handle,
+        // ) -> Result<Self, AsyncRuntimeError> {
+    ) -> Self {
+        Self {
+            // runtime: AsyncRuntime::new(Some(1), "chromecast-async-runtime")?,
+            rt_handle,
             started: false,
             command_tx: None,
             addresses: device_info.addresses,
             name: device_info.name,
             port: device_info.port,
-        })
+        }
     }
 }
 
@@ -100,13 +106,14 @@ pub struct ChromecastCastingDevice {
     state: Mutex<State>,
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export)]
+// #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl ChromecastCastingDevice {
-    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
-    pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
-        Ok(Self {
-            state: Mutex::new(State::new(device_info)?),
-        })
+    // #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
+    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+        Self {
+            state: Mutex::new(State::new(device_info, rt_handle)),
+        }
     }
 }
 
@@ -641,44 +648,45 @@ impl ChromecastCastingDevice {
         // TODO: `blocking_send()`? Would need to check for a runtime and use that if it exists.
         //        Can save clones when this function is called from sync environment.
         let tx = tx.clone();
-        state.runtime.spawn(async move { tx.send(cmd).await });
+        // state.runtime.spawn(async move { tx.send(cmd).await });
+        state.rt_handle.spawn(async move { tx.send(cmd).await });
 
         Ok(())
     }
 }
 
-impl CastingDeviceExt for ChromecastCastingDevice {
-    fn soft_start(
-        &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError> {
-        let mut state = self.state.lock().unwrap();
-        if state.started {
-            warn!("Failed to start: already started");
-            return Err(CastingDeviceError::DeviceAlreadyStarted);
-        }
+// impl CastingDeviceExt for ChromecastCastingDevice {
+//     fn soft_start(
+//         &self,
+//         event_handler: Arc<dyn CastingDeviceEventHandler>,
+//     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError> {
+//         let mut state = self.state.lock().unwrap();
+//         if state.started {
+//             warn!("Failed to start: already started");
+//             return Err(CastingDeviceError::DeviceAlreadyStarted);
+//         }
 
-        let addrs = state
-            .addresses
-            .iter()
-            .map(|a| a.into())
-            .map(|a| SocketAddr::new(a, state.port))
-            .collect::<Vec<SocketAddr>>();
+//         let addrs = state
+//             .addresses
+//             .iter()
+//             .map(|a| a.into())
+//             .map(|a| SocketAddr::new(a, state.port))
+//             .collect::<Vec<SocketAddr>>();
 
-        if addrs.is_empty() {
-            error!("Missing addresses");
-            return Err(CastingDeviceError::MissingAddresses);
-        }
+//         if addrs.is_empty() {
+//             error!("Missing addresses");
+//             return Err(CastingDeviceError::MissingAddresses);
+//         }
 
-        state.started = true;
-        info!("Starting with address list: {addrs:?}...");
+//         state.started = true;
+//         info!("Starting with address list: {addrs:?}...");
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
-        state.command_tx = Some(tx);
+//         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+//         state.command_tx = Some(tx);
 
-        Ok(Box::pin(InnerDevice::new(rx, event_handler).work(addrs)))
-    }
-}
+//         Ok(Box::pin(InnerDevice::new(rx, event_handler).work(addrs)))
+//     }
+// }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingDevice for ChromecastCastingDevice {
@@ -796,20 +804,32 @@ impl CastingDevice for ChromecastCastingDevice {
         Ok(())
     }
 
-    // fn start(&self, event_handler: Arc<dyn CastingDeviceEventHandler>) {
-    //     if let Ok(work_fut) = self.soft_start(event_handler) {
-    //         let state = self.state.lock().unwrap();
-    //         state.runtime.spawn(work_fut);
-    //         // state.runtime.spawn(async move {
-    //         //     if let Err(err) = work_fut.await {
-    //         //         error!("Error occurred when working: {err}");
-    //         //     }
-    //         // });
-    //         info!("Started");
-    //     } else {
-    //         error!("Failed to soft start self");
-    //     }
-    // }
+    fn start(
+        &self,
+        event_handler: Arc<dyn CastingDeviceEventHandler>,
+    ) -> Result<(), CastingDeviceError> {
+        let mut state = self.state.lock().unwrap();
+        if state.started {
+            return Err(CastingDeviceError::DeviceAlreadyStarted);
+        }
+
+        let addrs = crate::casting_device::ips_to_socket_addrs(&state.addresses, state.port);
+        if addrs.is_empty() {
+            return Err(CastingDeviceError::MissingAddresses);
+        }
+
+        state.started = true;
+        info!("Starting with address list: {addrs:?}...");
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+        state.command_tx = Some(tx);
+
+        state
+            .rt_handle
+            .spawn(InnerDevice::new(rx, event_handler).work(addrs));
+
+        Ok(())
+    }
 
     fn get_device_info(&self) -> CastingDeviceInfo {
         let state = self.state.lock().unwrap();

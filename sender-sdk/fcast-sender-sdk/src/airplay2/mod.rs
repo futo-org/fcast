@@ -3,7 +3,6 @@ mod tlv8;
 
 use std::{
     collections::HashMap,
-    future::Future,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -15,7 +14,7 @@ use chacha20poly1305::ChaCha20Poly1305;
 use ed25519_dalek::ed25519::signature::Signer;
 use ed25519_dalek::Verifier;
 use hex_literal::hex;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use num_bigint::BigUint;
 use rand_pcg::rand_core::RngCore;
 use rtsp::StatusCode;
@@ -24,6 +23,7 @@ use srp_client::SrpClient;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    runtime::Handle,
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -35,10 +35,10 @@ use crate::{
     airplay_common::{self, AirPlayFeatures},
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, CastingDeviceExt, CastingDeviceInfo,
+        CastingDeviceEventHandler, /* CastingDeviceExt, */ CastingDeviceInfo,
         GenericEventSubscriptionGroup,
     },
-    AsyncRuntime, AsyncRuntimeError, IpAddr,
+    IpAddr,
 };
 
 const DEVICE_ID: &str = "C9635ED0964902E0";
@@ -1290,7 +1290,8 @@ impl InnerDevice {
 }
 
 struct State {
-    runtime: AsyncRuntime,
+    // runtime: AsyncRuntime,
+    rt_handle: Handle,
     started: bool,
     command_tx: Option<Sender<Command>>,
     addresses: Vec<IpAddr>,
@@ -1299,15 +1300,17 @@ struct State {
 }
 
 impl State {
-    pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
-        Ok(Self {
-            runtime: AsyncRuntime::new(Some(1), "airplay2-async-runtime")?,
+    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
+    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+        Self {
+            // runtime: AsyncRuntime::new(Some(1), "airplay2-async-runtime")?,
+            rt_handle,
             started: false,
             command_tx: None,
             addresses: device_info.addresses,
             name: device_info.name,
             port: device_info.port,
-        })
+        }
     }
 }
 
@@ -1316,49 +1319,53 @@ pub struct AirPlay2CastingDevice {
     state: Mutex<State>,
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export)]
+// #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl AirPlay2CastingDevice {
-    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
-    pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
-        Ok(Self {
-            state: Mutex::new(State::new(device_info)?),
-        })
+    // #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
+    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+        // Ok(Self {
+        //     state: Mutex::new(State::new(device_info)?),
+        // })
+        Self {
+            state: Mutex::new(State::new(device_info, rt_handle)),
+        }
     }
 }
 
-impl CastingDeviceExt for AirPlay2CastingDevice {
-    fn soft_start(
-        &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
-    ) -> Result<std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError>
-    {
-        let mut state = self.state.lock().unwrap();
-        if state.started {
-            warn!("Failed to start: already started");
-            return Err(CastingDeviceError::DeviceAlreadyStarted);
-        }
+// impl CastingDeviceExt for AirPlay2CastingDevice {
+//     fn soft_start(
+//         &self,
+//         event_handler: Arc<dyn CastingDeviceEventHandler>,
+//     ) -> Result<std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError>
+//     {
+//         let mut state = self.state.lock().unwrap();
+//         if state.started {
+//             warn!("Failed to start: already started");
+//             return Err(CastingDeviceError::DeviceAlreadyStarted);
+//         }
 
-        let addrs = state
-            .addresses
-            .iter()
-            .map(|a| a.into())
-            .map(|a| SocketAddr::new(a, state.port))
-            .collect::<Vec<SocketAddr>>();
+//         let addrs = state
+//             .addresses
+//             .iter()
+//             .map(|a| a.into())
+//             .map(|a| SocketAddr::new(a, state.port))
+//             .collect::<Vec<SocketAddr>>();
 
-        if addrs.is_empty() {
-            error!("Missing addresses");
-            return Err(CastingDeviceError::MissingAddresses);
-        }
+//         if addrs.is_empty() {
+//             error!("Missing addresses");
+//             return Err(CastingDeviceError::MissingAddresses);
+//         }
 
-        state.started = true;
-        info!("Starting with address list: {addrs:?}...");
+//         state.started = true;
+//         info!("Starting with address list: {addrs:?}...");
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
-        state.command_tx = Some(tx);
+//         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+//         state.command_tx = Some(tx);
 
-        Ok(Box::pin(InnerDevice::new(event_handler).work(addrs, rx)))
-    }
-}
+//         Ok(Box::pin(InnerDevice::new(event_handler).work(addrs, rx)))
+//     }
+// }
 
 impl AirPlay2CastingDevice {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
@@ -1372,7 +1379,8 @@ impl AirPlay2CastingDevice {
         // TODO: `blocking_send()`? Would need to check for a runtime and use that if it exists.
         //        Can save clones when this function is called from sync environment.
         let tx = tx.clone();
-        state.runtime.spawn(async move { tx.send(cmd).await });
+        // state.runtime.spawn(async move { tx.send(cmd).await });
+        state.rt_handle.spawn(async move { tx.send(cmd).await });
 
         Ok(())
     }
@@ -1488,9 +1496,32 @@ impl CastingDevice for AirPlay2CastingDevice {
         Ok(())
     }
 
-    // fn start(&self, _event_handler: Arc<dyn CastingDeviceEventHandler>) {
-    //     todo!()
-    // }
+    fn start(
+        &self,
+        event_handler: Arc<dyn CastingDeviceEventHandler>,
+    ) -> Result<(), CastingDeviceError> {
+        let mut state = self.state.lock().unwrap();
+        if state.started {
+            return Err(CastingDeviceError::DeviceAlreadyStarted);
+        }
+
+        let addrs = crate::casting_device::ips_to_socket_addrs(&state.addresses, state.port);
+        if addrs.is_empty() {
+            return Err(CastingDeviceError::MissingAddresses);
+        }
+
+        state.started = true;
+        info!("Starting with address list: {addrs:?}...");
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+        state.command_tx = Some(tx);
+
+        state
+            .rt_handle
+            .spawn(InnerDevice::new(event_handler).work(addrs, rx));
+
+        Ok(())
+    }
 
     fn get_device_info(&self) -> CastingDeviceInfo {
         todo!()

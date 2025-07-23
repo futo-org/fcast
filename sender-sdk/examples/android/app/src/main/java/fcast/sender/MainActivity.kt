@@ -35,8 +35,6 @@ import fcast.sender.ui.theme.FCastSenderTheme
 import uniffi.fcast_sender_sdk.CastConnectionState
 import uniffi.fcast_sender_sdk.CastingDevice
 import uniffi.fcast_sender_sdk.CastingDeviceEventHandler
-import uniffi.fcast_sender_sdk.CastingManager
-import uniffi.fcast_sender_sdk.CastingManagerEventHandler
 import uniffi.fcast_sender_sdk.GenericKeyEvent
 import uniffi.fcast_sender_sdk.GenericMediaEvent
 import uniffi.fcast_sender_sdk.PlaybackState
@@ -44,8 +42,14 @@ import uniffi.fcast_sender_sdk.Source
 import uniffi.fcast_sender_sdk.initLogger
 import uniffi.fcast_sender_sdk.IpAddr
 import uniffi.fcast_sender_sdk.urlFormatIpAddr
+import uniffi.fcast_sender_sdk.deviceInfoFromUrl
+import org.fcast.sender_sdk.NsdDeviceDiscoverer
+import uniffi.fcast_sender_sdk.CastContext
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import uniffi.fcast_sender_sdk.CastingDeviceInfo
+import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
+import uniffi.fcast_sender_sdk.FileServer
 
 data class CastingState(
     var volume: MutableState<Double> = mutableDoubleStateOf(1.0),
@@ -128,57 +132,44 @@ class EventHandler : CastingDeviceEventHandler {
     }
 }
 
-class ManagerEventHandler(
+class DiscoveryEventHandler(
     private val devices: MutableState<List<CastingDevice>>,
-) : CastingManagerEventHandler {
-    override fun deviceAdded(device: CastingDevice) {
-        var updated = false
-        val devName = device.name()
-        val newList = buildList {
-            devices.value.forEach {
-                if (it.name() == devName) {
-                    updated = true
-                    this += device
-                } else {
-                    this += it
-                }
-            }
-        }
-
-        if (!updated) {
-            devices.value = newList.toList() + device
-        } else {
-            devices.value = newList.toList()
-        }
-
-        println("Device added: $devName")
+    private val ctx: CastContext
+) : DeviceDiscovererEventHandler {
+    override fun deviceAvailable(deviceInfo: CastingDeviceInfo) {
+        devices.value += ctx.createDeviceFromInfo(deviceInfo)
     }
 
-    override fun deviceRemoved(device: CastingDevice) {
-        val devName = device.name()
-        devices.value = devices.value.filter { it.name() != devName }
-        println("Device removed: $devName")
+    override fun deviceChanged(deviceInfo: CastingDeviceInfo) {
+        devices.value.find { it.name() == deviceInfo.name }?.let {
+            it.setAddresses(deviceInfo.addresses)
+            it.setPort(deviceInfo.port)
+        }
     }
 
-    override fun deviceChanged(device: CastingDevice) {
-        println("Device changed `${device.name()}`")
+    override fun deviceRemoved(deviceName: String) {
+        devices.value.filter { it.name() != deviceName }.let {
+            devices.value = it
+        }
     }
 }
 
 class MainActivity : ComponentActivity() {
-    private val eventHandler: EventHandler = EventHandler()
+    private val eventHandler = EventHandler()
+    private val castContext = CastContext()
+    private val fileServer = castContext.startFileServer()
     private var activeCastingDevice: MutableState<CastingDevice?> = mutableStateOf(null)
     private val devices: MutableState<List<CastingDevice>> = mutableStateOf(listOf())
-    private val castingManager: CastingManager
-    private val barcodeLauncher = registerForActivityResult(ScanContract())
-    { result ->
-        when (val contents = result.contents) {
-            null -> {
-                println("Failed to get contents from QR scan")
-            }
-
-            else -> {
-                tryConnectFromUrl(contents)
+    private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
+        result.contents?.let {
+            deviceInfoFromUrl(it)?.let { deviceInfo ->
+                val device = castContext.createDeviceFromInfo(deviceInfo);
+                try {
+                    device.start(eventHandler)
+                    activeCastingDevice.value = device;
+                } catch (e: Exception) {
+                    println("Failed to start device: {e}")
+                }
             }
         }
     }
@@ -187,37 +178,22 @@ class MainActivity : ComponentActivity() {
         try {
             val uri = maybeUri!!
             val type = this.contentResolver.getType(uri)!!
-            val inputStream = this.contentResolver.openInputStream(uri)!!
-            val bytes = inputStream.readBytes()
-            tryHostCastFile(type, bytes)
+            val parcelFd = this.contentResolver.openFileDescriptor(uri, "r")
+            val fd = parcelFd?.detachFd() ?: throw Exception("asdf")
+            activeCastingDevice.value?.let { device ->
+                val entry = fileServer.serveFile(fd)
+                val url =
+                    "http://${urlFormatIpAddr(eventHandler.castingState.localAddress!!)}:${entry.port}/${entry.location}"
+                device.loadUrl(type, url, null, null)
+            }
         } catch (e: Exception) {
             println("Failed to read $maybeUri: $e")
         }
     }
+    private lateinit var deviceDiscoverer: NsdDeviceDiscoverer
 
     init {
-        try {
-            castingManager =
-                CastingManager(ManagerEventHandler(devices))
-        } catch (e: Exception) {
-            println("Failed to create casting manager: $e")
-            throw e
-        }
-    }
-
-    private fun tryHostCastFile(type: String, bytes: ByteArray) {
-        when (activeCastingDevice.value) {
-            is CastingDevice -> {
-                val entry = castingManager.hostFile(bytes)
-                val url =
-                    "http://${urlFormatIpAddr(eventHandler.castingState.localAddress!!)}:${entry.port}/${entry.location}"
-                activeCastingDevice.value!!.loadImage(type, url)
-            }
-
-            else -> {
-                println("No active casting device")
-            }
-        }
+        initLogger()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -239,18 +215,9 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    private fun tryConnectFromUrl(url: String) {
-        try {
-            val device = castingManager.handleUrl(url)
-            castingManager.connectDevice(device, eventHandler)
-        } catch (e: Exception) {
-            println("Failed to connect from url: $e")
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        initLogger()
+        deviceDiscoverer = NsdDeviceDiscoverer(this, DiscoveryEventHandler(devices, castContext))
         enableEdgeToEdge()
         setContent {
             FCastSenderTheme {
@@ -262,7 +229,7 @@ class MainActivity : ComponentActivity() {
                         devices,
                         connectDevice = { device ->
                             try {
-                                castingManager.connectDevice(device, eventHandler)
+                                device.start(eventHandler)
                                 activeCastingDevice.value = device
                             } catch (e: Exception) {
                                 println("Failed to connect to device: $e")
@@ -281,7 +248,8 @@ class MainActivity : ComponentActivity() {
                             barcodeLauncher.launch(ScanOptions().setOrientationLocked(false))
                         },
                         selectMedia = {
-                            selectMediaIntent.launch("image/*,video/*")
+                            // selectMediaIntent.launch("image/*,video/*,audio/*") // Doesn't show quick select for video and audio, only the first type in the list...
+                            selectMediaIntent.launch("*/*")
                         }
                     )
                 }
@@ -439,7 +407,8 @@ fun View(
                     Text("Cast local file")
                 }
                 if (state.playbackState.value == PlaybackState.PLAYING
-                    || state.playbackState.value == PlaybackState.PAUSED) {
+                    || state.playbackState.value == PlaybackState.PAUSED
+                ) {
                     Button(onClick = {
                         castingDevice.stopPlayback()
                     }) {

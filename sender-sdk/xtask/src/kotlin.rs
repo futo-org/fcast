@@ -34,7 +34,8 @@ fn build_for_android_target(
     let _p = sh.push_dir(workspace::root_path()?);
     cmd!(
         sh,
-        "cargo ndk --target {target} -o {dest_dir} build --profile {profile} -p {package_name}"
+        // "cargo ndk --target {target} -o {dest_dir} build --profile {profile} -p {package_name}"
+        "cargo ndk --target {target} -o {dest_dir} build --profile {profile} -p {package_name} --no-default-features --features _android_defaults"
     )
     .run()?;
 
