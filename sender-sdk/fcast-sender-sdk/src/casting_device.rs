@@ -228,18 +228,9 @@ pub enum CastingDeviceError {
     UnsupportedSubscription,
 }
 
-/// # Internal. Do not use.
-// #[cfg(any_protocol)]
-// pub trait CastingDeviceExt: Send + Sync {
-//     fn soft_start(
-//         &self,
-//         event_handler: Arc<dyn CastingDeviceEventHandler>,
-//     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError>;
-// }
-
 /// A generic interface for casting devices.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-pub trait CastingDevice: Send + Sync /* + CastingDeviceExt */ {
+pub trait CastingDevice: Send + Sync {
     // NOTE: naming it `protocol` causes iOS builds to fail
     fn casting_protocol(&self) -> CastProtocolType;
     fn is_ready(&self) -> bool;

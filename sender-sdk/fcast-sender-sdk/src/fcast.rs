@@ -68,7 +68,6 @@ enum Command {
 }
 
 struct State {
-    // runtime: AsyncRuntime,
     rt_handle: Handle,
     started: bool,
     command_tx: Option<Sender<Command>>,
@@ -78,10 +77,8 @@ struct State {
 }
 
 impl State {
-    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
     pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
         Self {
-            // runtime: AsyncRuntime::new(Some(1), "fcast-async-runtime")?,
             rt_handle,
             started: false,
             command_tx: None,
@@ -97,14 +94,8 @@ pub struct FCastCastingDevice {
     state: Mutex<State>,
 }
 
-// #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl FCastCastingDevice {
-    // #[cfg_attr(feature = "uniffi", uniffi::constructor)]
-    // pub fn new(device_info: CastingDeviceInfo) -> Result<Self, AsyncRuntimeError> {
     pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
-        // Ok(Self {
-        //     state: Mutex::new(State::new(device_info)?),
-        // })
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
         }
@@ -659,45 +650,11 @@ impl FCastCastingDevice {
         // TODO: `blocking_send()`? Would need to check for a runtime and use that if it exists.
         //        Can save clones when this function is called from sync environment.
         let tx = tx.clone();
-        // state.runtime.spawn(async move { tx.send(cmd).await });
         state.rt_handle.spawn(async move { tx.send(cmd).await });
 
         Ok(())
     }
 }
-
-// impl CastingDeviceExt for FCastCastingDevice {
-//     fn soft_start(
-//         &self,
-//         event_handler: Arc<dyn CastingDeviceEventHandler>,
-//     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>, CastingDeviceError> {
-//         let mut state = self.state.lock().unwrap();
-//         if state.started {
-//             warn!("Failed to start: already started");
-//             return Err(CastingDeviceError::DeviceAlreadyStarted);
-//         }
-
-//         let addrs = state
-//             .addresses
-//             .iter()
-//             .map(|a| a.into())
-//             .map(|a| SocketAddr::new(a, state.port))
-//             .collect::<Vec<SocketAddr>>();
-
-//         if addrs.is_empty() {
-//             error!("Missing addresses");
-//             return Err(CastingDeviceError::MissingAddresses);
-//         }
-
-//         state.started = true;
-//         info!("Starting with address list: {addrs:?}...");
-
-//         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
-//         state.command_tx = Some(tx);
-
-//         Ok(Box::pin(InnerDevice::new(event_handler).work(addrs, rx)))
-//     }
-// }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastingDevice for FCastCastingDevice {
