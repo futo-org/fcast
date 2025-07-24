@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use fcast_sender_sdk::{
-    airplay2::AirPlay2CastingDevice, casting_device::{
+    /* airplay2::AirPlay2CastingDevice, */ casting_device::{
         CastConnectionState, CastingDeviceEventHandler, CastingDeviceInfo, GenericKeyEvent,
         GenericMediaEvent, PlaybackState, Source,
     }, context::CastContext, IpAddr
@@ -47,34 +47,6 @@ impl CastingDeviceEventHandler for EventHandler {
         info!("Media event: {event:?}");
     }
 }
-
-// struct ManagerEventHandler {}
-
-// impl CastingManagerEventHandler for ManagerEventHandler {
-//     fn device_added(&self, device: Arc<dyn CastingDevice>) {
-//         info!("Device added: {}", device.name());
-//     }
-
-//     fn device_removed(&self, device: Arc<dyn CastingDevice>) {
-//         info!("Device removed: {}", device.name());
-//     }
-
-//     fn device_connected(&self, device: Arc<dyn CastingDevice>) {
-//         info!("Device connected: {}", device.name());
-//     }
-
-//     fn device_failed_to_run(&self,device:Arc<dyn CastingDevice>,reason:String) {
-//         todo!()
-//     }
-
-//     fn device_changed(&self, device: Arc<dyn CastingDevice>) {
-//         todo!()
-//     }
-
-//     fn device_disconnected(&self,device:Arc<dyn CastingDevice>) {
-//         todo!()
-//     }
-// }
 
 #[tokio::main]
 async fn main() {

@@ -1,3 +1,28 @@
+//! # FCast Sender SDK
+//!
+//! An all in one SDK for casting media to [FCast], [AirPlay] (soon), [Chromecast] and [Google Cast] receiver devices.
+//!
+//! ## Supported languages
+//!
+//! + Rust
+//! + Kotlin
+//! + Swift (soon)
+//!
+//! ## Features
+//!
+//! + Automatic discovery of devices on the network via [mDNS]
+//! + HTTP file server for easy casting of local media files
+//!
+//! ## Example usage
+//!
+//! TODO
+//!
+//! [FCast]: https://fcast.org/
+//! [AirPlay]: https://www.apple.com/airplay/
+//! [Chromecast]: https://en.wikipedia.org/wiki/Chromecast
+//! [Google Cast]: https://www.android.com/better-together/#cast
+//! [mDNS]: https://en.wikipedia.org/wiki/Multicast_DNS
+
 #[cfg(feature = "airplay1")]
 pub mod airplay1;
 #[cfg(feature = "airplay2")]
@@ -6,7 +31,7 @@ pub mod airplay2;
 pub(crate) mod airplay_common;
 #[cfg(feature = "chromecast")]
 pub mod chromecast;
-#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+#[cfg(any(feature = "http-file-server", any_protocol))]
 pub mod context;
 #[cfg(all(any_protocol, feature = "discovery"))]
 pub mod discovery;
@@ -18,17 +43,23 @@ pub(crate) mod utils;
 #[cfg(feature = "http-file-server")]
 pub mod file_server;
 
+/// Event handler for device discovery.
 #[cfg(all(any_protocol, feature = "discovery_types"))]
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait DeviceDiscovererEventHandler: Send + Sync {
+    /// Called when a device is found.
     fn device_available(&self, device_info: casting_device::CastingDeviceInfo);
+    /// Called when a device is removed or lost.
     fn device_removed(&self, device_name: String);
+    /// Called when a device has changed.
+    ///
+    /// The `name` field of `device_info` will correspond to a device announced from `device_available`.
     fn device_changed(&self, device_info: casting_device::CastingDeviceInfo);
 }
 
-#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+#[cfg(all(feature = "discovery", any_protocol))]
 use std::future::Future;
-#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+#[cfg(any(feature = "http-file-server", any_protocol))]
 use tokio::runtime;
 #[cfg(any_protocol)]
 pub mod casting_device;
@@ -55,13 +86,13 @@ pub enum AsyncRuntimeError {
     FailedToBuild(#[from] std::io::Error),
 }
 
-#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+#[cfg(any(feature = "http-file-server", any_protocol))]
 pub(crate) enum AsyncRuntime {
     Handle(runtime::Handle),
     Runtime(runtime::Runtime),
 }
 
-#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+#[cfg(any(feature = "http-file-server", any_protocol))]
 impl AsyncRuntime {
     pub fn new(threads: Option<usize>, name: &str) -> Result<Self, AsyncRuntimeError> {
         Ok(match runtime::Handle::try_current() {
@@ -83,6 +114,7 @@ impl AsyncRuntime {
         })
     }
 
+    #[cfg(all(feature = "discovery", any_protocol))]
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,

@@ -52,11 +52,9 @@ impl CastContext {
     }
 }
 
-// #[cfg(all(feature = "discovery", any_protocol))]
 #[cfg(all(feature = "discovery", any_protocol))]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
-    // pub fn start_discovery(&self, event_handler: Arc<dyn discovery::DeviceDiscovererEventHandler>) {
     pub fn start_discovery(&self, event_handler: Arc<dyn crate::DeviceDiscovererEventHandler>) {
         self.runtime
             .spawn(discovery::discover_devices(event_handler));
