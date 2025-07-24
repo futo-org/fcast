@@ -1,3 +1,7 @@
+//! # FCast Protocol
+//!
+//! Implementation of the data models documented [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-3).
+
 use serde::{Deserialize, Serialize};
 
 pub mod v2;
@@ -11,26 +15,48 @@ pub enum TryFromByteError {
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Opcode {
+    /// Not used
     None = 0,
+    /// Sender message to play media content, body is [`v3::PlayMessage`]
     Play = 1,
+    /// Sender message to pause media content, no body
     Pause = 2,
+    /// Sender message to resume media content, no body
     Resume = 3,
+    /// Sender message to stop media content, no body
     Stop = 4,
+    /// Sender message to seek, body is [`SeekMessage`]
     Seek = 5,
+    /// Receiver message to notify an updated playback state, body is [`v3::PlaybackUpdateMessage`]
     PlaybackUpdate = 6,
+    /// Receiver message to notify when the volume has changed, body is [`VolumeUpdateMessage`]
     VolumeUpdate = 7,
+    /// Sender message to change volume, body is [`SetVolumeMessage`]
     SetVolume = 8,
+    /// Server message to notify the sender a playback error happened, body is [`PlaybackErrorMessage`]
     PlaybackError = 9,
+    /// Sender message to change playback speed, body is [`SetSpeedMessage`]
     SetSpeed = 10,
+    /// Message to notify the other of the current version, body is [`VersionMessage`]
     Version = 11,
+    /// Message to get the other party to pong, no body
     Ping = 12,
+    /// Message to respond to a ping from the other party, no body
     Pong = 13,
-    // V3:
+    /// Message to notify the other party of device information and state, body is InitialSenderMessage
+    /// if receiver or [`v3::InitialReceiverMessage`] if sender
     Initial = 14,
+    /// Receiver message to notify all senders when any device has sent a [`v3::PlayMessage`], body is
+    /// [`v3::PlayUpdateMessage`]
     PlayUpdate = 15,
+    /// Sender message to set the item index in a playlist to play content from, body is
+    /// [`v3::SetPlaylistItemMessage`]
     SetPlaylistItem = 16,
+    /// Sender message to subscribe to a receiver event, body is [`v3::SubscribeEventMessage`]
     SubscribeEvent = 17,
+    /// Sender message to unsubscribe to a receiver event, body is [`v3::UnsubscribeEventMessage`]
     UnsubscribeEvent = 18,
+    /// Receiver message to notify when a sender subscribed event has occurred, body is [`v3::EventMessage`]
     Event = 19,
 }
 
