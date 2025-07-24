@@ -6,10 +6,6 @@ resolver = "2"
 [workspace.package]
 license = "MIT"
 
-[profile.release]
-lto = true
-codegen-units = 1
-
 [workspace.dependencies]
 tokio = { version = "1.46.1", features = [ "rt", "rt-multi-thread", "sync", "macros", "net", "time", "io-util", "fs" ] }
 serde = { version = "1.0.219", features = [ "derive" ] }
@@ -18,3 +14,8 @@ thiserror = "2.0.12"
 log = "0.4.27"
 env_logger = "0.11.8"
 mdns-sd = "0.13.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "debuginfo"
