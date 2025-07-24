@@ -1,7 +1,5 @@
 use std::{
-    // future::Future,
     net::SocketAddr,
-    // pin::Pin,
     sync::{Arc, Mutex},
 };
 
@@ -12,7 +10,7 @@ use fcast_protocol::{
     Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage,
 };
 use futures::StreamExt;
-use log::{debug, error, info /* warn */};
+use log::{debug, error, info};
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -24,10 +22,10 @@ use tokio::{
 use crate::{
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, /* CastingDeviceExt, */ CastingDeviceInfo,
-        GenericEventSubscriptionGroup, GenericKeyEvent, GenericMediaEvent, PlaybackState, Source,
+        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup,
+        GenericKeyEvent, GenericMediaEvent, PlaybackState, Source,
     },
-    /* AsyncRuntime, AsyncRuntimeError, */ IpAddr,
+    utils, IpAddr,
 };
 
 #[derive(Debug, PartialEq)]
@@ -206,7 +204,7 @@ impl InnerDevice {
             .connection_state_changed(CastConnectionState::Connecting);
 
         let Some(mut stream) =
-            crate::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
+            utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler

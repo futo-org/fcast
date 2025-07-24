@@ -1,5 +1,4 @@
 use std::{
-    // future::Future,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -9,7 +8,7 @@ use anyhow::{anyhow, Context};
 use bytes::Bytes;
 use http::StatusCode;
 use http_body_util::{BodyExt, Empty, Full};
-use log::{debug, error, info /* warn */};
+use log::{debug, error, info};
 use tokio::{
     net::TcpStream,
     runtime::Handle,
@@ -20,10 +19,9 @@ use uuid::Uuid;
 use crate::{
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, /* CastingDeviceExt, */ CastingDeviceInfo,
-        GenericEventSubscriptionGroup,
+        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup,
     },
-    /* AsyncRuntime, AsyncRuntimeError, */ IpAddr,
+    utils, IpAddr,
 };
 
 #[derive(Debug, PartialEq)]
@@ -186,7 +184,7 @@ impl InnerDevice {
 
         let (used_remote_address, local_address) = {
             let Some(stream) =
-                crate::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
+                utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
             else {
                 debug!("Received Quit command in connect loop");
                 self.event_handler

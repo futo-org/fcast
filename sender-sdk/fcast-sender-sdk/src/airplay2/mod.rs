@@ -35,10 +35,9 @@ use crate::{
     airplay_common::{self, AirPlayFeatures},
     casting_device::{
         CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, /* CastingDeviceExt, */ CastingDeviceInfo,
-        GenericEventSubscriptionGroup,
+        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup,
     },
-    IpAddr,
+    utils, IpAddr,
 };
 
 const DEVICE_ID: &str = "C9635ED0964902E0";
@@ -1219,7 +1218,7 @@ impl InnerDevice {
             .connection_state_changed(CastConnectionState::Connecting);
 
         let Some(stream) =
-            crate::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
+            utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler

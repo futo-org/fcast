@@ -4,7 +4,7 @@ use crate::{
         CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup, PlaybackState,
         Source,
     },
-    IpAddr,
+    utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
 use chromecast_protocol::{self as protocol, prost::Message, protos};
@@ -56,10 +56,7 @@ struct State {
 }
 
 impl State {
-    pub fn new(
-        device_info: CastingDeviceInfo,
-        rt_handle: Handle,
-    ) -> Self {
+    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
         Self {
             rt_handle,
             started: false,
@@ -222,7 +219,7 @@ impl InnerDevice {
             .connection_state_changed(CastConnectionState::Connecting);
 
         let Some(stream) =
-            crate::try_connect_tcp(addrs, 5, &mut self.cmd_rx, |cmd| cmd == Command::Quit).await?
+            utils::try_connect_tcp(addrs, 5, &mut self.cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler
