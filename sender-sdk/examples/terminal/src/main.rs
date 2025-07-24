@@ -143,7 +143,7 @@ async fn main() {
         46899,
     ));
 
-    dev.start(Arc::new(EventHandler {})).unwrap();
+    dev.connect(Arc::new(EventHandler {})).unwrap();
 
     info!("Press enter to quit");
     std::io::stdin().read_line(&mut String::new()).unwrap();

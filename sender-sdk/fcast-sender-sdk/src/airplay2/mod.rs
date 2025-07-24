@@ -1423,7 +1423,7 @@ impl CastingDevice for AirPlay2CastingDevice {
             error!("Failed to stop playback: {err}");
         }
         info!("Stopping active device because stopCasting was called.");
-        self.stop()
+        self.disconnect()
     }
 
     fn seek(&self, _time_seconds: f64) -> Result<(), CastingDeviceError> {
@@ -1486,7 +1486,7 @@ impl CastingDevice for AirPlay2CastingDevice {
         todo!()
     }
 
-    fn stop(&self) -> Result<(), CastingDeviceError> {
+    fn disconnect(&self) -> Result<(), CastingDeviceError> {
         if let Err(err) = self.send_command(Command::Quit) {
             error!("Failed to stop worker: {err}");
         }
@@ -1496,7 +1496,7 @@ impl CastingDevice for AirPlay2CastingDevice {
         Ok(())
     }
 
-    fn start(
+    fn connect(
         &self,
         event_handler: Arc<dyn CastingDeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {

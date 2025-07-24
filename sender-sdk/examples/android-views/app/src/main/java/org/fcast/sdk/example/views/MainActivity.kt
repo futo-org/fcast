@@ -72,7 +72,13 @@ data class CastingState(
     }
 }
 
-class EventHandler(private val castingState: CastingState, private val onConnected: () -> Unit) :
+class EventHandler(
+    private val castingState: CastingState,
+    private val onConnected: () -> Unit,
+    private val onVolumeChanged: (Double) -> Unit,
+    private val onDurationChanged: (Double) -> Unit,
+    private val onPositionChanged: (Double) -> Unit,
+) :
     CastingDeviceEventHandler {
     override fun connectionStateChanged(state: CastConnectionState) {
         println("Connection state changed: $state")
@@ -89,11 +95,13 @@ class EventHandler(private val castingState: CastingState, private val onConnect
     override fun volumeChanged(volume: Double) {
         println("Volume changed: $volume")
         castingState.volume = volume
+        onVolumeChanged(volume)
     }
 
     override fun timeChanged(time: Double) {
         println("Time changed: $time")
         castingState.time = time
+        onPositionChanged(time)
     }
 
     override fun playbackStateChanged(state: PlaybackState) {
@@ -104,6 +112,7 @@ class EventHandler(private val castingState: CastingState, private val onConnect
     override fun durationChanged(duration: Double) {
         println("Duration changed: $duration")
         castingState.duration = duration
+        onDurationChanged(duration)
     }
 
     override fun speedChanged(speed: Double) {
@@ -293,6 +302,8 @@ class DeviceConnectedDialog(
     private lateinit var imageDevice: ImageView
     private lateinit var textName: TextView
     private lateinit var textType: TextView
+    lateinit var volumeSlider: Slider
+    lateinit var positionSlider: Slider
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -311,7 +322,7 @@ class DeviceConnectedDialog(
         findViewById<Button>(org.fcast.sender_sdk.R.id.button_disconnect)
             ?.setOnClickListener {
                 try {
-                    castingState.activeDevice?.stop()
+                    castingState.activeDevice?.disconnect()
                 } catch (e: Exception) {
                     println(e)
                 }
@@ -332,22 +343,18 @@ class DeviceConnectedDialog(
             ?.setOnClickListener {
                 castingState.activeDevice?.stopPlayback()
             }
-        findViewById<Slider>(org.fcast.sender_sdk.R.id.slider_volume)
-            ?.addOnChangeListener(Slider.OnChangeListener { _, value, fromUser ->
-                if (!fromUser) {
-                    return@OnChangeListener
-                }
-
+        volumeSlider = findViewById(org.fcast.sender_sdk.R.id.slider_volume)!!
+        volumeSlider.addOnChangeListener(Slider.OnChangeListener { _, value, fromUser ->
+            if (fromUser) {
                 castingState.activeDevice?.changeVolume(value.toDouble())
-            })
-        findViewById<Slider>(org.fcast.sender_sdk.R.id.slider_position)
-            ?.addOnChangeListener(Slider.OnChangeListener { _, value, fromUser ->
-                if (!fromUser) {
-                    return@OnChangeListener
-                }
-
+            }
+        })
+        positionSlider = findViewById(org.fcast.sender_sdk.R.id.slider_position)!!
+        positionSlider.addOnChangeListener(Slider.OnChangeListener { _, value, fromUser ->
+            if (fromUser) {
                 castingState.activeDevice?.seek(value.toDouble())
-            })
+            }
+        })
     }
 
     fun update() {
@@ -434,14 +441,42 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
 
 class MainActivity : AppCompatActivity() {
     private val castingState = CastingState()
-    private val eventHandler = EventHandler(castingState, {
-        CoroutineScope(Dispatchers.Main).launch {
-            connectingToDeviceDialog.hide()
-            castingConnectedDialog.show()
-            castingConnectedDialog.update()
-            castLocalFileBtn.visibility = View.VISIBLE
-        }
-    })
+    private val eventHandler = EventHandler(castingState,
+        {
+            CoroutineScope(Dispatchers.Main).launch {
+                connectingToDeviceDialog.hide()
+                castingConnectedDialog.show()
+                castingConnectedDialog.update()
+                castLocalFileBtn.visibility = View.VISIBLE
+            }
+        },
+        { newVolume ->
+            CoroutineScope(Dispatchers.Main).launch {
+                try {
+                    castingConnectedDialog.volumeSlider.value = newVolume.toFloat()
+                } catch (e: Exception) {
+                    println("$e")
+                }
+            }
+        },
+        { newDuration ->
+            CoroutineScope(Dispatchers.Main).launch {
+                try {
+                    castingConnectedDialog.positionSlider.valueTo = newDuration.toFloat()
+                } catch (e: Exception) {
+                    println("$e")
+                }
+            }
+        },
+        { newPosition ->
+            CoroutineScope(Dispatchers.Main).launch {
+                try {
+                    castingConnectedDialog.positionSlider.value = newPosition.toFloat()
+                } catch (e: Exception) {
+                    println("$e")
+                }
+            }
+        })
     private val castContext = CastContext()
     private val fileServer = castContext.startFileServer()
     private lateinit var connectCastingDialog: ConnectCastingDialog
@@ -454,7 +489,7 @@ class MainActivity : AppCompatActivity() {
                 val device = castContext.createDeviceFromInfo(deviceInfo);
                 try {
                     castingState.reset()
-                    device.start(eventHandler)
+                    device.connect(eventHandler)
                     castingState.activeDevice = device;
                 } catch (e: Exception) {
                     println("Failed to start device: {e}")
@@ -562,7 +597,7 @@ class MainActivity : AppCompatActivity() {
             { device ->
                 connectCastingDialog.hide()
                 try {
-                    device.start(eventHandler)
+                    device.connect(eventHandler)
                     castingState.activeDevice = device
                     connectingToDeviceDialog.show()
                 } catch (e: Exception) {

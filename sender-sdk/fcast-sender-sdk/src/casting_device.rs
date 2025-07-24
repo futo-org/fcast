@@ -278,10 +278,8 @@ pub trait CastingDevice: Send + Sync /* + CastingDeviceExt */ {
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError>;
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
-    // TODO: is `disconnect` more appropriate
-    fn stop(&self) -> Result<(), CastingDeviceError>;
-    // TODO: same here but with `connect`
-    fn start(
+    fn disconnect(&self) -> Result<(), CastingDeviceError>;
+    fn connect(
         &self,
         event_handler: Arc<dyn CastingDeviceEventHandler>,
     ) -> Result<(), CastingDeviceError>;

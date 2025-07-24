@@ -165,7 +165,7 @@ class MainActivity : ComponentActivity() {
             deviceInfoFromUrl(it)?.let { deviceInfo ->
                 val device = castContext.createDeviceFromInfo(deviceInfo);
                 try {
-                    device.start(eventHandler)
+                    device.connect(eventHandler)
                     activeCastingDevice.value = device;
                 } catch (e: Exception) {
                     println("Failed to start device: {e}")
@@ -229,7 +229,7 @@ class MainActivity : ComponentActivity() {
                         devices,
                         connectDevice = { device ->
                             try {
-                                device.start(eventHandler)
+                                device.connect(eventHandler)
                                 activeCastingDevice.value = device
                             } catch (e: Exception) {
                                 println("Failed to connect to device: $e")
@@ -237,7 +237,7 @@ class MainActivity : ComponentActivity() {
                         },
                         disconnectActiveDevice = {
                             try {
-                                activeCastingDevice.value?.stop()
+                                activeCastingDevice.value?.disconnect()
                             } catch (e: Exception) {
                                 println("Failed to stop device: $e")
                             }

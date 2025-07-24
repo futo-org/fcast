@@ -10,7 +10,7 @@
     <string name="not_ready">Not ready</string>
     <string name="connect">Connect</string>
     <string name="stop">Stop</string>
-    <string name="stop_casting">Stop casting</string>
+    <string name="disconnect">Disconnect</string>
     <string name="start">Start</string>
     <string name="add_casting_device">Add Casting Device</string>
     <string name="error_message_here">Error message here</string>

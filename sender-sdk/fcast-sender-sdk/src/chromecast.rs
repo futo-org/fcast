@@ -726,7 +726,7 @@ impl CastingDevice for ChromecastCastingDevice {
             error!("Failed to stop playback: {err}");
         }
         info!("Stopping active device because stopCasting was called.");
-        self.stop()
+        self.disconnect()
     }
 
     fn seek(&self, time_seconds: f64) -> Result<(), CastingDeviceError> {
@@ -796,7 +796,7 @@ impl CastingDevice for ChromecastCastingDevice {
         self.send_command(Command::ChangeSpeed(speed))
     }
 
-    fn stop(&self) -> Result<(), CastingDeviceError> {
+    fn disconnect(&self) -> Result<(), CastingDeviceError> {
         self.send_command(Command::Quit)?;
         let mut state = self.state.lock().unwrap();
         state.command_tx = None;
@@ -804,7 +804,7 @@ impl CastingDevice for ChromecastCastingDevice {
         Ok(())
     }
 
-    fn start(
+    fn connect(
         &self,
         event_handler: Arc<dyn CastingDeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {
