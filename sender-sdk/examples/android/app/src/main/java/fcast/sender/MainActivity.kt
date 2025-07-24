@@ -32,9 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import fcast.sender.ui.theme.FCastSenderTheme
-import uniffi.fcast_sender_sdk.CastConnectionState
+import uniffi.fcast_sender_sdk.DeviceConnectionState
 import uniffi.fcast_sender_sdk.CastingDevice
-import uniffi.fcast_sender_sdk.CastingDeviceEventHandler
+import uniffi.fcast_sender_sdk.DeviceEventHandler
 import uniffi.fcast_sender_sdk.GenericKeyEvent
 import uniffi.fcast_sender_sdk.GenericMediaEvent
 import uniffi.fcast_sender_sdk.PlaybackState
@@ -47,7 +47,7 @@ import org.fcast.sender_sdk.NsdDeviceDiscoverer
 import uniffi.fcast_sender_sdk.CastContext
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import uniffi.fcast_sender_sdk.CastingDeviceInfo
+import uniffi.fcast_sender_sdk.DeviceInfo
 import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
 import uniffi.fcast_sender_sdk.FileServer
 
@@ -71,13 +71,13 @@ data class CastingState(
     }
 }
 
-class EventHandler : CastingDeviceEventHandler {
+class EventHandler : DeviceEventHandler {
     var castingState = CastingState()
 
-    override fun connectionStateChanged(state: CastConnectionState) {
+    override fun connectionStateChanged(state: DeviceConnectionState) {
         println("Connection state changed: $state")
         when (state) {
-            is CastConnectionState.Connected -> {
+            is DeviceConnectionState.Connected -> {
                 castingState.localAddress = state.localAddr
             }
 
@@ -136,11 +136,11 @@ class DiscoveryEventHandler(
     private val devices: MutableState<List<CastingDevice>>,
     private val ctx: CastContext
 ) : DeviceDiscovererEventHandler {
-    override fun deviceAvailable(deviceInfo: CastingDeviceInfo) {
+    override fun deviceAvailable(deviceInfo: DeviceInfo) {
         devices.value += ctx.createDeviceFromInfo(deviceInfo)
     }
 
-    override fun deviceChanged(deviceInfo: CastingDeviceInfo) {
+    override fun deviceChanged(deviceInfo: DeviceInfo) {
         devices.value.find { it.name() == deviceInfo.name }?.let {
             it.setAddresses(deviceInfo.addresses)
             it.setPort(deviceInfo.port)

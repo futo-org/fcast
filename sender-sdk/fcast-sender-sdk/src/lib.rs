@@ -47,13 +47,13 @@ pub mod file_server;
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait DeviceDiscovererEventHandler: Send + Sync {
     /// Called when a device is found.
-    fn device_available(&self, device_info: casting_device::CastingDeviceInfo);
+    fn device_available(&self, device_info: casting_device::DeviceInfo);
     /// Called when a device is removed or lost.
     fn device_removed(&self, device_name: String);
     /// Called when a device has changed.
     ///
     /// The `name` field of `device_info` will correspond to a device announced from `device_available`.
-    fn device_changed(&self, device_info: casting_device::CastingDeviceInfo);
+    fn device_changed(&self, device_info: casting_device::DeviceInfo);
 }
 
 #[cfg(all(feature = "discovery", any_protocol))]

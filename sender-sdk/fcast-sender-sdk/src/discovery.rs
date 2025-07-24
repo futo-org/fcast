@@ -6,7 +6,7 @@ use log::debug;
 use mdns_sd::ServiceEvent;
 use tokio_stream::StreamExt;
 
-use crate::casting_device::CastingDeviceInfo;
+use crate::casting_device::DeviceInfo;
 use crate::DeviceDiscovererEventHandler;
 use crate::IpAddr;
 
@@ -36,7 +36,7 @@ fn handle_fcast_mdns_resolved(
     }
     let addresses = std_ip_to_custom(service_info.get_addresses());
     let port = service_info.get_port();
-    let device_info = CastingDeviceInfo::fcast(name, addresses, port);
+    let device_info = DeviceInfo::fcast(name, addresses, port);
     if devices.contains(service_info.get_fullname()) {
         debug!("Updating FCast device `{}`", device_info.name);
         event_handler.device_changed(device_info);
@@ -176,7 +176,7 @@ pub(crate) async fn discover_devices(
                         .unwrap_or(service_info.get_fullname().to_string());
                     let addresses = std_ip_to_custom(service_info.get_addresses());
                     let port = service_info.get_port();
-                    let device_info = CastingDeviceInfo::chromecast(name, addresses, port);
+                    let device_info = DeviceInfo::chromecast(name, addresses, port);
                     if devices.contains(service_info.get_fullname()) {
                         debug!("Updating Chromecast device `{}`", device_info.name);
                         event_handler.device_changed(device_info);
@@ -213,9 +213,9 @@ pub(crate) async fn discover_devices(
                     let port = service_info.get_port();
 
                     let device_info = if is_airplay_2 {
-                        CastingDeviceInfo::airplay2(name, addresses, port)
+                        DeviceInfo::airplay2(name, addresses, port)
                     } else {
-                        CastingDeviceInfo::airplay1(name, addresses, port)
+                        DeviceInfo::airplay1(name, addresses, port)
                     };
 
                     if devices.contains(&fullname) {

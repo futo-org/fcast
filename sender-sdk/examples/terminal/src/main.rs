@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use fcast_sender_sdk::{
     /* airplay2::AirPlay2CastingDevice, */ casting_device::{
-        CastConnectionState, CastingDeviceEventHandler, CastingDeviceInfo, GenericKeyEvent,
+        DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
         GenericMediaEvent, PlaybackState, Source,
     }, context::CastContext, IpAddr
 };
@@ -10,8 +10,8 @@ use log::info;
 
 struct EventHandler {}
 
-impl CastingDeviceEventHandler for EventHandler {
-    fn connection_state_changed(&self, state: CastConnectionState) {
+impl DeviceEventHandler for EventHandler {
+    fn connection_state_changed(&self, state: DeviceConnectionState) {
         info!("Connection state changed: {state:?}");
     }
 
@@ -109,7 +109,7 @@ async fn main() {
     //     // 5000,
     // ));
 
-    let dev = ctx.create_device_from_info(CastingDeviceInfo::fcast(
+    let dev = ctx.create_device_from_info(DeviceInfo::fcast(
         "AirPlay2".to_owned(),
         vec![IpAddr::v4(127, 0, 0, 1)],
         46899,

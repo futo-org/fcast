@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug)]
-pub enum CastConnectionState {
+pub enum DeviceConnectionState {
     Disconnected,
     Connecting,
     Connected {
@@ -14,7 +14,7 @@ pub enum CastConnectionState {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-pub enum CastProtocolType {
+pub enum ProtocolType {
     #[cfg(feature = "chromecast")]
     Chromecast,
     #[cfg(feature = "airplay1")]
@@ -33,19 +33,19 @@ pub(crate) fn ips_to_socket_addrs(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> 
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-pub struct CastingDeviceInfo {
+pub struct DeviceInfo {
     pub name: String,
-    pub r#type: CastProtocolType,
+    pub r#type: ProtocolType,
     pub addresses: Vec<IpAddr>,
     pub port: u16,
 }
 
 macro_rules! dev_info_constructor {
     ($fname:ident, $type:ident) => {
-        pub fn $fname(name: String, addresses: Vec<IpAddr>, port: u16) -> CastingDeviceInfo {
-            CastingDeviceInfo {
+        pub fn $fname(name: String, addresses: Vec<IpAddr>, port: u16) -> DeviceInfo {
+            DeviceInfo {
                 name,
-                r#type: CastProtocolType::$type,
+                r#type: ProtocolType::$type,
                 addresses,
                 port,
             }
@@ -55,7 +55,7 @@ macro_rules! dev_info_constructor {
 
 #[cfg(feature = "fcast")]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-pub fn device_info_from_url(url: String) -> Option<CastingDeviceInfo> {
+pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
     #[cfg(feature = "fcast")]
     #[derive(serde::Deserialize)]
     struct FCastService {
@@ -135,14 +135,14 @@ pub fn device_info_from_url(url: String) -> Option<CastingDeviceInfo> {
         })
         .collect::<Option<Vec<IpAddr>>>()?;
 
-    Some(CastingDeviceInfo::fcast(
+    Some(DeviceInfo::fcast(
         found_info.name,
         addrs,
         tcp_service.port,
     ))
 }
 
-impl CastingDeviceInfo {
+impl DeviceInfo {
     #[cfg(feature = "fcast")]
     dev_info_constructor!(fcast, FCast);
     #[cfg(feature = "chromecast")]
@@ -202,8 +202,8 @@ pub enum GenericMediaEvent {
 
 #[allow(unused_variables)]
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
-pub trait CastingDeviceEventHandler: Send + Sync {
-    fn connection_state_changed(&self, state: CastConnectionState);
+pub trait DeviceEventHandler: Send + Sync {
+    fn connection_state_changed(&self, state: DeviceConnectionState);
     fn volume_changed(&self, volume: f64);
     fn time_changed(&self, time: f64);
     fn playback_state_changed(&self, state: PlaybackState);
@@ -232,7 +232,7 @@ pub enum CastingDeviceError {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub trait CastingDevice: Send + Sync {
     // NOTE: naming it `protocol` causes iOS builds to fail
-    fn casting_protocol(&self) -> CastProtocolType;
+    fn casting_protocol(&self) -> ProtocolType;
     fn is_ready(&self) -> bool;
     fn can_set_volume(&self) -> bool;
     fn can_set_speed(&self) -> bool;
@@ -272,9 +272,9 @@ pub trait CastingDevice: Send + Sync {
     fn disconnect(&self) -> Result<(), CastingDeviceError>;
     fn connect(
         &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
+        event_handler: Arc<dyn DeviceEventHandler>,
     ) -> Result<(), CastingDeviceError>;
-    fn get_device_info(&self) -> CastingDeviceInfo;
+    fn get_device_info(&self) -> DeviceInfo;
     fn get_addresses(&self) -> Vec<IpAddr>;
     fn set_addresses(&self, addrs: Vec<IpAddr>);
     fn get_port(&self) -> u16;

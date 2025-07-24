@@ -34,17 +34,17 @@ import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import uniffi.fcast_sender_sdk.CastConnectionState
-import uniffi.fcast_sender_sdk.CastProtocolType
+import uniffi.fcast_sender_sdk.DeviceConnectionState
+import uniffi.fcast_sender_sdk.ProtocolType
 import uniffi.fcast_sender_sdk.CastingDevice
-import uniffi.fcast_sender_sdk.CastingDeviceEventHandler
+import uniffi.fcast_sender_sdk.DeviceEventHandler
 import uniffi.fcast_sender_sdk.IpAddr
 import uniffi.fcast_sender_sdk.PlaybackState
 import uniffi.fcast_sender_sdk.Source
 import uniffi.fcast_sender_sdk.GenericKeyEvent
 import uniffi.fcast_sender_sdk.GenericMediaEvent
 import uniffi.fcast_sender_sdk.initLogger
-import uniffi.fcast_sender_sdk.CastingDeviceInfo
+import uniffi.fcast_sender_sdk.DeviceInfo
 import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
 import uniffi.fcast_sender_sdk.CastContext
 import uniffi.fcast_sender_sdk.deviceInfoFromUrl
@@ -79,11 +79,11 @@ class EventHandler(
     private val onDurationChanged: (Double) -> Unit,
     private val onPositionChanged: (Double) -> Unit,
 ) :
-    CastingDeviceEventHandler {
-    override fun connectionStateChanged(state: CastConnectionState) {
+    DeviceEventHandler {
+    override fun connectionStateChanged(state: DeviceConnectionState) {
         println("Connection state changed: $state")
         when (state) {
-            is CastConnectionState.Connected -> {
+            is DeviceConnectionState.Connected -> {
                 castingState.localAddress = state.localAddr
                 onConnected()
             }
@@ -143,15 +143,15 @@ class EventHandler(
 }
 
 class DiscoveryEventHandler(
-    private val onDeviceAdded: (CastingDeviceInfo) -> Unit,
+    private val onDeviceAdded: (DeviceInfo) -> Unit,
     private val onDeviceRemoved: (String) -> Unit,
-    private val onDeviceUpdated: (CastingDeviceInfo) -> Unit,
+    private val onDeviceUpdated: (DeviceInfo) -> Unit,
 ) : DeviceDiscovererEventHandler {
-    override fun deviceAvailable(deviceInfo: CastingDeviceInfo) {
+    override fun deviceAvailable(deviceInfo: DeviceInfo) {
         onDeviceAdded(deviceInfo)
     }
 
-    override fun deviceChanged(deviceInfo: CastingDeviceInfo) {
+    override fun deviceChanged(deviceInfo: DeviceInfo) {
         onDeviceUpdated(deviceInfo)
     }
 
@@ -182,17 +182,17 @@ class DeviceViewHolder(view: View, private val onConnect: (CastingDevice) -> Uni
     @SuppressLint("SetTextI18n")
     fun bind(d: CastingDevice) {
         when (d.castingProtocol()) {
-            CastProtocolType.CHROMECAST -> {
+            ProtocolType.CHROMECAST -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_chromecast)
                 textType.text = "Chromecast"
             }
 
-            CastProtocolType.AIR_PLAY, CastProtocolType.AIR_PLAY2 -> {
+            ProtocolType.AIR_PLAY, ProtocolType.AIR_PLAY2 -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_airplay)
                 textType.text = "AirPlay"
             }
 
-            CastProtocolType.F_CAST -> {
+            ProtocolType.F_CAST -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_fc)
                 textType.text = "FCast"
             }
@@ -360,17 +360,17 @@ class DeviceConnectedDialog(
     fun update() {
         val device = castingState.activeDevice ?: return
         when (device.castingProtocol()) {
-            CastProtocolType.CHROMECAST -> {
+            ProtocolType.CHROMECAST -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_chromecast)
                 textType.text = "Chromecast"
             }
 
-            CastProtocolType.AIR_PLAY, CastProtocolType.AIR_PLAY2 -> {
+            ProtocolType.AIR_PLAY, ProtocolType.AIR_PLAY2 -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_airplay)
                 textType.text = "AirPlay"
             }
 
-            CastProtocolType.F_CAST -> {
+            ProtocolType.F_CAST -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_fc)
                 textType.text = "FCast"
             }
@@ -425,9 +425,9 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
         findViewById<Button>(org.fcast.sender_sdk.R.id.button_confirm)
             ?.setOnClickListener {
                 val castProtocolType = when (spinnerType?.selectedItemPosition) {
-                    0 -> CastProtocolType.F_CAST
-                    1 -> CastProtocolType.CHROMECAST
-                    2 -> CastProtocolType.AIR_PLAY
+                    0 -> ProtocolType.F_CAST
+                    1 -> ProtocolType.CHROMECAST
+                    2 -> ProtocolType.AIR_PLAY
                     else -> {
                         textError.text =
                             "Device type is invalid expected values like FastCast or ChromeCast."

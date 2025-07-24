@@ -21,8 +21,8 @@ use tokio::{
 
 use crate::{
     casting_device::{
-        CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup,
+        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
+        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup,
         GenericKeyEvent, GenericMediaEvent, PlaybackState, Source,
     },
     utils, IpAddr,
@@ -75,7 +75,7 @@ struct State {
 }
 
 impl State {
-    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+    pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             rt_handle,
             started: false,
@@ -88,12 +88,12 @@ impl State {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
-pub struct FCastCastingDevice {
+pub struct FCastDevice {
     state: Mutex<State>,
 }
 
-impl FCastCastingDevice {
-    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+impl FCastDevice {
+    pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
         }
@@ -109,11 +109,11 @@ enum ProtocolVersion {
 }
 
 struct InnerDevice {
-    event_handler: Arc<dyn CastingDeviceEventHandler>,
+    event_handler: Arc<dyn DeviceEventHandler>,
 }
 
 impl InnerDevice {
-    pub fn new(event_handler: Arc<dyn CastingDeviceEventHandler>) -> Self {
+    pub fn new(event_handler: Arc<dyn DeviceEventHandler>) -> Self {
         Self { event_handler }
     }
 
@@ -201,21 +201,21 @@ impl InnerDevice {
         mut cmd_rx: Receiver<Command>,
     ) -> anyhow::Result<()> {
         self.event_handler
-            .connection_state_changed(CastConnectionState::Connecting);
+            .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(mut stream) =
             utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler
-                .connection_state_changed(CastConnectionState::Disconnected);
+                .connection_state_changed(DeviceConnectionState::Disconnected);
             return Ok(());
         };
 
         info!("Successfully connected");
 
         self.event_handler
-            .connection_state_changed(CastConnectionState::Connected {
+            .connection_state_changed(DeviceConnectionState::Connected {
                 used_remote_addr: stream.peer_addr()?.ip().into(),
                 local_addr: stream.local_addr()?.ip().into(),
             });
@@ -633,11 +633,11 @@ impl InnerDevice {
         }
 
         self.event_handler
-            .connection_state_changed(CastConnectionState::Disconnected);
+            .connection_state_changed(DeviceConnectionState::Disconnected);
     }
 }
 
-impl FCastCastingDevice {
+impl FCastDevice {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
         let state = self.state.lock().unwrap();
         let Some(tx) = &state.command_tx else {
@@ -655,9 +655,9 @@ impl FCastCastingDevice {
 }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-impl CastingDevice for FCastCastingDevice {
-    fn casting_protocol(&self) -> CastProtocolType {
-        CastProtocolType::FCast
+impl CastingDevice for FCastDevice {
+    fn casting_protocol(&self) -> ProtocolType {
+        ProtocolType::FCast
     }
 
     fn is_ready(&self) -> bool {
@@ -780,7 +780,7 @@ impl CastingDevice for FCastCastingDevice {
 
     fn connect(
         &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
+        event_handler: Arc<dyn DeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
         if state.started {
@@ -805,11 +805,11 @@ impl CastingDevice for FCastCastingDevice {
         Ok(())
     }
 
-    fn get_device_info(&self) -> CastingDeviceInfo {
+    fn get_device_info(&self) -> DeviceInfo {
         let state = self.state.lock().unwrap();
-        CastingDeviceInfo {
+        DeviceInfo {
             name: state.name.clone(),
-            r#type: CastProtocolType::FCast,
+            r#type: ProtocolType::FCast,
             addresses: state.addresses.clone(),
             port: state.port,
         }

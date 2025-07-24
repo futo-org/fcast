@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use crate::{
     casting_device::{
-        CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup,
+        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
+        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup,
     },
     utils, IpAddr,
 };
@@ -50,7 +50,7 @@ struct State {
 }
 
 impl State {
-    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+    pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             rt_handle,
             started: false,
@@ -64,12 +64,12 @@ impl State {
 
 #[allow(dead_code)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
-pub struct AirPlay1CastingDevice {
+pub struct AirPlay1Device {
     state: Mutex<State>,
 }
 
-impl AirPlay1CastingDevice {
-    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+impl AirPlay1Device {
+    pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
         }
@@ -77,12 +77,12 @@ impl AirPlay1CastingDevice {
 }
 
 struct InnerDevice {
-    event_handler: Arc<dyn CastingDeviceEventHandler>,
+    event_handler: Arc<dyn DeviceEventHandler>,
     session_id: String,
 }
 
 impl InnerDevice {
-    pub fn new(event_handler: Arc<dyn CastingDeviceEventHandler>) -> Self {
+    pub fn new(event_handler: Arc<dyn DeviceEventHandler>) -> Self {
         Self {
             event_handler,
             session_id: Uuid::new_v4().to_string(),
@@ -180,7 +180,7 @@ impl InnerDevice {
         mut cmd_rx: Receiver<Command>,
     ) -> anyhow::Result<()> {
         self.event_handler
-            .connection_state_changed(CastConnectionState::Connecting);
+            .connection_state_changed(DeviceConnectionState::Connecting);
 
         let (used_remote_address, local_address) = {
             let Some(stream) =
@@ -188,7 +188,7 @@ impl InnerDevice {
             else {
                 debug!("Received Quit command in connect loop");
                 self.event_handler
-                    .connection_state_changed(CastConnectionState::Disconnected);
+                    .connection_state_changed(DeviceConnectionState::Disconnected);
                 return Ok(());
             };
             (
@@ -200,7 +200,7 @@ impl InnerDevice {
         info!("Successfully connected");
 
         self.event_handler
-            .connection_state_changed(CastConnectionState::Connected {
+            .connection_state_changed(DeviceConnectionState::Connected {
                 used_remote_addr: used_remote_address.ip().into(),
                 local_addr: local_address.ip().into(),
             });
@@ -265,11 +265,11 @@ impl InnerDevice {
         }
 
         self.event_handler
-            .connection_state_changed(CastConnectionState::Disconnected);
+            .connection_state_changed(DeviceConnectionState::Disconnected);
     }
 }
 
-impl AirPlay1CastingDevice {
+impl AirPlay1Device {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
         let state = self.state.lock().unwrap();
         let Some(tx) = &state.command_tx else {
@@ -288,9 +288,9 @@ impl AirPlay1CastingDevice {
     }
 }
 
-impl CastingDevice for AirPlay1CastingDevice {
-    fn casting_protocol(&self) -> CastProtocolType {
-        CastProtocolType::AirPlay
+impl CastingDevice for AirPlay1Device {
+    fn casting_protocol(&self) -> ProtocolType {
+        ProtocolType::AirPlay
     }
 
     fn is_ready(&self) -> bool {
@@ -419,7 +419,7 @@ impl CastingDevice for AirPlay1CastingDevice {
 
     fn connect(
         &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
+        event_handler: Arc<dyn DeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
         if state.started {
@@ -444,11 +444,11 @@ impl CastingDevice for AirPlay1CastingDevice {
         Ok(())
     }
 
-    fn get_device_info(&self) -> CastingDeviceInfo {
+    fn get_device_info(&self) -> DeviceInfo {
         let state = self.state.lock().unwrap();
-        CastingDeviceInfo {
+        DeviceInfo {
             name: state.name.clone(),
-            r#type: CastProtocolType::AirPlay,
+            r#type: ProtocolType::AirPlay,
             addresses: state.addresses.clone(),
             port: state.port,
         }

@@ -5,8 +5,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
-import uniffi.fcast_sender_sdk.CastProtocolType
-import uniffi.fcast_sender_sdk.CastingDeviceInfo
+import uniffi.fcast_sender_sdk.ProtocolType
+import uniffi.fcast_sender_sdk.DeviceInfo
 import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
 import uniffi.fcast_sender_sdk.IpAddr
 import java.net.InetAddress
@@ -190,7 +190,7 @@ class NsdDeviceDiscoverer {
             }
 
             val deviceInfo =
-                CastingDeviceInfo(friendlyName, CastProtocolType.CHROMECAST, addresses, port)
+                DeviceInfo(friendlyName, ProtocolType.CHROMECAST, addresses, port)
             if (devices.contains(fullName)) {
                 eventHandler.deviceChanged(deviceInfo)
             } else {
@@ -223,11 +223,11 @@ class NsdDeviceDiscoverer {
             }
         } ?: false
 
-        val deviceInfo = CastingDeviceInfo(
+        val deviceInfo = DeviceInfo(
             name, if (isAirPlay2) {
-                CastProtocolType.AIR_PLAY2
+                ProtocolType.AIR_PLAY2
             } else {
-                CastProtocolType.AIR_PLAY
+                ProtocolType.AIR_PLAY
             }, addresses, port
         )
         if (devices.contains(fullName)) {
@@ -251,7 +251,7 @@ class NsdDeviceDiscoverer {
             devices.remove(fullName)
             return
         }
-        val deviceInfo = CastingDeviceInfo(name, CastProtocolType.F_CAST, addresses, port)
+        val deviceInfo = DeviceInfo(name, ProtocolType.F_CAST, addresses, port)
         if (devices.contains(fullName)) {
             eventHandler.deviceChanged(deviceInfo)
         } else {

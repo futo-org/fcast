@@ -1,5 +1,5 @@
 #[cfg(any_protocol)]
-use crate::casting_device::{CastProtocolType, CastingDevice, CastingDeviceInfo};
+use crate::casting_device::{ProtocolType, CastingDevice, DeviceInfo};
 #[cfg(all(feature = "discovery", any_protocol))]
 use crate::discovery;
 use crate::{AsyncRuntime, AsyncRuntimeError};
@@ -24,27 +24,27 @@ impl CastContext {
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
-    pub fn create_device_from_info(&self, info: CastingDeviceInfo) -> Arc<dyn CastingDevice> {
+    pub fn create_device_from_info(&self, info: DeviceInfo) -> Arc<dyn CastingDevice> {
         match info.r#type {
             #[cfg(feature = "chromecast")]
-            CastProtocolType::Chromecast => {
-                Arc::new(crate::chromecast::ChromecastCastingDevice::new(
+            ProtocolType::Chromecast => {
+                Arc::new(crate::chromecast::ChromecastDevice::new(
                     info,
                     self.runtime.handle().clone(),
                 ))
             }
             #[cfg(feature = "airplay1")]
-            CastProtocolType::AirPlay => Arc::new(crate::airplay1::AirPlay1CastingDevice::new(
+            ProtocolType::AirPlay => Arc::new(crate::airplay1::AirPlay1Device::new(
                 info,
                 self.runtime.handle().clone(),
             )),
             #[cfg(feature = "airplay2")]
-            CastProtocolType::AirPlay2 => Arc::new(crate::airplay2::AirPlay2CastingDevice::new(
+            ProtocolType::AirPlay2 => Arc::new(crate::airplay2::AirPlay2Device::new(
                 info,
                 self.runtime.handle().clone(),
             )),
             #[cfg(feature = "fcast")]
-            CastProtocolType::FCast => Arc::new(crate::fcast::FCastCastingDevice::new(
+            ProtocolType::FCast => Arc::new(crate::fcast::FCastDevice::new(
                 info,
                 self.runtime.handle().clone(),
             )),

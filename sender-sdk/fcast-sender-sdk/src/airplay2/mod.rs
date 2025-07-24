@@ -34,8 +34,8 @@ mod rtsp;
 use crate::{
     airplay_common::{self, AirPlayFeatures},
     casting_device::{
-        CastConnectionState, CastProtocolType, CastingDevice, CastingDeviceError,
-        CastingDeviceEventHandler, CastingDeviceInfo, GenericEventSubscriptionGroup,
+        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
+        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup,
     },
     utils, IpAddr,
 };
@@ -279,7 +279,7 @@ enum SenderState {
 }
 
 struct InnerDevice {
-    event_handler: Arc<dyn CastingDeviceEventHandler>,
+    event_handler: Arc<dyn DeviceEventHandler>,
     sender_state: SenderState,
     srp_client: Option<SrpClient>,
     used_remote_addr: Option<SocketAddr>,
@@ -305,7 +305,7 @@ struct InnerDevice {
 }
 
 impl InnerDevice {
-    pub fn new(event_handler: Arc<dyn CastingDeviceEventHandler>) -> Self {
+    pub fn new(event_handler: Arc<dyn DeviceEventHandler>) -> Self {
         Self {
             event_handler,
             sender_state: SenderState::WaitingOnPairSetup1,
@@ -1215,21 +1215,21 @@ impl InnerDevice {
         mut cmd_rx: Receiver<Command>,
     ) -> anyhow::Result<()> {
         self.event_handler
-            .connection_state_changed(CastConnectionState::Connecting);
+            .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(stream) =
             utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler
-                .connection_state_changed(CastConnectionState::Disconnected);
+                .connection_state_changed(DeviceConnectionState::Disconnected);
             return Ok(());
         };
 
         self.used_remote_addr = Some(stream.peer_addr()?);
 
         self.event_handler
-            .connection_state_changed(CastConnectionState::Connected {
+            .connection_state_changed(DeviceConnectionState::Connected {
                 used_remote_addr: stream
                     .peer_addr()
                     .context("Failed to get peer address")?
@@ -1284,7 +1284,7 @@ impl InnerDevice {
         }
 
         self.event_handler
-            .connection_state_changed(CastConnectionState::Disconnected);
+            .connection_state_changed(DeviceConnectionState::Disconnected);
     }
 }
 
@@ -1298,7 +1298,7 @@ struct State {
 }
 
 impl State {
-    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+    pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             rt_handle,
             started: false,
@@ -1311,19 +1311,19 @@ impl State {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
-pub struct AirPlay2CastingDevice {
+pub struct AirPlay2Device {
     state: Mutex<State>,
 }
 
-impl AirPlay2CastingDevice {
-    pub fn new(device_info: CastingDeviceInfo, rt_handle: Handle) -> Self {
+impl AirPlay2Device {
+    pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
         }
     }
 }
 
-impl AirPlay2CastingDevice {
+impl AirPlay2Device {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
         let state = self.state.lock().unwrap();
         let Some(tx) = &state.command_tx else {
@@ -1342,9 +1342,9 @@ impl AirPlay2CastingDevice {
     }
 }
 
-impl CastingDevice for AirPlay2CastingDevice {
-    fn casting_protocol(&self) -> CastProtocolType {
-        CastProtocolType::AirPlay2
+impl CastingDevice for AirPlay2Device {
+    fn casting_protocol(&self) -> ProtocolType {
+        ProtocolType::AirPlay2
     }
 
     fn is_ready(&self) -> bool {
@@ -1454,7 +1454,7 @@ impl CastingDevice for AirPlay2CastingDevice {
 
     fn connect(
         &self,
-        event_handler: Arc<dyn CastingDeviceEventHandler>,
+        event_handler: Arc<dyn DeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
         if state.started {
@@ -1479,7 +1479,7 @@ impl CastingDevice for AirPlay2CastingDevice {
         Ok(())
     }
 
-    fn get_device_info(&self) -> CastingDeviceInfo {
+    fn get_device_info(&self) -> DeviceInfo {
         todo!()
     }
 
