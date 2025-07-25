@@ -97,6 +97,9 @@ pub struct PlistReader<'a> {
 /// Not suitable for a large N.
 macro_rules! read_n_bytes {
     ($self:expr, $n:expr, $i:expr) => {{
+        if $i < ($n as usize) {
+            return Err(PlistParseError::OutOfBounds);
+        }
         let mut bytes = [0u8; $n as usize];
         bytes.copy_from_slice(&$self.plist[$i - ($n as usize)..$i]);
         bytes
