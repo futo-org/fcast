@@ -43,6 +43,8 @@ chacha20poly1305 = { version = "0.10.1", optional = true }
 x25519-dalek = { version = "2.0.1", features = ["getrandom"], optional = true }
 hex-literal = { version = "1.0.0", optional = true }
 plist = { path = "../plist", optional = true }
+hexdump = { path = "../hexdump", optional = true }
+rtsp = { path = "../rtsp", optional = true }
 
 # FCast
 url = { version = "2.5.4", optional = true }
@@ -65,7 +67,7 @@ fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64", "dep
 chromecast = ["dep:chromecast-protocol", "dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
 airplay1 = ["dep:serde", "dep:bitflags", "dep:hyper", "dep:http-body-util", "dep:hyper-util", "dep:uuid", "dep:bytes", "dep:http"]
 # airplay2 = ["dep:serde", "dep:serde_json", "dep:bitflags", "dep:uuid", "dep:num-bigint", "dep:sha2", "dep:aead", "dep:rand_pcg", "dep:ed25519-dalek", "dep:hkdf", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:hex-literal"]
-airplay2 = ["dep:serde", "dep:serde_json", "dep:bitflags", "dep:uuid", "dep:num-bigint", "dep:sha2", "dep:aead", "dep:rand_pcg", "dep:ed25519-dalek", "dep:hkdf", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:hex-literal", "plist"]
+airplay2 = ["dep:serde", "dep:serde_json", "dep:bitflags", "dep:uuid", "dep:num-bigint", "dep:sha2", "dep:aead", "dep:rand_pcg", "dep:ed25519-dalek", "dep:hkdf", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:hex-literal", "plist", "rtsp", "hexdump"]
 http-file-server = ["dep:hyper-util",  "dep:hyper", "dep:http", "dep:http-body-util", "dep:bytes", "dep:uuid", "dep:libc", "dep:http-range"]
 uniffi = ["dep:uniffi"]
 logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]

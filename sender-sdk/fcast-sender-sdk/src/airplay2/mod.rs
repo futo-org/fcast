@@ -28,8 +28,6 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 
-mod rtsp;
-
 use crate::{
     airplay_common::{self, AirPlayFeatures, AirPlayStatus, InfoPlist}, casting_device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
@@ -339,7 +337,7 @@ impl InnerDevice {
                 }
                 read_buf.extend_from_slice(&tmp_buf[0..read_bytes]);
             }
-            debug!("--- Response ---\n{}", crate::utils::hexdump(read_buf));
+            debug!("--- Response ---\n{}", hexdump::hexdump(read_buf));
             body = Some(read_buf[headers_end..headers_end + content_length].to_vec());
         }
 
@@ -420,7 +418,7 @@ impl InnerDevice {
             }
         };
 
-        debug!("Response:\n{}", crate::utils::hexdump(&plaintext));
+        debug!("Response:\n{}", hexdump::hexdump(&plaintext));
 
         Ok(())
     }

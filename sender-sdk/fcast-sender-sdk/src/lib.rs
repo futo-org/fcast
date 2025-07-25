@@ -38,8 +38,6 @@ pub mod discovery;
 #[cfg(feature = "fcast")]
 pub mod fcast;
 pub(crate) mod utils;
-#[cfg(any(feature = "http-file-server", feature = "airplay1", feature = "airplay2"))]
-pub(crate) mod http;
 
 #[cfg(feature = "http-file-server")]
 pub mod file_server;
