@@ -1,0 +1,27 @@
+[package]
+name = "fcast-sender-sdk-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+plist = { path = "../plist", features = [ "arbitrary" ] }
+arbitrary = "1.4.1"
+
+[[bin]]
+name = "plist_reader"
+path = "fuzz_targets/fuzz_plist_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plist_parser"
+path = "fuzz_targets/fuzz_plist_parser.rs"
+test = false
+doc = false
+bench = false

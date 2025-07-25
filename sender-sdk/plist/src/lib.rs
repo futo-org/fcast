@@ -5,11 +5,11 @@
 //  - https://github.com/Apple-FOSS-Mirror/CF/file/CFBinaryPList.c
 //  - http://fileformats.archiveteam.org/wiki/Property_List/Binary
 
-use crate::airplay_common::{AirPlayFeatures, AirPlayStatus, InfoPlist};
-
 const HEADER_MAGIC_NUMBER: &[u8] = b"bplist";
+const HEADER_SIZE: u64 = 8;
 const TRAILER_SIZE: usize = 32;
 const MAX_OFFSET_TABLE_OFFSET_SIZE: usize = 4;
+const MAX_OBJECT_REF_SIZE: usize = 4;
 const I8_N_BYTES: u8 = 1 << 0;
 const I16_N_BYTES: u8 = 1 << 1;
 const I32_N_BYTES: u8 = 1 << 2;
@@ -25,6 +25,8 @@ const UTF16_STR_MARKER: u8 = 0b0110;
 const UID_MARKER: u8 = 0b1000;
 const DICT_MARKER: u8 = 0b1101;
 const DATE_MARKER: u8 = 0b0011;
+
+const MAX_OBJECTS_IN_LIST: u64 = 4096;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlistReadError {
@@ -45,12 +47,12 @@ pub enum PlistReadError {
 }
 
 #[derive(PartialEq, Debug)]
-enum Version {
+pub enum Version {
     Zero,
 }
 
 #[derive(PartialEq, Debug, Clone)]
-enum Object {
+pub enum Object {
     Null, // v1+ only but we include it anyways
     Bool(bool),
     Fill,
@@ -76,7 +78,8 @@ impl Object {
 }
 
 #[derive(Debug)]
-struct Trailer {
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct Trailer {
     pub offset_table_offset_size: usize,
     pub object_ref_size: usize,
     pub num_objects: u64,
@@ -84,7 +87,9 @@ struct Trailer {
     pub offset_table_start: u64,
 }
 
-struct PlistReader<'a> {
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[derive(Debug)]
+pub struct PlistReader<'a> {
     i: usize,
     plist: &'a [u8],
 }
@@ -185,9 +190,16 @@ pub enum PlistParseError {
     OutOfBounds,
     #[error("first object is out of bounds")]
     StartObjectOob,
+    #[error("too many objects in list")]
+    TooManyObjectsInList,
+    #[error("too large number power")]
+    TooLargeNumPow,
+    #[error("invalid trailer")]
+    InvalidTrailer,
 }
 
-struct PlistParser<'a> {
+#[derive(Debug)]
+pub struct PlistParser<'a> {
     plist: &'a [u8],
     trailer: Trailer,
     object_idx: usize,
@@ -197,9 +209,24 @@ struct PlistParser<'a> {
 
 impl<'a> PlistParser<'a> {
     pub fn new(plist: &'a [u8], trailer: Trailer) -> Result<Self, PlistParseError> {
-        let object_idx = trailer.offset_table_start + trailer.top_object_offset;
-        if object_idx >= plist.len() as u64 {
+        let (object_idx, overflowed) = trailer
+            .offset_table_start
+            .overflowing_add(trailer.top_object_offset);
+        if overflowed || object_idx >= plist.len() as u64 {
             return Err(PlistParseError::StartObjectOob);
+        }
+
+        if trailer.offset_table_offset_size == 0
+            || trailer.offset_table_offset_size > MAX_OFFSET_TABLE_OFFSET_SIZE
+            || trailer.object_ref_size == 0
+            || trailer.object_ref_size > MAX_OBJECT_REF_SIZE
+            || trailer.offset_table_start < HEADER_SIZE
+        {
+            return Err(PlistParseError::InvalidTrailer);
+        }
+
+        if trailer.num_objects > MAX_OBJECTS_IN_LIST {
+            return Err(PlistParseError::TooManyObjectsInList);
         }
 
         Ok(Self {
@@ -214,7 +241,10 @@ impl<'a> PlistParser<'a> {
     fn parse_object_ref(&self, idx: usize) -> Result<usize, PlistParseError> {
         let ref_size = self.trailer.object_ref_size;
         let mut idx_buf = [0u8; MAX_OFFSET_TABLE_OFFSET_SIZE];
-        let bytes = &self.plist[idx..idx + ref_size];
+        let bytes = &self
+            .plist
+            .get(idx..idx + ref_size)
+            .ok_or(PlistParseError::OutOfBounds)?;
         for (i, b) in bytes.iter().enumerate() {
             idx_buf[MAX_OFFSET_TABLE_OFFSET_SIZE - bytes.len() + i] = *b;
         }
@@ -227,13 +257,13 @@ impl<'a> PlistParser<'a> {
         offset_table_idx: usize,
     ) -> Result<usize, PlistParseError> {
         let offset_size = self.trailer.offset_table_offset_size;
-        if offset_table_idx + offset_size > self.plist.len() - TRAILER_SIZE {
-            return Err(PlistParseError::NoMoreObjects);
-        }
-
-        // TODO: some of these checks should be done in `Self::new`
         if offset_size > MAX_OFFSET_TABLE_OFFSET_SIZE {
             return Err(PlistParseError::OffsetSizeTooLarge);
+        }
+
+        // if offset_table_idx + offset_size > self.plist.len() + TRAILER_SIZE { // is trailer included or not?
+        if offset_table_idx + offset_size > self.plist.len() {
+            return Err(PlistParseError::NoMoreObjects);
         }
 
         let mut idx_buf = [0u8; MAX_OFFSET_TABLE_OFFSET_SIZE];
@@ -261,7 +291,10 @@ impl<'a> PlistParser<'a> {
         if marker_hi != UID_MARKER {
             return Err(PlistParseError::UnknownObjectType);
         }
-        let n = 2u8.pow(marker_lo as u32);
+        let (n, overflowed) = 2u8.overflowing_pow(marker_lo as u32);
+        if overflowed {
+            return Err(PlistParseError::TooLargeNumPow);
+        }
         let idx = idx + 1 + n as usize;
         self.object_end = idx;
 
@@ -291,7 +324,10 @@ impl<'a> PlistParser<'a> {
         } else if marker_lo >> 3 != 0 {
             return Err(PlistParseError::UnknownObjectType);
         }
-        let n = 2u8.pow(marker_lo as u32);
+        let (n, overflowed) = 2u8.overflowing_pow(marker_lo as u32);
+        if overflowed {
+            return Err(PlistParseError::TooLargeNumPow);
+        }
 
         let idx = idx + 1 + n as usize;
         self.object_end = idx;
@@ -323,7 +359,10 @@ impl<'a> PlistParser<'a> {
         } else if marker_lo >> 3 != 0 {
             return Err(PlistParseError::UnknownObjectType);
         }
-        let n = 2u8.pow(marker_lo as u32);
+        let (n, overflowed) = 2u8.overflowing_pow(marker_lo as u32);
+        if overflowed {
+            return Err(PlistParseError::TooLargeNumPow);
+        }
 
         let idx = idx + 1 + n as usize;
         self.object_end = idx;
@@ -403,7 +442,7 @@ impl<'a> PlistParser<'a> {
             }
             (UTF16_STR_MARKER, nnnn) => {
                 let (count, start_offset) = self.get_count(nnnn, object_idx + 1)?;
-                if start_offset + count > self.plist.len() {
+                if start_offset + count * 2 > self.plist.len() {
                     return Err(PlistParseError::OutOfBounds);
                 }
                 let bytes = &self.plist[start_offset..start_offset + count * 2];
@@ -432,7 +471,10 @@ impl<'a> PlistParser<'a> {
             (DICT_MARKER, nnnn) => {
                 let (count, start_offset) = self.get_count(nnnn, object_idx + 1)?;
                 let mut dict = Vec::new();
-                let stride = count * self.trailer.object_ref_size;
+                let (stride, overflowed) = count.overflowing_mul(self.trailer.object_ref_size);
+                if overflowed {
+                    return Err(PlistParseError::OutOfBounds);
+                }
                 for i in 0..count {
                     let keyref =
                         self.parse_object_ref(start_offset + i * self.trailer.object_ref_size)?;
@@ -468,8 +510,7 @@ impl<'a> PlistParser<'a> {
     }
 
     pub fn parse(&mut self) -> Result<Vec<Object>, PlistParseError> {
-        let mut objects = Vec::new();
-
+        let mut objects = Vec::with_capacity(self.trailer.num_objects as usize);
         while self.parsed_objects < self.trailer.num_objects {
             objects.push(self.parse_next_object()?);
             self.parsed_objects += 1;
@@ -477,42 +518,6 @@ impl<'a> PlistParser<'a> {
 
         Ok(objects)
     }
-}
-
-pub fn info_from_plist(plist: &[u8]) -> Result<InfoPlist, PlistParseError> {
-    let mut reader = PlistReader::new(plist);
-    reader.read_magic_number()?;
-    reader.read_version()?;
-    let trailer = reader.read_trailer()?;
-    let mut info = InfoPlist::default();
-    let mut parser = PlistParser::new(plist, trailer)?;
-    let parsed = parser.parse()?;
-    for obj in parsed {
-        if let Object::Dict(items) = obj {
-            for (key, val) in items {
-                let Object::String(key) = key else {
-                    continue;
-                };
-                match key.as_str() {
-                    "features" => {
-                        if let Object::Int(features) = val {
-                            info.features =
-                                Some(AirPlayFeatures::from_bits_truncate(features as u64));
-                        }
-                    }
-                    "statusFlags" => {
-                        if let Object::Int(status_flags) = val {
-                            info.status_flags =
-                                Some(AirPlayStatus::from_bits_truncate(status_flags as u32));
-                        }
-                    }
-                    _ => (),
-                }
-            }
-        }
-    }
-
-    Ok(info)
 }
 
 #[cfg(test)]
