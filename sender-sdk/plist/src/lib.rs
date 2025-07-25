@@ -195,6 +195,8 @@ pub enum PlistParseError {
     TooLargeNumPow,
     #[error("invalid trailer")]
     InvalidTrailer,
+    #[error("list contains reference cycle")]
+    RefCycle,
 }
 
 #[derive(Debug)]
@@ -399,6 +401,7 @@ impl<'a> PlistParser<'a> {
         self.parsed_objects += 1;
         let (marker_hi, marker_lo) = self.marker(object_idx);
         // Format description here: https://github.com/Apple-FOSS-Mirror/CF/blob/a9db511baa36b8a2b75b67a022efdadfae656633/CFBinaryPList.c#L221
+        let initial_object_idx = object_idx;
         Ok(match (marker_hi, marker_lo) {
             (0b0000, 0b0000) => Object::Null,
             (0b0000, 0b1000) => Object::Bool(false),
@@ -463,6 +466,9 @@ impl<'a> PlistParser<'a> {
                         self.trailer.offset_table_start as usize
                             + objref * self.trailer.offset_table_offset_size,
                     )?;
+                    if initial_object_idx == objidx {
+                        return Err(PlistParseError::RefCycle);
+                    }
                     array.push(self.parse_object(objidx)?);
                 }
                 Object::Array(array)
@@ -481,6 +487,9 @@ impl<'a> PlistParser<'a> {
                         self.trailer.offset_table_start as usize
                             + keyref * self.trailer.offset_table_offset_size,
                     )?;
+                    if initial_object_idx == keyidx {
+                        return Err(PlistParseError::RefCycle);
+                    }
                     let key = self.parse_object(keyidx)?;
                     let valref = self.parse_object_ref(
                         start_offset + stride + i * self.trailer.object_ref_size,
@@ -489,6 +498,9 @@ impl<'a> PlistParser<'a> {
                         self.trailer.offset_table_start as usize
                             + valref * self.trailer.offset_table_offset_size,
                     )?;
+                    if initial_object_idx == validx {
+                        return Err(PlistParseError::RefCycle);
+                    }
                     let val = self.parse_object(validx)?;
                     dict.push((key, val));
                 }
