@@ -28,15 +28,16 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 
-// mod plist;
 mod rtsp;
 
 use crate::{
     airplay_common::{self, AirPlayFeatures, AirPlayStatus, InfoPlist}, casting_device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, ProtocolType,
-    }, http::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map}, utils, IpAddr
+    }, utils, IpAddr
 };
+
+use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
 
 const DEVICE_ID: &str = "C9635ED0964902E0";
 const PAIRING_USERNAME: &str = "Pair-Setup";

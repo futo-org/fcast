@@ -1,6 +1,6 @@
 [workspace]
 # members = [ "sender-sdk/chromecast-protocol", "sender-sdk/fcast-sender-sdk", "sender-sdk/fcast-protocol", "sender-sdk/examples/terminal", "sender-sdk/uniffi-bindgen", "sender-sdk/xtask", "senders/terminal", "sender-sdk/examples/chromecast2fcast"]
-members = [ "sender-sdk/chromecast-protocol", "sender-sdk/fcast-sender-sdk", "sender-sdk/fcast-protocol", "sender-sdk/examples/terminal", "sender-sdk/xtask", "senders/terminal", "sender-sdk/plist", "sender-sdk/fuzz"]
+members = [ "sender-sdk/chromecast-protocol", "sender-sdk/fcast-sender-sdk", "sender-sdk/fcast-protocol", "sender-sdk/examples/terminal", "sender-sdk/xtask", "senders/terminal", "sender-sdk/plist", "sender-sdk/fuzz", "sender-sdk/rtsp", "sender-sdk/parsers-common"]
 resolver = "2"
 
 [workspace.package]

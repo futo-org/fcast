@@ -1,0 +1,8 @@
+[package]
+name = "rtsp"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+parsers-common = { path = "../parsers-common" }
