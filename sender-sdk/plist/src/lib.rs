@@ -29,6 +29,7 @@ const DICT_MARKER: u8 = 0b1101;
 const DATE_MARKER: u8 = 0b0011;
 
 const MAX_OBJECTS_IN_LIST: u64 = 4096;
+const MAX_ELEMENTS_IN_ARRAY: usize = 1024 * 1024 * 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlistReadError {
@@ -202,6 +203,8 @@ pub enum PlistParseError {
     InvalidTrailer,
     #[error("list contains reference cycle")]
     RefCycle,
+    #[error("array is too large")]
+    ArrayTooLarge,
 }
 
 #[derive(Debug)]
@@ -468,6 +471,9 @@ impl<'a> PlistParser<'a> {
             (UID_MARKER, _) => self.parse_uid(object_idx)?,
             (ARRAY_MARKER, nnnn) => {
                 let (count, start_offset) = self.get_count(nnnn, object_idx + 1)?;
+                if count > MAX_ELEMENTS_IN_ARRAY {
+                    return Err(PlistParseError::ArrayTooLarge);
+                }
                 let mut array = Vec::with_capacity(count);
                 for i in 0..count {
                     let objref =
