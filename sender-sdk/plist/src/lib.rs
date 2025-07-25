@@ -457,10 +457,12 @@ impl<'a> PlistParser<'a> {
             }
             (UTF16_STR_MARKER, nnnn) => {
                 let (count, start_offset) = self.get_count(nnnn, object_idx + 1)?;
-                if start_offset + count * 2 > self.plist.len() {
+                let (end_idx, mul_overflowed) = count.overflowing_mul(2);
+                let (end_idx, add_overflowed) = start_offset.overflowing_add(end_idx);
+                if add_overflowed || mul_overflowed || end_idx > self.plist.len() {
                     return Err(PlistParseError::OutOfBounds);
                 }
-                let bytes = &self.plist[start_offset..start_offset + count * 2];
+                let bytes = &self.plist[start_offset..end_idx];
                 Object::String(String::from_utf16_lossy(
                     &bytes
                         .chunks(2)
