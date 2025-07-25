@@ -282,13 +282,13 @@ impl<'a> PlistParser<'a> {
         idx
     }
 
-    fn marker(&self, idx: usize) -> (u8, u8) {
-        let marker = self.plist[idx];
-        (marker >> 4, marker & 0x0F)
+    fn marker(&self, idx: usize) -> Result<(u8, u8), PlistParseError> {
+        let marker = self.plist.get(idx).ok_or(PlistParseError::OutOfBounds)?;
+        Ok((marker >> 4, marker & 0x0F))
     }
 
     fn parse_uid(&mut self, idx: usize) -> Result<Object, PlistParseError> {
-        let (marker_hi, marker_lo) = self.marker(idx);
+        let (marker_hi, marker_lo) = self.marker(idx)?;
         if marker_hi != UID_MARKER {
             return Err(PlistParseError::UnknownObjectType);
         }
@@ -319,7 +319,7 @@ impl<'a> PlistParser<'a> {
     }
 
     fn parse_int(&mut self, idx: usize) -> Result<Object, PlistParseError> {
-        let (marker_hi, marker_lo) = self.marker(idx);
+        let (marker_hi, marker_lo) = self.marker(idx)?;
         if marker_hi != INT_MARKER {
             return Err(PlistParseError::ExpectedInt);
         } else if marker_lo >> 3 != 0 {
@@ -354,7 +354,7 @@ impl<'a> PlistParser<'a> {
     }
 
     fn parse_real(&mut self, idx: usize) -> Result<Object, PlistParseError> {
-        let (marker_hi, marker_lo) = self.marker(idx);
+        let (marker_hi, marker_lo) = self.marker(idx)?;
         if marker_hi != REAL_MARKER {
             return Err(PlistParseError::ExpectedReal);
         } else if marker_lo >> 3 != 0 {
@@ -399,7 +399,7 @@ impl<'a> PlistParser<'a> {
 
     fn parse_object(&mut self, object_idx: usize) -> Result<Object, PlistParseError> {
         self.parsed_objects += 1;
-        let (marker_hi, marker_lo) = self.marker(object_idx);
+        let (marker_hi, marker_lo) = self.marker(object_idx)?;
         // Format description here: https://github.com/Apple-FOSS-Mirror/CF/blob/a9db511baa36b8a2b75b67a022efdadfae656633/CFBinaryPList.c#L221
         let initial_object_idx = object_idx;
         Ok(match (marker_hi, marker_lo) {
