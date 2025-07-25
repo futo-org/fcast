@@ -21,9 +21,9 @@ use tokio::{
 
 use crate::{
     casting_device::{
-        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
-        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup,
-        GenericKeyEvent, GenericMediaEvent, PlaybackState, Source,
+        CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
+        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
+        GenericMediaEvent, PlaybackState, ProtocolType, Source,
     },
     utils, IpAddr,
 };
@@ -93,6 +93,15 @@ pub struct FCastDevice {
 }
 
 impl FCastDevice {
+    const SUPPORTED_FEATURES: [DeviceFeature; 6] = [
+        DeviceFeature::SetVolume,
+        DeviceFeature::SetSpeed,
+        DeviceFeature::LoadContent,
+        DeviceFeature::LoadUrl,
+        DeviceFeature::KeyEventSubscription,
+        DeviceFeature::MediaEventSubscription,
+    ];
+
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
@@ -665,16 +674,8 @@ impl CastingDevice for FCastDevice {
         !state.addresses.is_empty() && state.port > 0 && !state.name.is_empty()
     }
 
-    fn can_set_volume(&self) -> bool {
-        true
-    }
-
-    fn can_set_speed(&self) -> bool {
-        true
-    }
-
-    fn support_subscriptions(&self) -> bool {
-        true
+    fn supports_feature(&self, feature: DeviceFeature) -> bool {
+        Self::SUPPORTED_FEATURES.contains(&feature)
     }
 
     fn name(&self) -> String {

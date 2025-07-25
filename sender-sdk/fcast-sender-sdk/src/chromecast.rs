@@ -1,7 +1,7 @@
 use crate::{
     casting_device::{
-        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
-        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState,
+        CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
+        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState, ProtocolType,
         Source,
     },
     utils, IpAddr,
@@ -100,6 +100,12 @@ pub struct ChromecastDevice {
 }
 
 impl ChromecastDevice {
+    const SUPPORTED_FEATURES: [DeviceFeature; 3] = [
+        DeviceFeature::SetVolume,
+        DeviceFeature::SetSpeed,
+        DeviceFeature::LoadUrl,
+    ];
+
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
@@ -166,10 +172,7 @@ struct InnerDevice {
 }
 
 impl InnerDevice {
-    pub fn new(
-        cmd_rx: Receiver<Command>,
-        event_handler: Arc<dyn DeviceEventHandler>,
-    ) -> Self {
+    pub fn new(cmd_rx: Receiver<Command>, event_handler: Arc<dyn DeviceEventHandler>) -> Self {
         Self {
             write_buffer: vec![0u8; 1000 * 64],
             cmd_rx,
@@ -655,16 +658,8 @@ impl CastingDevice for ChromecastDevice {
         !state.addresses.is_empty() && state.port > 0 && !state.name.is_empty()
     }
 
-    fn can_set_volume(&self) -> bool {
-        true
-    }
-
-    fn can_set_speed(&self) -> bool {
-        true
-    }
-
-    fn support_subscriptions(&self) -> bool {
-        false
+    fn supports_feature(&self, feature: DeviceFeature) -> bool {
+        Self::SUPPORTED_FEATURES.contains(&feature)
     }
 
     fn name(&self) -> String {
@@ -733,13 +728,14 @@ impl CastingDevice for ChromecastDevice {
     #[allow(unused_variables)]
     fn load_content(
         &self,
-        content_type: String,
-        content: String,
-        resume_position: f64,
-        duration: f64,
-        speed: Option<f64>,
+        _content_type: String,
+        _content: String,
+        _resume_position: f64,
+        _duration: f64,
+        _speed: Option<f64>,
     ) -> Result<(), CastingDeviceError> {
         todo!()
+        // self.load_url(content_type, url, Some(resume_position), speed)
     }
 
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError> {

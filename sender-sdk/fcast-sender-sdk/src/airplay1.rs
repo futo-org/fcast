@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use crate::{
     casting_device::{
-        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
-        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup,
+        CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
+        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, ProtocolType,
     },
     utils, IpAddr,
 };
@@ -69,6 +69,8 @@ pub struct AirPlay1Device {
 }
 
 impl AirPlay1Device {
+    const SUPPORTED_FEATURES: [DeviceFeature; 1] = [DeviceFeature::SetSpeed];
+
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
@@ -298,16 +300,8 @@ impl CastingDevice for AirPlay1Device {
         !state.addresses.is_empty() && state.port > 0 && !state.name.is_empty()
     }
 
-    fn can_set_volume(&self) -> bool {
-        false
-    }
-
-    fn can_set_speed(&self) -> bool {
-        true
-    }
-
-    fn support_subscriptions(&self) -> bool {
-        false
+    fn supports_feature(&self, feature: DeviceFeature) -> bool {
+        Self::SUPPORTED_FEATURES.contains(&feature)
     }
 
     fn name(&self) -> String {

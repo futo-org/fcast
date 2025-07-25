@@ -34,8 +34,8 @@ mod rtsp;
 use crate::{
     airplay_common::{self, AirPlayFeatures},
     casting_device::{
-        DeviceConnectionState, ProtocolType, CastingDevice, CastingDeviceError,
-        DeviceEventHandler, DeviceInfo, GenericEventSubscriptionGroup,
+        CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
+        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, ProtocolType,
     },
     utils, IpAddr,
 };
@@ -1316,6 +1316,8 @@ pub struct AirPlay2Device {
 }
 
 impl AirPlay2Device {
+    const SUPPORTED_FEATURES: [DeviceFeature; 0] = [];
+
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
@@ -1352,16 +1354,8 @@ impl CastingDevice for AirPlay2Device {
         !state.addresses.is_empty() && state.port > 0 && !state.name.is_empty()
     }
 
-    fn can_set_volume(&self) -> bool {
-        true
-    }
-
-    fn can_set_speed(&self) -> bool {
-        true
-    }
-
-    fn support_subscriptions(&self) -> bool {
-        false
+    fn supports_feature(&self, feature: DeviceFeature) -> bool {
+        Self::SUPPORTED_FEATURES.contains(&feature)
     }
 
     fn name(&self) -> String {

@@ -135,11 +135,7 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
         })
         .collect::<Option<Vec<IpAddr>>>()?;
 
-    Some(DeviceInfo::fcast(
-        found_info.name,
-        addrs,
-        tcp_service.port,
-    ))
+    Some(DeviceInfo::fcast(found_info.name, addrs, tcp_service.port))
 }
 
 impl DeviceInfo {
@@ -228,15 +224,25 @@ pub enum CastingDeviceError {
     UnsupportedSubscription,
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceFeature {
+    SetVolume,
+    SetSpeed,
+    LoadContent,
+    LoadUrl,
+    KeyEventSubscription,
+    MediaEventSubscription,
+}
+// fn supports_feature(feature: DeviceFeature) -> bool;
+
 /// A generic interface for casting devices.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub trait CastingDevice: Send + Sync {
     // NOTE: naming it `protocol` causes iOS builds to fail
     fn casting_protocol(&self) -> ProtocolType;
     fn is_ready(&self) -> bool;
-    fn can_set_volume(&self) -> bool;
-    fn can_set_speed(&self) -> bool;
-    fn support_subscriptions(&self) -> bool;
+    fn supports_feature(&self, feature: DeviceFeature) -> bool;
     fn name(&self) -> String;
     fn set_name(&self, name: String);
     fn stop_casting(&self) -> Result<(), CastingDeviceError>;
@@ -270,10 +276,8 @@ pub trait CastingDevice: Send + Sync {
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
     fn disconnect(&self) -> Result<(), CastingDeviceError>;
-    fn connect(
-        &self,
-        event_handler: Arc<dyn DeviceEventHandler>,
-    ) -> Result<(), CastingDeviceError>;
+    fn connect(&self, event_handler: Arc<dyn DeviceEventHandler>)
+        -> Result<(), CastingDeviceError>;
     fn get_device_info(&self) -> DeviceInfo;
     fn get_addresses(&self) -> Vec<IpAddr>;
     fn set_addresses(&self, addrs: Vec<IpAddr>);
