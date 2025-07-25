@@ -5,6 +5,8 @@
 //  - https://github.com/Apple-FOSS-Mirror/CF/file/CFBinaryPList.c
 //  - http://fileformats.archiveteam.org/wiki/Property_List/Binary
 
+use std::collections::HashSet;
+
 const HEADER_MAGIC_NUMBER: &[u8] = b"bplist";
 const HEADER_SIZE: u64 = 8;
 const TRAILER_SIZE: usize = 32;
@@ -400,7 +402,12 @@ impl<'a> PlistParser<'a> {
         })
     }
 
-    fn parse_object(&mut self, object_idx: usize) -> Result<Object, PlistParseError> {
+    // `expanding_objs_on_path` is needed to avoid stack overflows when parsing malicious plists
+    fn parse_object(
+        &mut self,
+        object_idx: usize,
+        expanding_objs_on_path: &mut HashSet<usize>,
+    ) -> Result<Object, PlistParseError> {
         self.parsed_objects += 1;
         let (marker_hi, marker_lo) = self.marker(object_idx)?;
         // Format description here: https://github.com/Apple-FOSS-Mirror/CF/blob/a9db511baa36b8a2b75b67a022efdadfae656633/CFBinaryPList.c#L221
@@ -469,10 +476,11 @@ impl<'a> PlistParser<'a> {
                         self.trailer.offset_table_start as usize
                             + objref * self.trailer.offset_table_offset_size,
                     )?;
-                    if initial_object_idx == objidx {
+                    if expanding_objs_on_path.contains(&objidx) {
                         return Err(PlistParseError::RefCycle);
                     }
-                    array.push(self.parse_object(objidx)?);
+                    expanding_objs_on_path.insert(initial_object_idx);
+                    array.push(self.parse_object(objidx, expanding_objs_on_path)?);
                 }
                 Object::Array(array)
             }
@@ -490,10 +498,11 @@ impl<'a> PlistParser<'a> {
                         self.trailer.offset_table_start as usize
                             + keyref * self.trailer.offset_table_offset_size,
                     )?;
-                    if initial_object_idx == keyidx {
+                    if expanding_objs_on_path.contains(&keyidx) {
                         return Err(PlistParseError::RefCycle);
                     }
-                    let key = self.parse_object(keyidx)?;
+                    expanding_objs_on_path.insert(initial_object_idx);
+                    let key = self.parse_object(keyidx, expanding_objs_on_path)?;
                     let valref = self.parse_object_ref(
                         start_offset + stride + i * self.trailer.object_ref_size,
                     )?;
@@ -501,10 +510,10 @@ impl<'a> PlistParser<'a> {
                         self.trailer.offset_table_start as usize
                             + valref * self.trailer.offset_table_offset_size,
                     )?;
-                    if initial_object_idx == validx {
+                    if expanding_objs_on_path.contains(&validx) {
                         return Err(PlistParseError::RefCycle);
                     }
-                    let val = self.parse_object(validx)?;
+                    let val = self.parse_object(validx, expanding_objs_on_path)?;
                     dict.push((key, val));
                 }
 
@@ -520,7 +529,7 @@ impl<'a> PlistParser<'a> {
             return Err(PlistParseError::ObjectPtrOutOfBounds);
         }
 
-        self.parse_object(object_idx)
+        self.parse_object(object_idx, &mut HashSet::new())
     }
 
     pub fn parse(&mut self) -> Result<Vec<Object>, PlistParseError> {
