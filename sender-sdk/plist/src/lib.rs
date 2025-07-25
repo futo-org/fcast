@@ -87,7 +87,6 @@ pub struct Trailer {
     pub offset_table_start: u64,
 }
 
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug)]
 pub struct PlistReader<'a> {
     i: usize,
