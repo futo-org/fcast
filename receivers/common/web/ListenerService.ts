@@ -1,5 +1,5 @@
 import { FCastSession } from 'common/FCastSession';
-import { Opcode, EventSubscribeObject, EventType, KeyEvent, KeyDownEvent, KeyUpEvent } from 'common/Packets';
+import { Opcode, EventSubscribeObject, EventObject, EventType, KeyEvent, KeyDownEvent, KeyUpEvent } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
 import { deepEqual } from 'common/UtilityBackend';
 import { EventEmitter } from 'events';
@@ -46,7 +46,7 @@ export abstract class ListenerService {
         }
     }
 
-    public subscribeEvent(sessionId: string, event: EventSubscribeObject): any {
+    public subscribeEvent(sessionId: string, event: EventSubscribeObject) {
         if (!this.eventSubscribers.has(sessionId)) {
             this.eventSubscribers.set(sessionId, []);
         }
@@ -56,7 +56,7 @@ export abstract class ListenerService {
         this.eventSubscribers.set(sessionId, sessionSubscriptions);
     }
 
-    public unsubscribeEvent(sessionId: string, event: EventSubscribeObject): any {
+    public unsubscribeEvent(sessionId: string, event: EventSubscribeObject) {
         if (this.eventSubscribers.has(sessionId)) {
             let sessionSubscriptions = this.eventSubscribers.get(sessionId);
 
@@ -101,7 +101,7 @@ export abstract class ListenerService {
         return { keyDown: keyDown, keyUp: keyUp };
     }
 
-    private isSubscribedToEvent(sessionId: string, event: EventSubscribeObject) {
+    private isSubscribedToEvent(sessionId: string, event: EventObject): boolean {
         let isSubscribed = false;
 
         if (this.eventSubscribers.has(sessionId)) {
