@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    convert::Infallible,
+    // convert::Infallible,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     str::FromStr,
     sync::{
@@ -9,20 +9,23 @@ use std::{
     },
 };
 
-use bytes::Bytes;
-use http::{HeaderMap, HeaderValue, Response, StatusCode};
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
-use hyper::service::service_fn;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use anyhow::bail;
+// use bytes::Bytes;
+// use http::{HeaderMap, HeaderValue, Response, StatusCode};
+// use http_body_util::{combinators::BoxBody, BodyExt, Full};
+// use hyper::service::service_fn;
+// use hyper_util::rt::{TokioExecutor, TokioIo};
 use log::{debug, error};
+use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
 use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     runtime::Handle,
     sync::Mutex,
 };
 use uuid::Uuid;
 
 const MAX_CHUNK_SIZE: u64 = 1024 * 512;
+const DEFAULT_REQUEST_BUF_CAP: usize = 1024;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
@@ -46,18 +49,10 @@ pub struct FileStoreEntry {
 enum FileRequestError {
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("HTTP: {0}")]
-    Http(#[from] http::Error),
     #[error("Failed to parse HTTP range")]
     HttpRangeParse,
-}
-
-macro_rules! empty_resp {
-    ($status:ident) => {
-        return Ok(Response::builder()
-            .status(StatusCode::$status)
-            .body(Full::new(Bytes::new()).boxed())?)
-    };
+    #[error("Utf8 error")]
+    Utf8(#[from] std::str::Utf8Error),
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
@@ -76,15 +71,38 @@ impl FileServer {
         }
     }
 
+    async fn emtpy_response<T: tokio::io::AsyncWrite + std::marker::Unpin>(
+        mut writer: T,
+        status: my_http::StatusCode,
+    ) -> Result<(), FileRequestError> {
+        let start_line = my_http::ResponseStartLine {
+            protocol: my_http::Protocol::Http11,
+            status_code: status,
+        }
+        .serialize();
+        writer.write_all(&start_line).await?;
+
+        writer
+            .write_all(my_http::KnownHeaderNames::CONTENT_LENGTH)
+            .await?;
+        writer.write_all(b": ").await?;
+        writer.write_all(b"0").await?;
+        writer.write_all(b"\r\n").await?;
+        writer.write_all(b"\r\n").await?;
+
+        Ok(())
+    }
+
     async fn handle_get_file_request(
+        stream: tokio::net::TcpStream,
         uuid: Uuid,
         files: FileMapLock,
-        headers: &HeaderMap<HeaderValue>,
-    ) -> Result<Response<BoxBody<Bytes, Infallible>>, FileRequestError> {
+        headers: &[(&[u8], &[u8])],
+    ) -> Result<(), FileRequestError> {
         let files = files.lock().await;
         let Some(fd) = files.get(&uuid) else {
             debug!("No file found for `{uuid}`");
-            empty_resp!(NOT_FOUND);
+            return Self::emtpy_response(stream, my_http::StatusCode::NotFound).await;
         };
 
         let raw_fd = fd.as_raw_fd();
@@ -92,81 +110,176 @@ impl FileServer {
         let mut file = unsafe { tokio::fs::File::from_raw_fd(dup_fd) };
         file.seek(std::io::SeekFrom::Start(0)).await?;
 
+        let mut writer = tokio::io::BufWriter::new(stream); // NOTE: MUST manually flush
+
         let file_meta = file.metadata().await?;
         let file_length = file_meta.len();
-        if let Some(range) = headers.get(http::header::RANGE) {
-            let mut ranges = http_range::HttpRange::parse_bytes(range.as_bytes(), file_length)
+        let mut reader = tokio::io::BufReader::new(file);
+        if let Some(range) = headers.iter().find_map(|(name, val)| {
+            if *name == my_http::KnownHeaderNames::RANGE {
+                Some(val)
+            } else {
+                None
+            }
+        }) {
+            let mut ranges = http_range::HttpRange::parse_bytes(range, file_length)
                 .map_err(|_| FileRequestError::HttpRangeParse)?;
-            match ranges.get_mut(0) {
-                Some(range) => {
-                    range.length = range.length.min(MAX_CHUNK_SIZE);
-                    let mut file_part = vec![0; range.length as usize];
-                    file.seek(std::io::SeekFrom::Start(range.start)).await?;
-                    file.read_exact(&mut file_part).await?;
-                    Ok(Response::builder()
-                        .status(StatusCode::PARTIAL_CONTENT)
-                        .header(http::header::CONTENT_TYPE, "application/octet-stream")
-                        .header(
-                            http::header::CONTENT_RANGE,
-                            format!(
-                                "bytes {}-{}/{file_length}",
-                                range.start,
-                                range.start + range.length - 1
-                            ),
-                        )
-                        .body(Full::new(Bytes::from_owner(file_part)).boxed())?)
+            if let Some(range) = ranges.get_mut(0) {
+                range.length = range.length.min(MAX_CHUNK_SIZE);
+                let start_line = my_http::ResponseStartLine {
+                    protocol: my_http::Protocol::Http11,
+                    status_code: my_http::StatusCode::ParitalContent,
                 }
-                None => empty_resp!(INTERNAL_SERVER_ERROR),
+                .serialize();
+                writer.write_all(&start_line).await?;
+
+                let headers = [
+                    (
+                        my_http::KnownHeaderNames::CONTENT_RANGE,
+                        format!(
+                            "bytes {}-{}/{file_length}",
+                            range.start,
+                            range.start + range.length - 1
+                        ),
+                    ),
+                    (
+                        my_http::KnownHeaderNames::CONTENT_TYPE,
+                        "application/octet-stream".to_string(),
+                    ),
+                    (
+                        my_http::KnownHeaderNames::CONTENT_LENGTH,
+                        range.length.to_string(),
+                    ),
+                ];
+
+                // TODO: should be made function
+                for header in headers {
+                    writer.write_all(header.0).await?;
+                    writer.write_all(b": ").await?;
+                    writer.write_all(header.1.as_bytes()).await?;
+                    writer.write_all(b"\r\n").await?;
+                }
+
+                writer.write_all(b"\r\n").await?;
+
+                reader.seek(std::io::SeekFrom::Start(range.start)).await?;
+                let mut read_buf = [0u8; 1024 * 8];
+                let mut bytes_read = 0;
+                while bytes_read < range.length {
+                    let n = reader.read(&mut read_buf).await?;
+                    let end = read_buf.len().min((range.length - bytes_read) as usize);
+                    writer.write_all(&read_buf[..end]).await?;
+                    bytes_read += n as u64;
+                }
+
+                writer.flush().await?;
+            } else {
+                return Self::emtpy_response(writer, my_http::StatusCode::BadRequest).await;
             }
         } else {
-            let mut file_contents: Vec<u8> = Vec::with_capacity(file_meta.len() as usize);
-            file.read_to_end(&mut file_contents).await?;
+            let start_line = my_http::ResponseStartLine {
+                protocol: my_http::Protocol::Http11,
+                status_code: my_http::StatusCode::ParitalContent,
+            }
+            .serialize();
+            writer.write_all(&start_line).await?;
 
-            Ok(Response::builder()
-                .header(http::header::CONTENT_TYPE, "application/octet-stream")
-                .body(Full::new(Bytes::from_owner(file_contents)).boxed())?)
+            let headers = [
+                (
+                    my_http::KnownHeaderNames::CONTENT_TYPE,
+                    "application/octet-stream".to_string(),
+                ),
+                (
+                    my_http::KnownHeaderNames::CONTENT_LENGTH,
+                    file_length.to_string(),
+                ),
+            ];
+
+            // TODO: should be made function
+            for header in headers {
+                writer.write_all(header.0).await?;
+                writer.write_all(b": ").await?;
+                writer.write_all(header.1.as_bytes()).await?;
+                writer.write_all(b"\r\n").await?;
+            }
+
+            writer.write_all(b"\r\n").await?;
+
+            tokio::io::copy(&mut reader, &mut writer).await?;
+
+            writer.flush().await?;
         }
+
+        Ok(())
     }
 
     async fn handle_request(
-        request: http::Request<hyper::body::Incoming>,
+        stream: tokio::net::TcpStream,
+        method: my_http::Method,
+        path: &[u8],
+        headers: &[(&[u8], &[u8])],
         files: FileMapLock,
-    ) -> Result<Response<BoxBody<Bytes, Infallible>>, FileRequestError> {
-        match *request.method() {
-            http::Method::GET => {
-                let Some(path) = request.uri().path().strip_prefix('/') else {
-                    debug!("Invalid path in URI: {:?}", request.uri());
-                    empty_resp!(NOT_FOUND);
+    ) -> Result<(), FileRequestError> {
+        match method {
+            my_http::Method::Get => {
+                let Some(path) = str::from_utf8(path)?.strip_prefix('/') else {
+                    debug!("Invalid path in URI");
+                    return Self::emtpy_response(stream, my_http::StatusCode::NotFound).await;
                 };
 
                 let Ok(uuid) = Uuid::from_str(path) else {
                     debug!("Path is not a valid UUID: {path}");
-                    empty_resp!(NOT_FOUND);
+                    return Self::emtpy_response(stream, my_http::StatusCode::NotFound).await;
                 };
 
-                Self::handle_get_file_request(uuid, files, request.headers()).await
+                Self::handle_get_file_request(stream, uuid, files, headers).await?;
             }
-            _ => empty_resp!(METHOD_NOT_ALLOWED),
+            _ => return Self::emtpy_response(stream, my_http::StatusCode::MethodNotAllowed).await,
         }
+        Ok(())
     }
 
     async fn dispatch_request(
-        stream: tokio::net::TcpStream,
+        mut stream: tokio::net::TcpStream,
         files: FileMapLock,
     ) -> anyhow::Result<()> {
-        let res = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-            .serve_connection(
-                TokioIo::new(stream),
-                service_fn(|request: http::Request<hyper::body::Incoming>| {
-                    // debug!("REQUEST: {request:?}");
-                    Self::handle_request(request, Arc::clone(&files))
-                }),
-            )
-            .await;
+        let mut request_buf = Vec::<u8>::with_capacity(DEFAULT_REQUEST_BUF_CAP);
+        let mut read_buf = [0u8; 1024];
+        let start_line_end = 'out: {
+            loop {
+                let n = stream.read(&mut read_buf).await?;
+                request_buf.extend_from_slice(&read_buf[..n]);
+                if let Some(cr_idx) = find_first_cr_lf(&request_buf) {
+                    break 'out cr_idx + 2;
+                }
+                if n < read_buf.len() {
+                    break;
+                }
+            }
+            bail!("Missing start line");
+        };
 
-        if let Err(err) = res {
-            error!("Failed to handle request: {err}");
-        }
+        let start_line_buf = request_buf[..start_line_end].to_vec();
+        let start_line = my_http::parse_request_start_line(&start_line_buf)?;
+        let header_map_end = 'out: {
+            loop {
+                if let Some(cr_idx) = find_first_double_cr_lf(&request_buf) {
+                    break 'out cr_idx + 4;
+                }
+                let n = stream.read(&mut read_buf).await?;
+                request_buf.extend_from_slice(&read_buf[..n]);
+                if n < read_buf.len() {
+                    break;
+                }
+            }
+            bail!("Missing headers");
+        };
+
+        let headers = parse_header_map(&request_buf[start_line_end..header_map_end])?;
+
+        // we don't care about the body
+
+        Self::handle_request(stream, start_line.0, start_line.1, &headers, files).await?;
 
         Ok(())
     }
@@ -179,7 +292,11 @@ impl FileServer {
         while let Ok((stream, addr)) = listener.accept().await {
             debug!("Got connection from {addr:?}");
             let files = Arc::clone(&files);
-            tokio::spawn(Self::dispatch_request(stream, files));
+            tokio::spawn(async move {
+                if let Err(err) = Self::dispatch_request(stream, files).await {
+                    error!("Failed to handle request: {err}");
+                }
+            });
         }
 
         Ok(())

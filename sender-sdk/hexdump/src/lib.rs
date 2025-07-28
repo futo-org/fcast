@@ -14,7 +14,7 @@ pub fn hexdump(data: &[u8]) -> String {
     for (i, chunk) in chunks.enumerate() {
         res += &format!("{:08x}: ", i * 16);
         for b in chunk {
-            res += &format!("{:02x} ", b);
+            res += &format!("{b:02x} ");
         }
         res += " |";
         for b in chunk {
@@ -30,7 +30,7 @@ pub fn hexdump(data: &[u8]) -> String {
     res += &format!("{:08x}: ", data.len() / 16 * 16);
 
     for b in rem {
-        res += &format!("{:02x} ", b);
+        res += &format!("{b:02x} ");
     }
     res.push(' ');
     for _ in rem.len()..16 {

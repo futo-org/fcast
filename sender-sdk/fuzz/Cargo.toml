@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 plist = { path = "../plist", features = [ "arbitrary" ] }
 parsers-common = { path = "../parsers-common" }
+http = { path = "../http" }
 arbitrary = "1.4.1"
 
 [[bin]]
@@ -30,6 +31,13 @@ bench = false
 [[bin]]
 name = "parse_header_map"
 path = "fuzz_targets/fuzz_parse_header_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_parse_request_start_line"
+path = "fuzz_targets/fuzz_http_parse_request_start_line.rs"
 test = false
 doc = false
 bench = false

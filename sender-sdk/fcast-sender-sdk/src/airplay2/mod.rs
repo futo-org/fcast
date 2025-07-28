@@ -29,10 +29,12 @@ use tokio::{
 };
 
 use crate::{
-    airplay_common::{self, AirPlayFeatures, AirPlayStatus, InfoPlist}, casting_device::{
+    airplay_common::{self, AirPlayFeatures, AirPlayStatus, InfoPlist},
+    casting_device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, ProtocolType,
-    }, utils, IpAddr
+    },
+    utils, IpAddr,
 };
 
 use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};

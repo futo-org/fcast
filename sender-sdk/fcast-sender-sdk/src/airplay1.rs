@@ -1,16 +1,16 @@
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Duration,
+    // time::Duration,
 };
 
 use anyhow::{anyhow, Context};
-use bytes::Bytes;
-use http::StatusCode;
-use http_body_util::{BodyExt, Empty, Full};
+// use bytes::Bytes;
+// use http::StatusCode;
+// use http_body_util::{BodyExt, Empty, Full};
 use log::{debug, error, info};
 use tokio::{
-    net::TcpStream,
+    // net::TcpStream,
     runtime::Handle,
     sync::mpsc::{Receiver, Sender},
 };
@@ -80,6 +80,7 @@ impl AirPlay1Device {
 
 struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
+    #[allow(dead_code)]
     session_id: String,
 }
 
@@ -93,87 +94,88 @@ impl InnerDevice {
 
     async fn post(
         &self,
-        addr: &SocketAddr,
-        path: &str,
-        body: Option<(&str, &str)>,
+        _addr: &SocketAddr,
+        _path: &str,
+        _body: Option<(&str, &str)>,
     ) -> anyhow::Result<bool> {
-        let stream =
-            tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(addr)).await??;
-        let io = hyper_util::rt::TokioIo::new(stream);
+        // let stream =
+        //     tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(addr)).await??;
+        // let io = hyper_util::rt::TokioIo::new(stream);
 
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-        tokio::task::spawn(async move {
-            if let Err(err) = conn.await {
-                error!("Connection failed: {err}");
-            }
-        });
+        // let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        // tokio::task::spawn(async move {
+        //     if let Err(err) = conn.await {
+        //         error!("Connection failed: {err}");
+        //     }
+        // });
 
-        let req_builder = hyper::Request::builder()
-            .method("POST")
-            .uri(format!("/{path}"))
-            .header("X-Apple-Device-ID", "0xdc2b61a0ce79")
-            .header("User-Agent", "MediaControl/1.0")
-            .header("X-Apple-Session-ID", &self.session_id);
+        // let req_builder = hyper::Request::builder()
+        //     .method("POST")
+        //     .uri(format!("/{path}"))
+        //     .header("X-Apple-Device-ID", "0xdc2b61a0ce79")
+        //     .header("User-Agent", "MediaControl/1.0")
+        //     .header("X-Apple-Session-ID", &self.session_id);
 
-        let req = match body {
-            Some((content_type, body)) => req_builder
-                .header("Content-Length", body.len().to_string())
-                .header("Content-Type", content_type)
-                .body(Full::new(Bytes::from_owner(body.as_bytes().to_vec())).boxed())?,
-            None => req_builder
-                .header("Content-Length", "0")
-                .body(Full::default().boxed())?,
-        };
+        // let req = match body {
+        //     Some((content_type, body)) => req_builder
+        //         .header("Content-Length", body.len().to_string())
+        //         .header("Content-Type", content_type)
+        //         .body(Full::new(Bytes::from_owner(body.as_bytes().to_vec())).boxed())?,
+        //     None => req_builder
+        //         .header("Content-Length", "0")
+        //         .body(Full::default().boxed())?,
+        // };
 
-        let res = tokio::time::timeout(Duration::from_secs(1), sender.send_request(req)).await??;
+        // let res = tokio::time::timeout(Duration::from_secs(1), sender.send_request(req)).await??;
 
-        if res.status() != StatusCode::OK {
-            error!("Status code: {}", res.status());
-            return Ok(false);
-        }
+        // if res.status() != StatusCode::OK {
+        //     error!("Status code: {}", res.status());
+        //     return Ok(false);
+        // }
 
         Ok(true)
     }
 
     #[allow(dead_code)]
-    async fn get(&self, addr: &SocketAddr, path: &str) -> anyhow::Result<String> {
-        let stream =
-            tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(addr)).await??;
-        let io = hyper_util::rt::TokioIo::new(stream);
+    async fn get(&self, _addr: &SocketAddr, _path: &str) -> anyhow::Result<String> {
+        // let stream =
+        //     tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(addr)).await??;
+        // let io = hyper_util::rt::TokioIo::new(stream);
 
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-        tokio::task::spawn(async move {
-            if let Err(err) = conn.await {
-                error!("Connection failed: {err}");
-            }
-        });
+        // let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        // tokio::task::spawn(async move {
+        //     if let Err(err) = conn.await {
+        //         error!("Connection failed: {err}");
+        //     }
+        // });
 
-        let req = hyper::Request::builder()
-            .method("GET")
-            .uri(format!("/{path}"))
-            .header("X-Apple-Device-ID", "0xdc2b61a0ce79")
-            .header("User-Agent", "MediaControl/1.0")
-            .header("X-Apple-Session-ID", &self.session_id)
-            .header("Content-Length", "0")
-            .body(Empty::<Bytes>::new())?;
+        // let req = hyper::Request::builder()
+        //     .method("GET")
+        //     .uri(format!("/{path}"))
+        //     .header("X-Apple-Device-ID", "0xdc2b61a0ce79")
+        //     .header("User-Agent", "MediaControl/1.0")
+        //     .header("X-Apple-Session-ID", &self.session_id)
+        //     .header("Content-Length", "0")
+        //     .body(Empty::<Bytes>::new())?;
 
-        let mut res = sender.send_request(req).await?;
+        // let mut res = sender.send_request(req).await?;
 
-        if res.status() != StatusCode::OK {
-            error!("Status code: {}", res.status());
-            todo!();
-            // return Ok(false);
-        }
+        // if res.status() != StatusCode::OK {
+        //     error!("Status code: {}", res.status());
+        //     todo!();
+        //     // return Ok(false);
+        // }
 
-        let mut body: Vec<u8> = Vec::new();
-        while let Some(next) = res.frame().await {
-            let frame = next?;
-            if let Some(chunk) = frame.data_ref() {
-                body.extend_from_slice(chunk);
-            }
-        }
+        // let mut body: Vec<u8> = Vec::new();
+        // while let Some(next) = res.frame().await {
+        //     let frame = next?;
+        //     if let Some(chunk) = frame.data_ref() {
+        //         body.extend_from_slice(chunk);
+        //     }
+        // }
 
-        Ok(String::from_utf8(body)?)
+        // Ok(String::from_utf8(body)?)
+        todo!()
     }
 
     async fn inner_work(

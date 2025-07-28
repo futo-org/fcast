@@ -62,14 +62,6 @@ fn main() -> Result<()> {
                     "../examples/android-views/app/aar/fcast-android-sender-sdk-release.aar",
                 )?;
             }
-            // {
-            //     let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android-layouts"));
-            //     cmd!(sh, "./gradlew assembleRelease").run()?;
-            //     sh.copy_file(
-            //         "build/outputs/aar/fcast-android-sender-sdk-layouts-release.aar",
-            //         "../examples/android-views/app/aar/fcast-android-sender-sdk-layouts-release.aar",
-            //     )?;
-            // }
             Ok(())
         }
     }
