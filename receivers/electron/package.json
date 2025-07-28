@@ -60,5 +60,8 @@
     "uuid": "^11.0.3",
     "ws": "^8.18.0",
     "yargs": "^17.7.2"
+  },
+  "optionalDependencies": {
+    "utf-8-validate": "^6.0.5"
   }
 }
