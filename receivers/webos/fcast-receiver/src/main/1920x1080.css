@@ -32,7 +32,11 @@
     }
 
     #title-icon {
-        width: 124px;
+        /*
+        For some strange reason on webOS 5.0 there is a right white border line...
+        Adjusting logo dimensions slightly seems to fix the issue...
+        */
+        width: 125px;
         height: 124px;
         margin-right: 25px;
     }
