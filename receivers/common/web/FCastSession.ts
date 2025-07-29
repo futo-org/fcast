@@ -61,7 +61,16 @@ export class FCastSession {
 
         const size = 1 + data.length;
         const header = Buffer.alloc(4 + 1);
-        header.writeUint32LE(size, 0);
+
+        // webOS 22 and earlier node versions do not support `writeUint32LE` despite nodejs stating
+        // it should be supported in those versions... `writeUIntLE` however works instead.
+        // @ts-ignore
+        if (TARGET === 'webOS') {
+            header.writeUIntLE(size, 0, 4);
+        } else {
+            header.writeUint32LE(size, 0);
+        }
+
         header[4] = opcode;
 
         let packet: Buffer;
