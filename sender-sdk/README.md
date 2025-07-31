@@ -24,6 +24,12 @@ $ cargo xtask generate-android
 
 ## IOS
 
+If `iphonesimulator` SDK not found, execute the following command:
+
+```console
+$ # xcode-select --switch /Applications/Xcode.app/Contents/Developer/
+```
+
 ### Additional required tools
 
 * The `aarch64-apple-ios-sim` and `aarch64-apple-ios` rustc targets

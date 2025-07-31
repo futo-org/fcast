@@ -9,3 +9,5 @@ node_modules/
 
 /target
 /flake*
+/ios-bindings
+/ios-build

@@ -1,6 +1,20 @@
 import SwiftUI
 import Synchronization
 import Combine
+import Network
+
+struct FoundDevice {
+    var name: String
+    var endpoint: NWEndpoint
+    var proto: ProtocolType
+}
+
+enum SheetState {
+    case deviceList
+    case connecting(deviceName: String)
+    case failedToConnect(deviceName: String, reason: String)
+    case connected
+}
 
 @MainActor
 class DataModel: ObservableObject {
@@ -8,81 +22,21 @@ class DataModel: ObservableObject {
     @Published var volume = 1.0
     @Published var time = 0.0
     @Published var duration = 0.0
-}
-
-final class EventHandler: CastingDeviceEventHandler {
-    private let dataModel: Mutex<DataModel>
-    
-    init(data: DataModel) {
-        dataModel = Mutex(data)
-    }
-    
-    func connectionStateChanged(state: CastConnectionState) {
-        print(state)
-    }
-    
-    func volumeChanged(volume: Double) {
-        dataModel.withLock { dataModel in
-            DispatchQueue.main.async { [dataModel] in
-                dataModel.volume = volume
-            }
-        }
-    }
-    
-    func timeChanged(time: Double) {
-        dataModel.withLock { dataModel in
-            DispatchQueue.main.async { [dataModel] in
-                dataModel.time = time
-            }
-        }
-    }
-    
-    func playbackStateChanged(state: PlaybackState) {
-        dataModel.withLock { dataModel in
-            DispatchQueue.main.async { [dataModel] in
-                dataModel.playbackState = state
-            }
-        }
-    }
-    
-    func durationChanged(duration: Double) {
-        dataModel.withLock { dataModel in
-            DispatchQueue.main.async { [dataModel] in
-                dataModel.duration = duration
-            }
-        }
-    }
-    
-    func speedChanged(speed: Double) {
-        print(speed)
-    }
-}
-
-final class SwiftCastingDevice {
-    var eventHandler: CastingDeviceEventHandler
-    var castingDevice: CastingDevice
-    
-    init(dataModel: DataModel) {
-        initLogger()
-        eventHandler = EventHandler(data: dataModel)
-        castingDevice = FCastCastingDevice
-            .newWithEventHandler(
-                deviceInfo: CastingDeviceInfo(
-                    name: "Test",
-                    type: CastProtocolType.fCast,
-                    addresses: [IpAddr.v4(q1: 127, q2: 0, q3: 0, q4: 1)],
-                    port: 46899
-                ),
-                eventHandler: eventHandler
-            )
-    }
+    @Published var speed = 1.0
+    @Published var devices: Array<FoundDevice> = Array()
+    @Published var showingDeviceList = false
+    @Published var showingConnectingToDevice = false
+    @Published var showingFailedToConnect = false
+    @Published var isShowingSheet = false
+    @Published var sheetState = SheetState.deviceList
+    @Published var usedLocalAddress: IpAddr? = nil
 }
 
 @main
 struct FCast_SenderApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView(data: DataModel())
+            try! ContentView(data: DataModel())
         }
     }
 }

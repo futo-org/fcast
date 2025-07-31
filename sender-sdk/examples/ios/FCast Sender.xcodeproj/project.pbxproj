@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		FEF9DE552DF6C11E00D08D8C /* FCast.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FEF9DE542DF6C11E00D08D8C /* FCast.xcframework */; };
-		FEF9DE582DF6C12D00D08D8C /* fcast.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEF9DE562DF6C12D00D08D8C /* fcast.swift */; };
+		2C10DED32E37B5C7000C85F7 /* fcast_sender_sdk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C10DED12E37B5C7000C85F7 /* fcast_sender_sdk.swift */; };
+		2C10DEDB2E37CD21000C85F7 /* fcast_sender_sdk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2C10DEDA2E37CD21000C85F7 /* fcast_sender_sdk.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,13 +42,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		2C10DED12E37B5C7000C85F7 /* fcast_sender_sdk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = fcast_sender_sdk.swift; sourceTree = "<group>"; };
+		2C10DED22E37B5C7000C85F7 /* fcast_sender_sdkFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fcast_sender_sdkFFI.h; sourceTree = "<group>"; };
+		2C10DED52E37B5E7000C85F7 /* FCastSender-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FCastSender-Bridging-Header.h"; sourceTree = "<group>"; };
+		2C10DEDA2E37CD21000C85F7 /* fcast_sender_sdk.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = fcast_sender_sdk.xcframework; sourceTree = "<group>"; };
 		FE5977C02DF448FF00115F46 /* FCast Sender.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "FCast Sender.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		FE5977F82DF6A78000115F46 /* FCastSender-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FCastSender-Bridging-Header.h"; sourceTree = "<group>"; };
-		FEF9DE542DF6C11E00D08D8C /* FCast.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = FCast.xcframework; sourceTree = "<group>"; };
-		FEF9DE562DF6C12D00D08D8C /* fcast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = fcast.swift; sourceTree = "<group>"; };
-		FEF9DE572DF6C12D00D08D8C /* fcastFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fcastFFI.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -74,7 +74,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FEF9DE552DF6C11E00D08D8C /* FCast.xcframework in Frameworks */,
+				2C10DEDB2E37CD21000C85F7 /* fcast_sender_sdk.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -98,16 +98,16 @@
 		FE492A012DF43426005DA314 = {
 			isa = PBXGroup;
 			children = (
-				FE5977F82DF6A78000115F46 /* FCastSender-Bridging-Header.h */,
+				2C10DED52E37B5E7000C85F7 /* FCastSender-Bridging-Header.h */,
 				FE492A0C2DF43426005DA314 /* FCast Sender */,
 				FE492A1A2DF43428005DA314 /* FCast SenderTests */,
 				FE492A242DF43428005DA314 /* FCast SenderUITests */,
 				FE5977C02DF448FF00115F46 /* FCast Sender.app */,
 				FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */,
 				FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */,
-				FEF9DE542DF6C11E00D08D8C /* FCast.xcframework */,
-				FEF9DE562DF6C12D00D08D8C /* fcast.swift */,
-				FEF9DE572DF6C12D00D08D8C /* fcastFFI.h */,
+				2C10DED12E37B5C7000C85F7 /* fcast_sender_sdk.swift */,
+				2C10DED22E37B5C7000C85F7 /* fcast_sender_sdkFFI.h */,
+				2C10DEDA2E37CD21000C85F7 /* fcast_sender_sdk.xcframework */,
 			);
 			sourceTree = "<group>";
 		};
@@ -215,6 +215,8 @@
 			);
 			mainGroup = FE492A012DF43426005DA314;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FE492A012DF43426005DA314;
 			projectDirPath = "";
@@ -256,7 +258,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FEF9DE582DF6C12D00D08D8C /* fcast.swift in Sources */,
+				2C10DED32E37B5C7000C85F7 /* fcast_sender_sdk.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -414,15 +416,19 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y29P2S6Z53;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "FCast-Sender-Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 16;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -430,6 +436,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-Sender";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "FCastSender-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -442,15 +449,19 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y29P2S6Z53;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "FCast-Sender-Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 16;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -458,6 +469,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "FUTO.FCast-Sender";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "FCastSender-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;

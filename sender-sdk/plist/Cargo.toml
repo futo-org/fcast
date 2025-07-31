@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-hex-literal = { version = "1.0.0", optional = true }
 arbitrary = { version = "1.4.1", features = [ "derive" ], optional = true }
+
+[dev-dependencies]
+hex-literal = "1.0.0"
 
 [features]
 default = []

@@ -14,11 +14,11 @@ serde_json = { workspace = true, optional = true }
 futures = "0.3.31"
 mdns-sd = { workspace = true, optional = true }
 thiserror.workspace = true
-hyper-util = { version = "0.1.14", features = ["server", "http1", "http2", "tokio"], optional = true }
-hyper = { version = "1.6.0", features = ["client", "http1"], optional = true }
-http = { version = "1.3.1", optional = true }
-http-body-util = { version = "0.1.3", optional = true }
-bytes = { version = "1.10.1", optional = true }
+# hyper-util = { version = "0.1.14", features = ["server", "http1", "http2", "tokio"], optional = true }
+# hyper = { version = "1.6.0", features = ["client", "http1"], optional = true }
+# http = { version = "1.3.1", optional = true }
+# http-body-util = { version = "0.1.3", optional = true }
+# bytes = { version = "1.10.1", optional = true }
 uuid = { version = "1.17.0", features = ["v4"], optional = true }
 bitflags = { version = "2.9.1", features = ["serde"], optional = true }
 tokio-stream = "0.1.17"
@@ -76,9 +76,9 @@ uniffi = ["dep:uniffi"]
 logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
 discovery = ["dep:mdns-sd", "discovery_types"]
 discovery_types = []
-_android_defaults = ["fcast", "chromecast", "airplay1", "airplay2", "http-file-server", "uniffi", "logging", "discovery_types"]
-# NOTE: change back to include airplay1
-# _android_defaults = ["fcast", "chromecast", "airplay2", "http-file-server", "uniffi", "logging", "discovery_types"]
+_mobile_defaults = ["fcast", "chromecast", "airplay1", "airplay2", "http-file-server", "uniffi", "logging", "discovery_types"]
+_android_defaults = ["_mobile_defaults"]
+_ios_defaults = ["_mobile_defaults"]
 
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]

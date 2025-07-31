@@ -3,6 +3,7 @@ use std::rc::Rc;
 use xshell::Shell;
 
 pub mod kotlin;
+pub mod swift;
 pub mod workspace;
 
 thread_local! {

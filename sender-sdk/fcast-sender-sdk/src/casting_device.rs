@@ -245,6 +245,8 @@ pub trait CastingDevice: Send + Sync {
     fn supports_feature(&self, feature: DeviceFeature) -> bool;
     fn name(&self) -> String;
     fn set_name(&self, name: String);
+    // TODO: Should this exist?
+    /// Stop playback and disconnect from the receiver.
     fn stop_casting(&self) -> Result<(), CastingDeviceError>;
     fn seek(&self, time_seconds: f64) -> Result<(), CastingDeviceError>;
     fn stop_playback(&self) -> Result<(), CastingDeviceError>;

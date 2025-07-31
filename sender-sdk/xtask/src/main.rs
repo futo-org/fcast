@@ -1,7 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use xshell::cmd;
-use xtask::kotlin::{self, KotlinArgs, KotlinCommand};
+use xtask::{
+    kotlin::{self, KotlinArgs, KotlinCommand},
+    swift::{self, SwiftArgs, SwiftCommand},
+};
 
 #[derive(Subcommand)]
 enum Command {
@@ -20,6 +23,8 @@ enum Command {
     // # xcodebuild -create-xcframework -library target/aarch64-apple-ios-sim/debug/libfcast.a -headers uniffi-out \
     //     -output ios/FCast.xcframework
     // # cp uniffi-out/fcast.swift sender-ios/Generated
+    Swift(swift::SwiftArgs),
+    GenerateIos,
     Hack,
 }
 
@@ -62,6 +67,15 @@ fn main() -> Result<()> {
                     "../examples/android-views/app/aar/fcast-android-sender-sdk-release.aar",
                 )?;
             }
+            Ok(())
+        }
+        Command::Swift(cmd) => cmd.run(),
+        Command::GenerateIos => {
+            SwiftArgs {
+                cmd: SwiftCommand::BuildIosLibrary { release: true },
+            }
+            .run()?;
+
             Ok(())
         }
     }
