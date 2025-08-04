@@ -241,15 +241,15 @@ export class Main {
                     });
                 });
                 l.emitter.on('disconnect', (message) => {
-                    ConnectionMonitor.onDisconnect(l, message, l instanceof WebSocketListenerService, () => {
+                    ConnectionMonitor.onDisconnect(message, l instanceof WebSocketListenerService, () => {
                         Main.emitter.emit('disconnect', message);
                     });
                 });
-                l.emitter.on('ping', (message) => {
-                    ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
+                l.emitter.on('ping', (sessionId: string) => {
+                    ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
                 });
-                l.emitter.on('pong', (message) => {
-                    ConnectionMonitor.onPingPong(message, l instanceof WebSocketListenerService);
+                l.emitter.on('pong', (sessionId: string) => {
+                    ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
                 });
                 l.emitter.on('initial', (message) => {
                     logger.info(`Received 'Initial' message from sender: ${message}`);

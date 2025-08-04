@@ -7,13 +7,13 @@ import { errorHandler } from 'src/Main';
 const logger = new Logger('ListenerService', LoggerType.BACKEND);
 
 export abstract class ListenerService {
-    public readonly PORT: number;
     public emitter: EventEmitter = new EventEmitter();
     protected sessionMap: Map<string, FCastSession> = new Map();
     private eventSubscribers: Map<string, EventSubscribeObject[]> = new Map();
 
     public abstract start(): void;
     public abstract stop(): void;
+    public abstract disconnect(sessionId: string): void;
 
     public send(opcode: number, message = null, sessionId = null) {
         // logger.info(`Sending message ${JSON.stringify(message)}`);

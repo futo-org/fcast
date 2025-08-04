@@ -45,7 +45,7 @@ export const supportedImageTypes = [
     'image/png',
     'image/svg+xml',
     'image/vnd.microsoft.icon',
-    'image/webp'
+    'image/webp',
 ];
 
 export const supportedImageExtensions = [
@@ -57,7 +57,7 @@ export const supportedImageExtensions = [
     '.jpeg', '.jpg', '.jpe', '.jif', '.jfif', '.jfi',
     '.png',
     '.svg',
-    '.webp'
+    '.webp',
 ];
 
 export const supportedPlayerTypes = streamingMediaTypes.concat(

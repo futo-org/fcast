@@ -43,52 +43,47 @@ export function setUiUpdateCallbacks(callbacks: any) {
 
 export class ConnectionMonitor {
     private static logger: Logger;
-    private static initialized = false;
     private static connectionPingTimeout = 2500;
-    private static heartbeatRetries = new Map();
-    private static backendConnections = new Map();
+    private static heartbeatRetries = new Map<string, number>();
+    private static backendConnections = new Map<string, any>(); // is `ListenerService`, but cant import backend module in frontend
     private static uiConnectUpdateTimeout = 100;
     private static uiDisconnectUpdateTimeout = 2000; // Senders may reconnect, but generally need more time
-    private static uiUpdateMap = new Map();
+    private static uiUpdateMap = new Map<string, any>(); // { event: string, uiUpdateCallback: () => void }
 
     constructor() {
-        if (!ConnectionMonitor.initialized) {
-            ConnectionMonitor.logger = new Logger('ConnectionMonitor', LoggerType.BACKEND);
+        ConnectionMonitor.logger = new Logger('ConnectionMonitor', LoggerType.BACKEND);
 
-            setInterval(() => {
-                if (ConnectionMonitor.backendConnections.size > 0) {
-                    for (const sessionId of ConnectionMonitor.backendConnections.keys()) {
-                        const listener = ConnectionMonitor.backendConnections.get(sessionId);
+        setInterval(() => {
+            if (ConnectionMonitor.backendConnections.size > 0) {
+                for (const sessionId of ConnectionMonitor.backendConnections.keys()) {
+                    const listener = ConnectionMonitor.backendConnections.get(sessionId);
 
-                        if (listener.getSessionProtocolVersion(sessionId) >= 2) {
-                            if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
-                                ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
-                                listener.disconnect(sessionId);
-                            }
-
-                            ConnectionMonitor.logger.debug(`Pinging session ${sessionId} with ${ConnectionMonitor.heartbeatRetries.get(sessionId)} retries left`);
-                            listener.send(Opcode.Ping, null, sessionId);
-                            ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
+                    if (listener.getSessionProtocolVersion(sessionId) >= 2) {
+                        if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
+                            ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
+                            listener.disconnect(sessionId);
                         }
-                        else if (listener.getSessionProtocolVersion(sessionId) === undefined) {
-                            ConnectionMonitor.logger.warn(`Session ${sessionId} was not found in the list of active sessions. Removing...`);
-                            ConnectionMonitor.backendConnections.delete(sessionId);
-                            ConnectionMonitor.heartbeatRetries.delete(sessionId);
-                        }
+
+                        ConnectionMonitor.logger.debug(`Pinging session ${sessionId} with ${ConnectionMonitor.heartbeatRetries.get(sessionId)} retries left`);
+                        listener.send(Opcode.Ping, null, sessionId);
+                        ConnectionMonitor.heartbeatRetries.set(sessionId, ConnectionMonitor.heartbeatRetries.get(sessionId) + 1);
+                    }
+                    else if (listener.getSessionProtocolVersion(sessionId) === undefined) {
+                        ConnectionMonitor.logger.warn(`Session ${sessionId} was not found in the list of active sessions. Removing...`);
+                        ConnectionMonitor.backendConnections.delete(sessionId);
+                        ConnectionMonitor.heartbeatRetries.delete(sessionId);
                     }
                 }
-            }, ConnectionMonitor.connectionPingTimeout);
-
-            ConnectionMonitor.initialized = true;
-        }
+            }
+        }, ConnectionMonitor.connectionPingTimeout);
     }
 
-    public static onPingPong(value: any, isWebsockets: boolean) {
-        ConnectionMonitor.logger.debug(`Received response from ${value.sessionId}`);
+    public static onPingPong(sessionId: string, isWebsockets: boolean) {
+        ConnectionMonitor.logger.debug(`Received response from ${sessionId}`);
 
         // Websocket clients currently don't support ping-pong commands
         if (!isWebsockets) {
-            ConnectionMonitor.heartbeatRetries.set(value.sessionId, 0);
+            ConnectionMonitor.heartbeatRetries.set(sessionId, 0);
         }
     }
 
@@ -96,17 +91,13 @@ export class ConnectionMonitor {
         ConnectionMonitor.logger.info(`Device connected: ${JSON.stringify(value)}`);
         const idMapping = isWebsockets ? value.sessionId : value.data.address;
 
-        if (!ConnectionMonitor.uiUpdateMap.has(idMapping)) {
-            ConnectionMonitor.uiUpdateMap.set(idMapping, []);
-        }
-
         if (!isWebsockets) {
             ConnectionMonitor.backendConnections.set(value.sessionId, listener);
             ConnectionMonitor.heartbeatRetries.set(value.sessionId, 0);
         }
 
         // Occasionally senders seem to instantaneously disconnect and reconnect, so suppress those ui updates
-        const senderUpdateQueue = ConnectionMonitor.uiUpdateMap.get(idMapping);
+        const senderUpdateQueue = ConnectionMonitor.uiUpdateMap.get(idMapping) ?? [];
         senderUpdateQueue.push({ event: 'connect', uiUpdateCallback: uiUpdateCallback });
         ConnectionMonitor.uiUpdateMap.set(idMapping, senderUpdateQueue);
 
@@ -115,7 +106,7 @@ export class ConnectionMonitor {
         }
     }
 
-    public static onDisconnect(listener: any, value: any, isWebsockets: boolean, uiUpdateCallback: any) {
+    public static onDisconnect(value: any, isWebsockets: boolean, uiUpdateCallback: any) {
         ConnectionMonitor.logger.info(`Device disconnected: ${JSON.stringify(value)}`);
 
         if (!isWebsockets) {

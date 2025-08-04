@@ -6,7 +6,7 @@ import { WebSocket, WebSocketServer } from 'modules/ws';
 const logger = new Logger('WebSocketListenerService', LoggerType.BACKEND);
 
 export class WebSocketListenerService extends ListenerService {
-    public readonly PORT = 46898;
+    public static readonly PORT = 46898;
     private server: WebSocketServer;
 
     start() {
@@ -14,7 +14,7 @@ export class WebSocketListenerService extends ListenerService {
             return;
         }
 
-        this.server = new WebSocketServer({ port: this.PORT })
+        this.server = new WebSocketServer({ port: WebSocketListenerService.PORT })
             .on("connection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }

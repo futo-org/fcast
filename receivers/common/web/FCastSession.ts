@@ -244,8 +244,8 @@ export class FCastSession {
         this.emitter.on("setvolume", (body: SetVolumeMessage) => { emitter.emit("setvolume", body) });
         this.emitter.on("setspeed", (body: SetSpeedMessage) => { emitter.emit("setspeed", body) });
         this.emitter.on("version", (body: VersionMessage) => { emitter.emit("version", body) });
-        this.emitter.on("ping", () => { emitter.emit("ping", { sessionId: this.sessionId }) });
-        this.emitter.on("pong", () => { emitter.emit("pong", { sessionId: this.sessionId }) });
+        this.emitter.on("ping", () => { emitter.emit("ping", this.sessionId) });
+        this.emitter.on("pong", () => { emitter.emit("pong", this.sessionId) });
         this.emitter.on("initial", (body: InitialSenderMessage) => { emitter.emit("initial", body) });
         this.emitter.on("setplaylistitem", (body: SetPlaylistItemMessage) => { emitter.emit("setplaylistitem", body) });
         this.emitter.on("subscribeevent", (body: SubscribeEventMessage) => { emitter.emit("subscribeevent", { sessionId: this.sessionId, body: body }) });

@@ -6,7 +6,7 @@ import { Logger, LoggerType } from 'common/Logger';
 const logger = new Logger('TcpListenerService', LoggerType.BACKEND);
 
 export class TcpListenerService extends ListenerService {
-    public readonly PORT = 46899;
+    public static readonly PORT = 46899;
     private server: net.Server;
 
     start() {
@@ -15,7 +15,7 @@ export class TcpListenerService extends ListenerService {
         }
 
         this.server = net.createServer()
-            .listen(this.PORT)
+            .listen(TcpListenerService.PORT)
             .on("connection", this.handleConnection.bind(this))
             .on("error", this.handleServerError.bind(this));
     }

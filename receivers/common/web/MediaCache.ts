@@ -24,7 +24,7 @@ class CacheObject {
 export class MediaCache {
     private static instance: MediaCache = null;
     private cache: Map<number, CacheObject>;
-    private cacheUrlMap: Map<string,number>;
+    private cacheUrlMap: Map<string, number>;
     private playlist: PlaylistContent;
     private playlistIndex: number;
     private quota: number;
@@ -72,9 +72,7 @@ export class MediaCache {
 
         MediaCache.instance = null;
         this.cache.clear();
-        this.cache = null;
         this.cacheUrlMap.clear();
-        this.cacheUrlMap = null;
         this.playlist = null;
         this.quota = 0;
         this.cacheSize = 0;
