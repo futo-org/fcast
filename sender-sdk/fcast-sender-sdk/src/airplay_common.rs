@@ -102,16 +102,17 @@ bitflags::bitflags! {
 }
 
 #[allow(dead_code)]
-// #[derive(serde::Deserialize, Debug)]
-#[derive(Debug, Default)]
+#[derive(serde::Deserialize, Debug)]
+// #[derive(Debug, Default)]
 pub struct InfoPlist {
     // #[serde(rename = "PTPInfo")]
     // pub ptp_info: Option<String>,
     // pub build: Option<String>,
     /// MAC address
-    // #[serde(rename = "deviceID")]
+    #[serde(rename = "deviceID")]
     pub device_id: Option<String>,
-    pub features: Option<AirPlayFeatures>,
+    // pub features: Option<AirPlayFeatures>,
+    pub features: Option<u64>,
     // #[serde(rename = "initialVolume")]
     // pub initial_volume: Option<f64>,
     // #[serde(rename = "firmwareBuildDate")]
@@ -129,10 +130,12 @@ pub struct InfoPlist {
     // #[serde(rename = "sourceVersion")]
     // pub source_version: Option<String>,
     // #[serde(rename = "statusFlags")]
-    pub status_flags: Option<AirPlayStatus>,
-    /// Raw TXT record from AirPlay service mDNS record
+    // pub status_flags: Option<AirPlayStatus>,
+    #[serde(rename = "statusFlags")]
+    pub status_flags: Option<u64>,
+    // Raw TXT record from AirPlay service mDNS record
     // #[serde(rename = "txtAirPlay")]
-    pub txt_air_play: Option<Vec<u8>>,
+    // pub txt_air_play: Option<Vec<u8>>,
     // txt_air_play: Option<Vec<u8>>,
     // The following properties are omitted:
     // pi	string

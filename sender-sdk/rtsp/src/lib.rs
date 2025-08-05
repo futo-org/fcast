@@ -9,6 +9,7 @@ impl Version {
     pub fn as_str_static(&self) -> &'static str {
         match self {
             Version::Rtsp10 => "RTSP/1.0",
+            // Version::Rtsp10 => "HTTP/1.1",
         }
     }
 }
@@ -17,6 +18,7 @@ impl Version {
 pub enum Method {
     Post,
     Get,
+    Setup,
 }
 
 impl Method {
@@ -24,6 +26,7 @@ impl Method {
         match self {
             Method::Post => "POST",
             Method::Get => "GET",
+            Method::Setup => "SETUP",
         }
     }
 }
@@ -80,28 +83,33 @@ impl Request<'_> {
 pub enum StatusCode {
     Ok,
     InternalServerError,
+    Forbidden,
+    AuthRequired,
+    MethodNotValidInThisState,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ParseStatusLineError {
-    #[error("Unknown status")]
+    #[error("Unknown RTSP status")]
     UnknownStatus,
 }
 
 pub fn parse_response_statusline(statusline: &[u8]) -> Result<StatusCode, ParseStatusLineError> {
+    // println!("{}", String::from_utf8_lossy(statusline));
     // TODO: properly parse this
     match statusline {
         b"RTSP/1.0 200 OK\r\n" => Ok(StatusCode::Ok),
         b"RTSP/1.0 500 Internal Server Error\r\n" => Ok(StatusCode::InternalServerError),
+        b"RTSP/1.0 403 Forbidden\r\n" => Ok(StatusCode::Forbidden),
+        b"RTSP/1.0 470 Connection Authorization Required\r\n" => Ok(StatusCode::AuthRequired),
+        b"RTSP/1.0 455 Method Not Valid In This State\r\n" => Ok(StatusCode::MethodNotValidInThisState),
+
+        // b"HTTP/1.1 200 OK\r\n" => Ok(StatusCode::Ok),
+        // b"HTTP/1.1 500 Internal Server Error\r\n" => Ok(StatusCode::InternalServerError),
+        // b"HTTP/1.1 470 Connection Authorization Required\r\n" => Ok(StatusCode::AuthRequired),
         _ => Err(ParseStatusLineError::UnknownStatus),
     }
 }
-
-// pub struct Response<'a> {
-//     pub status: StatusCode,
-//     pub headers: Vec<(&'a [u8], &'a [u8])>,
-//     pub body: Option<&'a [u8]>,
-// }
 
 #[cfg(test)]
 mod tests {

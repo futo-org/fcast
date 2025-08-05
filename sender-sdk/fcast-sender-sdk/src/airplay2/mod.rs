@@ -16,7 +16,7 @@ use ed25519_dalek::Verifier;
 use hex_literal::hex;
 use log::{debug, error, info};
 use num_bigint::BigUint;
-use plist::PlistParseError;
+// use plist::PlistParseError;
 use rand_pcg::rand_core::RngCore;
 use rtsp::StatusCode;
 use sha2::Sha512;
@@ -26,6 +26,7 @@ use tokio::{
     net::TcpStream,
     runtime::Handle,
     sync::mpsc::{Receiver, Sender},
+    time::timeout,
 };
 
 use crate::{
@@ -45,6 +46,8 @@ const TAG_LENGTH: usize = 16; // Poly1305
 const MAX_BLOCK_LENGTH: usize = 0x400;
 const BLOCK_LENGTH_LENGTH: usize = 2; // u16
 const FEEDBACK_INTERVAL: Duration = Duration::from_secs(2); // https://github.com/postlund/pyatv/blob/49f9c9e960930276c8fac9fb7696b54a7beb1951/pyatv/protocols/raop/protocols/airplayv2.py#L25
+const REQ_TIMEOUT_DUR: Duration = Duration::from_secs(5);
+const BPLIST_CONTENT_TYPE: &str = "application/x-apple-binary-plist";
 
 /// The Modulus, N, and Generator, g, are specified by the 3072-bit group of [RFC 5054](https://tools.ietf.org/html/rfc5054).
 fn srp_group_n() -> BigUint {
@@ -64,38 +67,40 @@ fn srp_group_n() -> BigUint {
     ))
 }
 
-pub fn info_from_plist(plist: &[u8]) -> Result<InfoPlist, PlistParseError> {
-    let mut reader = plist::PlistReader::new(plist);
-    reader.read_magic_number()?;
-    reader.read_version()?;
-    let trailer = reader.read_trailer()?;
-    let mut info = InfoPlist::default();
-    let mut parser = plist::PlistParser::new(plist, trailer)?;
-    let parsed = parser.parse()?;
-    for obj in parsed {
-        if let plist::Object::Dict(items) = obj {
-            for (key, val) in items {
-                let plist::Object::String(key) = key else {
-                    continue;
-                };
-                match key.as_str() {
-                    "features" => {
-                        if let plist::Object::Int(features) = val {
-                            info.features =
-                                Some(AirPlayFeatures::from_bits_truncate(features as u64));
-                        }
-                    }
-                    "statusFlags" => {
-                        if let plist::Object::Int(status_flags) = val {
-                            info.status_flags =
-                                Some(AirPlayStatus::from_bits_truncate(status_flags as u32));
-                        }
-                    }
-                    _ => (),
-                }
-            }
-        }
-    }
+// pub fn info_from_plist(plist: &[u8]) -> Result<InfoPlist, PlistParseError> {
+pub fn info_from_plist(data: &[u8]) -> anyhow::Result<InfoPlist> {
+    let info: InfoPlist = plist::from_bytes(data)?;
+    // let mut reader = plist::PlistReader::new(plist);
+    // reader.read_magic_number()?;
+    // reader.read_version()?;
+    // let trailer = reader.read_trailer()?;
+    // let mut info = InfoPlist::default();
+    // let mut parser = plist::PlistParser::new(plist, trailer)?;
+    // let parsed = parser.parse()?;
+    // for obj in parsed {
+    //     if let plist::Object::Dict(items) = obj {
+    //         for (key, val) in items {
+    //             let plist::Object::String(key) = key else {
+    //                 continue;
+    //             };
+    //             match key.as_str() {
+    //                 "features" => {
+    //                     if let plist::Object::Int(features) = val {
+    //                         info.features =
+    //                             Some(AirPlayFeatures::from_bits_truncate(features as u64));
+    //                     }
+    //                 }
+    //                 "statusFlags" => {
+    //                     if let plist::Object::Int(status_flags) = val {
+    //                         info.status_flags =
+    //                             Some(AirPlayStatus::from_bits_truncate(status_flags as u32));
+    //                     }
+    //                 }
+    //                 _ => (),
+    //             }
+    //         }
+    //     }
+    // }
 
     Ok(info)
 }
@@ -142,11 +147,13 @@ fn chacha20_poly1305_decrypt(
         msg: &[ciphertext, mac].concat(),
         aad,
     };
+    // //////////////////////////////////////////////////
     // debug!("key: {key:?}");
     // debug!("nonce: {nonce:?}");
     // debug!("aad: {aad:?}");
     // debug!("ciphertext: {ciphertext:?}");
     // debug!("mac: {mac:?}");
+    // //////////////////////////////////////////////////
     cipher
         .decrypt(nonce.into(), payload)
         .map_err(|err| anyhow!("failed to decrypt: {err}"))
@@ -199,6 +206,13 @@ enum PairingMethod {
     AddPairing = 3,
     RemovePairing = 4,
     ListPairings = 5,
+}
+
+bitflags::bitflags! {
+    pub struct PairingFlags: u32 {
+        /// Pair Setup M1 - M4 without exchanging public keys
+        const Transient = 1 << 4;
+    }
 }
 
 #[derive(Debug)]
@@ -267,15 +281,23 @@ impl InnerDevice {
 
     async fn send_rtsp_request(
         &mut self,
+        // req: rtsp::Request<'_>,
+        // mut req: rtsp::Request<'_>,
         req: rtsp::Request<'_>,
     ) -> anyhow::Result<(StatusCode, Option<Vec<u8>>)> {
         let Some(stream) = self.stream.as_mut() else {
             bail!("Cannot send request because stream is missing");
         };
 
+        // let mut he = req.headers.to_vec();
+        // he.push(("Authorization", "Basic UGFpci1TZXR1cDozOTM5"));
+        // req.headers = &he;
+
         self.scratch_buffer.clear();
         req.encode_into(&mut self.scratch_buffer);
-        stream.write_all(&self.scratch_buffer).await?;
+        debug!("{}", hexdump::hexdump(&self.scratch_buffer));
+        timeout(REQ_TIMEOUT_DUR, stream.write_all(&self.scratch_buffer)).await??;
+        stream.flush().await?;
 
         // TODO: make sure we return the right response for the CSeq sent now
 
@@ -284,12 +306,15 @@ impl InnerDevice {
         let mut tmp_buf = [0u8; 1024];
 
         loop {
-            let read_bytes = stream.read(&mut tmp_buf).await?;
+            debug!("Reading");
+            let read_bytes = timeout(REQ_TIMEOUT_DUR, stream.read(&mut tmp_buf)).await??;
+            debug!("Read {read_bytes} bytes");
             read_buf.extend_from_slice(&tmp_buf[0..read_bytes]);
             if read_bytes < tmp_buf.len() {
                 break;
             }
         }
+        debug!("read 1");
 
         let status_line_end =
             find_first_cr_lf(read_buf).ok_or(anyhow!("No CR LF found for statusline"))? + 2;
@@ -301,7 +326,7 @@ impl InnerDevice {
                 Some(end) => break 'out end + 4,
                 None => {
                     debug!("No trailing CR LF found after header map, trying to read more");
-                    let read_bytes = stream.read(&mut tmp_buf).await?;
+                    let read_bytes = timeout(REQ_TIMEOUT_DUR, stream.read(&mut tmp_buf)).await??;
                     if read_bytes == 0 {
                         bail!("Malformed response (missing trailing CR LF sequence in header map)");
                     }
@@ -330,7 +355,7 @@ impl InnerDevice {
         let mut body = None::<Vec<u8>>;
         if let Some(content_length) = content_length {
             while read_buf.len() < headers_end + content_length {
-                let read_bytes = stream.read(&mut tmp_buf).await?;
+                let read_bytes = timeout(REQ_TIMEOUT_DUR, stream.read(&mut tmp_buf)).await??;
                 if read_bytes == 0 {
                     bail!(
                         "Failed to read body, {} bytes are missing",
@@ -361,6 +386,9 @@ impl InnerDevice {
             ("X-Apple-HKP", "3"),
             ("X-Apple-Client-Name", "FCast Sender SDK"),
             ("CSeq", &cseq_str),
+            // ("Host", "192.168.1.203:7000"),
+            // ("Connection", "Keep-Alive"),
+            // ("Authorization", "Basic UGFpci1TZXR1cDozOTM5"),
         ];
 
         if let Some(provided_headers) = headers {
@@ -391,36 +419,42 @@ impl InnerDevice {
             body: None,
         };
 
-        debug!("Sennding request: {req:?}");
+        debug!("Sending request: {req:?}");
 
-        let mut encoded_req = Vec::new();
-        req.encode_into(&mut encoded_req);
+        // let mut encoded_req = Vec::new();
+        // req.encode_into(&mut encoded_req);
 
-        let encrypted = self.encrypt_data(&encoded_req)?;
+        let res = self.post_rtsp_with_resp("feedback", &[], None).await?;
 
-        match self.stream.as_mut() {
-            Some(stream) => stream.write_all(&encrypted).await?,
-            None => bail!("Cannot send feedback because stream is missing"),
-        }
+        debug!("{res:?}");
 
-        let mut read_buf = Vec::new();
-        let mut tmp_buf = [0u8; 1024];
-        let plaintext = loop {
-            match self.stream.as_mut() {
-                Some(stream) => {
-                    if stream.read(&mut tmp_buf).await? == 0 {
-                        bail!("No more data to read");
-                    }
-                }
-                None => bail!("Cannot send feedback because stream is missing"),
-            }
-            read_buf.extend_from_slice(&tmp_buf);
-            if let Some(plaintext) = self.decrypt_data(&read_buf)? {
-                break plaintext;
-            }
-        };
+        // let encrypted = self.encrypt_data(&encoded_req)?;
 
-        debug!("Response:\n{}", hexdump::hexdump(&plaintext));
+        // match self.stream.as_mut() {
+        //     Some(stream) => stream.write_all(&encrypted).await?,
+        //     None => bail!("Cannot send feedback because stream is missing"),
+        // }
+
+        // let mut read_buf = Vec::new();
+        // let mut tmp_buf = [0u8; 1024];
+        // loop {
+        //     match self.stream.as_mut() {
+        //         Some(stream) => {
+        //             let n_read = stream.read(&mut tmp_buf).await?;
+        //             read_buf.extend_from_slice(&tmp_buf[0..n_read]);
+        //             if n_read < tmp_buf.len() {
+        //                 break;
+        //             }
+        //         }
+        //         None => bail!("Cannot send feedback because stream is missing"),
+        //     }
+        // }
+
+        // if let Some(plaintext) = self.decrypt_data(&read_buf)? {
+        //     debug!("Response:\n{}", hexdump::hexdump(&plaintext));
+        // } else {
+        //     debug!("Could not decrypt");
+        // }
 
         Ok(())
     }
@@ -440,26 +474,22 @@ impl InnerDevice {
             password.as_bytes().to_vec(),
         ));
 
-        // When the iOS device performs authentication as part of the Pair Setup procedure, it sends
-        // a request to the accessory with the following TLV items:
-        //     kTLVType_State <M1>
-        //     kTLVType_Method <Pair Setup with Authentication>
-        let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M1 as u8]);
-        let method_item = tlv8::Item::new(
-            tlv8::Tag::Method,
-            vec![PairingMethod::PairSetupWithAuth as u8],
-        );
-        let encoded_tlv = tlv8::encode(&[state_item, method_item], false);
-        let encoded_tlv_len_str = encoded_tlv.len().to_string();
-
-        // When the iOS device performs Pair Setup with a separate optional authentication procedure,
-        // it sends a request to the accessory with the following TLV items:
+        // When the iOS device performs Pair Setup with a separate optional authentication procedure, it sends a request to the
+        // accessory with the following TLV items:
         //     kTLVType_State <M1>
         //     kTLVType_Method <Pair Setup>
         //     kTLVType_Flags <Pairing Type Flags>
+        let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M1 as u8]);
+        let method_item = tlv8::Item::new(tlv8::Tag::Method, vec![PairingMethod::PairSetup as u8]);
+        let flags_item = tlv8::Item::new(
+            tlv8::Tag::Flags,
+            PairingFlags::Transient.bits().to_be_bytes().to_vec(),
+        );
+        let encoded_tlv = tlv8::encode(&[state_item, method_item, flags_item], false);
+        let encoded_tlv_len_str = encoded_tlv.len().to_string();
 
         let headers = [
-            ("Content-Type", "application/octet-stream"),
+            ("Content-Type", "application/pairing+tlv8"),
             ("Content-Length", &encoded_tlv_len_str),
         ];
 
@@ -485,10 +515,18 @@ impl InnerDevice {
         fields: HashMap<tlv8::Tag, Vec<u8>>,
     ) -> anyhow::Result<Vec<u8>> {
         self.sender_state = SenderState::WaitingOnPairSetup2;
+        // self.sender_state = SenderState::WaitingOnPairVerify1;
 
         let Some(salt_bytes) = fields.get(&tlv8::Tag::Salt) else {
             bail!("Missing salt");
         };
+
+        debug!(
+            "Salt (len={}):\n{}",
+            salt_bytes.len(),
+            hexdump::hexdump(salt_bytes)
+        );
+
         let Some(b_bytes) = fields.get(&tlv8::Tag::PublicKey) else {
             bail!("Missing public key");
         };
@@ -500,6 +538,12 @@ impl InnerDevice {
         // 4. Generate its SRP public key with SRP_gen_pub().
         debug!("Starting authentication");
         let a_pub = client.srp_user_start_authentication(None)?;
+
+        debug!(
+            "Public key (len={}): {}",
+            a_pub.to_bytes_be().len(),
+            hexdump::hexdump(&a_pub.to_bytes_be())
+        );
 
         // 3. Set salt provided by the accessory in the <M2> TLV with SRP_set_params().
         // 6. Compute the SRP shared secret key with SRP_compute_key().
@@ -518,7 +562,7 @@ impl InnerDevice {
         let encodec_tlv_len_str = encoded_tlv.len().to_string();
 
         let headers = [
-            ("Content-Type", "application/octet-stream"),
+            ("Content-Type", "application/pairing+tlv8"),
             ("Content-Length", &encodec_tlv_len_str),
         ];
 
@@ -542,7 +586,8 @@ impl InnerDevice {
     async fn pair_setup_m4_m5(
         &mut self,
         fields: HashMap<tlv8::Tag, Vec<u8>>,
-    ) -> anyhow::Result<Vec<u8>> {
+        // ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<()> {
         self.sender_state = SenderState::WaitingOnPairSetup3;
 
         let Some(server_proof_bytes) = fields.get(&tlv8::Tag::Proof) else {
@@ -565,210 +610,563 @@ impl InnerDevice {
             .ok_or(anyhow!("Missing session key"))?;
         self.session_key = Some(session_key.clone());
 
+        debug!("session key length {}", session_key.len());
+
+        hkdf_extract_expand(
+            &session_key,
+            b"Control-Salt",
+            b"Control-Write-Encryption-Key",
+            &mut self.outgoing_key,
+        )?;
+
+        hkdf_extract_expand(
+            &session_key,
+            b"Control-Salt",
+            b"Control-Read-Encryption-Key",
+            &mut self.incoming_key,
+        )?;
+
+        // debug!("incoming key: {incoming_key:?}");
+
+        // WE ARE NOT DOING NON-TRANSIENT PAIR-SETUP. STOP HERE.
+        // TODO: carefully read the homekit pairing spec and implement acordingly
+
         // Generate its Ed25519 long-term public key, iOSDeviceLTPK, and long-term secret key, iOSDeviceLTSK.
-        let mut rng = rand_pcg::Pcg64::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
-        let mut seed = [0u8; 32];
-        rng.fill_bytes(&mut seed);
-        let ed_priv = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let ed_pub = ed_priv.verifying_key().to_bytes();
-        // self.device_private_key = Some(ed_priv.to_keypair_bytes().to_bytes());
-        self.device_private_key = Some(ed_priv.to_bytes());
-        self.device_public_key = Some(ed_pub);
+        // let mut rng = rand_pcg::Pcg64::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
+        // let mut seed = [0u8; 32];
+        // rng.fill_bytes(&mut seed);
+        // let ed_priv = ed25519_dalek::SigningKey::from_bytes(&seed);
+        // let ed_pub = ed_priv.verifying_key().to_bytes();
+        // // self.device_private_key = Some(ed_priv.to_keypair_bytes().to_bytes());
+        // self.device_private_key = Some(ed_priv.to_bytes());
+        // self.device_public_key = Some(ed_pub);
 
-        let mut device_x = [0u8; 32];
-        hkdf_extract_expand(
-            &session_key,
-            b"Pair-Setup-Controller-Sign-Salt",
-            b"Pair-Setup-Controller-Sign-Info",
-            &mut device_x,
-        )?;
+        // let mut device_x = [0u8; 32];
+        // hkdf_extract_expand(
+        //     &session_key,
+        //     b"Pair-Setup-Controller-Sign-Salt",
+        //     b"Pair-Setup-Controller-Sign-Info",
+        //     &mut device_x,
+        // )?;
 
-        // Concatenate iOSDeviceX with the iOS deviceʼs Pairing Identifier, iOSDevicePairingID, and its long-term
-        // public key, iOSDeviceLTPK. The data must be concatenated in order such that the final data is iOSDeviceX,
-        // iOSDevicePairingID, iOSDeviceLTPK. The concatenated value will be referred to as iOSDeviceInfo.
-        self.scratch_buffer.clear();
-        let device_info = &mut self.scratch_buffer;
-        device_info.extend_from_slice(&device_x);
-        device_info.extend_from_slice(DEVICE_ID.as_bytes());
-        device_info.extend_from_slice(&ed_pub);
-        // Generate iOSDeviceSignature by signing iOSDeviceInfo with its long-term secret key, iOSDeviceLTSK,
-        // using Ed25519.
-        let signature = ed_priv.sign(device_info).to_bytes();
+        // // Concatenate iOSDeviceX with the iOS deviceʼs Pairing Identifier, iOSDevicePairingID, and its long-term
+        // // public key, iOSDeviceLTPK. The data must be concatenated in order such that the final data is iOSDeviceX,
+        // // iOSDevicePairingID, iOSDeviceLTPK. The concatenated value will be referred to as iOSDeviceInfo.
+        // self.scratch_buffer.clear();
+        // let device_info = &mut self.scratch_buffer;
+        // device_info.extend_from_slice(&device_x);
+        // device_info.extend_from_slice(DEVICE_ID.as_bytes());
+        // device_info.extend_from_slice(&ed_pub);
+        // // Generate iOSDeviceSignature by signing iOSDeviceInfo with its long-term secret key, iOSDeviceLTSK,
+        // // using Ed25519.
+        // let signature = ed_priv.sign(device_info).to_bytes();
 
-        // Construct a sub-TLV with the following TLV items:
-        //     kTLVType_Identifier <iOSDevicePairingID>
-        //     kTLVType_PublicKey <iOSDeviceLTPK>
-        //     kTLVType_Signature <iOSDeviceSignature>
-        let identifier_item = tlv8::Item::new(tlv8::Tag::Identifier, DEVICE_ID.as_bytes().to_vec());
-        let public_key_item = tlv8::Item::new(tlv8::Tag::PublicKey, ed_pub.to_vec());
-        let sig_item = tlv8::Item::new(tlv8::Tag::Signature, signature.to_vec());
-        let sub_tlv = tlv8::encode(&[identifier_item, public_key_item, sig_item], false);
+        // // Construct a sub-TLV with the following TLV items:
+        // //     kTLVType_Identifier <iOSDevicePairingID>
+        // //     kTLVType_PublicKey <iOSDeviceLTPK>
+        // //     kTLVType_Signature <iOSDeviceSignature>
+        // let identifier_item = tlv8::Item::new(tlv8::Tag::Identifier, DEVICE_ID.as_bytes().to_vec());
+        // let public_key_item = tlv8::Item::new(tlv8::Tag::PublicKey, ed_pub.to_vec());
+        // let sig_item = tlv8::Item::new(tlv8::Tag::Signature, signature.to_vec());
+        // let sub_tlv = tlv8::encode(&[identifier_item, public_key_item, sig_item], false);
 
-        let mut session_key_2 = [0u8; 32];
-        hkdf_extract_expand(
-            &session_key,
-            "Pair-Setup-Encrypt-Salt".as_bytes(),
-            "Pair-Setup-Encrypt-Info".as_bytes(),
-            &mut session_key_2,
-        )?;
+        // let mut session_key_2 = [0u8; 32];
+        // hkdf_extract_expand(
+        //     &session_key,
+        //     "Pair-Setup-Encrypt-Salt".as_bytes(),
+        //     "Pair-Setup-Encrypt-Info".as_bytes(),
+        //     &mut session_key_2,
+        // )?;
 
-        // Encrypt the sub-TLV, encryptedData, and generate the 16 byte auth tag, authTag. This uses the
-        // ChaCha20-Poly1305 AEAD algorithm with the following parameters:
-        // encryptedData, authTag = ChaCha20-Poly1305(SessionKey, Nonce=”PS-Msg05”, AAD=<none>, Msg=<Sub-TLV>)
-        let (mut ciphertext, mac) =
-            chacha20_poly1305_encrypt(&session_key_2, b"\0\0\0\0PS-Msg05", &[], &sub_tlv)?;
-        ciphertext.extend_from_slice(&mac);
+        // // Encrypt the sub-TLV, encryptedData, and generate the 16 byte auth tag, authTag. This uses the
+        // // ChaCha20-Poly1305 AEAD algorithm with the following parameters:
+        // // encryptedData, authTag = ChaCha20-Poly1305(SessionKey, Nonce=”PS-Msg05”, AAD=<none>, Msg=<Sub-TLV>)
+        // let (mut ciphertext, mac) =
+        //     chacha20_poly1305_encrypt(&session_key_2, b"\0\0\0\0PS-Msg05", &[], &sub_tlv)?;
+        // ciphertext.extend_from_slice(&mac);
 
-        // Send the request to the accessory with the following TLV items:
-        //     kTLVType_State <M5>
-        //     kTLVType_EncryptedData <encryptedData with authTag appended>
-        let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M5 as u8]);
-        let encrypted_data_item = tlv8::Item::new(tlv8::Tag::EncryptedData, ciphertext);
-        let encoded_tlv = tlv8::encode(&[state_item, encrypted_data_item], false);
-        let encoded_tlv_len_str = encoded_tlv.len().to_string();
+        // // Send the request to the accessory with the following TLV items:
+        // //     kTLVType_State <M5>
+        // //     kTLVType_EncryptedData <encryptedData with authTag appended>
+        // let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M5 as u8]);
+        // let encrypted_data_item = tlv8::Item::new(tlv8::Tag::EncryptedData, ciphertext);
+        // let encoded_tlv = tlv8::encode(&[state_item, encrypted_data_item], false);
+        // let encoded_tlv_len_str = encoded_tlv.len().to_string();
 
-        let headers = [
-            ("Content-Type", "application/octet-stream"),
-            ("Content-Length", &encoded_tlv_len_str),
-        ];
+        // let headers = [
+        //     ("Content-Type", "application/pairing+tlv8"),
+        //     ("Content-Length", &encoded_tlv_len_str),
+        // ];
 
-        debug!("pair-setup [5/5]: sending request...");
+        // debug!("pair-setup [5/5]: sending request...");
 
-        let (resp_status, resp_body) = self
-            .post_rtsp_with_resp("pair-setup", &encoded_tlv, Some(&headers))
-            .await?;
+        // let (resp_status, resp_body) = self
+        //     .post_rtsp_with_resp("pair-setup", &encoded_tlv, Some(&headers))
+        //     .await?;
 
-        if resp_status == rtsp::StatusCode::Ok {
-            let Some(body) = resp_body else {
-                bail!("M4 -> M5 failed: missing body");
-            };
-            Ok(body)
-        } else {
-            Err(anyhow!("Failed to process M4 -> M5"))
-        }
+        // if resp_status == rtsp::StatusCode::Ok {
+        //     let Some(body) = resp_body else {
+        //         bail!("M4 -> M5 failed: missing body");
+        //     };
+        //     Ok(body)
+        // } else {
+        //     Err(anyhow!("Failed to process M4 -> M5"))
+        // }
+
+        // Err(anyhow!("Failed to process M4 -> M5"))
+        Ok(())
     }
 
-    async fn pair_verify_m1(
-        &mut self,
-        fields: HashMap<tlv8::Tag, Vec<u8>>,
-    ) -> anyhow::Result<Vec<u8>> {
+    // async fn pair_verify_m1(
+    //     &mut self,
+    //     fields: HashMap<tlv8::Tag, Vec<u8>>,
+    // ) -> anyhow::Result<Vec<u8>> {
+    //     self.sender_state = SenderState::WaitingOnPairVerify1;
+
+    //     let Some(encrypted_field) = fields.get(&tlv8::Tag::EncryptedData) else {
+    //         bail!("Encrypted data missing");
+    //     };
+    //     ensure!(encrypted_field.len() >= TAG_LENGTH);
+    //     let encrypted_tlv_data = &encrypted_field[..encrypted_field.len() - TAG_LENGTH];
+    //     let tag_data = &encrypted_field[encrypted_field.len() - TAG_LENGTH..];
+
+    //     let Some(k) = self.session_key.as_ref() else {
+    //         bail!("No valid session key");
+    //     };
+
+    //     let mut session_key_2 = [0u8; 32];
+    //     hkdf_extract_expand(
+    //         k,
+    //         b"Pair-Setup-Encrypt-Salt",
+    //         b"Pair-Setup-Encrypt-Info",
+    //         &mut session_key_2,
+    //     )?;
+
+    //     let decrypted_tlv = chacha20_poly1305_decrypt(
+    //         &session_key_2,
+    //         b"\0\0\0\0PS-Msg06",
+    //         &[],
+    //         encrypted_tlv_data,
+    //         tag_data,
+    //     )?;
+
+    //     let accessory_items = tlv8::mapify(tlv8::decode(&decrypted_tlv)?);
+    //     let Some(accessory_id_bytes) = accessory_items.get(&tlv8::Tag::Identifier) else {
+    //         bail!("Missing accessory ID");
+    //     };
+    //     let Some(accessory_ltpk_bytes) = accessory_items.get(&tlv8::Tag::PublicKey) else {
+    //         bail!("Missing accessory LTPK");
+    //     };
+    //     let Some(accessory_sig_bytes) = accessory_items.get(&tlv8::Tag::Signature) else {
+    //         bail!("Missing accessory signature");
+    //     };
+
+    //     self.accessory_ltpk = Some(accessory_ltpk_bytes.to_vec());
+    //     let mut accessory_x = [0u8; 32];
+    //     hkdf_extract_expand(
+    //         k,
+    //         b"Pair-Setup-Accessory-Sign-Salt",
+    //         b"Pair-Setup-Accessory-Sign-Info",
+    //         &mut accessory_x,
+    //     )?;
+
+    //     let mut accessory_info = accessory_x.to_vec();
+    //     accessory_info.extend_from_slice(accessory_id_bytes);
+    //     accessory_info.extend_from_slice(accessory_ltpk_bytes);
+
+    //     ensure!(accessory_ltpk_bytes.len() == 32);
+    //     let mut accessory_ltpk_byte_slice = [0u8; 32];
+    //     accessory_ltpk_byte_slice.copy_from_slice(&accessory_ltpk_bytes[0..32]);
+
+    //     let verifier = ed25519_dalek::VerifyingKey::from_bytes(&accessory_ltpk_byte_slice)?;
+    //     verifier
+    //         .verify(
+    //             &accessory_info,
+    //             &ed25519_dalek::Signature::from_slice(accessory_sig_bytes)?,
+    //         )
+    //         .context("Accessory signature not verified")?;
+
+    //     debug!("Accessory signature is valid");
+
+    //     let curve_priv = x25519_dalek::EphemeralSecret::random();
+    //     let curve_pub = x25519_dalek::PublicKey::from(&curve_priv);
+    //     self.verifier_private_key = Some(curve_priv);
+    //     self.verifier_public_key = Some(curve_pub);
+
+    //     let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M1 as u8]);
+    //     let pk_item = tlv8::Item::new(tlv8::Tag::PublicKey, curve_pub.as_bytes().to_vec());
+    //     let encoded_tlv = tlv8::encode(&[state_item, pk_item], false);
+    //     let encoded_tlv_len_str = encoded_tlv.len().to_string();
+
+    //     let headers = [
+    //         ("Content-Type", "application/pairing+tlv8"),
+    //         ("Content-Length", &encoded_tlv_len_str),
+    //     ];
+
+    //     debug!("pair-verify [1/2]: sending request...");
+
+    //     let (resp_status, resp_body) = self
+    //         .post_rtsp_with_resp("pair-verify", &encoded_tlv, Some(&headers))
+    //         .await?;
+
+    //     if resp_status == rtsp::StatusCode::Ok {
+    //         let Some(body) = resp_body else {
+    //             bail!("Failed to process pair-verify M1");
+    //         };
+    //         Ok(body)
+    //     } else {
+    //         Err(anyhow!("Pair-verify M1 failed"))
+    //     }
+    // }
+
+    // 5.7.3 M3: iOS Device -> Accessory - 'Verify Finish Request'
+    // async fn pair_verify_m2(
+    //     &mut self,
+    //     fields: HashMap<tlv8::Tag, Vec<u8>>,
+    // ) -> anyhow::Result<Vec<u8>> {
+    //     self.sender_state = SenderState::WaitingOnPairVerify2;
+
+    //     let Some(accessory_curve_pub_bytes) = fields.get(&tlv8::Tag::PublicKey) else {
+    //         bail!("Public key missing");
+    //     };
+    //     let Some(accessory_encrypted_field) = fields.get(&tlv8::Tag::EncryptedData) else {
+    //         bail!("Encrypted data missing");
+    //     };
+    //     self.accessory_curve_public = Some(accessory_curve_pub_bytes.clone());
+
+    //     ensure!(accessory_encrypted_field.len() >= TAG_LENGTH);
+    //     let encrypted_tlv_data =
+    //         &accessory_encrypted_field[..accessory_encrypted_field.len() - TAG_LENGTH];
+    //     let auth_tag = &accessory_encrypted_field[accessory_encrypted_field.len() - TAG_LENGTH..];
+
+    //     let Some(priv_param) = self.verifier_private_key.take() else {
+    //         bail!("Missing verifier");
+    //     };
+
+    //     ensure!(accessory_curve_pub_bytes.len() == 32);
+    //     let mut accessory_curve_pub_slice = [0u8; 32];
+    //     accessory_curve_pub_slice.copy_from_slice(&accessory_curve_pub_bytes[0..32]);
+
+    //     // Generate the shared secret, SharedSecret, from its Curve25519 secret key and the accessoryʼs
+    //     // Curve25519 public key.
+    //     let pub_param = x25519_dalek::PublicKey::from(accessory_curve_pub_slice);
+    //     let shared_secret = priv_param.diffie_hellman(&pub_param);
+
+    //     //  Derive the symmetric session encryption key, SessionKey, in the same manner as the accessory.
+    //     let mut session_key = [0u8; 32];
+    //     hkdf_extract_expand(
+    //         shared_secret.as_bytes(),
+    //         b"Pair-Verify-Encrypt-Salt",
+    //         b"Pair-Verify-Encrypt-Info",
+    //         &mut session_key,
+    //     )?;
+
+    //     self.accessory_shared_secret = Some(shared_secret);
+
+    //     // Verify the 16-byte auth tag, authTag, against the received encryptedData. If this fails, the
+    //     // setup process will be aborted and an error will be reported to the user.
+    //     // Decrypt the sub-TLV from the received encryptedData.
+    //     let decrypted_tlv = chacha20_poly1305_decrypt(
+    //         &session_key,
+    //         b"\0\0\0\0PV-Msg02",
+    //         &[],
+    //         encrypted_tlv_data,
+    //         auth_tag,
+    //     )?;
+    //     let accessory_items = tlv8::mapify(tlv8::decode(&decrypted_tlv)?);
+    //     let accessory_id_bytes = accessory_items
+    //         .get(&tlv8::Tag::Identifier)
+    //         .ok_or(anyhow!("Missing accessory ID"))?;
+    //     let accessory_sig_bytes = accessory_items
+    //         .get(&tlv8::Tag::Signature)
+    //         .ok_or(anyhow!("Missing accessory signature"))?;
+    //     let verifier_public_key = self
+    //         .verifier_public_key
+    //         .as_ref()
+    //         .ok_or(anyhow!("Missing verifier public key"))?;
+
+    //     // Use the accessoryʼs Pairing Identifier to look up the accessoryʼs long-term public key, AccessoryLTPK,
+    //     // in its list of paired accessories. If not found, the setup process will be aborted and an error will
+    //     // be reported to the user.
+    //     let Some(accessory_ltpk) = self.accessory_ltpk.as_ref() else {
+    //         bail!("Missing accessory LTPK");
+    //     };
+    //     ensure!(accessory_ltpk.len() == 32);
+    //     let mut accessory_ltpk_array = [0u8; 32];
+    //     accessory_ltpk_array.copy_from_slice(&accessory_ltpk[0..32]);
+
+    //     let accessory_info = [
+    //         accessory_curve_pub_bytes.as_slice(),
+    //         accessory_id_bytes.as_slice(),
+    //         verifier_public_key.as_bytes(),
+    //     ]
+    //     .concat();
+    //     let verifier = ed25519_dalek::VerifyingKey::from_bytes(&accessory_ltpk_array)?;
+    //     verifier.verify(
+    //         &accessory_info,
+    //         &ed25519_dalek::Signature::from_slice(accessory_sig_bytes)?,
+    //     )?;
+    //     debug!("Accessory signature is valid");
+
+    //     // Construct iOSDeviceInfo by concatenating the following items in order:
+    //     //     (a) iOS Deviceʼs Curve25519 public key.
+    //     //     (b) iOS Deviceʼs Pairing Identifier, iOSDevicePairingID.
+    //     //     (c) Accessoryʼs Curve25519 public key from the received <M2> TLV
+    //     let device_info = [
+    //         verifier_public_key.as_bytes(),
+    //         DEVICE_ID.as_bytes(),
+    //         &accessory_curve_pub_slice,
+    //     ]
+    //     .concat();
+    //     // Use Ed25519 to generate iOSDeviceSignature by signing iOSDeviceInfo with its long-term
+    //     // secret key, iOSDeviceLTSK.
+    //     let device_private_key = self
+    //         .device_private_key
+    //         .as_ref()
+    //         .ok_or(anyhow!("Missing device private key"))?;
+    //     let signature =
+    //         ed25519_dalek::SigningKey::from_bytes(device_private_key).sign(&device_info);
+
+    //     // Construct a sub-TLV with the following items:
+    //     //     kTLVType_Identifier <iOSDevicePairingID>
+    //     //     kTLVType_Signature <iOSDeviceSignature>
+    //     let identifier_item = tlv8::Item::new(tlv8::Tag::Identifier, DEVICE_ID.as_bytes().to_vec());
+    //     let signature_item = tlv8::Item::new(tlv8::Tag::Signature, signature.to_vec());
+    //     let sub_tlv = tlv8::encode(&[identifier_item, signature_item], false);
+
+    //     // Encrypt the sub-TLV, encryptedData, and generate the 16-byte auth tag, authTag. This uses the
+    //     // ChaCha20-Poly1305 AEAD algorithm with the following parameters:
+    //     // encryptedData, authTag = ChaCha20-Poly1305(SessionKey, Nonce=”PV-Msg03”, AAD=<none>, Msg=<Sub-TLV>)
+    //     let (encrypted_data, auth_tag) =
+    //         chacha20_poly1305_encrypt(&session_key, b"\0\0\0\0PV-Msg03", &[], &sub_tlv)?;
+
+    //     // Construct the request with the following TLV items:
+    //     //     kTLVType_State <M3>
+    //     //     kTLVType_EncryptedData <encryptedData with authTag appended>
+    //     let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M3 as u8]);
+    //     let encrypted_data_item = tlv8::Item::new(
+    //         tlv8::Tag::EncryptedData,
+    //         [encrypted_data, auth_tag].concat(),
+    //     );
+    //     let encoded_response = tlv8::encode(&[state_item, encrypted_data_item], false);
+    //     let encoded_response_len_str = encoded_response.len().to_string();
+
+    //     let headers = [
+    //         ("Content-Type", "application/pairing+tlv8"),
+    //         ("Content-Length", &encoded_response_len_str),
+    //     ];
+
+    //     debug!("pair-verify [2/2]: sending request...");
+
+    //     // Send the request to the accessory.
+    //     let (resp_status, resp_body) = self
+    //         .post_rtsp_with_resp("pair-verify", &encoded_response, Some(&headers))
+    //         .await?;
+
+    //     if resp_status == rtsp::StatusCode::Ok {
+    //         let Some(body) = resp_body else {
+    //             bail!("Failed to process pair-verify M2");
+    //         };
+    //         Ok(body)
+    //     } else {
+    //         Err(anyhow!("Pair-verify M2 failed"))
+    //     }
+    // }
+
+    fn set_ciphers(&mut self) -> anyhow::Result<()> {
+        // From https://openairplay.github.io/airplay-spec/pairing/hkp.html:
+        // After successful pairing the connection switches to being encrypted using the format
+        // N:n_bytes:tag where N is a 16 bit Little Endian length that describes the number of bytes
+        // in n_bytes and n_bytes is encrypted using ChaCha20-Poly1305 with tag being the Poly1305 tag.
+        //
+        // Each direction uses its own key and nonce.
+        //
+        // The key for data sent from client to accessory is a HKDF-SHA-512 with the following parameters:
+        //     InputKey = <EncryptionKey>
+        //     Salt = ”Control-Salt”
+        //     Info = ”Control-Write-Encryption-Key”
+        //     OutputSize = 32 bytes
+        //
+        // While the data sent from accessory to client is HKDF-SHA-512 with the following parameters:
+        //     InputKey = <EncryptionKey>
+        //     Salt = ”Control-Salt”
+        //     Info = ”Control-Read-Encryption-Key”
+        //     OutputSize = 32 bytes
+        //
+        // The nonce is a 64 bit counter (i.e. the high order bits of the full 96 bit nonce is set to 0)
+        // starting with 0 and incrementing by 1 for each encrypted block.
+        let Some(shared_key) = self.accessory_shared_secret.as_ref() else {
+            bail!("Missing accessory shared secret");
+        };
+        // debug!("Shared key: {:?}", shared_key.as_bytes());
+        hkdf_extract_expand(
+            shared_key.as_bytes(),
+            b"Control-Salt",
+            b"Control-Write-Encryption-Key",
+            &mut self.outgoing_key,
+        )?;
+
+        hkdf_extract_expand(
+            shared_key.as_bytes(),
+            b"Control-Salt",
+            b"Control-Read-Encryption-Key",
+            &mut self.incoming_key,
+        )?;
+        Ok(())
+    }
+
+    fn encrypt_data(&mut self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+        if !self.is_encrypted {
+            bail!("Cannot encrypt data because the connection is not encrypted");
+        }
+
+        let mut result = Vec::new();
+        let mut offset = 0;
+        while offset < data.len() {
+            let length = MAX_BLOCK_LENGTH.min(data.len() - offset);
+            let block_data = &data[offset..offset + length];
+            let length_data = (length as u16).to_le_bytes();
+            let nonce: [u8; 12] = {
+                let b = self.out_count.to_le_bytes();
+                [0, 0, 0, 0, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]
+            };
+            let (ciphertext, mac) =
+                chacha20_poly1305_encrypt(&self.outgoing_key, &nonce, &length_data, block_data)?;
+            result.extend_from_slice(&length_data);
+            result.extend_from_slice(&ciphertext);
+            result.extend_from_slice(&mac);
+            offset += length;
+            self.out_count += 1;
+        }
+
+        Ok(result)
+    }
+
+    /// Try to decrypt the data in `data`.
+    ///
+    /// The format of `data` should be N:n_bytes:tag where N is a 16 bit Little Endian length that
+    /// describes the number of bytes in n_bytes and n_bytes is encrypted using ChaCha20-Poly1305
+    /// with tag being the Poly1305 tag.
+    ///
+    /// If `data` is incomplete, [`None`] is returned and more data should be read from the source.
+    ///
+    // TODO: pop res.len() + BLOCK_LENGTH_LENGTH + TAG_LENGTH from `data`
+    fn decrypt_data(&mut self, data: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+        if !self.is_encrypted {
+            bail!("Cannot decrypt data because the connection is not encrypted");
+        }
+
+        if data.len() < BLOCK_LENGTH_LENGTH {
+            return Ok(None);
+        }
+
+        let length = u16::from_le_bytes([data[0], data[1]]) as usize;
+        debug!("enc length: {length}, data.len = {}", data.len());
+
+        if data.len() < BLOCK_LENGTH_LENGTH + length + TAG_LENGTH {
+            return Ok(None);
+        }
+
+        let ciphertext = &data[BLOCK_LENGTH_LENGTH..BLOCK_LENGTH_LENGTH + length];
+        let auth_tag =
+            &data[BLOCK_LENGTH_LENGTH + length..BLOCK_LENGTH_LENGTH + length + TAG_LENGTH];
+
+        let nonce = {
+            let b = self.in_count.to_le_bytes();
+            [0, 0, 0, 0, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]
+        };
+
+        let plaintext =
+            chacha20_poly1305_decrypt(&self.incoming_key, &nonce, &[], ciphertext, auth_tag)?;
+
+        Ok(Some(plaintext))
+    }
+
+    // async fn pairing_did_finish(&mut self) -> anyhow::Result<()> {
+    //     debug!("Pairing succeeded. Device is ready.");
+    //     let mut payload = json::Map::<String, json::Value>::new();
+    //     payload.insert(
+    //         "sessionUUID".to_owned(),
+    //         json::json!(Uuid::new_v4().to_string()),
+    //     );
+    //     payload.insert("timingProtocol".to_owned(), json::json!("None"));
+    //     let body = json::to_string(&payload).context("Failed to encode payload as json")?;
+
+    //     let setup_request = format!(
+    //         "SETUP /2182745467221657149 RTSP/1.0
+    //         Content-Length: {}
+    //         Content-Type: application/x-apple-binary-plist
+    //         User-Agent: AirPlay/381.13
+    //         X-Apple-HKP: 3
+    //         X-Apple-StreamID: 1
+
+    //         {body}",
+    //         body.len()
+    //     );
+    //     let encrypted_data = self.encrypt_data(setup_request.as_bytes())?;
+    //     self.post_http("2182745467221657149", &encrypted_data, None).await?;
+    //     Ok(())
+    // }
+
+    async fn pair_verify_start(&mut self) -> anyhow::Result<Vec<u8>> {
+        debug!("Starting pair-verify");
+
         self.sender_state = SenderState::WaitingOnPairVerify1;
 
-        let Some(encrypted_field) = fields.get(&tlv8::Tag::EncryptedData) else {
-            bail!("Encrypted data missing");
-        };
-        ensure!(encrypted_field.len() >= TAG_LENGTH);
-        let encrypted_tlv_data = &encrypted_field[..encrypted_field.len() - TAG_LENGTH];
-        let tag_data = &encrypted_field[encrypted_field.len() - TAG_LENGTH..];
-
-        let Some(k) = self.session_key.as_ref() else {
-            bail!("No valid session key");
-        };
-
-        let mut session_key_2 = [0u8; 32];
-        hkdf_extract_expand(
-            k,
-            b"Pair-Setup-Encrypt-Salt",
-            b"Pair-Setup-Encrypt-Info",
-            &mut session_key_2,
-        )?;
-
-        let decrypted_tlv = chacha20_poly1305_decrypt(
-            &session_key_2,
-            b"\0\0\0\0PS-Msg06",
-            &[],
-            encrypted_tlv_data,
-            tag_data,
-        )?;
-
-        let accessory_items = tlv8::mapify(tlv8::decode(&decrypted_tlv)?);
-        let Some(accessory_id_bytes) = accessory_items.get(&tlv8::Tag::Identifier) else {
-            bail!("Missing accessory ID");
-        };
-        let Some(accessory_ltpk_bytes) = accessory_items.get(&tlv8::Tag::PublicKey) else {
-            bail!("Missing accessory LTPK");
-        };
-        let Some(accessory_sig_bytes) = accessory_items.get(&tlv8::Tag::Signature) else {
-            bail!("Missing accessory signature");
-        };
-
-        self.accessory_ltpk = Some(accessory_ltpk_bytes.to_vec());
-        let mut accessory_x = [0u8; 32];
-        hkdf_extract_expand(
-            k,
-            b"Pair-Setup-Accessory-Sign-Salt",
-            b"Pair-Setup-Accessory-Sign-Info",
-            &mut accessory_x,
-        )?;
-
-        let mut accessory_info = accessory_x.to_vec();
-        accessory_info.extend_from_slice(accessory_id_bytes);
-        accessory_info.extend_from_slice(accessory_ltpk_bytes);
-
-        ensure!(accessory_ltpk_bytes.len() == 32);
-        let mut accessory_ltpk_byte_slice = [0u8; 32];
-        accessory_ltpk_byte_slice.copy_from_slice(&accessory_ltpk_bytes[0..32]);
-
-        let verifier = ed25519_dalek::VerifyingKey::from_bytes(&accessory_ltpk_byte_slice)?;
-        verifier
-            .verify(
-                &accessory_info,
-                &ed25519_dalek::Signature::from_slice(accessory_sig_bytes)?,
-            )
-            .context("Accessory signature not verified")?;
-
-        debug!("Accessory signature is valid");
-
+        // The iOS device generates a new, random Curve25519 key pair...
         let curve_priv = x25519_dalek::EphemeralSecret::random();
         let curve_pub = x25519_dalek::PublicKey::from(&curve_priv);
+
+        // let mut rng = rand_pcg::Pcg64::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
+        // let mut seed = [0u8; 32];
+        // rng.fill_bytes(&mut seed);
+        // let ed_priv = ed25519_dalek::SigningKey::from_bytes(&seed);
+        // let ed_pub = ed_priv.verifying_key().to_bytes();
+        // self.device_private_key = Some(ed_priv.to_bytes());
+        // self.device_public_key = Some(ed_pub);
+
         self.verifier_private_key = Some(curve_priv);
         self.verifier_public_key = Some(curve_pub);
 
+        // self.verifier_private_key = Some(ed_priv);
+        // self.verifier_public_key = Some(ed_pub);
+
+        // ...and sends a request to the accessory with the following
+        // TLV items:
+        //     kTLVType_State <M1>
+        //     kTLVType_PublicKey <iOS device’s Curve25519 public key>
         let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M1 as u8]);
-        let pk_item = tlv8::Item::new(tlv8::Tag::PublicKey, curve_pub.as_bytes().to_vec());
-        let encoded_tlv = tlv8::encode(&[state_item, pk_item], false);
-        let encoded_tlv_len_str = encoded_tlv.len().to_string();
+        // let public_key_item = tlv8::Item::new(tlv8::Tag::PublicKey, ed_pub.to_vec());
+        let public_key_item = tlv8::Item::new(tlv8::Tag::PublicKey, curve_pub.to_bytes().to_vec());
+        let encoded_response = tlv8::encode(&[state_item, public_key_item], false);
+        let encoded_response_len_str = encoded_response.len().to_string();
 
         let headers = [
-            ("Content-Type", "application/octet-stream"),
-            ("Content-Length", &encoded_tlv_len_str),
+            ("Content-Type", "application/pairing+tlv8"),
+            ("Content-Length", &encoded_response_len_str),
         ];
 
-        debug!("pair-verify [1/2]: sending request...");
-
         let (resp_status, resp_body) = self
-            .post_rtsp_with_resp("pair-verify", &encoded_tlv, Some(&headers))
+            .post_rtsp_with_resp("pair-verify", &encoded_response, Some(&headers))
             .await?;
 
-        if resp_status == rtsp::StatusCode::Ok {
-            let Some(body) = resp_body else {
-                bail!("Failed to process pair-verify M1");
-            };
-            Ok(body)
-        } else {
-            Err(anyhow!("Pair-verify M1 failed"))
+        println!("{resp_status:?}, {resp_body:?}");
+
+        if resp_status != rtsp::StatusCode::Ok {
+            bail!("Request failed");
         }
+
+        Ok(resp_body.ok_or(anyhow!("Missing body"))?)
     }
 
-    // 5.7.3 M3: iOS Device -> Accessory - 'Verify Finish Request'
-    async fn pair_verify_m2(
+    async fn pair_verify_finish(
         &mut self,
         fields: HashMap<tlv8::Tag, Vec<u8>>,
     ) -> anyhow::Result<Vec<u8>> {
-        self.sender_state = SenderState::WaitingOnPairVerify2;
-
         let Some(accessory_curve_pub_bytes) = fields.get(&tlv8::Tag::PublicKey) else {
             bail!("Public key missing");
         };
-        let Some(accessory_encrypted_field) = fields.get(&tlv8::Tag::EncryptedData) else {
-            bail!("Encrypted data missing");
-        };
         self.accessory_curve_public = Some(accessory_curve_pub_bytes.clone());
-
-        ensure!(accessory_encrypted_field.len() >= TAG_LENGTH);
-        let encrypted_tlv_data =
-            &accessory_encrypted_field[..accessory_encrypted_field.len() - TAG_LENGTH];
-        let auth_tag = &accessory_encrypted_field[accessory_encrypted_field.len() - TAG_LENGTH..];
 
         let Some(priv_param) = self.verifier_private_key.take() else {
             bail!("Missing verifier");
@@ -783,7 +1181,6 @@ impl InnerDevice {
         let pub_param = x25519_dalek::PublicKey::from(accessory_curve_pub_slice);
         let shared_secret = priv_param.diffie_hellman(&pub_param);
 
-        //  Derive the symmetric session encryption key, SessionKey, in the same manner as the accessory.
         let mut session_key = [0u8; 32];
         hkdf_extract_expand(
             shared_secret.as_bytes(),
@@ -793,6 +1190,15 @@ impl InnerDevice {
         )?;
 
         self.accessory_shared_secret = Some(shared_secret);
+
+        let Some(accessory_encrypted_field) = fields.get(&tlv8::Tag::EncryptedData) else {
+            bail!("Encrypted data missing");
+        };
+
+        ensure!(accessory_encrypted_field.len() >= TAG_LENGTH);
+        let encrypted_tlv_data =
+            &accessory_encrypted_field[..accessory_encrypted_field.len() - TAG_LENGTH];
+        let auth_tag = &accessory_encrypted_field[accessory_encrypted_field.len() - TAG_LENGTH..];
 
         // Verify the 16-byte auth tag, authTag, against the received encryptedData. If this fails, the
         // setup process will be aborted and an error will be reported to the user.
@@ -883,7 +1289,7 @@ impl InnerDevice {
         let encoded_response_len_str = encoded_response.len().to_string();
 
         let headers = [
-            ("Content-Type", "application/octet-stream"),
+            ("Content-Type", "application/pairing+tlv8"),
             ("Content-Length", &encoded_response_len_str),
         ];
 
@@ -904,139 +1310,61 @@ impl InnerDevice {
         }
     }
 
-    fn set_ciphers(&mut self) -> anyhow::Result<()> {
-        // From https://openairplay.github.io/airplay-spec/pairing/hkp.html:
-        // After successful pairing the connection switches to being encrypted using the format
-        // N:n_bytes:tag where N is a 16 bit Little Endian length that describes the number of bytes
-        // in n_bytes and n_bytes is encrypted using ChaCha20-Poly1305 with tag being the Poly1305 tag.
-        //
-        // Each direction uses its own key and nonce.
-        //
-        // The key for data sent from client to accessory is a HKDF-SHA-512 with the following parameters:
-        //     InputKey = <EncryptionKey>
-        //     Salt = ”Control-Salt”
-        //     Info = ”Control-Write-Encryption-Key”
-        //     OutputSize = 32 bytes
-        //
-        // While the data sent from accessory to client is HKDF-SHA-512 with the following parameters:
-        //     InputKey = <EncryptionKey>
-        //     Salt = ”Control-Salt”
-        //     Info = ”Control-Read-Encryption-Key”
-        //     OutputSize = 32 bytes
-        //
-        // The nonce is a 64 bit counter (i.e. the high order bits of the full 96 bit nonce is set to 0)
-        // starting with 0 and incrementing by 1 for each encrypted block.
-        let Some(shared_key) = self.accessory_shared_secret.as_ref() else {
-            bail!("Missing accessory shared secret");
-        };
-        debug!("Shared key: {:?}", shared_key.as_bytes());
-        hkdf_extract_expand(
-            shared_key.as_bytes(),
-            b"Control-Salt",
-            b"Control-Write-Encryption-Key",
-            &mut self.outgoing_key,
-        )?;
+    // async fn pair_verify_finish(
+    //     &mut self,
+    //     fields: HashMap<tlv8::Tag, Vec<u8>>,
+    // ) -> anyhow::Result<()> {
+    //     todo!()
+    // }
 
-        hkdf_extract_expand(
-            shared_key.as_bytes(),
-            b"Control-Salt",
-            b"Control-Read-Encryption-Key",
-            &mut self.incoming_key,
-        )?;
+    async fn auth_setup(&mut self) -> anyhow::Result<()> {
+        let cseq_str = self.rtsp_cseq.to_string();
+        self.rtsp_cseq += 1;
+
+        #[repr(u8)]
+        #[allow(dead_code)]
+        enum EncryptionType {
+            Unencrypted = 0x01,
+            Mfi = 0x10,
+        }
+
+        let mut body = Vec::new();
+        body.push(EncryptionType::Unencrypted as u8);
+        body.extend_from_slice(&hex!(
+            // https://github.com/owntone/owntone-server/blob/c1db4d914f5cd8e7dbe6c1b6478d68a4c14824af/src/outputs/raop.c#L276
+            "59 02 ed e9 0d 4e f2 bd 4c b6 8a 63 30 03 82 07 a9 4d bd 50 d8 aa 46 5b 5d 8c 01 2a 0c 7e 1d 4e"
+        ));
+
+        let body_len_string = body.len().to_string();
+        let req = rtsp::Request {
+            method: rtsp::Method::Post,
+            path: "/auth-setup",
+            version: rtsp::Version::Rtsp10,
+            headers: &[
+                ("X-Apple-ProtocolVersion", "1"),
+                ("CSeq", &cseq_str),
+                ("User-Agent", "AirPlay/381.13"),
+                ("Content-Type", "application/octet-stream"),
+                ("Content-Length", &body_len_string),
+            ],
+            body: Some(&body),
+        };
+
+        debug!("Sending request: {req:?}");
+
+        let (resp_status, resp_body) = self.send_rtsp_request(req).await?;
+        if resp_status != rtsp::StatusCode::Ok {
+            bail!("Failed to get setup auth, status code: {resp_status:?}");
+        }
+
+        debug!("{resp_body:?}");
+
+        // let Some(body) = resp_body else {
+        //     bail!("Failed to get `/info`: missing body");
+        // };
+
         Ok(())
     }
-
-    fn encrypt_data(&mut self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
-        if !self.is_encrypted {
-            bail!("Cannot encrypt data because the connection is not encrypted");
-        }
-
-        let mut result = Vec::new();
-        let mut offset = 0;
-        while offset < data.len() {
-            let length = MAX_BLOCK_LENGTH.min(data.len() - offset);
-            let block_data = &data[offset..offset + length];
-            let length_data = (length as u16).to_le_bytes();
-            let nonce: [u8; 12] = {
-                let b = self.out_count.to_le_bytes();
-                [0, 0, 0, 0, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]
-            };
-            let (ciphertext, mac) =
-                chacha20_poly1305_encrypt(&self.outgoing_key, &nonce, &length_data, block_data)?;
-            result.extend_from_slice(&length_data);
-            result.extend_from_slice(&ciphertext);
-            result.extend_from_slice(&mac);
-            offset += length;
-            self.out_count += 1;
-        }
-
-        Ok(result)
-    }
-
-    /// Try to decrypt the data in `data`.
-    ///
-    /// The format of `data` should be N:n_bytes:tag where N is a 16 bit Little Endian length that
-    /// describes the number of bytes in n_bytes and n_bytes is encrypted using ChaCha20-Poly1305
-    /// with tag being the Poly1305 tag.
-    ///
-    /// If `data` is incomplete, [`None`] is returned and more data should be read from the source.
-    ///
-    // TODO: pop res.len() + BLOCK_LENGTH_LENGTH + TAG_LENGTH from `data`
-    fn decrypt_data(&mut self, data: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
-        if !self.is_encrypted {
-            bail!("Cannot decrypt data because the connection is not encrypted");
-        }
-
-        if data.len() < BLOCK_LENGTH_LENGTH {
-            return Ok(None);
-        }
-
-        let length = u16::from_le_bytes([data[0], data[1]]) as usize;
-
-        if data.len() < BLOCK_LENGTH_LENGTH + length + TAG_LENGTH {
-            return Ok(None);
-        }
-
-        let ciphertext = &data[BLOCK_LENGTH_LENGTH..BLOCK_LENGTH_LENGTH + length];
-        let auth_tag =
-            &data[BLOCK_LENGTH_LENGTH + length..BLOCK_LENGTH_LENGTH + length + TAG_LENGTH];
-
-        let nonce = {
-            let b = self.in_count.to_le_bytes();
-            [0, 0, 0, 0, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]
-        };
-
-        let plaintext =
-            chacha20_poly1305_decrypt(&self.incoming_key, &nonce, &[], ciphertext, auth_tag)?;
-
-        Ok(Some(plaintext))
-    }
-
-    // async fn pairing_did_finish(&mut self) -> anyhow::Result<()> {
-    //     debug!("Pairing succeeded. Device is ready.");
-    //     let mut payload = json::Map::<String, json::Value>::new();
-    //     payload.insert(
-    //         "sessionUUID".to_owned(),
-    //         json::json!(Uuid::new_v4().to_string()),
-    //     );
-    //     payload.insert("timingProtocol".to_owned(), json::json!("None"));
-    //     let body = json::to_string(&payload).context("Failed to encode payload as json")?;
-
-    //     let setup_request = format!(
-    //         "SETUP /2182745467221657149 RTSP/1.0
-    //         Content-Length: {}
-    //         Content-Type: application/x-apple-binary-plist
-    //         User-Agent: AirPlay/381.13
-    //         X-Apple-HKP: 3
-    //         X-Apple-StreamID: 1
-
-    //         {body}",
-    //         body.len()
-    //     );
-    //     let encrypted_data = self.encrypt_data(setup_request.as_bytes())?;
-    //     self.post_http("2182745467221657149", &encrypted_data, None).await?;
-    //     Ok(())
-    // }
 
     // TODO: use http for HAP pairing
     async fn perform_pair(&mut self, pin: Option<&str>) -> anyhow::Result<()> {
@@ -1052,23 +1380,21 @@ impl InnerDevice {
 
             if let Some(error_bytes) = item_map.get(&tlv8::Tag::Error) {
                 if !error_bytes.is_empty() {
-                    let error_code = error_bytes[0];
-                    if error_code == 0x03 {
-                        let backoff_bytes = item_map
-                            .get(&tlv8::Tag::RetryDelay)
-                            .ok_or(anyhow!("Missing `RetryDelay` item"))?;
-                        if backoff_bytes.len() == 2 {
-                            let backoff_seconds =
-                                i16::from_le_bytes([backoff_bytes[0], backoff_bytes[1]]);
+                    let error_code = tlv8::ErrorCode::from(error_bytes[0]);
+                    error!("Got error code: {error_code:?}");
+                    if let Some(backoff_bytes) = item_map.get(&tlv8::Tag::RetryDelay) {
+                        if backoff_bytes.len() <= 8 {
+                            let mut full_bytes = [0; 8];
+                            full_bytes[0..backoff_bytes.len()].copy_from_slice(backoff_bytes);
+                            let backoff_seconds = u64::from_le_bytes(full_bytes);
                             bail!(
                                 "Pairing backoff requested, should retry in {backoff_seconds} seconds"
                             );
                         } else {
-                            todo!("Backoff bytes: {}", backoff_bytes.len());
+                            bail!("Invalid number of backoff bytes {}", backoff_bytes.len());
                         }
-                    } else {
-                        bail!("Pairing failed with error code {error_code}");
                     }
+                    bail!("Pairing failed with error code {error_code:?}");
                 }
             }
 
@@ -1087,13 +1413,23 @@ impl InnerDevice {
                     response_data = self.pair_setup_m2_m3(item_map).await?;
                 }
                 SenderState::WaitingOnPairSetup2 if remote_state == PairingState::M4 => {
-                    response_data = self.pair_setup_m4_m5(item_map).await?;
+                    // response_data = self.pair_setup_m4_m5(item_map).await?;
+                    self.pair_setup_m4_m5(item_map).await?;
+
+                    self.sender_state = SenderState::ReadyToPlay;
+                    // self.set_ciphers()?;
+                    self.is_encrypted = true;
+                    self.paired = true;
+                    // self.pairing_did_finish().await?;
+                    break;
                 }
-                SenderState::WaitingOnPairSetup3 if remote_state == PairingState::M6 => {
-                    response_data = self.pair_verify_m1(item_map).await?;
+                // SenderState::WaitingOnPairSetup3 if remote_state == PairingState::M6 => {
+                SenderState::WaitingOnPairSetup3 => {
+                    response_data = self.pair_verify_start().await?;
                 }
                 SenderState::WaitingOnPairVerify1 if remote_state == PairingState::M2 => {
-                    response_data = self.pair_verify_m2(item_map).await?;
+                    response_data = self.pair_verify_finish(item_map).await?;
+                    // response_data = self.pair_verify_m2(item_map).await?;
                 }
                 SenderState::WaitingOnPairVerify2 if remote_state == PairingState::M4 => {
                     self.sender_state = SenderState::ReadyToPlay;
@@ -1130,6 +1466,8 @@ impl InnerDevice {
             body: None,
         };
 
+        debug!("Sending request: {req:?}");
+
         let (resp_status, resp_body) = self.send_rtsp_request(req).await?;
         if resp_status != rtsp::StatusCode::Ok {
             bail!("Failed to get `/info`, status code: {resp_status:?}");
@@ -1140,6 +1478,90 @@ impl InnerDevice {
         };
 
         Ok(info_from_plist(&body)?)
+    }
+
+    async fn setup(&mut self) -> anyhow::Result<()> {
+        // https://github.com/postlund/pyatv/blob/49f9c9e960930276c8fac9fb7696b54a7beb1951/pyatv/protocols/raop/protocols/airplayv2.py#L51
+        let body: HashMap<&'static str, plist::Value> = HashMap::from([
+            ("deviceID", "AA,BB,CC,DD,EE,FF".into()),
+            // ("sessionUUID", str(uuid4()).upper()),
+            // ("timingPort", timing_server_port),
+            ("timingProtocol", "NTP".into()),
+            ("isMultiSelectAirPlay", true.into()),
+            ("groupContainsGroupLeader", false.into()),
+            ("macAddress", "AA,BB,CC,DD,EE,FF".into()),
+            ("model", "iPhone14,3".into()),
+            ("name", "pyatv".into()),
+            ("osBuildVersion", "20F66".into()),
+            ("osName", "iPhone OS".into()),
+            ("osVersion", "16.5".into()),
+            ("senderSupportsRelay", false.into()),
+            ("sourceVersion", "690.7.1".into()),
+            ("statsCollectionEnabled", false.into()),
+        ]);
+
+        let mut writer = std::io::Cursor::new(Vec::new());
+        plist::to_writer_binary(&mut writer, &body)?;
+
+        let cseq_str = self.rtsp_cseq.to_string();
+        self.rtsp_cseq += 1;
+        let req = rtsp::Request {
+            method: rtsp::Method::Setup,
+            path: "/",
+            version: rtsp::Version::Rtsp10,
+            headers: &[
+                ("X-Apple-ProtocolVersion", "1"),
+                ("CSeq", &cseq_str),
+                ("User-Agent", "AirPlay/381.13"),
+            ],
+            body: Some(writer.get_ref()),
+        };
+
+        debug!("Sending request: {req:?}");
+
+        let (resp_status, resp_body) = self.send_rtsp_request(req).await?;
+        if resp_status != rtsp::StatusCode::Ok {
+            bail!("Failed to setup, status code: {resp_status:?}");
+        }
+
+        // let mut encoded_req = Vec::new();
+        // req.encode_into(&mut encoded_req);
+
+        // let encrypted = self.encrypt_data(&encoded_req)?;
+
+        // debug!("encrypted: {encrypted:?}");
+
+        // match self.stream.as_mut() {
+        //     Some(stream) => stream.write_all(&encrypted).await?,
+        //     None => bail!("Cannot send request because stream is missing"),
+        // }
+
+        // let mut read_buf = Vec::new();
+        // let mut tmp_buf = [0u8; 1024];
+        // loop {
+        //     match self.stream.as_mut() {
+        //         Some(stream) => {
+        //             let n_read = stream.read(&mut tmp_buf).await?;
+        //             read_buf.extend_from_slice(&tmp_buf[0..n_read]);
+        //             if n_read < tmp_buf.len() {
+        //                 break;
+        //             }
+        //         }
+        //         None => bail!("Cannot send feedback because stream is missing"),
+        //     }
+        // }
+
+        // if let Some(plaintext) = self.decrypt_data(&read_buf)? {
+        //     debug!("Response:\n{}", hexdump::hexdump(&plaintext));
+        // } else {
+        //     debug!("Could not decrypt");
+        // }
+
+        // let Some(body) = resp_body else {
+        //     bail!("Failed to get `/info`: missing body");
+        // };
+
+        Ok(())
     }
 
     async fn inner_work(
@@ -1159,39 +1581,46 @@ impl InnerDevice {
             return Ok(());
         };
 
-        self.used_remote_addr = Some(stream.peer_addr()?);
+        let used_remote_addr = stream.peer_addr()?;
+        let local_addr = stream.local_addr().context("Failed to get local address")?;
+        self.used_remote_addr = Some(used_remote_addr);
 
-        self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connected {
-                used_remote_addr: stream
-                    .peer_addr()
-                    .context("Failed to get peer address")?
-                    .ip()
-                    .into(),
-                local_addr: stream
-                    .local_addr()
-                    .context("Failed to get local address")?
-                    .ip()
-                    .into(),
-            });
+        debug!("Connected to receiver local={local_addr:?} remote={used_remote_addr}");
 
         self.stream = Some(stream);
 
+        // TODO: get info and make sure SupportsTransientPairing is enabled
         let info = self.fetch_info().await?;
-        if let Some(features) = info.features.as_ref() {
-            // TODO: what are the different pairing protocols?
-            if features.contains(AirPlayFeatures::SupportsHKPairingAndAccessControl) {
-            } else if features.contains(AirPlayFeatures::Authentication4) {
-            }
-            debug!("{features:?}");
+        let Some(features) = info.features.map(|feats| AirPlayFeatures::from_bits_truncate(feats)) else {
+            error!("`features` is missing from receiver info");
+            todo!();
         };
 
-        debug!("status: {:?}", info.status_flags);
-        debug!("info: {info:?}");
+        if features.contains(AirPlayFeatures::HasUnifiedAdvertiserInfo) {
+            self.auth_setup().await?;
+        }
+
+        //     // TODO: what are the different pairing protocols?
+        //     if features.contains(AirPlayFeatures::SupportsHKPairingAndAccessControl) {
+        //     } else if features.contains(AirPlayFeatures::Authentication4) {
+        //     }
+        //     debug!("{features:?}");
+        // };
+
+        // debug!("status: {:?}", info.status_flags);
+        // debug!("info: {info:?}");
 
         self.perform_pair(None).await?;
 
+        self.event_handler
+            .connection_state_changed(DeviceConnectionState::Connected {
+                used_remote_addr: used_remote_addr.ip().into(),
+                local_addr: local_addr.ip().into(),
+            });
+
         let mut feedback_interval = tokio::time::interval(FEEDBACK_INTERVAL);
+
+        self.setup().await?;
 
         loop {
             tokio::select! {
@@ -1202,6 +1631,10 @@ impl InnerDevice {
                         Command::Quit => break,
                     }
                 }
+                // _ = feedback_interval.tick() => {
+                //     let info = self.fetch_info().await?;
+                //     debug!("{info:?}");
+                // }
                 _ = feedback_interval.tick() => self.send_feedback().await?,
             }
         }

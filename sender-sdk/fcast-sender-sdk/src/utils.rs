@@ -3,7 +3,7 @@ mod any_protocol_prelude {
     pub use anyhow::{anyhow, bail};
     pub use log::{error, info};
     pub use std::{net::SocketAddr, time::Duration};
-    pub use tokio::net::TcpStream;
+    pub use tokio::{net::TcpStream, time::sleep};
 }
 
 #[cfg(any_protocol)]
@@ -36,12 +36,12 @@ pub(crate) async fn try_connect_tcp<T>(
                         Ok(stream) => return Ok(Some(stream)),
                         Err(err) => {
                             error!("Failed to connect: {err}");
-                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            sleep(Duration::from_secs(1)).await;
                         }
                     },
                     Err(_) => {
                         info!("Failed to connect, retrying...");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        sleep(Duration::from_secs(1)).await;
                     }
                 }
             }

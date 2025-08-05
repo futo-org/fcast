@@ -96,23 +96,35 @@ async fn main() {
 
     let ctx = CastContext::new().unwrap();
 
-    // let dev = ctx.create_device(CastingDeviceInfo::airplay2(
+    // let dev = ctx.create_device_from_info(DeviceInfo::fcast(
     //     "AirPlay2".to_owned(),
-    //     // airplay2-receiver python:
-    //     // vec![IpAddr::v4(192, 168, 1, 133)],
-    //     // 7000,
-    //     // UxPlay (uxplay -d -hls -p 1337):
-    //     vec![IpAddr::v4(192, 168, 1, 133)],
-    //     1338,
-    //     // shairport-sync:
-    //     // vec![IpAddr::v4(192, 168, 1, 133)],
-    //     // 5000,
+    //     vec![IpAddr::v4(127, 0, 0, 1)],
+    //     46899,
     // ));
 
-    let dev = ctx.create_device_from_info(DeviceInfo::fcast(
+
+    // sonos: vec![IpAddr::v4(192, 168, 1, 203)],
+
+    let dev = ctx.create_device_from_info(DeviceInfo::airplay2(
         "AirPlay2".to_owned(),
-        vec![IpAddr::v4(127, 0, 0, 1)],
-        46899,
+        // vec![IpAddr::v4(192, 168, 1, 133)],
+        // 7000,
+
+        // Sonos
+        vec![IpAddr::v4(192, 168, 1, 203)],
+        7000,
+
+        // Mac
+        // vec![IpAddr::v4(192, 168, 1, 64)],
+        // 7000,
+
+        // uxplay
+        // vec![IpAddr::v4(192, 168, 1, 133)],
+        // 1338,
+
+        // shairport sync
+        // vec![IpAddr::v4(192, 168, 1, 133)],
+        // 7000,
     ));
 
     dev.connect(Arc::new(EventHandler {})).unwrap();

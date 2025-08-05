@@ -10,6 +10,41 @@ pub enum TagError {
     InvalidValue(u8),
 }
 
+#[derive(Debug)]
+#[repr(u8)]
+pub enum ErrorCode {
+    /// Generic error to handle unexpected errors.
+    Unknown = 0x01,
+    /// Authentication Setup code or signature verification failed.
+    Authentication = 0x02,
+    /// Client must look at the retry delay TLV item and wait that many seconds before retrying.
+    Backoff = 0x03,
+    /// Server cannot accept any more pairings.
+    MaxPeers = 0x04,
+    /// Server reached its maximum number of authentication attempts.
+    MaxTries = 0x05,
+    /// Server pairing method is unavailable.
+    Unavailable = 0x06,
+    /// Server is busy and cannot accept a pairing request at this time.
+    Busy = 0x07,
+    Invalid,
+}
+
+impl From<u8> for ErrorCode {
+    fn from(value: u8) -> Self {
+        match value {
+            0x01 => Self::Unknown,
+            0x02 => Self::Authentication,
+            0x03 => Self::Backoff,
+            0x04 => Self::MaxPeers,
+            0x05 => Self::MaxTries,
+            0x06 => Self::Unavailable,
+            0x07 => Self::Busy,
+            _ => Self::Invalid,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Tag {
@@ -287,5 +322,23 @@ mod tests {
         // Declared length = 2, but only 1 data byte follows
         let arr = [Tag::Flags as u8, 2, 0x5A];
         assert!(decode(&arr).is_err());
+    }
+
+    #[test]
+    fn test_encode_decode_large_single() {
+        let item = Item::new(Tag::EncryptedData, vec![1; 400]);
+        let encoded = encode(&[item.clone()], false);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(item, decoded[0]);
+    }
+
+    #[test]
+    fn test_encode_decode_large_double() {
+        let item1 = Item::new(Tag::EncryptedData, vec![1; 400]);
+        let item2 = Item::new(Tag::EncryptedData, vec![2; 400]);
+        let encoded = encode(&[item1.clone(), item2.clone()], false);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(item1, decoded[0]);
+        assert_eq!(item2, decoded[1]);
     }
 }
