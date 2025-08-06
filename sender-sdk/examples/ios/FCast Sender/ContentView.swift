@@ -2,6 +2,7 @@ import Network
 import PhotosUI
 import SwiftUI
 import System
+import CodeScanner
 
 final class DevEventHandler: DeviceEventHandler {
     let onStateChanged: @Sendable (DeviceConnectionState) -> Void
@@ -253,107 +254,127 @@ struct ContentView: View {
             .sheet(isPresented: $dataModel.isShowingSheet) {
                 switch dataModel.sheetState {
                 case .deviceList:
-                    DeviceList(devices: dataModel.devices) { device in
-                        dataModel.sheetState = SheetState.connecting(
-                            deviceName: device.name
-                        )
-
-                        Task {
-                            let conn = NWConnection(
-                                to: device.endpoint,
-                                using: .tcp
+                    DeviceList(
+                        devices: dataModel.devices,
+                        onConnect: { device in
+                            dataModel.sheetState = SheetState.connecting(
+                                deviceName: device.name
                             )
-                            conn.stateUpdateHandler = { state in
-                                switch state {
-                                case .ready:
-                                    if let innerEndpoint = conn.currentPath?
-                                        .remoteEndpoint,
-                                        case .hostPort(let host, let port) =
+                            Task {
+                                let conn = NWConnection(
+                                    to: device.endpoint,
+                                    using: .tcp
+                                )
+                                conn.stateUpdateHandler = { state in
+                                    switch state {
+                                    case .ready:
+                                        if let innerEndpoint = conn.currentPath?
+                                            .remoteEndpoint,
+                                           case .hostPort(let host, let port) =
                                             innerEndpoint
-                                    {
-                                        switch host {
-                                        default:
-                                            break
-                                        }
-                                        let address: IpAddr
-                                        switch host {
-                                        case .ipv4(let addr):
-                                            let raw = addr.rawValue
-                                            address = IpAddr.v4(
-                                                o1: raw[0],
-                                                o2: raw[1],
-                                                o3: raw[2],
-                                                o4: raw[3]
-                                            )
-                                        case .ipv6(let addr):
-                                            let raw = addr.rawValue
-                                            address = IpAddr.v6(
-                                                o1: raw[0],
-                                                o2: raw[1],
-                                                o3: raw[2],
-                                                o4: raw[3],
-                                                o5: raw[4],
-                                                o6: raw[5],
-                                                o7: raw[6],
-                                                o8: raw[7],
-                                                o9: raw[8],
-                                                o10: raw[9],
-                                                o11: raw[10],
-                                                o12: raw[11],
-                                                o13: raw[12],
-                                                o14: raw[13],
-                                                o15: raw[14],
-                                                o16: raw[15]
-                                            )
-                                        default:
-                                            DispatchQueue.main.async {
-                                                dataModel.sheetState =
+                                        {
+                                            switch host {
+                                            default:
+                                                break
+                                            }
+                                            let address: IpAddr
+                                            switch host {
+                                            case .ipv4(let addr):
+                                                let raw = addr.rawValue
+                                                address = IpAddr.v4(
+                                                    o1: raw[0],
+                                                    o2: raw[1],
+                                                    o3: raw[2],
+                                                    o4: raw[3]
+                                                )
+                                            case .ipv6(let addr):
+                                                let raw = addr.rawValue
+                                                address = IpAddr.v6(
+                                                    o1: raw[0],
+                                                    o2: raw[1],
+                                                    o3: raw[2],
+                                                    o4: raw[3],
+                                                    o5: raw[4],
+                                                    o6: raw[5],
+                                                    o7: raw[6],
+                                                    o8: raw[7],
+                                                    o9: raw[8],
+                                                    o10: raw[9],
+                                                    o11: raw[10],
+                                                    o12: raw[11],
+                                                    o13: raw[12],
+                                                    o14: raw[13],
+                                                    o15: raw[14],
+                                                    o16: raw[15]
+                                                )
+                                            default:
+                                                DispatchQueue.main.async {
+                                                    dataModel.sheetState =
                                                     SheetState.failedToConnect(
                                                         deviceName: device.name,
                                                         reason:
                                                             "No address available"
                                                     )
+                                                }
+                                                return
                                             }
-                                            return
-                                        }
-                                        let info = DeviceInfo(
-                                            name: device.name,
-                                            type: device.proto,
-                                            addresses: [address],
-                                            port: port.rawValue
-                                        )
-                                        activeDevice =
+                                            let info = DeviceInfo(
+                                                name: device.name,
+                                                type: device.proto,
+                                                addresses: [address],
+                                                port: port.rawValue
+                                            )
+                                            activeDevice =
                                             castContext.createDeviceFromInfo(
                                                 info: info
                                             )
-                                        do {
-                                            try activeDevice?.connect(
-                                                eventHandler: eventHandler
-                                            )
-                                        } catch {
-                                            DispatchQueue.main.async {
-                                                dataModel.sheetState =
+                                            do {
+                                                try activeDevice?.connect(
+                                                    eventHandler: eventHandler
+                                                )
+                                            } catch {
+                                                DispatchQueue.main.async {
+                                                    dataModel.sheetState =
                                                     SheetState.failedToConnect(
                                                         deviceName: device.name,
                                                         reason: "Unknown"
                                                     )
+                                                }
                                             }
                                         }
+                                    default:
+                                        break
                                     }
-                                default:
-                                    break
                                 }
+                                conn.start(queue: .global())
                             }
-                            conn.start(queue: .global())
-                        }
-                    }
+                        },
+                         onConnectScanned: { scannedDeviceInfo in
+                             activeDevice =
+                             castContext.createDeviceFromInfo(
+                                info: scannedDeviceInfo
+                             )
+                             do {
+                                 try activeDevice?.connect(
+                                    eventHandler: eventHandler
+                                 )
+                             } catch {
+                                 DispatchQueue.main.async {
+                                     dataModel.sheetState =
+                                     SheetState.failedToConnect(
+                                        deviceName: scannedDeviceInfo.name,
+                                        reason: "Unknown"
+                                     )
+                                 }
+                             }
+                         }
+                    )
                     .presentationDetents([.medium, .large])
                 case .connecting(let deviceName):
                     VStack {
                         ProgressView("Connecting to \(deviceName)")
                             .progressViewStyle(CircularProgressViewStyle())
                         Button(action: {
-
                         }) {
                             Text("Cancel")
                         }
@@ -474,31 +495,51 @@ struct ContentView: View {
 struct DeviceList: View {
     var devices: [FoundDevice]
     var onConnect: (FoundDevice) -> Void
+    var onConnectScanned: (DeviceInfo) -> Void
+    @State var isPresentingQrScanner = false
 
     var body: some View {
-        List(devices, id: \.name) { device in
-            Button(action: {
-                onConnect(device)
-            }) {
-                HStack {
-                    // TODO: change these icons
-                    switch device.proto {
-                    case .chromecast:
-                        Image("chromecast-icon")
-                            .renderingMode(.template)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: 32)
-                    case .airPlay, .airPlay2:
-                        Image("airplay-icon")
-                            .renderingMode(.template)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: 32)
-                    default:
-                        Image(systemName: "questionmark.app.dashed")
+        VStack {
+            List(devices, id: \.name) { device in
+                Button(action: {
+                    onConnect(device)
+                }) {
+                    HStack {
+                        // TODO: change these icons
+                        switch device.proto {
+                        case .chromecast:
+                            Image("chromecast-icon")
+                                .renderingMode(.template)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 32)
+                        case .airPlay, .airPlay2:
+                            Image("airplay-icon")
+                                .renderingMode(.template)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 32)
+                        default:
+                            Image(systemName: "questionmark.app.dashed")
+                        }
+                        Text(device.name)
                     }
-                    Text(device.name)
+                }
+            }
+
+            Text("Not seeing your receiver?")
+
+            Button("Scan QR", systemImage: "qrcode.viewfinder") {
+                isPresentingQrScanner.toggle()
+            }
+        }
+        .sheet(isPresented: $isPresentingQrScanner) {
+            CodeScannerView(codeTypes: [.qr]) { response in
+                if case let .success(result) = response {
+                    isPresentingQrScanner = false
+                    if let deviceInfo = deviceInfoFromUrl(url: result.string) {
+                        onConnectScanned(deviceInfo)
+                    }
                 }
             }
         }

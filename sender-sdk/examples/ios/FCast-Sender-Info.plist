@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.developer.networking.multicast</key>
-	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan QR code</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Test Test Test</string>
+	<string>We need to access your local network to automatically discover receivers</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_googlecast._tcp</string>

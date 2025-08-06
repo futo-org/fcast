@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2C0D5A332E43787700DE5418 /* CodeScanner in Frameworks */ = {isa = PBXBuildFile; productRef = 2C0D5A322E43787700DE5418 /* CodeScanner */; };
 		2C10DED32E37B5C7000C85F7 /* fcast_sender_sdk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C10DED12E37B5C7000C85F7 /* fcast_sender_sdk.swift */; };
 		2C10DEDB2E37CD21000C85F7 /* fcast_sender_sdk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2C10DEDA2E37CD21000C85F7 /* fcast_sender_sdk.xcframework */; };
 /* End PBXBuildFile section */
@@ -74,6 +75,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2C0D5A332E43787700DE5418 /* CodeScanner in Frameworks */,
 				2C10DEDB2E37CD21000C85F7 /* fcast_sender_sdk.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -132,6 +134,7 @@
 			);
 			name = "FCast Sender";
 			packageProductDependencies = (
+				2C0D5A322E43787700DE5418 /* CodeScanner */,
 			);
 			productName = "FCast Sender";
 			productReference = FE5977C02DF448FF00115F46 /* FCast Sender.app */;
@@ -216,6 +219,7 @@
 			mainGroup = FE492A012DF43426005DA314;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				2C0D5A312E43787700DE5418 /* XCRemoteSwiftPackageReference "CodeScanner" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FE492A012DF43426005DA314;
@@ -585,6 +589,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		2C0D5A312E43787700DE5418 /* XCRemoteSwiftPackageReference "CodeScanner" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/twostraws/CodeScanner.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2C0D5A322E43787700DE5418 /* CodeScanner */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2C0D5A312E43787700DE5418 /* XCRemoteSwiftPackageReference "CodeScanner" */;
+			productName = CodeScanner;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = FE492A022DF43426005DA314 /* Project object */;
 }
