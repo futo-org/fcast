@@ -349,10 +349,9 @@ pub fn init_logger(level_filter: LogLevelFilter) {
 #[cfg(all(target_os = "ios", feature = "logging"))]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn init_logger(level_filter: LogLevelFilter) {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(level_filter.to_log_compat()),
-    )
-    .init();
+    env_logger::Builder::new()
+        .filter(None, level_filter.to_log_compat())
+        .init();
 }
 
 #[cfg(test)]

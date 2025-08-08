@@ -8,8 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		2C0D5A332E43787700DE5418 /* CodeScanner in Frameworks */ = {isa = PBXBuildFile; productRef = 2C0D5A322E43787700DE5418 /* CodeScanner */; };
-		2C9CE3612E45F3AE009C8E88 /* fcast_sender_sdk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2C9CE3602E45F3AE009C8E88 /* fcast_sender_sdk.xcframework */; };
-		2C9CE3642E45F3C5009C8E88 /* fcast_sender_sdk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9CE3632E45F3C5009C8E88 /* fcast_sender_sdk.swift */; };
+		2CE96CDC2E46221100386DB8 /* fcast_sender_sdk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2CE96CDA2E46221100386DB8 /* fcast_sender_sdk.xcframework */; };
+		2CE96CDD2E46221100386DB8 /* fcast_sender_sdk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE96CD92E46221100386DB8 /* fcast_sender_sdk.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,9 +44,9 @@
 
 /* Begin PBXFileReference section */
 		2C10DED52E37B5E7000C85F7 /* FCastSender-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FCastSender-Bridging-Header.h"; sourceTree = "<group>"; };
-		2C9CE3602E45F3AE009C8E88 /* fcast_sender_sdk.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = fcast_sender_sdk.xcframework; sourceTree = "<group>"; };
-		2C9CE3622E45F3BA009C8E88 /* fcast_sender_sdkFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fcast_sender_sdkFFI.h; sourceTree = "<group>"; };
-		2C9CE3632E45F3C5009C8E88 /* fcast_sender_sdk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = fcast_sender_sdk.swift; sourceTree = "<group>"; };
+		2CE96CD92E46221100386DB8 /* fcast_sender_sdk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = fcast_sender_sdk.swift; sourceTree = "<group>"; };
+		2CE96CDA2E46221100386DB8 /* fcast_sender_sdk.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = fcast_sender_sdk.xcframework; sourceTree = "<group>"; };
+		2CE96CDB2E46221100386DB8 /* fcast_sender_sdkFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fcast_sender_sdkFFI.h; sourceTree = "<group>"; };
 		FE5977C02DF448FF00115F46 /* FCast Sender.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "FCast Sender.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -76,7 +76,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2C0D5A332E43787700DE5418 /* CodeScanner in Frameworks */,
-				2C9CE3612E45F3AE009C8E88 /* fcast_sender_sdk.xcframework in Frameworks */,
+				2CE96CDC2E46221100386DB8 /* fcast_sender_sdk.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,10 +106,10 @@
 				FE492A242DF43428005DA314 /* FCast SenderUITests */,
 				FE5977C02DF448FF00115F46 /* FCast Sender.app */,
 				FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */,
-				2C9CE3602E45F3AE009C8E88 /* fcast_sender_sdk.xcframework */,
 				FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */,
-				2C9CE3622E45F3BA009C8E88 /* fcast_sender_sdkFFI.h */,
-				2C9CE3632E45F3C5009C8E88 /* fcast_sender_sdk.swift */,
+				2CE96CD92E46221100386DB8 /* fcast_sender_sdk.swift */,
+				2CE96CDA2E46221100386DB8 /* fcast_sender_sdk.xcframework */,
+				2CE96CDB2E46221100386DB8 /* fcast_sender_sdkFFI.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -262,7 +262,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2C9CE3642E45F3C5009C8E88 /* fcast_sender_sdk.swift in Sources */,
+				2CE96CDD2E46221100386DB8 /* fcast_sender_sdk.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

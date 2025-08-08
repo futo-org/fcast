@@ -142,7 +142,7 @@ struct ContentView: View {
     var fileServer: FileServer
 
     init(data: DataModel) throws {
-        initLogger()
+        initLogger(levelFilter: LogLevelFilter.debug)
         dataModel = data
         castContext = try CastContext()
         fileServer = castContext.startFileServer()
