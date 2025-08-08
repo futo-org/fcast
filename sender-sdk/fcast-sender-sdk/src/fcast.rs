@@ -525,7 +525,7 @@ impl InnerDevice {
                                 shared_state.source = Some(source);
                             }
                         }
-                        _ => debug!("Packet ignored: {:?}", packet),
+                        _ => debug!("Packet ignored: {packet:?}"),
                     }
                 }
                 cmd = cmd_rx.recv() => {
@@ -654,8 +654,6 @@ impl FCastDevice {
             return Err(CastingDeviceError::FailedToSendCommand);
         };
 
-        // TODO: `blocking_send()`? Would need to check for a runtime and use that if it exists.
-        //        Can save clones when this function is called from sync environment.
         let tx = tx.clone();
         state.rt_handle.spawn(async move { tx.send(cmd).await });
 

@@ -31,6 +31,9 @@ use tokio_rustls::{
     TlsConnector,
 };
 
+const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
+const RECEIVER_APP_ID: &str = "CC1AD845";
+
 struct RequestId {
     inner: u64,
 }
@@ -169,6 +172,8 @@ struct InnerDevice {
     write_buffer: Vec<u8>,
     cmd_rx: Receiver<Command>,
     event_handler: Arc<dyn DeviceEventHandler>,
+    transport_id: Option<String>,
+    writer: Option<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
 }
 
 impl InnerDevice {
@@ -177,12 +182,13 @@ impl InnerDevice {
             write_buffer: vec![0u8; 1000 * 64],
             cmd_rx,
             event_handler,
+            transport_id: None,
+            writer: None,
         }
     }
 
     async fn send_channel_message<T>(
         &mut self,
-        writer: &mut tokio::io::WriteHalf<TlsStream<TcpStream>>,
         source_id: impl ToString,
         destination_id: impl ToString,
         obj: T,
@@ -190,6 +196,10 @@ impl InnerDevice {
     where
         T: Serialize + namespaces::Namespace + std::fmt::Debug,
     {
+        let Some(writer) = self.writer.as_mut() else {
+            bail!("`writer` is missing");
+        };
+
         let cast_message = protos::CastMessage {
             protocol_version: protos::cast_message::ProtocolVersion::Castv210.into(),
             source_id: source_id.to_string(),
@@ -217,6 +227,21 @@ impl InnerDevice {
         Ok(())
     }
 
+    async fn send_media_channel_message<T>(&mut self, obj: T) -> anyhow::Result<()>
+    where
+        T: Serialize + namespaces::Namespace + std::fmt::Debug,
+    {
+        match self.transport_id.as_ref() {
+            Some(transport_id) => {
+                self.send_channel_message("sender-0", transport_id.clone(), obj)
+                    .await
+            }
+            None => {
+                bail!("`transport_id` is missing")
+            }
+        }
+    }
+
     async fn inner_work(&mut self, addrs: Vec<SocketAddr>) -> anyhow::Result<()> {
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connecting);
@@ -242,7 +267,6 @@ impl InnerDevice {
         root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
             .dangerous()
-            // TODO: hack or required?
             .with_custom_certificate_verifier(Arc::new(AllCertVerifier))
             .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(config));
@@ -251,12 +275,12 @@ impl InnerDevice {
 
         debug!("Connected to {remote_addr:?}");
 
-        let (reader, mut writer) = tokio::io::split(stream);
+        let (reader, writer) = tokio::io::split(stream);
+        self.writer = Some(writer);
 
         let mut request_id = RequestId::new();
 
         self.send_channel_message(
-            &mut writer,
             "sender-0",
             "receiver-0",
             namespaces::Connection::Connect { conn_type: 0 },
@@ -264,7 +288,6 @@ impl InnerDevice {
         .await?;
 
         self.send_channel_message(
-            &mut writer,
             "sender-0",
             "receiver-0",
             namespaces::Receiver::GetStatus {
@@ -327,9 +350,7 @@ impl InnerDevice {
 
         let mut shared_state = SharedState::default();
         let mut is_running = false;
-        // TODO: maybe Option<>s?
         let mut session_id = String::new();
-        let mut transport_id = String::new();
         let mut media_session_id = 0u64;
 
         macro_rules! changed {
@@ -340,6 +361,8 @@ impl InnerDevice {
                 }
             };
         }
+
+        let mut get_status_interval = tokio::time::interval(DEFAULT_GET_STATUS_DELAY);
 
         loop {
             tokio::select! {
@@ -355,7 +378,6 @@ impl InnerDevice {
                             match msg {
                                 namespaces::Heartbeat::Ping => {
                                     self.send_channel_message(
-                                        &mut writer,
                                         "sender-0",
                                         "receiver-0",
                                         namespaces::Heartbeat::Pong
@@ -374,29 +396,23 @@ impl InnerDevice {
                                     };
                                     let mut new_is_running = false;
                                     for application in applications {
-                                        if &application.app_id == "CC1AD845" {
+                                        if application.app_id == RECEIVER_APP_ID {
                                             new_is_running = true;
                                             if session_id.is_empty() {
                                                 session_id = application.session_id;
-                                                transport_id = application.transport_id;
+                                                self.transport_id = Some(application.transport_id);
 
-                                                self.send_channel_message(
-                                                    &mut writer,
-                                                    "sender-0",
-                                                    transport_id.clone(),
+                                                self.send_media_channel_message(
                                                     namespaces::Connection::Connect { conn_type: 0 }
                                                 ).await?;
 
-                                                debug!("Connected to media channel {transport_id}");
+                                                debug!("Connected to media channel {:?}", self.transport_id);
 
-                                                self.send_channel_message(
-                                                    &mut writer,
-                                                    "sender-0",
-                                                    transport_id.clone(),
+                                                self.send_media_channel_message(
                                                     namespaces::Media::GetStatus {
                                                         media_session_id: None,
                                                         request_id: request_id.inc()
-                                                    }
+                                                    },
                                                 ).await?;
                                             }
                                         }
@@ -405,11 +421,10 @@ impl InnerDevice {
                                     is_running = new_is_running;
                                     if !is_running {
                                         self.send_channel_message(
-                                            &mut writer,
                                             "sender-0",
                                             "receiver-0",
                                             namespaces::Receiver::Launch {
-                                                app_id: "CC1AD845".to_owned(),
+                                                app_id: RECEIVER_APP_ID.to_owned(),
                                                 request_id: request_id.inc(),
                                             }).await?;
                                     }
@@ -474,10 +489,7 @@ impl InnerDevice {
                         Command::LoadVideo {
                             content_type, content_id, speed, ..
                         } => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::Load {
                                     current_time: Some(0.0),
                                     media: protocol::MediaInformation {
@@ -493,10 +505,7 @@ impl InnerDevice {
                             ).await?;
                         }
                         Command::LoadUrl { content_type, url, resume_position, speed, .. } => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::Load {
                                     current_time: resume_position,
                                     media: protocol::MediaInformation {
@@ -513,7 +522,6 @@ impl InnerDevice {
                         }
                         Command::ChangeVolume(volume) => {
                             self.send_channel_message(
-                                &mut writer,
                                 "sender-0",
                                 "receiver-0",
                                 namespaces::Receiver::SetVolume {
@@ -526,10 +534,7 @@ impl InnerDevice {
                             ).await?;
                         }
                         Command::ChangeSpeed(speed) => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::SetPlaybackRate {
                                     request_id: request_id.inc(),
                                     media_session_id,
@@ -538,10 +543,7 @@ impl InnerDevice {
                             ).await?;
                         }
                         Command::Seek(time_seconds) => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::Seek {
                                     media_session_id: media_session_id.to_string(),
                                     request_id: request_id.inc(),
@@ -550,10 +552,7 @@ impl InnerDevice {
                             ).await?;
                         }
                         Command::Stop => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::Stop {
                                     media_session_id: media_session_id.to_string(),
                                     request_id: request_id.inc(),
@@ -561,10 +560,7 @@ impl InnerDevice {
                             ).await?;
                         }
                         Command::PausePlayback => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::Pause {
                                     media_session_id: media_session_id.to_string(),
                                     request_id: request_id.inc(),
@@ -572,10 +568,7 @@ impl InnerDevice {
                             ).await?;
                         }
                         Command::ResumePlayback => {
-                            self.send_channel_message(
-                                &mut writer,
-                                "sender-0",
-                                transport_id.clone(),
+                            self.send_media_channel_message(
                                 namespaces::Media::Resume {
                                     media_session_id: media_session_id.to_string(),
                                     request_id: request_id.inc(),
@@ -584,11 +577,10 @@ impl InnerDevice {
                         }
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                _ = get_status_interval.tick() => {
                     if !is_running {
                         debug!("Requesting receiver status");
                         self.send_channel_message(
-                            &mut writer,
                             "sender-0",
                             "receiver-0",
                             namespaces::Receiver::GetStatus {
@@ -598,10 +590,7 @@ impl InnerDevice {
                         .await?;
                     } else if media_session_id != 0 {
                         debug!("Requesting media status");
-                        self.send_channel_message(
-                            &mut writer,
-                            "sender-0",
-                            transport_id.clone(),
+                        self.send_media_channel_message(
                             namespaces::Media::GetStatus {
                                 request_id: request_id.inc(),
                                 media_session_id: Some(media_session_id),
@@ -615,7 +604,9 @@ impl InnerDevice {
 
         info!("Shutting down...");
 
-        writer.shutdown().await?;
+        if let Some(mut writer) = self.writer.take() {
+            writer.shutdown().await?;
+        }
 
         Ok(())
     }
@@ -638,8 +629,6 @@ impl ChromecastDevice {
             return Err(CastingDeviceError::FailedToSendCommand);
         };
 
-        // TODO: `blocking_send()`? Would need to check for a runtime and use that if it exists.
-        //        Can save clones when this function is called from sync environment.
         let tx = tx.clone();
         state.rt_handle.spawn(async move { tx.send(cmd).await });
 
