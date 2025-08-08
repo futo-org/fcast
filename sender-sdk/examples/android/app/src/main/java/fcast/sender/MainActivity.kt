@@ -49,6 +49,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import uniffi.fcast_sender_sdk.DeviceInfo
 import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
+import uniffi.fcast_sender_sdk.LogLevelFilter
 import uniffi.fcast_sender_sdk.FileServer
 
 data class CastingState(
@@ -193,7 +194,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var deviceDiscoverer: NsdDeviceDiscoverer
 
     init {
-        initLogger()
+        initLogger(LogLevelFilter.DEBUG)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {

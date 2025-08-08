@@ -49,6 +49,7 @@ import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
 import uniffi.fcast_sender_sdk.CastContext
 import uniffi.fcast_sender_sdk.deviceInfoFromUrl
 import uniffi.fcast_sender_sdk.urlFormatIpAddr
+import uniffi.fcast_sender_sdk.LogLevelFilter
 import org.fcast.sender_sdk.NsdDeviceDiscoverer
 
 data class CastingState(
@@ -515,7 +516,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var castLocalFileBtn: Button
 
     init {
-        initLogger()
+        initLogger(LogLevelFilter.DEBUG)
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {

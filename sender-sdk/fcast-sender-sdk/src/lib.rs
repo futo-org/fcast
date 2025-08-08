@@ -319,19 +319,40 @@ impl From<std::net::IpAddr> for IpAddr {
     }
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg(all(any(target_os = "android", target_os = "ios"), feature = "logging"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogLevelFilter {
+    Debug,
+    Info,
+}
+
+#[cfg(all(any(target_os = "android", target_os = "ios"), feature = "logging"))]
+impl LogLevelFilter {
+    pub fn to_log_compat(&self) -> log::LevelFilter {
+        match self {
+            LogLevelFilter::Debug => log::LevelFilter::Debug,
+            LogLevelFilter::Info => log::LevelFilter::Debug,
+        }
+    }
+}
+
 #[cfg(all(target_os = "android", feature = "logging"))]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-pub fn init_logger() {
+pub fn init_logger(level_filter: LogLevelFilter) {
     log_panics::init();
     android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
+        android_logger::Config::default().with_max_level(level_filter.to_log_compat()),
     );
 }
 
 #[cfg(all(target_os = "ios", feature = "logging"))]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-pub fn init_logger() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+pub fn init_logger(level_filter: LogLevelFilter) {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(level_filter.to_log_compat()),
+    )
+    .init();
 }
 
 #[cfg(test)]
