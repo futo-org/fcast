@@ -9,18 +9,21 @@ uniffi = { version = "0.29.3", optional = true }
 tokio.workspace = true
 log.workspace= true
 anyhow = "1.0.98"
+thiserror.workspace = true
+futures = "0.3.31"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-futures = "0.3.31"
+
+# Device discovery
+tokio-stream = { version = "0.1.17", optional = true }
 mdns-sd = { workspace = true, optional = true }
-thiserror.workspace = true
-uuid = { version = "1.17.0", features = ["v4"], optional = true }
-bitflags = { version = "2.9.1", features = ["serde"], optional = true }
-tokio-stream = "0.1.17"
+
+# File server
+http = { path = "../http", optional = true }
 libc = { version = "0.2.174", optional = true }
 http-range = { version = "0.1.5", optional = true }
 parsers-common = { path = "../parsers-common" }
-http = { path = "../http", optional = true }
+uuid = { version = "1.17.0", features = ["v4"], optional = true }
 
 # Chromecast
 rustls-pki-types = { version = "1.12.0", optional = true }
@@ -50,7 +53,7 @@ chromecast = ["dep:chromecast-protocol", "dep:serde", "dep:serde_json", "dep:rus
 http-file-server = ["dep:uuid", "dep:libc", "dep:http-range", "dep:http"]
 uniffi = ["dep:uniffi"]
 logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
-discovery = ["dep:mdns-sd", "discovery_types"]
+discovery = ["dep:mdns-sd", "discovery_types", "dep:tokio-stream"]
 discovery_types = []
 _mobile_defaults = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery_types"]
 _android_defaults = ["_mobile_defaults"]

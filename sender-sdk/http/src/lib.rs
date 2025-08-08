@@ -124,10 +124,10 @@ pub fn parse_request_start_line(
 pub struct KnownHeaderNames;
 
 impl KnownHeaderNames {
-    pub const CONTENT_LENGTH: &'static [u8] = b"Content-Length";
-    pub const CONTENT_RANGE: &'static [u8] = b"Content-Range";
-    pub const CONTENT_TYPE: &'static [u8] = b"Content-Type";
-    pub const RANGE: &'static [u8] = b"Range";
+    pub const CONTENT_LENGTH: &str = "Content-Length";
+    pub const CONTENT_RANGE: &str = "Content-Range";
+    pub const CONTENT_TYPE: &str = "Content-Type";
+    pub const RANGE: &str = "Range";
 }
 
 #[derive(Debug, Clone)]

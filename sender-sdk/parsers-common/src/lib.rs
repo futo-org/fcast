@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 /// Find the first `\r\n` sequence in `data` and returns the index of the `\r`.
 pub fn find_first_cr_lf(data: &[u8]) -> Option<usize> {
     for (i, win) in data.windows(2).enumerate() {
@@ -32,6 +34,12 @@ pub enum ParseHeaderMapError {
     MissingValueCrLf,
     #[error("Malformed header map")]
     Malformed,
+    #[error("Key is not UTF-8")]
+    KeyIsNotUtf8,
+    #[error("Value is not UTF-8")]
+    ValueIsNotUtf8,
+    #[error("Duplicated header")]
+    DuplicatedHeader,
 }
 
 /// Parse an RTSP/HTTP header map.
@@ -39,8 +47,8 @@ pub enum ParseHeaderMapError {
 /// # Arguments
 ///   - `data` a byte buffer with key value pairs in the format `<key>: <value>\r\n` that must include
 ///     the trailing `\r\n` line.
-pub fn parse_header_map(data: &[u8]) -> Result<Vec<(&[u8], &[u8])>, ParseHeaderMapError> {
-    let mut map = Vec::new();
+pub fn parse_header_map(data: &[u8]) -> Result<HashMap<&'_ str, &'_ str>, ParseHeaderMapError> {
+    let mut map = HashMap::new();
     let mut i = 0;
 
     while i < data.len() {
@@ -86,7 +94,16 @@ pub fn parse_header_map(data: &[u8]) -> Result<Vec<(&[u8], &[u8])>, ParseHeaderM
 
         i = cr_idx + 2;
 
-        map.push((key, value));
+        let Ok(key) = str::from_utf8(key) else {
+            return Err(ParseHeaderMapError::KeyIsNotUtf8);
+        };
+        let Ok(value) = str::from_utf8(value) else {
+            return Err(ParseHeaderMapError::ValueIsNotUtf8);
+        };
+
+        if map.insert(key, value).is_some() {
+            return Err(ParseHeaderMapError::DuplicatedHeader);
+        }
     }
 
     if i + 1 >= data.len() || data[i + 1] != b'\n' {
@@ -128,14 +145,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_header_map() {
+    fn test_parse_valid_header_map() {
         assert_eq!(
             parse_header_map(
                 b"Content-Length: 0\r\n\
                     \r\n"
             )
             .unwrap(),
-            vec![(b"Content-Length".as_slice(), b"0".as_slice()),]
+            HashMap::from([("Content-Length", "0"),])
         );
         assert_eq!(
             parse_header_map(
@@ -144,15 +161,16 @@ mod tests {
                     \r\n"
             )
             .unwrap(),
-            vec![
-                (b"Content-Length".as_slice(), b"0".as_slice()),
-                (
-                    b"Content-Type".as_slice(),
-                    b"application/octet-stream".as_slice()
-                ),
-            ]
+            HashMap::from([
+                ("Content-Length", "0"),
+                ("Content-Type", "application/octet-stream",),
+            ])
         );
-        assert_eq!(parse_header_map(b"\r\n").unwrap(), vec![]);
+        assert_eq!(parse_header_map(b"\r\n").unwrap(), HashMap::new());
+    }
+
+    #[test]
+    fn test_parse_invalid_header_map() {
         assert_eq!(
             parse_header_map(b"Content-Length: 0\r\n"),
             Err(ParseHeaderMapError::MissingEndCrLf),
@@ -160,6 +178,14 @@ mod tests {
         assert_eq!(
             parse_header_map(b"Content-Length: 0\r\n\r\n this makes it malformed"),
             Err(ParseHeaderMapError::Malformed),
+        );
+        assert_eq!(
+            parse_header_map(b": 0\r\n\r\n"),
+            Err(ParseHeaderMapError::MissingKeyName),
+        );
+        assert_eq!(
+            parse_header_map(b"Content-Length: \r\n\r\n"),
+            Err(ParseHeaderMapError::MissingValue),
         );
     }
 }

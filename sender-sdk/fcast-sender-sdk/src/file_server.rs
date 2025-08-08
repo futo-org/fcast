@@ -1,5 +1,8 @@
 use std::{
     collections::HashMap,
+    fs::File,
+    io,
+    marker::Unpin,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     str::FromStr,
     sync::{
@@ -9,10 +12,11 @@ use std::{
 };
 
 use anyhow::bail;
+use http::KnownHeaderNames;
 use log::{debug, error};
 use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
 use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
     runtime::Handle,
     sync::Mutex,
 };
@@ -29,7 +33,12 @@ pub enum FileServerError {
     NotRunning,
 }
 
-type FileMapLock = Arc<Mutex<HashMap<Uuid, OwnedFd>>>;
+enum FileHandle {
+    Fd(OwnedFd),
+    File(File),
+}
+
+type FileMapLock = Arc<Mutex<HashMap<Uuid, FileHandle>>>;
 
 /// http://:{port}/{location}
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -42,11 +51,27 @@ pub struct FileStoreEntry {
 #[derive(Debug, thiserror::Error)]
 enum FileRequestError {
     #[error("I/O: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
     #[error("Failed to parse HTTP range")]
     HttpRangeParse,
     #[error("Utf8 error")]
     Utf8(#[from] std::str::Utf8Error),
+}
+
+async fn write_header_map<T: AsyncWrite + Unpin>(
+    writer: &mut T,
+    headers: &[(&str, &str)],
+) -> Result<(), io::Error> {
+    for header in headers {
+        writer.write_all(header.0.as_bytes()).await?;
+        writer.write_all(b": ").await?;
+        writer.write_all(header.1.as_bytes()).await?;
+        writer.write_all(b"\r\n").await?;
+    }
+
+    writer.write_all(b"\r\n").await?;
+
+    Ok(())
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
@@ -65,7 +90,7 @@ impl FileServer {
         }
     }
 
-    async fn emtpy_response<T: tokio::io::AsyncWrite + std::marker::Unpin>(
+    async fn emtpy_response<T: AsyncWrite + Unpin>(
         mut writer: T,
         status: http::StatusCode,
     ) -> Result<(), FileRequestError> {
@@ -76,13 +101,7 @@ impl FileServer {
         .serialize();
         writer.write_all(&start_line).await?;
 
-        writer
-            .write_all(http::KnownHeaderNames::CONTENT_LENGTH)
-            .await?;
-        writer.write_all(b": ").await?;
-        writer.write_all(b"0").await?;
-        writer.write_all(b"\r\n").await?;
-        writer.write_all(b"\r\n").await?;
+        write_header_map(&mut writer, &[(KnownHeaderNames::CONTENT_LENGTH, "0")]).await?;
 
         Ok(())
     }
@@ -91,32 +110,30 @@ impl FileServer {
         stream: tokio::net::TcpStream,
         uuid: Uuid,
         files: FileMapLock,
-        headers: &[(&[u8], &[u8])],
+        headers: HashMap<&'_ str, &'_ str>,
     ) -> Result<(), FileRequestError> {
         let files = files.lock().await;
-        let Some(fd) = files.get(&uuid) else {
+        let Some(file_handle) = files.get(&uuid) else {
             debug!("No file found for `{uuid}`");
             return Self::emtpy_response(stream, http::StatusCode::NotFound).await;
         };
 
-        let raw_fd = fd.as_raw_fd();
+        let raw_fd = match file_handle {
+            FileHandle::Fd(fd) => fd.as_raw_fd(),
+            FileHandle::File(file) => file.as_raw_fd(),
+        };
+
         let dup_fd = unsafe { libc::dup(raw_fd) };
         let mut file = unsafe { tokio::fs::File::from_raw_fd(dup_fd) };
-        file.seek(std::io::SeekFrom::Start(0)).await?;
+        file.seek(io::SeekFrom::Start(0)).await?;
 
         let mut writer = tokio::io::BufWriter::new(stream); // NOTE: MUST manually flush
 
         let file_meta = file.metadata().await?;
         let file_length = file_meta.len();
         let mut reader = tokio::io::BufReader::new(file);
-        if let Some(range) = headers.iter().find_map(|(name, val)| {
-            if *name == http::KnownHeaderNames::RANGE {
-                Some(val)
-            } else {
-                None
-            }
-        }) {
-            let mut ranges = http_range::HttpRange::parse_bytes(range, file_length)
+        if let Some(range) = headers.get(KnownHeaderNames::RANGE) {
+            let mut ranges = http_range::HttpRange::parse(range, file_length)
                 .map_err(|_| FileRequestError::HttpRangeParse)?;
             if let Some(range) = ranges.get_mut(0) {
                 range.length = range.length.min(MAX_CHUNK_SIZE);
@@ -127,36 +144,21 @@ impl FileServer {
                 .serialize();
                 writer.write_all(&start_line).await?;
 
+                let bytes_range_str = format!(
+                    "bytes {}-{}/{file_length}",
+                    range.start,
+                    range.start + range.length - 1
+                );
+                let content_length = range.length.to_string();
+
                 let headers = [
-                    (
-                        http::KnownHeaderNames::CONTENT_RANGE,
-                        format!(
-                            "bytes {}-{}/{file_length}",
-                            range.start,
-                            range.start + range.length - 1
-                        ),
-                    ),
-                    (
-                        http::KnownHeaderNames::CONTENT_TYPE,
-                        "application/octet-stream".to_string(),
-                    ),
-                    (
-                        http::KnownHeaderNames::CONTENT_LENGTH,
-                        range.length.to_string(),
-                    ),
+                    (KnownHeaderNames::CONTENT_RANGE, bytes_range_str.as_str()),
+                    (KnownHeaderNames::CONTENT_TYPE, "application/octet-stream"),
+                    (KnownHeaderNames::CONTENT_LENGTH, content_length.as_str()),
                 ];
+                write_header_map(&mut writer, &headers).await?;
 
-                // TODO: should be made function
-                for header in headers {
-                    writer.write_all(header.0).await?;
-                    writer.write_all(b": ").await?;
-                    writer.write_all(header.1.as_bytes()).await?;
-                    writer.write_all(b"\r\n").await?;
-                }
-
-                writer.write_all(b"\r\n").await?;
-
-                reader.seek(std::io::SeekFrom::Start(range.start)).await?;
+                reader.seek(io::SeekFrom::Start(range.start)).await?;
                 let mut read_buf = [0u8; 1024 * 8];
                 let mut bytes_read = 0;
                 while bytes_read < range.length {
@@ -178,27 +180,14 @@ impl FileServer {
             .serialize();
             writer.write_all(&start_line).await?;
 
+            let content_length = file_length.to_string();
             let headers = [
-                (
-                    http::KnownHeaderNames::CONTENT_TYPE,
-                    "application/octet-stream".to_string(),
-                ),
-                (
-                    http::KnownHeaderNames::CONTENT_LENGTH,
-                    file_length.to_string(),
-                ),
+                (KnownHeaderNames::CONTENT_TYPE, "application/octet-stream"),
+                (KnownHeaderNames::CONTENT_LENGTH, content_length.as_str()),
             ];
+            write_header_map(&mut writer, &headers).await?;
 
-            // TODO: should be made function
-            for header in headers {
-                writer.write_all(header.0).await?;
-                writer.write_all(b": ").await?;
-                writer.write_all(header.1.as_bytes()).await?;
-                writer.write_all(b"\r\n").await?;
-            }
-
-            writer.write_all(b"\r\n").await?;
-
+            // Transfer the file contents
             tokio::io::copy(&mut reader, &mut writer).await?;
 
             writer.flush().await?;
@@ -211,7 +200,7 @@ impl FileServer {
         stream: tokio::net::TcpStream,
         method: http::Method,
         path: &[u8],
-        headers: &[(&[u8], &[u8])],
+        headers: HashMap<&'_ str, &'_ str>,
         files: FileMapLock,
     ) -> Result<(), FileRequestError> {
         match method {
@@ -273,7 +262,7 @@ impl FileServer {
 
         // we don't care about the body
 
-        Self::handle_request(stream, start_line.0, start_line.1, &headers, files).await?;
+        Self::handle_request(stream, start_line.0, start_line.1, headers, files).await?;
 
         Ok(())
     }
@@ -316,7 +305,7 @@ impl FileServer {
         self.rt_handle.spawn(async move {
             let fd = unsafe { OwnedFd::from_raw_fd(fd) };
             let mut files = files.lock().await;
-            files.insert(id, fd);
+            files.insert(id, FileHandle::Fd(fd));
         });
 
         Ok(FileStoreEntry {
@@ -325,3 +314,32 @@ impl FileServer {
         })
     }
 }
+
+impl FileServer {
+    pub fn serve_rs_file(&self, file: File) -> Result<FileStoreEntry, FileServerError> {
+        let port = self.listen_port.load(Ordering::Relaxed);
+        if port == 0 {
+            return Err(FileServerError::NotRunning);
+        }
+
+        let id = Uuid::new_v4();
+        let files = Arc::clone(&self.files);
+        self.rt_handle.spawn(async move {
+            let mut files = files.lock().await;
+            files.insert(id, FileHandle::File(file));
+        });
+
+        Ok(FileStoreEntry {
+            location: id.to_string(),
+            port,
+        })
+    }
+}
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[tokio::test]
+//     async fn test_serve_file_descriptor() {}
+// }
