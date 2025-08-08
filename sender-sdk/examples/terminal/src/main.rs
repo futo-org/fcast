@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use fcast_sender_sdk::{
     /* airplay2::AirPlay2CastingDevice, */ casting_device::{
@@ -8,11 +8,16 @@ use fcast_sender_sdk::{
 };
 use log::info;
 
-struct EventHandler {}
+struct EventHandler {
+    running: Arc<AtomicBool>,
+}
 
 impl DeviceEventHandler for EventHandler {
     fn connection_state_changed(&self, state: DeviceConnectionState) {
         info!("Connection state changed: {state:?}");
+        if state == DeviceConnectionState::Disconnected {
+            self.running.store(false, Ordering::Relaxed);
+        }
     }
 
     fn volume_changed(&self, volume: f64) {
@@ -102,7 +107,6 @@ async fn main() {
     //     46899,
     // ));
 
-
     // sonos: vec![IpAddr::v4(192, 168, 1, 203)],
 
     let dev = ctx.create_device_from_info(DeviceInfo::airplay2(
@@ -127,10 +131,16 @@ async fn main() {
         // 7000,
     ));
 
-    dev.connect(Arc::new(EventHandler {})).unwrap();
+    let running = Arc::new(AtomicBool::new(true));
 
-    info!("Press enter to quit");
-    std::io::stdin().read_line(&mut String::new()).unwrap();
+    dev.connect(Arc::new(EventHandler { running: Arc::clone(&running) })).unwrap();
+
+    while running.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // info!("Press enter to quit");
+    // std::io::stdin().read_line(&mut String::new()).unwrap();
 
     // dev.stop().unwrap();
 

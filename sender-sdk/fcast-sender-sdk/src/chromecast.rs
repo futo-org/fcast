@@ -4,7 +4,7 @@ use crate::{
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState, ProtocolType,
         Source,
     },
-    utils, IpAddr,
+    net_utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
 use chromecast_protocol::{self as protocol, prost::Message, protos};
@@ -222,7 +222,8 @@ impl InnerDevice {
             .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(stream) =
-            utils::try_connect_tcp(addrs, 5, &mut self.cmd_rx, |cmd| cmd == Command::Quit).await?
+            net_utils::try_connect_tcp(addrs, 5, &mut self.cmd_rx, |cmd| cmd == Command::Quit)
+                .await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler

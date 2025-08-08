@@ -1,0 +1,14 @@
+[package]
+name = "chromecast2fcast"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["chromecast", "fcast"] }
+env_logger.workspace = true
+log.workspace = true
+tokio.workspace = true
+mdns-sd.workspace = true
+tokio-rustls = { version = "0.26.2", default-features = false, features = [ "logging", "ring", "tls12" ] }
+rustls-pki-types = "1.12.0"

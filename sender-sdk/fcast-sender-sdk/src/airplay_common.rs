@@ -1,7 +1,7 @@
 bitflags::bitflags! {
     /// https://openairplay.github.io/airplay-spec/status_flags.html
     #[derive(PartialEq, Eq, Debug)]
-    pub struct AirPlayStatus: u32 {
+    pub struct AirPlayStatus: u64 {
         /// has been detected Defined in CarPlay section of MFi spec. Not seen set anywhere
         const Problem = 1 << 0;
         /// is not configured	Defined in CarPlay section of MFi spec. Not seen set anywhere
@@ -134,8 +134,8 @@ pub struct InfoPlist {
     #[serde(rename = "statusFlags")]
     pub status_flags: Option<u64>,
     // Raw TXT record from AirPlay service mDNS record
-    // #[serde(rename = "txtAirPlay")]
-    // pub txt_air_play: Option<Vec<u8>>,
+    #[serde(rename = "txtAirPlay")]
+    pub txt_air_play: Option<plist::Data>,
     // txt_air_play: Option<Vec<u8>>,
     // The following properties are omitted:
     // pi	string

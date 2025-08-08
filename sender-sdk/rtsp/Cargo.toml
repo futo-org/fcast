@@ -6,5 +6,5 @@ license.workspace = true
 
 [dependencies]
 parsers-common = { path = "../parsers-common" }
-hexdump = { path = "../hexdump" }
+utils = { path = "../utils" }
 thiserror.workspace = true

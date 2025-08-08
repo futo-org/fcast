@@ -25,7 +25,7 @@ use crate::{
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
         GenericMediaEvent, PlaybackState, ProtocolType, Source,
     },
-    utils, IpAddr,
+    net_utils, IpAddr,
 };
 
 #[derive(Debug, PartialEq)]
@@ -213,7 +213,7 @@ impl InnerDevice {
             .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(mut stream) =
-            utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
+            net_utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler

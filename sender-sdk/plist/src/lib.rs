@@ -83,10 +83,15 @@ impl Object {
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Trailer {
+    /// Byte size of offset ints in offset table
     pub offset_table_offset_size: usize,
+    /// Byte size of object refs in arrays and dicts
     pub object_ref_size: usize,
+    /// Number of offsets in offset table (also is number of objects)
     pub num_objects: u64,
+    /// Element # in offset table which is top level object
     pub top_object_offset: u64,
+    /// Offset table offset (from start of the encoded plist)
     pub offset_table_start: u64,
 }
 
@@ -405,7 +410,7 @@ impl<'a> PlistParser<'a> {
         })
     }
 
-    // `expanding_objs_on_path` is needed to avoid stack overflows when parsing malicious plists
+    // `expanding_objs_on_path` is needed to avoid stack overflows when parsing malicious plists. TODO: should be fixed size array
     fn parse_object(
         &mut self,
         object_idx: usize,
@@ -549,6 +554,245 @@ impl<'a> PlistParser<'a> {
 
         Ok(objects)
     }
+}
+
+#[derive(Debug)]
+enum IrObject {
+    Ref(usize),
+    Raw(Vec<u8>),
+    Group(Vec<IrObject>),
+}
+
+pub fn encode_int(int: i64) -> Vec<u8> {
+    let mut raw = Vec::new();
+    if int >= i8::MIN as i64 && int <= i8::MAX as i64 {
+        // raw.push((INT_MARKER << 4) + 1);
+        raw.push((INT_MARKER << 4) + 0);
+        raw.extend_from_slice(&(int as i8).to_be_bytes());
+    } else if int >= i16::MIN as i64 && int <= i16::MAX as i64 {
+        // raw.push((INT_MARKER << 4) + 2);
+        raw.push((INT_MARKER << 4) + 1);
+        raw.extend_from_slice(&(int as i16).to_be_bytes());
+    } else if int >= i32::MIN as i64 && int <= i32::MAX as i64 {
+        // raw.push((INT_MARKER << 4) + 4);
+        raw.push((INT_MARKER << 4) + 2);
+        raw.extend_from_slice(&(int as i32).to_be_bytes());
+    } else {
+        // raw.push((INT_MARKER << 4) + 8);
+        raw.push((INT_MARKER << 4) + 3);
+        raw.extend_from_slice(&int.to_be_bytes());
+    }
+    raw
+}
+
+fn encode_single_obj(obj: Object, offsets: &mut Vec<usize>) -> Vec<IrObject> {
+    let mut objs = Vec::new();
+    // let mut
+
+    match obj {
+        Object::Null => objs.push(IrObject::Raw(vec![0b0000])),
+        Object::Bool(p) => objs.push(IrObject::Raw(vec![0b1000 + p as u8])),
+        Object::Fill => objs.push(IrObject::Raw(vec![0b1111])),
+        Object::Int(int) => objs.push(IrObject::Raw(encode_int(int))),
+        Object::Real(real) => {
+            // let mut raw = vec![(REAL_MARKER << 4) + 8];
+            let mut raw = vec![(REAL_MARKER << 4) + 3];
+            raw.extend_from_slice(&real.to_be_bytes());
+            objs.push(IrObject::Raw(raw));
+        }
+        Object::Date(date) => {
+            let mut raw = vec![(DATE_MARKER << 4) + DATE_MARKER];
+            raw.extend_from_slice(&date.to_be_bytes());
+            objs.push(IrObject::Raw(raw));
+        }
+        Object::Data(data) => {
+            let mut raw = Vec::new();
+            if data.len() < 0b1111 {
+                raw.push(DATA_MARKER + data.len() as u8);
+            } else {
+                raw.push(DATA_MARKER + 0b1111);
+                raw.extend_from_slice(&encode_int(data.len() as i64));
+            }
+            raw.extend_from_slice(&data);
+            objs.push(IrObject::Raw(raw));
+        }
+        Object::Uid(uid) => {
+            let mut raw = Vec::new();
+            if uid <= u8::MAX as u64 {
+                raw.push((UID_MARKER << 4) + 1);
+                raw.extend_from_slice(&(uid as u8).to_be_bytes());
+            } else if uid <= u16::MAX as u64 {
+                raw.push((UID_MARKER << 4) + 2);
+                raw.extend_from_slice(&(uid as u16).to_be_bytes());
+            } else if uid <= u32::MAX as u64 {
+                raw.push((UID_MARKER << 4) + 4);
+                raw.extend_from_slice(&(uid as u32).to_be_bytes());
+            } else {
+                raw.push((UID_MARKER << 4) + 8);
+                raw.extend_from_slice(&uid.to_be_bytes());
+            }
+            objs.push(IrObject::Raw(raw));
+        }
+        Object::Array(objects) => {
+            let mut raw = Vec::new();
+            if objects.len() < 0b1111 {
+                raw.push((ARRAY_MARKER << 4) + objects.len() as u8);
+            } else {
+                raw.push((ARRAY_MARKER << 4) + 0b1111);
+                raw.extend_from_slice(&encode_int(objects.len() as i64));
+            }
+            let mut elements = Vec::new();
+            for obj in objects {
+                elements.push(encode_single_obj(obj, offsets));
+            }
+            let mut group = Vec::new();
+            group.push(IrObject::Raw(raw));
+            for i in 0..elements.len() {
+            // for i in 1..=elements.len() {
+                group.push(IrObject::Ref(offsets.len() + i));
+                println!("{}", offsets.len() + i);
+                // group.push(IrObject::Ref(*offsets.last().unwrap_or(&0) + i));
+            }
+            objs.push(IrObject::Group(group));
+            for (idx, element) in elements.into_iter().enumerate() {
+                // offsets.push(objs.len());
+                // println!("{}", offsets.len());
+                // offsets.push(*offsets.last().unwrap_or(&0) + 1);
+                offsets.push(offsets.len() + idx);
+                objs.extend(element);
+            }
+        }
+        Object::String(string) => {}
+        Object::Dict(pairs) => {}
+    }
+
+    objs
+}
+
+#[derive(Debug)]
+enum IntSize {
+    U8,
+    U16,
+    U32,
+}
+
+impl Into<usize> for IntSize {
+    fn into(self) -> usize {
+        match self {
+            IntSize::U8 => 1,
+            IntSize::U16 => 2,
+            IntSize::U32 => 4,
+        }
+    }
+}
+
+fn min_sized_int(int: usize) -> IntSize {
+    // We won't ever encounter lists with more than 4b elements
+    assert!(int <= u32::MAX as usize);
+    if int <= u8::MAX as usize {
+        IntSize::U8
+    } else if int <= u16::MAX as usize {
+        IntSize::U16
+    } else {
+        IntSize::U32
+    }
+}
+
+fn number_of_offsets(obj: &IrObject) -> usize {
+    match obj {
+        IrObject::Ref(_) => 1,
+        IrObject::Raw(_) => 0,
+        IrObject::Group(group) => {
+            let mut count = 0;
+            for obj in group {
+                count += number_of_offsets(obj);
+            }
+            count
+        }
+    }
+}
+
+pub fn encode_object_to_list(obj: Object) -> Vec<u8> {
+    // Push the offset into the table so decoding will start from the 0th offset
+    let mut offsets = vec![0];
+    let encoded_objects = encode_single_obj(obj, &mut offsets);
+    let offset_table_offset_size = min_sized_int(offsets.len());
+    let object_ref_size = min_sized_int(
+        encoded_objects
+            .iter()
+            .map(|obj| number_of_offsets(obj))
+            .sum::<usize>(),
+    );
+    let num_objects = offsets.len();
+    let top_object_offset = 0u64;
+    println!("encoded: {encoded_objects:?} offsets: {offsets:?} offset_table_offset_size: {offset_table_offset_size:?} object_ref_size: {object_ref_size:?}");
+
+    let mut encoded = HEADER_MAGIC_NUMBER.to_vec();
+    encoded.extend_from_slice(b"00"); // Version
+    let mut encoded_offset_table = Vec::new();
+
+    // let mut offsets_idx = 0;
+    for obj in encoded_objects {
+        let obj_start = encoded.len();
+        match offset_table_offset_size {
+            IntSize::U8 => {
+                // encoded_offset_table.extend_from_slice(&(offsets[offsets_idx] as u8).to_be_bytes())
+                encoded_offset_table.extend_from_slice(&(obj_start as u8).to_be_bytes())
+            }
+            IntSize::U16 => {
+                // encoded_offset_table.extend_from_slice(&(offsets[offsets_idx] as u16).to_be_bytes())
+                encoded_offset_table.extend_from_slice(&(obj_start as u16).to_be_bytes())
+            }
+            IntSize::U32 => {
+                // encoded_offset_table.extend_from_slice(&(offsets[offsets_idx] as u32).to_be_bytes())
+                encoded_offset_table.extend_from_slice(&(obj_start as u32).to_be_bytes())
+            }
+        }
+
+        // offsets_idx += 1;
+
+        match obj {
+            IrObject::Ref(refer) => match object_ref_size {
+                IntSize::U8 => encoded.extend_from_slice(&(refer as u8).to_be_bytes()),
+                IntSize::U16 => encoded.extend_from_slice(&(refer as u16).to_be_bytes()),
+                IntSize::U32 => encoded.extend_from_slice(&(refer as u32).to_be_bytes()),
+            },
+            IrObject::Raw(items) => encoded.extend(items),
+            IrObject::Group(objs) => {
+                for obj in objs {
+                    match obj {
+                        IrObject::Ref(refer) => match object_ref_size {
+                            IntSize::U8 => encoded.extend_from_slice(&(refer as u8).to_be_bytes()),
+                            IntSize::U16 => encoded.extend_from_slice(&(refer as u16).to_be_bytes()),
+                            IntSize::U32 => encoded.extend_from_slice(&(refer as u32).to_be_bytes()),
+                        },
+                        IrObject::Raw(items) => encoded.extend(items),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+
+    let offset_table_start = encoded.len() as u64;
+
+    encoded.extend(encoded_offset_table);
+
+    let trailer = Trailer {
+        offset_table_offset_size: offset_table_offset_size.into(),
+        object_ref_size: object_ref_size.into(),
+        num_objects: num_objects as u64,
+        top_object_offset,
+        offset_table_start,
+    };
+
+    encoded.extend_from_slice(&(trailer.offset_table_offset_size as u8).to_be_bytes());
+    encoded.extend_from_slice(&(trailer.object_ref_size as u8).to_be_bytes());
+    encoded.extend_from_slice(&trailer.num_objects.to_be_bytes());
+    encoded.extend_from_slice(&trailer.top_object_offset.to_be_bytes());
+    encoded.extend_from_slice(&trailer.offset_table_start.to_be_bytes());
+
+    encoded
 }
 
 #[cfg(test)]
@@ -911,5 +1155,41 @@ mod tests {
             00 00 00 00 00 00 00 00 00 00 00 00 03 9a"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn test_encode_primitives() {
+        // TODO: proptest
+        let inputs = [
+            // Object::Null,
+            // Object::Int(0),
+            // Object::Int(256),
+            // Object::Int(65536),
+            // Object::Array(vec![
+            //     Object::Null,
+            //     Object::Null,
+            //     Object::Int(0),
+            //     Object::Int(256),
+            //     Object::Int(65536),
+            // ]),
+            // Object::Real(0.0),
+            Object::Array(vec![
+                Object::Array(vec![
+                    Object::Int(1),
+                    Object::Int(2),
+                ]),
+                Object::Int(3),
+                Object::Int(4),
+            ]),
+        ];
+        for input in inputs {
+            let iclone = input.clone();
+            let encoded = encode_object_to_list(input);
+            println!("{encoded:?}");
+            assert_eq!(
+                parse!(encoded).unwrap()[0],
+                iclone,
+            );
+        }
     }
 }

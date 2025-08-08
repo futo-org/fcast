@@ -37,7 +37,7 @@ pub mod context;
 pub mod discovery;
 #[cfg(feature = "fcast")]
 pub mod fcast;
-pub(crate) mod utils;
+pub(crate) mod net_utils;
 
 #[cfg(feature = "http-file-server")]
 pub mod file_server;

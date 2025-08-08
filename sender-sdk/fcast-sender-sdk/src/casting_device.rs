@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DeviceConnectionState {
     Disconnected,
     Connecting,

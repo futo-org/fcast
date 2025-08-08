@@ -13,6 +13,7 @@ plist = { path = "../plist", features = [ "arbitrary" ] }
 parsers-common = { path = "../parsers-common" }
 http = { path = "../http" }
 arbitrary = "1.4.1"
+utils = { path = "../utils" }
 
 [[bin]]
 name = "plist_reader"
@@ -38,6 +39,13 @@ bench = false
 [[bin]]
 name = "http_parse_request_start_line"
 path = "fuzz_targets/fuzz_http_parse_request_start_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "utils_decode_dns_txt"
+path = "fuzz_targets/fuzz_utils_decode_dns_txt.rs"
 test = false
 doc = false
 bench = false

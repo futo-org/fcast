@@ -1,4 +1,4 @@
-mod srp_client;
+mod srp;
 mod tlv8;
 
 use std::{
@@ -16,11 +16,12 @@ use ed25519_dalek::Verifier;
 use hex_literal::hex;
 use log::{debug, error, info};
 use num_bigint::BigUint;
+use plist::Value;
 // use plist::PlistParseError;
 use rand_pcg::rand_core::RngCore;
 use rtsp::StatusCode;
 use sha2::Sha512;
-use srp_client::SrpClient;
+use srp::SrpClient;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -28,6 +29,8 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::timeout,
 };
+use utils::hexdump;
+use uuid::Uuid;
 
 use crate::{
     airplay_common::{self, AirPlayFeatures, AirPlayStatus, InfoPlist},
@@ -35,7 +38,7 @@ use crate::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, ProtocolType,
     },
-    utils, IpAddr,
+    net_utils, IpAddr,
 };
 
 use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
@@ -126,6 +129,14 @@ fn chacha20_poly1305_encrypt(
         msg: plaintext,
         aad,
     };
+
+    // ////////////////////////////////////////
+    debug!("Encrypt:");
+    debug!("key: {key:?}");
+    debug!("nonce: {nonce:?}");
+    debug!("aad: {aad:?}");
+    // ////////////////////////////////////////
+
     let ciphertext = cipher
         .encrypt(nonce.into(), payload)
         .map_err(|err| anyhow!("failed to encrypt: {err}"))?;
@@ -295,7 +306,7 @@ impl InnerDevice {
 
         self.scratch_buffer.clear();
         req.encode_into(&mut self.scratch_buffer);
-        debug!("{}", hexdump::hexdump(&self.scratch_buffer));
+        debug!("{}", hexdump(&self.scratch_buffer));
         timeout(REQ_TIMEOUT_DUR, stream.write_all(&self.scratch_buffer)).await??;
         stream.flush().await?;
 
@@ -306,15 +317,12 @@ impl InnerDevice {
         let mut tmp_buf = [0u8; 1024];
 
         loop {
-            debug!("Reading");
             let read_bytes = timeout(REQ_TIMEOUT_DUR, stream.read(&mut tmp_buf)).await??;
-            debug!("Read {read_bytes} bytes");
             read_buf.extend_from_slice(&tmp_buf[0..read_bytes]);
             if read_bytes < tmp_buf.len() {
                 break;
             }
         }
-        debug!("read 1");
 
         let status_line_end =
             find_first_cr_lf(read_buf).ok_or(anyhow!("No CR LF found for statusline"))? + 2;
@@ -364,7 +372,7 @@ impl InnerDevice {
                 }
                 read_buf.extend_from_slice(&tmp_buf[0..read_bytes]);
             }
-            debug!("--- Response ---\n{}", hexdump::hexdump(read_buf));
+            debug!("--- Response ---\n{}", hexdump(read_buf));
             body = Some(read_buf[headers_end..headers_end + content_length].to_vec());
         }
 
@@ -384,7 +392,9 @@ impl InnerDevice {
         let mut req_headers = vec![
             ("User-Agent", "AirPlay/381.13"),
             ("X-Apple-HKP", "3"),
-            ("X-Apple-Client-Name", "FCast Sender SDK"),
+            // ("X-Apple-HKP", "4"),
+            // ("X-Apple-ProtocolVersion", "1"),
+            // ("X-Apple-Client-Name", "FCast Sender SDK"),
             ("CSeq", &cseq_str),
             // ("Host", "192.168.1.203:7000"),
             // ("Connection", "Keep-Alive"),
@@ -521,11 +531,7 @@ impl InnerDevice {
             bail!("Missing salt");
         };
 
-        debug!(
-            "Salt (len={}):\n{}",
-            salt_bytes.len(),
-            hexdump::hexdump(salt_bytes)
-        );
+        debug!("Salt (len={}):\n{}", salt_bytes.len(), hexdump(salt_bytes));
 
         let Some(b_bytes) = fields.get(&tlv8::Tag::PublicKey) else {
             bail!("Missing public key");
@@ -542,7 +548,7 @@ impl InnerDevice {
         debug!(
             "Public key (len={}): {}",
             a_pub.to_bytes_be().len(),
-            hexdump::hexdump(&a_pub.to_bytes_be())
+            hexdump(&a_pub.to_bytes_be())
         );
 
         // 3. Set salt provided by the accessory in the <M2> TLV with SRP_set_params().
@@ -727,7 +733,7 @@ impl InnerDevice {
     //         bail!("Encrypted data missing");
     //     };
     //     ensure!(encrypted_field.len() >= TAG_LENGTH);
-    //     let encrypted_tlv_data = &encrypted_field[..encrypted_field.len() - TAG_LENGTH];
+    //     let ed_tlv_data = &encrypted_field[..encrypted_field.len() - TAG_LENGTH];
     //     let tag_data = &encrypted_field[encrypted_field.len() - TAG_LENGTH..];
 
     //     let Some(k) = self.session_key.as_ref() else {
@@ -1068,6 +1074,7 @@ impl InnerDevice {
         }
 
         let ciphertext = &data[BLOCK_LENGTH_LENGTH..BLOCK_LENGTH_LENGTH + length];
+        debug!("Ciphertext length: {}", ciphertext.len());
         let auth_tag =
             &data[BLOCK_LENGTH_LENGTH + length..BLOCK_LENGTH_LENGTH + length + TAG_LENGTH];
 
@@ -1076,8 +1083,18 @@ impl InnerDevice {
             [0, 0, 0, 0, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]
         };
 
-        let plaintext =
-            chacha20_poly1305_decrypt(&self.incoming_key, &nonce, &[], ciphertext, auth_tag)?;
+        self.in_count += 1;
+
+        debug!("Decrypting with key: {:?}", self.incoming_key);
+
+        // chacha20_poly1305_decrypt(&self.incoming_key, &nonce, &[], ciphertext, auth_tag)?;
+        let plaintext = chacha20_poly1305_decrypt(
+            &self.incoming_key,
+            &nonce,
+            &[data[0], data[1]],
+            ciphertext,
+            auth_tag,
+        )?;
 
         Ok(Some(plaintext))
     }
@@ -1113,7 +1130,6 @@ impl InnerDevice {
 
         self.sender_state = SenderState::WaitingOnPairVerify1;
 
-        // The iOS device generates a new, random Curve25519 key pair...
         let curve_priv = x25519_dalek::EphemeralSecret::random();
         let curve_pub = x25519_dalek::PublicKey::from(&curve_priv);
 
@@ -1131,32 +1147,79 @@ impl InnerDevice {
         // self.verifier_private_key = Some(ed_priv);
         // self.verifier_public_key = Some(ed_pub);
 
-        // ...and sends a request to the accessory with the following
-        // TLV items:
-        //     kTLVType_State <M1>
-        //     kTLVType_PublicKey <iOS device’s Curve25519 public key>
         let state_item = tlv8::Item::new(tlv8::Tag::State, vec![PairingState::M1 as u8]);
         // let public_key_item = tlv8::Item::new(tlv8::Tag::PublicKey, ed_pub.to_vec());
         let public_key_item = tlv8::Item::new(tlv8::Tag::PublicKey, curve_pub.to_bytes().to_vec());
+        debug!("public len: {}", curve_pub.to_bytes().len());
         let encoded_response = tlv8::encode(&[state_item, public_key_item], false);
         let encoded_response_len_str = encoded_response.len().to_string();
 
+        // let cseq_str = self.rtsp_cseq.to_string(); // #
+        // self.rtsp_cseq += 1; // #
+
         let headers = [
-            ("Content-Type", "application/pairing+tlv8"),
+            ("Content-Type", "application/octet-stream"),
+            // ("CSeq", &cseq_str), // #
             ("Content-Length", &encoded_response_len_str),
         ];
+
+        // let request = rtsp::Request {
+        //     method: rtsp::Method::Post,
+        //     path: "/pair-verify",
+        //     version: rtsp::Version::Rtsp10,
+        //     headers: &headers,
+        //     body: Some(&encoded_response),
+        // };
 
         let (resp_status, resp_body) = self
             .post_rtsp_with_resp("pair-verify", &encoded_response, Some(&headers))
             .await?;
 
-        println!("{resp_status:?}, {resp_body:?}");
+        debug!("{resp_status:?}, {resp_body:?}");
 
         if resp_status != rtsp::StatusCode::Ok {
             bail!("Request failed");
         }
 
         Ok(resp_body.ok_or(anyhow!("Missing body"))?)
+
+        // let mut encoded_req = Vec::new();
+        // request.encode_into(&mut encoded_req);
+
+        // debug!("encoded request:\n{}", hexdump(&encoded_req));
+
+        // let encrypted = self.encrypt_data(&encoded_req)?;
+
+        // debug!("encrypted: {encrypted:?}");
+
+        // match self.stream.as_mut() {
+        //     Some(stream) => stream.write_all(&encrypted).await?,
+        //     None => bail!("Cannot send request because stream is missing"),
+        // }
+
+        // let mut read_buf = Vec::new();
+        // let mut tmp_buf = [0u8; 1024];
+        // loop {
+        //     match self.stream.as_mut() {
+        //         Some(stream) => {
+        //             let n_read = stream.read(&mut tmp_buf).await?;
+        //             read_buf.extend_from_slice(&tmp_buf[0..n_read]);
+        //             if n_read < tmp_buf.len() {
+        //                 break;
+        //             }
+        //         }
+        //         None => bail!("Cannot send feedback because stream is missing"),
+        //     }
+        // }
+
+        // debug!("Response: {read_buf:?}");
+
+        // if let Some(plaintext) = self.decrypt_data(&read_buf)? {
+        //     debug!("Response:\n{}", hexdump(&plaintext));
+        //     return Ok(plaintext);
+        // } else {
+        //     bail!("Could not decrypt");
+        // }
     }
 
     async fn pair_verify_finish(
@@ -1225,9 +1288,11 @@ impl InnerDevice {
         // Use the accessoryʼs Pairing Identifier to look up the accessoryʼs long-term public key, AccessoryLTPK,
         // in its list of paired accessories. If not found, the setup process will be aborted and an error will
         // be reported to the user.
-        let Some(accessory_ltpk) = self.accessory_ltpk.as_ref() else {
-            bail!("Missing accessory LTPK");
-        };
+        let accessory_ltpk = b"transient";
+        // let curve_pub = x25519_dalek::PublicKey::from(accessory_ltpk);
+        // let Some(accessory_ltpk) = self.accessory_ltpk.as_ref() else {
+        //     bail!("Missing accessory LTPK");
+        // };
         ensure!(accessory_ltpk.len() == 32);
         let mut accessory_ltpk_array = [0u8; 32];
         accessory_ltpk_array.copy_from_slice(&accessory_ltpk[0..32]);
@@ -1352,12 +1417,43 @@ impl InnerDevice {
 
         debug!("Sending request: {req:?}");
 
-        let (resp_status, resp_body) = self.send_rtsp_request(req).await?;
-        if resp_status != rtsp::StatusCode::Ok {
-            bail!("Failed to get setup auth, status code: {resp_status:?}");
+        let mut encoded_req = Vec::new();
+        req.encode_into(&mut encoded_req);
+
+        let encrypted = self.encrypt_data(&encoded_req)?;
+        let Some(stream) = self.stream.as_mut() else {
+            todo!();
+        };
+
+        debug!("Encrypted: {encrypted:?}");
+
+        stream.write_all(&encrypted).await?;
+
+        let mut read_buf = Vec::new();
+        let mut tmp_buf = [0u8; 1024];
+        loop {
+            match self.stream.as_mut() {
+                Some(stream) => {
+                    let n_read = stream.read(&mut tmp_buf).await?;
+                    read_buf.extend_from_slice(&tmp_buf[0..n_read]);
+                    if n_read < tmp_buf.len() {
+                        break;
+                    }
+                }
+                None => bail!("Cannot send feedback because stream is missing"),
+            }
         }
 
-        debug!("{resp_body:?}");
+        debug!("{read_buf:?}");
+
+        // stream.wri
+
+        // let (resp_status, resp_body) = self.send_rtsp_request(req).await?;
+        // if resp_status != rtsp::StatusCode::Ok {
+        //     bail!("Failed to get setup auth, status code: {resp_status:?}");
+        // }
+
+        // debug!("{resp_body:?}");
 
         // let Some(body) = resp_body else {
         //     bail!("Failed to get `/info`: missing body");
@@ -1420,6 +1516,15 @@ impl InnerDevice {
                     // self.set_ciphers()?;
                     self.is_encrypted = true;
                     self.paired = true;
+
+                    // response_data = self.pair_verify_start().await?;
+                    // let item_map = tlv8::mapify(tlv8::decode(&response_data)?);
+                    // debug!("{item_map:?}");
+
+                    // response_data = self.pair_verify_finish(item_map).await?;
+                    // let item_map = tlv8::mapify(tlv8::decode(&response_data)?);
+                    // debug!("{item_map:?}");
+
                     // self.pairing_did_finish().await?;
                     break;
                 }
@@ -1452,8 +1557,15 @@ impl InnerDevice {
     }
 
     async fn fetch_info(&mut self) -> anyhow::Result<airplay_common::InfoPlist> {
+        let body_plist: HashMap<&'static str, plist::Value> =
+            HashMap::from([("qualifier", vec!["txtAirPlay".into()].into())]);
+
+        let mut body_writer = std::io::Cursor::new(Vec::new());
+        plist::to_writer_binary(&mut body_writer, &body_plist)?;
+
         let cseq_str = self.rtsp_cseq.to_string();
         self.rtsp_cseq += 1;
+        let content_length_str = body_writer.get_ref().len().to_string();
         let req = rtsp::Request {
             method: rtsp::Method::Get,
             path: "/info",
@@ -1462,8 +1574,10 @@ impl InnerDevice {
                 ("X-Apple-ProtocolVersion", "1"),
                 ("CSeq", &cseq_str),
                 ("User-Agent", "AirPlay/381.13"),
+                ("Content-Type", BPLIST_CONTENT_TYPE),
+                ("Content-Length", &content_length_str),
             ],
-            body: None,
+            body: Some(body_writer.get_ref()),
         };
 
         debug!("Sending request: {req:?}");
@@ -1484,8 +1598,10 @@ impl InnerDevice {
         // https://github.com/postlund/pyatv/blob/49f9c9e960930276c8fac9fb7696b54a7beb1951/pyatv/protocols/raop/protocols/airplayv2.py#L51
         let body: HashMap<&'static str, plist::Value> = HashMap::from([
             ("deviceID", "AA,BB,CC,DD,EE,FF".into()),
+            ("sessionUUID", Uuid::new_v4().to_string().into()),
             // ("sessionUUID", str(uuid4()).upper()),
             // ("timingPort", timing_server_port),
+            ("timingPort", 5000.into()),
             ("timingProtocol", "NTP".into()),
             ("isMultiSelectAirPlay", true.into()),
             ("groupContainsGroupLeader", false.into()),
@@ -1503,16 +1619,44 @@ impl InnerDevice {
         let mut writer = std::io::Cursor::new(Vec::new());
         plist::to_writer_binary(&mut writer, &body)?;
 
+        let mut rng = rand_pcg::Pcg64::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
+        let mut session_id = [0; 4];
+        rng.fill_bytes(&mut session_id);
+        let mut dacp_id = [0; 8];
+        rng.fill_bytes(&mut dacp_id);
+        let mut active_remote = [0; 4];
+        rng.fill_bytes(&mut active_remote);
+        let session_id_str = format!("{}", u32::from_be_bytes(session_id));
+        let dacp_id_str = format!("{:X}", u64::from_be_bytes(dacp_id));
+        let active_remote_str = format!("{}", u32::from_be_bytes(active_remote));
+
+        let path = format!("rtsp://192.168.1.133/{session_id_str}");
+
+        self.rtsp_cseq = 1;
         let cseq_str = self.rtsp_cseq.to_string();
         self.rtsp_cseq += 1;
+        let content_length = writer.get_ref().len().to_string();
         let req = rtsp::Request {
             method: rtsp::Method::Setup,
-            path: "/",
+            // path: "rtsp://192.168.1.203/14351957919123295992",
+            path: &path,
+            // path: "/2182745467221657149",
             version: rtsp::Version::Rtsp10,
             headers: &[
-                ("X-Apple-ProtocolVersion", "1"),
+                // ("X-Apple-ProtocolVersion", "1"),
+                // ("X-Apple-HKP", "3"),
+                // ("X-Apple-HKP", "4"),
                 ("CSeq", &cseq_str),
-                ("User-Agent", "AirPlay/381.13"),
+                // ("User-Agent", "AirPlay/381.13"),
+                ("User-Agent", "AirPlay/550.10"),
+                ("Content-Type", BPLIST_CONTENT_TYPE),
+                // ("DACP-ID", "207987F49EDCA9F9"),
+                ("DACP-ID", &dacp_id_str),
+                // ("Active-Remote", "3307516521"),
+                ("Active-Remote", &active_remote_str),
+                // ("Client-Instance", "207987F49EDCA9F9"),
+                ("Client-Instance", &dacp_id_str),
+                ("Content-Length", &content_length),
             ],
             body: Some(writer.get_ref()),
         };
@@ -1524,8 +1668,11 @@ impl InnerDevice {
             bail!("Failed to setup, status code: {resp_status:?}");
         }
 
+        let read_buf = resp_body.unwrap();
+
         // let mut encoded_req = Vec::new();
         // req.encode_into(&mut encoded_req);
+        // debug!("raw: {encoded_req:?}");
 
         // let encrypted = self.encrypt_data(&encoded_req)?;
 
@@ -1551,15 +1698,43 @@ impl InnerDevice {
         //     }
         // }
 
-        // if let Some(plaintext) = self.decrypt_data(&read_buf)? {
-        //     debug!("Response:\n{}", hexdump::hexdump(&plaintext));
-        // } else {
-        //     debug!("Could not decrypt");
-        // }
+        debug!("Response: {read_buf:?}");
+
+        if let Some(plaintext) = self.decrypt_data(&read_buf)? {
+            debug!("Response:\n{}", hexdump(&plaintext));
+        } else {
+            debug!("Could not decrypt");
+        }
 
         // let Some(body) = resp_body else {
         //     bail!("Failed to get `/info`: missing body");
         // };
+
+        Ok(())
+    }
+
+    async fn pair_pin_start(&mut self) -> anyhow::Result<()> {
+        let cseq_str = self.rtsp_cseq.to_string();
+        self.rtsp_cseq += 1;
+        let req = rtsp::Request {
+            method: rtsp::Method::Post,
+            path: "/pair-pin-start",
+            version: rtsp::Version::Rtsp10,
+            headers: &[
+                ("X-Apple-ProtocolVersion", "1"),
+                ("CSeq", &cseq_str),
+                ("User-Agent", "AirPlay/381.13"),
+                ("Content-Length", "0"),
+            ],
+            body: None,
+        };
+
+        debug!("Sending request: {req:?}");
+
+        let (resp_status, _resp_body) = self.send_rtsp_request(req).await?;
+        if resp_status != rtsp::StatusCode::Ok {
+            bail!("Failed to setup, status code: {resp_status:?}");
+        }
 
         Ok(())
     }
@@ -1573,7 +1748,7 @@ impl InnerDevice {
             .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(stream) =
-            utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
+            net_utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler
@@ -1591,13 +1766,45 @@ impl InnerDevice {
 
         // TODO: get info and make sure SupportsTransientPairing is enabled
         let info = self.fetch_info().await?;
-        let Some(features) = info.features.map(|feats| AirPlayFeatures::from_bits_truncate(feats)) else {
-            error!("`features` is missing from receiver info");
-            todo!();
+        let Some(features) = info
+            .features
+            .map(|feats| AirPlayFeatures::from_bits_truncate(feats))
+        else {
+            bail!("`features` is missing from receiver info");
         };
 
-        if features.contains(AirPlayFeatures::HasUnifiedAdvertiserInfo) {
-            self.auth_setup().await?;
+        let Some(txt) = info
+            .txt_air_play
+            .map(|data| utils::decode_dns_txt(data.as_ref()))
+        else {
+            bail!("`txt` records missing from received info");
+        };
+
+        debug!("{txt:?}");
+
+        // let Some(status) = info.status_flags.map(|stat| AirPlayStatus::from_bits_truncate(stat)) else {
+        //     bail!("`status` is missing from receiver info");
+        // };
+
+        // debug!("Receiver status: {status:?}");
+
+        debug!("Features: {features:?}");
+
+        if !features.contains(AirPlayFeatures::SupportsTransientPairing) {
+            bail!("Receiver does not support transient pairing");
+        }
+
+        debug!("Receiver supports transient pairing");
+
+        // if status.contains(AirPlayStatus::PasswordRequired) {
+        if true {
+            self.pair_pin_start().await?;
+            println!("Enter pin:");
+            let pin = "3939";
+            // let mut pin = String::new();
+            // std::io::stdin().read_line(&mut pin).unwrap();
+            // let pin = pin.strip_suffix('\n').unwrap();
+            self.password = Some(pin.to_string());
         }
 
         //     // TODO: what are the different pairing protocols?
@@ -1610,7 +1817,13 @@ impl InnerDevice {
         // debug!("status: {:?}", info.status_flags);
         // debug!("info: {info:?}");
 
-        self.perform_pair(None).await?;
+        // self.perform_pair(None).await?;
+        self.perform_pair(self.password.clone().as_ref().map(|p| p.as_str()))
+            .await?;
+
+        if features.contains(AirPlayFeatures::HasUnifiedAdvertiserInfo) {
+            self.auth_setup().await?;
+        }
 
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connected {
@@ -1875,116 +2088,5 @@ impl CastingDevice for AirPlay2Device {
         _group: GenericEventSubscriptionGroup,
     ) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedSubscription)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{srp_client::SrpClient, *};
-
-    #[test]
-    fn test_srp() {
-        // Username
-        let i = "alice";
-        // Password
-        let p = "password123";
-        // A private
-        let a = BigUint::from_bytes_be(&hex!(
-            "60975527 035CF2AD 1989806F 0407210B C81EDC04 E2762A56 AFD529DD DA2D4393"
-        ));
-        // A public
-        let big_a = BigUint::from_bytes_be(&hex!(
-            "FAB6F5D2 615D1E32 3512E799 1CC37443 F487DA60 4CA8C923 0FCB04E5 41DCE628
-            0B27CA46 80B0374F 179DC3BD C7553FE6 2459798C 701AD864 A91390A2 8C93B644
-            ADBF9C00 745B942B 79F9012A 21B9B787 82319D83 A1F83628 66FBD6F4 6BFC0DDB
-            2E1AB6E4 B45A9906 B82E37F0 5D6F97F6 A3EB6E18 2079759C 4F684783 7B62321A
-            C1B4FA68 641FCB4B B98DD697 A0C73641 385F4BAB 25B79358 4CC39FC8 D48D4BD8
-            67A9A3C1 0F8EA121 70268E34 FE3BBE6F F89998D6 0DA2F3E4 283CBEC1 393D52AF
-            724A5723 0C604E9F BCE583D7 613E6BFF D67596AD 121A8707 EEC46944 95703368
-            6A155F64 4D5C5863 B48F61BD BF19A53E AB6DAD0A 186B8C15 2E5F5D8C AD4B0EF8
-            AA4EA500 8834C3CD 342E5E0F 167AD045 92CD8BD2 79639398 EF9E114D FAAAB919
-            E14E8509 89224DDD 98576D79 385D2210 902E9F9B 1F2D86CF A47EE244 635465F7
-            1058421A 0184BE51 DD10CC9D 079E6F16 04E7AA9B 7CF7883C 7D4CE12B 06EBE160
-            81E23F27 A231D184 32D7D1BB 55C28AE2 1FFCF005 F57528D1 5A88881B B3BBB7FE"
-        ));
-        // B private
-        // let b = &hex!("E487CB59 D31AC550 471E81F0 0F6928E0 1DDA08E9 74A004F4 9E61F5D1 05284D20");
-        // B public
-        let big_b = &hex!(
-            "40F57088 A482D4C7 733384FE 0D301FDD CA9080AD 7D4F6FDF 09A01006 C3CB6D56 \
-            2E41639A E8FA21DE 3B5DBA75 85B27558 9BDB2798 63C56280 7B2B9908 3CD1429C \
-            DBE89E25 BFBD7E3C AD3173B2 E3C5A0B1 74DA6D53 91E6A06E 465F037A 40062548 \
-            39A56BF7 6DA84B1C 94E0AE20 8576156F E5C140A4 BA4FFC9E 38C3B07B 88845FC6 \
-            F7DDDA93 381FE0CA 6084C4CD 2D336E54 51C464CC B6EC65E7 D16E548A 273E8262 \
-            84AF2559 B6264274 215960FF F47BDD63 D3AFF064 D6137AF7 69661C9D 4FEE4738 \
-            2603C88E AA098058 1D077584 61B777E4 356DDA58 35198B51 FEEA308D 70F75450 \
-            B71675C0 8C7D8302 FD7539DD 1FF2A11C B4258AA7 0D234436 AA42B6A0 615F3F91 \
-            5D55CC3B 966B2716 B36E4D1A 06CE5E5D 2EA3BEE5 A1270E87 51DA45B6 0B997B0F \
-            FDB0F996 2FEE4F03 BEE780BA 0A845B1D 92714217 83AE6601 A61EA2E3 42E4F2E8 \
-            BC935A40 9EAD19F2 21BD1B74 E2964DD1 9FC845F6 0EFC0933 8B60B6B2 56D8CAC8 \
-            89CCA306 CC370A0B 18C8B886 E95DA0AF 5235FEF4 393020D2 B7F30569 04759042"
-        );
-        // Salt
-        let s = &hex!("BEB25379 D1A8581E B5A72767 3A2441EE");
-        // Verifier
-        let v = BigUint::from_bytes_be(&hex!(
-            "9B5E0617 01EA7AEB 39CF6E35 19655A85 3CF94C75 CAF2555E F1FAF759 BB79CB47 \
-            7014E04A 88D68FFC 05323891 D4C205B8 DE81C2F2 03D8FAD1 B24D2C10 9737F1BE \
-            BBD71F91 2447C4A0 3C26B9FA D8EDB3E7 80778E30 2529ED1E E138CCFC 36D4BA31 \
-            3CC48B14 EA8C22A0 186B222E 655F2DF5 603FD75D F76B3B08 FF895006 9ADD03A7 \
-            54EE4AE8 8587CCE1 BFDE3679 4DBAE459 2B7B904F 442B041C B17AEBAD 1E3AEBE3 \
-            CBE99DE6 5F4BB1FA 00B0E7AF 06863DB5 3B02254E C66E781E 3B62A821 2C86BEB0 \
-            D50B5BA6 D0B478D8 C4E9BBCE C2176532 6FBD1405 8D2BBDE2 C33045F0 3873E539 \
-            48D78B79 4F0790E4 8C36AED6 E880F557 427B2FC0 6DB5E1E2 E1D7E661 AC482D18 \
-            E528D729 5EF74372 95FF1A72 D4027717 13F16876 DD050AE5 B7AD53CC B90855C9 \
-            39566483 58ADFD96 6422F524 98732D68 D1D7FBEF 10D78034 AB8DCB6F 0FCF885C \
-            C2B2EA2C 3E6AC866 09EA058A 9DA8CC63 531DC915 414DF568 B09482DD AC1954DE \
-            C7EB714F 6FF7D44C D5B86F6B D1158109 30637C01 D0F6013B C9740FA2 C633BA89"
-        ));
-        // Random scrambling parameter
-        let u = BigUint::from_bytes_be(&hex!(
-            "03AE5F3C 3FA9EFF1 A50D7DBB 8D2F60A1 EA66EA71 2D50AE97 6EE34641 A1CD0E51 \
-             C4683DA3 83E8595D 6CB56A15 D5FBC754 3E07FBDD D316217E 01A391A1 8EF06DFF"
-        ));
-        // Premaster secret
-        let big_s = BigUint::from_bytes_be(&hex!(
-            "F1036FEC D017C823 9C0D5AF7 E0FCF0D4 08B009E3 6411618A 60B23AAB BFC38339 \
-            72682312 14BAACDC 94CA1C53 F442FB51 C1B027C3 18AE238E 16414D60 D1881B66 \
-            486ADE10 ED02BA33 D098F6CE 9BCF1BB0 C46CA2C4 7F2F174C 59A9C61E 2560899B \
-            83EF6113 1E6FB30B 714F4E43 B735C9FE 6080477C 1B83E409 3E4D456B 9BCA492C \
-            F9339D45 BC42E67C E6C02C24 3E49F5DA 42A869EC 855780E8 4207B8A1 EA6501C4 \
-            78AAC0DF D3D22614 F531A00D 826B7954 AE8B14A9 85A42931 5E6DD366 4CF47181 \
-            496A9432 9CDE8005 CAE63C2F 9CA4969B FE840019 24037C44 6559BDBB 9DB9D4DD \
-            142FBCD7 5EEF2E16 2C843065 D99E8F05 762C4DB7 ABD9DB20 3D41AC85 A58C05BD \
-            4E2DBF82 2A934523 D54E0653 D376CE8B 56DCB452 7DDDC1B9 94DC7509 463A7468 \
-            D7F02B1B EB168571 4CE1DD1E 71808A13 7F788847 B7C6B7BF A1364474 B3B7E894 \
-            78954F6A 8E68D45B 85A88E4E BFEC1336 8EC0891C 3BC86CF5 00978801 78D86135 \
-            E7287234 58538858 D715B7B2 47406222 C1019F53 603F0169 52D49710 0858824C"
-        ));
-        // Session key
-        let big_k = &hex!(
-            "5CBC219D B052138E E1148C71 CD449896 3D682549 CE91CA24 F098468F 06015BEB \
-            6AF245C2 093F98C3 651BCA83 AB8CAB2B 580BBF02 184FEFDF 26142F73 DF95AC50"
-        );
-
-        let mut srp = SrpClient::new(
-            srp_group_n(),
-            srp_group_g(),
-            i.as_bytes().to_vec(),
-            p.as_bytes().to_vec(),
-        );
-        let big_a_computed = srp.srp_user_start_authentication(Some(a)).unwrap();
-        assert_eq!(big_a, big_a_computed);
-
-        let triple = srp.user_process_challenge_internal(s, big_b).unwrap();
-        let u_computed = triple.0;
-        let v_computed = triple.1;
-        // let big_m_computed = triple.2;
-        assert_eq!(u_computed, u);
-        assert_eq!(v_computed, v);
-        let big_s_computed = srp.get_big_s().unwrap();
-        assert_eq!(big_s_computed, big_s);
-
-        assert_eq!(srp.get_session_key().unwrap(), big_k);
     }
 }

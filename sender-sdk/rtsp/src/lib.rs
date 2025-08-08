@@ -1,4 +1,4 @@
-use hexdump::hexdump;
+use utils::hexdump;
 
 #[derive(Debug)]
 pub enum Version {
@@ -83,6 +83,7 @@ impl Request<'_> {
 pub enum StatusCode {
     Ok,
     InternalServerError,
+    Unauthorized,
     Forbidden,
     AuthRequired,
     MethodNotValidInThisState,
@@ -95,11 +96,12 @@ pub enum ParseStatusLineError {
 }
 
 pub fn parse_response_statusline(statusline: &[u8]) -> Result<StatusCode, ParseStatusLineError> {
-    // println!("{}", String::from_utf8_lossy(statusline));
+    println!("{}", String::from_utf8_lossy(statusline));
     // TODO: properly parse this
     match statusline {
         b"RTSP/1.0 200 OK\r\n" => Ok(StatusCode::Ok),
         b"RTSP/1.0 500 Internal Server Error\r\n" => Ok(StatusCode::InternalServerError),
+        b"RTSP/1.0 401 Unauthorized\r\n" => Ok(StatusCode::Unauthorized),
         b"RTSP/1.0 403 Forbidden\r\n" => Ok(StatusCode::Forbidden),
         b"RTSP/1.0 470 Connection Authorization Required\r\n" => Ok(StatusCode::AuthRequired),
         b"RTSP/1.0 455 Method Not Valid In This State\r\n" => Ok(StatusCode::MethodNotValidInThisState),
