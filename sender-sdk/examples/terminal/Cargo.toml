@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["airplay2", "chromecast", "fcast"] }
-fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["airplay2", "fcast"] }
+fcast-sender-sdk = { path = "../../fcast-sender-sdk" }
 env_logger.workspace = true
 log.workspace = true
 tokio.workspace = true

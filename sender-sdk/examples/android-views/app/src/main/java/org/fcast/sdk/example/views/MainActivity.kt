@@ -187,11 +187,6 @@ class DeviceViewHolder(view: View, private val onConnect: (CastingDevice) -> Uni
                 textType.text = "Chromecast"
             }
 
-            ProtocolType.AIR_PLAY, ProtocolType.AIR_PLAY2 -> {
-                imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_airplay)
-                textType.text = "AirPlay"
-            }
-
             ProtocolType.F_CAST -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_fc)
                 textType.text = "FCast"
@@ -365,11 +360,6 @@ class DeviceConnectedDialog(
                 textType.text = "Chromecast"
             }
 
-            ProtocolType.AIR_PLAY, ProtocolType.AIR_PLAY2 -> {
-                imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_airplay)
-                textType.text = "AirPlay"
-            }
-
             ProtocolType.F_CAST -> {
                 imageDevice.setImageResource(org.fcast.sender_sdk.R.drawable.ic_fc)
                 textType.text = "FCast"
@@ -427,7 +417,6 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
                 val castProtocolType = when (spinnerType?.selectedItemPosition) {
                     0 -> ProtocolType.F_CAST
                     1 -> ProtocolType.CHROMECAST
-                    2 -> ProtocolType.AIR_PLAY
                     else -> {
                         textError.text =
                             "Device type is invalid expected values like FastCast or ChromeCast."
@@ -441,7 +430,8 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
 
 class MainActivity : AppCompatActivity() {
     private val castingState = CastingState()
-    private val eventHandler = EventHandler(castingState,
+    private val eventHandler = EventHandler(
+        castingState,
         {
             CoroutineScope(Dispatchers.Main).launch {
                 connectingToDeviceDialog.hide()
@@ -454,6 +444,7 @@ class MainActivity : AppCompatActivity() {
             CoroutineScope(Dispatchers.Main).launch {
                 try {
                     castingConnectedDialog.volumeSlider.value = newVolume.toFloat()
+                        .coerceAtMost(castingConnectedDialog.volumeSlider.valueTo)
                 } catch (e: Exception) {
                     println("$e")
                 }
@@ -462,7 +453,10 @@ class MainActivity : AppCompatActivity() {
         { newDuration ->
             CoroutineScope(Dispatchers.Main).launch {
                 try {
-                    castingConnectedDialog.positionSlider.valueTo = newDuration.toFloat()
+                    val newDurationF = newDuration.toFloat()
+                    castingConnectedDialog.positionSlider.value =
+                        castingConnectedDialog.positionSlider.value.coerceAtMost(newDurationF)
+                    castingConnectedDialog.positionSlider.valueTo = newDurationF
                 } catch (e: Exception) {
                     println("$e")
                 }
@@ -471,7 +465,10 @@ class MainActivity : AppCompatActivity() {
         { newPosition ->
             CoroutineScope(Dispatchers.Main).launch {
                 try {
-                    castingConnectedDialog.positionSlider.value = newPosition.toFloat()
+                    val newPositionF = newPosition.toFloat()
+                    castingConnectedDialog.positionSlider.value = newPositionF
+                    castingConnectedDialog.positionSlider.value =
+                        castingConnectedDialog.positionSlider.valueTo.coerceAtMost(newPositionF)
                 } catch (e: Exception) {
                     println("$e")
                 }

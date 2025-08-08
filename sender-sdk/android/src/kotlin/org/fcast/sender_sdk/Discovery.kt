@@ -40,8 +40,6 @@ class NsdDeviceDiscoverer {
     private val eventHandler: DeviceDiscovererEventHandler
     private val discoveryListeners = mapOf(
         "_googlecast._tcp" to createDiscoveryListener(::chromecastDeviceEvent),
-        "_airplay._tcp" to createDiscoveryListener(::airPlayDeviceEvent),
-        "_fastcast._tcp" to createDiscoveryListener(::fCastDeviceEvent),
         "_fcast._tcp" to createDiscoveryListener(::fCastDeviceEvent)
     )
 
@@ -197,44 +195,6 @@ class NsdDeviceDiscoverer {
                 eventHandler.deviceAvailable(deviceInfo)
                 devices.add(fullName)
             }
-        }
-    }
-
-    private fun airPlayDeviceEvent(
-        name: String,
-        addresses: List<IpAddr>,
-        port: UShort,
-        txt: Map<String, ByteArray>,
-        lost: Boolean,
-    ) {
-        val fullName = "$name._airplay._tcp"
-        if (lost) {
-            eventHandler.deviceRemoved(name)
-            devices.remove(fullName)
-            return
-        }
-
-        val isAirPlay2: Boolean = txt["srcvers"]?.let {
-            try {
-                val major = it.decodeToString().split('.', limit = 2)[0].toIntOrNull() ?: 0
-                major >= 200
-            } catch (e: Exception) {
-                false
-            }
-        } ?: false
-
-        val deviceInfo = DeviceInfo(
-            name, if (isAirPlay2) {
-                ProtocolType.AIR_PLAY2
-            } else {
-                ProtocolType.AIR_PLAY
-            }, addresses, port
-        )
-        if (devices.contains(fullName)) {
-            eventHandler.deviceChanged(deviceInfo)
-        } else {
-            eventHandler.deviceAvailable(deviceInfo)
-            devices.add(fullName)
         }
     }
 

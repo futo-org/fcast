@@ -1,5 +1,5 @@
 use crate::{
-    casting_device::{
+    device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState, ProtocolType,
         Source,
@@ -765,7 +765,7 @@ impl CastingDevice for ChromecastDevice {
             return Err(CastingDeviceError::DeviceAlreadyStarted);
         }
 
-        let addrs = crate::casting_device::ips_to_socket_addrs(&state.addresses, state.port);
+        let addrs = crate::device::ips_to_socket_addrs(&state.addresses, state.port);
         if addrs.is_empty() {
             return Err(CastingDeviceError::MissingAddresses);
         }

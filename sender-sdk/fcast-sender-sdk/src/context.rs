@@ -1,5 +1,5 @@
 #[cfg(any_protocol)]
-use crate::casting_device::{CastingDevice, DeviceInfo, ProtocolType};
+use crate::device::{CastingDevice, DeviceInfo, ProtocolType};
 #[cfg(all(feature = "discovery", any_protocol))]
 use crate::discovery;
 use crate::{AsyncRuntime, AsyncRuntimeError};
@@ -28,16 +28,6 @@ impl CastContext {
         match info.r#type {
             #[cfg(feature = "chromecast")]
             ProtocolType::Chromecast => Arc::new(crate::chromecast::ChromecastDevice::new(
-                info,
-                self.runtime.handle().clone(),
-            )),
-            #[cfg(feature = "airplay1")]
-            ProtocolType::AirPlay => Arc::new(crate::airplay1::AirPlay1Device::new(
-                info,
-                self.runtime.handle().clone(),
-            )),
-            #[cfg(feature = "airplay2")]
-            ProtocolType::AirPlay2 => Arc::new(crate::airplay2::AirPlay2Device::new(
                 info,
                 self.runtime.handle().clone(),
             )),

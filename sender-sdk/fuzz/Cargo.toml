@@ -9,24 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-plist = { path = "../plist", features = [ "arbitrary" ] }
 parsers-common = { path = "../parsers-common" }
 http = { path = "../http" }
 arbitrary = "1.4.1"
-
-[[bin]]
-name = "plist_reader"
-path = "fuzz_targets/fuzz_plist_reader.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "plist_parser"
-path = "fuzz_targets/fuzz_plist_parser.rs"
-test = false
-doc = false
-bench = false
 
 [[bin]]
 name = "parse_header_map"

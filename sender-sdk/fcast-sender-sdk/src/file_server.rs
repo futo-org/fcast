@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    // convert::Infallible,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     str::FromStr,
     sync::{
@@ -10,11 +9,6 @@ use std::{
 };
 
 use anyhow::bail;
-// use bytes::Bytes;
-// use http::{HeaderMap, HeaderValue, Response, StatusCode};
-// use http_body_util::{combinators::BoxBody, BodyExt, Full};
-// use hyper::service::service_fn;
-// use hyper_util::rt::{TokioExecutor, TokioIo};
 use log::{debug, error};
 use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
 use tokio::{
@@ -73,17 +67,17 @@ impl FileServer {
 
     async fn emtpy_response<T: tokio::io::AsyncWrite + std::marker::Unpin>(
         mut writer: T,
-        status: my_http::StatusCode,
+        status: http::StatusCode,
     ) -> Result<(), FileRequestError> {
-        let start_line = my_http::ResponseStartLine {
-            protocol: my_http::Protocol::Http11,
+        let start_line = http::ResponseStartLine {
+            protocol: http::Protocol::Http11,
             status_code: status,
         }
         .serialize();
         writer.write_all(&start_line).await?;
 
         writer
-            .write_all(my_http::KnownHeaderNames::CONTENT_LENGTH)
+            .write_all(http::KnownHeaderNames::CONTENT_LENGTH)
             .await?;
         writer.write_all(b": ").await?;
         writer.write_all(b"0").await?;
@@ -102,7 +96,7 @@ impl FileServer {
         let files = files.lock().await;
         let Some(fd) = files.get(&uuid) else {
             debug!("No file found for `{uuid}`");
-            return Self::emtpy_response(stream, my_http::StatusCode::NotFound).await;
+            return Self::emtpy_response(stream, http::StatusCode::NotFound).await;
         };
 
         let raw_fd = fd.as_raw_fd();
@@ -116,7 +110,7 @@ impl FileServer {
         let file_length = file_meta.len();
         let mut reader = tokio::io::BufReader::new(file);
         if let Some(range) = headers.iter().find_map(|(name, val)| {
-            if *name == my_http::KnownHeaderNames::RANGE {
+            if *name == http::KnownHeaderNames::RANGE {
                 Some(val)
             } else {
                 None
@@ -126,16 +120,16 @@ impl FileServer {
                 .map_err(|_| FileRequestError::HttpRangeParse)?;
             if let Some(range) = ranges.get_mut(0) {
                 range.length = range.length.min(MAX_CHUNK_SIZE);
-                let start_line = my_http::ResponseStartLine {
-                    protocol: my_http::Protocol::Http11,
-                    status_code: my_http::StatusCode::ParitalContent,
+                let start_line = http::ResponseStartLine {
+                    protocol: http::Protocol::Http11,
+                    status_code: http::StatusCode::ParitalContent,
                 }
                 .serialize();
                 writer.write_all(&start_line).await?;
 
                 let headers = [
                     (
-                        my_http::KnownHeaderNames::CONTENT_RANGE,
+                        http::KnownHeaderNames::CONTENT_RANGE,
                         format!(
                             "bytes {}-{}/{file_length}",
                             range.start,
@@ -143,11 +137,11 @@ impl FileServer {
                         ),
                     ),
                     (
-                        my_http::KnownHeaderNames::CONTENT_TYPE,
+                        http::KnownHeaderNames::CONTENT_TYPE,
                         "application/octet-stream".to_string(),
                     ),
                     (
-                        my_http::KnownHeaderNames::CONTENT_LENGTH,
+                        http::KnownHeaderNames::CONTENT_LENGTH,
                         range.length.to_string(),
                     ),
                 ];
@@ -174,23 +168,23 @@ impl FileServer {
 
                 writer.flush().await?;
             } else {
-                return Self::emtpy_response(writer, my_http::StatusCode::BadRequest).await;
+                return Self::emtpy_response(writer, http::StatusCode::BadRequest).await;
             }
         } else {
-            let start_line = my_http::ResponseStartLine {
-                protocol: my_http::Protocol::Http11,
-                status_code: my_http::StatusCode::ParitalContent,
+            let start_line = http::ResponseStartLine {
+                protocol: http::Protocol::Http11,
+                status_code: http::StatusCode::ParitalContent,
             }
             .serialize();
             writer.write_all(&start_line).await?;
 
             let headers = [
                 (
-                    my_http::KnownHeaderNames::CONTENT_TYPE,
+                    http::KnownHeaderNames::CONTENT_TYPE,
                     "application/octet-stream".to_string(),
                 ),
                 (
-                    my_http::KnownHeaderNames::CONTENT_LENGTH,
+                    http::KnownHeaderNames::CONTENT_LENGTH,
                     file_length.to_string(),
                 ),
             ];
@@ -215,26 +209,26 @@ impl FileServer {
 
     async fn handle_request(
         stream: tokio::net::TcpStream,
-        method: my_http::Method,
+        method: http::Method,
         path: &[u8],
         headers: &[(&[u8], &[u8])],
         files: FileMapLock,
     ) -> Result<(), FileRequestError> {
         match method {
-            my_http::Method::Get => {
+            http::Method::Get => {
                 let Some(path) = str::from_utf8(path)?.strip_prefix('/') else {
                     debug!("Invalid path in URI");
-                    return Self::emtpy_response(stream, my_http::StatusCode::NotFound).await;
+                    return Self::emtpy_response(stream, http::StatusCode::NotFound).await;
                 };
 
                 let Ok(uuid) = Uuid::from_str(path) else {
                     debug!("Path is not a valid UUID: {path}");
-                    return Self::emtpy_response(stream, my_http::StatusCode::NotFound).await;
+                    return Self::emtpy_response(stream, http::StatusCode::NotFound).await;
                 };
 
                 Self::handle_get_file_request(stream, uuid, files, headers).await?;
             }
-            _ => return Self::emtpy_response(stream, my_http::StatusCode::MethodNotAllowed).await,
+            _ => return Self::emtpy_response(stream, http::StatusCode::MethodNotAllowed).await,
         }
         Ok(())
     }
@@ -260,7 +254,7 @@ impl FileServer {
         };
 
         let start_line_buf = request_buf[..start_line_end].to_vec();
-        let start_line = my_http::parse_request_start_line(&start_line_buf)?;
+        let start_line = http::parse_request_start_line(&start_line_buf)?;
         let header_map_end = 'out: {
             loop {
                 if let Some(cr_idx) = find_first_double_cr_lf(&request_buf) {

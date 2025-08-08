@@ -17,10 +17,6 @@ pub enum DeviceConnectionState {
 pub enum ProtocolType {
     #[cfg(feature = "chromecast")]
     Chromecast,
-    #[cfg(feature = "airplay1")]
-    AirPlay,
-    #[cfg(feature = "airplay2")]
-    AirPlay2,
     #[cfg(feature = "fcast")]
     FCast,
 }
@@ -143,10 +139,6 @@ impl DeviceInfo {
     dev_info_constructor!(fcast, FCast);
     #[cfg(feature = "chromecast")]
     dev_info_constructor!(chromecast, Chromecast);
-    #[cfg(feature = "airplay1")]
-    dev_info_constructor!(airplay1, AirPlay);
-    #[cfg(feature = "airplay2")]
-    dev_info_constructor!(airplay2, AirPlay2);
 }
 
 #[derive(Default, PartialEq, Eq, Debug)]

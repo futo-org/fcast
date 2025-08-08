@@ -1,10 +1,10 @@
-use std::sync::Arc;
-
 use fcast_sender_sdk::{
-    /* airplay2::AirPlay2CastingDevice, */ casting_device::{
-        DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
-        GenericMediaEvent, PlaybackState, Source,
-    }, context::CastContext, IpAddr
+    context::CastContext,
+    device::{
+        DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent, GenericMediaEvent,
+        PlaybackState, Source,
+    },
+    IpAddr,
 };
 use log::info;
 
@@ -92,45 +92,12 @@ async fn main() {
     // dev.subscribe_event(GenericEventSubscriptionGroup::Keys);
     // dev.subscribe_event(GenericEventSubscriptionGroup::Media);
 
-    // let manager = CastingManager::new(Arc::new(ManagerEventHandler {}));
+    // let ctx = CastContext::new().unwrap();
 
-    let ctx = CastContext::new().unwrap();
+    // dev.connect(Arc::new(EventHandler {})).unwrap();
 
-    // let dev = ctx.create_device_from_info(DeviceInfo::fcast(
-    //     "AirPlay2".to_owned(),
-    //     vec![IpAddr::v4(127, 0, 0, 1)],
-    //     46899,
-    // ));
-
-
-    // sonos: vec![IpAddr::v4(192, 168, 1, 203)],
-
-    let dev = ctx.create_device_from_info(DeviceInfo::airplay2(
-        "AirPlay2".to_owned(),
-        // vec![IpAddr::v4(192, 168, 1, 133)],
-        // 7000,
-
-        // Sonos
-        vec![IpAddr::v4(192, 168, 1, 203)],
-        7000,
-
-        // Mac
-        // vec![IpAddr::v4(192, 168, 1, 64)],
-        // 7000,
-
-        // uxplay
-        // vec![IpAddr::v4(192, 168, 1, 133)],
-        // 1338,
-
-        // shairport sync
-        // vec![IpAddr::v4(192, 168, 1, 133)],
-        // 7000,
-    ));
-
-    dev.connect(Arc::new(EventHandler {})).unwrap();
-
-    info!("Press enter to quit");
-    std::io::stdin().read_line(&mut String::new()).unwrap();
+    // info!("Press enter to quit");
+    // std::io::stdin().read_line(&mut String::new()).unwrap();
 
     // dev.stop().unwrap();
 

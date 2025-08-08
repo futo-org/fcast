@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "FCast Sender SDK Example"
+rootProject.name = "FCast Sender SDK Demo"
 include(":app")

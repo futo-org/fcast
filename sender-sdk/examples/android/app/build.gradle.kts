@@ -9,7 +9,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "fcast.sender"
+        applicationId = "org.fcast.sender.sdk.demo"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
