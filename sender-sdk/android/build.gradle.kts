@@ -1,3 +1,5 @@
+import com.android.aaptcompiler.android.isTruthy
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
@@ -16,7 +18,10 @@ android {
         getByName("main") {
             java.srcDirs("src")
             jniLibs.srcDir("src/jniLibs")
-            res.srcDirs("src/res")
+            if (project.hasProperty("includeResources")
+                && project.properties["includeResources"].isTruthy()) {
+                res.srcDirs("src/res")
+            }
         }
     }
 

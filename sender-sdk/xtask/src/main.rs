@@ -57,7 +57,7 @@ fn main() -> Result<()> {
                 let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android"));
                 sh.create_dir("../examples/android/app/aar")?;
                 sh.create_dir("../examples/android-views/app/aar")?;
-                cmd!(sh, "./gradlew assembleRelease").run()?;
+                cmd!(sh, "./gradlew assembleRelease -PincludeResources=true").run()?;
                 sh.copy_file(
                     "build/outputs/aar/fcast-android-sender-sdk-release.aar",
                     "../examples/android/app/aar/fcast-android-sender-sdk-release.aar",
