@@ -14,7 +14,6 @@ use log::{debug, error, info};
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::tcp::{ReadHalf, WriteHalf},
     runtime::Handle,
     sync::mpsc::{Receiver, Sender},
 };
@@ -119,19 +118,22 @@ enum ProtocolVersion {
 
 struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
+    writer: Option<tokio::net::tcp::OwnedWriteHalf>,
 }
 
 impl InnerDevice {
     pub fn new(event_handler: Arc<dyn DeviceEventHandler>) -> Self {
-        Self { event_handler }
+        Self {
+            event_handler,
+            writer: None,
+        }
     }
 
-    async fn send<T: Serialize>(
-        &mut self,
-        writer: &mut WriteHalf<'_>,
-        op: Opcode,
-        msg: T,
-    ) -> anyhow::Result<()> {
+    async fn send<T: Serialize>(&mut self, op: Opcode, msg: T) -> anyhow::Result<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            bail!("`writer` is missing");
+        };
+
         let json = serde_json::to_string(&msg)?;
         let data = json.as_bytes();
         let size = 1 + data.len();
@@ -152,7 +154,11 @@ impl InnerDevice {
         Ok(())
     }
 
-    async fn send_empty(&mut self, writer: &mut WriteHalf<'_>, op: Opcode) -> anyhow::Result<()> {
+    async fn send_empty(&mut self, op: Opcode) -> anyhow::Result<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            bail!("`writer` is missing");
+        };
+
         let mut header = [0u8; HEADER_LENGTH];
         header[..HEADER_LENGTH - 1].copy_from_slice(&1u32.to_le_bytes());
         header[HEADER_LENGTH - 1] = op as u8;
@@ -167,7 +173,6 @@ impl InnerDevice {
     #[allow(clippy::too_many_arguments)]
     async fn send_play(
         &mut self,
-        writer: &mut WriteHalf<'_>,
         version: &ProtocolVersion,
         content_type: String,
         url: Option<String>,
@@ -185,7 +190,7 @@ impl InnerDevice {
                     speed,
                     headers: None,
                 };
-                self.send(writer, Opcode::Play, msg).await?;
+                self.send(Opcode::Play, msg).await?;
             }
             ProtocolVersion::V3 => {
                 let msg = v3::PlayMessage {
@@ -198,7 +203,7 @@ impl InnerDevice {
                     volume: None,
                     metadata: None,
                 };
-                self.send(writer, Opcode::Play, msg).await?;
+                self.send(Opcode::Play, msg).await?;
             }
         }
         Ok(())
@@ -212,7 +217,7 @@ impl InnerDevice {
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connecting);
 
-        let Some(mut stream) =
+        let Some(stream) =
             utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
@@ -229,13 +234,14 @@ impl InnerDevice {
                 local_addr: stream.local_addr()?.ip().into(),
             });
 
-        let (reader, mut writer) = stream.split();
+        let (reader, writer) = stream.into_split();
+        self.writer = Some(writer);
 
         let packet_stream = futures::stream::unfold(
             (reader, vec![0u8; 1000 * 32 - 1]),
             |(mut reader, mut body_buf)| async move {
                 async fn read_packet(
-                    reader: &mut ReadHalf<'_>,
+                    reader: &mut tokio::net::tcp::OwnedReadHalf,
                     body_buf: &mut [u8],
                 ) -> anyhow::Result<(Opcode, Option<String>)> {
                     let mut header_buf: [u8; HEADER_LENGTH] = [0; HEADER_LENGTH];
@@ -305,8 +311,8 @@ impl InnerDevice {
         }
 
         // Negotiate version and potentially downgrade
-        let version = {
-            self.send(&mut writer, Opcode::Version, VersionMessage { version: 3 })
+        let session_version = {
+            self.send(Opcode::Version, VersionMessage { version: 3 })
                 .await?;
 
             let maybe_version_msg = packet_stream.next().await.ok_or(anyhow!(
@@ -322,7 +328,6 @@ impl InnerDevice {
                     debug!("Receiver supports v3");
 
                     self.send(
-                        &mut writer,
                         Opcode::Initial,
                         v3::InitialSenderMessage {
                             display_name: None,
@@ -383,7 +388,7 @@ impl InnerDevice {
             }
         };
 
-        info!("Using protocol {version:?}");
+        info!("Using protocol {session_version:?}");
 
         loop {
             tokio::select! {
@@ -395,7 +400,7 @@ impl InnerDevice {
                                 error!("Missing body");
                                 continue;
                             };
-                            match version {
+                            match session_version {
                                 ProtocolVersion::V2 => {
                                     let Ok(update) = serde_json::from_str::<v2::PlaybackUpdateMessage>(&body) else {
                                         error!("Malformed body: {body}");
@@ -452,10 +457,10 @@ impl InnerDevice {
                             };
                             changed!(volume, update.volume, volume_changed);
                         }
-                        Opcode::Ping => self.send_empty(&mut writer, Opcode::Pong).await?,
+                        Opcode::Ping => self.send_empty(Opcode::Pong).await?,
                         Opcode::Event => {
-                            if version != ProtocolVersion::V3 {
-                                debug!("Received event message when not supposed to ({version:?}), ignoring");
+                            if session_version != ProtocolVersion::V3 {
+                                debug!("Received event message when not supposed to ({session_version:?}), ignoring");
                                 continue;
                             }
                             let Some(body) = packet.1 else {
@@ -534,18 +539,11 @@ impl InnerDevice {
                     debug!("Received command: {cmd:?}");
 
                     match cmd {
-                        Command::ChangeVolume(volume) => {
-                            let msg = SetVolumeMessage { volume };
-                            self.send(&mut writer, Opcode::SetVolume, msg).await?;
-                        }
-                        Command::ChangeSpeed(speed) => {
-                            let msg = SetSpeedMessage { speed };
-                            self.send(&mut writer, Opcode::SetSpeed, msg).await?;
-                        }
+                        Command::ChangeVolume(volume) => self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?,
+                        Command::ChangeSpeed(speed) => self.send(Opcode::SetSpeed, SetSpeedMessage { speed }).await?,
                         Command::LoadVideo { content_type, content_id, speed, resume_position, .. } => {
                             self.send_play(
-                                &mut writer,
-                                &version,
+                                &session_version,
                                 content_type,
                                 Some(content_id),
                                 None,
@@ -555,8 +553,7 @@ impl InnerDevice {
                         }
                         Command::LoadUrl { content_type, url, resume_position, speed } => {
                             self.send_play(
-                                &mut writer,
-                                &version,
+                                &session_version,
                                 content_type,
                                 Some(url),
                                 None,
@@ -566,8 +563,7 @@ impl InnerDevice {
                         }
                         Command::LoadContent { content_type, content, resume_position, speed, .. } => {
                             self.send_play(
-                                &mut writer,
-                                &version,
+                                &session_version,
                                 content_type,
                                 None,
                                 Some(content),
@@ -575,24 +571,21 @@ impl InnerDevice {
                                 speed,
                             ).await?;
                         }
-                        Command::SeekVideo(time) => {
-                            let msg = SeekMessage { time };
-                            self.send(&mut writer, Opcode::Seek, msg).await?;
-                        }
+                        Command::SeekVideo(time) => self.send(Opcode::Seek, SeekMessage { time }).await?,
                         Command::StopVideo => {
-                            self.send_empty(&mut writer, Opcode::Stop).await?;
+                            self.send_empty(Opcode::Stop).await?;
                             self.event_handler.playback_state_changed(PlaybackState::Idle);
                         }
-                        Command::PauseVideo => self.send_empty(&mut writer, Opcode::Pause).await?,
-                        Command::ResumeVideo => self.send_empty(&mut writer, Opcode::Resume).await?,
+                        Command::PauseVideo => self.send_empty(Opcode::Pause).await?,
+                        Command::ResumeVideo => self.send_empty(Opcode::Resume).await?,
                         Command::Quit => break,
                         Command::SubscribeToAllMediaItemEvents
                             | Command::SubscribeToAllKeyEvents
                             | Command::UnsubscribeToAllMediaItemEvents
                             | Command::UnsubscribeToAllKeyEvents => {
-                            if version != ProtocolVersion::V3 {
+                            if session_version != ProtocolVersion::V3 {
                                 error!(
-                                    "Current protocol version ({version:?}) does not support event subscriptions, {:?} is required",
+                                    "Current protocol version ({session_version:?}) does not support event subscriptions, {:?} is required",
                                     ProtocolVersion::V3
                                 );
                                 continue;
@@ -618,7 +611,6 @@ impl InnerDevice {
                             };
                             for obj in objs {
                                 self.send(
-                                    &mut writer,
                                     op,
                                     v3::SubscribeEventMessage { event: obj }
                                 ).await?;
@@ -631,7 +623,9 @@ impl InnerDevice {
 
         info!("Shutting down...");
 
-        writer.shutdown().await?;
+        if let Some(mut writer) = self.writer.take() {
+            writer.shutdown().await?;
+        }
 
         Ok(())
     }
