@@ -55,7 +55,6 @@ final class DevEventHandler: DeviceEventHandler {
 
 final class NWDeviceDiscoverer {
     private var ctx: CastContext
-    private var airPlayBrowser: NWBrowser
     private var fCastBrowser: NWBrowser
     private var chromecastBrowser: NWBrowser
 
@@ -65,10 +64,6 @@ final class NWDeviceDiscoverer {
         onRemoved: @escaping (NWEndpoint) -> Void,
     ) {
         ctx = context
-        airPlayBrowser = NWBrowser(
-            for: .bonjourWithTXTRecord(type: "_airplay._tcp", domain: nil),
-            using: .tcp
-        )
         fCastBrowser = NWBrowser(
             for: .bonjourWithTXTRecord(type: "_fcast._tcp", domain: nil),
             using: .tcp
@@ -78,26 +73,6 @@ final class NWDeviceDiscoverer {
             using: .tcp
         )
 
-        airPlayBrowser.browseResultsChangedHandler = { newResults, changes in
-            for result in changes {
-                switch result {
-                case .added(let added):
-                    if case .service(let name, _, _, _) = added.endpoint {
-                        onAdded(
-                            FoundDevice(
-                                name: name,
-                                endpoint: added.endpoint,
-                                proto: ProtocolType.airPlay
-                            )
-                        )
-                    }
-                case .removed(let removed):
-                    onRemoved(removed.endpoint)
-                default:
-                    break
-                }
-            }
-        }
         fCastBrowser.browseResultsChangedHandler = { newResults, changes in
             for result in changes {
                 switch result {
@@ -149,7 +124,6 @@ final class NWDeviceDiscoverer {
             }
         }
 
-        airPlayBrowser.start(queue: .main)
         fCastBrowser.start(queue: .main)
         chromecastBrowser.start(queue: .main)
     }
@@ -509,12 +483,6 @@ struct DeviceList: View {
                         switch device.proto {
                         case .chromecast:
                             Image("chromecast-icon")
-                                .renderingMode(.template)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxWidth: 32)
-                        case .airPlay, .airPlay2:
-                            Image("airplay-icon")
                                 .renderingMode(.template)
                                 .resizable()
                                 .scaledToFit()
