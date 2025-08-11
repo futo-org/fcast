@@ -32,25 +32,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import fcast.sender.ui.theme.FCastSenderTheme
-import uniffi.fcast_sender_sdk.DeviceConnectionState
-import uniffi.fcast_sender_sdk.CastingDevice
-import uniffi.fcast_sender_sdk.DeviceEventHandler
-import uniffi.fcast_sender_sdk.GenericKeyEvent
-import uniffi.fcast_sender_sdk.GenericMediaEvent
-import uniffi.fcast_sender_sdk.PlaybackState
-import uniffi.fcast_sender_sdk.Source
-import uniffi.fcast_sender_sdk.initLogger
-import uniffi.fcast_sender_sdk.IpAddr
-import uniffi.fcast_sender_sdk.urlFormatIpAddr
-import uniffi.fcast_sender_sdk.deviceInfoFromUrl
+import org.fcast.sender_sdk.DeviceConnectionState
+import org.fcast.sender_sdk.CastingDevice
+import org.fcast.sender_sdk.DeviceEventHandler
+import org.fcast.sender_sdk.GenericKeyEvent
+import org.fcast.sender_sdk.GenericMediaEvent
+import org.fcast.sender_sdk.PlaybackState
+import org.fcast.sender_sdk.Source
+import org.fcast.sender_sdk.initLogger
+import org.fcast.sender_sdk.IpAddr
+import org.fcast.sender_sdk.urlFormatIpAddr
+import org.fcast.sender_sdk.deviceInfoFromUrl
 import org.fcast.sender_sdk.NsdDeviceDiscoverer
-import uniffi.fcast_sender_sdk.CastContext
+import org.fcast.sender_sdk.CastContext
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import uniffi.fcast_sender_sdk.DeviceInfo
-import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
-import uniffi.fcast_sender_sdk.LogLevelFilter
-import uniffi.fcast_sender_sdk.FileServer
+import org.fcast.sender_sdk.DeviceInfo
+import org.fcast.sender_sdk.DeviceDiscovererEventHandler
+import org.fcast.sender_sdk.LogLevelFilter
+import org.fcast.sender_sdk.FileServer
 
 data class CastingState(
     var volume: MutableState<Double> = mutableDoubleStateOf(1.0),

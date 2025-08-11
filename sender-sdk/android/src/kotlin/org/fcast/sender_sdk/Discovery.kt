@@ -5,10 +5,6 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
-import uniffi.fcast_sender_sdk.ProtocolType
-import uniffi.fcast_sender_sdk.DeviceInfo
-import uniffi.fcast_sender_sdk.DeviceDiscovererEventHandler
-import uniffi.fcast_sender_sdk.IpAddr
 import java.net.InetAddress
 
 private fun inetAddressToIpAddr(addrs: Array<InetAddress>): List<IpAddr> {

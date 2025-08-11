@@ -2,7 +2,7 @@ use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use uniffi_bindgen::{
-    bindings::KotlinBindingGenerator, library_mode::generate_bindings, EmptyCrateConfigSupplier,
+    bindings::KotlinBindingGenerator, library_mode::generate_bindings, EmptyCrateConfigSupplier
 };
 use xshell::cmd;
 
@@ -48,12 +48,14 @@ fn build_for_android_target(
 }
 
 fn generate_uniffi_bindings(library_path: &Utf8Path, ffi_generated_dir: &Utf8Path) -> Result<()> {
+    let config_path = workspace::root_path()?.join("sender-sdk/fcast-sender-sdk/uniffi.toml");
+
     generate_bindings(
         library_path,
         None,
         &KotlinBindingGenerator,
         &EmptyCrateConfigSupplier,
-        None,
+        Some(&config_path),
         ffi_generated_dir,
         false,
     )?;
