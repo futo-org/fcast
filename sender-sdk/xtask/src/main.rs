@@ -9,7 +9,10 @@ use xtask::{
 #[derive(Subcommand)]
 enum Command {
     Kotlin(kotlin::KotlinArgs),
-    GenerateAndroid,
+    GenerateAndroid {
+        #[arg(long, short)]
+        include_resources: bool,
+    },
     // GenerateIos, // TODO
     // # https://github.com/Tehnix/template-mobile-wasm
     // # export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer/
@@ -42,7 +45,7 @@ fn main() -> Result<()> {
             cmd!(sh, "cargo hack check --each-feature").run()?;
             Ok(())
         }
-        Command::GenerateAndroid => {
+        Command::GenerateAndroid { include_resources } => {
             KotlinArgs {
                 cmd: KotlinCommand::BuildAndroidLibrary {
                     release: true,
@@ -57,7 +60,11 @@ fn main() -> Result<()> {
                 let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android"));
                 sh.create_dir("../examples/android/app/aar")?;
                 sh.create_dir("../examples/android-views/app/aar")?;
-                cmd!(sh, "./gradlew assembleRelease -PincludeResources=true").run()?;
+                if include_resources {
+                    cmd!(sh, "./gradlew assembleRelease -PincludeResources=true").run()?;
+                } else {
+                    cmd!(sh, "./gradlew assembleRelease -PincludeResources=false").run()?;
+                }
                 sh.copy_file(
                     "build/outputs/aar/fcast-android-sender-sdk-release.aar",
                     "../examples/android/app/aar/fcast-android-sender-sdk-release.aar",
