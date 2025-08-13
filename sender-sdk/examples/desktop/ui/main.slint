@@ -1,0 +1,140 @@
+import { Button, ListView, HorizontalBox, VerticalBox, Spinner, Slider } from "std-widgets.slint";
+
+export enum DeviceType {
+    FCast,
+    Chromecast,
+}
+
+export struct Device {
+    name: string,
+    type: DeviceType,
+}
+
+export enum State {
+    Idle,
+    Connecting,
+    Connected,
+}
+
+export global Bridge {
+    in property<[Device]> devices: [];
+    in-out property<State> state: State.Idle;
+    in-out property<Device> connected-device: { name: "n/a", type: DeviceType.FCast };
+    in property<float> volume: 0.0;
+    in property<float> playback-position: 0.0;
+    in property<float> playback-duration: 0.0;
+
+    callback connect(device-name: string);
+    callback disconnect();
+    callback cast-local();
+    callback change-volume(new-volume: float);
+    callback seek(new-position: float);
+
+    public function connected() {
+        state = State.Connected;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "FCast sender SDK demo";
+
+    if Bridge.state == State.Idle: VerticalBox {
+        alignment: center;
+        width: root.width.min(400px);
+        height: root.height.min(500px);
+
+        Text {
+            text: "Connect to your receiver";
+            horizontal-alignment: center;
+            font-weight: 800;
+        }
+
+        if Bridge.devices.length > 0: ListView {
+            height: 300px;
+
+            for device in Bridge.devices : Rectangle {
+                background: ta.has-hover ? whitesmoke : #00000000;
+                ta := TouchArea {
+                    clicked => {
+                        Bridge.state = State.Connecting;
+                        Bridge.connect(device.name);
+                        Bridge.connected-device = device;
+                    }
+                }
+                HorizontalBox {
+                    Text {
+                        text: device.name;
+                    }
+                }
+            }
+        }
+        if Bridge.devices.length == 0: Text {
+            text: "No devices found";
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Devices become visible when they are discovered on the local network";
+            horizontal-alignment: center;
+            font-italic: true;
+            wrap: word-wrap;
+
+        }
+    }
+    if Bridge.state == State.Connecting: VerticalBox {
+        alignment: center;
+        Spinner {
+            indeterminate: true;
+        }
+        Text {
+            horizontal-alignment: center;
+            text: "Connecting to " + Bridge.connected-device.name;
+        }
+    }
+    if Bridge.state == State.Connected: VerticalBox {
+        alignment: center;
+        Text {
+            horizontal-alignment: center;
+            text: "Connected to " + Bridge.connected-device.name;
+        }
+        Button {
+            text: "Cast local media";
+            clicked => {
+                Bridge.cast-local();
+            }
+        }
+        HorizontalBox {
+            Text {
+                text: "Volume";
+            }
+            Slider {
+                value <=> Bridge.volume;
+                step: 0.01;
+                maximum: 1.0;
+                changed(new-volume) => {
+                    Bridge.change-volume(new-volume);
+                }
+            }
+        }
+        HorizontalBox {
+            Text {
+                text: "Position";
+            }
+            Slider {
+                value <=> Bridge.playback-position;
+                step: 0.10;
+                maximum <=> Bridge.playback-duration;
+                changed(new-position) => {
+                    Bridge.seek(new-position);
+                }
+            }
+        }
+        Button {
+            text: "Disconnect";
+            clicked => {
+                Bridge.disconnect();
+                Bridge.state = State.Idle;
+            }
+        }
+    }
+}

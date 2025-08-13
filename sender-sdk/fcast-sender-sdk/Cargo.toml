@@ -8,7 +8,7 @@ edition = "2021"
 uniffi = { version = "0.29.4", optional = true }
 tokio.workspace = true
 log.workspace= true
-anyhow = "1.0.98"
+anyhow.workspace = true
 thiserror.workspace = true
 futures = "0.3.31"
 serde = { workspace = true, optional = true }

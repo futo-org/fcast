@@ -1,5 +1,5 @@
 [workspace]
-members = [ "sender-sdk/chromecast-protocol", "sender-sdk/fcast-sender-sdk", "sender-sdk/fcast-protocol", "sender-sdk/examples/terminal", "sender-sdk/xtask", "senders/terminal", "sender-sdk/fuzz", "sender-sdk/parsers-common", "sender-sdk/http"]
+members = [ "sender-sdk/chromecast-protocol", "sender-sdk/fcast-sender-sdk", "sender-sdk/fcast-protocol", "sender-sdk/examples/terminal", "sender-sdk/xtask", "senders/terminal", "sender-sdk/fuzz", "sender-sdk/parsers-common", "sender-sdk/http", "sender-sdk/examples/desktop"]
 resolver = "2"
 
 [workspace.package]
@@ -13,6 +13,7 @@ thiserror = "2.0.12"
 log = "0.4.27"
 env_logger = "0.11.8"
 mdns-sd = "0.13.10"
+anyhow = "1.0.98"
 
 [profile.release]
 lto = true

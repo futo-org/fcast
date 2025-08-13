@@ -1,0 +1,18 @@
+[package]
+name = "desktop"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "chromecast", "http-file-server", "logging", "discovery"] }
+tokio.workspace = true
+env_logger.workspace = true
+log.workspace = true
+anyhow.workspace = true
+slint = "1.12.1"
+rfd = "0.15.4" # File dialog
+infer = "0.19.0" # MIME type inference
+
+[build-dependencies]
+slint-build = "1.12.1"

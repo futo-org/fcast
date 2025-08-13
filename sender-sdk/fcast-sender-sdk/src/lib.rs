@@ -180,7 +180,7 @@ fn try_ip_addr_from_str(s: &str) -> Result<IpAddr, ParseIpAddrError> {
 #[allow(dead_code)]
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
-fn url_format_ip_addr(addr: &IpAddr) -> String {
+pub fn url_format_ip_addr(addr: &IpAddr) -> String {
     match addr {
         IpAddr::V4 { o1, o2, o3, o4 } => format!("{o1}.{o2}.{o3}.{o4}"),
         IpAddr::V6 {
