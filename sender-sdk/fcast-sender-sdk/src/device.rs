@@ -1,5 +1,5 @@
 use crate::IpAddr;
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::Arc;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -24,8 +24,35 @@ pub enum ProtocolType {
 
 pub(crate) fn ips_to_socket_addrs(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> {
     ips.iter()
-        .map(|a| a.into())
-        .map(|a| SocketAddr::new(a, port))
+        .map(|a| match *a {
+            IpAddr::V4 { .. } => SocketAddr::new(a.into(), port),
+            IpAddr::V6 {
+                scope_id,
+                o1,
+                o2,
+                o3,
+                o4,
+                o5,
+                o6,
+                o7,
+                o8,
+                o9,
+                o10,
+                o11,
+                o12,
+                o13,
+                o14,
+                o15,
+                o16,
+            } => SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::from_bits(u128::from_be_bytes([
+                    o1, o2, o3, o4, o5, o6, o7, o8, o9, o10, o11, o12, o13, o14, o15, o16,
+                ])),
+                port,
+                0,
+                scope_id,
+            )),
+        })
         .collect()
 }
 

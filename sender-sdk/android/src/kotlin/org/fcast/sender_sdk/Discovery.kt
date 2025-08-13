@@ -5,24 +5,28 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 
 private fun inetAddressToIpAddr(addrs: Array<InetAddress>): List<IpAddr> {
     return addrs.map { addr ->
         val bytes = addr.address
-        if (bytes.size == 4) {
+        if (addr is Inet4Address) {
             return@map IpAddr.V4(
                 bytes[0].toUByte(),
                 bytes[1].toUByte(),
                 bytes[2].toUByte(),
                 bytes[3].toUByte()
             )
-        } else if (bytes.size == 16) {
+        }
+        if (addr is Inet6Address) {
             return@map IpAddr.V6(
                 bytes[0].toUByte(), bytes[1].toUByte(), bytes[2].toUByte(), bytes[3].toUByte(),
                 bytes[4].toUByte(), bytes[5].toUByte(), bytes[6].toUByte(), bytes[7].toUByte(),
                 bytes[8].toUByte(), bytes[9].toUByte(), bytes[10].toUByte(), bytes[11].toUByte(),
                 bytes[12].toUByte(), bytes[13].toUByte(), bytes[14].toUByte(), bytes[15].toUByte(),
+                addr.scopeId.toUInt()
             )
         } else {
             throw IllegalStateException("Invalid InetAddress")

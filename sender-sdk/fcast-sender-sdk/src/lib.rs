@@ -149,6 +149,7 @@ pub enum IpAddr {
         o14: u8,
         o15: u8,
         o16: u8,
+        scope_id: u32,
     },
 }
 
@@ -200,12 +201,13 @@ pub fn url_format_ip_addr(addr: &IpAddr) -> String {
             o14,
             o15,
             o16,
+            scope_id,
         } => {
             let addr = std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
                 *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
                 *o16,
             ]));
-            format!("[{addr}]")
+            format!("[{addr}%{scope_id}]")
         }
     }
 }
@@ -233,6 +235,7 @@ fn octets_from_ip_addr(addr: &IpAddr) -> Vec<u8> {
             o14,
             o15,
             o16,
+            ..
         } => {
             vec![
                 *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
@@ -274,6 +277,7 @@ impl From<&std::net::IpAddr> for IpAddr {
                     o14: octets[13],
                     o15: octets[14],
                     o16: octets[15],
+                    scope_id: 0,
                 }
             }
         }
@@ -304,6 +308,7 @@ impl From<&IpAddr> for std::net::IpAddr {
                 o14,
                 o15,
                 o16,
+                ..
             } => std::net::IpAddr::V6(std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
                 *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
                 *o16,
