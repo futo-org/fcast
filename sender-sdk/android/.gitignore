@@ -9,4 +9,6 @@
 .cxx
 local.properties
 /src/jniLibs
-/src/kotlin/uniffi
+
+# UniFFI artifacts
+/src/kotlin/org/fcast/sender_sdk/fcast_sender_sdk.kt
