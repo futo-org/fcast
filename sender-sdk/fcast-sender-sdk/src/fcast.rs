@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context};
@@ -218,7 +218,7 @@ impl InnerDevice {
             .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(stream) =
-            utils::try_connect_tcp(addrs, 5, &mut cmd_rx, |cmd| cmd == Command::Quit).await?
+            utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler

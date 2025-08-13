@@ -1,9 +1,9 @@
 #[cfg(any_protocol)]
 mod any_protocol_prelude {
     pub use anyhow::{anyhow, bail};
-    pub use log::{error, info};
+    pub use log::info;
     pub use std::{net::SocketAddr, time::Duration};
-    pub use tokio::{net::TcpStream, time::sleep};
+    pub use tokio::{net::TcpStream};
 }
 
 #[cfg(any_protocol)]
@@ -15,36 +15,45 @@ use any_protocol_prelude::*;
 #[cfg(any_protocol)]
 pub(crate) async fn try_connect_tcp<T>(
     addrs: Vec<SocketAddr>,
-    max_retires: usize,
+    timeout: Duration,
     cmd_rx: &mut tokio::sync::mpsc::Receiver<T>,
     on_cmd: impl Fn(T) -> bool,
 ) -> anyhow::Result<Option<tokio::net::TcpStream>> {
-    let mut retries = 0;
-    loop {
-        if retries > max_retires {
-            bail!("Exceeded maximum retries ({max_retires})");
-        }
+    anyhow::ensure!(!addrs.is_empty());
 
-        info!("Trying to connect to {addrs:?}...");
-        tokio::select! {
-            stream = tokio::time::timeout(
-                Duration::from_secs(1),
-                TcpStream::connect(addrs.as_slice()),
-            ) => {
-                match stream {
-                    Ok(stream) => match stream {
-                        Ok(stream) => return Ok(Some(stream)),
-                        Err(err) => {
-                            error!("Failed to connect: {err}");
-                            sleep(Duration::from_secs(1)).await;
-                        }
-                    },
-                    Err(_) => {
-                        info!("Failed to connect, retrying...");
-                        sleep(Duration::from_secs(1)).await;
+    info!("Trying to connect to {addrs:?}...");
+
+    let mut connections: Vec<_> = addrs.into_iter().map(|addr| {
+        Box::pin(tokio::time::timeout(
+            timeout,
+            TcpStream::connect(addr)
+        ))
+    }).collect();
+
+    let (connection_tx, mut connection_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        'out: {
+            while !connections.is_empty() {
+                match futures::future::select_all(connections).await {
+                    (Ok(Ok(res)), _, _) => {
+                        let _ = connection_tx.send(Some(res));
+                        break 'out;
                     }
+                    (Ok(Err(_)), _, remaining) => connections = remaining,
+                    (Err(_), _, remaining) => connections = remaining,
                 }
             }
+            let _ = connection_tx.send(None);
+        }
+    });
+
+    loop {
+        tokio::select! {
+            connection = &mut connection_rx => match connection? {
+                Some(connection) => return Ok(Some(connection)),
+                None => bail!("Failed to connect"),
+            },
             cmd = cmd_rx.recv() => {
                 let cmd = cmd.ok_or(anyhow!("No more commands"))?;
                 if on_cmd(cmd) {
@@ -52,8 +61,6 @@ pub(crate) async fn try_connect_tcp<T>(
                 }
             }
         }
-
-        retries += 1;
     }
 }
 

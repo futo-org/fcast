@@ -251,7 +251,7 @@ impl InnerDevice {
             .connection_state_changed(DeviceConnectionState::Connecting);
 
         let Some(stream) =
-            utils::try_connect_tcp(addrs, 5, &mut self.cmd_rx, |cmd| cmd == Command::Quit).await?
+            utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| cmd == Command::Quit).await?
         else {
             debug!("Received Quit command in connect loop");
             self.event_handler
