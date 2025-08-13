@@ -1,13 +1,16 @@
 use crate::{
     device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState, ProtocolType,
-        Source,
+        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState, Playlist,
+        ProtocolType, Source,
     },
     utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
-use chromecast_protocol::{self as protocol, prost::Message, protos};
+use chromecast_protocol::{
+    self as protocol, prost::Message, protos, MediaInformation, QueueItem, QueueRepeatMode,
+    StreamType,
+};
 use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use futures::StreamExt;
 use log::{debug, error, info, warn};
@@ -89,6 +92,7 @@ enum Command {
         resume_position: Option<f64>,
         speed: Option<f64>,
     },
+    LoadPlaylist(Playlist),
     ChangeVolume(f64),
     ChangeSpeed(f64),
     Seek(f64),
@@ -520,6 +524,30 @@ impl InnerDevice {
                                 }
                             ).await?;
                         }
+                        Command::LoadPlaylist(playlist) => {
+                            let queue_items = playlist.items.into_iter().map(|item| {
+                                QueueItem {
+                                    autoplay: true,
+                                    media: MediaInformation {
+                                        content_id: item.content_location,
+                                        stream_type: StreamType::None,
+                                        content_type: item.content_type,
+                                        duration: None,
+                                    },
+                                    playback_duration: i32::MAX,
+                                    start_time: 0.0,
+                                }
+                            }).collect::<Vec<QueueItem>>();
+                            self.send_media_channel_message(
+                                namespaces::Media::QueueLoad {
+                                    request_id: request_id.inc(),
+                                    items: queue_items,
+                                    repeat_mode: QueueRepeatMode::All,
+                                    start_index: 0,
+                                    queue_type: Some("PLAYLIST".to_string()),
+                                }
+                            ).await?;
+                        }
                         Command::ChangeVolume(volume) => {
                             self.send_channel_message(
                                 "sender-0",
@@ -712,6 +740,10 @@ impl CastingDevice for ChromecastDevice {
 
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError> {
         self.load_url(content_type, url, None, None)
+    }
+
+    fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
+        self.send_command(Command::LoadPlaylist(playlist))
     }
 
     #[allow(unused_variables)]

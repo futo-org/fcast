@@ -166,6 +166,23 @@ pub enum Source {
     },
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaylistItem {
+    /// MIME type
+    pub content_type: String,
+    /// URL
+    pub content_location: String,
+    /// Seconds from beginning of media to start playback
+    pub start_time: Option<f64>,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Playlist {
+    pub items: Vec<PlaylistItem>,
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Clone, Debug)]
 pub enum GenericEventSubscriptionGroup {
@@ -269,6 +286,7 @@ pub trait CastingDevice: Send + Sync {
         speed: Option<f64>,
     ) -> Result<(), CastingDeviceError>;
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError>;
+    fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError>;
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
     fn disconnect(&self) -> Result<(), CastingDeviceError>;

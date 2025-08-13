@@ -22,7 +22,7 @@ use crate::{
     device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
-        GenericMediaEvent, PlaybackState, ProtocolType, Source,
+        GenericMediaEvent, PlaybackState, Playlist, ProtocolType, Source,
     },
     utils, IpAddr,
 };
@@ -731,6 +731,30 @@ impl CastingDevice for FCastDevice {
 
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError> {
         self.load_url(content_type, url, None, None)
+    }
+
+    fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
+        let items = playlist
+            .items
+            .into_iter()
+            .map(|item| v3::MediaItem {
+                container: item.content_type,
+                url: Some(item.content_location),
+                time: item.start_time,
+                ..Default::default()
+            })
+            .collect::<Vec<v3::MediaItem>>();
+
+        let playlist = v3::PlaylistContent {
+            variant: v3::ContentType::Playlist,
+            items,
+            ..Default::default()
+        };
+
+        let json_paylaod = serde_json::to_string(&playlist)
+            .map_err(|_| CastingDeviceError::FailedToSendCommand)?;
+
+        self.load_content("application/json".to_string(), json_paylaod, 0.0, 0.0, None)
     }
 
     fn load_content(

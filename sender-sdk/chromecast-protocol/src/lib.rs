@@ -127,6 +127,35 @@ pub struct MediaStatus {
     pub volume: Volume,
 }
 
+/// <https://developers.google.com/cast/docs/reference/web_sender/chrome.cast.media.QueueItem>
+#[derive(Serialize, Deserialize, Debug)]
+pub struct QueueItem {
+    /// Whether the media will automatically play.
+    pub autoplay: bool,
+    pub media: MediaInformation,
+    /// Playback duration of the item in seconds. If it is larger than the actual duration - startTime it will be
+    /// limited to the actual duration - startTime. It can be negative, in such case the duration will be the actual
+    /// item duration minus the duration provided. A duration of value zero effectively means that the item will not be
+    /// played.
+    #[serde(rename = "playbackDuration")]
+    pub playback_duration: i32,
+    // This parameter is a hint for the receiver to preload this media item before it is played. It allows for a smooth
+    // transition between items played from the queue.
+    //
+    // The time is expressed in seconds, relative to the beginning of this item playback (usually the end of the
+    // previous item playback). Only positive values are valid. For example, if the value is 10 seconds, this item will
+    // be preloaded 10 seconds before the previous item has finished. The receiver will try to honor this value but
+    // will not guarantee it, for example if the value is larger than the previous item duration the receiver may just
+    // preload this item shortly after the previous item has started playing (there will never be two items being
+    // preloaded in parallel). Also, if an item is inserted in the queue just after the currentItem and the time to
+    // preload is higher than the time left on the currentItem, the preload will just happen as soon as possible.
+    // #[serde(rename = "preloadTime")]
+    // pub preload_time: f64,
+    /// Seconds from the beginning of the media to start playback.
+    #[serde(rename = "startTime")]
+    pub start_time: f64,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct NamespaceMap {
     pub name: String,
@@ -155,6 +184,26 @@ pub struct Application {
     pub transport_id: String,
     #[serde(rename = "universalAppId")]
     pub universal_app_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum QueueRepeatMode {
+    /// Items are played in order, and when the queue is completed (the last item has ended) the media session is
+    /// terminated.
+    #[serde(rename = "REPEAT_OFF")]
+    Off,
+    /// The items in the queue will be played indefinitely. When the last item has ended, the first item will be played
+    /// again.
+    #[serde(rename = "REPEAT_ALL")]
+    All,
+    /// The current item will be repeated indefinitely.
+    #[serde(rename = "REPEAT_SINGLE")]
+    Single,
+    /// The items in the queue will be played indefinitely. When the last item has ended, the list of items will be
+    /// randomly shuffled by the receiver, and the queue will continue to play starting from the first item of the
+    /// shuffled items.
+    #[serde(rename = "REPEAT_ALL_AND_SHUFFLE")]
+    AllAndShuffle,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -375,6 +424,26 @@ pub mod namespaces {
             request_id: u64,
             #[serde(rename = "playbackRate")]
             playback_rate: f64,
+        },
+        #[serde(rename = "QUEUE_LOAD")]
+        QueueLoad {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+            /// Array of items to load. It is sorted (first element will be played first). Must not be null or empty.
+            items: Vec<QueueItem>,
+            #[serde(rename = "repeatMode")]
+            repeat_mode: QueueRepeatMode,
+            /// The index of the item in the items array that must be the first currentItem (the item that will be
+            /// played first). Note this is the index of the array (starts at 0) and not the itemId (as it is not known
+            /// until the queue is created). If repeatMode is chrome.cast.media.RepeatMode.OFF playback will end when
+            /// the last item in the array is played (elements before the startIndex will not be played). This may be
+            /// useful for continuation scenarios where the user was already using the sender app and in the middle
+            /// decides to cast. In this way the sender app does not need to map between the local and remote queue
+            /// positions or saves one extra request to update the queue.
+            #[serde(rename = "startIndex")]
+            start_index: u32,
+            #[serde(rename = "queueType")]
+            queue_type: Option<String>,
         },
     }
 

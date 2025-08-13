@@ -117,13 +117,13 @@ pub struct PlayMessage {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Deserialize_repr, Serialize_repr, Debug)]
+#[derive(Deserialize_repr, Serialize_repr, Debug, Default)]
 #[repr(u8)]
 pub enum ContentType {
-    Playlist = 0,
+    #[default] Playlist = 0,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 pub struct MediaItem {
     /// The MIME type (video/mp4)
     pub container: String,
@@ -147,10 +147,10 @@ pub struct MediaItem {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 pub struct PlaylistContent {
-    #[serde(rename = "type")]
-    variant: ContentType,
+    #[serde(rename = "contentType")]
+    pub variant: ContentType,
     pub items: Vec<MediaItem>,
     /// Start position of the first item to play from the playlist
     pub offset: Option<u64>, // int or float?
@@ -738,5 +738,48 @@ mod tests {
             }
         );
         assert!(serde_json::from_str::<EventObject>(r#"{"type":5}"#).is_err());
+    }
+
+    #[test]
+    fn serialize_playlist_content() {
+        assert_eq!(
+            serde_json::to_string(&PlaylistContent {
+                variant: ContentType::Playlist,
+                items: Vec::new(),
+                offset: None,
+                volume: None,
+                speed: None,
+                forward_cache: None,
+                backward_cache: None,
+                metadata: None
+            })
+            .unwrap(),
+            r#"{"contentType":0,"items":[],"offset":null,"volume":null,"speed":null,"forwardCache":null,"backwardCache":null,"metadata":null}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&PlaylistContent {
+                variant: ContentType::Playlist,
+                items: vec![MediaItem {
+                    container: "video/mp4".to_string(),
+                    url: Some("abc".to_string()),
+                    content: None,
+                    time: None,
+                    volume: None,
+                    speed: None,
+                    cache: None,
+                    show_duration: None,
+                    headers: None,
+                    metadata: None
+                }],
+                offset: None,
+                volume: None,
+                speed: None,
+                forward_cache: None,
+                backward_cache: None,
+                metadata: None
+            })
+            .unwrap(),
+            r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc","content":null,"time":null,"volume":null,"speed":null,"cache":null,"showDuration":null,"headers":null,"metadata":null}],"offset":null,"volume":null,"speed":null,"forwardCache":null,"backwardCache":null,"metadata":null}"#,
+        );
     }
 }
