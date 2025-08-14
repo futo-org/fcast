@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use log::debug;
+use mdns_sd::ScopedIp;
 use mdns_sd::ServiceEvent;
 use tokio_stream::StreamExt;
 
@@ -28,21 +29,52 @@ fn handle_fcast_mdns_resolved(
     if let Some(stripped) = name.strip_suffix(&format!(".{FCAST_MDNS_SERVICE_NAME}")) {
         name = stripped.to_string();
     }
-    let addresses = std_ip_to_custom(service_info.get_addresses());
     let port = service_info.get_port();
+    let resolved_service = service_info.as_resolved_service();
+    let addresses = scoped_ip_to_custom(&resolved_service.addresses);
     let device_info = DeviceInfo::fcast(name, addresses, port);
-    if devices.contains(service_info.get_fullname()) {
+    let fullname = resolved_service.fullname;
+    if devices.contains(&fullname) {
         debug!("Updating FCast device `{}`", device_info.name);
         event_handler.device_changed(device_info);
     } else {
         debug!("New FCast device `{}`", device_info.name);
         event_handler.device_available(device_info);
-        devices.insert(service_info.get_fullname().to_string());
+        devices.insert(fullname);
     }
 }
 
-fn std_ip_to_custom(addrs: &HashSet<std::net::IpAddr>) -> Vec<IpAddr> {
-    addrs.iter().map(IpAddr::from).collect()
+fn scoped_ip_to_custom(addrs: &HashSet<ScopedIp>) -> Vec<IpAddr> {
+    addrs
+        .iter()
+        .map(|addr| match addr {
+            ScopedIp::V4(v4) => IpAddr::from(std::net::IpAddr::V4(*v4.addr())),
+            ScopedIp::V6(v6) => {
+                let addr = v6.addr();
+                let octets = addr.octets();
+                IpAddr::V6 {
+                    o1: octets[0],
+                    o2: octets[1],
+                    o3: octets[2],
+                    o4: octets[3],
+                    o5: octets[4],
+                    o6: octets[5],
+                    o7: octets[6],
+                    o8: octets[7],
+                    o9: octets[8],
+                    o10: octets[9],
+                    o11: octets[10],
+                    o12: octets[11],
+                    o13: octets[12],
+                    o14: octets[13],
+                    o15: octets[14],
+                    o16: octets[15],
+                    scope_id: v6.scope_id().index,
+                }
+            }
+            _ => IpAddr::from(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)), // NOTE: this case will most likely never be hit
+        })
+        .collect()
 }
 
 enum Message {
@@ -137,16 +169,18 @@ pub(crate) async fn discover_devices(
                         .get_property(CHROMECAST_FRIENDLY_NAME_TXT)
                         .map(|name| name.val_str().to_string())
                         .unwrap_or(service_info.get_fullname().to_string());
-                    let addresses = std_ip_to_custom(service_info.get_addresses());
                     let port = service_info.get_port();
+                    let resolved_service = service_info.as_resolved_service();
+                    let addresses = scoped_ip_to_custom(&resolved_service.addresses);
                     let device_info = DeviceInfo::chromecast(name, addresses, port);
-                    if devices.contains(service_info.get_fullname()) {
+                    let fullname = resolved_service.fullname;
+                    if devices.contains(&fullname) {
                         debug!("Updating Chromecast device `{}`", device_info.name);
                         event_handler.device_changed(device_info);
                     } else {
                         debug!("New Chromecast device `{}`", device_info.name);
                         event_handler.device_available(device_info);
-                        devices.insert(service_info.get_fullname().to_string());
+                        devices.insert(fullname);
                     }
                 })
             }
