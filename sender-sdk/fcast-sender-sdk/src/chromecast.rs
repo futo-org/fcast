@@ -490,7 +490,7 @@ impl InnerDevice {
                     }
                 }
                 cmd = self.cmd_rx.recv() => {
-                    let cmd = cmd.ok_or(anyhow!("Something"))?;
+                    let cmd = cmd.ok_or(anyhow!("Failed to receive command"))?;
                     match cmd {
                         Command::Quit => break,
                         Command::LoadVideo {

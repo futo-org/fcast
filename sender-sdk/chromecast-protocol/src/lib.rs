@@ -223,6 +223,14 @@ pub struct Status {
     pub volume: VolumeStatus,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub enum InvalidRequestReason {
+    #[serde(rename = "INVALID_COMMAND")]
+    InvalidCommand,
+    #[serde(rename = "DUPLICATE_REQUESTID")]
+    DuplicateRequestId,
+}
+
 pub mod namespaces {
     use super::*;
 
@@ -444,6 +452,49 @@ pub mod namespaces {
             start_index: u32,
             #[serde(rename = "queueType")]
             queue_type: Option<String>,
+        },
+        /// https://developers.google.com/cast/docs/media/messages#InvalidPlayerState
+        ///
+        /// <https://developers.google.com/cast/docs/media/messages#InvalidPlayerState>
+        #[serde(rename = "INVALID_PLAYER_STATE")]
+        InvalidPlayerState {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+        },
+        /// Sent when the load request failed. The player state will be IDLE.
+        ///
+        /// <https://developers.google.com/cast/docs/media/messages#LoadFailed>
+        #[serde(rename = "LOAD_FAILED")]
+        LoadFailed {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+        },
+        #[serde(rename = "ERROR")]
+        Error {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+            #[serde(rename = "detailedErrorCode")]
+            detailed_error_code: Option<u64>,
+            reason: Option<String>,
+            #[serde(rename = "itemId")]
+            item_id: u64,
+        },
+        /// Sent when the load request was cancelled (a second load request was received).
+        ///
+        /// <https://developers.google.com/cast/docs/media/messages#LoadCancelled>
+        #[serde(rename = "LOAD_CANCELLED")]
+        LoadCancelled {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+        },
+        /// Sent when the request is invalid (an unknown request type, for example).
+        ///
+        /// <https://developers.google.com/cast/docs/media/messages#InvalidRequest>
+        #[serde(rename = "INVALID_REQUEST")]
+        InvalidRequest {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+            reason: InvalidRequestReason,
         },
     }
 
