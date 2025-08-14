@@ -36,6 +36,7 @@ use tokio_rustls::{
 
 const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
 const RECEIVER_APP_ID: &str = "CC1AD845";
+const MAX_LAUNCH_RETRIES: u8 = 15;
 
 struct RequestId {
     inner: u64,
@@ -182,6 +183,7 @@ struct InnerDevice {
     media_session_id: u64,
     current_player_state: PlayerState,
     session_id: String,
+    launch_retries: u8,
 }
 
 impl InnerDevice {
@@ -196,6 +198,7 @@ impl InnerDevice {
             media_session_id: 0,
             current_player_state: PlayerState::Idle,
             session_id: String::new(),
+            launch_retries: 0,
         }
     }
 
@@ -274,6 +277,23 @@ impl InnerDevice {
             },
         )
         .await
+    }
+
+    async fn launch_app(&mut self) -> anyhow::Result<()> {
+        if self.launch_retries < MAX_LAUNCH_RETRIES {
+            debug!("Trying to launch app ({})", self.launch_retries);
+            self.launch_retries += 1;
+            let request_id = self.request_id.inc();
+            self.send_channel_message(
+                "sender-0",
+                "receiver-0",
+                namespaces::Receiver::Launch {
+                    app_id: RECEIVER_APP_ID.to_owned(),
+                    request_id,
+                }).await
+        } else {
+            bail!("Launch retries exceeded MAX_LAUNCH_RETRIES ({MAX_LAUNCH_RETRIES})")
+        }
     }
 
     /// Returns `true` if the device should quit.
@@ -421,12 +441,7 @@ impl InnerDevice {
         };
 
         let remote_addr = stream.peer_addr()?.ip();
-
-        self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connected {
-                used_remote_addr: remote_addr.into(),
-                local_addr: stream.local_addr()?.ip().into(),
-            });
+        let stream_local_addr = stream.local_addr()?.ip();
 
         let mut root_cert_store = RootCertStore::empty();
         root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -542,9 +557,12 @@ impl InnerDevice {
                             let msg: namespaces::Receiver = json::from_str(json_payload)?;
                             match msg {
                                 namespaces::Receiver::Status { status, .. } => {
-                                    debug!(">>>>> {status:#?}");
+                                    debug!("Receiver status: {status:#?}");
                                     let Some(applications) = status.applications else {
                                         debug!("Got ReceiverStatus with no `applications` field");
+                                        if !is_running {
+                                            self.launch_app().await?;
+                                        }
                                         continue;
                                     };
                                     let mut new_is_running = false;
@@ -568,20 +586,20 @@ impl InnerDevice {
                                                         request_id,
                                                     },
                                                 ).await?;
+
+                                                if !is_running {
+                                                    self.event_handler
+                                                        .connection_state_changed(DeviceConnectionState::Connected {
+                                                            used_remote_addr: remote_addr.into(),
+                                                            local_addr: stream_local_addr.into(),
+                                                        });
+                                                }
                                             }
                                         }
                                     }
-                                    // Relaunch the app if it was terminated due to e.g. inactivity
                                     is_running = new_is_running;
                                     if !is_running {
-                                        let request_id = self.request_id.inc();
-                                        self.send_channel_message(
-                                            "sender-0",
-                                            "receiver-0",
-                                            namespaces::Receiver::Launch {
-                                                app_id: RECEIVER_APP_ID.to_owned(),
-                                                request_id,
-                                            }).await?;
+                                        self.launch_app().await?;
                                     }
                                 }
                                 _ => debug!("Ignored receiver message: {msg:#?}"),
@@ -643,7 +661,13 @@ impl InnerDevice {
                                     continue;
                                 }
                             };
+
                             debug!("Connection message: {msg:#?}");
+
+                            if matches!(msg, namespaces::Connection::Close) {
+                                debug!("Session closed");
+                                break;
+                            }
                         }
                         _ => warn!("Unsupported namespace: {}", packet.namespace),
                     }
