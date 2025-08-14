@@ -3,7 +3,7 @@ mod any_protocol_prelude {
     pub use anyhow::{anyhow, bail};
     pub use log::info;
     pub use std::{net::SocketAddr, time::Duration};
-    pub use tokio::{net::TcpStream};
+    pub use tokio::net::TcpStream;
 }
 
 #[cfg(any_protocol)]
@@ -21,14 +21,12 @@ pub(crate) async fn try_connect_tcp<T>(
 ) -> anyhow::Result<Option<tokio::net::TcpStream>> {
     anyhow::ensure!(!addrs.is_empty());
 
-    info!("Trying to connect to {addrs:?}...");
+    debug!("Trying to connect to {addrs:?}...");
 
-    let mut connections: Vec<_> = addrs.into_iter().map(|addr| {
-        Box::pin(tokio::time::timeout(
-            timeout,
-            TcpStream::connect(addr)
-        ))
-    }).collect();
+    let mut connections: Vec<_> = addrs
+        .into_iter()
+        .map(|addr| Box::pin(tokio::time::timeout(timeout, TcpStream::connect(addr))))
+        .collect();
 
     let (connection_tx, mut connection_rx) = tokio::sync::oneshot::channel();
 

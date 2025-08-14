@@ -13,7 +13,7 @@ use chromecast_protocol::{
 };
 use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use futures::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
 use serde_json as json;
@@ -443,24 +443,12 @@ impl InnerDevice {
         let (reader, writer) = tokio::io::split(stream);
         self.writer = Some(writer);
 
-        // let mut request_id = RequestId::new();
-
         self.send_channel_message(
             "sender-0",
             "receiver-0",
             namespaces::Connection::Connect { conn_type: 0 },
         )
         .await?;
-
-        // {
-        //     let request_id = self.request_id.inc();
-        //     self.send_channel_message(
-        //         "sender-0",
-        //         "receiver-0",
-        //         namespaces::Receiver::GetStatus { request_id },
-        //     )
-        //     .await?;
-        // }
 
         let packet_stream = futures::stream::unfold(
             (reader, vec![0u8; 1000 * 64]),
@@ -693,7 +681,7 @@ impl InnerDevice {
             }
         }
 
-        info!("Shutting down...");
+        debug!("Shutting down...");
 
         self.stop_session().await?;
 
@@ -758,7 +746,7 @@ impl CastingDevice for ChromecastDevice {
         if let Err(err) = self.stop_playback() {
             error!("Failed to stop playback: {err}");
         }
-        info!("Stopping active device because stopCasting was called.");
+        debug!("Stopping active device because stopCasting was called.");
         self.disconnect()
     }
 
@@ -857,7 +845,7 @@ impl CastingDevice for ChromecastDevice {
         }
 
         state.started = true;
-        info!("Starting with address list: {addrs:?}...");
+        debug!("Starting with address list: {addrs:?}...");
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
         state.command_tx = Some(tx);

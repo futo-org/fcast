@@ -11,7 +11,7 @@ use fcast_protocol::{
     Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage,
 };
 use futures::StreamExt;
-use log::{debug, error, info};
+use log::{debug, error};
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -230,7 +230,7 @@ impl InnerDevice {
             return Ok(());
         };
 
-        info!("Successfully connected");
+        debug!("Successfully connected");
 
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connected {
@@ -392,7 +392,7 @@ impl InnerDevice {
             }
         };
 
-        info!("Using protocol {session_version:?}");
+        debug!("Using protocol {session_version:?}");
 
         loop {
             tokio::select! {
@@ -625,7 +625,7 @@ impl InnerDevice {
             }
         }
 
-        info!("Shutting down...");
+        debug!("Shutting down...");
 
         if let Some(mut writer) = self.writer.take() {
             writer.shutdown().await?;
@@ -688,7 +688,7 @@ impl CastingDevice for FCastDevice {
         if let Err(err) = self.stop_playback() {
             error!("Failed to stop playback: {err}");
         }
-        info!("Stopping active device because stopCasting was called.");
+        debug!("Stopping active device because stopCasting was called.");
         self.disconnect()
     }
 
@@ -787,15 +787,15 @@ impl CastingDevice for FCastDevice {
     }
 
     fn disconnect(&self) -> Result<(), CastingDeviceError> {
-        info!("Trying to stop worker...");
+        debug!("Trying to stop worker...");
         if let Err(err) = self.send_command(Command::Quit) {
             error!("Failed to stop worker: {err}");
         }
-        info!("Sent quit command");
+        debug!("Sent quit command");
         let mut state = self.state.lock().unwrap();
         state.command_tx = None;
         state.started = false;
-        info!("Stopped OK");
+        debug!("Stopped OK");
         Ok(())
     }
 
@@ -814,7 +814,7 @@ impl CastingDevice for FCastDevice {
         }
 
         state.started = true;
-        info!("Starting with address list: {addrs:?}...");
+        debug!("Starting with address list: {addrs:?}...");
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
         state.command_tx = Some(tx);
