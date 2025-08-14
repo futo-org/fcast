@@ -8,8 +8,8 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use chromecast_protocol::{
-    self as protocol, prost::Message, protos, MediaInformation, QueueItem, QueueRepeatMode,
-    StreamType,
+    self as protocol, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
+    QueueRepeatMode, StreamType, CONNECTION_NAMESPACE,
 };
 use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use futures::StreamExt;
@@ -178,6 +178,10 @@ struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
     transport_id: Option<String>,
     writer: Option<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
+    request_id: RequestId,
+    media_session_id: u64,
+    current_player_state: PlayerState,
+    session_id: String,
 }
 
 impl InnerDevice {
@@ -188,6 +192,10 @@ impl InnerDevice {
             event_handler,
             transport_id: None,
             writer: None,
+            request_id: RequestId::new(),
+            media_session_id: 0,
+            current_player_state: PlayerState::Idle,
+            session_id: String::new(),
         }
     }
 
@@ -246,6 +254,156 @@ impl InnerDevice {
         }
     }
 
+    async fn stop_playback(&mut self) -> anyhow::Result<()> {
+        let request_id = self.request_id.inc();
+        self.send_media_channel_message(namespaces::Media::Stop {
+            media_session_id: self.media_session_id.to_string(),
+            request_id,
+        })
+        .await
+    }
+
+    async fn stop_session(&mut self) -> anyhow::Result<()> {
+        let request_id = self.request_id.inc();
+        self.send_channel_message(
+            "sender-0",
+            "receiver-0",
+            namespaces::Receiver::StopSession {
+                session_id: self.session_id.clone(),
+                request_id,
+            },
+        )
+        .await
+    }
+
+    /// Returns `true` if the device should quit.
+    async fn handle_command(&mut self, cmd: Command) -> anyhow::Result<bool> {
+        match cmd {
+            Command::Quit => return Ok(true),
+            Command::LoadVideo {
+                content_type,
+                content_id,
+                speed,
+                ..
+            } => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::Load {
+                    current_time: Some(0.0),
+                    media: protocol::MediaInformation {
+                        content_id,
+                        stream_type: protocol::StreamType::None,
+                        content_type,
+                        duration: None,
+                    },
+                    request_id,
+                    auto_play: None,
+                    playback_rate: speed,
+                })
+                .await?;
+            }
+            Command::LoadUrl {
+                content_type,
+                url,
+                resume_position,
+                speed,
+                ..
+            } => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::Load {
+                    current_time: resume_position,
+                    media: protocol::MediaInformation {
+                        content_id: url,
+                        stream_type: protocol::StreamType::None,
+                        content_type,
+                        duration: None,
+                    },
+                    request_id,
+                    auto_play: None,
+                    playback_rate: speed,
+                })
+                .await?;
+            }
+            Command::LoadPlaylist(playlist) => {
+                let queue_items = playlist
+                    .items
+                    .into_iter()
+                    .map(|item| QueueItem {
+                        autoplay: true,
+                        media: MediaInformation {
+                            content_id: item.content_location,
+                            stream_type: StreamType::None,
+                            content_type: item.content_type,
+                            duration: None,
+                        },
+                        playback_duration: i32::MAX,
+                        start_time: 0.0,
+                    })
+                    .collect::<Vec<QueueItem>>();
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::QueueLoad {
+                    request_id,
+                    items: queue_items,
+                    repeat_mode: QueueRepeatMode::All,
+                    start_index: 0,
+                    queue_type: Some("PLAYLIST".to_string()),
+                })
+                .await?;
+            }
+            Command::ChangeVolume(volume) => {
+                let request_id = self.request_id.inc();
+                self.send_channel_message(
+                    "sender-0",
+                    "receiver-0",
+                    namespaces::Receiver::SetVolume {
+                        request_id,
+                        volume: protocol::Volume {
+                            level: Some(volume),
+                            muted: None,
+                        },
+                    },
+                )
+                .await?;
+            }
+            Command::ChangeSpeed(speed) => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::SetPlaybackRate {
+                    request_id,
+                    media_session_id: self.media_session_id,
+                    playback_rate: speed,
+                })
+                .await?;
+            }
+            Command::Seek(time_seconds) => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::Seek {
+                    media_session_id: self.media_session_id.to_string(),
+                    request_id,
+                    current_time: Some(time_seconds),
+                })
+                .await?;
+            }
+            Command::Stop => self.stop_playback().await?,
+            Command::PausePlayback => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::Pause {
+                    media_session_id: self.media_session_id.to_string(),
+                    request_id,
+                })
+                .await?;
+            }
+            Command::ResumePlayback => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::Resume {
+                    media_session_id: self.media_session_id.to_string(),
+                    request_id,
+                })
+                .await?;
+            }
+        }
+
+        Ok(false)
+    }
+
     async fn inner_work(&mut self, addrs: Vec<SocketAddr>) -> anyhow::Result<()> {
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connecting);
@@ -285,7 +443,7 @@ impl InnerDevice {
         let (reader, writer) = tokio::io::split(stream);
         self.writer = Some(writer);
 
-        let mut request_id = RequestId::new();
+        // let mut request_id = RequestId::new();
 
         self.send_channel_message(
             "sender-0",
@@ -294,14 +452,15 @@ impl InnerDevice {
         )
         .await?;
 
-        self.send_channel_message(
-            "sender-0",
-            "receiver-0",
-            namespaces::Receiver::GetStatus {
-                request_id: request_id.inc(),
-            },
-        )
-        .await?;
+        // {
+        //     let request_id = self.request_id.inc();
+        //     self.send_channel_message(
+        //         "sender-0",
+        //         "receiver-0",
+        //         namespaces::Receiver::GetStatus { request_id },
+        //     )
+        //     .await?;
+        // }
 
         let packet_stream = futures::stream::unfold(
             (reader, vec![0u8; 1000 * 64]),
@@ -332,7 +491,7 @@ impl InnerDevice {
 
                 match read_packet(&mut reader, &mut body_buf).await {
                     Ok(body) => {
-                        debug!("Received packet, body: {body:?}");
+                        debug!("Received packet, body: {body:#?}");
                         Some((body, (reader, body_buf)))
                     }
                     Err(err) => {
@@ -357,8 +516,6 @@ impl InnerDevice {
 
         let mut shared_state = SharedState::default();
         let mut is_running = false;
-        let mut session_id = String::new();
-        let mut media_session_id = 0u64;
 
         macro_rules! changed {
             ($param:ident, $new:expr, $fun:ident) => {
@@ -397,6 +554,7 @@ impl InnerDevice {
                             let msg: namespaces::Receiver = json::from_str(json_payload)?;
                             match msg {
                                 namespaces::Receiver::Status { status, .. } => {
+                                    debug!(">>>>> {status:#?}");
                                     let Some(applications) = status.applications else {
                                         debug!("Got ReceiverStatus with no `applications` field");
                                         continue;
@@ -405,8 +563,8 @@ impl InnerDevice {
                                     for application in applications {
                                         if application.app_id == RECEIVER_APP_ID {
                                             new_is_running = true;
-                                            if session_id.is_empty() {
-                                                session_id = application.session_id;
+                                            if self.session_id.is_empty() {
+                                                self.session_id = application.session_id;
                                                 self.transport_id = Some(application.transport_id);
 
                                                 self.send_media_channel_message(
@@ -415,10 +573,11 @@ impl InnerDevice {
 
                                                 debug!("Connected to media channel {:?}", self.transport_id);
 
+                                                let request_id = self.request_id.inc();
                                                 self.send_media_channel_message(
                                                     namespaces::Media::GetStatus {
                                                         media_session_id: None,
-                                                        request_id: request_id.inc()
+                                                        request_id,
                                                     },
                                                 ).await?;
                                             }
@@ -427,16 +586,17 @@ impl InnerDevice {
                                     // Relaunch the app if it was terminated due to e.g. inactivity
                                     is_running = new_is_running;
                                     if !is_running {
+                                        let request_id = self.request_id.inc();
                                         self.send_channel_message(
                                             "sender-0",
                                             "receiver-0",
                                             namespaces::Receiver::Launch {
                                                 app_id: RECEIVER_APP_ID.to_owned(),
-                                                request_id: request_id.inc(),
+                                                request_id,
                                             }).await?;
                                     }
                                 }
-                                _ => debug!("Ignored receiver message: {msg:?}"),
+                                _ => debug!("Ignored receiver message: {msg:#?}"),
                             }
                         }
                         MEDIA_NAMESPACE => {
@@ -451,7 +611,7 @@ impl InnerDevice {
                             match msg {
                                 namespaces::Media::Status { status, .. } => {
                                     for stat in status {
-                                        media_session_id = stat.media_session_id;
+                                        self.media_session_id = stat.media_session_id;
                                         if let Some(media) = stat.media {
                                             if let Some(duration_update) = media.duration {
                                                 changed!(duration, duration_update, duration_changed);
@@ -465,7 +625,7 @@ impl InnerDevice {
                                                 shared_state.source = Some(new_source);
                                             }
                                         }
-                                        debug!("New media_session_id: {media_session_id}");
+                                        debug!("New media_session_id: {}", self.media_session_id);
                                         changed!(speed, stat.playback_rate, speed_changed);
                                         changed!(time, stat.current_time, time_changed);
                                         if let Some(level) = stat.volume.level {
@@ -481,150 +641,50 @@ impl InnerDevice {
                                             },
                                             playback_state_changed
                                         );
+                                        self.current_player_state = stat.player_state;
                                     }
                                 }
                                 _ => (),
                             }
+                        }
+                        CONNECTION_NAMESPACE => {
+                            let msg = match json::from_str::<namespaces::Connection>(json_payload) {
+                                Ok(msg) => msg,
+                                Err(err) => {
+                                    error!("Failed to parse media message: {err}");
+                                    continue;
+                                }
+                            };
+                            debug!("Connection message: {msg:#?}");
                         }
                         _ => warn!("Unsupported namespace: {}", packet.namespace),
                     }
                 }
                 cmd = self.cmd_rx.recv() => {
                     let cmd = cmd.ok_or(anyhow!("Failed to receive command"))?;
-                    match cmd {
-                        Command::Quit => break,
-                        Command::LoadVideo {
-                            content_type, content_id, speed, ..
-                        } => {
-                            self.send_media_channel_message(
-                                namespaces::Media::Load {
-                                    current_time: Some(0.0),
-                                    media: protocol::MediaInformation {
-                                        content_id,
-                                        stream_type: protocol::StreamType::None,
-                                        content_type,
-                                        duration: None,
-                                    },
-                                    request_id: request_id.inc(),
-                                    auto_play: None,
-                                    playback_rate: speed,
-                                }
-                            ).await?;
-                        }
-                        Command::LoadUrl { content_type, url, resume_position, speed, .. } => {
-                            self.send_media_channel_message(
-                                namespaces::Media::Load {
-                                    current_time: resume_position,
-                                    media: protocol::MediaInformation {
-                                        content_id: url,
-                                        stream_type: protocol::StreamType::None,
-                                        content_type,
-                                        duration: None,
-                                    },
-                                    request_id: request_id.inc(),
-                                    auto_play: None,
-                                    playback_rate: speed,
-                                }
-                            ).await?;
-                        }
-                        Command::LoadPlaylist(playlist) => {
-                            let queue_items = playlist.items.into_iter().map(|item| {
-                                QueueItem {
-                                    autoplay: true,
-                                    media: MediaInformation {
-                                        content_id: item.content_location,
-                                        stream_type: StreamType::None,
-                                        content_type: item.content_type,
-                                        duration: None,
-                                    },
-                                    playback_duration: i32::MAX,
-                                    start_time: 0.0,
-                                }
-                            }).collect::<Vec<QueueItem>>();
-                            self.send_media_channel_message(
-                                namespaces::Media::QueueLoad {
-                                    request_id: request_id.inc(),
-                                    items: queue_items,
-                                    repeat_mode: QueueRepeatMode::All,
-                                    start_index: 0,
-                                    queue_type: Some("PLAYLIST".to_string()),
-                                }
-                            ).await?;
-                        }
-                        Command::ChangeVolume(volume) => {
-                            self.send_channel_message(
-                                "sender-0",
-                                "receiver-0",
-                                namespaces::Receiver::SetVolume {
-                                    request_id: request_id.inc(),
-                                    volume: protocol::Volume {
-                                        level: Some(volume),
-                                        muted: None,
-                                    },
-                                },
-                            ).await?;
-                        }
-                        Command::ChangeSpeed(speed) => {
-                            self.send_media_channel_message(
-                                namespaces::Media::SetPlaybackRate {
-                                    request_id: request_id.inc(),
-                                    media_session_id,
-                                    playback_rate: speed
-                                },
-                            ).await?;
-                        }
-                        Command::Seek(time_seconds) => {
-                            self.send_media_channel_message(
-                                namespaces::Media::Seek {
-                                    media_session_id: media_session_id.to_string(),
-                                    request_id: request_id.inc(),
-                                    current_time: Some(time_seconds)
-                                },
-                            ).await?;
-                        }
-                        Command::Stop => {
-                            self.send_media_channel_message(
-                                namespaces::Media::Stop {
-                                    media_session_id: media_session_id.to_string(),
-                                    request_id: request_id.inc(),
-                                }
-                            ).await?;
-                        }
-                        Command::PausePlayback => {
-                            self.send_media_channel_message(
-                                namespaces::Media::Pause {
-                                    media_session_id: media_session_id.to_string(),
-                                    request_id: request_id.inc(),
-                                }
-                            ).await?;
-                        }
-                        Command::ResumePlayback => {
-                            self.send_media_channel_message(
-                                namespaces::Media::Resume {
-                                    media_session_id: media_session_id.to_string(),
-                                    request_id: request_id.inc(),
-                                }
-                            ).await?;
-                        }
+                    if self.handle_command(cmd).await? {
+                        break;
                     }
                 }
                 _ = get_status_interval.tick() => {
                     if !is_running {
                         debug!("Requesting receiver status");
+                        let request_id = self.request_id.inc();
                         self.send_channel_message(
                             "sender-0",
                             "receiver-0",
                             namespaces::Receiver::GetStatus {
-                                request_id: request_id.inc(),
+                                request_id,
                             },
                         )
                         .await?;
-                    } else if media_session_id != 0 {
+                    } else if self.media_session_id != 0 && self.current_player_state == PlayerState::Playing {
                         debug!("Requesting media status");
+                        let request_id = self.request_id.inc();
                         self.send_media_channel_message(
                             namespaces::Media::GetStatus {
-                                request_id: request_id.inc(),
-                                media_session_id: Some(media_session_id),
+                                request_id,
+                                media_session_id: Some(self.media_session_id),
                             },
                         )
                         .await?;
@@ -634,6 +694,8 @@ impl InnerDevice {
         }
 
         info!("Shutting down...");
+
+        self.stop_session().await?;
 
         if let Some(mut writer) = self.writer.take() {
             writer.shutdown().await?;

@@ -9,6 +9,7 @@ pub mod protos {
 pub const HEARTBEAT_NAMESPACE: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
 pub const RECEIVER_NAMESPACE: &str = "urn:x-cast:com.google.cast.receiver";
 pub const MEDIA_NAMESPACE: &str = "urn:x-cast:com.google.cast.media";
+pub const CONNECTION_NAMESPACE: &str = "urn:x-cast:com.google.cast.tp.connection";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Volume {
@@ -65,7 +66,7 @@ pub enum IdleReason {
     Error,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum PlayerState {
     /// Player has not been loaded yet
     #[serde(rename = "IDLE")]
@@ -254,7 +255,7 @@ pub mod namespaces {
 
     impl Namespace for Connection {
         fn name(&self) -> &'static str {
-            "urn:x-cast:com.google.cast.tp.connection"
+            CONNECTION_NAMESPACE
         }
     }
 
@@ -283,11 +284,11 @@ pub mod namespaces {
             request_id: u64,
         },
         #[serde(rename = "STOP")]
-        StopCasting {
-            #[serde(rename = "sessionId")]
-            session_id: String,
+        StopSession {
             #[serde(rename = "requestId")]
             request_id: u64,
+            #[serde(rename = "sessionId")]
+            session_id: String,
         },
         #[serde(rename = "LAUNCH")]
         Launch {
