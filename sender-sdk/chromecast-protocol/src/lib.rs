@@ -229,6 +229,8 @@ pub enum InvalidRequestReason {
     InvalidCommand,
     #[serde(rename = "DUPLICATE_REQUESTID")]
     DuplicateRequestId,
+    #[serde(rename = "INVALID_MEDIA_SESSION_ID")]
+    InvalidMediaSessionId,
 }
 
 pub mod namespaces {
@@ -246,6 +248,8 @@ pub mod namespaces {
             #[serde(rename = "connType")]
             conn_type: u64,
         },
+        #[serde(rename = "CLOSE")]
+        Close,
     }
 
     impl Namespace for Connection {
@@ -302,6 +306,12 @@ pub mod namespaces {
             #[serde(rename = "requestId")]
             request_id: u64,
             status: Status,
+        },
+        #[serde(rename = "LAUNCH_STATUS")]
+        LaunchStatus {
+            #[serde(rename = "launchRequestId")]
+            request_id: u64,
+            status: String,
         },
     }
 
