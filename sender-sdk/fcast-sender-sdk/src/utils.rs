@@ -1,7 +1,7 @@
 #[cfg(any_protocol)]
 mod any_protocol_prelude {
     pub use anyhow::{anyhow, bail};
-    pub use log::info;
+    pub use log::debug;
     pub use std::{net::SocketAddr, time::Duration};
     pub use tokio::net::TcpStream;
 }
