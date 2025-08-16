@@ -1,0 +1,31 @@
+buildSenderSDKDockerContainer:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd sender-sdk
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev:latest .
+    - docker push $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev:latest
+  when: manual
+
+buildAndroid:
+  stage: buildSenderSDKForAndroid
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
+  script:
+    - cargo xtask kotlin build-android-library --release --src-dir sender-sdk/out
+    - cp -rf sender-sdk/out/* /artifacts/
+  tags:
+    - fcast-instance-runner
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "3 days"
+    paths:
+      - sender-sdk/out/*
+  when: manual

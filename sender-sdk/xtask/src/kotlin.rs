@@ -2,7 +2,7 @@ use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use uniffi_bindgen::{
-    bindings::KotlinBindingGenerator, library_mode::generate_bindings, EmptyCrateConfigSupplier
+    bindings::KotlinBindingGenerator, library_mode::generate_bindings, EmptyCrateConfigSupplier,
 };
 use xshell::cmd;
 
@@ -77,25 +77,24 @@ fn build_android_library(release: bool, src_dir: Utf8PathBuf) -> Result<()> {
 
     let profile = if release { "release" } else { "dev" };
 
-    // NOTE: uncommented for quick testing iterations
-    // build_for_android_target(
-    //     "x86_64-linux-android",
-    //     profile,
-    //     jni_libs_dir_str,
-    //     package_name,
-    // )?;
-    // build_for_android_target(
-    //     "i686-linux-android",
-    //     profile,
-    //     jni_libs_dir_str,
-    //     package_name,
-    // )?;
-    // build_for_android_target(
-    //     "armv7-linux-androideabi",
-    //     profile,
-    //     jni_libs_dir_str,
-    //     package_name,
-    // )?;
+    build_for_android_target(
+        "x86_64-linux-android",
+        profile,
+        jni_libs_dir_str,
+        package_name,
+    )?;
+    build_for_android_target(
+        "i686-linux-android",
+        profile,
+        jni_libs_dir_str,
+        package_name,
+    )?;
+    build_for_android_target(
+        "armv7-linux-androideabi",
+        profile,
+        jni_libs_dir_str,
+        package_name,
+    )?;
     let uniffi_lib_path = build_for_android_target(
         "aarch64-linux-android",
         profile,
