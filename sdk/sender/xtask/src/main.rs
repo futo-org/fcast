@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use xshell::cmd;
 use xtask::{
-    kotlin::{self, KotlinArgs, KotlinCommand},
+    kotlin::self,
     swift::{self, SwiftArgs, SwiftCommand},
 };
 

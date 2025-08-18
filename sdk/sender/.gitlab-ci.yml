@@ -17,8 +17,8 @@ buildAndroid:
   stage: buildSenderSDKForAndroid
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
   script:
-    - cargo xtask kotlin build-android-library --release --src-dir sender-sdk/out
-    - cp -rf sender-sdk/out/* /artifacts/
+    - cargo xtask kotlin build-android-library --release --src-dir sdk/sender/out
+    - cp -rf sdk/sender/out/* /artifacts/
   tags:
     - fcast-instance-runner
   artifacts:
@@ -27,5 +27,5 @@ buildAndroid:
     access: all
     expire_in: "3 days"
     paths:
-      - sender-sdk/out/*
+      - sdk/sender/out/*
   when: manual

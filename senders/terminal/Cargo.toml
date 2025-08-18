@@ -12,4 +12,4 @@ ctrlc = "3.1.9"
 tungstenite = { version = "0.21.0" }
 url = "2.5.0"
 tiny_http = "0.12.0"
-fcast-protocol.path = "../../sender-sdk/fcast-protocol"
+fcast-protocol.path = "../../sdk/common/fcast-protocol"
