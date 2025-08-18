@@ -120,7 +120,8 @@ pub struct PlayMessage {
 #[derive(Deserialize_repr, Serialize_repr, Debug, Default)]
 #[repr(u8)]
 pub enum ContentType {
-    #[default] Playlist = 0,
+    #[default]
+    Playlist = 0,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]

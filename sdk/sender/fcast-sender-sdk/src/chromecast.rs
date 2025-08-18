@@ -290,7 +290,9 @@ impl InnerDevice {
                 namespaces::Receiver::Launch {
                     app_id: RECEIVER_APP_ID.to_owned(),
                     request_id,
-                }).await
+                },
+            )
+            .await
         } else {
             bail!("Launch retries exceeded MAX_LAUNCH_RETRIES ({MAX_LAUNCH_RETRIES})")
         }
