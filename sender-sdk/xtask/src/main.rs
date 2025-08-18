@@ -9,10 +9,6 @@ use xtask::{
 #[derive(Subcommand)]
 enum Command {
     Kotlin(kotlin::KotlinArgs),
-    GenerateAndroid {
-        #[arg(long, short)]
-        include_resources: bool,
-    },
     // GenerateIos, // TODO
     // # https://github.com/Tehnix/template-mobile-wasm
     // # export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer/
@@ -43,37 +39,6 @@ fn main() -> Result<()> {
         Command::Hack => {
             let sh = xtask::sh();
             cmd!(sh, "cargo hack check --each-feature").run()?;
-            Ok(())
-        }
-        Command::GenerateAndroid { include_resources } => {
-            KotlinArgs {
-                cmd: KotlinCommand::BuildAndroidLibrary {
-                    release: true,
-                    src_dir: xtask::workspace::root_path()?
-                        .join("sender-sdk/android/src")
-                        .into(),
-                },
-            }
-            .run()?;
-            let sh = xtask::sh();
-            {
-                let _p = sh.push_dir(xtask::workspace::root_path()?.join("sender-sdk/android"));
-                sh.create_dir("../examples/android/app/aar")?;
-                sh.create_dir("../examples/android-views/app/aar")?;
-                if include_resources {
-                    cmd!(sh, "./gradlew assembleRelease -PincludeResources=true").run()?;
-                } else {
-                    cmd!(sh, "./gradlew assembleRelease -PincludeResources=false").run()?;
-                }
-                sh.copy_file(
-                    "build/outputs/aar/fcast-android-sender-sdk-release.aar",
-                    "../examples/android/app/aar/fcast-android-sender-sdk-release.aar",
-                )?;
-                sh.copy_file(
-                    "build/outputs/aar/fcast-android-sender-sdk-release.aar",
-                    "../examples/android-views/app/aar/fcast-android-sender-sdk-release.aar",
-                )?;
-            }
             Ok(())
         }
         Command::Swift(cmd) => cmd.run(),

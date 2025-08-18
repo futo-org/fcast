@@ -48,7 +48,6 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation("net.java.dev.jna:jna:5.12.0@aar")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -57,10 +56,7 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-    implementation(fileTree(mapOf("dir" to "aar", "include" to listOf("*.aar"))))
-
-    implementation("androidx.recyclerview:recyclerview:1.4.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.2.1")
-    implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation("com.google.android.material:material:1.12.0")
+    // implementation("org.fcast:sender-sdk-minimal:0.1.0")
+    implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-minimal:5a9e64a789")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
 }

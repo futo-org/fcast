@@ -44,7 +44,6 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-    implementation(fileTree(mapOf("dir" to "aar", "include" to listOf("*.aar"))))
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
-    implementation("net.java.dev.jna:jna:5.12.0@aar")
+    implementation("org.fcast:sender-sdk-full:0.1.0")
 }
