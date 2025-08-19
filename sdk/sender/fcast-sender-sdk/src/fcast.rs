@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -28,6 +31,11 @@ use crate::{
     },
     utils, IpAddr,
 };
+
+const DEFAULT_SESSION_VERSION: u8 = 2;
+const EVENT_SUB_MIN_PROTO_VERSION: u8 = 3;
+const PLAYLIST_MIN_PROTO_VERSION: u8 = 3;
+const V3_FEATURES_MIN_PROTO_VERSION: u8 = 3;
 
 #[derive(Debug, PartialEq)]
 enum LoadType {
@@ -84,31 +92,40 @@ impl State {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct FCastDevice {
     state: Mutex<State>,
+    session_version: FCastVersion,
 }
 
 impl FCastDevice {
-    const SUPPORTED_FEATURES: [DeviceFeature; 6] = [
-        DeviceFeature::SetVolume,
-        DeviceFeature::SetSpeed,
-        DeviceFeature::LoadContent,
-        DeviceFeature::LoadUrl,
-        DeviceFeature::KeyEventSubscription,
-        DeviceFeature::MediaEventSubscription,
-    ];
-
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
+            session_version: FCastVersion::new(),
         }
     }
 }
 
 const HEADER_LENGTH: usize = 5;
 
-#[derive(Debug, PartialEq, Eq)]
-enum ProtocolVersion {
-    V2,
-    V3,
+struct FCastVersion(Arc<AtomicU8>);
+
+impl FCastVersion {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(DEFAULT_SESSION_VERSION)))
+    }
+
+    pub fn get(&self) -> u8 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set(&self, value: u8) {
+        self.0.store(value, Ordering::Relaxed)
+    }
+}
+
+impl Clone for FCastVersion {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
 }
 
 fn meta_to_fcast_meta(meta: Option<Metadata>) -> Option<MetadataObject> {
@@ -122,13 +139,15 @@ fn meta_to_fcast_meta(meta: Option<Metadata>) -> Option<MetadataObject> {
 struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
     writer: Option<tokio::net::tcp::OwnedWriteHalf>,
+    session_version: FCastVersion,
 }
 
 impl InnerDevice {
-    pub fn new(event_handler: Arc<dyn DeviceEventHandler>) -> Self {
+    pub fn new(event_handler: Arc<dyn DeviceEventHandler>, session_version: FCastVersion) -> Self {
         Self {
             event_handler,
             writer: None,
+            session_version,
         }
     }
 
@@ -175,7 +194,6 @@ impl InnerDevice {
 
     async fn load(
         &mut self,
-        version: &ProtocolVersion,
         type_: LoadType,
         content_type: String,
         resume_position: f64,
@@ -184,8 +202,8 @@ impl InnerDevice {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> anyhow::Result<()> {
-        match version {
-            ProtocolVersion::V2 => {
+        match self.session_version.get() {
+            2 => {
                 let mut msg = v2::PlayMessage {
                     container: content_type,
                     url: None,
@@ -208,7 +226,7 @@ impl InnerDevice {
                         .await?;
                 }
             }
-            ProtocolVersion::V3 => {
+            3 => {
                 let mut msg = v3::PlayMessage {
                     container: content_type,
                     url: None,
@@ -229,6 +247,7 @@ impl InnerDevice {
                 }
                 self.send(Opcode::Play, msg).await?;
             }
+            _ => bail!("Unspoorted session version {}", self.session_version.get()),
         }
         Ok(())
     }
@@ -337,86 +356,6 @@ impl InnerDevice {
             };
         }
 
-        // Negotiate version and potentially downgrade
-        let session_version = {
-            self.send(Opcode::Version, VersionMessage { version: 3 })
-                .await?;
-
-            let maybe_version_msg = packet_stream.next().await.ok_or(anyhow!(
-                "Packet stream empty when waiting for version message"
-            ))?;
-            if maybe_version_msg.0 == Opcode::Version {
-                let body = maybe_version_msg
-                    .1
-                    .ok_or(anyhow!("Received version message with no body"))?;
-                let version_msg: VersionMessage = serde_json::from_str(&body)
-                    .context("Failed to parse VersionMessage json body")?;
-                if version_msg.version == 3 {
-                    debug!("Receiver supports v3");
-
-                    self.send(
-                        Opcode::Initial,
-                        v3::InitialSenderMessage {
-                            display_name: None,
-                            app_name: Some(
-                                concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION")).to_owned(),
-                            ),
-                            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                        },
-                    )
-                    .await
-                    .context("Failed to send InitialSenderMessage")?;
-
-                    let maybe_initial_msg = packet_stream.next().await.ok_or(anyhow!(
-                        "Packet stream empty when waiting for initial message"
-                    ))?;
-                    if maybe_initial_msg.0 != Opcode::Initial {
-                        bail!("expected Initial message, got {:?}", maybe_initial_msg.0);
-                    }
-                    let body = maybe_initial_msg
-                        .1
-                        .ok_or(anyhow!("Received initial message with no body"))?;
-                    let initial_msg: InitialReceiverMessage = serde_json::from_str(&body)
-                        .context("Failed to parse InitialReceiverMessage json body")?;
-
-                    debug!("Received InitialReceiverMessage: {initial_msg:?}");
-
-                    if let Some(play_msg) = initial_msg.play_data {
-                        if let Some(url) = play_msg.url {
-                            let source = Source::Url {
-                                url,
-                                content_type: play_msg.container,
-                            };
-                            self.event_handler.source_changed(source.clone());
-                            self.event_handler
-                                .playback_state_changed(PlaybackState::Playing);
-                            shared_state.source = Some(source);
-                        } else if let Some(content) = play_msg.content {
-                            let source = Source::Content { content };
-                            self.event_handler.source_changed(source.clone());
-                            self.event_handler
-                                .playback_state_changed(PlaybackState::Playing);
-                            shared_state.source = Some(source);
-                        }
-                    }
-
-                    ProtocolVersion::V3
-                } else {
-                    debug!("Receiver supports v2, downgrading");
-                    ProtocolVersion::V2
-                }
-            } else {
-                debug!(
-                    "Expected to receive version message, got {:?}. Assuming receiver supports v2",
-                    maybe_version_msg.0
-                );
-                // TODO: the received message gets dropped, should it?
-                ProtocolVersion::V2
-            }
-        };
-
-        debug!("Using protocol {session_version:?}");
-
         loop {
             tokio::select! {
                 packet = packet_stream.next() => {
@@ -427,8 +366,8 @@ impl InnerDevice {
                                 error!("Missing body");
                                 continue;
                             };
-                            match session_version {
-                                ProtocolVersion::V2 => {
+                            match self.session_version.get() {
+                                2 => {
                                     let Ok(update) = serde_json::from_str::<v2::PlaybackUpdateMessage>(&body) else {
                                         error!("Malformed body: {body}");
                                         continue;
@@ -446,7 +385,7 @@ impl InnerDevice {
                                         playback_state_changed
                                     );
                                 }
-                                ProtocolVersion::V3 => {
+                                3 => {
                                     let Ok(update) = serde_json::from_str::<v3::PlaybackUpdateMessage>(&body) else {
                                         error!("Malformed body: {body}");
                                         continue;
@@ -471,6 +410,7 @@ impl InnerDevice {
                                     );
                                     // TODO: item_index
                                 }
+                                _ => bail!("Unsupported session version {}", self.session_version.get()),
                             }
                         }
                         Opcode::VolumeUpdate => {
@@ -486,8 +426,8 @@ impl InnerDevice {
                         }
                         Opcode::Ping => self.send_empty(Opcode::Pong).await?,
                         Opcode::Event => {
-                            if session_version != ProtocolVersion::V3 {
-                                debug!("Received event message when not supposed to ({session_version:?}), ignoring");
+                            if self.session_version.get() != V3_FEATURES_MIN_PROTO_VERSION {
+                                debug!("Received event message when not supposed to, ignoring");
                                 continue;
                             }
                             let Some(body) = packet.1 else {
@@ -557,6 +497,75 @@ impl InnerDevice {
                                 shared_state.source = Some(source);
                             }
                         }
+                        Opcode::Version => {
+                            let Some(body) = packet.1 else {
+                                error!("Version message is missing body");
+                                continue;
+                            };
+                            let version_msg = match serde_json::from_str::<VersionMessage>(&body) {
+                                Ok(msg) => msg,
+                                Err(err) => {
+                                    error!("Failed to parse VersionMessage json body: {err}");
+                                    continue;
+                                }
+                            };
+                            if version_msg.version >= V3_FEATURES_MIN_PROTO_VERSION {
+                                debug!("Receiver supports v3");
+                                self.send(
+                                    Opcode::Version,
+                                    VersionMessage { version: V3_FEATURES_MIN_PROTO_VERSION }
+                                ).await?;
+
+                                self.send(
+                                    Opcode::Initial,
+                                    v3::InitialSenderMessage {
+                                        display_name: None,
+                                        app_name: Some(
+                                            concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION")).to_owned(),
+                                        ),
+                                        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                                    },
+                                )
+                                .await
+                                .context("Failed to send InitialSenderMessage")?;
+
+                                self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
+                            }
+                        }
+                        Opcode::Initial => {
+                            let Some(body) = packet.1 else {
+                                error!("Received initial message with no body");
+                                continue;
+                            };
+                            let initial_msg = match serde_json::from_str::<InitialReceiverMessage>(&body) {
+                                Ok(msg) => msg,
+                                Err(err) => {
+                                    error!("Failed to parse InitialReceiverMessage json body: {err}");
+                                    continue;
+                                }
+                            };
+
+                            debug!("Received InitialReceiverMessage: {initial_msg:?}");
+
+                            if let Some(play_msg) = initial_msg.play_data {
+                                if let Some(url) = play_msg.url {
+                                    let source = Source::Url {
+                                        url,
+                                        content_type: play_msg.container,
+                                    };
+                                    self.event_handler.source_changed(source.clone());
+                                    self.event_handler
+                                        .playback_state_changed(PlaybackState::Playing);
+                                    shared_state.source = Some(source);
+                                } else if let Some(content) = play_msg.content {
+                                    let source = Source::Content { content };
+                                    self.event_handler.source_changed(source.clone());
+                                    self.event_handler
+                                        .playback_state_changed(PlaybackState::Playing);
+                                    shared_state.source = Some(source);
+                                }
+                            }
+                        }
                         _ => debug!("Packet ignored: {packet:?}"),
                     }
                 }
@@ -569,7 +578,7 @@ impl InnerDevice {
                         Command::ChangeVolume(volume) => self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?,
                         Command::ChangeSpeed(speed) => self.send(Opcode::SetSpeed, SetSpeedMessage { speed }).await?,
                         Command::Load { type_, content_type, resume_position, speed, volume, metadata, request_headers, } =>
-                            self.load(&session_version, type_, content_type, resume_position, speed, volume, metadata, request_headers).await?,
+                            self.load(type_, content_type, resume_position, speed, volume, metadata, request_headers).await?,
                         Command::SeekVideo(time) => self.send(Opcode::Seek, SeekMessage { time }).await?,
                         Command::StopVideo => {
                             self.send_empty(Opcode::Stop).await?;
@@ -582,10 +591,10 @@ impl InnerDevice {
                             | Command::SubscribeToAllKeyEvents
                             | Command::UnsubscribeToAllMediaItemEvents
                             | Command::UnsubscribeToAllKeyEvents => {
-                            if session_version != ProtocolVersion::V3 {
+                            if self.session_version.get() != EVENT_SUB_MIN_PROTO_VERSION {
                                 error!(
-                                    "Current protocol version ({session_version:?}) does not support event subscriptions, {:?} is required",
-                                    ProtocolVersion::V3
+                                    "Current protocol version ({}) does not support event subscriptions, version >=3 is required",
+                                    self.session_version.get(),
                                 );
                                 continue;
                             }
@@ -666,7 +675,18 @@ impl CastingDevice for FCastDevice {
     }
 
     fn supports_feature(&self, feature: DeviceFeature) -> bool {
-        Self::SUPPORTED_FEATURES.contains(&feature)
+        match feature {
+            DeviceFeature::SetVolume
+            | DeviceFeature::SetSpeed
+            | DeviceFeature::LoadContent
+            | DeviceFeature::LoadUrl => true,
+            DeviceFeature::KeyEventSubscription
+            | DeviceFeature::MediaEventSubscription
+            | DeviceFeature::LoadImage
+            | DeviceFeature::LoadPlaylist => {
+                self.session_version.get() >= V3_FEATURES_MIN_PROTO_VERSION
+            }
+        }
     }
 
     fn name(&self) -> String {
@@ -752,6 +772,10 @@ impl CastingDevice for FCastDevice {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
+        if self.session_version.get() < PLAYLIST_MIN_PROTO_VERSION {
+            return Err(CastingDeviceError::UnsupportedFeature);
+        }
+
         self.load_url(
             content_type,
             url,
@@ -764,6 +788,10 @@ impl CastingDevice for FCastDevice {
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
+        if self.session_version.get() < PLAYLIST_MIN_PROTO_VERSION {
+            return Err(CastingDeviceError::UnsupportedFeature);
+        }
+
         let items = playlist
             .items
             .into_iter()
@@ -861,7 +889,7 @@ impl CastingDevice for FCastDevice {
 
         state
             .rt_handle
-            .spawn(InnerDevice::new(event_handler).work(addrs, rx));
+            .spawn(InnerDevice::new(event_handler, self.session_version.clone()).work(addrs, rx));
 
         Ok(())
     }
@@ -900,19 +928,27 @@ impl CastingDevice for FCastDevice {
         &self,
         group: GenericEventSubscriptionGroup,
     ) -> Result<(), CastingDeviceError> {
-        self.send_command(match group {
-            GenericEventSubscriptionGroup::Keys => Command::SubscribeToAllKeyEvents,
-            GenericEventSubscriptionGroup::Media => Command::SubscribeToAllMediaItemEvents,
-        })
+        if self.session_version.get() >= EVENT_SUB_MIN_PROTO_VERSION {
+            self.send_command(match group {
+                GenericEventSubscriptionGroup::Keys => Command::SubscribeToAllKeyEvents,
+                GenericEventSubscriptionGroup::Media => Command::SubscribeToAllMediaItemEvents,
+            })
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
     }
 
     fn unsubscribe_event(
         &self,
         group: GenericEventSubscriptionGroup,
     ) -> Result<(), CastingDeviceError> {
-        self.send_command(match group {
-            GenericEventSubscriptionGroup::Keys => Command::UnsubscribeToAllKeyEvents,
-            GenericEventSubscriptionGroup::Media => Command::UnsubscribeToAllMediaItemEvents,
-        })
+        if self.session_version.get() >= EVENT_SUB_MIN_PROTO_VERSION {
+            self.send_command(match group {
+                GenericEventSubscriptionGroup::Keys => Command::UnsubscribeToAllKeyEvents,
+                GenericEventSubscriptionGroup::Media => Command::UnsubscribeToAllMediaItemEvents,
+            })
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
     }
 }

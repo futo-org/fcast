@@ -274,6 +274,8 @@ pub enum DeviceFeature {
     LoadUrl,
     KeyEventSubscription,
     MediaEventSubscription,
+    LoadImage,
+    LoadPlaylist,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]

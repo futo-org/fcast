@@ -103,10 +103,12 @@ pub struct ChromecastDevice {
 }
 
 impl ChromecastDevice {
-    const SUPPORTED_FEATURES: [DeviceFeature; 3] = [
+    const SUPPORTED_FEATURES: [DeviceFeature; 5] = [
         DeviceFeature::SetVolume,
         DeviceFeature::SetSpeed,
         DeviceFeature::LoadUrl,
+        DeviceFeature::LoadImage,
+        DeviceFeature::LoadPlaylist,
     ];
 
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
