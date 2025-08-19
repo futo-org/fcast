@@ -1,4 +1,5 @@
 use crate::IpAddr;
+use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::Arc;
 
@@ -305,6 +306,7 @@ pub trait CastingDevice: Send + Sync {
         resume_position: Option<f64>,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
     fn load_content(
         &self,
@@ -314,6 +316,7 @@ pub trait CastingDevice: Send + Sync {
         duration: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
     fn load_video(
         &self,
@@ -322,8 +325,15 @@ pub trait CastingDevice: Send + Sync {
         resume_position: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
-    fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError>;
+    fn load_image(
+        &self,
+        content_type: String,
+        url: String,
+        metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
+    ) -> Result<(), CastingDeviceError>;
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError>;
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;

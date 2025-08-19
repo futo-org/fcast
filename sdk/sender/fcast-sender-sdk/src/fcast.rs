@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -29,34 +30,51 @@ use crate::{
 };
 
 #[derive(Debug, PartialEq)]
+enum LoadType {
+    Url { url: String },
+    Content { content: String, duration: f64 },
+}
+
+#[derive(Debug, PartialEq)]
 enum Command {
     ChangeVolume(f64),
     ChangeSpeed(f64),
-    #[allow(dead_code)]
-    LoadVideo {
-        stream_type: String,
+    Load {
+        type_: LoadType,
         content_type: String,
-        content_id: String,
-        resume_position: f64,
-        duration: f64,
-        speed: Option<f64>,
-        metadata: Option<Metadata>,
-    },
-    LoadUrl {
-        content_type: String,
-        url: String,
         resume_position: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     },
-    LoadContent {
-        content_type: String,
-        content: String,
-        resume_position: f64,
-        duration: f64,
-        speed: Option<f64>,
-        metadata: Option<Metadata>,
-    },
+    // #[allow(dead_code)]
+    // LoadVideo {
+    // stream_type: String,
+    // content_type: String,
+    // content_id: String,
+    // resume_position: f64,
+    // duration: f64,
+    // speed: Option<f64>,
+    // metadata: Option<Metadata>,
+    // request_headers: Option<HashMap<String, String>>,
+    // },
+    // LoadUrl {
+    // content_type: String,
+    // url: String,
+    // resume_position: f64,
+    // speed: Option<f64>,
+    // metadata: Option<Metadata>,
+    // request_headers: Option<HashMap<String, String>>,
+    // },
+    // LoadContent {
+    // content_type: String,
+    // content: String,
+    // resume_position: f64,
+    // duration: f64,
+    // speed: Option<f64>,
+    // metadata: Option<Metadata>,
+    // request_headers: Option<HashMap<String, String>>,
+    // },
     SeekVideo(f64),
     StopVideo,
     PauseVideo,
@@ -182,40 +200,55 @@ impl InnerDevice {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn send_play(
+    async fn load(
         &mut self,
         version: &ProtocolVersion,
+        type_: LoadType,
         content_type: String,
-        url: Option<String>,
-        content: Option<String>,
         resume_position: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> anyhow::Result<()> {
         match version {
             ProtocolVersion::V2 => {
-                let msg = v2::PlayMessage {
+                let mut msg = v2::PlayMessage {
                     container: content_type,
-                    url,
-                    content,
+                    url: None,
+                    content: None,
                     time: Some(resume_position),
                     speed,
-                    headers: None,
+                    headers: request_headers,
                 };
+                match type_ {
+                    LoadType::Url { url } => {
+                        msg.url = Some(url);
+                    }
+                    LoadType::Content { content, .. } => {
+                        msg.content = Some(content);
+                    }
+                }
                 self.send(Opcode::Play, msg).await?;
             }
             ProtocolVersion::V3 => {
-                let msg = v3::PlayMessage {
+                let mut msg = v3::PlayMessage {
                     container: content_type,
-                    url,
-                    content,
+                    url: None,
+                    content: None,
                     time: Some(resume_position),
                     speed,
-                    headers: None,
+                    headers: request_headers,
                     volume: None,
                     metadata: meta_to_fcast_meta(metadata),
                 };
+                match type_ {
+                    LoadType::Url { url } => {
+                        msg.url = Some(url);
+                    }
+                    LoadType::Content { content, .. } => {
+                        msg.content = Some(content);
+                    }
+                }
                 self.send(Opcode::Play, msg).await?;
             }
         }
@@ -557,39 +590,8 @@ impl InnerDevice {
                     match cmd {
                         Command::ChangeVolume(volume) => self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?,
                         Command::ChangeSpeed(speed) => self.send(Opcode::SetSpeed, SetSpeedMessage { speed }).await?,
-                        Command::LoadVideo { content_type, content_id, speed, resume_position, metadata, .. } => {
-                            self.send_play(
-                                &session_version,
-                                content_type,
-                                Some(content_id),
-                                None,
-                                resume_position,
-                                speed,
-                                metadata,
-                            ).await?;
-                        }
-                        Command::LoadUrl { content_type, url, resume_position, speed, metadata } => {
-                            self.send_play(
-                                &session_version,
-                                content_type,
-                                Some(url),
-                                None,
-                                resume_position,
-                                speed,
-                                metadata,
-                            ).await?;
-                        }
-                        Command::LoadContent { content_type, content, resume_position, speed, metadata, .. } => {
-                            self.send_play(
-                                &session_version,
-                                content_type,
-                                None,
-                                Some(content),
-                                resume_position,
-                                speed,
-                                metadata,
-                            ).await?;
-                        }
+                        Command::Load { type_, content_type, resume_position, speed, metadata, request_headers } =>
+                            self.load(&session_version, type_, content_type, resume_position, speed, metadata, request_headers).await?,
                         Command::SeekVideo(time) => self.send(Opcode::Seek, SeekMessage { time }).await?,
                         Command::StopVideo => {
                             self.send_empty(Opcode::Stop).await?;
@@ -730,13 +732,15 @@ impl CastingDevice for FCastDevice {
         resume_position: Option<f64>,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
-        self.send_command(Command::LoadUrl {
+        self.send_command(Command::Load {
             content_type,
-            url,
+            type_: LoadType::Url { url },
             resume_position: resume_position.unwrap_or(0.0),
             speed,
             metadata,
+            request_headers,
         })
     }
 
@@ -747,12 +751,26 @@ impl CastingDevice for FCastDevice {
         resume_position: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, Some(resume_position), speed, metadata)
+        self.load_url(
+            content_type,
+            url,
+            Some(resume_position),
+            speed,
+            metadata,
+            request_headers,
+        )
     }
 
-    fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, None, None, None)
+    fn load_image(
+        &self,
+        content_type: String,
+        url: String,
+        metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
+    ) -> Result<(), CastingDeviceError> {
+        self.load_url(content_type, url, None, None, metadata, request_headers)
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
@@ -783,6 +801,7 @@ impl CastingDevice for FCastDevice {
             0.0,
             None,
             None,
+            None,
         )
     }
 
@@ -794,14 +813,15 @@ impl CastingDevice for FCastDevice {
         duration: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
-        self.send_command(Command::LoadContent {
+        self.send_command(Command::Load {
+            type_: LoadType::Content { content, duration },
             content_type,
-            content,
             resume_position,
-            duration,
             speed,
             metadata,
+            request_headers,
         })
     }
 

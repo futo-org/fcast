@@ -18,6 +18,7 @@ use rustls_pki_types::ServerName;
 use serde::Serialize;
 use serde_json as json;
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -87,6 +88,7 @@ enum Command {
         duration: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     },
     LoadUrl {
         content_type: String,
@@ -94,6 +96,7 @@ enum Command {
         resume_position: Option<f64>,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     },
     LoadPlaylist(Playlist),
     ChangeVolume(f64),
@@ -815,6 +818,7 @@ impl CastingDevice for ChromecastDevice {
         resume_position: Option<f64>,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(), CastingDeviceError> {
         self.send_command(Command::LoadUrl {
             content_type,
@@ -822,6 +826,7 @@ impl CastingDevice for ChromecastDevice {
             resume_position,
             speed,
             metadata,
+            request_headers,
         })
     }
 
@@ -832,12 +837,26 @@ impl CastingDevice for ChromecastDevice {
         resume_position: f64,
         speed: Option<f64>,
         metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, Some(resume_position), speed, metadata)
+        self.load_url(
+            content_type,
+            url,
+            Some(resume_position),
+            speed,
+            metadata,
+            request_headers,
+        )
     }
 
-    fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, None, None, None)
+    fn load_image(
+        &self,
+        content_type: String,
+        url: String,
+        metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
+    ) -> Result<(), CastingDeviceError> {
+        self.load_url(content_type, url, None, None, metadata, request_headers)
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
@@ -853,6 +872,7 @@ impl CastingDevice for ChromecastDevice {
         _duration: f64,
         _speed: Option<f64>,
         _metadata: Option<Metadata>,
+        _request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedFeature)
     }

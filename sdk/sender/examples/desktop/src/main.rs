@@ -389,7 +389,7 @@ impl App {
                                     entry.location,
                                 );
                                 active_device
-                                    .load_url(media_type.mime_type().to_string(), url, None, None)
+                                    .load_url(media_type.mime_type().to_string(), url, None, None, None, None)
                                     .unwrap();
                             }
                             None => error!("Not connected"),
