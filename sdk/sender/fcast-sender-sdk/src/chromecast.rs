@@ -79,22 +79,12 @@ impl State {
 #[derive(Debug, PartialEq)]
 enum Command {
     Quit,
-    #[allow(dead_code)]
-    LoadVideo {
-        stream_type: String,
-        content_type: String,
-        content_id: String,
-        resume_position: f64,
-        duration: f64,
-        speed: Option<f64>,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    },
     LoadUrl {
         content_type: String,
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     },
@@ -312,39 +302,33 @@ impl InnerDevice {
         }
     }
 
+    async fn change_volume(&mut self, volume: f64) -> anyhow::Result<()> {
+        let request_id = self.request_id.inc();
+        self.send_channel_message(
+            "sender-0",
+            "receiver-0",
+            namespaces::Receiver::SetVolume {
+                request_id,
+                volume: protocol::Volume {
+                    level: Some(volume),
+                    muted: None,
+                },
+            },
+        )
+        .await
+    }
+
     /// Returns `true` if the device should quit.
     async fn handle_command(&mut self, cmd: Command) -> anyhow::Result<bool> {
         match cmd {
             Command::Quit => return Ok(true),
-            Command::LoadVideo {
-                content_type,
-                content_id,
-                speed,
-                metadata,
-                ..
-            } => {
-                let request_id = self.request_id.inc();
-                self.send_media_channel_message(namespaces::Media::Load {
-                    current_time: Some(0.0),
-                    media: protocol::MediaInformation {
-                        content_id,
-                        stream_type: protocol::StreamType::None,
-                        content_type,
-                        duration: None,
-                        metadata: meta_to_gcast_meta(metadata),
-                    },
-                    request_id,
-                    auto_play: None,
-                    playback_rate: speed,
-                })
-                .await?;
-            }
             Command::LoadUrl {
                 content_type,
                 url,
                 resume_position,
                 speed,
                 metadata,
+                volume,
                 ..
             } => {
                 let request_id = self.request_id.inc();
@@ -362,6 +346,9 @@ impl InnerDevice {
                     playback_rate: speed,
                 })
                 .await?;
+                if let Some(volume) = volume {
+                    self.change_volume(volume).await?;
+                }
             }
             Command::LoadPlaylist(playlist) => {
                 let queue_items = playlist
@@ -390,21 +377,7 @@ impl InnerDevice {
                 })
                 .await?;
             }
-            Command::ChangeVolume(volume) => {
-                let request_id = self.request_id.inc();
-                self.send_channel_message(
-                    "sender-0",
-                    "receiver-0",
-                    namespaces::Receiver::SetVolume {
-                        request_id,
-                        volume: protocol::Volume {
-                            level: Some(volume),
-                            muted: None,
-                        },
-                    },
-                )
-                .await?;
-            }
+            Command::ChangeVolume(volume) => self.change_volume(volume).await?,
             Command::ChangeSpeed(speed) => {
                 let request_id = self.request_id.inc();
                 self.send_media_channel_message(namespaces::Media::SetPlaybackRate {
@@ -817,6 +790,7 @@ impl CastingDevice for ChromecastDevice {
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(), CastingDeviceError> {
@@ -825,6 +799,7 @@ impl CastingDevice for ChromecastDevice {
             url,
             resume_position,
             speed,
+            volume,
             metadata,
             request_headers,
         })
@@ -836,6 +811,7 @@ impl CastingDevice for ChromecastDevice {
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
@@ -844,6 +820,7 @@ impl CastingDevice for ChromecastDevice {
             url,
             Some(resume_position),
             speed,
+            volume,
             metadata,
             request_headers,
         )
@@ -856,7 +833,15 @@ impl CastingDevice for ChromecastDevice {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, None, None, metadata, request_headers)
+        self.load_url(
+            content_type,
+            url,
+            None,
+            None,
+            None,
+            metadata,
+            request_headers,
+        )
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
@@ -870,6 +855,7 @@ impl CastingDevice for ChromecastDevice {
         _content: String,
         _resume_position: f64,
         _duration: f64,
+        _volume: Option<f64>,
         _speed: Option<f64>,
         _metadata: Option<Metadata>,
         _request_headers: Option<HashMap<String, String>>,

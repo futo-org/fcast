@@ -44,6 +44,7 @@ enum Command {
         content_type: String,
         resume_position: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     },
@@ -207,6 +208,7 @@ impl InnerDevice {
         content_type: String,
         resume_position: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> anyhow::Result<()> {
@@ -229,6 +231,10 @@ impl InnerDevice {
                     }
                 }
                 self.send(Opcode::Play, msg).await?;
+                if let Some(volume) = volume {
+                    self.send(Opcode::SetVolume, SetVolumeMessage { volume })
+                        .await?;
+                }
             }
             ProtocolVersion::V3 => {
                 let mut msg = v3::PlayMessage {
@@ -238,7 +244,7 @@ impl InnerDevice {
                     time: Some(resume_position),
                     speed,
                     headers: request_headers,
-                    volume: None,
+                    volume,
                     metadata: meta_to_fcast_meta(metadata),
                 };
                 match type_ {
@@ -590,8 +596,8 @@ impl InnerDevice {
                     match cmd {
                         Command::ChangeVolume(volume) => self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?,
                         Command::ChangeSpeed(speed) => self.send(Opcode::SetSpeed, SetSpeedMessage { speed }).await?,
-                        Command::Load { type_, content_type, resume_position, speed, metadata, request_headers } =>
-                            self.load(&session_version, type_, content_type, resume_position, speed, metadata, request_headers).await?,
+                        Command::Load { type_, content_type, resume_position, speed, volume, metadata, request_headers, } =>
+                            self.load(&session_version, type_, content_type, resume_position, speed, volume, metadata, request_headers).await?,
                         Command::SeekVideo(time) => self.send(Opcode::Seek, SeekMessage { time }).await?,
                         Command::StopVideo => {
                             self.send_empty(Opcode::Stop).await?;
@@ -731,6 +737,7 @@ impl CastingDevice for FCastDevice {
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
@@ -739,6 +746,7 @@ impl CastingDevice for FCastDevice {
             type_: LoadType::Url { url },
             resume_position: resume_position.unwrap_or(0.0),
             speed,
+            volume,
             metadata,
             request_headers,
         })
@@ -750,6 +758,7 @@ impl CastingDevice for FCastDevice {
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
@@ -758,6 +767,7 @@ impl CastingDevice for FCastDevice {
             url,
             Some(resume_position),
             speed,
+            volume,
             metadata,
             request_headers,
         )
@@ -770,7 +780,15 @@ impl CastingDevice for FCastDevice {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, None, None, metadata, request_headers)
+        self.load_url(
+            content_type,
+            url,
+            None,
+            None,
+            None,
+            metadata,
+            request_headers,
+        )
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
@@ -802,6 +820,7 @@ impl CastingDevice for FCastDevice {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -812,6 +831,7 @@ impl CastingDevice for FCastDevice {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {
@@ -820,6 +840,7 @@ impl CastingDevice for FCastDevice {
             content_type,
             resume_position,
             speed,
+            volume,
             metadata,
             request_headers,
         })

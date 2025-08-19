@@ -305,6 +305,7 @@ pub trait CastingDevice: Send + Sync {
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
@@ -315,6 +316,7 @@ pub trait CastingDevice: Send + Sync {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
@@ -324,6 +326,7 @@ pub trait CastingDevice: Send + Sync {
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        volume: Option<f64>,
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;

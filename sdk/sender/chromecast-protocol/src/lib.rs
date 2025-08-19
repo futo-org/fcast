@@ -166,7 +166,6 @@ pub struct MediaInformation {
     /// MIME content type of the media being played
     #[serde(rename = "contentType")]
     pub content_type: String,
-    // TODO: `metadata`
     pub metadata: Option<Metadata>,
     /// Duration of the currently playing stream in seconds
     pub duration: Option<f64>,
