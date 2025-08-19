@@ -879,8 +879,8 @@ impl CastingDevice for ChromecastDevice {
         _content: String,
         _resume_position: f64,
         _duration: f64,
-        _volume: Option<f64>,
         _speed: Option<f64>,
+        _volume: Option<f64>,
         _metadata: Option<Metadata>,
         _request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError> {

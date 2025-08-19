@@ -204,7 +204,10 @@ struct ContentView: View {
                                         contentType: contentType,
                                         url: url,
                                         resumePosition: nil,
-                                        speed: nil
+                                        speed: nil,
+                                        volume: nil,
+                                        metadata: nil,
+                                        requestHeaders: nil
                                     )
                                 } catch {
                                     print("Failed to serve file")
@@ -279,7 +282,8 @@ struct ContentView: View {
                                                     o13: raw[12],
                                                     o14: raw[13],
                                                     o15: raw[14],
-                                                    o16: raw[15]
+                                                    o16: raw[15],
+                                                    scopeId: UInt32(addr.interface?.index ?? 0)
                                                 )
                                             default:
                                                 DispatchQueue.main.async {
