@@ -48,6 +48,10 @@ impl DeviceEventHandler for EventHandler {
     fn media_event(&self, event: GenericMediaEvent) {
         info!("Media event: {event:?}");
     }
+
+    fn playback_error(&self, message: String) {
+        info!("Playback error: {message}");
+    }
 }
 
 #[tokio::main]

@@ -147,6 +147,10 @@ impl DeviceEventHandler for DevEventHandler {
     fn key_event(&self, _event: GenericKeyEvent) {}
 
     fn media_event(&self, _event: GenericMediaEvent) {}
+
+    fn playback_error(&self, message: String) {
+        error!("Playback error: {message}");
+    }
 }
 
 struct App {

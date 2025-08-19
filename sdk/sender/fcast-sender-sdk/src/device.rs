@@ -247,6 +247,7 @@ pub trait DeviceEventHandler: Send + Sync {
     fn source_changed(&self, source: Source);
     fn key_event(&self, event: GenericKeyEvent);
     fn media_event(&self, event: GenericMediaEvent);
+    fn playback_error(&self, message: String);
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]

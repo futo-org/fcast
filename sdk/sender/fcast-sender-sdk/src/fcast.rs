@@ -12,7 +12,8 @@ use anyhow::{anyhow, bail, Context};
 use fcast_protocol::{
     v2,
     v3::{self, InitialReceiverMessage, MetadataObject, SetPlaylistItemMessage},
-    Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage,
+    Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
+    VolumeUpdateMessage,
 };
 use futures::StreamExt;
 use log::{debug, error};
@@ -571,6 +572,20 @@ impl InnerDevice {
                                     shared_state.source = Some(source);
                                 }
                             }
+                        }
+                        Opcode::PlaybackError => {
+                            let Some(body) = packet.1 else {
+                                error!("Received playback error with no body");
+                                continue;
+                            };
+                            let error = match serde_json::from_str::<PlaybackErrorMessage>(&body) {
+                                Ok(msg) => msg,
+                                Err(err) => {
+                                    error!("Failed to parse PlaybackErrorMessage json body: {err}");
+                                    continue;
+                                }
+                            };
+                            self.event_handler.playback_error(error.message);
                         }
                         _ => debug!("Packet ignored: {packet:?}"),
                     }
