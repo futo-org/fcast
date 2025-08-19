@@ -276,6 +276,8 @@ pub enum DeviceFeature {
     MediaEventSubscription,
     LoadImage,
     LoadPlaylist,
+    PlaylistNextAndPrevious,
+    SetPlaylistItemIndex,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -340,6 +342,13 @@ pub trait CastingDevice: Send + Sync {
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError>;
+    fn playlist_item_next(&self) -> Result<(), CastingDeviceError>;
+    fn playlist_item_previous(&self) -> Result<(), CastingDeviceError>;
+    /// Set the item index for the currently playing playlist.
+    ///
+    /// # Arguments
+    ///   * `index`: zero-based index into the playlist
+    fn set_playlist_item_index(&self, index: u32) -> Result<(), CastingDeviceError>;
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
     fn disconnect(&self) -> Result<(), CastingDeviceError>;

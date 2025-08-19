@@ -444,6 +444,7 @@ pub mod namespaces {
         }
     }
 
+    // TODO: can media_session_id be a u64?
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(tag = "type")]
     pub enum Media {
@@ -585,6 +586,14 @@ pub mod namespaces {
             start_index: u32,
             #[serde(rename = "queueType")]
             queue_type: Option<String>,
+        },
+        #[serde(rename = "QUEUE_UPDATE")]
+        QueueUpdate {
+            #[serde(rename = "requestId")]
+            request_id: u64,
+            #[serde(rename = "mediaSessionId")]
+            media_session_id: String,
+            jump: Option<i32>,
         },
         /// https://developers.google.com/cast/docs/media/messages#InvalidPlayerState
         ///

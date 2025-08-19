@@ -11,7 +11,7 @@ use std::{
 use anyhow::{anyhow, bail, Context};
 use fcast_protocol::{
     v2,
-    v3::{self, InitialReceiverMessage, MetadataObject},
+    v3::{self, InitialReceiverMessage, MetadataObject, SetPlaylistItemMessage},
     Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage,
 };
 use futures::StreamExt;
@@ -65,6 +65,9 @@ enum Command {
     SubscribeToAllKeyEvents,
     UnsubscribeToAllMediaItemEvents,
     UnsubscribeToAllKeyEvents,
+    SetPlaylistItemIndex(u32),
+    JumpPlaylist(i32),
+    LoadPlaylist(Playlist),
 }
 
 struct State {
@@ -356,6 +359,9 @@ impl InnerDevice {
             };
         }
 
+        let mut playlist_length = None::<usize>;
+        let mut current_playlist_item_index = None::<usize>;
+
         loop {
             tokio::select! {
                 packet = packet_stream.next() => {
@@ -408,7 +414,7 @@ impl InnerDevice {
                                         },
                                         playback_state_changed
                                     );
-                                    // TODO: item_index
+                                    current_playlist_item_index = update.item_index.map(|idx| idx as usize);
                                 }
                                 _ => bail!("Unsupported session version {}", self.session_version.get()),
                             }
@@ -577,8 +583,47 @@ impl InnerDevice {
                     match cmd {
                         Command::ChangeVolume(volume) => self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?,
                         Command::ChangeSpeed(speed) => self.send(Opcode::SetSpeed, SetSpeedMessage { speed }).await?,
-                        Command::Load { type_, content_type, resume_position, speed, volume, metadata, request_headers, } =>
-                            self.load(type_, content_type, resume_position, speed, volume, metadata, request_headers).await?,
+                        Command::Load { type_, content_type, resume_position, speed, volume, metadata, request_headers, } => {
+                            self.load(type_, content_type, resume_position, speed, volume, metadata, request_headers).await?;
+                            playlist_length = None;
+                            current_playlist_item_index = None;
+                        }
+                        Command::LoadPlaylist(playlist) => {
+                            let items = playlist
+                                .items
+                                .into_iter()
+                                .map(|item| v3::MediaItem {
+                                    container: item.content_type,
+                                    url: Some(item.content_location),
+                                    time: item.start_time,
+                                    ..Default::default()
+                                })
+                                .collect::<Vec<v3::MediaItem>>();
+
+                            playlist_length = Some(items.len());
+                            current_playlist_item_index = Some(0);
+
+                            let playlist = v3::PlaylistContent {
+                                variant: v3::ContentType::Playlist,
+                                items,
+                                ..Default::default()
+                            };
+
+                            let Ok(json_paylaod) = serde_json::to_string(&playlist) else {
+                                error!("Failed to serialize playlist to json");
+                                continue;
+                            };
+
+                            self.load(
+                                LoadType::Content { content: json_paylaod, duration: 0.0 },
+                                "application/json".to_owned(),
+                                0.0,
+                                None,
+                                None,
+                                None,
+                                None,
+                            ).await?;
+                        }
                         Command::SeekVideo(time) => self.send(Opcode::Seek, SeekMessage { time }).await?,
                         Command::StopVideo => {
                             self.send_empty(Opcode::Stop).await?;
@@ -623,6 +668,26 @@ impl InnerDevice {
                                     v3::SubscribeEventMessage { event: obj }
                                 ).await?;
                             }
+                        }
+                        Command::SetPlaylistItemIndex(item_index) =>
+                            self.send(Opcode::SetPlaylistItem, SetPlaylistItemMessage { item_index: item_index as u64 }).await?,
+                        Command::JumpPlaylist(jump) => {
+                            let (Some(playlist_length), Some(current_playlist_item_index))
+                                = (playlist_length, current_playlist_item_index.as_mut()) else {
+                                error!("Cannot jump in playlist because a playlist is not currently playing");
+                                continue;
+                            };
+                            if jump < 0 && *current_playlist_item_index == 0 {
+                                *current_playlist_item_index = playlist_length - 1;
+                            } else {
+                                *current_playlist_item_index += jump as usize;
+                                *current_playlist_item_index %= playlist_length;
+                            }
+
+                            self.send(
+                                Opcode::SetPlaylistItem,
+                                SetPlaylistItemMessage { item_index: *current_playlist_item_index as u64 }
+                            ).await?;
                         }
                     }
                 }
@@ -683,6 +748,8 @@ impl CastingDevice for FCastDevice {
             DeviceFeature::KeyEventSubscription
             | DeviceFeature::MediaEventSubscription
             | DeviceFeature::LoadImage
+            | DeviceFeature::PlaylistNextAndPrevious
+            | DeviceFeature::SetPlaylistItemIndex
             | DeviceFeature::LoadPlaylist => {
                 self.session_version.get() >= V3_FEATURES_MIN_PROTO_VERSION
             }
@@ -792,36 +859,23 @@ impl CastingDevice for FCastDevice {
             return Err(CastingDeviceError::UnsupportedFeature);
         }
 
-        let items = playlist
-            .items
-            .into_iter()
-            .map(|item| v3::MediaItem {
-                container: item.content_type,
-                url: Some(item.content_location),
-                time: item.start_time,
-                ..Default::default()
-            })
-            .collect::<Vec<v3::MediaItem>>();
+        self.send_command(Command::LoadPlaylist(playlist))
+    }
 
-        let playlist = v3::PlaylistContent {
-            variant: v3::ContentType::Playlist,
-            items,
-            ..Default::default()
-        };
+    fn playlist_item_next(&self) -> Result<(), CastingDeviceError> {
+        self.send_command(Command::JumpPlaylist(1))
+    }
 
-        let json_paylaod = serde_json::to_string(&playlist)
-            .map_err(|_| CastingDeviceError::FailedToSendCommand)?;
+    fn playlist_item_previous(&self) -> Result<(), CastingDeviceError> {
+        self.send_command(Command::JumpPlaylist(-1))
+    }
 
-        self.load_content(
-            "application/json".to_string(),
-            json_paylaod,
-            0.0,
-            0.0,
-            None,
-            None,
-            None,
-            None,
-        )
+    fn set_playlist_item_index(&self, index: u32) -> Result<(), CastingDeviceError> {
+        if self.session_version.get() >= PLAYLIST_MIN_PROTO_VERSION {
+            self.send_command(Command::SetPlaylistItemIndex(index))
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
     }
 
     fn load_content(

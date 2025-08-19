@@ -95,6 +95,7 @@ enum Command {
     Stop,
     PausePlayback,
     ResumePlayback,
+    JumpPlaylist(i32),
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
@@ -103,14 +104,6 @@ pub struct ChromecastDevice {
 }
 
 impl ChromecastDevice {
-    const SUPPORTED_FEATURES: [DeviceFeature; 5] = [
-        DeviceFeature::SetVolume,
-        DeviceFeature::SetSpeed,
-        DeviceFeature::LoadUrl,
-        DeviceFeature::LoadImage,
-        DeviceFeature::LoadPlaylist,
-    ];
-
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
@@ -412,6 +405,15 @@ impl InnerDevice {
                 self.send_media_channel_message(namespaces::Media::Resume {
                     media_session_id: self.media_session_id.to_string(),
                     request_id,
+                })
+                .await?;
+            }
+            Command::JumpPlaylist(jump) => {
+                let request_id = self.request_id.inc();
+                self.send_media_channel_message(namespaces::Media::QueueUpdate {
+                    media_session_id: self.media_session_id.to_string(),
+                    request_id,
+                    jump: Some(jump),
                 })
                 .await?;
             }
@@ -749,7 +751,15 @@ impl CastingDevice for ChromecastDevice {
     }
 
     fn supports_feature(&self, feature: DeviceFeature) -> bool {
-        Self::SUPPORTED_FEATURES.contains(&feature)
+        match feature {
+            DeviceFeature::SetVolume
+            | DeviceFeature::SetSpeed
+            | DeviceFeature::LoadUrl
+            | DeviceFeature::LoadImage
+            | DeviceFeature::LoadPlaylist
+            | DeviceFeature::PlaylistNextAndPrevious => true,
+            _ => false,
+        }
     }
 
     fn name(&self) -> String {
@@ -848,6 +858,18 @@ impl CastingDevice for ChromecastDevice {
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
         self.send_command(Command::LoadPlaylist(playlist))
+    }
+
+    fn playlist_item_next(&self) -> Result<(), CastingDeviceError> {
+        self.send_command(Command::JumpPlaylist(1))
+    }
+
+    fn playlist_item_previous(&self) -> Result<(), CastingDeviceError> {
+        self.send_command(Command::JumpPlaylist(-1))
+    }
+
+    fn set_playlist_item_index(&self, _index: u32) -> Result<(), CastingDeviceError> {
+        Err(CastingDeviceError::UnsupportedFeature)
     }
 
     #[allow(unused_variables)]
