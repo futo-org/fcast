@@ -1,6 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde::{de, ser, Deserialize, Serialize};
 
 pub use prost;
+use serde_json::{json, Value};
 
 pub mod protos {
     include!(concat!(env!("OUT_DIR"), "/protos.rs"));
@@ -29,6 +30,128 @@ pub enum StreamType {
     Live,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Image {
+    pub url: String,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Metadata {
+    Generic {
+        title: Option<String>,
+        subtitle: Option<String>,
+        images: Option<Vec<Image>>,
+        release_date: Option<String>,
+    },
+}
+
+impl Serialize for Metadata {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Metadata::Generic {
+                title,
+                subtitle,
+                images,
+                release_date,
+            } => {
+                let mut map = serde_json::Map::new();
+                map.insert("metadataType".to_owned(), json!(0u64));
+                map.insert(
+                    "title".to_owned(),
+                    match title {
+                        Some(t) => Value::String(t.to_owned()),
+                        None => Value::Null,
+                    },
+                );
+                map.insert(
+                    "subtitle".to_owned(),
+                    match subtitle {
+                        Some(s) => Value::String(s.to_owned()),
+                        None => Value::Null,
+                    },
+                );
+                map.insert(
+                    "images".to_owned(),
+                    match images {
+                        Some(i) => serde_json::to_value(i)
+                            .map_err(|_| ser::Error::custom("failed to serialize `images`"))?,
+                        None => Value::Null,
+                    },
+                );
+                map.insert(
+                    "releaseDate".to_owned(),
+                    match release_date {
+                        Some(r) => Value::String(r.to_owned()),
+                        None => Value::Null,
+                    },
+                );
+                map.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Metadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut map = serde_json::Map::deserialize(deserializer)?;
+
+        let type_ = map
+            .remove("metadataType")
+            .ok_or(de::Error::missing_field("metadataType"))?
+            .as_u64()
+            .ok_or(de::Error::custom("`metadataType` is not an integer"))?;
+        let rest = Value::Object(map);
+
+        match type_ {
+            0 => {
+                let title = match rest.get("title") {
+                    Some(t) => t.as_str().map(|s| s.to_string()),
+                    None => None,
+                };
+                let subtitle = match rest.get("subtitle") {
+                    Some(s) => s.as_str().map(|s| s.to_string()),
+                    None => None,
+                };
+                let images = match rest.get("images") {
+                    Some(i) => match i.as_array() {
+                        Some(images) => Some(
+                            images
+                                .iter()
+                                .map(|maybe_image| {
+                                    serde_json::from_value::<Image>(maybe_image.clone())
+                                })
+                                .collect::<Result<Vec<Image>, serde_json::Error>>()
+                                .map_err(|_| {
+                                    de::Error::custom("`images` is not an array of images")
+                                })?,
+                        ),
+                        None => None,
+                    },
+                    None => None,
+                };
+                let release_date = match rest.get("releaseDate") {
+                    Some(r) => r.as_str().map(|s| s.to_string()),
+                    None => None,
+                };
+
+                Ok(Self::Generic {
+                    title,
+                    subtitle,
+                    images,
+                    release_date,
+                })
+            }
+            _ => Err(de::Error::custom(format!("Unknown metadata type {type_}"))),
+        }
+    }
+}
+
 /// <https://developers.google.com/cast/docs/media/messages#MediaInformation>
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MediaInformation {
@@ -44,7 +167,7 @@ pub struct MediaInformation {
     #[serde(rename = "contentType")]
     pub content_type: String,
     // TODO: `metadata`
-    // metadata: Option<...>
+    pub metadata: Option<Metadata>,
     /// Duration of the currently playing stream in seconds
     pub duration: Option<f64>,
 }
@@ -513,5 +636,34 @@ pub mod namespaces {
         fn name(&self) -> &'static str {
             MEDIA_NAMESPACE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serde_generic_metadata() {
+        let meta = Metadata::Generic {
+            title: None,
+            subtitle: None,
+            images: None,
+            release_date: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<Metadata>(&serde_json::to_string(&meta).unwrap()).unwrap(),
+            meta,
+        );
+        let meta = Metadata::Generic {
+            title: Some("title".to_owned()),
+            subtitle: Some("subtitle".to_owned()),
+            images: Some(vec![Image { url: "url".to_owned() }]),
+            release_date: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<Metadata>(&serde_json::to_string(&meta).unwrap()).unwrap(),
+            meta,
+        );
     }
 }

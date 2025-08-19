@@ -1,8 +1,8 @@
 use crate::{
     device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, PlaybackState, Playlist,
-        ProtocolType, Source,
+        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, Metadata, PlaybackState,
+        Playlist, ProtocolType, Source,
     },
     utils, IpAddr,
 };
@@ -86,12 +86,14 @@ enum Command {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     },
     LoadUrl {
         content_type: String,
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     },
     LoadPlaylist(Playlist),
     ChangeVolume(f64),
@@ -171,6 +173,15 @@ impl rustls::client::danger::ServerCertVerifier for AllCertVerifier {
             rustls::SignatureScheme::ED448,
         ]
     }
+}
+
+fn meta_to_gcast_meta(meta: Option<Metadata>) -> Option<protocol::Metadata> {
+    meta.map(|meta| protocol::Metadata::Generic {
+        title: meta.title,
+        subtitle: None,
+        images: meta.thumbnail_url.map(|url| vec![protocol::Image { url }]),
+        release_date: None,
+    })
 }
 
 struct InnerDevice {
@@ -306,6 +317,7 @@ impl InnerDevice {
                 content_type,
                 content_id,
                 speed,
+                metadata,
                 ..
             } => {
                 let request_id = self.request_id.inc();
@@ -316,6 +328,7 @@ impl InnerDevice {
                         stream_type: protocol::StreamType::None,
                         content_type,
                         duration: None,
+                        metadata: meta_to_gcast_meta(metadata),
                     },
                     request_id,
                     auto_play: None,
@@ -328,6 +341,7 @@ impl InnerDevice {
                 url,
                 resume_position,
                 speed,
+                metadata,
                 ..
             } => {
                 let request_id = self.request_id.inc();
@@ -338,6 +352,7 @@ impl InnerDevice {
                         stream_type: protocol::StreamType::None,
                         content_type,
                         duration: None,
+                        metadata: meta_to_gcast_meta(metadata),
                     },
                     request_id,
                     auto_play: None,
@@ -356,6 +371,7 @@ impl InnerDevice {
                             stream_type: StreamType::None,
                             content_type: item.content_type,
                             duration: None,
+                            metadata: None,
                         },
                         playback_duration: i32::MAX,
                         start_time: 0.0,
@@ -798,12 +814,14 @@ impl CastingDevice for ChromecastDevice {
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> std::result::Result<(), CastingDeviceError> {
         self.send_command(Command::LoadUrl {
             content_type,
             url,
             resume_position,
             speed,
+            metadata,
         })
     }
 
@@ -813,12 +831,13 @@ impl CastingDevice for ChromecastDevice {
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, Some(resume_position), speed)
+        self.load_url(content_type, url, Some(resume_position), speed, metadata)
     }
 
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, None, None)
+        self.load_url(content_type, url, None, None, None)
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
@@ -833,9 +852,9 @@ impl CastingDevice for ChromecastDevice {
         _resume_position: f64,
         _duration: f64,
         _speed: Option<f64>,
+        _metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError> {
-        todo!()
-        // self.load_url(content_type, url, Some(resume_position), speed)
+        Err(CastingDeviceError::UnsupportedFeature)
     }
 
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError> {

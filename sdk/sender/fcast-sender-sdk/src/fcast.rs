@@ -7,7 +7,7 @@ use std::{
 use anyhow::{anyhow, bail, Context};
 use fcast_protocol::{
     v2,
-    v3::{self, InitialReceiverMessage},
+    v3::{self, InitialReceiverMessage, MetadataObject},
     Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, VolumeUpdateMessage,
 };
 use futures::StreamExt;
@@ -23,7 +23,7 @@ use crate::{
     device::{
         CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
         DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
-        GenericMediaEvent, PlaybackState, Playlist, ProtocolType, Source,
+        GenericMediaEvent, Metadata, PlaybackState, Playlist, ProtocolType, Source,
     },
     utils, IpAddr,
 };
@@ -40,12 +40,14 @@ enum Command {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     },
     LoadUrl {
         content_type: String,
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     },
     LoadContent {
         content_type: String,
@@ -53,6 +55,7 @@ enum Command {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     },
     SeekVideo(f64),
     StopVideo,
@@ -115,6 +118,14 @@ const HEADER_LENGTH: usize = 5;
 enum ProtocolVersion {
     V2,
     V3,
+}
+
+fn meta_to_fcast_meta(meta: Option<Metadata>) -> Option<MetadataObject> {
+    meta.map(|meta| MetadataObject::Generic {
+        title: meta.title,
+        thumbnail_url: meta.thumbnail_url,
+        custom: None,
+    })
 }
 
 struct InnerDevice {
@@ -180,6 +191,7 @@ impl InnerDevice {
         content: Option<String>,
         resume_position: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> anyhow::Result<()> {
         match version {
             ProtocolVersion::V2 => {
@@ -202,7 +214,7 @@ impl InnerDevice {
                     speed,
                     headers: None,
                     volume: None,
-                    metadata: None,
+                    metadata: meta_to_fcast_meta(metadata),
                 };
                 self.send(Opcode::Play, msg).await?;
             }
@@ -545,7 +557,7 @@ impl InnerDevice {
                     match cmd {
                         Command::ChangeVolume(volume) => self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?,
                         Command::ChangeSpeed(speed) => self.send(Opcode::SetSpeed, SetSpeedMessage { speed }).await?,
-                        Command::LoadVideo { content_type, content_id, speed, resume_position, .. } => {
+                        Command::LoadVideo { content_type, content_id, speed, resume_position, metadata, .. } => {
                             self.send_play(
                                 &session_version,
                                 content_type,
@@ -553,9 +565,10 @@ impl InnerDevice {
                                 None,
                                 resume_position,
                                 speed,
+                                metadata,
                             ).await?;
                         }
-                        Command::LoadUrl { content_type, url, resume_position, speed } => {
+                        Command::LoadUrl { content_type, url, resume_position, speed, metadata } => {
                             self.send_play(
                                 &session_version,
                                 content_type,
@@ -563,9 +576,10 @@ impl InnerDevice {
                                 None,
                                 resume_position,
                                 speed,
+                                metadata,
                             ).await?;
                         }
-                        Command::LoadContent { content_type, content, resume_position, speed, .. } => {
+                        Command::LoadContent { content_type, content, resume_position, speed, metadata, .. } => {
                             self.send_play(
                                 &session_version,
                                 content_type,
@@ -573,6 +587,7 @@ impl InnerDevice {
                                 Some(content),
                                 resume_position,
                                 speed,
+                                metadata,
                             ).await?;
                         }
                         Command::SeekVideo(time) => self.send(Opcode::Seek, SeekMessage { time }).await?,
@@ -714,12 +729,14 @@ impl CastingDevice for FCastDevice {
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError> {
         self.send_command(Command::LoadUrl {
             content_type,
             url,
             resume_position: resume_position.unwrap_or(0.0),
             speed,
+            metadata,
         })
     }
 
@@ -729,12 +746,13 @@ impl CastingDevice for FCastDevice {
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, Some(resume_position), speed)
+        self.load_url(content_type, url, Some(resume_position), speed, metadata)
     }
 
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError> {
-        self.load_url(content_type, url, None, None)
+        self.load_url(content_type, url, None, None, None)
     }
 
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
@@ -758,7 +776,14 @@ impl CastingDevice for FCastDevice {
         let json_paylaod = serde_json::to_string(&playlist)
             .map_err(|_| CastingDeviceError::FailedToSendCommand)?;
 
-        self.load_content("application/json".to_string(), json_paylaod, 0.0, 0.0, None)
+        self.load_content(
+            "application/json".to_string(),
+            json_paylaod,
+            0.0,
+            0.0,
+            None,
+            None,
+        )
     }
 
     fn load_content(
@@ -768,6 +793,7 @@ impl CastingDevice for FCastDevice {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError> {
         self.send_command(Command::LoadContent {
             content_type,
@@ -775,6 +801,7 @@ impl CastingDevice for FCastDevice {
             resume_position,
             duration,
             speed,
+            metadata,
         })
     }
 

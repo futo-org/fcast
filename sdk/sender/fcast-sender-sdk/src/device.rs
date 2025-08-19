@@ -260,6 +260,8 @@ pub enum CastingDeviceError {
     DeviceAlreadyStarted,
     #[error("unsupported subscription")]
     UnsupportedSubscription,
+    #[error("unsupported feature")]
+    UnsupportedFeature,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -272,7 +274,13 @@ pub enum DeviceFeature {
     KeyEventSubscription,
     MediaEventSubscription,
 }
-// fn supports_feature(feature: DeviceFeature) -> bool;
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, PartialEq)]
+pub struct Metadata {
+    pub title: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
 
 /// A generic interface for casting devices.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
@@ -296,6 +304,7 @@ pub trait CastingDevice: Send + Sync {
         url: String,
         resume_position: Option<f64>,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError>;
     fn load_content(
         &self,
@@ -304,6 +313,7 @@ pub trait CastingDevice: Send + Sync {
         resume_position: f64,
         duration: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError>;
     fn load_video(
         &self,
@@ -311,6 +321,7 @@ pub trait CastingDevice: Send + Sync {
         url: String,
         resume_position: f64,
         speed: Option<f64>,
+        metadata: Option<Metadata>,
     ) -> Result<(), CastingDeviceError>;
     fn load_image(&self, content_type: String, url: String) -> Result<(), CastingDeviceError>;
     fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError>;
