@@ -48,7 +48,7 @@ fn build_for_android_target(
 }
 
 fn generate_uniffi_bindings(library_path: &Utf8Path, ffi_generated_dir: &Utf8Path) -> Result<()> {
-    let config_path = workspace::root_path()?.join("sender-sdk/fcast-sender-sdk/uniffi.toml");
+    let config_path = workspace::root_path()?.join("sdk/sender/fcast-sender-sdk/uniffi.toml");
 
     generate_bindings(
         library_path,

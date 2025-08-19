@@ -1,5 +1,5 @@
 # docker build --no-cache -t fcast/sender-sdk-dev:latest .
-# docker run --rm -it -w /app/sender-sdk --entrypoint='sh' --network host -v ..:/app fcast/sender-sdk-dev:latest
+# docker run --rm -it -w /app/sdk/sender --entrypoint='sh' --network host -v ..:/app fcast/sender-sdk-dev:latest
 
 FROM rust:1-alpine
 
