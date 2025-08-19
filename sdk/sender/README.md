@@ -15,12 +15,13 @@
   (can be installed with [rustup](https://rustup.rs/): `rustup target add x86_64-linux-android i686-linux-android armv7-linux-androideabi aarch64-linux-android`)
 * `JAVA_HOME` must point to a java implementation
 
-To generate the bindings and include them in the `examples/android/` and `examples/android-views/` demos,
-execute the following command:
+To build the android library locally you first need to clone [fcast-sdk-jitpack](https://gitlab.futo.org/videostreaming/fcast-sdk-jitpack) locally, build the rust binaries and generate the UniFFI kotlin module:
 
 ```console
-$ cargo xtask generate-android
+$ cargo xtask kotlin build-android-library --release --src-dir <path-to-fcast-sdk-jitpack>/src
 ```
+
+Then follow the `Local testing` section [here](https://gitlab.futo.org/videostreaming/fcast-sdk-jitpack/-/blob/main/README.md?ref_type=heads).
 
 ## IOS
 
