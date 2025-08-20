@@ -50,7 +50,6 @@ import com.journeyapps.barcodescanner.ScanOptions
 import org.fcast.sender_sdk.DeviceInfo
 import org.fcast.sender_sdk.DeviceDiscovererEventHandler
 import org.fcast.sender_sdk.LogLevelFilter
-import org.fcast.sender_sdk.FileServer
 
 data class CastingState(
     var volume: MutableState<Double> = mutableDoubleStateOf(1.0),
@@ -131,6 +130,10 @@ class EventHandler : DeviceEventHandler {
     override fun mediaEvent(event: GenericMediaEvent) {
         // Unreachable
     }
+
+    override fun playbackError(message: String) {
+        println("Playback error: $message")
+    }
 }
 
 class DiscoveryEventHandler(
@@ -164,10 +167,10 @@ class MainActivity : ComponentActivity() {
     private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let {
             deviceInfoFromUrl(it)?.let { deviceInfo ->
-                val device = castContext.createDeviceFromInfo(deviceInfo);
+                val device = castContext.createDeviceFromInfo(deviceInfo)
                 try {
-                    device.connect(eventHandler)
-                    activeCastingDevice.value = device;
+                    device.connect(null, eventHandler)
+                    activeCastingDevice.value = device
                 } catch (e: Exception) {
                     println("Failed to start device: {e}")
                 }
@@ -185,7 +188,7 @@ class MainActivity : ComponentActivity() {
                 val entry = fileServer.serveFile(fd)
                 val url =
                     "http://${urlFormatIpAddr(eventHandler.castingState.localAddress!!)}:${entry.port}/${entry.location}"
-                device.loadUrl(type, url, null, null)
+                device.loadUrl(type, url, null, null, null, null, null)
             }
         } catch (e: Exception) {
             println("Failed to read $maybeUri: $e")
@@ -230,7 +233,7 @@ class MainActivity : ComponentActivity() {
                         devices,
                         connectDevice = { device ->
                             try {
-                                device.connect(eventHandler)
+                                device.connect(null, eventHandler)
                                 activeCastingDevice.value = device
                             } catch (e: Exception) {
                                 println("Failed to connect to device: $e")
@@ -396,7 +399,10 @@ fun View(
                             "video/mp4",
                             "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
                             0.0,
-                            1.0
+                            1.0,
+                            null,
+                            null,
+                            null
                         )
                     } catch (e: Exception) {
                         println("Failed to load video: $e")

@@ -141,6 +141,10 @@ class EventHandler(
     override fun mediaEvent(event: GenericMediaEvent) {
         // Unreachable
     }
+
+    override fun playbackError(message: String) {
+        println("Playback error: $message")
+    }
 }
 
 class DiscoveryEventHandler(
@@ -267,8 +271,8 @@ class ConnectCastingDialog(
 
     override fun show() {
         super.show()
-        textNoDevicesFound.visibility = if (devices.isEmpty()) View.VISIBLE else View.GONE;
-        recyclerDevices.visibility = if (devices.isNotEmpty()) View.VISIBLE else View.GONE;
+        textNoDevicesFound.visibility = if (devices.isEmpty()) View.VISIBLE else View.GONE
+        recyclerDevices.visibility = if (devices.isNotEmpty()) View.VISIBLE else View.GONE
     }
 
     fun update() {
@@ -384,7 +388,7 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
                 this.hide()
             }
 
-        textError = findViewById<TextView>(org.fcast.sender_sdk.R.id.text_error)!!
+        textError = findViewById(org.fcast.sender_sdk.R.id.text_error)!!
         textError.visibility = View.GONE
 
         val spinnerType = findViewById<Spinner>(org.fcast.sender_sdk.R.id.spinner_type)
@@ -484,11 +488,11 @@ class MainActivity : AppCompatActivity() {
     private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let {
             deviceInfoFromUrl(it)?.let { deviceInfo ->
-                val device = castContext.createDeviceFromInfo(deviceInfo);
+                val device = castContext.createDeviceFromInfo(deviceInfo)
                 try {
                     castingState.reset()
-                    device.connect(eventHandler)
-                    castingState.activeDevice = device;
+                    device.connect(null, eventHandler)
+                    castingState.activeDevice = device
                 } catch (e: Exception) {
                     println("Failed to start device: {e}")
                 }
@@ -506,7 +510,7 @@ class MainActivity : AppCompatActivity() {
                 val entry = fileServer.serveFile(fd)
                 val url =
                     "http://${urlFormatIpAddr(castingState.localAddress!!)}:${entry.port}/${entry.location}"
-                device.loadUrl(type, url, null, null)
+                device.loadUrl(type, url, null, null, null, null, null)
             }
         } catch (e: Exception) {
             println("Failed to read $maybeUri: $e")
@@ -595,7 +599,7 @@ class MainActivity : AppCompatActivity() {
             { device ->
                 connectCastingDialog.hide()
                 try {
-                    device.connect(eventHandler)
+                    device.connect(null, eventHandler)
                     castingState.activeDevice = device
                     connectingToDeviceDialog.show()
                 } catch (e: Exception) {
@@ -615,7 +619,7 @@ class MainActivity : AppCompatActivity() {
         setSupportActionBar(findViewById(R.id.toolbar))
         supportActionBar?.setDisplayShowTitleEnabled(false)
 
-        castLocalFileBtn = findViewById<Button>(R.id.cast_local_file)
+        castLocalFileBtn = findViewById(R.id.cast_local_file)
         castLocalFileBtn.visibility = View.GONE
         castLocalFileBtn.setOnClickListener {
             selectMediaIntent.launch("*/*")
