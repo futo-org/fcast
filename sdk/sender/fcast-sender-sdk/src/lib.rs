@@ -1,12 +1,12 @@
 //! # FCast Sender SDK
 //!
-//! An all in one SDK for casting media to [FCast], [AirPlay] (soon), [Chromecast] and [Google Cast] receiver devices.
+//! An all in one SDK for casting media to [FCast], [Chromecast] and [Google Cast] receiver devices.
 //!
 //! ## Supported languages
 //!
 //! + Rust
 //! + Kotlin
-//! + Swift (soon)
+//! + Swift
 //!
 //! ## Features
 //!
