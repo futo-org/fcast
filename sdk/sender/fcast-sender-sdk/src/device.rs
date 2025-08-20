@@ -309,6 +309,18 @@ pub trait CastingDevice: Send + Sync {
     fn stop_playback(&self) -> Result<(), CastingDeviceError>;
     fn pause_playback(&self) -> Result<(), CastingDeviceError>;
     fn resume_playback(&self) -> Result<(), CastingDeviceError>;
+    #[cfg_attr(
+        feature = "uniffi",
+        uniffi::method(default(
+            content_type,
+            url,
+            resume_position = None,
+            speed = None,
+            volume = None,
+            metadata = None,
+            request_headers = None
+        ))
+    )]
     fn load_url(
         &self,
         content_type: String,
@@ -319,6 +331,19 @@ pub trait CastingDevice: Send + Sync {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
+    #[cfg_attr(
+        feature = "uniffi",
+        uniffi::method(default(
+            content_type,
+            content,
+            resume_position,
+            duration,
+            speed = None,
+            volume = None,
+            metadata = None,
+            request_headers = None
+        ))
+    )]
     fn load_content(
         &self,
         content_type: String,
@@ -330,6 +355,18 @@ pub trait CastingDevice: Send + Sync {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
+    #[cfg_attr(
+        feature = "uniffi",
+        uniffi::method(default(
+            content_type,
+            url,
+            resume_position,
+            speed = None,
+            volume = None,
+            metadata = None,
+            request_headers = None
+        ))
+    )]
     fn load_video(
         &self,
         content_type: String,
@@ -340,6 +377,15 @@ pub trait CastingDevice: Send + Sync {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     ) -> Result<(), CastingDeviceError>;
+    #[cfg_attr(
+        feature = "uniffi",
+        uniffi::method(default(
+            content_type,
+            url,
+            metadata = None,
+            request_headers = None
+        ))
+    )]
     fn load_image(
         &self,
         content_type: String,
@@ -358,6 +404,13 @@ pub trait CastingDevice: Send + Sync {
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
     fn disconnect(&self) -> Result<(), CastingDeviceError>;
+    #[cfg_attr(
+        feature = "uniffi",
+        uniffi::method(default(
+            app_info = None,
+            event_handler
+        ))
+    )]
     fn connect(
         &self,
         app_info: Option<ApplicationInfo>,
