@@ -1,8 +1,8 @@
 use crate::{
     device::{
-        CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, Metadata, PlaybackState,
-        Playlist, ProtocolType, Source,
+        ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
+        DeviceEventHandler, DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, Metadata,
+        PlaybackState, Playlist, ProtocolType, Source,
     },
     utils, IpAddr,
 };
@@ -912,6 +912,7 @@ impl CastingDevice for ChromecastDevice {
 
     fn connect(
         &self,
+        _app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();

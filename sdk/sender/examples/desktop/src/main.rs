@@ -272,10 +272,13 @@ impl App {
                         .cloned()
                     {
                         let device = self.cast_context.create_device_from_info(device_info);
-                        device.connect(Arc::new(DevEventHandler::new(
-                            self.event_tx.clone(),
-                            current_device_id,
-                        )))?;
+                        device.connect(
+                            None,
+                            Arc::new(DevEventHandler::new(
+                                self.event_tx.clone(),
+                                current_device_id,
+                            )),
+                        )?;
                         active_device = Some(device);
                     }
                 }
@@ -393,7 +396,15 @@ impl App {
                                     entry.location,
                                 );
                                 active_device
-                                    .load_url(media_type.mime_type().to_string(), url, None, None, None, None, None)
+                                    .load_url(
+                                        media_type.mime_type().to_string(),
+                                        url,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                    )
                                     .unwrap();
                             }
                             None => error!("Not connected"),

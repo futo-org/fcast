@@ -3,8 +3,8 @@ use std::sync::Arc;
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent, GenericMediaEvent,
-        PlaybackState, ProtocolType, Source,
+        ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
+        GenericMediaEvent, PlaybackState, ProtocolType, Source,
     },
     IpAddr,
 };
@@ -67,7 +67,15 @@ async fn main() {
         port: 46899,
     });
 
-    dev.connect(Arc::new(EventHandler {})).unwrap();
+    dev.connect(
+        Some(ApplicationInfo {
+            name: "terminal demo".to_string(),
+            version: "0".to_string(),
+            display_name: "FCast sender SDK terminal demo".to_string(),
+        }),
+        Arc::new(EventHandler {}),
+    )
+    .unwrap();
 
     info!("Press enter load demo video");
     std::io::stdin().read_line(&mut String::new()).unwrap();

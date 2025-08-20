@@ -288,6 +288,14 @@ pub struct Metadata {
     pub thumbnail_url: Option<String>,
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug)]
+pub struct ApplicationInfo {
+    pub name: String,
+    pub version: String,
+    pub display_name: String,
+}
+
 /// A generic interface for casting devices.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub trait CastingDevice: Send + Sync {
@@ -353,8 +361,11 @@ pub trait CastingDevice: Send + Sync {
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
     fn disconnect(&self) -> Result<(), CastingDeviceError>;
-    fn connect(&self, event_handler: Arc<dyn DeviceEventHandler>)
-        -> Result<(), CastingDeviceError>;
+    fn connect(
+        &self,
+        app_info: Option<ApplicationInfo>,
+        event_handler: Arc<dyn DeviceEventHandler>,
+    ) -> Result<(), CastingDeviceError>;
     fn get_device_info(&self) -> DeviceInfo;
     fn get_addresses(&self) -> Vec<IpAddr>;
     fn set_addresses(&self, addrs: Vec<IpAddr>);

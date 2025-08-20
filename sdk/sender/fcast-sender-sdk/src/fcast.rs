@@ -26,9 +26,10 @@ use tokio::{
 
 use crate::{
     device::{
-        CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-        DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent,
-        GenericMediaEvent, Metadata, PlaybackState, Playlist, ProtocolType, Source,
+        ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
+        DeviceEventHandler, DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup,
+        GenericKeyEvent, GenericMediaEvent, Metadata, PlaybackState, Playlist, ProtocolType,
+        Source,
     },
     utils, IpAddr,
 };
@@ -144,14 +145,20 @@ struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
     writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     session_version: FCastVersion,
+    app_info: Option<ApplicationInfo>,
 }
 
 impl InnerDevice {
-    pub fn new(event_handler: Arc<dyn DeviceEventHandler>, session_version: FCastVersion) -> Self {
+    pub fn new(
+        app_info: Option<ApplicationInfo>,
+        event_handler: Arc<dyn DeviceEventHandler>,
+        session_version: FCastVersion,
+    ) -> Self {
         Self {
             event_handler,
             writer: None,
             session_version,
+            app_info,
         }
     }
 
@@ -529,13 +536,24 @@ impl InnerDevice {
 
                                 self.send(
                                     Opcode::Initial,
-                                    v3::InitialSenderMessage {
-                                        display_name: None,
-                                        app_name: Some(
-                                            concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION")).to_owned(),
-                                        ),
-                                        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                                    },
+                                    match self.app_info.as_ref() {
+                                        Some(info) => {
+                                            v3::InitialSenderMessage {
+                                                display_name: Some(info.display_name.clone()),
+                                                app_name: Some(info.name.clone()),
+                                                app_version: Some(info.version.clone()),
+                                            }
+                                        }
+                                        None => {
+                                            v3::InitialSenderMessage {
+                                                display_name: None,
+                                                app_name: Some(
+                                                    concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION")).to_owned(),
+                                                ),
+                                                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                                            }
+                                        }
+                                    }
                                 )
                                 .await
                                 .context("Failed to send InitialSenderMessage")?;
@@ -942,6 +960,7 @@ impl CastingDevice for FCastDevice {
 
     fn connect(
         &self,
+        app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
@@ -960,9 +979,9 @@ impl CastingDevice for FCastDevice {
         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
         state.command_tx = Some(tx);
 
-        state
-            .rt_handle
-            .spawn(InnerDevice::new(event_handler, self.session_version.clone()).work(addrs, rx));
+        state.rt_handle.spawn(
+            InnerDevice::new(app_info, event_handler, self.session_version.clone()).work(addrs, rx),
+        );
 
         Ok(())
     }
