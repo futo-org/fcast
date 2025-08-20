@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -33,10 +33,10 @@ use crate::{
     utils, IpAddr,
 };
 
-const DEFAULT_SESSION_VERSION: u8 = 2;
-const EVENT_SUB_MIN_PROTO_VERSION: u8 = 3;
-const PLAYLIST_MIN_PROTO_VERSION: u8 = 3;
-const V3_FEATURES_MIN_PROTO_VERSION: u8 = 3;
+const DEFAULT_SESSION_VERSION: u64 = 2;
+const EVENT_SUB_MIN_PROTO_VERSION: u64 = 3;
+const PLAYLIST_MIN_PROTO_VERSION: u64 = 3;
+const V3_FEATURES_MIN_PROTO_VERSION: u64 = 3;
 
 #[derive(Debug, PartialEq)]
 enum LoadType {
@@ -110,18 +110,18 @@ impl FCastDevice {
 
 const HEADER_LENGTH: usize = 5;
 
-struct FCastVersion(Arc<AtomicU8>);
+struct FCastVersion(Arc<AtomicU64>);
 
 impl FCastVersion {
     pub fn new() -> Self {
-        Self(Arc::new(AtomicU8::new(DEFAULT_SESSION_VERSION)))
+        Self(Arc::new(AtomicU64::new(DEFAULT_SESSION_VERSION)))
     }
 
-    pub fn get(&self) -> u8 {
+    pub fn get(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
 
-    pub fn set(&self, value: u8) {
+    pub fn set(&self, value: u64) {
         self.0.store(value, Ordering::Relaxed)
     }
 }

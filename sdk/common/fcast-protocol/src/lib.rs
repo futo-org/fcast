@@ -98,7 +98,7 @@ pub struct PlaybackErrorMessage {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct VersionMessage {
-    pub version: u8,
+    pub version: u64,
 }
 
 #[derive(Serialize, Debug)]
