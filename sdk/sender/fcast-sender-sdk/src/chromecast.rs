@@ -777,14 +777,6 @@ impl CastingDevice for ChromecastDevice {
         state.name = name;
     }
 
-    fn stop_casting(&self) -> Result<(), CastingDeviceError> {
-        if let Err(err) = self.stop_playback() {
-            error!("Failed to stop playback: {err}");
-        }
-        debug!("Stopping active device because stopCasting was called.");
-        self.disconnect()
-    }
-
     fn seek(&self, time_seconds: f64) -> Result<(), CastingDeviceError> {
         self.send_command(Command::Seek(time_seconds))
     }
