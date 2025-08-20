@@ -666,7 +666,9 @@ mod tests {
         let meta = Metadata::Generic {
             title: Some("title".to_owned()),
             subtitle: Some("subtitle".to_owned()),
-            images: Some(vec![Image { url: "url".to_owned() }]),
+            images: Some(vec![Image {
+                url: "url".to_owned(),
+            }]),
             release_date: None,
         };
         assert_eq!(
