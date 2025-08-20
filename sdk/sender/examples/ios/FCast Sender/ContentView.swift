@@ -144,6 +144,8 @@ struct ContentView: View {
     @State var isShowingMediaPicker = false
     @State var activeFileHandle: FileHandle? = nil
     var fileServer: FileServer
+    @State var isShowingErrorAlert = false
+    @State var errorAlertMessage = ""
 
     init(data: DataModel) throws {
         initLogger(levelFilter: LogLevelFilter.debug)
@@ -219,7 +221,13 @@ struct ContentView: View {
                             }
                         }
                     }
+                } onError: { message in
+                    errorAlertMessage = message
+                    isShowingErrorAlert.toggle()
                 }
+            }
+            .alert(errorAlertMessage, isPresented: $isShowingErrorAlert) {
+                Button("OK", role: .cancel) {}
             }
             .toolbar {
                 Button(action: {
@@ -526,9 +534,10 @@ struct DeviceList: View {
 
 struct MediaPicker: UIViewControllerRepresentable {
     var onComplete: (String, URL) -> Void
+    var onError: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onComplete: onComplete)
+        Coordinator(onComplete: onComplete, onError: onError)
     }
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
@@ -548,9 +557,11 @@ struct MediaPicker: UIViewControllerRepresentable {
 
     class Coordinator: NSObject, PHPickerViewControllerDelegate {
         let onComplete: (String, URL) -> Void
+        let onError: (String) -> Void
 
-        init(onComplete: @escaping (String, URL) -> Void) {
+        init(onComplete: @escaping (String, URL) -> Void, onError: @escaping (String) -> Void) {
             self.onComplete = onComplete
+            self.onError = onError
         }
 
         func picker(
@@ -583,13 +594,13 @@ struct MediaPicker: UIViewControllerRepresentable {
                 if item.hasItemConformingToTypeIdentifier(typeId) {
                     item.loadFileRepresentation(forTypeIdentifier: typeId) {
                         tempURL,
-                        error in
-                        if let error = error {
-                            // TODO: error
+                        maybeError in
+                        if let error = maybeError {
+                            self.onError(error.localizedDescription)
                             return
                         }
                         guard let tempURL = tempURL else {
-                            // TODO: error
+                            self.onError("Temporary URL is missing")
                             return
                         }
                         self.onComplete(contentType, tempURL)
