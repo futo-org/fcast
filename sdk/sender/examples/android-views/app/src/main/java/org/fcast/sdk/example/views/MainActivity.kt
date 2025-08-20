@@ -8,6 +8,7 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -51,6 +52,7 @@ import org.fcast.sender_sdk.deviceInfoFromUrl
 import org.fcast.sender_sdk.urlFormatIpAddr
 import org.fcast.sender_sdk.LogLevelFilter
 import org.fcast.sender_sdk.NsdDeviceDiscoverer
+import org.fcast.sender_sdk.tryIpAddrFromStr
 
 data class CastingState(
     var activeDevice: CastingDevice? = null,
@@ -374,8 +376,13 @@ class DeviceConnectedDialog(
     }
 }
 
-class CastingAddDialog(context: Context) : AlertDialog(context) {
+class CastingAddDialog(context: Context, val onAdded: (DeviceInfo) -> Unit) : AlertDialog(context) {
     private lateinit var textError: TextView
+    private lateinit var editName: EditText
+    private lateinit var editIP: EditText
+    private lateinit var editPort: EditText
+    private lateinit var spinnerType: Spinner
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(
@@ -390,23 +397,25 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
 
         textError = findViewById(org.fcast.sender_sdk.R.id.text_error)!!
         textError.visibility = View.GONE
+        editName = findViewById(org.fcast.sender_sdk.R.id.edit_name)!!
+        editIP = findViewById(org.fcast.sender_sdk.R.id.edit_ip)!!
+        editPort = findViewById(org.fcast.sender_sdk.R.id.edit_port)!!
+        spinnerType = findViewById(org.fcast.sender_sdk.R.id.spinner_type)!!
 
-        val spinnerType = findViewById<Spinner>(org.fcast.sender_sdk.R.id.spinner_type)
         ArrayAdapter.createFromResource(
             context,
             org.fcast.sender_sdk.R.array.casting_device_type_array,
             org.fcast.sender_sdk.R.layout.spinner_item_simple
         ).also { adapter ->
             adapter.setDropDownViewResource(org.fcast.sender_sdk.R.layout.spinner_dropdownitem_simple)
-            spinnerType?.adapter = adapter
+            spinnerType.adapter = adapter
         }
 
-        val editPort = findViewById<EditText>(org.fcast.sender_sdk.R.id.edit_port)
-        spinnerType?.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        spinnerType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                editPort?.text?.clear()
-                editPort?.text?.append(
-                    when (spinnerType?.selectedItemPosition) {
+                editPort.text?.clear()
+                editPort.text?.append(
+                    when (spinnerType.selectedItemPosition) {
                         0 -> "46899" // FCast
                         1 -> "8009" // Chromecast
                         else -> ""
@@ -419,7 +428,7 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
 
         findViewById<Button>(org.fcast.sender_sdk.R.id.button_confirm)
             ?.setOnClickListener {
-                val castProtocolType = when (spinnerType?.selectedItemPosition) {
+                val castProtocolType = when (spinnerType.selectedItemPosition) {
                     0 -> ProtocolType.F_CAST
                     1 -> ProtocolType.CHROMECAST
                     else -> {
@@ -429,7 +438,58 @@ class CastingAddDialog(context: Context) : AlertDialog(context) {
                         return@setOnClickListener
                     }
                 }
+
+                val name = editName.text.toString().trim()
+                if (name.isBlank()) {
+                    textError.text = "Name can not be empty."
+                    textError.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+
+                val ip = editIP.text.toString().trim()
+                if (ip.isBlank()) {
+                    textError.text = "IP can not be empty."
+                    textError.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+
+                val address = try {
+                    tryIpAddrFromStr(ip)
+                } catch (e: Exception) {
+                    println("Invalid IP address ($ip): $e")
+                    textError.text = "IP address is invalid"
+                    textError.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                val port: UShort? = editPort.text.toString().trim().toUShortOrNull();
+                if (port == null) {
+                    textError.text = "Port number is invalid, expected a number between 0 and 65535.";
+                    textError.visibility = View.VISIBLE;
+                    return@setOnClickListener;
+                }
+
+                textError.visibility = View.GONE;
+                val deviceInfo = DeviceInfo(name, castProtocolType, listOf(address), port);
+                onAdded(deviceInfo)
+                dismiss()
             }
+    }
+
+    override fun show() {
+        super.show()
+
+        editName.text.clear()
+        editIP.text.clear()
+        editPort.text.clear()
+        editPort.text.append("46899")
+        textError.visibility = View.GONE
+        spinnerType.setSelection(0)
+
+        window?.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+            clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+            setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        }
     }
 }
 
@@ -613,7 +673,18 @@ class MainActivity : AppCompatActivity() {
         castingConnectedDialog = DeviceConnectedDialog(this, castingState) {
             castLocalFileBtn.visibility = View.GONE
         }
-        castingAddDialog = CastingAddDialog(this)
+        castingAddDialog = CastingAddDialog(this) { deviceInfo ->
+            try {
+                connectCastingDialog.devices.add(
+                    castContext.createDeviceFromInfo(
+                        deviceInfo
+                    )
+                )
+                connectCastingDialog.update()
+            } catch (e: Exception) {
+                println(e)
+            }
+        }
         connectingToDeviceDialog = DeviceConnectingDialog(this)
         setContentView(R.layout.activity_main)
         setSupportActionBar(findViewById(R.id.toolbar))
