@@ -51,6 +51,10 @@ final class DevEventHandler: DeviceEventHandler {
     func keyEvent(event: GenericKeyEvent) {}
 
     func mediaEvent(event: GenericMediaEvent) {}
+
+    func playbackError(message: String) {
+        print("Playback error: \(message)")
+    }
 }
 
 final class NWDeviceDiscoverer {
@@ -308,6 +312,7 @@ struct ContentView: View {
                                             )
                                             do {
                                                 try activeDevice?.connect(
+                                                    appInfo: nil,
                                                     eventHandler: eventHandler
                                                 )
                                             } catch {
@@ -334,6 +339,7 @@ struct ContentView: View {
                              )
                              do {
                                  try activeDevice?.connect(
+                                    appInfo: nil,
                                     eventHandler: eventHandler
                                  )
                              } catch {
@@ -412,7 +418,7 @@ struct ContentView: View {
 
                         HStack {
                             Spacer()
-                            
+
                             Button(action: {
                                 do {
                                     try activeDevice?.pausePlayback()
@@ -424,7 +430,7 @@ struct ContentView: View {
                             }
 
                             Spacer()
-                            
+
                             Button(action: {
                                 do {
                                     try activeDevice?.resumePlayback()
@@ -436,7 +442,7 @@ struct ContentView: View {
                             }
 
                             Spacer()
-                            
+
                             Button(action: {
                                 do {
                                     try activeDevice?.stopPlayback()
@@ -446,7 +452,7 @@ struct ContentView: View {
                             }) {
                                 Image(systemName: "stop").font(.system(size: 42))
                             }
-                            
+
                             Spacer()
                         }
 
