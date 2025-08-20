@@ -312,8 +312,6 @@ pub trait CastingDevice: Send + Sync {
     #[cfg_attr(
         feature = "uniffi",
         uniffi::method(default(
-            content_type,
-            url,
             resume_position = None,
             speed = None,
             volume = None,
@@ -334,10 +332,6 @@ pub trait CastingDevice: Send + Sync {
     #[cfg_attr(
         feature = "uniffi",
         uniffi::method(default(
-            content_type,
-            content,
-            resume_position,
-            duration,
             speed = None,
             volume = None,
             metadata = None,
@@ -358,9 +352,6 @@ pub trait CastingDevice: Send + Sync {
     #[cfg_attr(
         feature = "uniffi",
         uniffi::method(default(
-            content_type,
-            url,
-            resume_position,
             speed = None,
             volume = None,
             metadata = None,
@@ -380,8 +371,6 @@ pub trait CastingDevice: Send + Sync {
     #[cfg_attr(
         feature = "uniffi",
         uniffi::method(default(
-            content_type,
-            url,
             metadata = None,
             request_headers = None
         ))
@@ -408,7 +397,6 @@ pub trait CastingDevice: Send + Sync {
         feature = "uniffi",
         uniffi::method(default(
             app_info = None,
-            event_handler
         ))
     )]
     fn connect(
