@@ -106,7 +106,14 @@ function formatDuration(duration: number) {
 }
 
 function sendPlaybackUpdate(updateState: PlaybackState) {
-    const updateMessage = new PlaybackUpdateMessage(Date.now(), updateState, player?.getCurrentTime(), player?.getDuration(), player?.getPlaybackRate());
+    const updateMessage = new PlaybackUpdateMessage(
+        Date.now(),
+        updateState,
+        player?.getCurrentTime(),
+        player?.getDuration(),
+        player?.getPlaybackRate(),
+        isMediaItem ? playlistIndex : null
+    );
     playbackState = updateState;
 
     if (updateMessage.generationTime > lastPlayerUpdateGenerationTime) {
@@ -386,6 +393,7 @@ function setPlaylistItem(index: number) {
         playlistIndex = index;
         cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
         playItemCached = true;
+        sendPlaybackUpdate(playbackState);
         window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
         showDurationTimer.stop();
     }

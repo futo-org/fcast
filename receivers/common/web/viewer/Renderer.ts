@@ -1,4 +1,4 @@
-import { EventMessage, EventType, GenericMediaMetadata, KeyEvent, MediaItem, MediaItemEvent, MetadataType, PlaybackState, PlaylistContent, PlayMessage, SeekMessage, SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
+import { EventMessage, EventType, GenericMediaMetadata, KeyEvent, MediaItem, MediaItemEvent, MetadataType, PlaybackState, PlaylistContent, PlayMessage, SeekMessage, SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage, PlaybackUpdateMessage } from 'common/Packets';
 import { mediaItemFromPlayMessage, playMessageFromMediaItem, Timer } from 'common/UtilityFrontend';
 import { supportedImageTypes } from 'common/MimeTypes';
 import * as connectionMonitor from 'common/ConnectionMonitor';
@@ -54,9 +54,23 @@ let showDurationTimer = new Timer(() => {
         idleIcon.style.display = 'block';
 
         playerCtrlAction.setAttribute("class", "play iconSize");
-        imageViewerPlaybackState = PlaybackState.Idle;
+        sendPlaybackUpdate(PlaybackState.Idle);
     }
 }, 0, false);
+
+function sendPlaybackUpdate(updateState: PlaybackState) {
+    const updateMessage = new PlaybackUpdateMessage(
+        Date.now(),
+        updateState,
+        null,
+        null,
+        null,
+        isMediaItem ? playlistIndex : null
+    );
+    imageViewerPlaybackState = updateState;
+
+    window.targetAPI.sendPlaybackUpdate(updateMessage);
+};
 
 function onPlay(_event, value: PlayMessage) {
     if (isPlaylistPlayRequestCounter === 0) {
@@ -161,6 +175,7 @@ function setPlaylistItem(index: number) {
         playlistIndex = index;
         cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
         isPlaylistPlayRequestCounter++;
+        sendPlaybackUpdate(imageViewerPlaybackState);
         window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
         showDurationTimer.stop();
     }
@@ -222,7 +237,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                     if (imageViewerPlaybackState === PlaybackState.Idle || imageViewerPlaybackState === PlaybackState.Playing) {
                         showDurationTimer.start(cachedPlayMediaItem.showDuration * 1000);
                         playerCtrlAction.setAttribute("class", "pause iconSize");
-                        imageViewerPlaybackState = PlaybackState.Playing;
+                        sendPlaybackUpdate(PlaybackState.Playing);
                     }
                 }
                 else {
@@ -251,7 +266,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
         case PlayerControlEvent.Pause:
             playerCtrlAction.setAttribute("class", "play iconSize");
-            imageViewerPlaybackState = PlaybackState.Paused;
+            sendPlaybackUpdate(PlaybackState.Paused);
             showDurationTimer.pause();
             break;
 
@@ -269,7 +284,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                     showDurationTimer.start(cachedPlayMediaItem.showDuration * 1000);
                 }
 
-                imageViewerPlaybackState = PlaybackState.Playing;
+                sendPlaybackUpdate(PlaybackState.Playing);
             }
             break;
 
