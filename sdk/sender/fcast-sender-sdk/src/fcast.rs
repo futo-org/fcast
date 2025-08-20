@@ -363,6 +363,14 @@ impl InnerDevice {
         let mut playlist_length = None::<usize>;
         let mut current_playlist_item_index = None::<usize>;
 
+        self.send(
+            Opcode::Version,
+            VersionMessage {
+                version: V3_FEATURES_MIN_PROTO_VERSION,
+            },
+        )
+        .await?;
+
         loop {
             tokio::select! {
                 packet = packet_stream.next() => {
@@ -518,10 +526,6 @@ impl InnerDevice {
                             };
                             if version_msg.version >= V3_FEATURES_MIN_PROTO_VERSION {
                                 debug!("Receiver supports v3");
-                                self.send(
-                                    Opcode::Version,
-                                    VersionMessage { version: V3_FEATURES_MIN_PROTO_VERSION }
-                                ).await?;
 
                                 self.send(
                                     Opcode::Initial,
