@@ -39,6 +39,8 @@ const EVENT_SUB_MIN_PROTO_VERSION: u64 = 3;
 const PLAYLIST_MIN_PROTO_VERSION: u64 = 3;
 const V3_FEATURES_MIN_PROTO_VERSION: u64 = 3;
 
+const CONNECTED_EVENT_DEADLINE_DURATION: Duration = Duration::from_secs(2);
+
 #[derive(Debug, PartialEq)]
 enum LoadType {
     Url { url: String },
@@ -70,6 +72,7 @@ enum Command {
     SetPlaylistItemIndex(u32),
     JumpPlaylist(i32),
     LoadPlaylist(Playlist),
+    ConnectedEventDeadlineElapsed,
 }
 
 struct State {
@@ -267,6 +270,7 @@ impl InnerDevice {
         &mut self,
         addrs: Vec<SocketAddr>,
         mut cmd_rx: Receiver<Command>,
+        cmd_tx: Sender<Command>,
     ) -> anyhow::Result<()> {
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connecting);
@@ -285,11 +289,14 @@ impl InnerDevice {
 
         debug!("Successfully connected");
 
-        self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connected {
-                used_remote_addr: stream.peer_addr()?.ip().into(),
-                local_addr: stream.local_addr()?.ip().into(),
-            });
+        let used_remote_addr: IpAddr = stream.peer_addr()?.ip().into();
+        let local_addr: IpAddr = stream.local_addr()?.ip().into();
+        let mut has_emitted_connected_event = false;
+
+        tokio::spawn(async move {
+            tokio::time::sleep(CONNECTED_EVENT_DEADLINE_DURATION).await;
+            let _ = cmd_tx.send(Command::ConnectedEventDeadlineElapsed).await;
+        });
 
         let (reader, writer) = stream.into_split();
         self.writer = Some(writer);
@@ -560,6 +567,15 @@ impl InnerDevice {
 
                                 self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
                             }
+
+                            if !has_emitted_connected_event {
+                                self.event_handler
+                                    .connection_state_changed(DeviceConnectionState::Connected {
+                                        used_remote_addr,
+                                        local_addr,
+                                    });
+                                has_emitted_connected_event = true;
+                            }
                         }
                         Opcode::Initial => {
                             let Some(body) = packet.1 else {
@@ -726,6 +742,16 @@ impl InnerDevice {
                                 SetPlaylistItemMessage { item_index: *current_playlist_item_index as u64 }
                             ).await?;
                         }
+                        Command::ConnectedEventDeadlineElapsed => {
+                            if !has_emitted_connected_event {
+                                self.event_handler
+                                    .connection_state_changed(DeviceConnectionState::Connected {
+                                        used_remote_addr,
+                                        local_addr,
+                                    });
+                                has_emitted_connected_event = true;
+                            }
+                        }
                     }
                 }
             }
@@ -740,8 +766,13 @@ impl InnerDevice {
         Ok(())
     }
 
-    pub async fn work(mut self, addrs: Vec<SocketAddr>, cmd_rx: Receiver<Command>) {
-        if let Err(err) = self.inner_work(addrs, cmd_rx).await {
+    pub async fn work(
+        mut self,
+        addrs: Vec<SocketAddr>,
+        cmd_rx: Receiver<Command>,
+        cmd_tx: Sender<Command>,
+    ) {
+        if let Err(err) = self.inner_work(addrs, cmd_rx, cmd_tx).await {
             error!("Inner work error: {err}");
         }
 
@@ -969,10 +1000,11 @@ impl CastingDevice for FCastDevice {
         debug!("Starting with address list: {addrs:?}...");
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
-        state.command_tx = Some(tx);
+        state.command_tx = Some(tx.clone());
 
         state.rt_handle.spawn(
-            InnerDevice::new(app_info, event_handler, self.session_version.clone()).work(addrs, rx),
+            InnerDevice::new(app_info, event_handler, self.session_version.clone())
+                .work(addrs, rx, tx),
         );
 
         Ok(())

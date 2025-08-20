@@ -123,7 +123,7 @@ impl AsyncRuntime {
 // UniFFI does not support std::net::IpAddr
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum IpAddr {
     V4 {
         o1: u8,
