@@ -58,20 +58,20 @@ fn build_ios_library(release: bool) -> Result<()> {
             "target/aarch64-apple-ios-sim/{}/lib{package_camel}.dylib",
             if release { "release" } else { "debug" }
         )),
-        "ios-bindings".into(),
+        "ios-bindings/uniffi/".into(),
     )?;
 
     rename(
-        format!("ios-bindings/{package_camel}FFI.modulemap"),
-        format!("ios-bindings/{package_camel}.modulemap"),
+        format!("ios-bindings/uniffi/{package_camel}FFI.modulemap"),
+        format!("ios-bindings/uniffi/{package_camel}.modulemap"),
     )?;
 
-    sh.remove_path("ios-build")?;
+    sh.remove_path(format!("ios-bindings/{package_camel}.xcframework"))?;
 
     let profile = if release { "release" } else { "debug" };
     cmd!(
         sh,
-        "xcodebuild -create-xcframework -library target/aarch64-apple-ios-sim/{profile}/lib{package_camel}.a -library target/aarch64-apple-ios/{profile}/lib{package_camel}.a -headers ios-bindings -output ios-build/{package_camel}.xcframework"
+        "xcodebuild -create-xcframework -library target/aarch64-apple-ios-sim/{profile}/lib{package_camel}.a -library target/aarch64-apple-ios/{profile}/lib{package_camel}.a -headers ios-bindings/uniffi -output ios-bindings/{package_camel}.xcframework"
     ).run()?;
 
     Ok(())
