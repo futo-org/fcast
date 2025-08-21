@@ -310,6 +310,7 @@ pub enum LoadRequest {
     Content {
         content_type: String,
         content: String,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
         resume_position: f64,
         #[cfg_attr(feature = "uniffi", uniffi(default))]
         speed: Option<f64>,

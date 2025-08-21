@@ -647,10 +647,8 @@ impl InnerDevice {
                                         self.current_player_state = stat.player_state;
                                     }
                                 }
-                                namespaces::Media::Error { reason, .. } => {
-                                    if let Some(error_reason) = reason {
-                                        self.event_handler.playback_error(error_reason);
-                                    }
+                                namespaces::Media::Error { reason: Some(error_reason), .. } => {
+                                    self.event_handler.playback_error(error_reason);
                                 }
                                 _ => (),
                             }
