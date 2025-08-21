@@ -929,7 +929,7 @@ impl CastingDevice for FCastDevice {
                 metadata,
                 request_headers,
             } => {
-                if self.session_version.get() < PLAYLIST_MIN_PROTO_VERSION {
+                if self.session_version.get() < V3_FEATURES_MIN_PROTO_VERSION {
                     return Err(CastingDeviceError::UnsupportedFeature);
                 }
 
