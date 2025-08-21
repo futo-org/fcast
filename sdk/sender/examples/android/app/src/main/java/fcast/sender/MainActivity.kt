@@ -49,6 +49,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.fcast.sender_sdk.DeviceInfo
 import org.fcast.sender_sdk.DeviceDiscovererEventHandler
+import org.fcast.sender_sdk.LoadRequest
 import org.fcast.sender_sdk.LogLevelFilter
 
 data class CastingState(
@@ -188,7 +189,7 @@ class MainActivity : ComponentActivity() {
                 val entry = fileServer.serveFile(fd)
                 val url =
                     "http://${urlFormatIpAddr(eventHandler.castingState.localAddress!!)}:${entry.port}/${entry.location}"
-                device.loadUrl(type, url, null, null, null, null, null)
+                device.load(LoadRequest.Url(type, url))
             }
         } catch (e: Exception) {
             println("Failed to read $maybeUri: $e")
@@ -395,15 +396,10 @@ fun View(
             else -> {
                 Button(onClick = {
                     try {
-                        castingDevice.loadVideo(
+                        castingDevice.load(LoadRequest.Video(
                             "video/mp4",
                             "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                            0.0,
-                            1.0,
-                            null,
-                            null,
-                            null
-                        )
+                        ))
                     } catch (e: Exception) {
                         println("Failed to load video: $e")
                     }

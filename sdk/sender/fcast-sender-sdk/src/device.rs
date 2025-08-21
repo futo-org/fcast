@@ -205,12 +205,6 @@ pub struct PlaylistItem {
     pub start_time: Option<f64>,
 }
 
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-#[derive(Clone, Debug, PartialEq)]
-pub struct Playlist {
-    pub items: Vec<PlaylistItem>,
-}
-
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Clone, Debug)]
 pub enum GenericEventSubscriptionGroup {
@@ -282,7 +276,7 @@ pub enum DeviceFeature {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Metadata {
     pub title: Option<String>,
     pub thumbnail_url: Option<String>,
@@ -294,6 +288,63 @@ pub struct ApplicationInfo {
     pub name: String,
     pub version: String,
     pub display_name: String,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Debug, Clone)]
+pub enum LoadRequest {
+    Url {
+        content_type: String,
+        url: String,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        resume_position: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        speed: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        volume: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        metadata: Option<Metadata>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        request_headers: Option<HashMap<String, String>>,
+    },
+    Content {
+        content_type: String,
+        content: String,
+        resume_position: f64,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        speed: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        volume: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        metadata: Option<Metadata>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        request_headers: Option<HashMap<String, String>>,
+    },
+    Video {
+        content_type: String,
+        url: String,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        resume_position: f64,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        speed: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        volume: Option<f64>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        metadata: Option<Metadata>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        request_headers: Option<HashMap<String, String>>,
+    },
+    Image {
+        content_type: String,
+        url: String,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        metadata: Option<Metadata>,
+        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        request_headers: Option<HashMap<String, String>>,
+    },
+    Playlist {
+        items: Vec<PlaylistItem>,
+    },
 }
 
 /// A generic interface for casting devices.
@@ -309,80 +360,7 @@ pub trait CastingDevice: Send + Sync {
     fn stop_playback(&self) -> Result<(), CastingDeviceError>;
     fn pause_playback(&self) -> Result<(), CastingDeviceError>;
     fn resume_playback(&self) -> Result<(), CastingDeviceError>;
-    #[cfg_attr(
-        feature = "uniffi",
-        uniffi::method(default(
-            resume_position = None,
-            speed = None,
-            volume = None,
-            metadata = None,
-            request_headers = None
-        ))
-    )]
-    fn load_url(
-        &self,
-        content_type: String,
-        url: String,
-        resume_position: Option<f64>,
-        speed: Option<f64>,
-        volume: Option<f64>,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError>;
-    #[cfg_attr(
-        feature = "uniffi",
-        uniffi::method(default(
-            speed = None,
-            volume = None,
-            metadata = None,
-            request_headers = None
-        ))
-    )]
-    fn load_content(
-        &self,
-        content_type: String,
-        content: String,
-        resume_position: f64,
-        duration: f64,
-        speed: Option<f64>,
-        volume: Option<f64>,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError>;
-    #[cfg_attr(
-        feature = "uniffi",
-        uniffi::method(default(
-            speed = None,
-            volume = None,
-            metadata = None,
-            request_headers = None
-        ))
-    )]
-    fn load_video(
-        &self,
-        content_type: String,
-        url: String,
-        resume_position: f64,
-        speed: Option<f64>,
-        volume: Option<f64>,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError>;
-    #[cfg_attr(
-        feature = "uniffi",
-        uniffi::method(default(
-            metadata = None,
-            request_headers = None
-        ))
-    )]
-    fn load_image(
-        &self,
-        content_type: String,
-        url: String,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError>;
-    fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError>;
+    fn load(&self, request: LoadRequest) -> Result<(), CastingDeviceError>;
     fn playlist_item_next(&self) -> Result<(), CastingDeviceError>;
     fn playlist_item_previous(&self) -> Result<(), CastingDeviceError>;
     /// Set the item index for the currently playing playlist.

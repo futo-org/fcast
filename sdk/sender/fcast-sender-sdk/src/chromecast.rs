@@ -1,8 +1,8 @@
 use crate::{
     device::{
         ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
-        DeviceEventHandler, DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, Metadata,
-        PlaybackState, Playlist, ProtocolType, Source,
+        DeviceEventHandler, DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, LoadRequest,
+        Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
     },
     utils, IpAddr,
 };
@@ -88,7 +88,7 @@ enum Command {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     },
-    LoadPlaylist(Playlist),
+    LoadPlaylist(Vec<PlaylistItem>),
     ChangeVolume(f64),
     ChangeSpeed(f64),
     Seek(f64),
@@ -345,9 +345,8 @@ impl InnerDevice {
                     self.change_volume(volume).await?;
                 }
             }
-            Command::LoadPlaylist(playlist) => {
-                let queue_items = playlist
-                    .items
+            Command::LoadPlaylist(items) => {
+                let queue_items = items
                     .into_iter()
                     .map(|item| QueueItem {
                         autoplay: true,
@@ -742,6 +741,27 @@ impl ChromecastDevice {
 
         Ok(())
     }
+
+    fn load_url(
+        &self,
+        content_type: String,
+        url: String,
+        resume_position: Option<f64>,
+        speed: Option<f64>,
+        volume: Option<f64>,
+        metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
+    ) -> std::result::Result<(), CastingDeviceError> {
+        self.send_command(Command::LoadUrl {
+            content_type,
+            url,
+            resume_position,
+            speed,
+            volume,
+            metadata,
+            request_headers,
+        })
+    }
 }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
@@ -793,68 +813,59 @@ impl CastingDevice for ChromecastDevice {
         self.send_command(Command::ResumePlayback)
     }
 
-    fn load_url(
-        &self,
-        content_type: String,
-        url: String,
-        resume_position: Option<f64>,
-        speed: Option<f64>,
-        volume: Option<f64>,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> std::result::Result<(), CastingDeviceError> {
-        self.send_command(Command::LoadUrl {
-            content_type,
-            url,
-            resume_position,
-            speed,
-            volume,
-            metadata,
-            request_headers,
-        })
-    }
-
-    fn load_video(
-        &self,
-        content_type: String,
-        url: String,
-        resume_position: f64,
-        speed: Option<f64>,
-        volume: Option<f64>,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError> {
-        self.load_url(
-            content_type,
-            url,
-            Some(resume_position),
-            speed,
-            volume,
-            metadata,
-            request_headers,
-        )
-    }
-
-    fn load_image(
-        &self,
-        content_type: String,
-        url: String,
-        metadata: Option<Metadata>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError> {
-        self.load_url(
-            content_type,
-            url,
-            None,
-            None,
-            None,
-            metadata,
-            request_headers,
-        )
-    }
-
-    fn load_playlist(&self, playlist: Playlist) -> Result<(), CastingDeviceError> {
-        self.send_command(Command::LoadPlaylist(playlist))
+    fn load(&self, request: LoadRequest) -> Result<(), CastingDeviceError> {
+        match request {
+            LoadRequest::Url {
+                content_type,
+                url,
+                resume_position,
+                speed,
+                volume,
+                metadata,
+                request_headers,
+            } => self.send_command(Command::LoadUrl {
+                content_type,
+                url,
+                resume_position,
+                speed,
+                volume,
+                metadata,
+                request_headers,
+            }),
+            LoadRequest::Content { .. } => Err(CastingDeviceError::UnsupportedFeature),
+            LoadRequest::Video {
+                content_type,
+                url,
+                resume_position,
+                speed,
+                volume,
+                metadata,
+                request_headers,
+            } => self.load_url(
+                content_type,
+                url,
+                Some(resume_position),
+                speed,
+                volume,
+                metadata,
+                request_headers,
+            ),
+            LoadRequest::Image {
+                content_type,
+                url,
+                metadata,
+                request_headers,
+            } => self.load_url(
+                content_type,
+                url,
+                None,
+                None,
+                None,
+                metadata,
+                request_headers,
+            ),
+            LoadRequest::Playlist { items } => self.send_command(Command::LoadPlaylist(items)),
+        }
     }
 
     fn playlist_item_next(&self) -> Result<(), CastingDeviceError> {
@@ -866,21 +877,6 @@ impl CastingDevice for ChromecastDevice {
     }
 
     fn set_playlist_item_index(&self, _index: u32) -> Result<(), CastingDeviceError> {
-        Err(CastingDeviceError::UnsupportedFeature)
-    }
-
-    #[allow(unused_variables)]
-    fn load_content(
-        &self,
-        _content_type: String,
-        _content: String,
-        _resume_position: f64,
-        _duration: f64,
-        _speed: Option<f64>,
-        _volume: Option<f64>,
-        _metadata: Option<Metadata>,
-        _request_headers: Option<HashMap<String, String>>,
-    ) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedFeature)
     }
 

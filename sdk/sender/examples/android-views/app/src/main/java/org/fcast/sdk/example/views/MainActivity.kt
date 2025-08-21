@@ -48,6 +48,7 @@ import org.fcast.sender_sdk.initLogger
 import org.fcast.sender_sdk.DeviceInfo
 import org.fcast.sender_sdk.DeviceDiscovererEventHandler
 import org.fcast.sender_sdk.CastContext
+import org.fcast.sender_sdk.LoadRequest
 import org.fcast.sender_sdk.deviceInfoFromUrl
 import org.fcast.sender_sdk.urlFormatIpAddr
 import org.fcast.sender_sdk.LogLevelFilter
@@ -570,7 +571,7 @@ class MainActivity : AppCompatActivity() {
                 val entry = fileServer.serveFile(fd)
                 val url =
                     "http://${urlFormatIpAddr(castingState.localAddress!!)}:${entry.port}/${entry.location}"
-                device.loadUrl(type, url, null, null, null, null, null)
+                device.load(LoadRequest.Url(type, url))
             }
         } catch (e: Exception) {
             println("Failed to read $maybeUri: $e")

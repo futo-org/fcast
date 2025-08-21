@@ -3,8 +3,7 @@ use std::{rc::Rc, sync::Arc};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
-        GenericMediaEvent, PlaybackState, ProtocolType, Source,
+        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent, GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source
     },
     file_server::FileServer,
     url_format_ip_addr, DeviceDiscovererEventHandler, IpAddr,
@@ -396,15 +395,15 @@ impl App {
                                     entry.location,
                                 );
                                 active_device
-                                    .load_url(
-                                        media_type.mime_type().to_string(),
+                                    .load(LoadRequest::Url {
+                                        content_type: media_type.mime_type().to_string(),
                                         url,
-                                        None,
-                                        None,
-                                        None,
-                                        None,
-                                        None,
-                                    )
+                                        resume_position: None,
+                                        speed: None,
+                                        volume: None,
+                                        metadata: None,
+                                        request_headers: None,
+                                    })
                                     .unwrap();
                             }
                             None => error!("Not connected"),
