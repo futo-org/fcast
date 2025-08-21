@@ -206,15 +206,7 @@ struct ContentView: View {
                                     )
                                     let url =
                                         "http://\(urlFormatIpAddr(addr: usedLocalAddress)):\(entry.port)/\(entry.location)"
-                                    try activeDevice.loadUrl(
-                                        contentType: contentType,
-                                        url: url,
-                                        resumePosition: nil,
-                                        speed: nil,
-                                        volume: nil,
-                                        metadata: nil,
-                                        requestHeaders: nil
-                                    )
+                                    try activeDevice.load(request: .url(contentType: contentType, url: url))
                                 } catch {
                                     print("Failed to serve file")
                                 }
