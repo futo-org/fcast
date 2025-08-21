@@ -302,7 +302,7 @@ struct ContentView: View {
                                             }
                                             let info = DeviceInfo(
                                                 name: device.name,
-                                                type: device.proto,
+                                                protocol: device.proto,
                                                 addresses: [address],
                                                 port: port.rawValue
                                             )
