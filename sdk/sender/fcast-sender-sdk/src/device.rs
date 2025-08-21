@@ -61,7 +61,7 @@ pub(crate) fn ips_to_socket_addrs(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> 
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub name: String,
-    pub r#type: ProtocolType,
+    pub protocol: ProtocolType,
     pub addresses: Vec<IpAddr>,
     pub port: u16,
 }
@@ -71,7 +71,7 @@ macro_rules! dev_info_constructor {
         pub fn $fname(name: String, addresses: Vec<IpAddr>, port: u16) -> DeviceInfo {
             DeviceInfo {
                 name,
-                r#type: ProtocolType::$type,
+                protocol: ProtocolType::$type,
                 addresses,
                 port,
             }

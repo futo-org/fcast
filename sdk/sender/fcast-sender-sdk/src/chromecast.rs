@@ -928,7 +928,7 @@ impl CastingDevice for ChromecastDevice {
         let state = self.state.lock().unwrap();
         DeviceInfo {
             name: state.name.clone(),
-            r#type: ProtocolType::Chromecast,
+            protocol: ProtocolType::Chromecast,
             addresses: state.addresses.clone(),
             port: state.port,
         }

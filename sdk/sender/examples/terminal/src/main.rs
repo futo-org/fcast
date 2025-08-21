@@ -62,7 +62,7 @@ async fn main() {
 
     let dev = ctx.create_device_from_info(DeviceInfo {
         name: "FCast testing device".to_owned(),
-        r#type: ProtocolType::FCast,
+        protocol: ProtocolType::FCast,
         addresses: vec![IpAddr::v4(127, 0, 0, 1)],
         port: 46899,
     });

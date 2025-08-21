@@ -25,7 +25,7 @@ impl CastContext {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
     pub fn create_device_from_info(&self, info: DeviceInfo) -> Arc<dyn CastingDevice> {
-        match info.r#type {
+        match info.protocol {
             #[cfg(feature = "chromecast")]
             ProtocolType::Chromecast => Arc::new(crate::chromecast::ChromecastDevice::new(
                 info,

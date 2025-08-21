@@ -189,7 +189,7 @@ impl App {
     }
 
     fn add_device_to_list(&self, device_info: &DeviceInfo) -> anyhow::Result<()> {
-        let type_ = match device_info.r#type {
+        let type_ = match device_info.protocol {
             ProtocolType::Chromecast => DeviceType::Chromecast,
             ProtocolType::FCast => DeviceType::FCast,
         };

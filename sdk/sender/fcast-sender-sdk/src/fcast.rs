@@ -1023,7 +1023,7 @@ impl CastingDevice for FCastDevice {
         let state = self.state.lock().unwrap();
         DeviceInfo {
             name: state.name.clone(),
-            r#type: ProtocolType::FCast,
+            protocol: ProtocolType::FCast,
             addresses: state.addresses.clone(),
             port: state.port,
         }
