@@ -5,6 +5,7 @@ stages:
   - buildWebOSReceiver
   - buildTizenOSReceiver
   - buildSenderSDKForAndroid
+  - testSDK
 
 variables:
   ANDROID_VERSION_NAME:
