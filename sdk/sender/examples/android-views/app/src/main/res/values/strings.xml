@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FCast Sender SDK Views Demo</string>
+    <string name="cast_local_file">Cast local file</string>
+</resources>

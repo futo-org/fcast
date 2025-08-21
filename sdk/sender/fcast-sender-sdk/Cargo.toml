@@ -1,0 +1,65 @@
+[package]
+name = "fcast-sender-sdk"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+# uniffi = { version = "0.29.4", optional = true }
+uniffi = { git = "https://github.com/mozilla/uniffi-rs.git", rev = "c66ce860d2832c42b4b24052bbb0608c419f5503", optional = true }
+tokio.workspace = true
+log.workspace= true
+anyhow.workspace = true
+thiserror.workspace = true
+futures = "0.3.31"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+# Device discovery
+tokio-stream = { version = "0.1.17", optional = true }
+mdns-sd = { workspace = true, optional = true }
+
+# File server
+http = { path = "../http", optional = true }
+libc = { version = "0.2.174", optional = true }
+http-range = { version = "0.1.5", optional = true }
+parsers-common = { path = "../parsers-common" }
+uuid = { version = "1.17.0", features = ["v4"], optional = true }
+
+# Chromecast
+rustls-pki-types = { version = "1.12.0", optional = true }
+webpki-roots = { version = "1.0.1", optional = true }
+tokio-rustls = { version = "0.26.2", default-features = false, features = [ "logging", "ring" ], optional = true }
+chromecast-protocol = { path = "../chromecast-protocol", optional = true }
+
+# FCast
+url = { version = "2.5.4", optional = true }
+fcast-protocol = { path = "../../common/fcast-protocol", optional = true }
+base64 = { version = "0.22.1", optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = { version = "0.15.0", optional = true }
+log-panics = { version = "2.1.0", features = ["with-backtrace"], optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+env_logger = { workspace = true, optional = true }
+
+[build-dependencies]
+cfg_aliases = "0.2.1"
+
+[features]
+default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
+fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64", "dep:url"]
+chromecast = ["dep:chromecast-protocol", "dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
+http-file-server = ["dep:uuid", "dep:libc", "dep:http-range", "dep:http"]
+uniffi = ["dep:uniffi"]
+logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
+discovery = ["dep:mdns-sd", "discovery_types", "dep:tokio-stream"]
+discovery_types = []
+_mobile_defaults = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery_types"]
+_android_defaults = ["_mobile_defaults"]
+_ios_defaults = ["_mobile_defaults"]
+
+[lib]
+crate-type = ["cdylib", "rlib", "staticlib"]
+name = "fcast_sender_sdk"

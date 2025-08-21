@@ -6,3 +6,8 @@
 node_modules/
 .wrangler/
 .secure_files/
+
+/target
+/flake*
+/ios-bindings
+/ios-build

@@ -4,6 +4,8 @@ stages:
   - buildAndDeployElectron
   - buildWebOSReceiver
   - buildTizenOSReceiver
+  - buildSenderSDKForAndroid
+  - testSDK
 
 variables:
   ANDROID_VERSION_NAME:
@@ -18,3 +20,4 @@ include:
   - local: 'receivers/electron/.gitlab-ci.yml'
   - local: 'receivers/webos/.gitlab-ci.yml'
   - local: 'receivers/tizen/.gitlab-ci.yml'
+  - local: 'sdk/sender/.gitlab-ci.yml'
