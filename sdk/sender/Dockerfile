@@ -6,6 +6,8 @@ FROM rust:1-alpine
 RUN apk add --update alpine-sdk protobuf wget2 gcompat
 
 RUN cargo install cargo-ndk
+RUN cargo install cargo-hack --locked
+
 RUN rustup target add aarch64-linux-android \
     armv7-linux-androideabi \
     x86_64-linux-android \
