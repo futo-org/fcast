@@ -35,6 +35,8 @@ cargoHackSenderSDK:
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
   script:
     - cargo xtask hack
+  tags:
+    - fcast-instance-runner
   when: manual
 
 cargoTestSenderSDK:
@@ -42,4 +44,6 @@ cargoTestSenderSDK:
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
   script:
     - cargo test --verbose
+  tags:
+    - fcast-instance-runner
   when: manual
