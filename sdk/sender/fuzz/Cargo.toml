@@ -1,0 +1,28 @@
+[package]
+name = "fcast-sender-sdk-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+parsers-common = { path = "../parsers-common" }
+http = { path = "../http" }
+arbitrary = "1.4.1"
+
+[[bin]]
+name = "parse_header_map"
+path = "fuzz_targets/fuzz_parse_header_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_parse_request_start_line"
+path = "fuzz_targets/fuzz_http_parse_request_start_line.rs"
+test = false
+doc = false
+bench = false

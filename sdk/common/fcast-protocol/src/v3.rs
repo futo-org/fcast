@@ -90,9 +90,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
                 Ok(Self::Generic {
                     title,
                     thumbnail_url,
-                    custom: rest
-                        .get("custom")
-                        .cloned(),
+                    custom: rest.get("custom").cloned(),
                 })
             }
             _ => Err(de::Error::custom(format!("Unknown metadata type {type_}"))),
@@ -102,7 +100,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PlayMessage {
-    ///  The MIME type (video/mp4)
+    /// The MIME type (video/mp4)
     pub container: String,
     // The URL to load (optional)
     pub url: Option<String>,
@@ -119,13 +117,14 @@ pub struct PlayMessage {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Deserialize_repr, Serialize_repr, Debug)]
+#[derive(Deserialize_repr, Serialize_repr, Debug, Default)]
 #[repr(u8)]
 pub enum ContentType {
+    #[default]
     Playlist = 0,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 pub struct MediaItem {
     /// The MIME type (video/mp4)
     pub container: String,
@@ -149,10 +148,10 @@ pub struct MediaItem {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 pub struct PlaylistContent {
-    #[serde(rename = "type")]
-    variant: ContentType,
+    #[serde(rename = "contentType")]
+    pub variant: ContentType,
     pub items: Vec<MediaItem>,
     /// Start position of the first item to play from the playlist
     pub offset: Option<u64>, // int or float?
@@ -205,6 +204,7 @@ pub struct InitialSenderMessage {
     pub app_version: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct InitialReceiverMessage {
     #[serde(rename = "displayName")]
@@ -217,6 +217,7 @@ pub struct InitialReceiverMessage {
     pub play_data: Option<PlayMessage>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct PlayUpdateMessage {
     #[serde(rename = "generationTime")]
@@ -240,6 +241,7 @@ pub enum KeyNames {
     Enter,
 }
 
+#[allow(dead_code)]
 impl KeyNames {
     pub fn all() -> Vec<String> {
         vec![
@@ -458,7 +460,7 @@ impl<'de> Deserialize<'de> for EventObject {
 pub struct EventMessage {
     #[serde(rename = "generationTime")]
     pub generation_time: u64,
-    event: EventObject,
+    pub event: EventObject,
 }
 
 #[cfg(test)]
@@ -737,5 +739,48 @@ mod tests {
             }
         );
         assert!(serde_json::from_str::<EventObject>(r#"{"type":5}"#).is_err());
+    }
+
+    #[test]
+    fn serialize_playlist_content() {
+        assert_eq!(
+            serde_json::to_string(&PlaylistContent {
+                variant: ContentType::Playlist,
+                items: Vec::new(),
+                offset: None,
+                volume: None,
+                speed: None,
+                forward_cache: None,
+                backward_cache: None,
+                metadata: None
+            })
+            .unwrap(),
+            r#"{"contentType":0,"items":[],"offset":null,"volume":null,"speed":null,"forwardCache":null,"backwardCache":null,"metadata":null}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&PlaylistContent {
+                variant: ContentType::Playlist,
+                items: vec![MediaItem {
+                    container: "video/mp4".to_string(),
+                    url: Some("abc".to_string()),
+                    content: None,
+                    time: None,
+                    volume: None,
+                    speed: None,
+                    cache: None,
+                    show_duration: None,
+                    headers: None,
+                    metadata: None
+                }],
+                offset: None,
+                volume: None,
+                speed: None,
+                forward_cache: None,
+                backward_cache: None,
+                metadata: None
+            })
+            .unwrap(),
+            r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc","content":null,"time":null,"volume":null,"speed":null,"cache":null,"showDuration":null,"headers":null,"metadata":null}],"offset":null,"volume":null,"speed":null,"forwardCache":null,"backwardCache":null,"metadata":null}"#,
+        );
     }
 }

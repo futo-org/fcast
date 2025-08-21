@@ -12,26 +12,7 @@ pub struct PlayMessage {
     pub headers: Option<HashMap<String, String>>,
 }
 
-impl PlayMessage {
-    pub fn new(
-        container: String,
-        url: Option<String>,
-        content: Option<String>,
-        time: Option<f64>,
-        speed: Option<f64>,
-        headers: Option<HashMap<String, String>>,
-    ) -> Self {
-        Self {
-            container,
-            url,
-            content,
-            time,
-            speed,
-            headers,
-        }
-    }
-}
-
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct PlaybackUpdateMessage {
     #[serde(rename = "generationTime")]
