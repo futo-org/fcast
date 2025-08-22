@@ -1,5 +1,5 @@
 [workspace]
-members = [ "sdk/sender/chromecast-protocol", "sdk/sender/fcast-sender-sdk", "sdk/sender/examples/terminal", "sdk/sender/xtask", "senders/terminal", "sdk/sender/fuzz", "sdk/sender/parsers-common", "sdk/sender/http", "sdk/sender/examples/desktop", "sdk/common/fcast-protocol"]
+members = [ "sdk/sender/chromecast-protocol", "sdk/sender/fcast-sender-sdk", "sdk/sender/examples/terminal", "sdk/sender/xtask", "senders/terminal", "sdk/sender/fuzz", "sdk/sender/parsers-common", "sdk/sender/http", "sdk/sender/examples/desktop", "sdk/common/fcast-protocol", "sdk/sender/flutter-binding/rust/", "sdk/sender/flutter_plugin/rust/", "sdk/sender/flutter_plugin/rust"]
 resolver = "2"
 
 [workspace.package]
