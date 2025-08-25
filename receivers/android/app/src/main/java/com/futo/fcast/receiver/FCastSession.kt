@@ -1,42 +1,39 @@
 package com.futo.fcast.receiver
 
 import android.util.Log
+import com.futo.fcast.receiver.models.EventMessage
+import com.futo.fcast.receiver.models.InitialReceiverMessage
+import com.futo.fcast.receiver.models.InitialSenderMessage
+import com.futo.fcast.receiver.models.Opcode
+import com.futo.fcast.receiver.models.PROTOCOL_VERSION
+import com.futo.fcast.receiver.models.PlayMessage
+import com.futo.fcast.receiver.models.PlayMessageV1
+import com.futo.fcast.receiver.models.PlayMessageV2
+import com.futo.fcast.receiver.models.PlayUpdateMessage
+import com.futo.fcast.receiver.models.PlaybackErrorMessage
+import com.futo.fcast.receiver.models.PlaybackUpdateMessage
+import com.futo.fcast.receiver.models.PlaybackUpdateMessageV1
+import com.futo.fcast.receiver.models.PlaybackUpdateMessageV2
+import com.futo.fcast.receiver.models.SeekMessage
+import com.futo.fcast.receiver.models.SetPlaylistItemMessage
+import com.futo.fcast.receiver.models.SetSpeedMessage
+import com.futo.fcast.receiver.models.SetVolumeMessage
+import com.futo.fcast.receiver.models.SubscribeEventMessage
+import com.futo.fcast.receiver.models.UnsubscribeEventMessage
+import com.futo.fcast.receiver.models.VersionMessage
+import com.futo.fcast.receiver.models.VolumeUpdateMessage
+import com.futo.fcast.receiver.models.VolumeUpdateMessageV1
 import kotlinx.serialization.json.Json
 import java.io.DataOutputStream
 import java.io.OutputStream
 import java.net.SocketAddress
-import java.nio.ByteBuffer
 import java.util.UUID
-
-
 
 enum class SessionState {
     Idle,
     WaitingForLength,
     WaitingForData,
     Disconnected
-}
-
-enum class Opcode(val value: Byte) {
-    None(0),
-    Play(1),
-    Pause(2),
-    Resume(3),
-    Stop(4),
-    Seek(5),
-    PlaybackUpdate(6),
-    VolumeUpdate(7),
-    SetVolume(8),
-    PlaybackError(9),
-    SetSpeed(10), 
-    Version(11),
-    Ping(12),
-    Pong(13);
-
-    companion object {
-        private val _map = entries.associateBy { it.value }
-        fun find(value: Byte): Opcode = _map[value] ?: None
-    }
 }
 
 const val LENGTH_BYTES = 4
@@ -49,9 +46,14 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
     private var _state = SessionState.WaitingForLength
     private var _outputStream: DataOutputStream? = DataOutputStream(outputStream)
     private var _outputStreamLock = Object()
-    val id = UUID.randomUUID()
+    private var _sentInitialMessage = false
 
-    fun send(opcode: Opcode, message: String? = null) {
+    val id: UUID  = UUID.randomUUID()
+    // Not all senders send a version message to the receiver on connection. Choosing version 2
+    // as the base version since most/all current senders support this version.
+    var protocolVersion: Long = 2
+
+    private fun send(opcode: Opcode, message: String? = null) {
         ensureNotMainThread()
 
         synchronized(_outputStreamLock) {
@@ -81,39 +83,53 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
 
                 Log.d(TAG, "Sent $size bytes: (opcode: $opcode, body: $message).")
             } catch (e: Throwable) {
-                Log.i(TAG, "Failed to send message ${id}.", e)
+                Log.e(TAG, "$id: Failed to send message (opcode: $opcode, body: $message)", e)
                 throw e
             }
         }
     }
 
-    inline fun <reified T> send(opcode: Opcode, message: T) {
+    fun <T> send(opcode: Opcode, message: T) {
+        if (!this.isSupportedOpcode(opcode)) {
+            return
+        }
+
         try {
-            send(opcode, message?.let { Json.encodeToString(it) })
+            val strippedMessage = this.stripUnsupportedFields(opcode, message)
+            when (strippedMessage) {
+                is PlayMessageV1 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
+                is PlaybackUpdateMessageV1 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
+                is VolumeUpdateMessageV1 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
+                is PlayMessageV2 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
+                is PlaybackUpdateMessageV2 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
+
+                is PlayMessage -> send(opcode, message?.let { Json.encodeToString(it as PlayMessage) })
+                is SeekMessage -> send(opcode, message?.let { Json.encodeToString(it as SeekMessage) })
+                is PlaybackUpdateMessage -> send(opcode, message?.let { Json.encodeToString(it as PlaybackUpdateMessage) })
+                is VolumeUpdateMessage -> send(opcode, message?.let { Json.encodeToString(it as VolumeUpdateMessage) })
+                is SetVolumeMessage -> send(opcode, message?.let { Json.encodeToString(it as SetVolumeMessage) })
+                is PlaybackErrorMessage -> send(opcode, message?.let { Json.encodeToString(it as PlaybackErrorMessage) })
+                is SetSpeedMessage -> send(opcode, message?.let { Json.encodeToString(it as SetSpeedMessage) })
+                is VersionMessage -> send(opcode, message?.let { Json.encodeToString(it as VersionMessage) })
+                is InitialSenderMessage -> send(opcode, message?.let { Json.encodeToString(it as InitialSenderMessage) })
+                is InitialReceiverMessage -> send(opcode, message?.let { Json.encodeToString(it as InitialReceiverMessage) })
+                is PlayUpdateMessage -> send(opcode, message?.let { Json.encodeToString(it as PlayUpdateMessage) })
+                is SetPlaylistItemMessage -> send(opcode, message?.let { Json.encodeToString(it as SetPlaylistItemMessage) })
+                is SubscribeEventMessage -> send(opcode, message?.let { Json.encodeToString(it as SubscribeEventMessage) })
+                is UnsubscribeEventMessage -> send(opcode, message?.let { Json.encodeToString(it as UnsubscribeEventMessage) })
+                is EventMessage -> send(opcode, message?.let { Json.encodeToString(it as EventMessage) })
+            }
         } catch (e: Throwable) {
             Log.i(TAG, "Failed to encode message to string ${id}.", e)
             throw e
         }
     }
 
-    fun processBytes(data: ByteBuffer) {
-        Log.i(TAG, "${data.remaining()} bytes received from $_remoteSocketAddress")
-        if (!data.hasArray()) {
-            throw IllegalArgumentException("ByteBuffer does not have a backing array")
-        }
-
-        val byteArray = data.array()
-        val offset = data.arrayOffset() + data.position()
-        val length = data.remaining()
-
-        when (_state) {
-            SessionState.WaitingForLength -> handleLengthBytes(byteArray, offset, length)
-            SessionState.WaitingForData -> handlePacketBytes(byteArray, offset, length)
-            else -> throw Exception("Invalid state $_state encountered")
-        }
+    fun close() {
+        _outputStream?.close()
     }
 
-    fun processBytes(data: ByteArray, count: Int) {
+    fun processBytes(data: ByteArray, count: Int, offset: Int = 0) {
         if (data.isEmpty()) {
             return
         }
@@ -121,8 +137,8 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         Log.i(TAG, "$count bytes received from $_remoteSocketAddress")
 
         when (_state) {
-            SessionState.WaitingForLength -> handleLengthBytes(data, 0, count)
-            SessionState.WaitingForData -> handlePacketBytes(data, 0, count)
+            SessionState.WaitingForLength -> handleLengthBytes(data, offset, count)
+            SessionState.WaitingForData -> handlePacketBytes(data, offset, count)
             else -> throw Exception("Invalid state $_state encountered")
         }
     }
@@ -181,17 +197,6 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         }
     }
 
-    private fun handleNextPacket() {
-        Log.i(TAG, "Processing packet of $_bytesRead bytes from $_remoteSocketAddress")
-
-        val opcode = Opcode.find(_buffer[0])
-        val body = if (_packetLength > 1) _buffer.copyOfRange(1, _packetLength)
-            .toString(Charsets.UTF_8) else null
-
-        Log.i(TAG, "Received packet (opcode: ${opcode}, body: '${body}')")
-        handlePacket(opcode, body)
-    }
-
     private fun handlePacket(opcode: Opcode, body: String?) {
         Log.i(TAG, "Processing packet (opcode: $opcode, size: ${body?.length ?: 0}, from ${_remoteSocketAddress})")
 
@@ -204,7 +209,33 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
                 Opcode.Seek -> _service.onCastSeek(json.decodeFromString(body!!))
                 Opcode.SetVolume -> _service.onSetVolume(json.decodeFromString(body!!))
                 Opcode.SetSpeed -> _service.onSetSpeed(json.decodeFromString(body!!))
-                Opcode.Ping -> send(Opcode.Pong)
+                Opcode.Version -> {
+                    val versionMessage = json.decodeFromString<VersionMessage>(body!!)
+                    this.protocolVersion = if (versionMessage.version > 0 && versionMessage.version <= PROTOCOL_VERSION) versionMessage.version else this.protocolVersion
+                    if (!this._sentInitialMessage && this.protocolVersion >= 3) {
+                        this.send(
+                            Opcode.Initial, InitialReceiverMessage(
+                                DiscoveryService.getServiceName(),
+                                NetworkService.cache.appName,
+                                NetworkService.cache.appVersion,
+                                NetworkService.cache.playMessage,
+                            )
+                        )
+
+                        this._sentInitialMessage = true
+                    }
+
+                    _service.onVersion(json.decodeFromString(body))
+                }
+                Opcode.Ping -> {
+                    send(Opcode.Pong)
+                    _service.onPing(id)
+                }
+                Opcode.Pong -> _service.onPong(id)
+                Opcode.Initial -> _service.onInitial(json.decodeFromString(body!!))
+                Opcode.SetPlaylistItem -> _service.onSetPlaylistItem(json.decodeFromString(body!!))
+                Opcode.SubscribeEvent -> _service.onSubscribeEvent(json.decodeFromString(body!!))
+                Opcode.UnsubscribeEvent -> _service.onUnsubscribeEvent(json.decodeFromString(body!!))
                 else -> { }
             }
         } catch (e: Throwable) {
@@ -212,8 +243,66 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         }
     }
 
+    private fun handleNextPacket() {
+        Log.i(TAG, "Processing packet of $_bytesRead bytes from $_remoteSocketAddress")
+
+        val opcode = Opcode.find(_buffer[0])
+        val body = if (_packetLength > 1) _buffer.copyOfRange(1, _packetLength)
+            .toString(Charsets.UTF_8) else null
+
+        Log.i(TAG, "Received packet (opcode: ${opcode}, body: '${body}')")
+        handlePacket(opcode, body)
+    }
+
+    private fun isSupportedOpcode(opcode: Opcode): Boolean {
+        return when (this.protocolVersion) {
+            1L -> opcode.value <= 8
+            2L -> opcode.value <= 13
+            3L -> opcode.value <= 19
+            else -> false
+        }
+    }
+
+    fun <T> stripUnsupportedFields(opcode: Opcode, message: T? = null): Any? {
+        return when (this.protocolVersion) {
+            1L -> return when (opcode) {
+                Opcode.Play -> PlayMessageV1(
+                    (message as PlayMessage).container,
+                    message.url,
+                    message.content,
+                    message.time
+                )
+                Opcode.PlaybackUpdate -> PlaybackUpdateMessageV1(
+                    (message as PlaybackUpdateMessage).state,
+                    message.time ?: 0.0
+                )
+                Opcode.VolumeUpdate -> VolumeUpdateMessageV1((message as VolumeUpdateMessage).volume)
+                else -> message
+            }
+            2L -> return when (opcode) {
+                Opcode.Play -> PlayMessageV2(
+                    (message as PlayMessage).container,
+                    message.url,
+                    message.content,
+                    message.time,
+                    message.speed,
+                    message.headers
+                )
+                Opcode.PlaybackUpdate -> PlaybackUpdateMessageV2(
+                    (message as PlaybackUpdateMessage).generationTime,
+                    message.state,
+                    message.time ?: 0.0,
+                    message.duration ?: 0.0,
+                    message.speed ?: 1.0
+                )
+                else -> message
+            }
+            else -> message
+        }
+    }
+
     companion object {
-        const val TAG = "FCastSession"
+        private const val TAG = "FCastSession"
         private val json = Json { ignoreUnknownKeys = true }
     }
 }

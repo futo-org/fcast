@@ -4,33 +4,38 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
+import com.futo.fcast.receiver.models.PROTOCOL_VERSION
 
 class DiscoveryService(private val _context: Context) {
     private var _nsdManager: NsdManager? = null
     private val _registrationListenerTcp = DefaultRegistrationListener()
     private val _registrationListenerWs = DefaultRegistrationListener()
 
-    private fun getDeviceName(): String {
-        return "${android.os.Build.MANUFACTURER}-${android.os.Build.MODEL}"
-    }
-
     fun start() {
         if (_nsdManager != null) return
 
-        val serviceName = "FCast-${getDeviceName()}"
-        Log.i("DiscoveryService", "Discovery service started. Name: $serviceName")
+        val serviceName = getServiceName()
+        Log.i(TAG, "Discovery service started. Name: $serviceName")
 
         _nsdManager = _context.getSystemService(Context.NSD_SERVICE) as NsdManager
         _nsdManager?.registerService(NsdServiceInfo().apply {
             this.serviceName = serviceName
             this.serviceType = "_fcast._tcp"
             this.port = TcpListenerService.PORT
+
+            this.setAttribute("version", PROTOCOL_VERSION.toString())
+            this.setAttribute("appName", BuildConfig.VERSION_NAME)
+            this.setAttribute("appVersion", BuildConfig.VERSION_CODE.toString())
         }, NsdManager.PROTOCOL_DNS_SD, _registrationListenerTcp)
 
         _nsdManager?.registerService(NsdServiceInfo().apply {
             this.serviceName = serviceName
             this.serviceType = "_fcast._ws"
             this.port = WebSocketListenerService.PORT
+
+            this.setAttribute("version", PROTOCOL_VERSION.toString())
+            this.setAttribute("appName", BuildConfig.VERSION_NAME)
+            this.setAttribute("appVersion", BuildConfig.VERSION_CODE.toString())
         }, NsdManager.PROTOCOL_DNS_SD, _registrationListenerWs)
     }
 
@@ -54,23 +59,27 @@ class DiscoveryService(private val _context: Context) {
 
     private class DefaultRegistrationListener : NsdManager.RegistrationListener {
         override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-            Log.d("DiscoveryService", "Service registered: ${serviceInfo.serviceName}")
+            Log.d(TAG, "Service registered: ${serviceInfo.serviceName}")
         }
 
         override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            Log.e("DiscoveryService", "Service registration failed: errorCode=$errorCode")
+            Log.e(TAG, "Service registration failed: serviceInfo=$serviceInfo errorCode=$errorCode")
         }
 
         override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-            Log.d("DiscoveryService", "Service unregistered: ${serviceInfo.serviceName}")
+            Log.d(TAG, "Service unregistered: ${serviceInfo.serviceName}")
         }
 
         override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            Log.e("DiscoveryService", "Service unregistration failed: errorCode=$errorCode")
+            Log.e(TAG, "Service unregistration failed: errorCode=$errorCode")
         }
     }
 
     companion object {
         private const val TAG = "DiscoveryService"
+
+        fun getServiceName(): String {
+            return "FCast-${android.os.Build.MANUFACTURER}-${android.os.Build.MODEL}"
+        }
     }
 }

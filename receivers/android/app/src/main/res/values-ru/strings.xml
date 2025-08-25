@@ -11,7 +11,7 @@
     <string name="installing_update">Установка обновления…</string>
     <string name="success">Успех</string>
     <string name="failed_to_update_with_error">Не удалось обновить пакет из-за ошибки</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">Доступно обновление для приемника FCast. Хотите обновиться?</string>
+    <string name="update_status">Доступно обновление для приемника FCast. Хотите обновиться?</string>
     <string name="never">Никогда</string>
     <string name="close">Закрывать</string>
     <string name="update">Обновлять</string>
@@ -21,5 +21,5 @@
     <string name="permission_dialog_message">Этому приложению требуется разрешение System Alert Window для отображения контента поверх других приложений. Пожалуйста, предоставьте разрешение.</string>
     <string name="permission_dialog_positive_button">Позволять</string>
     <string name="permission_dialog_negative_button">Отмена</string>
-    <string name="waiting_for_media">Ожидание СМИ</string>
+    <string name="waiting_for_connection">Ожидание СМИ</string>
 </resources>

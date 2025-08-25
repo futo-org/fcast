@@ -2,66 +2,39 @@ package com.futo.fcast.receiver
 
 import android.util.Log
 import org.java_websocket.WebSocket
-import org.java_websocket.handshake.ClientHandshake
-import org.java_websocket.server.WebSocketServer
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
+import java.util.UUID
+import kotlin.collections.set
 
-class WebSocketListenerService(private val _networkService: NetworkService, private val _onNewSession: (session: FCastSession) -> Unit) : WebSocketServer(InetSocketAddress(PORT)) {
+class WebSocketListenerService(private val _networkService: NetworkService, private val _onNewSession: (session: FCastSession) -> Unit) : ListenerService() {
+    private var _stopped: Boolean = true
     private val _sockets = arrayListOf<WebSocket>()
+    private val _server = WebSocketServer(_networkService, _onNewSession, ::onOpen, ::onClose, ::disconnect, PORT)
+    private val _socketMap: MutableMap<UUID, WebSocket> = mutableMapOf()
 
-    override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
-        val session = FCastSession(WebSocketOutputStream(conn), conn.remoteSocketAddress, _networkService)
-        conn.setAttachment(session)
-
-        synchronized(_sockets) {
-            _sockets.add(conn)
-        }
-
-        _onNewSession(session)
-
-        Log.i(TAG, "New connection from ${conn.remoteSocketAddress} ${session.id}")
-    }
-
-    override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
-        synchronized(_sockets) {
-            _sockets.remove(conn)
-        }
-
-        Log.i(TAG, "Closed connection from ${conn.remoteSocketAddress} ${conn.getAttachment<FCastSession>().id}")
-    }
-
-    override fun onMessage(conn: WebSocket?, message: String?) {
-        if (conn == null) {
-            Log.i(TAG, "Conn is null, ignore onMessage")
+    override fun start() {
+        if (!_stopped) {
             return
         }
+        _stopped = false
 
-        Log.i(TAG, "Received string message, but not processing: $message")
-    }
-
-    override fun onMessage(conn: WebSocket?, message: ByteBuffer?) {
-        if (conn == null) {
-            Log.i(TAG, "Conn is null, ignore onMessage")
-            return
-        }
-
-        if (message == null) {
-            Log.i(TAG, "Received byte message null")
-            return
-        }
-
-        val session = conn.getAttachment<FCastSession>()
-        Log.i(TAG, "Received byte message (offset = ${message.arrayOffset()}, size = ${message.remaining()}, id = ${session.id})")
-        session.processBytes(message)
-    }
-
-    override fun onError(conn: WebSocket?, ex: Exception) {
-        Log.e(TAG, "Error in WebSocket connection", ex)
-    }
-
-    override fun onStart() {
+        _server.start()
         Log.i(TAG, "WebSocketListenerService started on port $PORT")
+    }
+
+    override fun stop() {
+        if (_stopped) {
+            return
+        }
+        _stopped = true
+
+        _server.stop()
+        Log.i(TAG, "Stopped WebSocketListenerService")
+    }
+
+    override fun disconnect(sessionId: UUID) {
+        sessionMap[sessionId]?.close()
+        _socketMap[sessionId]?.close()
+        Log.i(TAG, "Disconnected ${_socketMap[sessionId]?.remoteSocketAddress}")
     }
 
     fun forEachSession(handler: (FCastSession) -> Unit) {
@@ -72,8 +45,33 @@ class WebSocketListenerService(private val _networkService: NetworkService, priv
         }
     }
 
+    private fun onOpen(session: FCastSession, socket: WebSocket) {
+        synchronized(sessionMap) {
+            sessionMap[session.id] = session
+        }
+        synchronized(_socketMap) {
+            _socketMap[session.id] = socket
+        }
+
+        _networkService.onConnect(this, session.id, socket.remoteSocketAddress)
+    }
+
+    private fun onClose(session: FCastSession) {
+        _socketMap[session.id]?.let {
+            _networkService.onDisconnect(session.id, it.remoteSocketAddress)
+        }
+
+        synchronized(sessionMap) {
+            sessionMap.remove(session.id)
+        }
+
+        synchronized(_socketMap) {
+            _socketMap.remove(session.id)
+        }
+    }
+
     companion object {
-        const val TAG = "WebSocketListenerService"
+        private const val TAG = "WebSocketListenerService"
         const val PORT = 46898
     }
 }

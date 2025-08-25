@@ -11,7 +11,7 @@
     <string name="installing_update">جاري تثبيت التحديث…</string>
     <string name="success">نجاح</string>
     <string name="failed_to_update_with_error">فشل تحديث الحزمة بسبب الخطأ</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">هناك تحديث متاح لجهاز الاستقبال FCast، هل ترغب في التحديث؟</string>
+    <string name="update_status">هناك تحديث متاح لجهاز الاستقبال FCast، هل ترغب في التحديث؟</string>
     <string name="never">أبداً</string>
     <string name="close">يغلق</string>
     <string name="update">تحديث</string>
@@ -21,5 +21,5 @@
     <string name="permission_dialog_message">يتطلب هذا التطبيق إذن "نافذة تنبيه النظام" لعرض المحتوى فوق التطبيقات الأخرى. يُرجى منح الإذن.</string>
     <string name="permission_dialog_positive_button">يسمح</string>
     <string name="permission_dialog_negative_button">يلغي</string>
-    <string name="waiting_for_media">في انتظار وسائل الإعلام</string>
+    <string name="waiting_for_connection">في انتظار وسائل الإعلام</string>
 </resources>

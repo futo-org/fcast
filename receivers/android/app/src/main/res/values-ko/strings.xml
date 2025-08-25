@@ -11,7 +11,7 @@
     <string name="installing_update">업데이트를 설치하는 중…</string>
     <string name="success">성공</string>
     <string name="failed_to_update_with_error">오류로 인해 패키지를 업데이트하지 못했습니다.</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">FCast 수신기에 대한 업데이트가 있습니다. 업데이트하시겠습니까?</string>
+    <string name="update_status">FCast 수신기에 대한 업데이트가 있습니다. 업데이트하시겠습니까?</string>
     <string name="never">절대</string>
     <string name="close">닫다</string>
     <string name="update">업데이트</string>
@@ -21,5 +21,5 @@
     <string name="permission_dialog_message">이 앱은 다른 앱 위에 콘텐츠를 표시하기 위해 시스템 알림 창 권한이 필요합니다. 권한을 부여해 주세요.</string>
     <string name="permission_dialog_positive_button">허용하다</string>
     <string name="permission_dialog_negative_button">취소</string>
-    <string name="waiting_for_media">미디어를 기다리는 중</string>
+    <string name="waiting_for_connection">미디어를 기다리는 중</string>
 </resources>

@@ -11,7 +11,7 @@
     <string name="installing_update">Instalando a atualização…</string>
     <string name="success">Sucesso</string>
     <string name="failed_to_update_with_error">Falhou em atualizar pacote com erro</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">Há uma atualização nova para o receptor do FCast, você quer atualizar?</string>
+    <string name="update_status">Há uma atualização nova para o receptor do FCast, você quer atualizar?</string>
     <string name="never">Nunca</string>
     <string name="close">Fechar</string>
     <string name="update">Atualizar</string>
@@ -21,5 +21,5 @@
     <string name="permission_dialog_message">Este app precisa da permissão para sobrepor outros apps para que possa exibir conteúdo em cima de outros apps. Por favor conceda a permissão.</string>
     <string name="permission_dialog_positive_button">Permitir</string>
     <string name="permission_dialog_negative_button">Cancelar</string>
-    <string name="waiting_for_media">Aguardando mídia</string>
+    <string name="waiting_for_connection">Aguardando mídia</string>
 </resources>

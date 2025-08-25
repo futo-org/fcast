@@ -1,6 +1,5 @@
 package com.futo.fcast.receiver
 
-import android.graphics.drawable.Animatable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -10,13 +9,18 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
-import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
@@ -32,7 +36,6 @@ import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -44,17 +47,34 @@ import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.max
 import androidx.core.net.toUri
+import androidx.lifecycle.ViewModel
+import com.futo.fcast.receiver.models.PlayMessage
+import com.futo.fcast.receiver.models.PlaybackUpdateMessage
+import com.futo.fcast.receiver.models.PlayerActivityViewModel
+import com.futo.fcast.receiver.models.SeekMessage
+import com.futo.fcast.receiver.models.SetSpeedMessage
+import com.futo.fcast.receiver.models.SetVolumeMessage
+import com.futo.fcast.receiver.models.VolumeUpdateMessage
+import com.futo.fcast.receiver.views.ConstraintLayoutGroup
+import com.futo.fcast.receiver.views.CustomPlayerViewScreen
+import com.futo.fcast.receiver.views.PlayerActivity
+import kotlinx.coroutines.flow.MutableStateFlow
 
 
 class PlayerActivity : AppCompatActivity() {
-    private lateinit var _playerControlView: PlayerView
-    private lateinit var _imageSpinner: ImageView
-    private lateinit var _textMessage: TextView
-    private lateinit var _layoutOverlay: ConstraintLayout
+//class PlayerActivity : ComponentActivity() {
+//    private lateinit var _playerControlView: PlayerView
+//    private lateinit var _imageSpinner: ImageView
+//    private lateinit var _textMessage: TextView
+//    private lateinit var _layoutOverlay: ConstraintLayout
     private lateinit var _exoPlayer: ExoPlayer
     private var _shouldPlaybackRestartOnConnectivity: Boolean = false
     private lateinit var _connectivityManager: ConnectivityManager
     private var _wasPlaying = false
+
+    val viewModel = PlayerActivityViewModel()
+//    private var _isLoading = false
+
 
     private val _connectivityEvents = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -134,13 +154,15 @@ class PlayerActivity : AppCompatActivity() {
 
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    NetworkService.instance?.sendPlaybackUpdate(PlaybackUpdateMessage(
-                        System.currentTimeMillis(),
-                        0.0,
-                        0.0,
-                        0,
-                        0.0
-                    ))
+                    NetworkService.instance?.sendPlaybackUpdate(
+                        PlaybackUpdateMessage(
+                            System.currentTimeMillis(),
+                            0,
+                            0.0,
+                            0.0,
+                            0.0
+                        )
+                    )
                     NetworkService.instance?.sendPlaybackError(fullMessage)
                 } catch (e: Throwable) {
                     Log.e(TAG, "Unhandled error sending playback error", e)
@@ -152,7 +174,12 @@ class PlayerActivity : AppCompatActivity() {
             super.onVolumeChanged(volume)
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    NetworkService.instance?.sendCastVolumeUpdate(VolumeUpdateMessage(System.currentTimeMillis(), volume.toDouble()))
+                    NetworkService.instance?.sendCastVolumeUpdate(
+                        VolumeUpdateMessage(
+                            System.currentTimeMillis(),
+                            volume.toDouble()
+                        )
+                    )
                 } catch (e: Throwable) {
                     Log.e(TAG, "Unhandled error sending volume update", e)
                 }
@@ -190,7 +217,7 @@ class PlayerActivity : AppCompatActivity() {
         val duration: Double
         val speed: Double
         if (state != 0) {
-            duration = (_exoPlayer.duration / 1000.0).coerceAtLeast(1.0)
+            duration = (_exoPlayer.duration / 1000.0).coerceAtLeast(0.0)
             time = (_exoPlayer.currentPosition / 1000.0).coerceAtLeast(0.0).coerceAtMost(duration)
             speed = _exoPlayer.playbackParameters.speed.toDouble().coerceAtLeast(0.01)
         } else {
@@ -201,10 +228,10 @@ class PlayerActivity : AppCompatActivity() {
 
         val playbackUpdate = PlaybackUpdateMessage(
             System.currentTimeMillis(),
+            state,
             time,
             duration,
-            state,
-            speed
+            speed,
         )
 
         lifecycleScope.launch(Dispatchers.IO) {
@@ -221,16 +248,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate")
 
-        setContentView(R.layout.activity_player)
-        setFullScreen()
-
-        _playerControlView = findViewById(R.id.player_control_view)
-        _imageSpinner = findViewById(R.id.image_spinner)
-        _textMessage = findViewById(R.id.text_message)
-        _layoutOverlay = findViewById(R.id.layout_overlay)
-
-        setStatus(true, null)
-
+//        _playerControlView = CustomPlayerView(this)
         val trackSelector = DefaultTrackSelector(this)
         trackSelector.parameters = trackSelector.parameters
             .buildUpon()
@@ -241,9 +259,35 @@ class PlayerActivity : AppCompatActivity() {
         _exoPlayer = ExoPlayer.Builder(this)
             .setTrackSelector(trackSelector).build()
         _exoPlayer.addListener(_playerEventListener)
-        _playerControlView.player = _exoPlayer
-        _playerControlView.controllerAutoShow = false
 
+
+        setContent {
+            PlayerActivity(viewModel, _exoPlayer)
+        }
+
+//        setContentView(R.layout.activity_player)
+        setFullScreen()
+
+//        _playerControlView = findViewById(R.id.player_control_view)
+//        _imageSpinner = findViewById(R.id.image_spinner)
+//        _textMessage = findViewById(R.id.text_message)
+//        _layoutOverlay = findViewById(R.id.layout_overlay)
+
+        setStatus(true, null)
+
+//        val trackSelector = DefaultTrackSelector(this)
+//        trackSelector.parameters = trackSelector.parameters
+//            .buildUpon()
+//            .setPreferredTextLanguage("df")
+//            .setSelectUndeterminedTextLanguage(true)
+//            .build()
+//
+//        _exoPlayer = ExoPlayer.Builder(this)
+//            .setTrackSelector(trackSelector).build()
+//        _exoPlayer.addListener(_playerEventListener)
+//        _playerControlView.player = _exoPlayer
+//        _playerControlView.controllerAutoShow = false
+//
         Log.i(TAG, "Attached onConnectionAvailable listener.")
         _connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         val netReq = NetworkRequest.Builder()
@@ -295,22 +339,26 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun setStatus(isLoading: Boolean, message: String?) {
-        if (isLoading) {
-            (_imageSpinner.drawable as Animatable?)?.start()
-            _imageSpinner.visibility = View.VISIBLE
-        } else {
-            (_imageSpinner.drawable as Animatable?)?.stop()
-            _imageSpinner.visibility = View.GONE
-        }
+//        PlayerActivityViewModel.isLoading.value = isLoading
+//        PlayerActivityViewModel.statusMessage.value = message
+        viewModel.statusMessage = message
 
-        if (message != null) {
-            _textMessage.visibility = View.VISIBLE
-            _textMessage.text = message
-        } else {
-            _textMessage.visibility = View.GONE
-        }
+//        if (isLoading) {
+//            (_imageSpinner.drawable as Animatable?)?.start()
+//            _imageSpinner.visibility = View.VISIBLE
+//        } else {
+//            (_imageSpinner.drawable as Animatable?)?.stop()
+//            _imageSpinner.visibility = View.GONE
+//        }
 
-        _layoutOverlay.visibility = if (isLoading || message != null) View.VISIBLE else View.GONE
+//        if (message != null) {
+//            _textMessage.visibility = View.VISIBLE
+//            _textMessage.text = message
+//        } else {
+//            _textMessage.visibility = View.GONE
+//        }
+//
+//        _layoutOverlay.visibility = if (isLoading || message != null) View.VISIBLE else View.GONE
     }
 
     private fun setFullScreen() {
@@ -349,18 +397,20 @@ class PlayerActivity : AppCompatActivity() {
         _connectivityManager.unregisterNetworkCallback(_connectivityEvents)
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
-        _playerControlView.player = null
+//        _playerControlView.player = null
         NetworkService.activityCount--
 
         GlobalScope.launch(Dispatchers.IO) {
             try {
-                NetworkService.instance?.sendPlaybackUpdate(PlaybackUpdateMessage(
-                    System.currentTimeMillis(),
-                    0.0,
-                    0.0,
-                    0,
-                    0.0
-                ))
+                NetworkService.instance?.sendPlaybackUpdate(
+                    PlaybackUpdateMessage(
+                        System.currentTimeMillis(),
+                        0,
+                        0.0,
+                        0.0,
+                        0.0
+                    )
+                )
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to send playback update.", e)
             }
@@ -369,13 +419,26 @@ class PlayerActivity : AppCompatActivity() {
 
     @OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (_playerControlView.isControllerFullyVisible) {
+//        if (_playerControlView.isControllerFullyVisible) {
+//            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+//                _playerControlView.hideController()
+//                return true
+//            }
+//        if (PlayerActivityViewModel.showControls.value) {
+        if (viewModel.showControls) {
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-                _playerControlView.hideController()
+//                PlayerActivityViewModel.showControls.value = false
+                viewModel.showControls = false
                 return true
             }
         } else {
             when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_CENTER -> {
+//                    PlayerActivityViewModel.showControls.value = true
+                    viewModel.showControls = true
+                    return true
+                }
+
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     _exoPlayer.seekTo(max(0, _exoPlayer.currentPosition - SEEK_BACKWARD_MILLIS))
                     return true

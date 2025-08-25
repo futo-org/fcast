@@ -1,4 +1,4 @@
-package com.futo.fcast.receiver
+package com.futo.fcast.receiver.models
 
 import kotlinx.serialization.Serializable
 

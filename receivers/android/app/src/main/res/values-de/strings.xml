@@ -11,7 +11,7 @@
     <string name="installing_update">Update wird installiert…</string>
     <string name="success">Erfolg</string>
     <string name="failed_to_update_with_error">Paket konnte nicht aktualisiert werden. Fehler</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">Für den FCast-Receiver ist ein Update verfügbar. Möchten Sie ein Update durchführen?</string>
+    <string name="update_status">Für den FCast-Receiver ist ein Update verfügbar. Möchten Sie ein Update durchführen?</string>
     <string name="never">Niemals</string>
     <string name="close">Schließen</string>
     <string name="update">Aktualisieren</string>
@@ -21,5 +21,5 @@
     <string name="permission_dialog_message">Diese App benötigt die Berechtigung „Systemwarnfenster“, um Inhalte über anderen Apps anzuzeigen. Bitte erteilen Sie die Berechtigung.</string>
     <string name="permission_dialog_positive_button">Erlauben</string>
     <string name="permission_dialog_negative_button">Stornieren</string>
-    <string name="waiting_for_media">Warten auf Medien</string>
+    <string name="waiting_for_connection">Warten auf Medien</string>
 </resources>

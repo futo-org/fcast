@@ -6,19 +6,19 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
-import android.graphics.drawable.Animatable
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.util.TypedValue
-import android.view.View
 import android.view.WindowManager
 import android.widget.*
+import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -26,7 +26,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import com.google.zxing.BarcodeFormat
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import kotlinx.coroutines.*
@@ -36,31 +35,44 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.NetworkInterface
 import androidx.core.net.toUri
+import com.futo.fcast.receiver.models.FCastNetworkConfig
+import com.futo.fcast.receiver.models.FCastService
+import com.futo.fcast.receiver.models.MainActivityViewModel
+import com.futo.fcast.receiver.views.MainActivity
+import com.google.zxing.EncodeHintType
 
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var _buttonUpdate: LinearLayout
-    private lateinit var _text: TextView
-    private lateinit var _textIPs: TextView
-    private lateinit var _textProgress: TextView
-    private lateinit var _updateSpinner: ImageView
-    private lateinit var _imageSpinner: ImageView
+//    private lateinit var _buttonUpdate: LinearLayout
+//    private lateinit var _text: TextView
+//    private lateinit var _textIPs: TextView
+//    private lateinit var _textProgress: TextView
+//    private lateinit var _updateSpinner: ImageView
+//    private lateinit var _imageSpinner: ImageView
     private lateinit var _layoutConnectionInfo: ConstraintLayout
-    private lateinit var _videoBackground: PlayerView
-    private lateinit var _viewDemo: View
+//    private lateinit var _videoBackground: PlayerView
+//    private lateinit var _viewDemo: View
     private lateinit var _player: ExoPlayer
-    private lateinit var _imageQr: ImageView
-    private lateinit var _textScanToConnect: TextView
+//    private lateinit var _imageQr: ImageView
+//    private lateinit var _textScanToConnect: TextView
     private lateinit var _systemAlertWindowPermissionLauncher: ActivityResultLauncher<Intent>
     private var _updateAvailable: Boolean? = null
-    private var _updating: Boolean = false
-    private var _demoClickCount = 0
-    private var _lastDemoToast: Toast? = null
+//    private var _updating: Boolean = false
+//    private var _demoClickCount = 0
+//    private var _lastDemoToast: Toast? = null
     private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
+
+    val viewModel = MainActivityViewModel()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+//        setContentView(R.layout.activity_main)
+
+        _player = ExoPlayer.Builder(this).build()
+        setContent {
+            MainActivity(viewModel, _player)
+        }
+
 
         _systemAlertWindowPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
             if (Settings.canDrawOverlays(this)) {
@@ -80,54 +92,55 @@ class MainActivity : AppCompatActivity() {
             null
         }
 
-        _buttonUpdate = findViewById(R.id.button_update)
-        _text = findViewById(R.id.text_dialog)
-        _textIPs = findViewById(R.id.text_ips)
-        _textProgress = findViewById(R.id.text_progress)
-        _updateSpinner = findViewById(R.id.update_spinner)
-        _imageSpinner = findViewById(R.id.image_spinner)
-        _layoutConnectionInfo = findViewById(R.id.layout_connection_info)
-        _videoBackground = findViewById(R.id.video_background)
-        _viewDemo = findViewById(R.id.view_demo)
-        _imageQr = findViewById(R.id.image_qr)
-        _textScanToConnect = findViewById(R.id.text_scan_to_connect)
+//        _buttonUpdate = findViewById(R.id.button_update)
+//        _text = findViewById(R.id.text_dialog)
+//        _textIPs = findViewById(R.id.text_ips)
+//        _textProgress = findViewById(R.id.text_progress)
+//        _updateSpinner = findViewById(R.id.update_spinner)
+//        _imageSpinner = findViewById(R.id.image_spinner)
+//        _layoutConnectionInfo = findViewById(R.id.layout_connection_info)
+//        _videoBackground = findViewById(R.id.video_background)
+//        _viewDemo = findViewById(R.id.view_demo)
+//        _imageQr = findViewById(R.id.image_qr)
+//        _textScanToConnect = findViewById(R.id.text_scan_to_connect)
 
         startVideo()
-        startAnimations()
+//        startAnimations()
 
-        setText(getString(R.string.checking_for_updates))
-        _buttonUpdate.visibility = View.INVISIBLE
+//        setText(getString(R.string.checking_for_updates))
+        viewModel.updateStatus = getString(R.string.checking_for_updates)
+//        _buttonUpdate.visibility = View.INVISIBLE
 
-        _buttonUpdate.setOnClickListener {
-            if (_updating) {
-                return@setOnClickListener
-            }
+//        _buttonUpdate.setOnClickListener {
+//            if (_updating) {
+//                return@setOnClickListener
+//            }
+//
+//            _updating = true
+//            update()
+//        }
 
-            _updating = true
-            update()
-        }
-
-        _viewDemo.setOnClickListener {
-            _demoClickCount++
-            if (_demoClickCount in 2..4) {
-                val remainingClicks = 5 - _demoClickCount
-                _lastDemoToast?.cancel()
-                _lastDemoToast = Toast.makeText(this, "Click $remainingClicks more times to start demo", Toast.LENGTH_SHORT).apply { show() }
-            } else if (_demoClickCount == 5) {
-                NetworkService.instance?.onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
-                _demoClickCount = 0
-            }
-        }
+//        _viewDemo.setOnClickListener {
+//            _demoClickCount++
+//            if (_demoClickCount in 2..4) {
+//                val remainingClicks = 5 - _demoClickCount
+//                _lastDemoToast?.cancel()
+//                _lastDemoToast = Toast.makeText(this, "Click $remainingClicks more times to start demo", Toast.LENGTH_SHORT).apply { show() }
+//            } else if (_demoClickCount == 5) {
+//                NetworkService.instance?.onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
+//                _demoClickCount = 0
+//            }
+//        }
 
         if (BuildConfig.IS_PLAYSTORE_VERSION) {
-            _text.visibility = View.INVISIBLE
-            _buttonUpdate.visibility = View.INVISIBLE
-            _updateSpinner.visibility = View.INVISIBLE
-            (_updateSpinner.drawable as Animatable?)?.stop()
+//            _text.visibility = View.INVISIBLE
+//            _buttonUpdate.visibility = View.INVISIBLE
+//            _updateSpinner.visibility = View.INVISIBLE
+//            (_updateSpinner.drawable as Animatable?)?.stop()
         } else {
-            _text.visibility = View.VISIBLE
-            _updateSpinner.visibility = View.VISIBLE
-            (_updateSpinner.drawable as Animatable?)?.start()
+//            _text.visibility = View.VISIBLE
+//            _updateSpinner.visibility = View.VISIBLE
+//            (_updateSpinner.drawable as Animatable?)?.start()
 
             lifecycleScope.launch(Dispatchers.IO) {
                 checkForUpdates()
@@ -135,25 +148,36 @@ class MainActivity : AppCompatActivity() {
         }
 
         val ips = getIPs()
-        _textIPs.text = "IPs\n${ips.joinToString("\n")}\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+        //        _textIPs.text = "IPs\n${ips.joinToString("\n")}\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+        viewModel.textIPs = ips.joinToString("\n")
+        viewModel.textPorts = "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
 
         try {
             val barcodeEncoder = BarcodeEncoder()
-            val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 100.0f, resources.displayMetrics).toInt()
-            val json = Json.encodeToString(FCastNetworkConfig("${Build.MANUFACTURER}-${Build.MODEL}", ips, listOf(
-                FCastService(TcpListenerService.PORT, 0),
-                FCastService(WebSocketListenerService.PORT, 1)
-            )))
+            val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 200.0f, resources.displayMetrics).toInt()
+            val hints = mapOf(EncodeHintType.MARGIN to 1)
+            val json = Json.encodeToString(
+                FCastNetworkConfig(
+                    "${Build.MANUFACTURER}-${Build.MODEL}", ips, listOf(
+                        FCastService(TcpListenerService.PORT, 0),
+                        FCastService(WebSocketListenerService.PORT, 1)
+                    )
+                )
+            )
             val base64 = Base64.encodeToString(json.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
             val url = "fcast://r/${base64}"
             Log.i(TAG, "connection url: $url")
-            val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px)
-            _imageQr.setImageBitmap(bitmap)
+            val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px, hints)
+//            _imageQr.setImageBitmap(bitmap)
+            viewModel.imageQR = bitmap.asImageBitmap()
         } catch (_: java.lang.Exception) {
-            _textScanToConnect.visibility = View.GONE
-            _imageQr.visibility = View.GONE
+            viewModel.showQR = false
+            // show error notification as toast, not in UI
+//            _textScanToConnect.visibility = View.GONE
+//            _imageQr.visibility = View.GONE
         }
 
+        instance = this
         NetworkService.activityCount++
 
         checkAndRequestPermissions()
@@ -178,6 +202,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        instance = null
         InstallReceiver.onReceiveResult = null
         _player.release()
         NetworkService.activityCount--
@@ -194,8 +219,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVideo() {
-        _player = ExoPlayer.Builder(this).build()
-        _videoBackground.player = _player
+//        _player = ExoPlayer.Builder(this).build()
+//        _videoBackground.player = _player
 
         val mediaItem = MediaItem.fromUri(("android.resource://" + packageName + "/" + R.raw.c).toUri())
         _player.setMediaItem(mediaItem)
@@ -204,10 +229,10 @@ class MainActivity : AppCompatActivity() {
         _player.playWhenReady = true
     }
 
-    private fun startAnimations() {
-        //Spinner animation
-        (_imageSpinner.drawable as Animatable?)?.start()
-    }
+//    private fun startAnimations() {
+//        //Spinner animation
+//        (_imageSpinner.drawable as Animatable?)?.start()
+//    }
 
     private fun checkAndRequestPermissions(): Boolean {
         val listPermissionsNeeded = arrayListOf<String>()
@@ -311,15 +336,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setText(text: CharSequence?) {
-        if (text == null) {
-            _text.visibility = View.INVISIBLE
-            _text.text = ""
-        } else {
-            _text.visibility = View.VISIBLE
-            _text.text = text
-        }
-    }
+//    private fun setText(text: CharSequence?) {
+//        if (text == null) {
+//            _text.visibility = View.INVISIBLE
+//            _text.text = ""
+//        } else {
+//            _text.visibility = View.VISIBLE
+//            _text.text = text
+//        }
+//    }
 
     private suspend fun checkForUpdates() {
         Log.i(TAG, "Checking for updates...")
@@ -360,20 +385,23 @@ class MainActivity : AppCompatActivity() {
     private fun setUpdateAvailable(updateAvailable: Boolean) {
         if (updateAvailable) {
             try {
-                (_updateSpinner.drawable as Animatable?)?.stop()
-                _updateSpinner.visibility = View.INVISIBLE
-                setText(resources.getText(R.string.there_is_an_update_available_do_you_wish_to_update))
-                _buttonUpdate.visibility = View.VISIBLE
+//                (_updateSpinner.drawable as Animatable?)?.stop()
+//                _updateSpinner.visibility = View.INVISIBLE
+//                setText(resources.getText(R.string.update_status))
+                viewModel.updateStatus = getString(R.string.update_status)
+//                _buttonUpdate.visibility = View.VISIBLE
             } catch (_: Throwable) {
                 Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show()
                 Log.w(TAG, "Error occurred in update dialog.")
             }
         } else {
-            _updateSpinner.visibility = View.INVISIBLE
-            _buttonUpdate.visibility = View.INVISIBLE
-            setText(null)
+//            _updateSpinner.visibility = View.INVISIBLE
+//            _buttonUpdate.visibility = View.INVISIBLE
+//            setText(null)
+            viewModel.updateStatus = null
         }
 
+        viewModel.updateAvailable = updateAvailable
         _updateAvailable = updateAvailable
     }
 
@@ -392,13 +420,15 @@ class MainActivity : AppCompatActivity() {
         return response.body.string().trim().toInt()
     }
 
-    private fun update() {
-        _updateSpinner.visibility = View.VISIBLE
-        _buttonUpdate.visibility = Button.INVISIBLE
+    fun update() {
+        viewModel.updating = true
+//        _updateSpinner.visibility = View.VISIBLE
+//        _buttonUpdate.visibility = Button.INVISIBLE
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        setText(resources.getText(R.string.downloading_update))
-        (_updateSpinner.drawable as Animatable?)?.start()
+//        setText(resources.getText(R.string.downloading_update))
+        viewModel.updateStatus = getString(R.string.downloading_update)
+//        (_updateSpinner.drawable as Animatable?)?.start()
 
         lifecycleScope.launch(Dispatchers.IO) {
             var inputStream: InputStream? = null
@@ -449,7 +479,8 @@ class MainActivity : AppCompatActivity() {
                         lastProgressText = progressText
 
                         lifecycleScope.launch(Dispatchers.Main) {
-                            _textProgress.text = progressText
+//                            _textProgress.text = progressText
+                            viewModel.updateProgress = progressText
                         }
                     }
                 }
@@ -470,8 +501,10 @@ class MainActivity : AppCompatActivity() {
             session.close()
 
             withContext(Dispatchers.Main) {
-                _textProgress.text = ""
-                setText(resources.getText(R.string.installing_update))
+//                _textProgress.text = ""
+                viewModel.updateProgress = ""
+//                setText(resources.getText(R.string.installing_update))
+                viewModel.updateStatus = getString(R.string.installing_update)
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Exception thrown while downloading and installing latest version of app.", e)
@@ -491,14 +524,18 @@ class MainActivity : AppCompatActivity() {
         InstallReceiver.onReceiveResult = null
         Log.i(TAG, "Cleared InstallReceiver.onReceiveResult handler.")
 
-        (_updateSpinner.drawable as Animatable?)?.stop()
+//        (_updateSpinner.drawable as Animatable?)?.stop()
 
         if (result.isNullOrBlank()) {
-            _updateSpinner.setImageResource(R.drawable.ic_update_success)
-            setText(resources.getText(R.string.success))
+            viewModel.updateResultSuccessful = true
+//            _updateSpinner.setImageResource(R.drawable.ic_update_success)
+//            setText(resources.getText(R.string.success))
+            viewModel.updateStatus = getString(R.string.success)
         } else {
-            _updateSpinner.setImageResource(R.drawable.ic_update_fail)
-            setText("${resources.getText(R.string.failed_to_update_with_error)}: '$result'.")
+            viewModel.updateResultSuccessful = false
+//            _updateSpinner.setImageResource(R.drawable.ic_update_fail)
+//            setText("${resources.getText(R.string.failed_to_update_with_error)}: '$result'.")
+            viewModel.updateStatus = "${getString(R.string.failed_to_update_with_error)}: '$result'."
         }
     }
 
@@ -536,10 +573,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        const val TAG = "MainActivity"
-        const val VERSION_URL = "https://dl.fcast.org/android/fcast-version.txt"
-        const val APK_URL = "https://dl.fcast.org/android/fcast-release.apk"
-        const val REQUEST_ID_MULTIPLE_PERMISSIONS = 1
-        const val REQUEST_CODE = 2
+        var instance: MainActivity? = null
+
+        private const val TAG = "MainActivity"
+        private const val VERSION_URL = "https://dl.fcast.org/android/fcast-version.txt"
+        private const val APK_URL = "https://dl.fcast.org/android/fcast-release.apk"
+        private const val REQUEST_ID_MULTIPLE_PERMISSIONS = 1
+        private const val REQUEST_CODE = 2
     }
 }

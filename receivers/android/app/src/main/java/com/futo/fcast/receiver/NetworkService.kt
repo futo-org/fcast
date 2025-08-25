@@ -9,8 +9,36 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import com.futo.fcast.receiver.models.ContentObject
+import com.futo.fcast.receiver.models.ContentType
+import com.futo.fcast.receiver.models.InitialSenderMessage
+import com.futo.fcast.receiver.models.Opcode
+import com.futo.fcast.receiver.models.PROTOCOL_VERSION
+import com.futo.fcast.receiver.models.PlayMessage
+import com.futo.fcast.receiver.models.PlaybackErrorMessage
+import com.futo.fcast.receiver.models.PlaybackUpdateMessage
+import com.futo.fcast.receiver.models.PlaylistContent
+import com.futo.fcast.receiver.models.SeekMessage
+import com.futo.fcast.receiver.models.SetPlaylistItemMessage
+import com.futo.fcast.receiver.models.SetSpeedMessage
+import com.futo.fcast.receiver.models.SetVolumeMessage
+import com.futo.fcast.receiver.models.SubscribeEventMessage
+import com.futo.fcast.receiver.models.UnsubscribeEventMessage
+import com.futo.fcast.receiver.models.VersionMessage
+import com.futo.fcast.receiver.models.VolumeUpdateMessage
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.Json
+import java.net.SocketAddress
+import java.util.UUID
+
+data class AppCache(
+    val interfaces: Any? = null,
+    val appName: String = BuildConfig.VERSION_NAME,
+    val appVersion: String = BuildConfig.VERSION_CODE.toString(),
+    val playMessage: PlayMessage? = null,
+    val playerVolume: Double? = null,
+    val subscribedKeys: Set<String>,
+)
 
 class NetworkService : Service() {
     private var _discoveryService: DiscoveryService? = null
@@ -51,7 +79,7 @@ class NetworkService : Service() {
         val notification: Notification = createNotificationBuilder()
             .setContentTitle(name)
             .setContentText(descriptionText)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_name)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -67,9 +95,9 @@ class NetworkService : Service() {
                 withContext(Dispatchers.IO) {
                     try {
                         Log.i(TAG, "Sending version ${session.id}")
-                        session.send(Opcode.Version, VersionMessage(2))
-                    } catch (_: Throwable) {
-                        Log.e(TAG, "Failed to send version ${session.id}")
+                        session.send(Opcode.Version, VersionMessage(PROTOCOL_VERSION))
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed to send version ${session.id}", e)
                     }
                 }
             }
@@ -87,6 +115,7 @@ class NetworkService : Service() {
             start()
         }
 
+        ConnectionMonitor()
         Log.i(TAG, "Started NetworkService")
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
@@ -147,6 +176,43 @@ class NetworkService : Service() {
         _webSocketListenerService?.forEachSession(sender)
     }
 
+    suspend fun preparePlayMessage(message: PlayMessage, cachedPlayerVolume: Double?) {
+        // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+        // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
+        // is cached in the play message when volume is not set in v3 PlayMessage.
+        var rendererMessage = PlayMessage(
+            message.container, message.url,
+            message.content, message.time, message.volume ?: cachedPlayerVolume,
+            message.speed, message.headers, message.metadata
+        )
+
+        rendererMessage = proxyPlayIfRequired(rendererMessage)
+
+        if (message.container === "application/json") {
+            val jsonStr: String = if (message.url != null) fetchJSON(message.url).toString() else message.content ?: ""
+
+            try {
+                val json = Json.decodeFromString<ContentObject>(jsonStr)
+
+                when (json.contentType) {
+                    ContentType.Playlist -> {
+                        val playlistContent = Json.decodeFromString<PlaylistContent>(jsonStr)
+                        _mediaCache?.destroy()
+                        _mediaCache = MediaCache(playlistContent)
+
+                        onPlayPlaylist(playlistContent)
+                        return
+                    }
+                }
+            }
+            catch (e: IllegalArgumentException) {
+                Log.w(com.futo.fcast.receiver.TAG, "JSON format is not a supported format, attempting to render as text: error=$e")
+            }
+        }
+
+        onCastPlay(rendererMessage)
+    }
+
     fun sendPlaybackError(error: String) {
         Log.i(TAG, "sendPlaybackError")
         val message = PlaybackErrorMessage(error)
@@ -183,7 +249,7 @@ class NetworkService : Service() {
                         val playNotification = createNotificationBuilder()
                             .setContentTitle("FCast")
                             .setContentText("New content received. Tap to play.")
-                            .setSmallIcon(R.drawable.ic_launcher_background)
+                            .setSmallIcon(R.drawable.ic_stat_name)
                             .setContentIntent(pi)
                             .setPriority(NotificationCompat.PRIORITY_HIGH)
                             .setAutoCancel(true)
@@ -199,6 +265,10 @@ class NetworkService : Service() {
                 Log.e(TAG, "Failed to play", e)
             }
         }
+    }
+
+    fun onPlayPlaylist(value: PlaylistContent) {
+
     }
 
     fun onCastPause() {
@@ -273,6 +343,111 @@ class NetworkService : Service() {
         }
     }
 
+    fun onVersion(message: VersionMessage) {
+        Log.i(TAG, "onVersion")
+
+        // implementation TBD
+    }
+
+    fun onPing(sessionId: UUID) {
+        ConnectionMonitor.onPingPong(sessionId)
+    }
+
+    fun onPong(sessionId: UUID) {
+        ConnectionMonitor.onPingPong(sessionId)
+    }
+
+    fun onInitial(message: InitialSenderMessage) {
+        Log.i(TAG, "Received 'Initial' message from sender: $message")
+    }
+
+    fun onSetPlaylistItem(message: SetPlaylistItemMessage) {
+        Log.i(TAG, "onSetPlaylistItem")
+
+        // implementation TBD
+    }
+
+    fun onSubscribeEvent(message: SubscribeEventMessage) {
+        Log.i(TAG, "onSubscribeEvent")
+
+        // implementation TBD
+    }
+
+    fun onUnsubscribeEvent(message: UnsubscribeEventMessage) {
+        Log.i(TAG, "onUnsubscribeEvent")
+
+        // implementation TBD
+    }
+
+    // send-event
+
+    // play-request
+
+
+
+    // Window might be re-created while devices are still connected
+//fun setUiUpdateCallbacks(callbacks: any) {
+//    var frontendConnections = []
+//
+//    window.targetAPI.onConnect((_event, value: any) => {
+//        val idMapping = value.type === 'ws' ? value.sessionId : value.data.address
+//
+//        Log.d(TAG, "Processing connect event for $idMapping with current connections: $frontendConnections")
+//        frontendConnections.push(idMapping)
+//        callbacks.onConnect(frontendConnections)
+//    })
+//    window.targetAPI.onDisconnect((_event, value: any) => {
+//        val idMapping = value.type === 'ws' ? value.sessionId : value.data.address
+//
+//        Log.d(TAG, "Processing disconnect event for $idMapping with current connections: $frontendConnections")
+//        val index = frontendConnections.indexOf(idMapping)
+//        if (index != -1) {
+//            frontendConnections.splice(index, 1)
+//            callbacks.onDisconnect(frontendConnections)
+//        }
+//    })
+//
+//    window.targetAPI.getSessions().then((sessions: string[]) => {
+//        Log.i(TAG, "Window created with current sessions: $sessions")
+//        frontendConnections = sessions
+//
+//        if (frontendConnections.length > 0) {
+//            callbacks.onConnect(frontendConnections, true)
+//        }
+//    })
+//}
+
+    fun onConnect(listener: ListenerService, sessionId: UUID, address: SocketAddress) {
+        ConnectionMonitor.onConnect(listener, sessionId, address, {
+            _scope?.launch(Dispatchers.Main) {
+                try {
+                    MainActivity.instance?.viewModel?.connections?.add(sessionId)
+                    PlayerActivity.instance?.viewModel?.connections?.add(sessionId)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "onConnect: Failed to update UI connection state", e)
+                }
+            }
+        })
+//        Toast.makeText(this, "ON CONNECT TEST", Toast.LENGTH_LONG).show()
+        // or just call local callbacks in activity modules to keep things similar
+//        MainActivity._TESTING.setText("ON CONNECT UPDATE FROM $sessionId")
+    }
+
+    fun onDisconnect(sessionId: UUID, address: SocketAddress) {
+        ConnectionMonitor.onDisconnect(sessionId, address, {
+            _scope?.launch(Dispatchers.Main) {
+                try {
+                    MainActivity.instance?.viewModel?.connections?.remove(sessionId)
+                    PlayerActivity.instance?.viewModel?.connections?.remove(sessionId)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "onDisconnect: Failed to update UI connection state", e)
+                }
+            }
+        })
+
+//        Toast.makeText(this, "ON DISCONNECT TEST", Toast.LENGTH_LONG).show()
+    }
+
     companion object {
         private const val CHANNEL_ID = "NetworkListenerServiceChannel"
         private const val NOTIFICATION_ID = 1
@@ -280,5 +455,143 @@ class NetworkService : Service() {
         const val TAG = "NetworkService"
         var activityCount = 0
         var instance: NetworkService? = null
+
+        val cache: AppCache = AppCache(null,BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE.toString(), null, null, setOf())
+        private var _mediaCache: MediaCache? = null
+
+
+        
+        var key: String? = null
+        var cert: String? = null
+//        var proxyServer: http.Server
+//        var proxyServerAddress: AddressInfo
+        var proxiedFiles: MutableMap<String, PlayMessage> = mutableMapOf()
+
+        private suspend fun setupProxyServer() {
+//            try {
+//                Log.i(TAG, "Proxy server starting")
+//
+//                val port = 0
+//                proxyServer = http.createServer((req, res) => {
+//                    Log.i(TAG, "Request received")
+//                    val requestUrl = "http://${req.headers.host}${req.url}"
+//
+//                    val proxyInfo = proxiedFiles[requestUrl]
+//
+//                    if (!proxyInfo) {
+//                        res.writeHead(404)
+//                        res.end('Not found')
+//                        return
+//                    }
+//
+//                    if (proxyInfo.url.startsWith('app://')) {
+//                        var start: number = 0
+//                        var end: number = null
+//                        val contentSize = MediaCache.getInstance().getObjectSize(proxyInfo.url)
+//                        if (req.headers.range) {
+//                            val range = req.headers.range.slice(6).split('-')
+//                            start = (range.length > 0) ? parseInt(range[0]) : 0
+//                            end = (range.length > 1) ? parseInt(range[1]) : null
+//                        }
+//
+//                        Log.d(TAG, "Fetching byte range from cache: start=${start}, end=${end}")
+//                        val stream = MediaCache.getInstance().getObject(proxyInfo.url, start, end)
+//                        var responseCode = null
+//                        var responseHeaders = null
+//
+//                        if (start != 0) {
+//                            responseCode = 206
+//                            responseHeaders = {
+//                                'Accept-Ranges': 'bytes',
+//                                'Content-Length': contentSize - start,
+//                                'Content-Range': `bytes ${start}-${end ? end : contentSize - 1}/${contentSize}`,
+//                                'Content-Type': proxyInfo.container,
+//                            }
+//                        }
+//                        else {
+//                            responseCode = 200
+//                            responseHeaders = {
+//                                'Accept-Ranges': 'bytes',
+//                                'Content-Length': contentSize,
+//                                'Content-Type': proxyInfo.container,
+//                            }
+//                        }
+//
+//                        Log.d(TAG,"Serving content ${proxyInfo.url} with response headers: $responseHeaders")
+//                        res.writeHead(responseCode, responseHeaders)
+//                        stream.pipe(res)
+//                    }
+//                    else {
+//                        val omitHeaders = setOf(
+//                            "host",
+//                            "connection",
+//                            "keep-alive",
+//                            "proxy-authenticate",
+//                            "proxy-authorization",
+//                            "te",
+//                            "trailers",
+//                            "transfer-encoding",
+//                            "upgrade",
+//                        )
+//
+//                        val filteredHeaders = Object.fromEntries(Object.entries(req.headers)
+//                            .filter(([key]) => !omitHeaders.has(key.toLowerCase()))
+//                        .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value]))
+//
+//                        val parsedUrl = url.parse(proxyInfo.url)
+//                        val options: http.RequestOptions = {
+//                            ... parsedUrl,
+//                            method: req.method,
+//                            headers: { ...filteredHeaders, ...proxyInfo.headers }
+//                        }
+//
+//                        val proxyReq = http.request(options, (proxyRes) => {
+//                            res.writeHead(proxyRes.statusCode, proxyRes.headers)
+//                            proxyRes.pipe(res, { end: true })
+//                        })
+//
+//                        req.pipe(proxyReq, { end: true })
+//                        proxyReq.on('error', (e) => {
+//                            Log.e(TAG, "Problem with request: ${e.message}")
+//                            res.writeHead(500)
+//                            res.end()
+//                        })
+//                    }
+//                })
+//                NetworkService.proxyServer.on('error', e => {
+//                    reject(e)
+//                })
+//                NetworkService.proxyServer.listen(port, '127.0.0.1', () => {
+//                    proxyServerAddress = proxyServer.address() as AddressInfo
+//                    Log.i(TAG, "Proxy server running at http://127.0.0.1:${proxyServerAddress.port}/")
+//                    resolve()
+//                })
+//            } catch (e) {
+//                reject(e)
+//            }
+        }
+
+        suspend fun proxyPlayIfRequired(message: PlayMessage): PlayMessage {
+            if (message.url !== null && (message.url.startsWith("app://") || (message.headers !== null && !streamingMediaTypes.contains(message.container.lowercase())))) {
+                return PlayMessage(
+                    message.container, proxyFile(message),
+                    message.content, message.time, message.volume,
+                    message.speed, message.headers
+                )
+            }
+            return message
+        }
+
+        suspend fun proxyFile(message: PlayMessage): String {
+            val proxiedUrl = "TEMP"
+//            if (!proxyServer) {
+//                await NetworkService.setupProxyServer()
+//            }
+//
+//            val proxiedUrl = "http://127.0.0.1:${proxyServerAddress.port}/${UUID.randomUUID()}"
+            Log.i(TAG, "Proxied url $proxiedUrl, $message")
+            proxiedFiles[proxiedUrl] = message
+            return proxiedUrl
+        }
     }
 }

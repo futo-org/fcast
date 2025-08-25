@@ -11,7 +11,7 @@
     <string name="installing_update">Installing update…</string>
     <string name="success">Success</string>
     <string name="failed_to_update_with_error">Failed to update package with error</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">There is an update available for FCast receiver, do you wish to update?</string>
+    <string name="update_status">There is an update available for FCast receiver, do you wish to update?</string>
     <string name="never">Never</string>
     <string name="close">Close</string>
     <string name="update">Update</string>
@@ -21,5 +21,30 @@
     <string name="permission_dialog_message">This app requires the System Alert Window permission to display content on top of other apps. Please grant the permission.</string>
     <string name="permission_dialog_positive_button">Allow</string>
     <string name="permission_dialog_negative_button">Cancel</string>
-    <string name="waiting_for_media">Waiting for media</string>
+    <string name="waiting_for_connection">Waiting for a connection</string>
+    <string name="connected">Connected: Ready to cast</string>
+    <string name="connected_multiple">Multiple devices connected:\n Ready to cast</string>
+    <string name="main_device_disconnected">Device disconnected</string>
+    <string name="main_device_disconnected_multiple">A device has disconnected</string>
+    <string name="player_device_connected">Device connected</string>
+    <string name="player_device_disconnected">Device disconnected. If you experience playback issues, please reconnect.</string>
+    <string name="connection_information">Connection Information</string>
+    <string name="sender_app_download">Need a sender app?\nDownload Grayjay at https://grayjay.app</string>
+    <string name="connection_details">Connection Details</string>
+    <string name="ips">IPs</string>
+    <string name="port">Port</string>
+    <string name="scan_to_connect">Scan with a FCast sender app</string>
+
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">Application Icon</string>
+
+    <!-- Accessibility descriptions for a media control button that causes playback to be started. [CHAR LIMIT=NONE] -->
+    <string name="player_button_play">Play</string>
+    <!-- Accessibility description for a media control button that causes playback to be paused. [CHAR LIMIT=NONE] -->
+    <string name="player_button_pause">Pause</string>
+    <!-- Accessibility description for a media control button that causes the next track to be played. [CHAR LIMIT=NONE] -->
+    <string name="player_next_button">Next</string>
+    <!-- Accessibility description for a media control button that causes the previous track to be played. [CHAR LIMIT=NONE] -->
+    <string name="player_previous_button">Previous</string>
 </resources>
