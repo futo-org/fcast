@@ -1,0 +1,388 @@
+{
+  "types": [
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+      "rust_wire_type": {
+        "Io": "usize",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "String",
+      "rust_wire_type": {
+        "Io": "wire_cst_list_prim_u_8_strict",
+        "Web": "String"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": "*mut "
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "TraitDef_DeviceEventHandler",
+      "rust_wire_type": {
+        "Io": "UNREACHABLE_RUST_WIRE_TYPE",
+        "Web": "UNREACHABLE_RUST_WIRE_TYPE"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "box_autoadd_device_info",
+      "rust_wire_type": {
+        "Io": "wire_cst_device_info",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": "*mut "
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "device_info",
+      "rust_wire_type": {
+        "Io": "wire_cst_device_info",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": "FrbWrapper<crate::api::DeviceInfo>"
+    },
+    {
+      "safe_ident": "error_message",
+      "rust_wire_type": {
+        "Io": "wire_cst_error_message",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "f_64",
+      "rust_wire_type": {
+        "Io": "f64",
+        "Web": "f64"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "i_32",
+      "rust_wire_type": {
+        "Io": "i32",
+        "Web": "i32"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "ip_addr",
+      "rust_wire_type": {
+        "Io": "wire_cst_ip_addr",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": "FrbWrapper<crate::api::IpAddr>"
+    },
+    {
+      "safe_ident": "list_ip_addr",
+      "rust_wire_type": {
+        "Io": "wire_cst_list_ip_addr",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Io": "*mut ",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "list_prim_u_8_strict",
+      "rust_wire_type": {
+        "Web": "Box<[u8]>",
+        "Io": "wire_cst_list_prim_u_8_strict"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": "*mut "
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "opt_box_autoadd_device_info",
+      "rust_wire_type": {
+        "Io": "wire_cst_device_info",
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": "*mut "
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "protocol_type",
+      "rust_wire_type": {
+        "Io": "i32",
+        "Web": "i32"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": "FrbWrapper<crate::api::ProtocolType>"
+    },
+    {
+      "safe_ident": "u_16",
+      "rust_wire_type": {
+        "Io": "u16",
+        "Web": "u16"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "u_32",
+      "rust_wire_type": {
+        "Io": "u32",
+        "Web": "u32"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "u_8",
+      "rust_wire_type": {
+        "Io": "u8",
+        "Web": "u8"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "unit",
+      "rust_wire_type": {
+        "Web": "()",
+        "Io": "()"
+      },
+      "rust_wire_modifier": {
+        "Web": "",
+        "Io": ""
+      },
+      "wrapper_struct_name": null
+    },
+    {
+      "safe_ident": "usize",
+      "rust_wire_type": {
+        "Web": "flutter_rust_bridge::for_generated::wasm_bindgen::JsValue",
+        "Io": "usize"
+      },
+      "rust_wire_modifier": {
+        "Io": "",
+        "Web": ""
+      },
+      "wrapper_struct_name": null
+    }
+  ]
+}

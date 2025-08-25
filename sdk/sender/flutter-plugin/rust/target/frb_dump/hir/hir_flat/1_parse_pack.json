@@ -1,0 +1,1055 @@
+{
+  "functions": [
+    {
+      "namespace": "crate::api",
+      "owner": "Function",
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=device_info_from_url, vis=Some(Visibility::Public(Pub)), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_PlaybackState",
+          "trait_def_name": "Default"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=default, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=connection_state_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=volume_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=time_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=playback_state_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=duration_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=speed_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=source_changed, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=key_event, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=media_event, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "TraitDef": {
+          "trait_def_name": "crate::api/DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=playback_error, vis=None, attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=connection_state_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=volume_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=time_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=playback_state_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=duration_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=speed_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=source_changed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=key_event, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=media_event, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "DeviceEventHandlerWrapper",
+          "trait_def_name": "DeviceEventHandler"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=playback_error, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_CastingDeviceError",
+          "trait_def_name": "Display"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [allow (unused_qualifications)], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_CastingDeviceError",
+          "trait_def_name": "Debug"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_DeviceFeature",
+          "trait_def_name": "Clone"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=clone, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_DeviceFeature",
+          "trait_def_name": "Debug"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_DeviceFeature",
+          "trait_def_name": "PartialEq"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=eq, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_DeviceFeature",
+          "trait_def_name": "Eq"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=assert_receiver_is_total_eq, vis=Some(Visibility::Inherited), attrs=[# [inline], # [doc (hidden)], # [coverage (off)], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_Metadata",
+          "trait_def_name": "Debug"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_Metadata",
+          "trait_def_name": "Clone"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=clone, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_Metadata",
+          "trait_def_name": "PartialEq"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=eq, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_ApplicationInfo",
+          "trait_def_name": "Debug"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_LoadRequest",
+          "trait_def_name": "Debug"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "_LoadRequest",
+          "trait_def_name": "Clone"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=clone, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=casting_protocol, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=is_ready, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=supports_feature, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=name, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=set_name, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=seek, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=stop_playback, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=pause_playback, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=resume_playback, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=load, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=playlist_item_next, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=playlist_item_previous, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=set_playlist_item_index, vis=Some(Visibility::Inherited), attrs=[# [doc = \" Set the item index for the currently playing playlist.\"], # [doc = \"\"], # [doc = \" # Arguments\"], # [doc = \"   * `index`: zero-based index into the playlist\"]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=change_volume, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=change_speed, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=disconnect, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=connect, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=get_device_info, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=get_addresses, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=set_addresses, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=get_port, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=set_port, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=subscribe_event, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastingDevice",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=unsubscribe_event, vis=Some(Visibility::Inherited), attrs=[])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "ErrorMessage",
+          "trait_def_name": "Debug"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [inline], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "ErrorMessage",
+          "trait_def_name": "Display"
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=fmt, vis=Some(Visibility::Inherited), attrs=[# [allow (unused_qualifications)], # [automatically_derived]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastContext",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=new, vis=Some(Visibility::Public(Pub)), attrs=[# [frb (sync)]])"
+    },
+    {
+      "namespace": "crate::api",
+      "owner": {
+        "StructOrEnum": {
+          "impl_ty": "CastContext",
+          "trait_def_name": null
+        }
+      },
+      "sources": [
+        "Normal"
+      ],
+      "item_fn": "GeneralizedItemFn(name=create_device_from_info, vis=Some(Visibility::Public(Pub)), attrs=[# [frb (sync)]])"
+    }
+  ],
+  "enums": [
+    {
+      "name": "crate::api/IpAddr",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/ProtocolType",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/DeviceConnectionState",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/PlaybackState",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/Source",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/GenericEventSubscriptionGroup",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/GenericMediaEvent",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/CastingDeviceError",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/DeviceFeature",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/LoadRequest",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/ErrorMessage",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": false
+    }
+  ],
+  "structs": [
+    {
+      "name": "crate::api/DeviceInfo",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/PlaylistItem",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/GenericKeyEvent",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/DeviceEventHandlerWrapper",
+      "visibility": "Inherited",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": false
+    },
+    {
+      "name": "crate::api/Metadata",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/ApplicationInfo",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": true
+    },
+    {
+      "name": "crate::api/CastingDevice",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": false
+    },
+    {
+      "name": "crate::api/CastContext",
+      "visibility": "Public",
+      "sources": [
+        "Normal"
+      ],
+      "mirror": false
+    }
+  ],
+  "traits": [
+    {
+      "name": "crate::api/DeviceEventHandler",
+      "attrs": [],
+      "sources": [
+        "Normal"
+      ]
+    }
+  ],
+  "trait_impls": [
+    {
+      "trait_name": "Default",
+      "impl_ty": "_PlaybackState"
+    },
+    {
+      "trait_name": "DeviceEventHandler",
+      "impl_ty": "DeviceEventHandlerWrapper"
+    },
+    {
+      "trait_name": "Error",
+      "impl_ty": "_CastingDeviceError"
+    },
+    {
+      "trait_name": "Display",
+      "impl_ty": "_CastingDeviceError"
+    },
+    {
+      "trait_name": "Debug",
+      "impl_ty": "_CastingDeviceError"
+    },
+    {
+      "trait_name": "Clone",
+      "impl_ty": "_DeviceFeature"
+    },
+    {
+      "trait_name": "Debug",
+      "impl_ty": "_DeviceFeature"
+    },
+    {
+      "trait_name": "StructuralPartialEq",
+      "impl_ty": "_DeviceFeature"
+    },
+    {
+      "trait_name": "PartialEq",
+      "impl_ty": "_DeviceFeature"
+    },
+    {
+      "trait_name": "Eq",
+      "impl_ty": "_DeviceFeature"
+    },
+    {
+      "trait_name": "Debug",
+      "impl_ty": "_Metadata"
+    },
+    {
+      "trait_name": "Clone",
+      "impl_ty": "_Metadata"
+    },
+    {
+      "trait_name": "StructuralPartialEq",
+      "impl_ty": "_Metadata"
+    },
+    {
+      "trait_name": "PartialEq",
+      "impl_ty": "_Metadata"
+    },
+    {
+      "trait_name": "Debug",
+      "impl_ty": "_ApplicationInfo"
+    },
+    {
+      "trait_name": "Debug",
+      "impl_ty": "_LoadRequest"
+    },
+    {
+      "trait_name": "Clone",
+      "impl_ty": "_LoadRequest"
+    },
+    {
+      "trait_name": "Debug",
+      "impl_ty": "ErrorMessage"
+    },
+    {
+      "trait_name": "Error",
+      "impl_ty": "ErrorMessage"
+    },
+    {
+      "trait_name": "Display",
+      "impl_ty": "ErrorMessage"
+    }
+  ],
+  "constants": [],
+  "types": [],
+  "existing_handler": null,
+  "extra_rust_output_code": "",
+  "extra_dart_output_code": {
+    "header": {
+      "file_top": "",
+      "import": "",
+      "part": ""
+    },
+    "body": ""
+  },
+  "skips": []
+}

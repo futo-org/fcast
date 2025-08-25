@@ -1,0 +1,17 @@
+[package]
+name = "fcast-sender-sdk-flutter-plugin"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+flutter_rust_bridge = "2.11.1"
+fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "chromecast", "http-file-server", "logging"] }
+thiserror.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+name = "fcast_sender_sdk_flutter_binding"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

@@ -1,0 +1,132 @@
+{
+  "types": [
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "dart_api_type": "CastContext"
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+      "dart_api_type": "CastingDevice"
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+      "dart_api_type": "DeviceConnectionState"
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+      "dart_api_type": "GenericKeyEvent"
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+      "dart_api_type": "GenericMediaEvent"
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+      "dart_api_type": "PlaybackState"
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+      "dart_api_type": "Source"
+    },
+    {
+      "safe_ident": "Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "dart_api_type": "CastContext"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "dart_api_type": "CastContext"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+      "dart_api_type": "CastingDevice"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+      "dart_api_type": "DeviceConnectionState"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+      "dart_api_type": "GenericKeyEvent"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+      "dart_api_type": "GenericMediaEvent"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+      "dart_api_type": "PlaybackState"
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+      "dart_api_type": "Source"
+    },
+    {
+      "safe_ident": "String",
+      "dart_api_type": "String"
+    },
+    {
+      "safe_ident": "TraitDef_DeviceEventHandler",
+      "dart_api_type": "DeviceEventHandler"
+    },
+    {
+      "safe_ident": "box_autoadd_device_info",
+      "dart_api_type": "DeviceInfo"
+    },
+    {
+      "safe_ident": "device_info",
+      "dart_api_type": "DeviceInfo"
+    },
+    {
+      "safe_ident": "error_message",
+      "dart_api_type": "ErrorMessage"
+    },
+    {
+      "safe_ident": "f_64",
+      "dart_api_type": "double"
+    },
+    {
+      "safe_ident": "i_32",
+      "dart_api_type": "int"
+    },
+    {
+      "safe_ident": "ip_addr",
+      "dart_api_type": "IpAddr"
+    },
+    {
+      "safe_ident": "list_ip_addr",
+      "dart_api_type": "List<IpAddr>"
+    },
+    {
+      "safe_ident": "list_prim_u_8_strict",
+      "dart_api_type": "Uint8List"
+    },
+    {
+      "safe_ident": "opt_box_autoadd_device_info",
+      "dart_api_type": "DeviceInfo?"
+    },
+    {
+      "safe_ident": "protocol_type",
+      "dart_api_type": "ProtocolType"
+    },
+    {
+      "safe_ident": "u_16",
+      "dart_api_type": "int"
+    },
+    {
+      "safe_ident": "u_32",
+      "dart_api_type": "int"
+    },
+    {
+      "safe_ident": "u_8",
+      "dart_api_type": "int"
+    },
+    {
+      "safe_ident": "unit",
+      "dart_api_type": "void"
+    },
+    {
+      "safe_ident": "usize",
+      "dart_api_type": "BigInt"
+    }
+  ]
+}

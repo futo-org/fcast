@@ -1,0 +1,2867 @@
+{
+  "funcs_all": [
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "CastContext_create_device_from_info",
+        "dart_style": null
+      },
+      "id": 1,
+      "inputs": [
+        {
+          "ownership_mode": null,
+          "inner": {
+            "ty": {
+              "type": "RustAutoOpaque",
+              "safe_ident": "Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+              "data": {
+                "ownership_mode": "Ref",
+                "inner": {
+                  "namespace": "crate::api",
+                  "inner": {
+                    "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastContext>"
+                  },
+                  "codec": "Moi",
+                  "dart_api_type": null,
+                  "brief_name": true
+                },
+                "raw": {
+                  "string": {
+                    "raw": "CastContext"
+                  },
+                  "segments": [
+                    {
+                      "ident": "CastContext",
+                      "args": ""
+                    }
+                  ]
+                },
+                "reason": null,
+                "ignore": false
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Boxed",
+              "safe_ident": "box_autoadd_device_info",
+              "data": {
+                "exist_in_real_api": false,
+                "inner": {
+                  "type": "StructRef",
+                  "safe_ident": "device_info",
+                  "data": {
+                    "ident": "crate::api/DeviceInfo",
+                    "is_exception": false
+                  }
+                }
+              }
+            },
+            "name": {
+              "rust_style": "info",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "RustAutoOpaque",
+          "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+          "data": {
+            "ownership_mode": "Owned",
+            "inner": {
+              "namespace": "crate::api",
+              "inner": {
+                "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastingDevice>"
+              },
+              "codec": "Moi",
+              "dart_api_type": null,
+              "brief_name": true
+            },
+            "raw": {
+              "string": {
+                "raw": "CastingDevice"
+              },
+              "segments": [
+                {
+                  "ident": "CastingDevice",
+                  "args": ""
+                }
+              ]
+            },
+            "reason": "StructOrEnumRequireOpaque",
+            "ignore": false
+          }
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "RustAutoOpaque",
+            "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+            "data": {
+              "ownership_mode": "Owned",
+              "inner": {
+                "namespace": "crate::api",
+                "inner": {
+                  "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastContext>"
+                },
+                "codec": "Moi",
+                "dart_api_type": null,
+                "brief_name": true
+              },
+              "raw": {
+                "string": {
+                  "raw": "CastContext"
+                },
+                "segments": [
+                  {
+                    "ident": "CastContext",
+                    "args": ""
+                  }
+                ]
+              },
+              "reason": "StructOrEnumRequireOpaque",
+              "ignore": false
+            }
+          },
+          "owner_ty_raw": "CastContext",
+          "actual_method_name": "create_device_from_info",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": null
+        }
+      },
+      "mode": "Sync",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "Normal"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "CastContext_new",
+        "dart_style": null
+      },
+      "id": 2,
+      "inputs": [],
+      "output": {
+        "normal": {
+          "type": "RustAutoOpaque",
+          "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+          "data": {
+            "ownership_mode": "Owned",
+            "inner": {
+              "namespace": "crate::api",
+              "inner": {
+                "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastContext>"
+              },
+              "codec": "Moi",
+              "dart_api_type": null,
+              "brief_name": true
+            },
+            "raw": {
+              "string": {
+                "raw": "CastContext"
+              },
+              "segments": [
+                {
+                  "ident": "CastContext",
+                  "args": ""
+                }
+              ]
+            },
+            "reason": "StructOrEnumRequireOpaque",
+            "ignore": false
+          }
+        },
+        "error": {
+          "type": "EnumRef",
+          "safe_ident": "error_message",
+          "data": {
+            "ident": "crate::api/ErrorMessage",
+            "is_exception": true
+          }
+        }
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "RustAutoOpaque",
+            "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+            "data": {
+              "ownership_mode": "Owned",
+              "inner": {
+                "namespace": "crate::api",
+                "inner": {
+                  "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastContext>"
+                },
+                "codec": "Moi",
+                "dart_api_type": null,
+                "brief_name": true
+              },
+              "raw": {
+                "string": {
+                  "raw": "CastContext"
+                },
+                "segments": [
+                  {
+                    "ident": "CastContext",
+                    "args": ""
+                  }
+                ]
+              },
+              "reason": "StructOrEnumRequireOpaque",
+              "ignore": false
+            }
+          },
+          "owner_ty_raw": "CastContext",
+          "actual_method_name": "new",
+          "actual_method_dart_name": null,
+          "mode": "Static",
+          "trait_def": null
+        }
+      },
+      "mode": "Sync",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "Normal"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_connection_state_changed",
+        "dart_style": null
+      },
+      "id": 3,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": null,
+          "inner": {
+            "ty": {
+              "type": "RustAutoOpaque",
+              "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+              "data": {
+                "ownership_mode": "Owned",
+                "inner": {
+                  "namespace": "crate::api",
+                  "inner": {
+                    "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_DeviceConnectionState>"
+                  },
+                  "codec": "Moi",
+                  "dart_api_type": null,
+                  "brief_name": true
+                },
+                "raw": {
+                  "string": {
+                    "raw": "_DeviceConnectionState"
+                  },
+                  "segments": [
+                    {
+                      "ident": "_DeviceConnectionState",
+                      "args": ""
+                    }
+                  ]
+                },
+                "reason": null,
+                "ignore": false
+              }
+            },
+            "name": {
+              "rust_style": "state",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "connection_state_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_duration_changed",
+        "dart_style": null
+      },
+      "id": 4,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Primitive",
+              "safe_ident": "f_64",
+              "data": "F64"
+            },
+            "name": {
+              "rust_style": "duration",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "duration_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_key_event",
+        "dart_style": null
+      },
+      "id": 5,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": null,
+          "inner": {
+            "ty": {
+              "type": "RustAutoOpaque",
+              "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+              "data": {
+                "ownership_mode": "Owned",
+                "inner": {
+                  "namespace": "crate::api",
+                  "inner": {
+                    "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_GenericKeyEvent>"
+                  },
+                  "codec": "Moi",
+                  "dart_api_type": null,
+                  "brief_name": true
+                },
+                "raw": {
+                  "string": {
+                    "raw": "_GenericKeyEvent"
+                  },
+                  "segments": [
+                    {
+                      "ident": "_GenericKeyEvent",
+                      "args": ""
+                    }
+                  ]
+                },
+                "reason": null,
+                "ignore": false
+              }
+            },
+            "name": {
+              "rust_style": "event",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "key_event",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_media_event",
+        "dart_style": null
+      },
+      "id": 6,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": null,
+          "inner": {
+            "ty": {
+              "type": "RustAutoOpaque",
+              "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+              "data": {
+                "ownership_mode": "Owned",
+                "inner": {
+                  "namespace": "crate::api",
+                  "inner": {
+                    "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_GenericMediaEvent>"
+                  },
+                  "codec": "Moi",
+                  "dart_api_type": null,
+                  "brief_name": true
+                },
+                "raw": {
+                  "string": {
+                    "raw": "_GenericMediaEvent"
+                  },
+                  "segments": [
+                    {
+                      "ident": "_GenericMediaEvent",
+                      "args": ""
+                    }
+                  ]
+                },
+                "reason": null,
+                "ignore": false
+              }
+            },
+            "name": {
+              "rust_style": "event",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "media_event",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_playback_error",
+        "dart_style": null
+      },
+      "id": 7,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Delegate",
+              "safe_ident": "String",
+              "data": "String"
+            },
+            "name": {
+              "rust_style": "message",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "playback_error",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_playback_state_changed",
+        "dart_style": null
+      },
+      "id": 8,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": null,
+          "inner": {
+            "ty": {
+              "type": "RustAutoOpaque",
+              "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+              "data": {
+                "ownership_mode": "Owned",
+                "inner": {
+                  "namespace": "crate",
+                  "inner": {
+                    "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_PlaybackState>"
+                  },
+                  "codec": "Moi",
+                  "dart_api_type": null,
+                  "brief_name": true
+                },
+                "raw": {
+                  "string": {
+                    "raw": "_PlaybackState"
+                  },
+                  "segments": [
+                    {
+                      "ident": "_PlaybackState",
+                      "args": ""
+                    }
+                  ]
+                },
+                "reason": null,
+                "ignore": false
+              }
+            },
+            "name": {
+              "rust_style": "state",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "playback_state_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_source_changed",
+        "dart_style": null
+      },
+      "id": 9,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": null,
+          "inner": {
+            "ty": {
+              "type": "RustAutoOpaque",
+              "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+              "data": {
+                "ownership_mode": "Owned",
+                "inner": {
+                  "namespace": "crate::api",
+                  "inner": {
+                    "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_Source>"
+                  },
+                  "codec": "Moi",
+                  "dart_api_type": null,
+                  "brief_name": true
+                },
+                "raw": {
+                  "string": {
+                    "raw": "_Source"
+                  },
+                  "segments": [
+                    {
+                      "ident": "_Source",
+                      "args": ""
+                    }
+                  ]
+                },
+                "reason": null,
+                "ignore": false
+              }
+            },
+            "name": {
+              "rust_style": "source",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "source_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_speed_changed",
+        "dart_style": null
+      },
+      "id": 10,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Primitive",
+              "safe_ident": "f_64",
+              "data": "F64"
+            },
+            "name": {
+              "rust_style": "speed",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "speed_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_time_changed",
+        "dart_style": null
+      },
+      "id": 11,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Primitive",
+              "safe_ident": "f_64",
+              "data": "F64"
+            },
+            "name": {
+              "rust_style": "time",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "time_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "TraitDef_DeviceEventHandler_volume_changed",
+        "dart_style": null
+      },
+      "id": 12,
+      "inputs": [
+        {
+          "ownership_mode": "Ref",
+          "inner": {
+            "ty": {
+              "type": "TraitDef",
+              "safe_ident": "TraitDef_DeviceEventHandler",
+              "data": {
+                "name": "crate::api/DeviceEventHandler"
+              }
+            },
+            "name": {
+              "rust_style": "that",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        },
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Primitive",
+              "safe_ident": "f_64",
+              "data": "F64"
+            },
+            "name": {
+              "rust_style": "volume",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Primitive",
+          "safe_ident": "unit",
+          "data": "Unit"
+        },
+        "error": null
+      },
+      "owner": {
+        "Method": {
+          "owner_ty": {
+            "type": "TraitDef",
+            "safe_ident": "TraitDef_DeviceEventHandler",
+            "data": {
+              "name": "crate::api/DeviceEventHandler"
+            }
+          },
+          "owner_ty_raw": "DeviceEventHandler",
+          "actual_method_name": "volume_changed",
+          "actual_method_dart_name": null,
+          "mode": "Instance",
+          "trait_def": {
+            "name": "crate::api/DeviceEventHandler"
+          }
+        }
+      },
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "NoImpl"
+    },
+    {
+      "namespace": "crate::api",
+      "name": {
+        "rust_style": "device_info_from_url",
+        "dart_style": null
+      },
+      "id": 13,
+      "inputs": [
+        {
+          "ownership_mode": "Owned",
+          "inner": {
+            "ty": {
+              "type": "Delegate",
+              "safe_ident": "String",
+              "data": "String"
+            },
+            "name": {
+              "rust_style": "url",
+              "dart_style": null
+            },
+            "is_final": true,
+            "is_rust_public": null,
+            "comments": [],
+            "default": null,
+            "settings": {
+              "is_in_mirrored_enum": false,
+              "skip_auto_accessors": false
+            }
+          },
+          "needs_extend_lifetime": false
+        }
+      ],
+      "output": {
+        "normal": {
+          "type": "Optional",
+          "safe_ident": "opt_box_autoadd_device_info",
+          "data": {
+            "inner": {
+              "type": "Boxed",
+              "safe_ident": "box_autoadd_device_info",
+              "data": {
+                "exist_in_real_api": false,
+                "inner": {
+                  "type": "StructRef",
+                  "safe_ident": "device_info",
+                  "data": {
+                    "ident": "crate::api/DeviceInfo",
+                    "is_exception": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "error": null
+      },
+      "owner": "Function",
+      "mode": "Normal",
+      "stream_dart_await": false,
+      "rust_async": false,
+      "initializer": false,
+      "arg_mode": "Named",
+      "accessor": null,
+      "comments": [],
+      "codec_mode_pack": {
+        "dart2rust": "Pde",
+        "rust2dart": "Pde"
+      },
+      "rust_call_code": null,
+      "rust_aop_after": null,
+      "impl_mode": "Normal"
+    }
+  ],
+  "extra_types_all": [],
+  "struct_pool": {
+    "crate::api/CastingDevice": {
+      "name": "crate::api/CastingDevice",
+      "wrapper_name": null,
+      "fields": [
+        {
+          "ty": {
+            "type": "RustAutoOpaque",
+            "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcCastingDevice",
+            "data": {
+              "ownership_mode": "Owned",
+              "inner": {
+                "namespace": "crate::api",
+                "inner": {
+                  "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < CastingDevice >>"
+                },
+                "codec": "Moi",
+                "dart_api_type": null,
+                "brief_name": true
+              },
+              "raw": {
+                "string": {
+                  "raw": "Arc < CastingDevice >"
+                },
+                "segments": [
+                  {
+                    "ident": "Arc",
+                    "args": "dyn device :: CastingDevice"
+                  }
+                ]
+              },
+              "reason": null,
+              "ignore": false
+            }
+          },
+          "name": {
+            "rust_style": "field0",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": false,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": false,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/Metadata": {
+      "name": "crate::api/Metadata",
+      "wrapper_name": "FrbWrapper<crate::api::Metadata>",
+      "fields": [
+        {
+          "ty": {
+            "type": "Optional",
+            "safe_ident": "opt_String",
+            "data": {
+              "inner": {
+                "type": "Delegate",
+                "safe_ident": "String",
+                "data": "String"
+              }
+            }
+          },
+          "name": {
+            "rust_style": "title",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Optional",
+            "safe_ident": "opt_String",
+            "data": {
+              "inner": {
+                "type": "Delegate",
+                "safe_ident": "String",
+                "data": "String"
+              }
+            }
+          },
+          "name": {
+            "rust_style": "thumbnail_url",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": true,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/ApplicationInfo": {
+      "name": "crate::api/ApplicationInfo",
+      "wrapper_name": "FrbWrapper<crate::api::ApplicationInfo>",
+      "fields": [
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "name",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "version",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "display_name",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": true,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/GenericKeyEvent": {
+      "name": "crate::api/GenericKeyEvent",
+      "wrapper_name": "FrbWrapper<crate::api::GenericKeyEvent>",
+      "fields": [
+        {
+          "ty": {
+            "type": "Primitive",
+            "safe_ident": "bool",
+            "data": "Bool"
+          },
+          "name": {
+            "rust_style": "released",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Primitive",
+            "safe_ident": "bool",
+            "data": "Bool"
+          },
+          "name": {
+            "rust_style": "repeat",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Primitive",
+            "safe_ident": "bool",
+            "data": "Bool"
+          },
+          "name": {
+            "rust_style": "handled",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "name",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": true,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/DeviceInfo": {
+      "name": "crate::api/DeviceInfo",
+      "wrapper_name": "FrbWrapper<crate::api::DeviceInfo>",
+      "fields": [
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "name",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "protocol_type",
+            "data": {
+              "PrimitiveEnum": {
+                "mir": {
+                  "ident": "crate::api/ProtocolType",
+                  "is_exception": false
+                },
+                "repr": "I32"
+              }
+            }
+          },
+          "name": {
+            "rust_style": "protocol",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "GeneralList",
+            "safe_ident": "list_ip_addr",
+            "data": {
+              "inner": {
+                "type": "EnumRef",
+                "safe_ident": "ip_addr",
+                "data": {
+                  "ident": "crate::api/IpAddr",
+                  "is_exception": false
+                }
+              }
+            }
+          },
+          "name": {
+            "rust_style": "addresses",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Primitive",
+            "safe_ident": "u_16",
+            "data": "U16"
+          },
+          "name": {
+            "rust_style": "port",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": true,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/DeviceEventHandlerWrapper": {
+      "name": "crate::api/DeviceEventHandlerWrapper",
+      "wrapper_name": null,
+      "fields": [
+        {
+          "ty": {
+            "type": "RustAutoOpaque",
+            "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcdynDeviceEventHandler",
+            "data": {
+              "ownership_mode": "Owned",
+              "inner": {
+                "namespace": "crate",
+                "inner": {
+                  "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < dyn DeviceEventHandler >>"
+                },
+                "codec": "Moi",
+                "dart_api_type": null,
+                "brief_name": true
+              },
+              "raw": {
+                "string": {
+                  "raw": "Arc < dyn DeviceEventHandler >"
+                },
+                "segments": [
+                  {
+                    "ident": "Arc",
+                    "args": "dyn DeviceEventHandler"
+                  }
+                ]
+              },
+              "reason": null,
+              "ignore": false
+            }
+          },
+          "name": {
+            "rust_style": "field0",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": false,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": false,
+      "dart_metadata_raw": [],
+      "ignore": true,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/CastContext": {
+      "name": "crate::api/CastContext",
+      "wrapper_name": null,
+      "fields": [
+        {
+          "ty": {
+            "type": "RustAutoOpaque",
+            "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+            "data": {
+              "ownership_mode": "Owned",
+              "inner": {
+                "namespace": "crate::api",
+                "inner": {
+                  "raw": "flutter_rust_bridge::for_generated::RustAutoOpaqueInner< CastContext>"
+                },
+                "codec": "Moi",
+                "dart_api_type": null,
+                "brief_name": true
+              },
+              "raw": {
+                "string": {
+                  "raw": " CastContext"
+                },
+                "segments": [
+                  {
+                    "ident": "context",
+                    "args": ""
+                  },
+                  {
+                    "ident": "CastContext",
+                    "args": ""
+                  }
+                ]
+              },
+              "reason": "StructOrEnumRequireOpaque",
+              "ignore": false
+            }
+          },
+          "name": {
+            "rust_style": "field0",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": false,
+          "comments": [],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": false,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    },
+    "crate::api/PlaylistItem": {
+      "name": "crate::api/PlaylistItem",
+      "wrapper_name": "FrbWrapper<crate::api::PlaylistItem>",
+      "fields": [
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "content_type",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [
+            "/// MIME type"
+          ],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Delegate",
+            "safe_ident": "String",
+            "data": "String"
+          },
+          "name": {
+            "rust_style": "content_location",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [
+            "/// URL"
+          ],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        },
+        {
+          "ty": {
+            "type": "Optional",
+            "safe_ident": "opt_box_autoadd_f_64",
+            "data": {
+              "inner": {
+                "type": "Boxed",
+                "safe_ident": "box_autoadd_f_64",
+                "data": {
+                  "exist_in_real_api": false,
+                  "inner": {
+                    "type": "Primitive",
+                    "safe_ident": "f_64",
+                    "data": "F64"
+                  }
+                }
+              }
+            }
+          },
+          "name": {
+            "rust_style": "start_time",
+            "dart_style": null
+          },
+          "is_final": true,
+          "is_rust_public": true,
+          "comments": [
+            "/// Seconds from beginning of media to start playback"
+          ],
+          "default": null,
+          "settings": {
+            "is_in_mirrored_enum": false,
+            "skip_auto_accessors": false
+          }
+        }
+      ],
+      "is_fields_named": true,
+      "dart_metadata_raw": [],
+      "ignore": false,
+      "needs_json_serializable": false,
+      "generate_hash": true,
+      "generate_eq": true,
+      "ui_state": false,
+      "comments": []
+    }
+  },
+  "enum_pool": {
+    "crate::api/IpAddr": {
+      "name": "crate::api/IpAddr",
+      "wrapper_name": "FrbWrapper<crate::api::IpAddr>",
+      "comments": [],
+      "variants": [
+        {
+          "name": {
+            "rust_style": "V4",
+            "dart_style": null
+          },
+          "wrapper_name": {
+            "rust_style": "IpAddr_V4",
+            "dart_style": null
+          },
+          "comments": [],
+          "kind": {
+            "Struct": {
+              "name": "crate::api::IpAddr/V4",
+              "wrapper_name": null,
+              "fields": [
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o1",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o2",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o3",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o4",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                }
+              ],
+              "is_fields_named": true,
+              "dart_metadata_raw": [],
+              "ignore": false,
+              "needs_json_serializable": false,
+              "generate_hash": true,
+              "generate_eq": true,
+              "ui_state": false,
+              "comments": []
+            }
+          }
+        },
+        {
+          "name": {
+            "rust_style": "V6",
+            "dart_style": null
+          },
+          "wrapper_name": {
+            "rust_style": "IpAddr_V6",
+            "dart_style": null
+          },
+          "comments": [],
+          "kind": {
+            "Struct": {
+              "name": "crate::api::IpAddr/V6",
+              "wrapper_name": null,
+              "fields": [
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o1",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o2",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o3",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o4",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o5",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o6",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o7",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o8",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o9",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o10",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o11",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o12",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o13",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o14",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o15",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_8",
+                    "data": "U8"
+                  },
+                  "name": {
+                    "rust_style": "o16",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                },
+                {
+                  "ty": {
+                    "type": "Primitive",
+                    "safe_ident": "u_32",
+                    "data": "U32"
+                  },
+                  "name": {
+                    "rust_style": "scope_id",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": true,
+                    "skip_auto_accessors": false
+                  }
+                }
+              ],
+              "is_fields_named": true,
+              "dart_metadata_raw": [],
+              "ignore": false,
+              "needs_json_serializable": false,
+              "generate_hash": true,
+              "generate_eq": true,
+              "ui_state": false,
+              "comments": []
+            }
+          }
+        }
+      ],
+      "mode": "Complex",
+      "ignore": false,
+      "needs_json_serializable": false
+    },
+    "crate::api/ProtocolType": {
+      "name": "crate::api/ProtocolType",
+      "wrapper_name": "FrbWrapper<crate::api::ProtocolType>",
+      "comments": [],
+      "variants": [
+        {
+          "name": {
+            "rust_style": "Chromecast",
+            "dart_style": null
+          },
+          "wrapper_name": {
+            "rust_style": "ProtocolType_Chromecast",
+            "dart_style": null
+          },
+          "comments": [],
+          "kind": "Value"
+        },
+        {
+          "name": {
+            "rust_style": "FCast",
+            "dart_style": null
+          },
+          "wrapper_name": {
+            "rust_style": "ProtocolType_FCast",
+            "dart_style": null
+          },
+          "comments": [],
+          "kind": "Value"
+        }
+      ],
+      "mode": "Simple",
+      "ignore": false,
+      "needs_json_serializable": false
+    },
+    "crate::api/ErrorMessage": {
+      "name": "crate::api/ErrorMessage",
+      "wrapper_name": null,
+      "comments": [],
+      "variants": [
+        {
+          "name": {
+            "rust_style": "Error",
+            "dart_style": null
+          },
+          "wrapper_name": {
+            "rust_style": "ErrorMessage_Error",
+            "dart_style": null
+          },
+          "comments": [],
+          "kind": {
+            "Struct": {
+              "name": "crate::api::ErrorMessage/Error",
+              "wrapper_name": null,
+              "fields": [
+                {
+                  "ty": {
+                    "type": "Delegate",
+                    "safe_ident": "String",
+                    "data": "String"
+                  },
+                  "name": {
+                    "rust_style": "field0",
+                    "dart_style": null
+                  },
+                  "is_final": true,
+                  "is_rust_public": false,
+                  "comments": [],
+                  "default": null,
+                  "settings": {
+                    "is_in_mirrored_enum": false,
+                    "skip_auto_accessors": false
+                  }
+                }
+              ],
+              "is_fields_named": false,
+              "dart_metadata_raw": [],
+              "ignore": false,
+              "needs_json_serializable": false,
+              "generate_hash": true,
+              "generate_eq": true,
+              "ui_state": false,
+              "comments": []
+            }
+          }
+        }
+      ],
+      "mode": "Complex",
+      "ignore": false,
+      "needs_json_serializable": false
+    }
+  },
+  "dart_code_of_type": {},
+  "existing_handler": null,
+  "skips": [
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/clone",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/eq",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/assert_receiver_is_total_eq",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/clone",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/eq",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/clone",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/fmt",
+      "reason": "IgnoreBecauseNotDefinedTrait"
+    },
+    {
+      "name": "crate::api/ApplicationInfo",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/PlaylistItem",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/DeviceEventHandlerWrapper",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/GenericKeyEvent",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/Metadata",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/PlaybackState",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/LoadRequest",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/DeviceConnectionState",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/Source",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/GenericMediaEvent",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/DeviceFeature",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/CastingDeviceError",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/GenericEventSubscriptionGroup",
+      "reason": "IgnoreBecauseTypeNotUsedByPub"
+    },
+    {
+      "name": "crate::api/casting_protocol",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/change_speed",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/change_volume",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/connect",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/disconnect",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/get_addresses",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/get_device_info",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/get_port",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/is_ready",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/load",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/name",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/pause_playback",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/playlist_item_next",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/playlist_item_previous",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/resume_playback",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/seek",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/set_addresses",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/set_name",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/set_playlist_item_index",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/set_port",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/stop_playback",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/subscribe_event",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/supports_feature",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/unsubscribe_event",
+      "reason": "IgnoreBecauseFunctionNotPub"
+    },
+    {
+      "name": "crate::api/connection_state_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/duration_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/key_event",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/media_event",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/playback_error",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/playback_state_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/source_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/speed_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/time_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/volume_changed",
+      "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+    },
+    {
+      "name": "crate::api/default",
+      "reason": "IgnoreBecauseNotAllowedOwner"
+    }
+  ],
+  "trait_impls": [],
+  "extra_rust_output_code": "",
+  "extra_dart_output_code": {
+    "header": {
+      "file_top": "",
+      "import": "",
+      "part": ""
+    },
+    "body": ""
+  }
+}

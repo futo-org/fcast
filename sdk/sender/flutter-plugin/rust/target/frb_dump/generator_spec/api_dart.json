@@ -1,0 +1,459 @@
+{
+  "namespaced_items": {
+    "crate": {
+      "funcs": [],
+      "classes": [
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate",
+          "class_name": "PlaybackState",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_PlaybackState>>\n                abstract class PlaybackState implements RustOpaqueInterface {\n                    \n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        }
+      ],
+      "extra_impl_code": [
+        "\n            @sealed class PlaybackStateImpl extends RustOpaque implements PlaybackState {\n                // Not to be used by end users\n                PlaybackStateImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                PlaybackStateImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_PlaybackState,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_PlaybackState,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_PlaybackStatePtr,\n                );\n\n                \n            }"
+      ],
+      "imports": {
+        "file_top": "",
+        "import": "",
+        "part": ""
+      },
+      "preamble": "",
+      "skips": [],
+      "needs_freezed": false,
+      "needs_json_serializable": false
+    },
+    "crate::api": {
+      "funcs": [
+        {
+          "namespace": "crate::api",
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "func_comments": "",
+          "func_expr": "Future<DeviceInfo?>  deviceInfoFromUrl({required String url })",
+          "func_impl": "RustLib.instance.api.crateApiDeviceInfoFromUrl(url: url)",
+          "func_params": [
+            {
+              "is_required": true,
+              "type_str": "String",
+              "name_str": "url",
+              "default_value": ""
+            }
+          ],
+          "func_return_type": "Future<DeviceInfo?>",
+          "src_lineno_pseudo": 63,
+          "return_stream": null
+        }
+      ],
+      "classes": [
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "CastContext",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastContext>>\n                abstract class CastContext implements RustOpaqueInterface {\n                     CastingDevice  createDeviceFromInfo({required DeviceInfo info });\n\n\nfactory CastContext()=>RustLib.instance.api.crateApiCastContextNew();\n\n\n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "CastingDevice",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CastingDevice>>\n                abstract class CastingDevice implements RustOpaqueInterface {\n                    \n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "DeviceConnectionState",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_DeviceConnectionState>>\n                abstract class DeviceConnectionState implements RustOpaqueInterface {\n                    \n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "GenericKeyEvent",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_GenericKeyEvent>>\n                abstract class GenericKeyEvent implements RustOpaqueInterface {\n                    \n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "GenericMediaEvent",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_GenericMediaEvent>>\n                abstract class GenericMediaEvent implements RustOpaqueInterface {\n                    \n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "Source",
+          "code": "\n                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<_Source>>\n                abstract class Source implements RustOpaqueInterface {\n                    \n\n                    \n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "import 'lib.dart';\nimport 'lib.dart';\n",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "DeviceEventHandler",
+          "code": "\n                abstract class DeviceEventHandler {\n                     Future<void>  connectionStateChanged({required DeviceConnectionState state });\n\n\n Future<void>  durationChanged({required double duration });\n\n\n Future<void>  keyEvent({required GenericKeyEvent event });\n\n\n Future<void>  mediaEvent({required GenericMediaEvent event });\n\n\n Future<void>  playbackError({required String message });\n\n\n Future<void>  playbackStateChanged({required PlaybackState state });\n\n\n Future<void>  sourceChanged({required Source source });\n\n\n Future<void>  speedChanged({required double speed });\n\n\n Future<void>  timeChanged({required double time });\n\n\n Future<void>  volumeChanged({required double volume });\n\n\n                }\n                ",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "DeviceInfo",
+          "code": "class DeviceInfo  {\n                final String name;\nfinal ProtocolType protocol;\nfinal List<IpAddr> addresses;\nfinal int port;\n\n                const DeviceInfo({required this.name ,required this.protocol ,required this.addresses ,required this.port ,});\n\n                \n                \n\n                \n        @override\n        int get hashCode => name.hashCode^protocol.hashCode^addresses.hashCode^port.hashCode;\n        \n\n                \n        @override\n        bool operator ==(Object other) =>\n            identical(this, other) ||\n            other is DeviceInfo &&\n                runtimeType == other.runtimeType\n                && name == other.name&& protocol == other.protocol&& addresses == other.addresses&& port == other.port;\n        \n            }",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "ErrorMessage",
+          "code": "@freezed\n                sealed class ErrorMessage with _$ErrorMessage implements FrbException {\n                    const ErrorMessage._();\n\n                     const factory ErrorMessage.error(  String field0,) = ErrorMessage_Error;\n\n                    \n\n                    \n                }",
+          "needs_freezed": true,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "IpAddr",
+          "code": "@freezed\n                sealed class IpAddr with _$IpAddr  {\n                    const IpAddr._();\n\n                     const factory IpAddr.v4({   required int o1 ,  required int o2 ,  required int o3 ,  required int o4 , }) = IpAddr_V4;\n const factory IpAddr.v6({   required int o1 ,  required int o2 ,  required int o3 ,  required int o4 ,  required int o5 ,  required int o6 ,  required int o7 ,  required int o8 ,  required int o9 ,  required int o10 ,  required int o11 ,  required int o12 ,  required int o13 ,  required int o14 ,  required int o15 ,  required int o16 ,  required int scopeId , }) = IpAddr_V6;\n\n                    \n\n                    \n                }",
+          "needs_freezed": true,
+          "needs_json_serializable": false
+        },
+        {
+          "header": {
+            "file_top": "",
+            "import": "",
+            "part": ""
+          },
+          "namespace": "crate::api",
+          "class_name": "ProtocolType",
+          "code": "enum ProtocolType {\n                    chromecast,\nfCast,\n                    ;\n                    \n                }",
+          "needs_freezed": false,
+          "needs_json_serializable": false
+        }
+      ],
+      "extra_impl_code": [
+        "\n            @sealed class CastContextImpl extends RustOpaque implements CastContext {\n                // Not to be used by end users\n                CastContextImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                CastContextImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_CastContext,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_CastContext,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_CastContextPtr,\n                );\n\n                 CastingDevice  createDeviceFromInfo({required DeviceInfo info })=>RustLib.instance.api.crateApiCastContextCreateDeviceFromInfo(that: this, info: info);\n\n\n            }",
+        "\n            @sealed class CastingDeviceImpl extends RustOpaque implements CastingDevice {\n                // Not to be used by end users\n                CastingDeviceImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                CastingDeviceImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_CastingDevice,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_CastingDevice,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_CastingDevicePtr,\n                );\n\n                \n            }",
+        "\n            @sealed class DeviceConnectionStateImpl extends RustOpaque implements DeviceConnectionState {\n                // Not to be used by end users\n                DeviceConnectionStateImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                DeviceConnectionStateImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_DeviceConnectionState,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_DeviceConnectionState,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_DeviceConnectionStatePtr,\n                );\n\n                \n            }",
+        "\n            @sealed class GenericKeyEventImpl extends RustOpaque implements GenericKeyEvent {\n                // Not to be used by end users\n                GenericKeyEventImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                GenericKeyEventImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_GenericKeyEvent,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_GenericKeyEvent,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_GenericKeyEventPtr,\n                );\n\n                \n            }",
+        "\n            @sealed class GenericMediaEventImpl extends RustOpaque implements GenericMediaEvent {\n                // Not to be used by end users\n                GenericMediaEventImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                GenericMediaEventImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_GenericMediaEvent,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_GenericMediaEvent,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_GenericMediaEventPtr,\n                );\n\n                \n            }",
+        "\n            @sealed class SourceImpl extends RustOpaque implements Source {\n                // Not to be used by end users\n                SourceImpl.frbInternalDcoDecode(List<dynamic> wire):\n                    super.frbInternalDcoDecode(wire, _kStaticData);\n\n                // Not to be used by end users\n                SourceImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):\n                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);\n\n                static final _kStaticData = RustArcStaticData(\n                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_Source,\n                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_Source,\n                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_SourcePtr,\n                );\n\n                \n            }"
+      ],
+      "imports": {
+        "file_top": "",
+        "import": "",
+        "part": ""
+      },
+      "preamble": "",
+      "skips": [
+        {
+          "name": "crate::api/ApplicationInfo",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/CastingDeviceError",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/DeviceConnectionState",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/DeviceEventHandlerWrapper",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/DeviceFeature",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/GenericEventSubscriptionGroup",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/GenericKeyEvent",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/GenericMediaEvent",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/LoadRequest",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/Metadata",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/PlaybackState",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/PlaylistItem",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/Source",
+          "reason": "IgnoreBecauseTypeNotUsedByPub"
+        },
+        {
+          "name": "crate::api/assert_receiver_is_total_eq",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/casting_protocol",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/change_speed",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/change_volume",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/clone",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/clone",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/clone",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/connect",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/connection_state_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/default",
+          "reason": "IgnoreBecauseNotAllowedOwner"
+        },
+        {
+          "name": "crate::api/disconnect",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/duration_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/eq",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/eq",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/fmt",
+          "reason": "IgnoreBecauseNotDefinedTrait"
+        },
+        {
+          "name": "crate::api/get_addresses",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/get_device_info",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/get_port",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/is_ready",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/key_event",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/load",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/media_event",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/name",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/pause_playback",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/playback_error",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/playback_state_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/playlist_item_next",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/playlist_item_previous",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/resume_playback",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/seek",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/set_addresses",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/set_name",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/set_playlist_item_index",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/set_port",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/source_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/speed_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/stop_playback",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/subscribe_event",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/supports_feature",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/time_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        },
+        {
+          "name": "crate::api/unsubscribe_event",
+          "reason": "IgnoreBecauseFunctionNotPub"
+        },
+        {
+          "name": "crate::api/volume_changed",
+          "reason": "IgnoreBecauseOwnerTyShouldIgnore"
+        }
+      ],
+      "needs_freezed": true,
+      "needs_json_serializable": false
+    }
+  }
+}

@@ -1,0 +1,228 @@
+{
+  "types": [
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+      "dart_wire_type": {
+        "Web": "int",
+        "Io": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastContext",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCastingDevice",
+      "dart_wire_type": {
+        "Web": "int",
+        "Io": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_DeviceConnectionState",
+      "dart_wire_type": {
+        "Web": "int",
+        "Io": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericKeyEvent",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_GenericMediaEvent",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_PlaybackState",
+      "dart_wire_type": {
+        "Web": "int",
+        "Io": "int"
+      }
+    },
+    {
+      "safe_ident": "RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInner_Source",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "String",
+      "dart_wire_type": {
+        "Web": "String",
+        "Io": "ffi.Pointer<wire_cst_list_prim_u_8_strict>"
+      }
+    },
+    {
+      "safe_ident": "TraitDef_DeviceEventHandler",
+      "dart_wire_type": {
+        "Io": "UNREACHABLE_DART_WIRE_TYPE",
+        "Web": "UNREACHABLE_DART_WIRE_TYPE"
+      }
+    },
+    {
+      "safe_ident": "box_autoadd_device_info",
+      "dart_wire_type": {
+        "Web": "JSAny",
+        "Io": "ffi.Pointer<wire_cst_device_info>"
+      }
+    },
+    {
+      "safe_ident": "device_info",
+      "dart_wire_type": {
+        "Io": "wire_cst_device_info",
+        "Web": "JSAny"
+      }
+    },
+    {
+      "safe_ident": "error_message",
+      "dart_wire_type": {
+        "Web": "JSAny",
+        "Io": "wire_cst_error_message"
+      }
+    },
+    {
+      "safe_ident": "f_64",
+      "dart_wire_type": {
+        "Io": "double",
+        "Web": "double"
+      }
+    },
+    {
+      "safe_ident": "i_32",
+      "dart_wire_type": {
+        "Web": "int",
+        "Io": "int"
+      }
+    },
+    {
+      "safe_ident": "ip_addr",
+      "dart_wire_type": {
+        "Io": "wire_cst_ip_addr",
+        "Web": "JSAny"
+      }
+    },
+    {
+      "safe_ident": "list_ip_addr",
+      "dart_wire_type": {
+        "Web": "JSAny",
+        "Io": "ffi.Pointer<wire_cst_list_ip_addr>"
+      }
+    },
+    {
+      "safe_ident": "list_prim_u_8_strict",
+      "dart_wire_type": {
+        "Web": "JSAny",
+        "Io": "ffi.Pointer<wire_cst_list_prim_u_8_strict>"
+      }
+    },
+    {
+      "safe_ident": "opt_box_autoadd_device_info",
+      "dart_wire_type": {
+        "Io": "ffi.Pointer<wire_cst_device_info>",
+        "Web": "JSAny?"
+      }
+    },
+    {
+      "safe_ident": "protocol_type",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "u_16",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "u_32",
+      "dart_wire_type": {
+        "Web": "int",
+        "Io": "int"
+      }
+    },
+    {
+      "safe_ident": "u_8",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "int"
+      }
+    },
+    {
+      "safe_ident": "unit",
+      "dart_wire_type": {
+        "Io": "void",
+        "Web": "void"
+      }
+    },
+    {
+      "safe_ident": "usize",
+      "dart_wire_type": {
+        "Io": "int",
+        "Web": "JSAny"
+      }
+    }
+  ]
+}
