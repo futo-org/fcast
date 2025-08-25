@@ -1868,6 +1868,11 @@ dependencies = [
 [[package]]
 name = "fcast-sender-sdk-flutter-plugin"
 version = "0.1.0"
+dependencies = [
+ "fcast-sender-sdk",
+ "flutter_rust_bridge",
+ "thiserror 2.0.12",
+]
 
 [[package]]
 name = "fcast-sender-sdk-fuzz"
@@ -1964,15 +1969,6 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "spin",
-]
-
-[[package]]
-name = "flutter-binding"
-version = "0.1.0"
-dependencies = [
- "fcast-sender-sdk",
- "flutter_rust_bridge",
- "thiserror 2.0.12",
 ]
 
 [[package]]
