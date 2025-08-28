@@ -390,10 +390,14 @@ export class Main {
         });
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ipcMain.on('network-changed', (event: IpcMainEvent, value: any) => {
+        ipcMain.on('network-changed', (event: IpcMainEvent, value: any, wifiSignalUpdate: boolean) => {
             Main.cache.interfaces = value;
-            Main.discoveryService.stop();
-            Main.discoveryService.start();
+
+            if (!wifiSignalUpdate) {
+                Main.discoveryService.stop();
+                Main.discoveryService.start();
+            }
+
             Main.mainWindow?.webContents?.send("device-info", { name: os.hostname(), interfaces: value });
         });
 
