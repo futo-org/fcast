@@ -31,6 +31,10 @@ pub mod discovery;
 #[cfg(feature = "fcast")]
 pub mod fcast;
 pub(crate) mod utils;
+#[cfg(feature = "http-file-server")]
+pub(crate) mod http;
+#[cfg(feature = "chromecast")]
+pub(crate) mod googlecast_protocol;
 
 #[cfg(feature = "http-file-server")]
 pub mod file_server;
