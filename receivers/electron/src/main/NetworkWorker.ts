@@ -24,6 +24,7 @@ function networkStateChangeListener(forceUpdate: boolean) {
                 let validInterfaces = queriedInterfaces.filter(v => v.ip4 !== '' && !v.internal && !v.virtual);
                 if (validInterfaces.length !== interfaces.size) {
                     interfaces.clear();
+                    changed = true;
                 }
 
                 for (const iface of validInterfaces) {
