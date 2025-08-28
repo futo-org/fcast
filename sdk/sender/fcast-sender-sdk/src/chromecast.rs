@@ -7,11 +7,11 @@ use crate::{
     utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
-use chromecast_protocol::{
+use googlecast_protocol::{
     self as protocol, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
     QueueRepeatMode, StreamType, CONNECTION_NAMESPACE,
 };
-use chromecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
+use googlecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use futures::StreamExt;
 use log::{debug, error, warn};
 use rustls_pki_types::ServerName;

@@ -973,16 +973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chromecast-protocol"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1775,10 +1765,10 @@ dependencies = [
  "anyhow",
  "base64",
  "cfg_aliases",
- "chromecast-protocol",
  "env_logger",
  "fcast-protocol",
  "futures",
+ "googlecast-protocol",
  "http 0.1.0",
  "http-range",
  "libc",
@@ -2274,6 +2264,16 @@ dependencies = [
  "log",
  "plain",
  "scroll",
+]
+
+[[package]]
+name = "googlecast-protocol"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

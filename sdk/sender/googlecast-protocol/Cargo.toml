@@ -1,6 +1,6 @@
 [package]
-name = "chromecast-protocol"
-description = "Data types for Chromecast"
+name = "googlecast-protocol"
+description = "Data types for Google cast"
 repository = "https://gitlab.futo.org/videostreaming/fcast"
 version = "0.1.0"
 license.workspace = true

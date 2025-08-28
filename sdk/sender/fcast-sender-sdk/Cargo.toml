@@ -33,7 +33,7 @@ uuid = { version = "1.17.0", features = ["v4"], optional = true }
 rustls-pki-types = { version = "1.12.0", optional = true }
 webpki-roots = { version = "1.0.1", optional = true }
 tokio-rustls = { version = "0.26.2", default-features = false, features = [ "logging", "ring" ], optional = true }
-chromecast-protocol = { path = "../chromecast-protocol", version = "0.1.0", optional = true }
+googlecast-protocol = { path = "../googlecast-protocol", version = "0.1.0", optional = true }
 
 # FCast
 url = { version = "2.5.4", optional = true }
@@ -53,7 +53,7 @@ cfg_aliases = "0.2.1"
 [features]
 default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
 fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64", "dep:url"]
-chromecast = ["dep:chromecast-protocol", "dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
+chromecast = ["dep:googlecast-protocol", "dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
 http-file-server = ["dep:uuid", "dep:libc", "dep:http-range", "dep:http"]
 uniffi = ["dep:uniffi"]
 logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
