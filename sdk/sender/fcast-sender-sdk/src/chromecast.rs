@@ -7,6 +7,7 @@ use crate::{
     utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
+use crate::googlecast_protocol;
 use googlecast_protocol::{
     self as protocol, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
     QueueRepeatMode, StreamType, CONNECTION_NAMESPACE,

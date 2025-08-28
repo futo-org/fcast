@@ -1768,12 +1768,13 @@ dependencies = [
  "env_logger",
  "fcast-protocol",
  "futures",
- "googlecast-protocol",
  "http-range",
  "libc",
  "log",
  "log-panics",
  "mdns-sd",
+ "prost",
+ "prost-build",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -2252,16 +2253,6 @@ dependencies = [
  "log",
  "plain",
  "scroll",
-]
-
-[[package]]
-name = "googlecast-protocol"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "serde",
- "serde_json",
 ]
 
 [[package]]
