@@ -24,6 +24,7 @@ pub enum Method {
     Options,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum StatusCode {
     Ok,

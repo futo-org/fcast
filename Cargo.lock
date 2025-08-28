@@ -1769,7 +1769,6 @@ dependencies = [
  "fcast-protocol",
  "futures",
  "googlecast-protocol",
- "http 0.1.0",
  "http-range",
  "libc",
  "log",

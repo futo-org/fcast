@@ -31,6 +31,7 @@ pub mod discovery;
 #[cfg(feature = "fcast")]
 pub mod fcast;
 pub(crate) mod utils;
+pub(crate) mod http;
 
 #[cfg(feature = "http-file-server")]
 pub mod file_server;
