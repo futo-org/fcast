@@ -15,7 +15,7 @@ use anyhow::bail;
 use crate::http;
 use http::KnownHeaderNames;
 use log::{debug, error};
-use parsers_common::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
+use http::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
     runtime::Handle,

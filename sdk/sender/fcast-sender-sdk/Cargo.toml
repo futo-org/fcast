@@ -25,7 +25,6 @@ mdns-sd = { workspace = true, optional = true }
 # File server
 libc = { version = "0.2.174", optional = true }
 http-range = { version = "0.1.5", optional = true }
-parsers-common = { path = "../parsers-common" }
 uuid = { version = "1.17.0", features = ["v4"], optional = true }
 
 # Chromecast
