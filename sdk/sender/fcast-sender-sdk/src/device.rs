@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub enum DeviceConnectionState {
     Disconnected,
     Connecting,
+    Reconnecting,
     Connected {
         used_remote_addr: IpAddr,
         local_addr: IpAddr,

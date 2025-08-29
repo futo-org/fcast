@@ -11,11 +11,11 @@ use std::{
     },
 };
 
-use anyhow::bail;
 use crate::http;
+use anyhow::bail;
 use http::KnownHeaderNames;
-use log::{debug, error};
 use http::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
+use log::{debug, error};
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
     runtime::Handle,

@@ -1,3 +1,4 @@
+use crate::googlecast_protocol;
 use crate::{
     device::{
         ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
@@ -7,13 +8,12 @@ use crate::{
     utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
-use crate::googlecast_protocol;
+use futures::StreamExt;
 use googlecast_protocol::{
     self as protocol, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
     QueueRepeatMode, StreamType, CONNECTION_NAMESPACE,
 };
 use googlecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
-use futures::StreamExt;
 use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
@@ -422,9 +422,21 @@ impl InnerDevice {
         Ok(false)
     }
 
-    async fn inner_work(&mut self, addrs: Vec<SocketAddr>) -> anyhow::Result<()> {
+    async fn inner_work(&mut self, addrs: &[SocketAddr], is_reconnect: bool) -> anyhow::Result<()> {
+        self.session_id.clear();
+        self.media_session_id = 0;
+        self.transport_id = None;
+        self.current_player_state = PlayerState::Idle;
+        self.launch_retries = 0;
+        self.writer = None;
+        self.request_id = RequestId::new();
+
         self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connecting);
+            .connection_state_changed(if is_reconnect {
+                DeviceConnectionState::Reconnecting
+            } else {
+                DeviceConnectionState::Connecting
+            });
 
         let Some(stream) =
             utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
@@ -718,8 +730,21 @@ impl InnerDevice {
     }
 
     pub async fn work(mut self, addrs: Vec<SocketAddr>) {
-        if let Err(err) = self.inner_work(addrs).await {
-            error!("Inner work error: {err}");
+        let mut is_reconnect = false;
+        let mut reconnect_interval = tokio::time::interval(utils::RECONNECT_INTERVAL);
+        loop {
+            if is_reconnect {
+                reconnect_interval.tick().await;
+                debug!("Trying to reconnect");
+            }
+
+            match self.inner_work(&addrs, is_reconnect).await {
+                Ok(_) => break,
+                Err(err) => {
+                    error!("Inner work error: {err}");
+                    is_reconnect = true;
+                }
+            }
         }
 
         self.event_handler
