@@ -268,15 +268,20 @@ impl InnerDevice {
 
     async fn inner_work(
         &mut self,
-        addrs: Vec<SocketAddr>,
-        mut cmd_rx: Receiver<Command>,
+        addrs: &[SocketAddr],
+        cmd_rx: &mut Receiver<Command>,
         cmd_tx: Sender<Command>,
+        is_reconnect: bool,
     ) -> anyhow::Result<()> {
         self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connecting);
+            .connection_state_changed(if is_reconnect {
+                DeviceConnectionState::Reconnecting
+            } else {
+                DeviceConnectionState::Connecting
+            });
 
         let Some(stream) =
-            utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut cmd_rx, |cmd| {
+            utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| {
                 cmd == Command::Quit
             })
             .await?
@@ -768,11 +773,27 @@ impl InnerDevice {
     pub async fn work(
         mut self,
         addrs: Vec<SocketAddr>,
-        cmd_rx: Receiver<Command>,
+        mut cmd_rx: Receiver<Command>,
         cmd_tx: Sender<Command>,
     ) {
-        if let Err(err) = self.inner_work(addrs, cmd_rx, cmd_tx).await {
-            error!("Inner work error: {err}");
+        let mut is_reconnect = false;
+        let mut reconnect_interval = tokio::time::interval(utils::RECONNECT_INTERVAL);
+        loop {
+            if is_reconnect {
+                reconnect_interval.tick().await;
+                debug!("Trying to reconnect");
+            }
+
+            match self
+                .inner_work(&addrs, &mut cmd_rx, cmd_tx.clone(), is_reconnect)
+                .await
+            {
+                Ok(_) => break,
+                Err(err) => {
+                    error!("Inner work error: {err}");
+                    is_reconnect = true;
+                }
+            }
         }
 
         self.event_handler

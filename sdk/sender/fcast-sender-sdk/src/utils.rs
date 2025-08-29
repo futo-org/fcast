@@ -9,12 +9,14 @@ mod any_protocol_prelude {
 #[cfg(any_protocol)]
 use any_protocol_prelude::*;
 
+pub const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
+
 /// # Arguments
 ///
 ///    * on_cmd: return true if the connect loop should quit.
 #[cfg(any_protocol)]
 pub(crate) async fn try_connect_tcp<T>(
-    addrs: Vec<SocketAddr>,
+    addrs: &[SocketAddr],
     timeout: Duration,
     cmd_rx: &mut tokio::sync::mpsc::Receiver<T>,
     on_cmd: impl Fn(T) -> bool,
@@ -24,8 +26,13 @@ pub(crate) async fn try_connect_tcp<T>(
     debug!("Trying to connect to {addrs:?}...");
 
     let mut connections: Vec<_> = addrs
-        .into_iter()
-        .map(|addr| Box::pin(tokio::time::timeout(timeout, TcpStream::connect(addr))))
+        .iter()
+        .map(|addr| {
+            Box::pin(tokio::time::timeout(
+                timeout,
+                TcpStream::connect(*addr),
+            ))
+        })
         .collect();
 
     let (connection_tx, mut connection_rx) = tokio::sync::oneshot::channel();
