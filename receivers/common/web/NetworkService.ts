@@ -1,7 +1,7 @@
 import { PlayMessage } from 'common/Packets';
 import { streamingMediaTypes } from 'common/MimeTypes';
 import { MediaCache } from './MediaCache';
-import * as http from 'http';
+import { http, https } from 'modules/follow-redirects';
 import * as url from 'url';
 import { AddressInfo } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
@@ -87,14 +87,15 @@ export class NetworkService {
                             .filter(([key]) => !omitHeaders.has(key.toLowerCase()))
                             .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value]));
 
+                        const protocol = proxyInfo.url.startsWith('https') ? https : http;
                         const parsedUrl = url.parse(proxyInfo.url);
-                        const options: http.RequestOptions = {
+                        const options: http.RequestOptions | https.RequestOptions = {
                             ... parsedUrl,
                             method: req.method,
                             headers: { ...filteredHeaders, ...proxyInfo.headers }
                         };
 
-                        const proxyReq = http.request(options, (proxyRes) => {
+                        const proxyReq = protocol.request(options, (proxyRes) => {
                             res.writeHead(proxyRes.statusCode, proxyRes.headers);
                             proxyRes.pipe(res, { end: true });
                         });

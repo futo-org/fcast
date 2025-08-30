@@ -82,7 +82,7 @@ export async function downloadFile(downloadUrl: string, destination: string, inM
         const protocol = downloadUrl.startsWith('https') ? https : http;
 
         const parsedUrl = url.parse(downloadUrl);
-        const options = protocol.RequestOptions = {
+        const options: http.RequestOptions | https.RequestOptions = {
             ...parsedUrl,
             headers: requestHeaders
         };
