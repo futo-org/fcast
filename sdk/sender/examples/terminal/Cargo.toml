@@ -2,6 +2,7 @@
 name = "terminal"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
 fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "chromecast"] }

@@ -3,6 +3,7 @@ name = "desktop"
 version = "0.1.0"
 edition = "2021"
 license.workspace = true
+publish = false
 
 [dependencies]
 fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "chromecast", "http-file-server", "logging", "discovery"] }
