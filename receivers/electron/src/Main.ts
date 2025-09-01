@@ -23,7 +23,7 @@ const APPLICATION_TITLE = 'FCast Receiver';
 
 class AppCache {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    public interfaces: any = null;
+    public interfaces: any[] = null;
     public appName: string = null;
     public appVersion: string = null;
     public playMessage: PlayMessage = null;
@@ -390,7 +390,7 @@ export class Main {
         });
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ipcMain.on('network-changed', (event: IpcMainEvent, value: any, wifiSignalUpdate: boolean) => {
+        ipcMain.on('network-changed', (event: IpcMainEvent, value: any[], wifiSignalUpdate: boolean) => {
             Main.cache.interfaces = value;
 
             if (!wifiSignalUpdate) {
@@ -632,6 +632,10 @@ export function getPlayMessage() {
 }
 
 export async function errorHandler(error: Error) {
+    if (attemptErrorRecovery(error)) {
+        return;
+    }
+
     logger.error(error);
     logger.shutdown();
 
@@ -650,4 +654,25 @@ export async function errorHandler(error: Error) {
     } else {
         Main.application.exit(0);
     }
+}
+
+function attemptErrorRecovery(error: Error): boolean {
+    let recovered = false;
+
+    switch (error.message) {
+        // Error case: no network interfaces are present while starting the program. mDNS setup will fail, so
+        // fallback to operating the program without mDNS if network interfaces later come online.
+        case 'addMembership ENODEV':
+            if (Main.cache.interfaces === null || Main.cache.interfaces?.length === 0) {
+                logger.error('Error starting mDNS discovery service, continuing without it...');
+                recovered = true;
+            }
+
+            break;
+
+        default:
+            break;
+    }
+
+    return recovered;
 }
