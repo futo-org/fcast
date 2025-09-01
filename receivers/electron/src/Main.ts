@@ -28,6 +28,7 @@ class AppCache {
     public appVersion: string = null;
     public playMessage: PlayMessage = null;
     public playerVolume: number = null;
+    public playbackUpdate: PlaybackUpdateMessage = null;
     public subscribedKeys = new Set<string>();
 }
 
@@ -233,6 +234,8 @@ export class Main {
                 Main.playerWindow?.close();
                 Main.playerWindow = null;
                 Main.playerWindowContentViewer = null;
+                Main.cache.playbackUpdate = null;
+                Main.cache.playMessage = null;
             });
 
             l.emitter.on("seek", (message: SeekMessage) => Main.playerWindow?.webContents?.send("seek", message));
@@ -261,7 +264,7 @@ export class Main {
                 ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
             });
             l.emitter.on('initial', (message) => {
-                logger.info(`Received 'Initial' message from sender: ${message}`);
+                logger.info(`Received 'Initial' message from sender:`, message);
             });
             l.emitter.on("setplaylistitem", (message: SetPlaylistItemMessage) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
             l.emitter.on('subscribeevent', (message) => {
@@ -301,6 +304,7 @@ export class Main {
             });
 
             ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
+                Main.cache.playbackUpdate = value;
                 l.send(Opcode.PlaybackUpdate, value);
             });
 
@@ -628,7 +632,16 @@ export function getAppVersion() {
 }
 
 export function getPlayMessage() {
-    return Main.cache.playMessage;
+    return Main.cache.playbackUpdate === null ? Main.cache.playMessage : {
+        ...Main.cache.playMessage,
+        time: Main.cache.playbackUpdate.time,
+        volume: Main.cache.playerVolume,
+        speed: Main.cache.playbackUpdate.speed
+    };
+}
+
+export function getPlaybackUpdateMessage() {
+    return Main.cache.playbackUpdate;
 }
 
 export async function errorHandler(error: Error) {

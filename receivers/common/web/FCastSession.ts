@@ -2,7 +2,7 @@ import * as net from 'net';
 import { EventEmitter } from 'events';
 import { Opcode, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, InitialSenderMessage, SetPlaylistItemMessage, SubscribeEventMessage, UnsubscribeEventMessage, PROTOCOL_VERSION, InitialReceiverMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
-import { getComputerName, getAppName, getAppVersion, getPlayMessage } from 'src/Main';
+import { getComputerName, getAppName, getAppVersion, getPlayMessage, getPlaybackUpdateMessage } from 'src/Main';
 import { WebSocket } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
 const logger = new Logger('FCastSession', LoggerType.BACKEND);
@@ -198,6 +198,7 @@ export class FCastSession {
                             getPlayMessage(),
                         ));
 
+                        this.send(Opcode.PlaybackUpdate, getPlaybackUpdateMessage());
                         this.sentInitialMessage = true;
                     }
 
