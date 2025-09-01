@@ -40,6 +40,7 @@ buildIos:
     - rustup default stable
     - rustup target add aarch64-apple-ios-sim aarch64-apple-ios
   script:
+    - rustup show
     - source $HOME/.cargo/env
     - cargo xtask generate-ios
     - cp -rf ios-bindings/* /artifacts/
