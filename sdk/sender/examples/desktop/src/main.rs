@@ -278,6 +278,7 @@ impl App {
                                 self.event_tx.clone(),
                                 current_device_id,
                             )),
+                            1000,
                         )?;
                         active_device = Some(device);
                     }
