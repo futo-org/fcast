@@ -14,7 +14,7 @@ buildSenderSDKDockerContainer:
   when: manual
 
 buildAndroid:
-  stage: buildSenderSDKForAndroid
+  stage: buildSenderSDK
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
   script:
     - cargo xtask kotlin build-android-library --release --src-dir sdk/sender/out
@@ -28,6 +28,27 @@ buildAndroid:
     expire_in: "3 days"
     paths:
       - sdk/sender/out/*
+  when: manual
+
+buildIos:
+  stage: buildSenderSDK
+  image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
+  tags:
+    - tart-installed
+  before_script:
+    - brew install rustup
+    - rustup default stable
+    - rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+  script:
+    - cargo xtask generate-ios
+    - cp -rf ios-bindings/* /artifacts/
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "3 days"
+    paths:
+      - ios-bindings/*
   when: manual
 
 cargoHackSenderSDK:
