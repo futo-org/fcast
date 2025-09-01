@@ -422,7 +422,7 @@ impl InnerDevice {
         Ok(false)
     }
 
-    async fn inner_work(&mut self, addrs: &[SocketAddr], is_reconnect: bool) -> anyhow::Result<()> {
+    async fn inner_work(&mut self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
         self.session_id.clear();
         self.media_session_id = 0;
         self.transport_id = None;
@@ -431,13 +431,6 @@ impl InnerDevice {
         self.writer = None;
         self.request_id = RequestId::new();
 
-        self.event_handler
-            .connection_state_changed(if is_reconnect {
-                DeviceConnectionState::Reconnecting
-            } else {
-                DeviceConnectionState::Connecting
-            });
-
         let Some(stream) =
             utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
                 cmd == Command::Quit
@@ -445,8 +438,6 @@ impl InnerDevice {
             .await?
         else {
             debug!("Received Quit command in connect loop");
-            self.event_handler
-                .connection_state_changed(DeviceConnectionState::Disconnected);
             return Ok(());
         };
 
@@ -729,23 +720,18 @@ impl InnerDevice {
         Ok(())
     }
 
-    pub async fn work(mut self, addrs: Vec<SocketAddr>) {
-        let mut is_reconnect = false;
-        let mut reconnect_interval = tokio::time::interval(utils::RECONNECT_INTERVAL);
-        loop {
-            if is_reconnect {
-                reconnect_interval.tick().await;
-                debug!("Trying to reconnect");
-            }
+    pub async fn work(mut self, addrs: Vec<SocketAddr>, reconnect_interval_millis: u64) {
+        self.event_handler
+            .connection_state_changed(DeviceConnectionState::Connecting);
 
-            match self.inner_work(&addrs, is_reconnect).await {
-                Ok(_) => break,
-                Err(err) => {
-                    error!("Inner work error: {err}");
-                    is_reconnect = true;
-                }
+        crate::connection_loop!(
+            reconnect_interval_millis,
+            on_work = { self.inner_work(&addrs).await },
+            on_reconnect_started = {
+                self.event_handler
+                    .connection_state_changed(DeviceConnectionState::Reconnecting);
             }
-        }
+        );
 
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Disconnected);
@@ -926,6 +912,7 @@ impl CastingDevice for ChromecastDevice {
         &self,
         _app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
+        reconnect_interval_millis: u64,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
         if state.started {
@@ -945,7 +932,7 @@ impl CastingDevice for ChromecastDevice {
 
         state
             .rt_handle
-            .spawn(InnerDevice::new(rx, event_handler).work(addrs));
+            .spawn(InnerDevice::new(rx, event_handler).work(addrs, reconnect_interval_millis));
 
         Ok(())
     }
