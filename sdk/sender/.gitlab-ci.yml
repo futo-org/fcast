@@ -41,8 +41,6 @@ buildIos:
     - rustup target add aarch64-apple-ios-sim aarch64-apple-ios
     - source $HOME/.cargo/env
   script:
-    - rustup show
-    - source $HOME/.cargo/env
     - cargo xtask generate-ios
   artifacts:
     untracked: false
