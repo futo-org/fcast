@@ -603,6 +603,15 @@ impl InnerDevice {
                                         .playback_state_changed(PlaybackState::Playing);
                                     shared_state.source = Some(source);
                                 }
+                                if let Some(volume) = play_msg.volume {
+                                    self.event_handler.volume_changed(volume);
+                                }
+                                if let Some(time) = play_msg.time {
+                                    self.event_handler.time_changed(time);
+                                }
+                                if let Some(speed) = play_msg.speed {
+                                    self.event_handler.speed_changed(speed);
+                                }
                             }
                         }
                         Opcode::PlaybackError => {
