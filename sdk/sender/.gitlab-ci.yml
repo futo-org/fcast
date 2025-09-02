@@ -36,11 +36,12 @@ buildIos:
   tags:
     - tart-installed
   before_script:
-    - brew install rustup
-    - rustup default stable
+    - brew install rustup-init
+    - rustup-init -y
     - rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+    - source $HOME/.cargo/env
   script:
-    - rustup run stable cargo xtask generate-ios
+    - cargo xtask generate-ios
     - cp -rf ios-bindings/* /artifacts/
   artifacts:
     untracked: false
