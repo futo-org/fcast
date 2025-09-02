@@ -40,9 +40,17 @@ buildIos:
     - rustup-init -y
     - rustup target add aarch64-apple-ios-sim aarch64-apple-ios
     - source $HOME/.cargo/env
+
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+    - mkdir -p ~/.ssh/
+    - cp ./.secure_files/id_ed25519 ~/.ssh/id_ed25519
+    - cp ./.secure_files/id_ed25519.pub ~/.ssh/id_ed25519.pub
+    - chmod 700 ~/.ssh/
+    - chmod 600 ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519.pub
   script:
     - cargo xtask generate-ios
-    - cp -rf ios-bindings/* /artifacts/
+    - scp -o StrictHostKeyChecking=no -r ios-bindings/* root@$FCAST_DO_RUNNER_IP:/artifacts/
   artifacts:
     untracked: false
     when: on_success
