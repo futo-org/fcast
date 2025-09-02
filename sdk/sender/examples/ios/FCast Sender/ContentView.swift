@@ -318,7 +318,8 @@ struct ContentView: View {
                                             do {
                                                 try activeDevice?.connect(
                                                     appInfo: nil,
-                                                    eventHandler: eventHandler
+                                                    eventHandler: eventHandler,
+                                                    reconnectIntervalMillis: 1000
                                                 )
                                             } catch {
                                                 DispatchQueue.main.async {
@@ -345,7 +346,8 @@ struct ContentView: View {
                              do {
                                  try activeDevice?.connect(
                                     appInfo: nil,
-                                    eventHandler: eventHandler
+                                    eventHandler: eventHandler,
+                                    reconnectIntervalMillis: 1000
                                  )
                              } catch {
                                  DispatchQueue.main.async {
