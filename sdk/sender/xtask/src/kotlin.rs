@@ -27,24 +27,16 @@ pub struct KotlinArgs {
 fn build_for_android_target(
     target: &str,
     profile: &str,
-    dest_dir: Option<&str>,
+    dest_dir: &str,
     package_name: &str,
 ) -> Result<Utf8PathBuf> {
     let sh = sh();
     let _p = sh.push_dir(workspace::root_path()?);
-    if let Some(dest_dir) = dest_dir {
-        cmd!(
-            sh,
-            "cargo ndk --target {target} -o {dest_dir} build --profile {profile} -p {package_name} --no-default-features --features _android_defaults"
-        )
-        .run()?;
-    } else {
-        cmd!(
-            sh,
-            "cargo ndk --target {target} build --profile {profile} -p {package_name} --no-default-features --features _android_defaults"
-        )
-        .run()?;
-    }
+    cmd!(
+        sh,
+        "cargo ndk --target {target} -o {dest_dir} build --profile {profile} -p {package_name} --no-default-features --features _android_defaults"
+    )
+    .run()?;
 
     let profile_dir_name = if profile == "dev" { "debug" } else { profile };
     let package_camel = package_name.replace('-', "_");
@@ -88,31 +80,25 @@ fn build_android_library(release: bool, src_dir: Utf8PathBuf) -> Result<()> {
     build_for_android_target(
         "x86_64-linux-android",
         profile,
-        Some(jni_libs_dir_str),
+        jni_libs_dir_str,
         package_name,
     )?;
     build_for_android_target(
         "i686-linux-android",
         profile,
-        Some(jni_libs_dir_str),
+        jni_libs_dir_str,
         package_name,
     )?;
     build_for_android_target(
         "armv7-linux-androideabi",
         profile,
-        Some(jni_libs_dir_str),
-        package_name,
-    )?;
-    build_for_android_target(
-        "aarch64-linux-android",
-        profile,
-        Some(jni_libs_dir_str),
+        jni_libs_dir_str,
         package_name,
     )?;
     let uniffi_lib_path = build_for_android_target(
-        "x86_64-linux-android",
-        "dev",
-        None,
+        "aarch64-linux-android",
+        profile,
+        jni_libs_dir_str,
         package_name,
     )?;
 
