@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub enum DeviceConnectionState {
     Disconnected,
     Connecting,
+    Reconnecting,
     Connected {
         used_remote_addr: IpAddr,
         local_addr: IpAddr,
@@ -372,6 +373,11 @@ pub trait CastingDevice: Send + Sync {
     fn change_volume(&self, volume: f64) -> Result<(), CastingDeviceError>;
     fn change_speed(&self, speed: f64) -> Result<(), CastingDeviceError>;
     fn disconnect(&self) -> Result<(), CastingDeviceError>;
+    /// Connect to the device.
+    ///
+    /// # Arguments
+    ///   * `reconnect_interval_millis`: the interval between each reconnect attempt. Setting this to `0`
+    ///     indicates that reconnects should not be attempted.
     #[cfg_attr(
         feature = "uniffi",
         uniffi::method(default(
@@ -382,6 +388,7 @@ pub trait CastingDevice: Send + Sync {
         &self,
         app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
+        reconnect_interval_millis: u64,
     ) -> Result<(), CastingDeviceError>;
     fn get_device_info(&self) -> DeviceInfo;
     fn get_addresses(&self) -> Vec<IpAddr>;

@@ -268,22 +268,16 @@ impl InnerDevice {
 
     async fn inner_work(
         &mut self,
-        addrs: Vec<SocketAddr>,
-        mut cmd_rx: Receiver<Command>,
+        addrs: &[SocketAddr],
+        cmd_rx: &mut Receiver<Command>,
         cmd_tx: Sender<Command>,
     ) -> anyhow::Result<()> {
-        self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connecting);
-
-        let Some(stream) =
-            utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut cmd_rx, |cmd| {
-                cmd == Command::Quit
-            })
-            .await?
+        let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| {
+            cmd == Command::Quit
+        })
+        .await?
         else {
             debug!("Received Quit command in connect loop");
-            self.event_handler
-                .connection_state_changed(DeviceConnectionState::Disconnected);
             return Ok(());
         };
 
@@ -768,12 +762,21 @@ impl InnerDevice {
     pub async fn work(
         mut self,
         addrs: Vec<SocketAddr>,
-        cmd_rx: Receiver<Command>,
+        mut cmd_rx: Receiver<Command>,
         cmd_tx: Sender<Command>,
+        reconnect_interval_millis: u64,
     ) {
-        if let Err(err) = self.inner_work(addrs, cmd_rx, cmd_tx).await {
-            error!("Inner work error: {err}");
-        }
+        self.event_handler
+            .connection_state_changed(DeviceConnectionState::Connecting);
+
+        crate::connection_loop!(
+            reconnect_interval_millis,
+            on_work = { self.inner_work(&addrs, &mut cmd_rx, cmd_tx.clone()).await },
+            on_reconnect_started = {
+                self.event_handler
+                    .connection_state_changed(DeviceConnectionState::Reconnecting);
+            }
+        );
 
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Disconnected);
@@ -994,6 +997,7 @@ impl CastingDevice for FCastDevice {
         &self,
         app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
+        reconnect_interval_millis: u64,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
         if state.started {
@@ -1012,8 +1016,12 @@ impl CastingDevice for FCastDevice {
         state.command_tx = Some(tx.clone());
 
         state.rt_handle.spawn(
-            InnerDevice::new(app_info, event_handler, self.session_version.clone())
-                .work(addrs, rx, tx),
+            InnerDevice::new(app_info, event_handler, self.session_version.clone()).work(
+                addrs,
+                rx,
+                tx,
+                reconnect_interval_millis,
+            ),
         );
 
         Ok(())

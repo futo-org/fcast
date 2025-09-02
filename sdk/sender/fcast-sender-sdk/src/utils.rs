@@ -14,7 +14,7 @@ use any_protocol_prelude::*;
 ///    * on_cmd: return true if the connect loop should quit.
 #[cfg(any_protocol)]
 pub(crate) async fn try_connect_tcp<T>(
-    addrs: Vec<SocketAddr>,
+    addrs: &[SocketAddr],
     timeout: Duration,
     cmd_rx: &mut tokio::sync::mpsc::Receiver<T>,
     on_cmd: impl Fn(T) -> bool,
@@ -24,8 +24,8 @@ pub(crate) async fn try_connect_tcp<T>(
     debug!("Trying to connect to {addrs:?}...");
 
     let mut connections: Vec<_> = addrs
-        .into_iter()
-        .map(|addr| Box::pin(tokio::time::timeout(timeout, TcpStream::connect(addr))))
+        .iter()
+        .map(|addr| Box::pin(tokio::time::timeout(timeout, TcpStream::connect(*addr))))
         .collect();
 
     let (connection_tx, mut connection_rx) = tokio::sync::oneshot::channel();
@@ -60,6 +60,34 @@ pub(crate) async fn try_connect_tcp<T>(
             }
         }
     }
+}
+
+#[cfg(any_protocol)]
+#[macro_export]
+macro_rules! connection_loop {
+    ($reconnect_interval_millis:expr, on_work = $on_work: block, on_reconnect_started = $on_reconnect_started:block) => {{
+        let mut is_reconnect = false;
+        let reconnect_duration = Duration::from_millis($reconnect_interval_millis);
+        loop {
+            match ($on_work) {
+                Ok(_) => break,
+                Err(err) => {
+                    error!("Inner work error: {err}");
+                    if $reconnect_interval_millis == 0 {
+                        break;
+                    } else {
+                        tokio::time::sleep(reconnect_duration).await;
+                    }
+
+                    if !is_reconnect {
+                        $on_reconnect_started;
+                    }
+
+                    is_reconnect = true;
+                }
+            }
+        }
+    }};
 }
 
 // pub fn hexdump(data: &[u8]) -> String {

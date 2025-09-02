@@ -1,5 +1,5 @@
-use std::io::Result;
 use cfg_aliases::cfg_aliases;
+use std::io::Result;
 
 fn main() -> Result<()> {
     #[cfg(feature = "chromecast")]

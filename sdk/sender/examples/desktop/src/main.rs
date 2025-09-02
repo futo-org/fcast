@@ -3,7 +3,8 @@ use std::{rc::Rc, sync::Arc};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent, GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source
+        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
+        GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
     },
     file_server::FileServer,
     url_format_ip_addr, DeviceDiscovererEventHandler, IpAddr,
@@ -277,6 +278,7 @@ impl App {
                                 self.event_tx.clone(),
                                 current_device_id,
                             )),
+                            1000,
                         )?;
                         active_device = Some(device);
                     }
@@ -298,6 +300,11 @@ impl App {
                         DeviceEvent::ConnectionStateChanged(state) => match state {
                             DeviceConnectionState::Disconnected => (),
                             DeviceConnectionState::Connecting => (),
+                            DeviceConnectionState::Reconnecting => {
+                                self.ui_weak.upgrade_in_event_loop(|ui| {
+                                    ui.global::<Bridge>().set_state(State::Connecting);
+                                })?;
+                            },
                             DeviceConnectionState::Connected { local_addr, .. } => {
                                 local_adddress = local_addr;
                                 self.ui_weak.upgrade_in_event_loop(|ui| {

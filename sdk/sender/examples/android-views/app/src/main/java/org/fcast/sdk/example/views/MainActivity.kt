@@ -552,7 +552,7 @@ class MainActivity : AppCompatActivity() {
                 val device = castContext.createDeviceFromInfo(deviceInfo)
                 try {
                     castingState.reset()
-                    device.connect(null, eventHandler)
+                    device.connect(null, eventHandler, 1000.toULong())
                     castingState.activeDevice = device
                 } catch (e: Exception) {
                     println("Failed to start device: {e}")
@@ -660,7 +660,7 @@ class MainActivity : AppCompatActivity() {
             { device ->
                 connectCastingDialog.hide()
                 try {
-                    device.connect(null, eventHandler)
+                    device.connect(null, eventHandler, 1000.toULong())
                     castingState.activeDevice = device
                     connectingToDeviceDialog.show()
                 } catch (e: Exception) {

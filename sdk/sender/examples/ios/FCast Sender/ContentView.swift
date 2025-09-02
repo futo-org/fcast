@@ -166,6 +166,11 @@ struct ContentView: View {
         eventHandler = DevEventHandler(
             onStateChanged: { state in
                 switch state {
+                case .reconnecting:
+                    DispatchQueue.main.async {
+                        data.sheetState = SheetState.connecting(deviceName: "n/a")
+                    }
+                    break
                 case .connected(usedRemoteAddr: _, let localAddr):
                     DispatchQueue.main.async {
                         data.sheetState = SheetState.connected
@@ -313,7 +318,8 @@ struct ContentView: View {
                                             do {
                                                 try activeDevice?.connect(
                                                     appInfo: nil,
-                                                    eventHandler: eventHandler
+                                                    eventHandler: eventHandler,
+                                                    reconnectIntervalMillis: 1000
                                                 )
                                             } catch {
                                                 DispatchQueue.main.async {
@@ -340,7 +346,8 @@ struct ContentView: View {
                              do {
                                  try activeDevice?.connect(
                                     appInfo: nil,
-                                    eventHandler: eventHandler
+                                    eventHandler: eventHandler,
+                                    reconnectIntervalMillis: 1000
                                  )
                              } catch {
                                  DispatchQueue.main.async {

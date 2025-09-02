@@ -1,3 +1,4 @@
+use crate::googlecast_protocol;
 use crate::{
     device::{
         ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
@@ -7,13 +8,12 @@ use crate::{
     utils, IpAddr,
 };
 use anyhow::{anyhow, bail, Result};
-use crate::googlecast_protocol;
+use futures::StreamExt;
 use googlecast_protocol::{
     self as protocol, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
     QueueRepeatMode, StreamType, CONNECTION_NAMESPACE,
 };
 use googlecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
-use futures::StreamExt;
 use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
@@ -422,9 +422,14 @@ impl InnerDevice {
         Ok(false)
     }
 
-    async fn inner_work(&mut self, addrs: Vec<SocketAddr>) -> anyhow::Result<()> {
-        self.event_handler
-            .connection_state_changed(DeviceConnectionState::Connecting);
+    async fn inner_work(&mut self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
+        self.session_id.clear();
+        self.media_session_id = 0;
+        self.transport_id = None;
+        self.current_player_state = PlayerState::Idle;
+        self.launch_retries = 0;
+        self.writer = None;
+        self.request_id = RequestId::new();
 
         let Some(stream) =
             utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
@@ -433,8 +438,6 @@ impl InnerDevice {
             .await?
         else {
             debug!("Received Quit command in connect loop");
-            self.event_handler
-                .connection_state_changed(DeviceConnectionState::Disconnected);
             return Ok(());
         };
 
@@ -717,10 +720,18 @@ impl InnerDevice {
         Ok(())
     }
 
-    pub async fn work(mut self, addrs: Vec<SocketAddr>) {
-        if let Err(err) = self.inner_work(addrs).await {
-            error!("Inner work error: {err}");
-        }
+    pub async fn work(mut self, addrs: Vec<SocketAddr>, reconnect_interval_millis: u64) {
+        self.event_handler
+            .connection_state_changed(DeviceConnectionState::Connecting);
+
+        crate::connection_loop!(
+            reconnect_interval_millis,
+            on_work = { self.inner_work(&addrs).await },
+            on_reconnect_started = {
+                self.event_handler
+                    .connection_state_changed(DeviceConnectionState::Reconnecting);
+            }
+        );
 
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Disconnected);
@@ -901,6 +912,7 @@ impl CastingDevice for ChromecastDevice {
         &self,
         _app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
+        reconnect_interval_millis: u64,
     ) -> Result<(), CastingDeviceError> {
         let mut state = self.state.lock().unwrap();
         if state.started {
@@ -920,7 +932,7 @@ impl CastingDevice for ChromecastDevice {
 
         state
             .rt_handle
-            .spawn(InnerDevice::new(rx, event_handler).work(addrs));
+            .spawn(InnerDevice::new(rx, event_handler).work(addrs, reconnect_interval_millis));
 
         Ok(())
     }
