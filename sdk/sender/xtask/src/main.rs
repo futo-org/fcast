@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::{Parser, Subcommand};
 use xshell::cmd;
 use xtask::{
@@ -20,22 +19,20 @@ struct Xtask {
     cmd: Command,
 }
 
-fn main() -> Result<()> {
+fn main() {
     match Xtask::parse().cmd {
-        Command::Kotlin(cmd) => cmd.run(),
+        Command::Kotlin(cmd) => cmd.run().unwrap(),
         Command::Hack => {
             let sh = xtask::sh();
-            cmd!(sh, "cargo hack check --each-feature").run()?;
-            Ok(())
+            cmd!(sh, "cargo hack check --each-feature").run().unwrap();
         }
-        Command::Swift(cmd) => cmd.run(),
+        Command::Swift(cmd) => cmd.run().unwrap(),
         Command::GenerateIos => {
             SwiftArgs {
                 cmd: SwiftCommand::BuildIosLibrary { release: true },
             }
-            .run()?;
-
-            Ok(())
+            .run()
+            .unwrap();
         }
     }
 }
