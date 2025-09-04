@@ -422,7 +422,7 @@ impl InnerDevice {
         Ok(false)
     }
 
-    async fn inner_work(&mut self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
+    async fn inner_work(&mut self, addrs: &[SocketAddr]) -> Result<(), utils::WorkError> {
         self.session_id.clear();
         self.media_session_id = 0;
         self.transport_id = None;
@@ -435,7 +435,8 @@ impl InnerDevice {
             utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
                 cmd == Command::Quit
             })
-            .await?
+            .await
+            .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
         else {
             debug!("Received Quit command in connect loop");
             return Ok(());
@@ -537,7 +538,7 @@ impl InnerDevice {
                 packet = packet_stream.next() => {
                     let packet = packet.ok_or(anyhow!("No more packets"))?;
                     if packet.payload_type() != protos::cast_message::PayloadType::String {
-                        bail!("Payload type {:?} is not implemented", packet.payload_type());
+                        return Err(anyhow!("Payload type {:?} is not implemented", packet.payload_type()).into());
                     }
                     let json_payload = packet.payload_utf8();
                     match packet.namespace.as_str() {
