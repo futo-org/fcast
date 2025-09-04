@@ -45,7 +45,7 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
-    implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-full:0.3.0") {
+    implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-full:0.3.1") {
         exclude(group = "net.java.dev.jna")
     }
     implementation("net.java.dev.jna:jna:5.13.0@aar")
