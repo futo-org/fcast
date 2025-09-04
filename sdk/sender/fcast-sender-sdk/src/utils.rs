@@ -63,10 +63,22 @@ pub(crate) async fn try_connect_tcp<T>(
 }
 
 #[cfg(any_protocol)]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WorkError {
+    #[error("Did not connect: {0}")]
+    DidNotConnect(String),
+    #[error("{0}")]
+    Anyhow(#[from] anyhow::Error),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    SerdeJson(#[from] serde_json::Error),
+}
+
+#[cfg(any_protocol)]
 #[macro_export]
 macro_rules! connection_loop {
     ($reconnect_interval_millis:expr, on_work = $on_work: block, on_reconnect_started = $on_reconnect_started:block) => {{
-        let mut is_reconnect = false;
         let reconnect_duration = Duration::from_millis($reconnect_interval_millis);
         loop {
             match ($on_work) {
@@ -79,11 +91,9 @@ macro_rules! connection_loop {
                         tokio::time::sleep(reconnect_duration).await;
                     }
 
-                    if !is_reconnect {
+                    if !matches!(err, $crate::utils::WorkError::DidNotConnect(_)) {
                         $on_reconnect_started;
                     }
-
-                    is_reconnect = true;
                 }
             }
         }

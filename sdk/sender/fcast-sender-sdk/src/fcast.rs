@@ -271,11 +271,12 @@ impl InnerDevice {
         addrs: &[SocketAddr],
         cmd_rx: &mut Receiver<Command>,
         cmd_tx: Sender<Command>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), utils::WorkError> {
         let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| {
             cmd == Command::Quit
         })
-        .await?
+        .await
+        .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
         else {
             debug!("Received Quit command in connect loop");
             return Ok(());
@@ -433,7 +434,7 @@ impl InnerDevice {
                                     );
                                     current_playlist_item_index = update.item_index.map(|idx| idx as usize);
                                 }
-                                _ => bail!("Unsupported session version {}", self.session_version.get()),
+                                _ => return Err(anyhow!("Unsupported session version {}", self.session_version.get()).into()),
                             }
                         }
                         Opcode::VolumeUpdate => {
