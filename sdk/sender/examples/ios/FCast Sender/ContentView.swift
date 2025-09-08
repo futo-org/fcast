@@ -3,6 +3,7 @@ import PhotosUI
 import SwiftUI
 import System
 import CodeScanner
+import FCastSenderSDK
 
 final class DevEventHandler: DeviceEventHandler {
     let onStateChanged: @Sendable (DeviceConnectionState) -> Void

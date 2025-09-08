@@ -8,8 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		2C0D5A332E43787700DE5418 /* CodeScanner in Frameworks */ = {isa = PBXBuildFile; productRef = 2C0D5A322E43787700DE5418 /* CodeScanner */; };
-		2CE96CDC2E46221100386DB8 /* fcast_sender_sdk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2CE96CDA2E46221100386DB8 /* fcast_sender_sdk.xcframework */; };
-		2CE96CDD2E46221100386DB8 /* fcast_sender_sdk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE96CD92E46221100386DB8 /* fcast_sender_sdk.swift */; };
+		2C8888C12E6F1B6000F38E7A /* FCastSenderSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 2C8888C02E6F1B6000F38E7A /* FCastSenderSDK */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,10 +42,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		2C10DED52E37B5E7000C85F7 /* FCastSender-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FCastSender-Bridging-Header.h"; sourceTree = "<group>"; };
-		2CE96CD92E46221100386DB8 /* fcast_sender_sdk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = fcast_sender_sdk.swift; sourceTree = "<group>"; };
-		2CE96CDA2E46221100386DB8 /* fcast_sender_sdk.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = fcast_sender_sdk.xcframework; sourceTree = "<group>"; };
-		2CE96CDB2E46221100386DB8 /* fcast_sender_sdkFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fcast_sender_sdkFFI.h; sourceTree = "<group>"; };
 		FE5977C02DF448FF00115F46 /* FCast Sender.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "FCast Sender.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "FCast SenderUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -75,8 +70,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2C8888C12E6F1B6000F38E7A /* FCastSenderSDK in Frameworks */,
 				2C0D5A332E43787700DE5418 /* CodeScanner in Frameworks */,
-				2CE96CDC2E46221100386DB8 /* fcast_sender_sdk.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -100,16 +95,12 @@
 		FE492A012DF43426005DA314 = {
 			isa = PBXGroup;
 			children = (
-				2C10DED52E37B5E7000C85F7 /* FCastSender-Bridging-Header.h */,
 				FE492A0C2DF43426005DA314 /* FCast Sender */,
 				FE492A1A2DF43428005DA314 /* FCast SenderTests */,
 				FE492A242DF43428005DA314 /* FCast SenderUITests */,
 				FE5977C02DF448FF00115F46 /* FCast Sender.app */,
 				FE5977D22DF5B8F600115F46 /* FCast SenderTests.xctest */,
 				FE5977D32DF5B8F600115F46 /* FCast SenderUITests.xctest */,
-				2CE96CD92E46221100386DB8 /* fcast_sender_sdk.swift */,
-				2CE96CDA2E46221100386DB8 /* fcast_sender_sdk.xcframework */,
-				2CE96CDB2E46221100386DB8 /* fcast_sender_sdkFFI.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -135,6 +126,7 @@
 			name = "FCast Sender";
 			packageProductDependencies = (
 				2C0D5A322E43787700DE5418 /* CodeScanner */,
+				2C8888C02E6F1B6000F38E7A /* FCastSenderSDK */,
 			);
 			productName = "FCast Sender";
 			productReference = FE5977C02DF448FF00115F46 /* FCast Sender.app */;
@@ -220,6 +212,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				2C0D5A312E43787700DE5418 /* XCRemoteSwiftPackageReference "CodeScanner" */,
+				2C8888BF2E6F1B6000F38E7A /* XCRemoteSwiftPackageReference "fcast-sender-sdk-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FE492A012DF43426005DA314;
@@ -262,7 +255,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2CE96CDD2E46221100386DB8 /* fcast_sender_sdk.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -442,7 +434,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "FCastSender-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -475,7 +466,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "FCastSender-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -599,6 +589,14 @@
 				minimumVersion = 2.5.2;
 			};
 		};
+		2C8888BF2E6F1B6000F38E7A /* XCRemoteSwiftPackageReference "fcast-sender-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://gitlab.futo.org/videostreaming/fcast-sender-sdk-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.0.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -606,6 +604,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 2C0D5A312E43787700DE5418 /* XCRemoteSwiftPackageReference "CodeScanner" */;
 			productName = CodeScanner;
+		};
+		2C8888C02E6F1B6000F38E7A /* FCastSenderSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2C8888BF2E6F1B6000F38E7A /* XCRemoteSwiftPackageReference "fcast-sender-sdk-swift" */;
+			productName = FCastSenderSDK;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
