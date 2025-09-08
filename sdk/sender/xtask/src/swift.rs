@@ -63,7 +63,7 @@ fn build_ios_library(release: bool) -> Result<()> {
 
     rename(
         format!("ios-bindings/uniffi/{package_camel}FFI.modulemap"),
-        format!("ios-bindings/uniffi/{package_camel}.modulemap"),
+        format!("ios-bindings/uniffi/module.modulemap"),
     )?;
 
     sh.remove_path(format!("ios-bindings/{package_camel}.xcframework"))?;
