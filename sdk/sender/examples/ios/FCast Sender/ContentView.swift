@@ -3,6 +3,7 @@ import PhotosUI
 import SwiftUI
 import System
 import CodeScanner
+import FCastSenderSDK
 
 final class DevEventHandler: DeviceEventHandler {
     let onStateChanged: @Sendable (DeviceConnectionState) -> Void
@@ -202,7 +203,7 @@ struct ContentView: View {
                         self.activeFileHandle = handle
                         Task {
                             if let activeDevice = self.activeDevice,
-                                let usedLocalAddress = dataModel
+                               let usedLocalAddress = dataModel
                                     .usedLocalAddress
                             {
                                 do {
