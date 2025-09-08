@@ -2,6 +2,7 @@ import SwiftUI
 import Synchronization
 import Combine
 import Network
+import FCastSenderSDK
 
 struct FoundDevice {
     var name: String
