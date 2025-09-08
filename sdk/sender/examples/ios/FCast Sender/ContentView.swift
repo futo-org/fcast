@@ -203,7 +203,7 @@ struct ContentView: View {
                         self.activeFileHandle = handle
                         Task {
                             if let activeDevice = self.activeDevice,
-                                let usedLocalAddress = dataModel
+                               let usedLocalAddress = dataModel
                                     .usedLocalAddress
                             {
                                 do {
