@@ -42,13 +42,14 @@ buildIos:
     - source $HOME/.cargo/env
   script:
     - cargo xtask generate-ios
-    - zip -r fcast_sender_sdk.xcframework.zip ios-bindings/fcast_sender_sdk.xcframework
+    - cd ios-bindings
+    - zip -r fcast_sender_sdk.xcframework.zip fcast_sender_sdk.xcframework
   artifacts:
     untracked: false
     when: on_success
     access: all
     paths:
-      - fcast_sender_sdk.xcframework.zip
+      - ios-bindings/fcast_sender_sdk.xcframework.zip
       - ios-bindings/uniffi/*
   when: manual
 
