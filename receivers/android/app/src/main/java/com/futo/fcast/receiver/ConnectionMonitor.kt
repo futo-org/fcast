@@ -2,10 +2,13 @@ package com.futo.fcast.receiver
 
 import android.util.Log
 import com.futo.fcast.receiver.models.Opcode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.net.SocketAddress
 import java.util.UUID
 
-class ConnectionMonitor {
+class ConnectionMonitor(private val _scope: CoroutineScope) {
     init {
         setInterval({
             if (_backendConnections.isNotEmpty()) {
@@ -17,11 +20,18 @@ class ConnectionMonitor {
                             if (_heartbeatRetries.getOrDefault(sessionId, 0) > 3) {
                                 Log.w(TAG, "Could not ping device with connection id $sessionId. Disconnecting...")
                                 it.disconnect(sessionId)
+                                continue
                             }
 
-                            Log.d(TAG, "Pinging session $sessionId with ${_heartbeatRetries[sessionId]} retries left")
-                            it.send(Opcode.Ping, null, sessionId)
-                            _heartbeatRetries[sessionId] = _heartbeatRetries.getOrDefault(sessionId, 0) + 1
+                            _scope?.launch(Dispatchers.IO) {
+                                try {
+                                    Log.d(TAG, "Pinging session $sessionId with ${_heartbeatRetries[sessionId]} retries left")
+                                    it.send(Opcode.Ping, null, sessionId)
+                                    _heartbeatRetries[sessionId] = _heartbeatRetries.getOrDefault(sessionId, 0) + 1
+                                } catch (e: Throwable) {
+                                    Log.w(TAG, "Failed to ping session $sessionId", e)
+                                }
+                            }
                         }
                         else if (version == null) {
                             Log.w(TAG, "Session $sessionId was not found in the list of active sessions. Removing...")

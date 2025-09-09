@@ -1,4 +1,4 @@
-package com.futo.fcast.receiver
+package com.futo.fcast.receiver.models
 
 val streamingMediaTypes = arrayListOf(
     "application/vnd.apple.mpegurl",

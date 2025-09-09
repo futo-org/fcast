@@ -97,11 +97,11 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
         try {
             val strippedMessage = this.stripUnsupportedFields(opcode, message)
             when (strippedMessage) {
-                is PlayMessageV1 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
-                is PlaybackUpdateMessageV1 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
-                is VolumeUpdateMessageV1 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
-                is PlayMessageV2 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
-                is PlaybackUpdateMessageV2 -> send(opcode, message?.let { Json.encodeToString(strippedMessage) })
+                is PlayMessageV1 -> send(opcode, Json.encodeToString(strippedMessage))
+                is PlaybackUpdateMessageV1 -> send(opcode, Json.encodeToString(strippedMessage))
+                is VolumeUpdateMessageV1 -> send(opcode, Json.encodeToString(strippedMessage))
+                is PlayMessageV2 -> send(opcode, Json.encodeToString(strippedMessage))
+                is PlaybackUpdateMessageV2 -> send(opcode, Json.encodeToString(strippedMessage))
 
                 is PlayMessage -> send(opcode, message?.let { Json.encodeToString(it as PlayMessage) })
                 is SeekMessage -> send(opcode, message?.let { Json.encodeToString(it as SeekMessage) })
@@ -118,6 +118,7 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
                 is SubscribeEventMessage -> send(opcode, message?.let { Json.encodeToString(it as SubscribeEventMessage) })
                 is UnsubscribeEventMessage -> send(opcode, message?.let { Json.encodeToString(it as UnsubscribeEventMessage) })
                 is EventMessage -> send(opcode, message?.let { Json.encodeToString(it as EventMessage) })
+                else -> send(opcode, message?.let { Json.encodeToString(it) })
             }
         } catch (e: Throwable) {
             Log.i(TAG, "Failed to encode message to string ${id}.", e)
@@ -202,11 +203,11 @@ class FCastSession(outputStream: OutputStream, private val _remoteSocketAddress:
 
         try {
             when (opcode) {
-                Opcode.Play -> _service.onCastPlay(json.decodeFromString(body!!))
-                Opcode.Pause -> _service.onCastPause()
-                Opcode.Resume -> _service.onCastResume()
-                Opcode.Stop -> _service.onCastStop()
-                Opcode.Seek -> _service.onCastSeek(json.decodeFromString(body!!))
+                Opcode.Play -> _service.onPlay(json.decodeFromString(body!!))
+                Opcode.Pause -> _service.onPause()
+                Opcode.Resume -> _service.onResume()
+                Opcode.Stop -> _service.onStop()
+                Opcode.Seek -> _service.onSeek(json.decodeFromString(body!!))
                 Opcode.SetVolume -> _service.onSetVolume(json.decodeFromString(body!!))
                 Opcode.SetSpeed -> _service.onSetSpeed(json.decodeFromString(body!!))
                 Opcode.Version -> {

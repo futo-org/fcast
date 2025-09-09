@@ -1,6 +1,7 @@
 package com.futo.fcast.receiver.views
 
 import androidx.annotation.OptIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,12 +26,18 @@ import androidx.media3.ui.compose.state.rememberPresentationState
 import com.futo.fcast.receiver.R
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.ui.compose.modifiers.resizeWithContentScale
+import coil3.compose.AsyncImage
 import com.futo.fcast.receiver.composables.PlayerActivityViewConnectionMonitor
+import com.futo.fcast.receiver.composables.PlayerState
 import com.futo.fcast.receiver.composables.Spinner
 import com.futo.fcast.receiver.composables.interFontFamily
 import com.futo.fcast.receiver.composables.noRippleClickable
+import com.futo.fcast.receiver.composables.rememberPlayerState
 import com.futo.fcast.receiver.models.PlayerActivityViewModel
 
 @OptIn(UnstableApi::class)
@@ -39,8 +46,9 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
     val context = LocalContext.current
     val presentationState = rememberPresentationState(exoPlayer)
     val scaledModifier = Modifier.resizeWithContentScale(ContentScale.Fit, presentationState.videoSizeDp)
+    val playerState = if (exoPlayer != null) rememberPlayerState(exoPlayer) else previewPlayerState
 
-    PlayerActivityViewConnectionMonitor(viewModel, context)
+    PlayerActivityViewConnectionMonitor(context)
 
     Box(Modifier.fillMaxSize()) {
         PlayerSurface(
@@ -49,7 +57,8 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
             modifier = scaledModifier.noRippleClickable { viewModel.showControls = !viewModel.showControls },
         )
 
-        if (presentationState.coverSurface) {
+        if (viewModel.isLoading) {
+//        else if (presentationState.coverSurface || viewModel.isLoading) {
             // TODO: Replace with new background load screen in next update
             Box(Modifier.matchParentSize().background(Color.Black))
             ConstraintLayout(modifier = Modifier
@@ -72,11 +81,48 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
                 )
             }
         }
+        else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {
+            AsyncImage(
+                model = playerState.mediaThumbnail,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MIXED) {
+            AsyncImage(
+                model = viewModel.playMessage?.url,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        else if (viewModel.isIdle) {
+            Box(Modifier.matchParentSize().background(Color.Black))
+            ConstraintLayout(modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0x66000000))
+            ) {
+                val imageRef = createRef()
+
+                Image(
+                    painter = painterResource(R.drawable.ic_icon),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(80.dp)
+                        .constrainAs(imageRef) {
+                            top.linkTo(parent.top)
+                            bottom.linkTo(parent.bottom)
+                            start.linkTo(parent.start)
+                            end.linkTo(parent.end)
+                        },
+                )
+            }
+        }
 
         if (viewModel.showControls) {
             PlayerControlsAV(
                 Modifier.fillMaxSize(),
-                exoPlayer
+                exoPlayer,
+                playerState
             )
         }
     }
@@ -128,6 +174,17 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel, exoPlayer: Player? = null
     }
 }
 
+val previewPlayerState = PlayerState(
+    1000L * 30,
+    1000L * 60,
+    1000L * 45,
+    true,
+    true,
+    "Video Title",
+    null,
+    0
+)
+
 @Preview
 @Composable
 @OptIn(UnstableApi::class)
@@ -135,6 +192,8 @@ fun PlayerActivityPreview() {
     val viewModel = PlayerActivityViewModel()
     viewModel.statusMessage = "This is a test message"
     viewModel.showControls = false
+    viewModel.isLoading = false
+    viewModel.isIdle = true
 
     PlayerActivity(viewModel)
 }

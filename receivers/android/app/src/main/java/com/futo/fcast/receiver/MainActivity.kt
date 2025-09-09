@@ -10,16 +10,19 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Base64
+import android.util.DisplayMetrics
 import android.util.Log
 import android.util.TypedValue
+import android.view.Display
 import android.view.WindowManager
+import android.view.WindowMetrics
 import android.widget.*
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -43,30 +46,16 @@ import com.google.zxing.EncodeHintType
 
 
 class MainActivity : AppCompatActivity() {
-//    private lateinit var _buttonUpdate: LinearLayout
-//    private lateinit var _text: TextView
-//    private lateinit var _textIPs: TextView
-//    private lateinit var _textProgress: TextView
-//    private lateinit var _updateSpinner: ImageView
-//    private lateinit var _imageSpinner: ImageView
-    private lateinit var _layoutConnectionInfo: ConstraintLayout
-//    private lateinit var _videoBackground: PlayerView
-//    private lateinit var _viewDemo: View
     private lateinit var _player: ExoPlayer
-//    private lateinit var _imageQr: ImageView
-//    private lateinit var _textScanToConnect: TextView
     private lateinit var _systemAlertWindowPermissionLauncher: ActivityResultLauncher<Intent>
     private var _updateAvailable: Boolean? = null
 //    private var _updating: Boolean = false
-//    private var _demoClickCount = 0
-//    private var _lastDemoToast: Toast? = null
     private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
 
     val viewModel = MainActivityViewModel()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-//        setContentView(R.layout.activity_main)
 
         _player = ExoPlayer.Builder(this).build()
         setContent {
@@ -92,20 +81,7 @@ class MainActivity : AppCompatActivity() {
             null
         }
 
-//        _buttonUpdate = findViewById(R.id.button_update)
-//        _text = findViewById(R.id.text_dialog)
-//        _textIPs = findViewById(R.id.text_ips)
-//        _textProgress = findViewById(R.id.text_progress)
-//        _updateSpinner = findViewById(R.id.update_spinner)
-//        _imageSpinner = findViewById(R.id.image_spinner)
-//        _layoutConnectionInfo = findViewById(R.id.layout_connection_info)
-//        _videoBackground = findViewById(R.id.video_background)
-//        _viewDemo = findViewById(R.id.view_demo)
-//        _imageQr = findViewById(R.id.image_qr)
-//        _textScanToConnect = findViewById(R.id.text_scan_to_connect)
-
         startVideo()
-//        startAnimations()
 
 //        setText(getString(R.string.checking_for_updates))
         viewModel.updateStatus = getString(R.string.checking_for_updates)
@@ -118,18 +94,6 @@ class MainActivity : AppCompatActivity() {
 //
 //            _updating = true
 //            update()
-//        }
-
-//        _viewDemo.setOnClickListener {
-//            _demoClickCount++
-//            if (_demoClickCount in 2..4) {
-//                val remainingClicks = 5 - _demoClickCount
-//                _lastDemoToast?.cancel()
-//                _lastDemoToast = Toast.makeText(this, "Click $remainingClicks more times to start demo", Toast.LENGTH_SHORT).apply { show() }
-//            } else if (_demoClickCount == 5) {
-//                NetworkService.instance?.onCastPlay(PlayMessage("video/mp4", "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"))
-//                _demoClickCount = 0
-//            }
 //        }
 
         if (BuildConfig.IS_PLAYSTORE_VERSION) {
@@ -147,14 +111,47 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val ips = getIPs()
+        // updated impl tbd
+        val networkWorker = NetworkWorker(this)
+        val ipInfo = networkWorker.getNetworkInfo()
+        val ips = ipInfo.map { it.address }
+        viewModel.ipInfo.addAll(ipInfo)
+
+
+//        val ips = networkWorker.getIPs()
+//        val ips = getIPs()
         //        _textIPs.text = "IPs\n${ips.joinToString("\n")}\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
-        viewModel.textIPs = ips.joinToString("\n")
+//        viewModel.textIPs = ips.joinToString("\n")
         viewModel.textPorts = "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+
+        val resolution = getScreenResolution()
+        val width = resolution.first
+        val height = resolution.second
+//        val qrSize = when {
+//            (width >= 2560 || height >= 1440) -> 384f
+//            (width >= 1920) || (height >= 1080) -> 256f
+//            (width >= 1280) || (height >= 720) -> 192f
+//            else -> 128f
+//        }
+        // todo: finalize qr code sizes
+        var qrSize = 200f
+        if (width >= 2560 || height >= 1440) {
+            qrSize = 200f
+        }
+        if ((width >= 1920 && width < 2560) || (height >= 1080 && height >= 1440)) {
+            qrSize = 150f
+        }
+        if ((width >= 1280 && width < 1920) || (height >= 720 && height >= 1080)) {
+            qrSize = 90f
+        }
+        if (width < 1280 || height < 720) {
+            qrSize = 60f
+        }
+
 
         try {
             val barcodeEncoder = BarcodeEncoder()
-            val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 200.0f, resources.displayMetrics).toInt()
+            val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, qrSize, resources.displayMetrics).toInt()
             val hints = mapOf(EncodeHintType.MARGIN to 1)
             val json = Json.encodeToString(
                 FCastNetworkConfig(
@@ -213,6 +210,23 @@ class MainActivity : AppCompatActivity() {
         _updateAvailable?.let { outState.putBoolean("updateAvailable", it) }
     }
 
+    private fun getScreenResolution(): Pair<Int, Int> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val windowMetrics: WindowMetrics = windowManager.currentWindowMetrics
+            val bounds = windowMetrics.bounds
+            Pair(bounds.width(), bounds.height())
+        } else {
+            getScreenResolutionLegacy()
+        }
+    }
+
+    private fun getScreenResolutionLegacy(): Pair<Int, Int> {
+        val displayMetrics = DisplayMetrics()
+        val display: Display? = (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay
+        display?.getRealMetrics(displayMetrics)
+        return Pair(displayMetrics.widthPixels, displayMetrics.heightPixels)
+    }
+
     private fun restartService() {
         NetworkService.instance?.stopSelf()
         startService(Intent(this, NetworkService::class.java))
@@ -228,11 +242,6 @@ class MainActivity : AppCompatActivity() {
         _player.repeatMode = Player.REPEAT_MODE_ALL
         _player.playWhenReady = true
     }
-
-//    private fun startAnimations() {
-//        //Spinner animation
-//        (_imageSpinner.drawable as Animatable?)?.start()
-//    }
 
     private fun checkAndRequestPermissions(): Boolean {
         val listPermissionsNeeded = arrayListOf<String>()
@@ -335,16 +344,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
-//    private fun setText(text: CharSequence?) {
-//        if (text == null) {
-//            _text.visibility = View.INVISIBLE
-//            _text.text = ""
-//        } else {
-//            _text.visibility = View.VISIBLE
-//            _text.text = text
-//        }
-//    }
 
     private suspend fun checkForUpdates() {
         Log.i(TAG, "Checking for updates...")
@@ -550,26 +549,6 @@ class MainActivity : AppCompatActivity() {
             outputStream.write(buffer, 0, n)
             onProgress.invoke(total.toFloat() / inputStreamLengthFloat)
         }
-    }
-
-    private fun getIPs(): List<String> {
-        val ips = arrayListOf<String>()
-        for (intf in NetworkInterface.getNetworkInterfaces()) {
-            for (addr in intf.inetAddresses) {
-                if (addr.isLoopbackAddress) {
-                    continue
-                }
-
-                if (addr.address.size != 4) {
-                    continue
-                }
-
-                Log.i(TAG, "Running on ${addr.hostAddress}:${TcpListenerService.PORT} (TCP)")
-                Log.i(TAG, "Running on ${addr.hostAddress}:${WebSocketListenerService.PORT} (WebSocket)")
-                addr.hostAddress?.let { ips.add(it) }
-            }
-        }
-        return ips
     }
 
     companion object {

@@ -9,8 +9,10 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import com.futo.fcast.receiver.composables.frontendConnections
 import com.futo.fcast.receiver.models.ContentObject
 import com.futo.fcast.receiver.models.ContentType
+import com.futo.fcast.receiver.models.EventMessage
 import com.futo.fcast.receiver.models.InitialSenderMessage
 import com.futo.fcast.receiver.models.Opcode
 import com.futo.fcast.receiver.models.PROTOCOL_VERSION
@@ -26,18 +28,20 @@ import com.futo.fcast.receiver.models.SubscribeEventMessage
 import com.futo.fcast.receiver.models.UnsubscribeEventMessage
 import com.futo.fcast.receiver.models.VersionMessage
 import com.futo.fcast.receiver.models.VolumeUpdateMessage
+import com.futo.fcast.receiver.models.streamingMediaTypes
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.Json
 import java.net.SocketAddress
 import java.util.UUID
 
 data class AppCache(
-    val interfaces: Any? = null,
+    var interfaces: Any? = null,
+    // TODO: fix version name (currently 1.0.0)
     val appName: String = BuildConfig.VERSION_NAME,
     val appVersion: String = BuildConfig.VERSION_CODE.toString(),
-    val playMessage: PlayMessage? = null,
-    val playerVolume: Double? = null,
-    val subscribedKeys: Set<String>,
+    var playMessage: PlayMessage? = null,
+    var playerVolume: Double? = null,
+    var subscribedKeys: Set<String>,
 )
 
 class NetworkService : Service() {
@@ -115,7 +119,7 @@ class NetworkService : Service() {
             start()
         }
 
-        ConnectionMonitor()
+        ConnectionMonitor(_scope!!)
         Log.i(TAG, "Started NetworkService")
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
@@ -210,7 +214,7 @@ class NetworkService : Service() {
             }
         }
 
-        onCastPlay(rendererMessage)
+        onPlay(rendererMessage)
     }
 
     fun sendPlaybackError(error: String) {
@@ -229,15 +233,17 @@ class NetworkService : Service() {
         send(Opcode.VolumeUpdate, value)
     }
 
-    fun onCastPlay(playMessage: PlayMessage) {
+    fun onPlay(playMessage: PlayMessage) {
         Log.i(TAG, "onPlay")
+
+        // TODO: update implementation to electron receiver
+        cache.playMessage = playMessage
 
         _scope?.launch(Dispatchers.Main) {
             try {
                 if (PlayerActivity.instance == null) {
                     val i = Intent(this@NetworkService, PlayerActivity::class.java)
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    i.putExtra("message", Json.encodeToString(playMessage))
 
                     if (activityCount > 0) {
                         startActivity(i)
@@ -267,11 +273,19 @@ class NetworkService : Service() {
         }
     }
 
-    fun onPlayPlaylist(value: PlaylistContent) {
+    fun onPlayPlaylist(message: PlaylistContent) {
+        Log.i(TAG, "onPlayPlaylist: $message")
 
+        _scope?.launch(Dispatchers.Main) {
+            try {
+                PlayerActivity.instance?.onPlayPlaylist(message)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to play playlist", e)
+            }
+        }
     }
 
-    fun onCastPause() {
+    fun onPause() {
         Log.i(TAG, "onPause")
 
         _scope?.launch(Dispatchers.Main) {
@@ -283,7 +297,7 @@ class NetworkService : Service() {
         }
     }
 
-    fun onCastResume() {
+    fun onResume() {
         Log.i(TAG, "onResume")
 
         _scope?.launch(Dispatchers.Main) {
@@ -295,7 +309,7 @@ class NetworkService : Service() {
         }
     }
 
-    fun onCastStop() {
+    fun onStop() {
         Log.i(TAG, "onStop")
 
         _scope?.launch(Dispatchers.Main) {
@@ -307,36 +321,36 @@ class NetworkService : Service() {
         }
     }
 
-    fun onCastSeek(seekMessage: SeekMessage) {
-        Log.i(TAG, "onSeek")
+    fun onSeek(message: SeekMessage) {
+        Log.i(TAG, "onSeek: $message")
 
         _scope?.launch(Dispatchers.Main) {
             try {
-                PlayerActivity.instance?.seek(seekMessage)
+                PlayerActivity.instance?.seek(message)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to seek", e)
             }
         }
     }
 
-    fun onSetVolume(setVolumeMessage: SetVolumeMessage) {
-        Log.i(TAG, "onSetVolume")
+    fun onSetVolume(message: SetVolumeMessage) {
+        Log.i(TAG, "onSetVolume: $message")
 
         _scope?.launch(Dispatchers.Main) {
             try {
-                PlayerActivity.instance?.setVolume(setVolumeMessage)
+                PlayerActivity.instance?.setVolume(message)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to seek", e)
             }
         }
     }
 
-    fun onSetSpeed(setSpeedMessage: SetSpeedMessage) {
-        Log.i(TAG, "setSpeedMessage")
+    fun onSetSpeed(message: SetSpeedMessage) {
+        Log.i(TAG, "setSpeedMessage: $message")
 
         _scope?.launch(Dispatchers.Main) {
             try {
-                PlayerActivity.instance?.setSpeed(setSpeedMessage)
+                PlayerActivity.instance?.setSpeed(message)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to seek", e)
             }
@@ -362,9 +376,15 @@ class NetworkService : Service() {
     }
 
     fun onSetPlaylistItem(message: SetPlaylistItemMessage) {
-        Log.i(TAG, "onSetPlaylistItem")
+        Log.i(TAG, "onSetPlaylistItem: $message")
 
-        // implementation TBD
+        _scope?.launch(Dispatchers.Main) {
+            try {
+                PlayerActivity.instance?.setPlaylistItem(message.itemIndex)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to set playlist item", e)
+            }
+        }
     }
 
     fun onSubscribeEvent(message: SubscribeEventMessage) {
@@ -379,73 +399,25 @@ class NetworkService : Service() {
         // implementation TBD
     }
 
-    // send-event
+    fun sendEvent(message: EventMessage) {
+        Log.i(TAG, "sendEvent")
+        _tcpListenerService?.send(Opcode.Event, message)
+        _webSocketListenerService?.send(Opcode.Event, message)
+    }
 
     // play-request
 
 
-
-    // Window might be re-created while devices are still connected
-//fun setUiUpdateCallbacks(callbacks: any) {
-//    var frontendConnections = []
-//
-//    window.targetAPI.onConnect((_event, value: any) => {
-//        val idMapping = value.type === 'ws' ? value.sessionId : value.data.address
-//
-//        Log.d(TAG, "Processing connect event for $idMapping with current connections: $frontendConnections")
-//        frontendConnections.push(idMapping)
-//        callbacks.onConnect(frontendConnections)
-//    })
-//    window.targetAPI.onDisconnect((_event, value: any) => {
-//        val idMapping = value.type === 'ws' ? value.sessionId : value.data.address
-//
-//        Log.d(TAG, "Processing disconnect event for $idMapping with current connections: $frontendConnections")
-//        val index = frontendConnections.indexOf(idMapping)
-//        if (index != -1) {
-//            frontendConnections.splice(index, 1)
-//            callbacks.onDisconnect(frontendConnections)
-//        }
-//    })
-//
-//    window.targetAPI.getSessions().then((sessions: string[]) => {
-//        Log.i(TAG, "Window created with current sessions: $sessions")
-//        frontendConnections = sessions
-//
-//        if (frontendConnections.length > 0) {
-//            callbacks.onConnect(frontendConnections, true)
-//        }
-//    })
-//}
-
     fun onConnect(listener: ListenerService, sessionId: UUID, address: SocketAddress) {
-        ConnectionMonitor.onConnect(listener, sessionId, address, {
-            _scope?.launch(Dispatchers.Main) {
-                try {
-                    MainActivity.instance?.viewModel?.connections?.add(sessionId)
-                    PlayerActivity.instance?.viewModel?.connections?.add(sessionId)
-                } catch (e: Throwable) {
-                    Log.e(TAG, "onConnect: Failed to update UI connection state", e)
-                }
-            }
-        })
-//        Toast.makeText(this, "ON CONNECT TEST", Toast.LENGTH_LONG).show()
-        // or just call local callbacks in activity modules to keep things similar
-//        MainActivity._TESTING.setText("ON CONNECT UPDATE FROM $sessionId")
+        ConnectionMonitor.onConnect(listener, sessionId, address) {
+            frontendConnections.add(sessionId)
+        }
     }
 
     fun onDisconnect(sessionId: UUID, address: SocketAddress) {
-        ConnectionMonitor.onDisconnect(sessionId, address, {
-            _scope?.launch(Dispatchers.Main) {
-                try {
-                    MainActivity.instance?.viewModel?.connections?.remove(sessionId)
-                    PlayerActivity.instance?.viewModel?.connections?.remove(sessionId)
-                } catch (e: Throwable) {
-                    Log.e(TAG, "onDisconnect: Failed to update UI connection state", e)
-                }
-            }
-        })
-
-//        Toast.makeText(this, "ON DISCONNECT TEST", Toast.LENGTH_LONG).show()
+        ConnectionMonitor.onDisconnect(sessionId, address) {
+            frontendConnections.remove(sessionId)
+        }
     }
 
     companion object {

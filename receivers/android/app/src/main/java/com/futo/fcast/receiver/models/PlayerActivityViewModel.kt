@@ -10,5 +10,8 @@ import java.util.UUID
 class PlayerActivityViewModel : ViewModel() {
     var statusMessage by mutableStateOf<String?>(null)
     var showControls by mutableStateOf(false)
-    var connections = mutableStateListOf<UUID>()
+
+    var isLoading by mutableStateOf(false)
+    var isIdle by mutableStateOf(true)
+    var playMessage by mutableStateOf<PlayMessage?>(null)
 }

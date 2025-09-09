@@ -7,12 +7,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import com.futo.fcast.receiver.MainActivity
+import com.futo.fcast.receiver.NetworkInterfaceData
 import java.util.UUID
 
 class MainActivityViewModel : ViewModel() {
     var showQR by mutableStateOf(true)
     var imageQR by mutableStateOf<ImageBitmap?>(null)
-    var textIPs by mutableStateOf("")
     var textPorts by mutableStateOf("")
     var updateStatus by mutableStateOf<String?>("")
     var updateAvailable by mutableStateOf(false)
@@ -20,7 +20,7 @@ class MainActivityViewModel : ViewModel() {
     var updateProgress by mutableStateOf("")
     var updateResultSuccessful by mutableStateOf<Boolean?>(null)
 
-    var connections = mutableStateListOf<UUID>()
+    var ipInfo = mutableStateListOf<NetworkInterfaceData>()
 
     fun update() { MainActivity.instance?.update() }
 }

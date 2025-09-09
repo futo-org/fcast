@@ -29,22 +29,20 @@
     <string name="player_device_connected">Device connected</string>
     <string name="player_device_disconnected">Device disconnected. If you experience playback issues, please reconnect.</string>
     <string name="connection_information">Connection Information</string>
-    <string name="sender_app_download">Need a sender app?\nDownload Grayjay at https://grayjay.app</string>
+    <string name="sender_app_download_text">Need a sender app?\nDownload Grayjay at </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
     <string name="connection_details">Connection Details</string>
-    <string name="ips">IPs</string>
     <string name="port">Port</string>
     <string name="scan_to_connect">Scan with a FCast sender app</string>
 
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Application Icon</string>
-
-    <!-- Accessibility descriptions for a media control button that causes playback to be started. [CHAR LIMIT=NONE] -->
     <string name="player_button_play">Play</string>
-    <!-- Accessibility description for a media control button that causes playback to be paused. [CHAR LIMIT=NONE] -->
     <string name="player_button_pause">Pause</string>
-    <!-- Accessibility description for a media control button that causes the next track to be played. [CHAR LIMIT=NONE] -->
     <string name="player_next_button">Next</string>
-    <!-- Accessibility description for a media control button that causes the previous track to be played. [CHAR LIMIT=NONE] -->
     <string name="player_previous_button">Previous</string>
+
+    <string name="player_captions_button">Captions</string>
+    <string name="player_settings_button">Settings</string>
 </resources>
