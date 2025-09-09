@@ -74,6 +74,7 @@ async fn main() {
             display_name: "FCast sender SDK terminal demo".to_string(),
         }),
         Arc::new(EventHandler {}),
+        1000,
     )
     .unwrap();
 
