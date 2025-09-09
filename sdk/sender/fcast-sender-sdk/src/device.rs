@@ -80,17 +80,16 @@ macro_rules! dev_info_constructor {
     };
 }
 
+/// Attempt to retrieve device info from a URL.
 #[cfg(feature = "fcast")]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
-    #[cfg(feature = "fcast")]
     #[derive(serde::Deserialize)]
     struct FCastService {
         port: u16,
         r#type: i32,
     }
 
-    #[cfg(feature = "fcast")]
     #[derive(serde::Deserialize)]
     struct FCastNetworkConfig {
         name: String,
@@ -308,6 +307,8 @@ pub enum LoadRequest {
         #[cfg_attr(feature = "uniffi", uniffi(default))]
         request_headers: Option<HashMap<String, String>>,
     },
+    /// Load content, usually a [DASH](https://en.wikipedia.org/wiki/Dynamic_Adaptive_Streaming_over_HTTP) or
+    /// [HLS](https://en.wikipedia.org/wiki/HTTP_Live_Streaming) manifest.
     Content {
         content_type: String,
         content: String,
@@ -354,16 +355,26 @@ pub enum LoadRequest {
 pub trait CastingDevice: Send + Sync {
     // NOTE: naming it `protocol` causes iOS builds to fail
     fn casting_protocol(&self) -> ProtocolType;
+    /// Returns `true` if the device has the required information needed to start a connection.
     fn is_ready(&self) -> bool;
+    /// Some features may only be present after the device has emitted the [`Connected`] event.
+    ///
+    /// [`Connected`]: DeviceConnectionState::Connected
     fn supports_feature(&self, feature: DeviceFeature) -> bool;
     fn name(&self) -> String;
     fn set_name(&self, name: String);
     fn seek(&self, time_seconds: f64) -> Result<(), CastingDeviceError>;
+    /// Stop the media that is playing on the receiver.
+    ///
+    /// This will usually result in the receiver closing the media viewer and show a default screen.
     fn stop_playback(&self) -> Result<(), CastingDeviceError>;
     fn pause_playback(&self) -> Result<(), CastingDeviceError>;
     fn resume_playback(&self) -> Result<(), CastingDeviceError>;
+    /// Load a media item.
     fn load(&self, request: LoadRequest) -> Result<(), CastingDeviceError>;
+    /// Try to play the next item in the playlist.
     fn playlist_item_next(&self) -> Result<(), CastingDeviceError>;
+    /// Try to play the previous item in the playlist.
     fn playlist_item_previous(&self) -> Result<(), CastingDeviceError>;
     /// Set the item index for the currently playing playlist.
     ///
@@ -378,12 +389,7 @@ pub trait CastingDevice: Send + Sync {
     /// # Arguments
     ///   * `reconnect_interval_millis`: the interval between each reconnect attempt. Setting this to `0`
     ///     indicates that reconnects should not be attempted.
-    #[cfg_attr(
-        feature = "uniffi",
-        uniffi::method(default(
-            app_info = None,
-        ))
-    )]
+    #[cfg_attr(feature = "uniffi", uniffi::method(default(app_info = None)))]
     fn connect(
         &self,
         app_info: Option<ApplicationInfo>,
@@ -395,6 +401,12 @@ pub trait CastingDevice: Send + Sync {
     fn set_addresses(&self, addrs: Vec<IpAddr>);
     fn get_port(&self) -> u16;
     fn set_port(&self, port: u16);
+    /// Attempt to subscribe to an event group.
+    ///
+    /// An error will be returned if the device does not support the group. Use [`supports_feature`]
+    /// to check if the group is supported.
+    ///
+    /// [`supports_feature`]: Self::supports_feature
     fn subscribe_event(
         &self,
         group: GenericEventSubscriptionGroup,

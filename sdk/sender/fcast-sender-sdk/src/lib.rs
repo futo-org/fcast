@@ -15,7 +15,102 @@
 //!
 //! ## Example usage
 //!
-//! TODO
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use fcast_sender_sdk::{
+//!     context::CastContext,
+//!     device::{
+//!         ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
+//!         GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
+//!     },
+//!     DeviceDiscovererEventHandler,
+//!     IpAddr,
+//! };
+//!
+//! struct DevEventHandler {}
+//!
+//! impl DeviceEventHandler for DevEventHandler {
+//!     fn connection_state_changed(&self, state: DeviceConnectionState) {
+//!         println!("Connection state changed: {state:?}");
+//!     }
+//!
+//!     fn volume_changed(&self, volume: f64) {
+//!         println!("Volume changed: {volume}");
+//!     }
+//!
+//!     fn time_changed(&self, time: f64) {
+//!         println!("Time changed: {time}");
+//!     }
+//!
+//!     fn playback_state_changed(&self, state: PlaybackState) {
+//!         println!("Playback state changed: {state:?}");
+//!     }
+//!
+//!     fn duration_changed(&self, duration: f64) {
+//!         println!("Duration changed: {duration}");
+//!     }
+//!
+//!     fn speed_changed(&self, speed: f64) {
+//!         println!("Speed changed: {speed}");
+//!     }
+//!
+//!     fn source_changed(&self, source: Source) {
+//!         println!("Source changed: {source:?}");
+//!     }
+//!
+//!     fn key_event(&self, event: GenericKeyEvent) {
+//!         println!("Key event: {event:?}");
+//!     }
+//!
+//!     fn media_event(&self, event: GenericMediaEvent) {
+//!         println!("Media event: {event:?}");
+//!     }
+//!
+//!     fn playback_error(&self, message: String) {
+//!         println!("Playback error: {message}");
+//!     }
+//! }
+//!
+//! struct DiscovererEventHandler {}
+//!
+//! impl DeviceDiscovererEventHandler for DiscovererEventHandler {
+//!     fn device_available(&self, device_info: DeviceInfo) {
+//!         println!("Device available: {device_info:?}");
+//!     }
+//!
+//!     fn device_removed(&self, device_name: String) {
+//!         println!("Device removed: {device_name}");
+//!     }
+//!
+//!     fn device_changed(&self, device_info: DeviceInfo) {
+//!         println!("Device changed: {device_info:?}");
+//!     }
+//! }
+//!
+//! let ctx = CastContext::new().unwrap();
+//!
+//! ctx.start_discovery(Arc::new(DiscovererEventHandler {}));
+//!
+//! let dev = ctx.create_device_from_info(DeviceInfo {
+//!     name: "FCast device".to_owned(),
+//!     protocol: ProtocolType::FCast,
+//!     addresses: vec![IpAddr::v4(127, 0, 0, 1)],
+//!     port: 46899,
+//! });
+//!
+//! dev.connect(None, Arc::new(DevEventHandler {}), 1000).unwrap();
+//!
+//! dev.load(LoadRequest::Video {
+//!     content_type: "video/mp4".to_string(),
+//!     url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4".to_string(),
+//!     resume_position: 0.0,
+//!     speed: None,
+//!     volume: None,
+//!     metadata: None,
+//!     request_headers: None,
+//! })
+//! .unwrap();
+//! ```
 //!
 //! [FCast]: https://fcast.org/
 //! [Chromecast]: https://en.wikipedia.org/wiki/Chromecast
