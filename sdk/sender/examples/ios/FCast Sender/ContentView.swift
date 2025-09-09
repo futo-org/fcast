@@ -58,82 +58,6 @@ final class DevEventHandler: DeviceEventHandler {
     }
 }
 
-final class NWDeviceDiscoverer {
-    private var ctx: CastContext
-    private var fCastBrowser: NWBrowser
-    private var chromecastBrowser: NWBrowser
-
-    init(
-        context: CastContext,
-        onAdded: @escaping (FoundDevice) -> Void,
-        onRemoved: @escaping (NWEndpoint) -> Void,
-    ) {
-        ctx = context
-        fCastBrowser = NWBrowser(
-            for: .bonjourWithTXTRecord(type: "_fcast._tcp", domain: nil),
-            using: .tcp
-        )
-        chromecastBrowser = NWBrowser(
-            for: .bonjourWithTXTRecord(type: "_googlecast._tcp", domain: nil),
-            using: .tcp
-        )
-
-        fCastBrowser.browseResultsChangedHandler = { newResults, changes in
-            for result in changes {
-                switch result {
-                case .added(let added):
-                    if case .service(let name, _, _, _) = added.endpoint {
-                        onAdded(
-                            FoundDevice(
-                                name: name,
-                                endpoint: added.endpoint,
-                                proto: ProtocolType.fCast
-                            )
-                        )
-                    }
-                case .removed(let removed):
-                    onRemoved(removed.endpoint)
-                default:
-                    break
-                }
-            }
-        }
-        chromecastBrowser.browseResultsChangedHandler = { newResults, changes in
-            for result in changes {
-                switch result {
-                case .added(let added):
-                    if case .service(var name, _, _, _) = added.endpoint {
-                        if case .bonjour(let txt) = added.metadata,
-                            let maybeFriendlyNameData = txt.getEntry(for: "fn"),
-                            let friendlyNameData = maybeFriendlyNameData.data,
-                            let friendlyName = String(
-                                data: friendlyNameData,
-                                encoding: .utf8
-                            )
-                        {
-                            name = friendlyName
-                        }
-                        onAdded(
-                            FoundDevice(
-                                name: name,
-                                endpoint: added.endpoint,
-                                proto: ProtocolType.chromecast
-                            )
-                        )
-                    }
-                case .removed(let removed):
-                    onRemoved(removed.endpoint)
-                default:
-                    break
-                }
-            }
-        }
-
-        fCastBrowser.start(queue: .main)
-        chromecastBrowser.start(queue: .main)
-    }
-}
-
 struct ContentView: View {
     @ObservedObject var dataModel: DataModel
     var castContext: CastContext
@@ -154,13 +78,16 @@ struct ContentView: View {
         castContext = try CastContext()
         fileServer = castContext.startFileServer()
         discoverer = NWDeviceDiscoverer(
-            context: castContext,
             onAdded: { found in
-                data.devices.append(found)
+                DispatchQueue.main.async {
+                    data.devices.append(found)
+                }
             },
             onRemoved: { endpoint in
-                data.devices.removeAll { it in
-                    it.endpoint == endpoint
+                DispatchQueue.main.async {
+                    data.devices.removeAll { it in
+                        it.endpoint == endpoint
+                    }
                 }
             }
         )

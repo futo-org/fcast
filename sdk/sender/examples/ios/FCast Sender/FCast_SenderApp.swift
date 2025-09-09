@@ -4,12 +4,6 @@ import Combine
 import Network
 import FCastSenderSDK
 
-struct FoundDevice {
-    var name: String
-    var endpoint: NWEndpoint
-    var proto: ProtocolType
-}
-
 enum SheetState {
     case deviceList
     case connecting(deviceName: String)
