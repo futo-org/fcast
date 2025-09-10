@@ -62,6 +62,7 @@ export class ConnectionMonitor {
                         if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
                             ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
                             listener.disconnect(sessionId);
+                            continue;
                         }
 
                         ConnectionMonitor.logger.debug(`Pinging session ${sessionId} with ${ConnectionMonitor.heartbeatRetries.get(sessionId)} retries left`);
