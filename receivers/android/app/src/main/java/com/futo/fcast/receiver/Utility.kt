@@ -144,7 +144,7 @@ fun mediaItemFromPlayMessage(message: PlayMessage?): MediaItem {
     else MediaItem("")
 }
 
-class Timer(private var _callback: () -> Unit, private var _delay: Long, autoStart: Boolean) {
+class Timer(private var _callback: () -> Unit, private var _delay: Long, autoStart: Boolean = true) {
     private val _handler = Handler(Looper.getMainLooper())
     private var _handle: Runnable?
     private var _startTime: Long = Calendar.getInstance().time.time

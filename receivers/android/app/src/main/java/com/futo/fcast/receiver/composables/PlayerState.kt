@@ -13,7 +13,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.IntSize
 import androidx.media3.common.Player.EVENT_IS_PLAYING_CHANGED
+import androidx.media3.common.VideoSize
 import com.futo.fcast.receiver.PlayerActivity
 import com.futo.fcast.receiver.PlayerActivity.Companion.TAG
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +29,8 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun rememberPlayerState(player: Player): PlayerState {
+    var currentVideoSize by remember { mutableStateOf<Size?>(null) }
+
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var bufferedPosition by remember { mutableLongStateOf(0L) }
@@ -73,6 +81,12 @@ fun rememberPlayerState(player: Player): PlayerState {
 //                events.contains(EVENT_IS_PLAYING_CHANGED)
                 updateState(events)
             }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+//                Log.i("test", "size change ${videoSize.width} ${videoSize.height}")
+                currentVideoSize = Size(videoSize.width.toFloat(), videoSize.height.toFloat())
+                super.onVideoSizeChanged(videoSize)
+            }
         }
 
         player.addListener(listener)
@@ -82,12 +96,16 @@ fun rememberPlayerState(player: Player): PlayerState {
         }
     }
 
-    return remember(currentPosition, duration, isPlaying) {
-        PlayerState(currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType)
+    return remember(currentVideoSize, currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType) {
+        PlayerState(currentVideoSize, currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType)
     }
+//    return remember(currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType) {
+//        PlayerState(currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType)
+//    }
 }
 
 data class PlayerState(
+    val currentVideoSize: Size?,
     val currentPosition: Long,
     val duration: Long,
     val bufferedPosition: Long,

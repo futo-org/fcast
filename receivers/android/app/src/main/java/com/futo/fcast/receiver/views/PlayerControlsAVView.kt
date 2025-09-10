@@ -1,6 +1,8 @@
 package com.futo.fcast.receiver.views
 
 import androidx.annotation.OptIn
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,12 +47,13 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.state.rememberNextButtonState
 import androidx.media3.ui.compose.state.rememberPlayPauseButtonState
-import androidx.media3.ui.compose.state.rememberPlaybackSpeedState
 import androidx.media3.ui.compose.state.rememberPreviousButtonState
 import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.PlayerActivity
 import com.futo.fcast.receiver.composables.PlayerState
 import com.futo.fcast.receiver.composables.interFontFamily
+import com.futo.fcast.receiver.models.ControlFocus
+import com.futo.fcast.receiver.models.PlayerActivityViewModel
 
 enum class ButtonType {
     PlayPause,
@@ -62,20 +65,29 @@ enum class ButtonType {
 
 @OptIn(UnstableApi::class)
 @Composable
-fun ControlButton(modifier: Modifier = Modifier, buttonType: ButtonType, exoPlayer: Player? = null) {
+fun ControlButton(viewModel: PlayerActivityViewModel, modifier: Modifier = Modifier, buttonType: ButtonType, exoPlayer: Player? = null) {
     var selected by remember { mutableStateOf(false) }
 
     val (onClick, enabled, toggleShowPrimary) = if (exoPlayer == null) {
         when (buttonType) {
-            ButtonType.PlayPause -> Triple({}, true, previewShowPlayButton)
-            ButtonType.PlayNext -> Triple({
-                PlayerActivity.instance?.nextPlaylistItem()
-                Unit
-            }, true, true)
-            ButtonType.PlayPrevious -> Triple({
-                PlayerActivity.instance?.previousPlaylistItem()
-                Unit
-            }, true, true)
+            ButtonType.PlayPause -> {
+                selected = viewModel.controlFocus == ControlFocus.Action
+                Triple({}, true, previewShowPlayButton)
+            }
+            ButtonType.PlayNext -> {
+                selected = viewModel.controlFocus == ControlFocus.PlayNext
+                Triple({
+                    PlayerActivity.instance?.nextPlaylistItem()
+                    Unit
+                }, true, true)
+            }
+            ButtonType.PlayPrevious -> {
+                selected = viewModel.controlFocus == ControlFocus.PlayPrevious
+                Triple({
+                    PlayerActivity.instance?.previousPlaylistItem()
+                    Unit
+                }, true, true)
+            }
             ButtonType.Captions -> Triple({}, true, previewShowCaptionsOff)
             ButtonType.Settings -> Triple({}, true, true)
         }
@@ -84,14 +96,17 @@ fun ControlButton(modifier: Modifier = Modifier, buttonType: ButtonType, exoPlay
         when (buttonType) {
             ButtonType.PlayPause -> {
                 val state = rememberPlayPauseButtonState(exoPlayer)
+                selected = viewModel.controlFocus == ControlFocus.Action
                 Triple(state::onClick, state.isEnabled, state.showPlay)
             }
             ButtonType.PlayNext -> {
                 val state = rememberNextButtonState(exoPlayer)
+                selected = viewModel.controlFocus == ControlFocus.PlayNext
                 Triple(state::onClick, state.isEnabled, false)
             }
             ButtonType.PlayPrevious -> {
                 val state = rememberPreviousButtonState(exoPlayer)
+                selected = viewModel.controlFocus == ControlFocus.PlayPrevious
                 Triple(state::onClick, state.isEnabled, false)
             }
             ButtonType.Captions -> Triple({}, false, true)
@@ -116,13 +131,15 @@ fun ControlButton(modifier: Modifier = Modifier, buttonType: ButtonType, exoPlay
         ButtonType.Settings -> Pair(ImageVector.vectorResource(R.drawable.ic_settings), stringResource(R.string.player_settings_button))
     }
 
+
+    val buttonHighlight by animateColorAsState(
+        targetValue = if (selected) Color(0x1AFFFFFF) else Color(0x00000000),
+        animationSpec = tween(durationMillis = 100)
+    )
     Box(
-        modifier =
-            if (selected)
-                Modifier
-                    .clip(CircleShape)
-                    .background(Color(0x1AFFFFFF))
-            else Modifier
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(buttonHighlight)
     ) {
         IconButton(onClick = onClick, modifier = modifier, enabled = enabled) {
             Icon(
@@ -137,8 +154,9 @@ fun ControlButton(modifier: Modifier = Modifier, buttonType: ButtonType, exoPlay
 
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlayerProgressBar(modifier: Modifier, exoPlayer: Player? = null, playerState: PlayerState) {
+fun PlayerProgressBar(viewModel: PlayerActivityViewModel, modifier: Modifier, exoPlayer: Player? = null, playerState: PlayerState) {
     var selected by remember { mutableStateOf(false) }
+    selected = viewModel.controlFocus == ControlFocus.ProgressBar
 
     val duration = playerState.duration.toFloat().coerceAtLeast(0.0f)
     val currentPosition = playerState.currentPosition.toFloat().coerceAtLeast(0.0f).coerceAtMost(duration)
@@ -207,7 +225,7 @@ fun PlayerProgressBar(modifier: Modifier, exoPlayer: Player? = null, playerState
 }
 
 @Composable
-fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState: PlayerState) {
+fun PlayerControlsAV(viewModel: PlayerActivityViewModel, modifier: Modifier, exoPlayer: Player? = null, playerState: PlayerState) {
     val height = if (playerState.mediaTitle != null) 180.dp else 162.dp
 
     Box(modifier, contentAlignment = Alignment.BottomCenter) {
@@ -270,6 +288,7 @@ fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState:
                         )
                     }
                     PlayerProgressBar(
+                        viewModel,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(4.dp),
@@ -290,6 +309,7 @@ fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState:
                         ) {
                             if (controlPlayerSettingsShow) {
                                 ControlButton(
+                                    viewModel,
                                     modifier = Modifier.size(20.dp),
                                     ButtonType.Captions,
                                     exoPlayer
@@ -305,6 +325,7 @@ fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState:
                         ) {
                             if (playerState.isPlaylist) {
                                 ControlButton(
+                                    viewModel,
                                     modifier = Modifier
                                         .size(44.dp)
                                         .padding(6.dp),
@@ -313,6 +334,7 @@ fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState:
                                 )
                             }
                             ControlButton(
+                                viewModel,
                                 modifier = Modifier
                                     .size(56.dp)
                                     .padding(6.dp),
@@ -321,6 +343,7 @@ fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState:
                             )
                             if (playerState.isPlaylist) {
                                 ControlButton(
+                                    viewModel,
                                     modifier = Modifier
                                         .size(44.dp)
                                         .padding(6.dp),
@@ -339,6 +362,7 @@ fun PlayerControlsAV(modifier: Modifier, exoPlayer: Player? = null, playerState:
                         ) {
                             if (controlPlayerSettingsShow) {
                                 ControlButton(
+                                    viewModel,
                                     modifier = Modifier.size(20.dp),
                                     ButtonType.Settings,
                                     exoPlayer
@@ -362,7 +386,12 @@ const val previewShowCaptionsOff = true
 @Preview
 @Composable
 fun PlayerControlsAVPreview() {
+    val viewModel = PlayerActivityViewModel()
+//    viewModel.controlFocus = ControlFocus.ProgressBar
+    viewModel.controlFocus = ControlFocus.Action
+
     val playerState = PlayerState(
+        null,
         1000L * 30,
         1000L * 60,
         1000L * 45,
@@ -378,6 +407,6 @@ fun PlayerControlsAVPreview() {
     Box(modifier = Modifier
         .fillMaxSize()
         .background(Color.Gray)) {
-        PlayerControlsAV(modifier = Modifier.fillMaxSize(), null, playerState)
+        PlayerControlsAV(viewModel, modifier = Modifier.fillMaxSize(), null, playerState)
     }
 }

@@ -1,6 +1,10 @@
 package com.futo.fcast.receiver.views
 
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -44,21 +48,36 @@ import com.futo.fcast.receiver.models.PlayerActivityViewModel
 @Composable
 fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player? = null) {
     val context = LocalContext.current
-    val presentationState = rememberPresentationState(exoPlayer)
-    val scaledModifier = Modifier.resizeWithContentScale(ContentScale.Fit, presentationState.videoSizeDp)
+//    val presentationState = rememberPresentationState(exoPlayer)
+//    val scaledModifier = Modifier.resizeWithContentScale(ContentScale.Fit, presentationState.videoSizeDp)
     val playerState = if (exoPlayer != null) rememberPlayerState(exoPlayer) else previewPlayerState
+    val scaledModifier = Modifier.resizeWithContentScale(ContentScale.Fit, playerState.currentVideoSize)
 
     PlayerActivityViewConnectionMonitor(context)
 
     Box(Modifier.fillMaxSize()) {
+        // todo: fix issue when seeking causes video size change, but content is not scaled to surface size...
+        // occurs also in old receiver build, but perhaps resize mode is not configured correctly as it is in grayjay
         PlayerSurface(
             player = exoPlayer,
             surfaceType = SURFACE_TYPE_SURFACE_VIEW,
             modifier = scaledModifier.noRippleClickable { viewModel.showControls = !viewModel.showControls },
         )
 
+//        AndroidView(
+//            factory = { context ->
+//                PlayerView(context).apply {
+//                    player = exoPlayer
+//                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+//                }
+//            },
+//            update = { view ->
+////                view.player = exoPlayer
+//            },
+//            modifier = Modifier.fillMaxSize()
+//        )
+
         if (viewModel.isLoading) {
-//        else if (presentationState.coverSurface || viewModel.isLoading) {
             // TODO: Replace with new background load screen in next update
             Box(Modifier.matchParentSize().background(Color.Black))
             ConstraintLayout(modifier = Modifier
@@ -118,8 +137,13 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
             }
         }
 
-        if (viewModel.showControls) {
+        AnimatedVisibility(
+            visible = viewModel.showControls,
+            enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 200))
+        ) {
             PlayerControlsAV(
+                viewModel,
                 Modifier.fillMaxSize(),
                 exoPlayer,
                 playerState
@@ -175,6 +199,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel, exoPlayer: Player? = null
 }
 
 val previewPlayerState = PlayerState(
+    null,
     1000L * 30,
     1000L * 60,
     1000L * 45,

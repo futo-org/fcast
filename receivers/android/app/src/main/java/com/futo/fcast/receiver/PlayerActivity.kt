@@ -12,17 +12,9 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowInsets
 import android.view.WindowManager
-import android.widget.ImageView
-import android.widget.TextView
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -39,20 +31,17 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.max
 import androidx.core.net.toUri
-import androidx.lifecycle.ViewModel
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_VIDEO
+import com.futo.fcast.receiver.models.ControlFocus
 import com.futo.fcast.receiver.models.EventMessage
 import com.futo.fcast.receiver.models.EventType
 import com.futo.fcast.receiver.models.GenericMediaMetadata
@@ -69,12 +58,14 @@ import com.futo.fcast.receiver.models.VolumeUpdateMessage
 import com.futo.fcast.receiver.models.streamingMediaTypes
 import com.futo.fcast.receiver.models.supportedAudioTypes
 import com.futo.fcast.receiver.models.supportedVideoTypes
-import com.futo.fcast.receiver.views.ConstraintLayoutGroup
-import com.futo.fcast.receiver.views.CustomPlayerViewScreen
 import com.futo.fcast.receiver.views.PlayerActivity
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.math.floor
+import kotlin.math.min
 
+enum class ControlBarMode {
+    KeyboardMouse,
+    Remote
+}
 
 class PlayerActivity : AppCompatActivity() {
     private lateinit var _exoPlayer: ExoPlayer
@@ -91,7 +82,16 @@ class PlayerActivity : AppCompatActivity() {
     private var _isMediaItem: Boolean = false
     private var _playItemCached = false
 
+    private val _uiHideTimer = Timer({
+        if (!_exoPlayer.isPlaying) {
+            _controlMode = ControlBarMode.KeyboardMouse
+            viewModel.controlFocus = ControlFocus.None
+            viewModel.showControls = false
+        }
+    }, 5000)
     private val _showDurationTimer = Timer(::mediaEndHandler, 0, false)
+    
+    private var _controlMode = ControlBarMode.KeyboardMouse
 
     private val _connectivityEvents = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -381,6 +381,82 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun setControlMode(mode: ControlBarMode, immediateHide: Boolean = true) {
+        if (mode == ControlBarMode.KeyboardMouse) {
+            _uiHideTimer.enable()
+
+            if (immediateHide) {
+                viewModel.controlFocus = ControlFocus.None
+                viewModel.showControls = false
+            }
+            else {
+                _uiHideTimer.start()
+            }
+        }
+        else {
+            viewModel.controlFocus = ControlFocus.ProgressBar
+            viewModel.showControls = true
+            _uiHideTimer.start()
+        }
+
+        _controlMode = mode
+    }
+
+    private val minSkipInterval = 10
+
+    private var skipBackRepeat = false
+    private var skipBackInterval = minSkipInterval
+    private var skipBackIntervalIncrease = false
+    private val skipBackTimer = Timer({ skipBackIntervalIncrease = true }, 2000, false)
+
+    private var skipForwardRepeat = false
+    private var skipForwardInterval = minSkipInterval
+    private var skipForwardIntervalIncrease = false
+    private val skipForwardTimer = Timer({ skipForwardIntervalIncrease = true }, 2000, false)
+
+    private fun skipBack(repeat: Boolean = false) {
+        if (!skipBackRepeat && repeat) {
+            skipBackRepeat = true
+            skipBackTimer.start()
+        }
+        else if (skipBackRepeat && skipBackIntervalIncrease && repeat) {
+            skipBackInterval = if (skipBackInterval == 10) 30 else min(skipBackInterval + 30, 300)
+            skipBackIntervalIncrease = false
+            skipBackTimer.start()
+        }
+        else if (!repeat) {
+            skipBackTimer.stop()
+            skipBackRepeat = false
+            skipBackIntervalIncrease = false
+            skipBackInterval = minSkipInterval
+        }
+
+        _exoPlayer.seekTo(max(_exoPlayer.currentPosition - (skipBackInterval * 1000), 0))
+    }
+
+    private fun skipForward(repeat: Boolean = false) {
+        if (!skipForwardRepeat && repeat) {
+            skipForwardRepeat = true
+            skipForwardTimer.start()
+        }
+        else if (skipForwardRepeat && skipForwardIntervalIncrease && repeat) {
+            skipForwardInterval = if (skipForwardInterval == 10) 30 else min(skipForwardInterval + 30, 300)
+            skipForwardIntervalIncrease = false
+            skipForwardTimer.start()
+        }
+        else if (!repeat) {
+            skipForwardTimer.stop()
+            skipForwardRepeat = false
+            skipForwardIntervalIncrease = false
+            skipForwardInterval = minSkipInterval
+        }
+
+        // todo: handle livestreams
+//        if (!isLivePosition) {
+            _exoPlayer.seekTo(min(_exoPlayer.currentPosition + (skipForwardInterval * 1000), _exoPlayer.duration))
+//        }
+    }
+
     override fun onPause() {
         super.onPause()
 
@@ -424,36 +500,186 @@ class PlayerActivity : AppCompatActivity() {
 
     @OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-//        if (_playerControlView.isControllerFullyVisible) {
-//            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-//                _playerControlView.hideController()
-//                return true
-//            }
-//        if (PlayerActivityViewModel.showControls.value) {
-        if (viewModel.showControls) {
-            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-//                PlayerActivityViewModel.showControls.value = false
-                viewModel.showControls = false
-                return true
-            }
-        } else {
+//        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
+        var handledCase = false
+        var key = ""
+
+        if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
+                KeyEvent.KEYCODE_K,
+                KeyEvent.KEYCODE_SPACE,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    if (!_exoPlayer.isPlaying) {
+                        resume()
+                    }
+                    else {
+                        pause()
+                    }
+
+                    key = event.displayLabel.toString()
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_DPAD_CENTER -> {
-//                    PlayerActivityViewModel.showControls.value = true
-                    viewModel.showControls = true
-                    return true
+                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                        setControlMode(ControlBarMode.Remote)
+                    }
+                    else {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar || viewModel.controlFocus == ControlFocus.Action) {
+                            // Play/pause toggle
+                            if (!_exoPlayer.isPlaying) {
+                                resume()
+                            }
+                            else {
+                                pause()
+                            }
+                        }
+                        else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
+                            previousPlaylistItem()
+                        }
+                        else if (viewModel.controlFocus == ControlFocus.PlayNext) {
+                            nextPlaylistItem()
+                        }
+                    }
+
+                    key = "Enter"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                        setControlMode(ControlBarMode.Remote)
+                    }
+                    else {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar) {
+                            setControlMode(ControlBarMode.KeyboardMouse)
+                        }
+                        else {
+                            viewModel.controlFocus = ControlFocus.ProgressBar
+                        }
+                    }
+
+                    key = "ArrowUp"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                        setControlMode(ControlBarMode.Remote)
+                    }
+                    else {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar) {
+                            viewModel.controlFocus = ControlFocus.Action
+                        }
+                        else {
+                            setControlMode(ControlBarMode.KeyboardMouse)
+                        }
+                    }
+
+                    key = "ArrowDown"
+                    handledCase = true
                 }
 
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    _exoPlayer.seekTo(max(0, _exoPlayer.currentPosition - SEEK_BACKWARD_MILLIS))
-                    return true
+                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                        setControlMode(ControlBarMode.Remote)
+                    }
+                    else {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar || !_isMediaItem) {
+                            skipBack(event.repeatCount > 0)
+                        }
+                        else {
+                            if (viewModel.controlFocus == ControlFocus.Action) {
+                                viewModel.controlFocus = ControlFocus.PlayPrevious
+                            }
+                            else if (viewModel.controlFocus == ControlFocus.PlayNext) {
+                                viewModel.controlFocus = ControlFocus.Action
+                            }
+                        }
+                    }
+
+                    key = "ArrowLeft"
+                    handledCase = true
                 }
+
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    _exoPlayer.seekTo(_exoPlayer.currentPosition + SEEK_FORWARD_MILLIS)
-                    return true
+                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                        setControlMode(ControlBarMode.Remote)
+                    }
+                    else {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar || !_isMediaItem) {
+                            skipForward(event.repeatCount > 0)
+                        }
+                        else {
+                            if (viewModel.controlFocus == ControlFocus.Action) {
+                                viewModel.controlFocus = ControlFocus.PlayNext
+                            }
+                            else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
+                                viewModel.controlFocus = ControlFocus.Action
+                            }
+                        }
+                    }
+
+                    key = "ArrowRight"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_MEDIA_STOP -> {
+//            window.parent.webOSApp.loadPage('main_window/index.html');
+                    key = "Stop"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                skipBack(event.repeatCount > 0)
+                    key = "Rewind"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                    if (!_exoPlayer.isPlaying) {
+                        resume()
+                    }
+
+                    key = "Play"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                    if (_exoPlayer.isPlaying) {
+                        pause()
+                    }
+
+                    key = "Pause"
+                    handledCase = true
+                }
+
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                    skipForward(event.repeatCount > 0);
+                    key = "FastForward"
+                    handledCase = true
+                }
+
+                // todo handling
+                KeyEvent.KEYCODE_BACK -> {
+//            window.parent.webOSApp.loadPage('main_window/index.html');
+                    key = "Back"
+                    handledCase = true
                 }
             }
         }
+
+        if (handledCase) {
+            return true
+        }
+
+//        if (window.targetAPI.getSubscribedKeys().keyDown.has(key)) {
+//            window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, key, event.repeat, handledCase)));
+//        }
+//        if (window.targetAPI.getSubscribedKeys().keyUp.has(key)) {
+//            window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, key, event.repeat, handledCase)));
+//        }
 
         return super.dispatchKeyEvent(event)
     }
