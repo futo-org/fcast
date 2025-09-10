@@ -25,6 +25,10 @@ html {
     font-family: InterBold;
 }
 
+#app-download-link {
+    color: #019BE7;
+}
+
 /* gap not supported in WebOS 6.0 */
 #ips {
     gap: unset;

@@ -145,6 +145,10 @@ body, html {
     height: auto;
 }
 
+#app-download-link {
+    color: #019BE7;
+}
+
 #connection-information {
     display: none;
     flex-direction: column;
