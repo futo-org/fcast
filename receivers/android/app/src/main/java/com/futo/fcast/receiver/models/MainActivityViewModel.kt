@@ -9,7 +9,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import com.futo.fcast.receiver.MainActivity
 import com.futo.fcast.receiver.NetworkInterfaceData
-import java.util.UUID
 
 class MainActivityViewModel : ViewModel() {
     var showQR by mutableStateOf(true)
@@ -23,5 +22,7 @@ class MainActivityViewModel : ViewModel() {
 
     var ipInfo = mutableStateListOf<NetworkInterfaceData>()
 
-    fun update() { MainActivity.instance?.update() }
+    fun update() {
+        MainActivity.instance?.update()
+    }
 }

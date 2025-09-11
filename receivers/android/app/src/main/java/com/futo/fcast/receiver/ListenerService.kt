@@ -13,7 +13,8 @@ import java.util.UUID
 
 abstract class ListenerService {
     protected val sessionMap: MutableMap<UUID, FCastSession> = mutableMapOf()
-    private val _eventSubscribers: MutableMap<UUID, MutableList<EventSubscribeObject>> = mutableMapOf()
+    private val _eventSubscribers: MutableMap<UUID, MutableList<EventSubscribeObject>> =
+        mutableMapOf()
 
     abstract fun start()
     abstract fun stop()
@@ -23,7 +24,11 @@ abstract class ListenerService {
 //        Log.i(TAG, "Sending message $message")
 
         if (sessionId != null) {
-            if (opcode == Opcode.Event && !this.isSubscribedToEvent(sessionId, (message as EventMessage).event)) {
+            if (opcode == Opcode.Event && !this.isSubscribedToEvent(
+                    sessionId,
+                    (message as EventMessage).event
+                )
+            ) {
                 return
             }
 
@@ -33,10 +38,13 @@ abstract class ListenerService {
                 Log.w(TAG, "Failed to send error.", e)
                 this.sessionMap[sessionId]?.close()
             }
-        }
-        else {
+        } else {
             for (session in this.sessionMap.values) {
-                if (opcode == Opcode.Event && !this.isSubscribedToEvent(session.id, (message as EventMessage).event)) {
+                if (opcode == Opcode.Event && !this.isSubscribedToEvent(
+                        session.id,
+                        (message as EventMessage).event
+                    )
+                ) {
                     continue
                 }
 
@@ -51,7 +59,8 @@ abstract class ListenerService {
     }
 
     fun subscribeEvent(sessionId: UUID, event: EventSubscribeObject) {
-        val sessionSubscriptions = _eventSubscribers.getOrDefault(sessionId, mutableListOf<EventSubscribeObject>())
+        val sessionSubscriptions =
+            _eventSubscribers.getOrDefault(sessionId, mutableListOf<EventSubscribeObject>())
         sessionSubscriptions += event
         _eventSubscribers[sessionId] = sessionSubscriptions
     }
@@ -103,6 +112,7 @@ abstract class ListenerService {
                                 continue
                             }
                         }
+
                         EventType.KeyUp -> {
                             val subscribeEvent = e as KeyUpEvent
                             val keyEvent = event as KeyEvent
@@ -110,6 +120,7 @@ abstract class ListenerService {
                                 continue
                             }
                         }
+
                         else -> {}
                     }
 

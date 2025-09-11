@@ -15,7 +15,8 @@ class BootReceiver : BroadcastReceiver() {
         try {
             if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
                 intent.action == Intent.ACTION_PACKAGE_ADDED ||
-                intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+                intent.action == Intent.ACTION_MY_PACKAGE_REPLACED
+            ) {
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     // Show a notification with an action to start the service
@@ -42,7 +43,8 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun showStartServiceNotification(context: Context) {
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         // Create the Notification Channel for Android 8.0 and above
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -55,8 +57,14 @@ class BootReceiver : BroadcastReceiver() {
 
         // PendingIntent to start the TcpListenerService
         val serviceIntent = Intent(context, NetworkService::class.java)
-        val pendingIntent = PendingIntent.getService(context, 0, serviceIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val startServiceAction = NotificationCompat.Action.Builder(0, "Start Service", pendingIntent).build()
+        val pendingIntent = PendingIntent.getService(
+            context,
+            0,
+            serviceIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val startServiceAction =
+            NotificationCompat.Action.Builder(0, "Start Service", pendingIntent).build()
 
         // Build the notification
         val notificationBuilder = createNotificationBuilder(context)

@@ -9,7 +9,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun ThemedText(text: String, modifier: Modifier = Modifier, fontWeight: FontWeight = FontWeight.Normal) {
+fun ThemedText(
+    text: String,
+    modifier: Modifier = Modifier,
+    fontWeight: FontWeight = FontWeight.Normal
+) {
     Text(
         text = text,
         modifier = modifier,

@@ -113,7 +113,8 @@ fun SenderAppDownloadText() {
         modifier = Modifier.padding(vertical = 10.dp),
         style = TextStyle(textAlign = TextAlign.Center),
         onClick = { offset ->
-            annotatedString.getStringAnnotations(tag = "url", start = offset, end = offset).firstOrNull()?.let {
+            annotatedString.getStringAnnotations(tag = "url", start = offset, end = offset)
+                .firstOrNull()?.let {
                 uriHandler.openUri(it.item)
             }
         }
@@ -135,14 +136,13 @@ fun ConnectionDetailsView(viewModel: MainActivityViewModel, modifier: Modifier) 
                         ip.signalLevel >= 30 -> R.drawable.wifi_strength_1
                         else -> R.drawable.wifi_strength_outline
                     }
-                }
-                else {
+                } else {
                     R.drawable.wifi_strength_3
                 }
             }
         }
 
-        Row (
+        Row(
             Modifier.padding(vertical = 2.dp)
         ) {
             Image(
@@ -196,8 +196,7 @@ fun ConnectionStatusView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
     if (frontendConnections.isEmpty()) {
         Spinner(modifier = iconModifier)
-    }
-    else {
+    } else {
         Box(
             modifier = iconModifier
                 .clip(CircleShape)
@@ -257,11 +256,16 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
         shape = RoundedCornerShape(10.dp),
         border = strokeCardBorder
     ) {
-        Column(modifier = Modifier
-            .padding(horizontal = 15.dp, vertical = paddingSize),
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 15.dp, vertical = paddingSize),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            ThemedText(stringResource(R.string.connection_information), Modifier.padding(top = paddingSize), FontWeight.Bold)
+            ThemedText(
+                stringResource(R.string.connection_information),
+                Modifier.padding(top = paddingSize),
+                FontWeight.Bold
+            )
             Spacer(
                 modifier = Modifier
                     .padding(vertical = paddingSize)
@@ -272,7 +276,8 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
             if (viewModel.ipInfo.isNotEmpty()) {
                 if (viewModel.showQR) {
-                    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+                    val isPortrait =
+                        LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
                     val configuration = LocalConfiguration.current
                     val density = LocalDensity.current
 
@@ -295,8 +300,7 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
                         if (height < 1280 || width < 720) {
                             qrSize = 60.dp
                         }
-                    }
-                    else {
+                    } else {
                         if (width >= 2560 || height >= 1440) {
                             qrSize = 165.dp
                         }
@@ -321,7 +325,11 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
 //                ThemedText(width.toString() + " " + height.toString())
 
-                    ThemedText(stringResource(R.string.scan_to_connect), Modifier.padding(bottom = paddingSize), FontWeight.Bold)
+                    ThemedText(
+                        stringResource(R.string.scan_to_connect),
+                        Modifier.padding(bottom = paddingSize),
+                        FontWeight.Bold
+                    )
                     Image(
                         painter = if (viewModel.imageQR != null)
                             BitmapPainter(viewModel.imageQR!!)
@@ -332,7 +340,11 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
                     )
                     SenderAppDownloadText()
 
-                    ThemedText(stringResource(R.string.connection_details), Modifier.padding(top = paddingSize), FontWeight.Bold)
+                    ThemedText(
+                        stringResource(R.string.connection_details),
+                        Modifier.padding(top = paddingSize),
+                        FontWeight.Bold
+                    )
                     Spacer(
                         modifier = Modifier
                             .padding(top = paddingSize, bottom = paddingSize - 2.dp)
@@ -343,14 +355,17 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
                 }
 
                 ConnectionDetailsView(viewModel, modifier)
-            }
-            else {
+            } else {
                 Image(
                     painter = painterResource(R.drawable.error),
                     contentDescription = null,
                     modifier = Modifier.size(55.dp)
                 )
-                ThemedText(stringResource(R.string.network_no_interfaces), Modifier.padding(top = paddingSize), fontWeight = FontWeight.Bold)
+                ThemedText(
+                    stringResource(R.string.network_no_interfaces),
+                    Modifier.padding(top = paddingSize),
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -386,28 +401,36 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 TitleView(viewModel, Modifier)
-                Spacer(Modifier.fillMaxWidth().height(20.dp))
+                Spacer(Modifier
+                    .fillMaxWidth()
+                    .height(20.dp))
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     ConnectionStatusView(viewModel, Modifier.fillMaxWidth())
                 }
-                Spacer(Modifier.fillMaxWidth().height(spacerSize))
+                Spacer(Modifier
+                    .fillMaxWidth()
+                    .height(spacerSize))
 
                 ConnectionInfoView(viewModel, Modifier)
-                Spacer(Modifier.fillMaxWidth().height(spacerSize))
+                Spacer(Modifier
+                    .fillMaxWidth()
+                    .height(spacerSize))
                 Surface(
                     modifier = Modifier.padding(horizontal = 30.dp),
                     color = colorCardBackground,
                     shape = RoundedCornerShape(10.dp),
                     border = strokeCardBorder
                 ) {
-                    UpdateView(viewModel, modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp))
+                    UpdateView(
+                        viewModel,
+                        modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp)
+                    )
                 }
             }
-        }
-        else {
+        } else {
             Row(
                 modifier = Modifier.padding(vertical = 40.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -421,17 +444,24 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     TitleView(viewModel, Modifier.fillMaxWidth())
-                    Spacer(Modifier.fillMaxWidth().height(spacerSize))
+                    Spacer(Modifier
+                        .fillMaxWidth()
+                        .height(spacerSize))
                     ConnectionStatusView(viewModel, Modifier.fillMaxWidth())
 
-                    Spacer(Modifier.fillMaxWidth().height(spacerSize * 2))
+                    Spacer(Modifier
+                        .fillMaxWidth()
+                        .height(spacerSize * 2))
                     Surface(
                         modifier = Modifier.padding(horizontal = 30.dp),
                         color = colorCardBackground,
                         shape = RoundedCornerShape(10.dp),
                         border = strokeCardBorder
                     ) {
-                        UpdateView(viewModel, modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp))
+                        UpdateView(
+                            viewModel,
+                            modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp)
+                        )
                     }
                 }
                 Column(
@@ -458,9 +488,11 @@ fun MainActivityLandscapePreview() {
     viewModel.showQR = true
 //    viewModel.updating = true
 
-    viewModel.ipInfo = mutableStateListOf(NetworkInterfaceData(
-        NetworkInterfaceType.Wired, "Ethernet", "123.456.7.890", null
-    ))
+    viewModel.ipInfo = mutableStateListOf(
+        NetworkInterfaceData(
+            NetworkInterfaceType.Wired, "Ethernet", "123.456.7.890", null
+        )
+    )
 //    viewModel.ipInfo = mutableStateListOf<NetworkInterfaceData>()
 
     MainActivity(viewModel)
@@ -476,9 +508,11 @@ fun MainActivityPortraitPreview() {
     viewModel.textPorts = "46899 (TCP), 46898 (WS)"
     viewModel.showQR = true
 //    viewModel.updating = true
-    viewModel.ipInfo = mutableStateListOf(NetworkInterfaceData(
-        NetworkInterfaceType.Wired, "Ethernet", "123.456.7.890", null
-    ))
+    viewModel.ipInfo = mutableStateListOf(
+        NetworkInterfaceData(
+            NetworkInterfaceType.Wired, "Ethernet", "123.456.7.890", null
+        )
+    )
 //    viewModel.ipInfo = mutableStateListOf<NetworkInterfaceData>()
 
 

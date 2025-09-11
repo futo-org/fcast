@@ -17,7 +17,10 @@ const val TAG = "Utility"
 
 fun ensureNotMainThread() {
     if (Looper.myLooper() == Looper.getMainLooper()) {
-        Log.e("Utility", "Throwing exception because a function that should not be called on main thread, is called on main thread")
+        Log.e(
+            "Utility",
+            "Throwing exception because a function that should not be called on main thread, is called on main thread"
+        )
         throw IllegalStateException("Cannot run on main thread")
     }
 }
@@ -26,7 +29,11 @@ inline fun setTimeout(crossinline block: () -> Unit, timeoutMillis: Long) {
     setTimeout(Handler(Looper.getMainLooper()), block, timeoutMillis)
 }
 
-inline fun setTimeout(handler: Handler, crossinline block: () -> Unit, timeoutMillis: Long): Runnable {
+inline fun setTimeout(
+    handler: Handler,
+    crossinline block: () -> Unit,
+    timeoutMillis: Long
+): Runnable {
     val runnable = Runnable { block() }
     handler.postDelayed(runnable, timeoutMillis)
     return runnable
@@ -65,10 +72,12 @@ suspend fun fetchJSON(url: String): JSONObject {
     return JSONObject(response.body.toString())
 }
 
-suspend fun downloadFile(downloadUrl: String, destination: String, inMemory: Boolean = false,
-                         requestHeaders: Map<String, String>? = null,
-                         startCb: ((downloadSize: Long) -> Boolean)? = null,
-                         progressCb: ((downloadedBytes: Long, downloadSize: Long) -> Void)? = null) {
+suspend fun downloadFile(
+    downloadUrl: String, destination: String, inMemory: Boolean = false,
+    requestHeaders: Map<String, String>? = null,
+    startCb: ((downloadSize: Long) -> Boolean)? = null,
+    progressCb: ((downloadedBytes: Long, downloadSize: Long) -> Void)? = null
+) {
     val client = OkHttpClient()
     val requestBuilder = okhttp3.Request.Builder()
         .url(downloadUrl)
@@ -89,7 +98,10 @@ suspend fun downloadFile(downloadUrl: String, destination: String, inMemory: Boo
                 }
 
                 val downloadSize = response.body.contentLength()
-                Log.i(TAG, "Downloading file $downloadUrl to $destination with size: $downloadSize bytes")
+                Log.i(
+                    TAG,
+                    "Downloading file $downloadUrl to $destination with size: $downloadSize bytes"
+                )
 
                 startCb?.let {
                     if (!startCb(downloadSize)) {
@@ -144,7 +156,11 @@ fun mediaItemFromPlayMessage(message: PlayMessage?): MediaItem {
     else MediaItem("")
 }
 
-class Timer(private var _callback: () -> Unit, private var _delay: Long, autoStart: Boolean = true) {
+class Timer(
+    private var _callback: () -> Unit,
+    private var _delay: Long,
+    autoStart: Boolean = true
+) {
     private val _handler = Handler(Looper.getMainLooper())
     private var _handle: Runnable?
     private var _startTime: Long = Calendar.getInstance().time.time

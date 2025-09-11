@@ -5,19 +5,14 @@ import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.media3.common.Player
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.DpSize
-import androidx.compose.ui.unit.IntSize
+import androidx.media3.common.Player
 import androidx.media3.common.Player.EVENT_IS_PLAYING_CHANGED
 import androidx.media3.common.VideoSize
 import com.futo.fcast.receiver.PlayerActivity
@@ -44,8 +39,7 @@ fun rememberPlayerState(player: Player): PlayerState {
     val updateState: (events: Player.Events?) -> Unit = {
         if (it?.contains(EVENT_IS_PLAYING_CHANGED) == true && player.isPlaying) {
             PlayerActivity.instance?.mediaPlayHandler()
-        }
-        else if (player.playbackState == Player.STATE_ENDED) {
+        } else if (player.playbackState == Player.STATE_ENDED) {
             PlayerActivity.instance?.mediaEndHandler()
         }
 
@@ -54,7 +48,8 @@ fun rememberPlayerState(player: Player): PlayerState {
         bufferedPosition = player.bufferedPosition
         isPlaying = player.isPlaying
         isPlaylist = player.mediaItemCount > 0
-        mediaTitle = if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
+        mediaTitle =
+            if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
         mediaThumbnail = player.mediaMetadata.artworkUri
         mediaType = player.mediaMetadata.mediaType
     }
@@ -96,8 +91,28 @@ fun rememberPlayerState(player: Player): PlayerState {
         }
     }
 
-    return remember(currentVideoSize, currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType) {
-        PlayerState(currentVideoSize, currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType)
+    return remember(
+        currentVideoSize,
+        currentPosition,
+        duration,
+        bufferedPosition,
+        isPlaying,
+        isPlaylist,
+        mediaTitle,
+        mediaThumbnail,
+        mediaType
+    ) {
+        PlayerState(
+            currentVideoSize,
+            currentPosition,
+            duration,
+            bufferedPosition,
+            isPlaying,
+            isPlaylist,
+            mediaTitle,
+            mediaThumbnail,
+            mediaType
+        )
     }
 //    return remember(currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType) {
 //        PlayerState(currentPosition, duration, bufferedPosition, isPlaying, isPlaylist, mediaTitle, mediaThumbnail, mediaType)

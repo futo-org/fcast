@@ -287,7 +287,6 @@ data class EventMessage(
 )
 
 
-
 object ContentTypeSerializer : KSerializer<ContentType> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("ContentType", PrimitiveKind.BYTE)
@@ -341,7 +340,11 @@ object MetadataObjectSerializer : KSerializer<MetadataObject> {
         val typeValue = jsonObject["type"]?.jsonPrimitive?.int ?: error("Missing 'type' field")
 
         return when (typeValue) {
-            MetadataType.Generic.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(GenericMediaMetadata.serializer(), jsonObject)
+            MetadataType.Generic.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                GenericMediaMetadata.serializer(),
+                jsonObject
+            )
+
             else -> error("Unknown metadata type: $typeValue")
         }
     }
@@ -350,7 +353,10 @@ object MetadataObjectSerializer : KSerializer<MetadataObject> {
         val jsonEncoder = encoder as? JsonEncoder ?: error("This serializer works only with Json")
 
         when (value) {
-            is GenericMediaMetadata -> jsonEncoder.encodeSerializableValue(GenericMediaMetadata.serializer(), value)
+            is GenericMediaMetadata -> jsonEncoder.encodeSerializableValue(
+                GenericMediaMetadata.serializer(),
+                value
+            )
         }
     }
 }
@@ -363,10 +369,15 @@ object ContentObjectSerializer : KSerializer<ContentObject> {
     override fun deserialize(decoder: Decoder): ContentObject {
         val jsonDecoder = decoder as? JsonDecoder ?: error("This serializer works only with Json")
         val jsonObject = jsonDecoder.decodeJsonElement().jsonObject
-        val typeValue = jsonObject["contentType"]?.jsonPrimitive?.int ?: error("Missing 'type' field")
+        val typeValue =
+            jsonObject["contentType"]?.jsonPrimitive?.int ?: error("Missing 'type' field")
 
         return when (typeValue) {
-            ContentType.Playlist.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(PlaylistContent.serializer(), jsonObject)
+            ContentType.Playlist.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                PlaylistContent.serializer(),
+                jsonObject
+            )
+
             else -> error("Unknown metadata type: $typeValue")
         }
     }
@@ -375,7 +386,10 @@ object ContentObjectSerializer : KSerializer<ContentObject> {
         val jsonEncoder = encoder as? JsonEncoder ?: error("This serializer works only with Json")
 
         when (value) {
-            is PlaylistContent -> jsonEncoder.encodeSerializableValue(PlaylistContent.serializer(), value)
+            is PlaylistContent -> jsonEncoder.encodeSerializableValue(
+                PlaylistContent.serializer(),
+                value
+            )
         }
     }
 }
@@ -391,11 +405,31 @@ object EventSubscribeObjectSerializer : KSerializer<EventSubscribeObject> {
         val typeValue = jsonObject["type"]?.jsonPrimitive?.int ?: error("Missing 'type' field")
 
         return when (typeValue) {
-            EventType.MediaItemStart.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(MediaItemStartEvent.serializer(), jsonObject)
-            EventType.MediaItemEnd.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(MediaItemEndEvent.serializer(), jsonObject)
-            EventType.MediaItemChange.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(MediaItemChangeEvent.serializer(), jsonObject)
-            EventType.KeyDown.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(KeyDownEvent.serializer(), jsonObject)
-            EventType.KeyUp.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(KeyUpEvent.serializer(), jsonObject)
+            EventType.MediaItemStart.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                MediaItemStartEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.MediaItemEnd.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                MediaItemEndEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.MediaItemChange.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                MediaItemChangeEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.KeyDown.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                KeyDownEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.KeyUp.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                KeyUpEvent.serializer(),
+                jsonObject
+            )
+
             else -> error("Unknown metadata type: $typeValue")
         }
     }
@@ -404,9 +438,21 @@ object EventSubscribeObjectSerializer : KSerializer<EventSubscribeObject> {
         val jsonEncoder = encoder as? JsonEncoder ?: error("This serializer works only with Json")
 
         when (value) {
-            is MediaItemStartEvent -> jsonEncoder.encodeSerializableValue(MediaItemStartEvent.serializer(), value)
-            is MediaItemEndEvent -> jsonEncoder.encodeSerializableValue(MediaItemEndEvent.serializer(), value)
-            is MediaItemChangeEvent -> jsonEncoder.encodeSerializableValue(MediaItemChangeEvent.serializer(), value)
+            is MediaItemStartEvent -> jsonEncoder.encodeSerializableValue(
+                MediaItemStartEvent.serializer(),
+                value
+            )
+
+            is MediaItemEndEvent -> jsonEncoder.encodeSerializableValue(
+                MediaItemEndEvent.serializer(),
+                value
+            )
+
+            is MediaItemChangeEvent -> jsonEncoder.encodeSerializableValue(
+                MediaItemChangeEvent.serializer(),
+                value
+            )
+
             is KeyDownEvent -> jsonEncoder.encodeSerializableValue(KeyDownEvent.serializer(), value)
             is KeyUpEvent -> jsonEncoder.encodeSerializableValue(KeyUpEvent.serializer(), value)
         }
@@ -424,11 +470,31 @@ object EventObjectSerializer : KSerializer<EventObject> {
         val typeValue = jsonObject["type"]?.jsonPrimitive?.int ?: error("Missing 'type' field")
 
         return when (typeValue) {
-            EventType.MediaItemStart.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(MediaItemEvent.serializer(), jsonObject)
-            EventType.MediaItemEnd.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(MediaItemEvent.serializer(), jsonObject)
-            EventType.MediaItemChange.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(MediaItemEvent.serializer(), jsonObject)
-            EventType.KeyDown.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(KeyEvent.serializer(), jsonObject)
-            EventType.KeyUp.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(KeyEvent.serializer(), jsonObject)
+            EventType.MediaItemStart.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                MediaItemEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.MediaItemEnd.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                MediaItemEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.MediaItemChange.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                MediaItemEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.KeyDown.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                KeyEvent.serializer(),
+                jsonObject
+            )
+
+            EventType.KeyUp.value.toInt() -> jsonDecoder.json.decodeFromJsonElement(
+                KeyEvent.serializer(),
+                jsonObject
+            )
+
             else -> error("Unknown metadata type: $typeValue")
         }
     }
@@ -437,7 +503,11 @@ object EventObjectSerializer : KSerializer<EventObject> {
         val jsonEncoder = encoder as? JsonEncoder ?: error("This serializer works only with Json")
 
         when (value) {
-            is MediaItemEvent -> jsonEncoder.encodeSerializableValue(MediaItemEvent.serializer(), value)
+            is MediaItemEvent -> jsonEncoder.encodeSerializableValue(
+                MediaItemEvent.serializer(),
+                value
+            )
+
             is KeyEvent -> jsonEncoder.encodeSerializableValue(KeyEvent.serializer(), value)
         }
     }

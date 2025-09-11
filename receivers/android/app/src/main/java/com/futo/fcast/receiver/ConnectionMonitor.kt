@@ -18,23 +18,32 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
 
                         if (version != null && version >= 2) {
                             if (_heartbeatRetries.getOrDefault(sessionId, 0) > 3) {
-                                Log.w(TAG, "Could not ping device with connection id $sessionId. Disconnecting...")
+                                Log.w(
+                                    TAG,
+                                    "Could not ping device with connection id $sessionId. Disconnecting..."
+                                )
                                 it.disconnect(sessionId)
                                 continue
                             }
 
-                            _scope?.launch(Dispatchers.IO) {
+                            _scope.launch(Dispatchers.IO) {
                                 try {
-                                    Log.d(TAG, "Pinging session $sessionId with ${_heartbeatRetries[sessionId]} retries left")
+                                    Log.d(
+                                        TAG,
+                                        "Pinging session $sessionId with ${_heartbeatRetries[sessionId]} retries left"
+                                    )
                                     it.send(Opcode.Ping, null, sessionId)
-                                    _heartbeatRetries[sessionId] = _heartbeatRetries.getOrDefault(sessionId, 0) + 1
+                                    _heartbeatRetries[sessionId] =
+                                        _heartbeatRetries.getOrDefault(sessionId, 0) + 1
                                 } catch (e: Throwable) {
                                     Log.w(TAG, "Failed to ping session $sessionId", e)
                                 }
                             }
-                        }
-                        else if (version == null) {
-                            Log.w(TAG, "Session $sessionId was not found in the list of active sessions. Removing...")
+                        } else if (version == null) {
+                            Log.w(
+                                TAG,
+                                "Session $sessionId was not found in the list of active sessions. Removing..."
+                            )
                             _backendConnections.remove(sessionId)
                             _heartbeatRetries.remove(sessionId)
                         }
@@ -51,15 +60,22 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
         private val _heartbeatRetries = mutableMapOf<UUID, Int>()
         private val _backendConnections = mutableMapOf<UUID, ListenerService>()
         private const val UI_CONNECT_UPDATE_TIMEOUT = 100L
-        private const val UI_DISCONNECT_UPDATE_TIMEOUT = 2000L // Senders may reconnect, but generally need more time
-        private val _uiUpdateMap = mutableMapOf<SocketAddress, ArrayList<Pair<String, (() -> Unit)>>>()
+        private const val UI_DISCONNECT_UPDATE_TIMEOUT =
+            2000L // Senders may reconnect, but generally need more time
+        private val _uiUpdateMap =
+            mutableMapOf<SocketAddress, ArrayList<Pair<String, (() -> Unit)>>>()
 
         fun onPingPong(sessionId: UUID) {
             Log.d(TAG, "Received response from $sessionId")
             _heartbeatRetries[sessionId] = 0
         }
 
-        fun onConnect(listener: ListenerService, sessionId: UUID, address: SocketAddress, uiUpdateCallback: () -> Unit) {
+        fun onConnect(
+            listener: ListenerService,
+            sessionId: UUID,
+            address: SocketAddress,
+            uiUpdateCallback: () -> Unit
+        ) {
             Log.i(TAG, "Device connected: sessionId=$sessionId, address=$address")
 
             _backendConnections[sessionId] = listener
@@ -103,10 +119,12 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
                         messageCount += 1
                         lastConnectCb = update.second
                     }
+
                     "disconnect" -> {
                         messageCount -= 1
                         lastDisconnectCb = update.second
                     }
+
                     else -> {
                         Log.w(TAG, "Unrecognized UI update event: ${update.first}")
                     }
@@ -116,8 +134,7 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
             if (messageCount > 0) {
                 Log.d(TAG, "Sending connect event for $address")
                 lastConnectCb()
-            }
-            else if (messageCount < 0) {
+            } else if (messageCount < 0) {
                 Log.d(TAG, "Sending disconnect event for $address")
                 lastDisconnectCb()
             }

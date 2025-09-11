@@ -8,10 +8,10 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
 import java.net.NetworkInterface
-import kotlin.collections.iterator
 
 class NetworkWorker(private val _context: Context) {
-    private val _connectivityManager = _context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val _connectivityManager =
+        _context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
     init {
         val networkRequest = NetworkRequest.Builder().build()
@@ -24,7 +24,10 @@ class NetworkWorker(private val _context: Context) {
                 super.onLost(network)
             }
 
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities
+            ) {
                 super.onCapabilitiesChanged(network, networkCapabilities)
             }
         }
@@ -77,15 +80,30 @@ class NetworkWorker(private val _context: Context) {
                             continue
                         }
 
-                        Log.i(TAG, "Running on ${addr.hostAddress}:${TcpListenerService.PORT} (TCP)")
-                        Log.i(TAG, "Running on ${addr.hostAddress}:${WebSocketListenerService.PORT} (WebSocket)")
+                        Log.i(
+                            TAG,
+                            "Running on ${addr.hostAddress}:${TcpListenerService.PORT} (TCP)"
+                        )
+                        Log.i(
+                            TAG,
+                            "Running on ${addr.hostAddress}:${WebSocketListenerService.PORT} (WebSocket)"
+                        )
 
                         // todo: determine normalized rssi value range
                         val signalStrength = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             if (type == NetworkInterfaceType.Wireless) capabilities.signalStrength else null
                         } else null
 
-                        addr.hostAddress?.let { connectedInterfaces.add(NetworkInterfaceData(type, iface.displayName, it, signalStrength)) }
+                        addr.hostAddress?.let {
+                            connectedInterfaces.add(
+                                NetworkInterfaceData(
+                                    type,
+                                    iface.displayName,
+                                    it,
+                                    signalStrength
+                                )
+                            )
+                        }
 
                     }
                 }

@@ -77,7 +77,11 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                 modifier = modifier,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                ThemedText(stringResource(R.string.update_available), Modifier.padding(top = 10.dp), FontWeight.Bold)
+                ThemedText(
+                    stringResource(R.string.update_available),
+                    Modifier.padding(top = 10.dp),
+                    FontWeight.Bold
+                )
                 Spacer(
                     modifier = Modifier
                         .padding(vertical = 10.dp)
@@ -144,8 +148,7 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                             ThemedText(stringResource(R.string.update_later))
                         }
                     }
-                }
-                else {
+                } else {
                     Row(
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically

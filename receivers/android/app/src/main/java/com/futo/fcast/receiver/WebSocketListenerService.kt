@@ -3,12 +3,15 @@ package com.futo.fcast.receiver
 import android.util.Log
 import org.java_websocket.WebSocket
 import java.util.UUID
-import kotlin.collections.set
 
-class WebSocketListenerService(private val _networkService: NetworkService, private val _onNewSession: (session: FCastSession) -> Unit) : ListenerService() {
+class WebSocketListenerService(
+    private val _networkService: NetworkService,
+    private val _onNewSession: (session: FCastSession) -> Unit
+) : ListenerService() {
     private var _stopped: Boolean = true
     private val _sockets = arrayListOf<WebSocket>()
-    private val _server = WebSocketServer(_networkService, _onNewSession, ::onOpen, ::onClose, ::disconnect, PORT)
+    private val _server =
+        WebSocketServer(_networkService, _onNewSession, ::onOpen, ::onClose, ::disconnect, PORT)
     private val _socketMap: MutableMap<UUID, WebSocket> = mutableMapOf()
 
     override fun start() {

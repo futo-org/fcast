@@ -5,10 +5,12 @@ import android.util.Log
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.ArrayList
 import java.util.UUID
 
-class TcpListenerService(private val _networkService: NetworkService, private val _onNewSession: (session: FCastSession) -> Unit) : ListenerService() {
+class TcpListenerService(
+    private val _networkService: NetworkService,
+    private val _onNewSession: (session: FCastSession) -> Unit
+) : ListenerService() {
     private var _stopped: Boolean = true
     private var _listenThread: Thread? = null
     private var _serverSocket: ServerSocket? = null
@@ -118,11 +120,18 @@ class TcpListenerService(private val _networkService: NetworkService, private va
                             _clientThreads.add(clientThread)
                         }
 
-                        Log.i(TAG, "New connection received from ${clientSocket.remoteSocketAddress}")
+                        Log.i(
+                            TAG,
+                            "New connection received from ${clientSocket.remoteSocketAddress}"
+                        )
                         clientThread.start()
                     }
                 } catch (e: Throwable) {
-                    Log.e(TAG, "Failed to accept client connection due to an error, sleeping 1 second then restarting", e)
+                    Log.e(
+                        TAG,
+                        "Failed to accept client connection due to an error, sleeping 1 second then restarting",
+                        e
+                    )
                     Thread.sleep(1000)
                 } finally {
                     _serverSocket?.close()
@@ -138,7 +147,8 @@ class TcpListenerService(private val _networkService: NetworkService, private va
     }
 
     private fun handleClientConnection(socket: Socket) {
-        val session = FCastSession(socket.getOutputStream(), socket.remoteSocketAddress, _networkService)
+        val session =
+            FCastSession(socket.getOutputStream(), socket.remoteSocketAddress, _networkService)
 
         try {
             synchronized(sessionMap) {

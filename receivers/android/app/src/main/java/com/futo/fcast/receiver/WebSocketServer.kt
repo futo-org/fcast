@@ -14,12 +14,14 @@ class WebSocketServer(
     private val _onOpen: (session: FCastSession, socket: WebSocket) -> Unit,
     private val _onClose: (session: FCastSession) -> Unit,
     private val _disconnect: (sessionId: UUID) -> Unit,
-    private val port: Int) : WebSocketServer(InetSocketAddress(port)) {
+    private val port: Int
+) : WebSocketServer(InetSocketAddress(port)) {
 
     private val _sockets = arrayListOf<WebSocket>()
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
-        val session = FCastSession(WebSocketOutputStream(conn), conn.remoteSocketAddress, _networkService)
+        val session =
+            FCastSession(WebSocketOutputStream(conn), conn.remoteSocketAddress, _networkService)
         conn.setAttachment(session)
 
         _onOpen(session, conn)
@@ -63,7 +65,10 @@ class WebSocketServer(
         }
 
         val session = conn.getAttachment<FCastSession>()
-        Log.i(TAG, "Received byte message (offset = ${message.arrayOffset()}, size = ${message.remaining()}, id = ${session.id})")
+        Log.i(
+            TAG,
+            "Received byte message (offset = ${message.arrayOffset()}, size = ${message.remaining()}, id = ${session.id})"
+        )
 
         if (!message.hasArray()) {
             throw Exception("message ByteBuffer does not have a backing array")

@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.LayoutDirection
 fun Modifier.noRippleClickable(onClick: () -> Unit): Modifier =
     clickable(
         interactionSource = remember { MutableInteractionSource() },
-        indication = null, // to prevent the ripple from the tap
+        indication = null,
     ) {
         onClick()
     }
@@ -25,7 +25,11 @@ fun Modifier.noRippleClickable(onClick: () -> Unit): Modifier =
 class WipeEffect(percent: State<Float>) : Shape {
     private val _percent = percent
 
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
         val newSize = Size(size.width * _percent.value, size.height)
         return Outline.Rectangle(newSize.toRect())
     }

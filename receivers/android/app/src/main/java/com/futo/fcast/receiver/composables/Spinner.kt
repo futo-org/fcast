@@ -28,7 +28,8 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun Spinner(modifier: Modifier = Modifier) {
-    val rotation = remember { listOf(Animatable(0f), Animatable(0f), Animatable(0f), Animatable(0f)) }
+    val rotation =
+        remember { listOf(Animatable(0f), Animatable(0f), Animatable(0f), Animatable(0f)) }
     val delays = remember { listOf(360L, 240L, 120L, 0L) }
 
     repeat(delays.size) {
@@ -85,7 +86,9 @@ fun SpinnerPreview() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(modifier = Modifier.fillMaxWidth().height(40.dp)) {}
+        Box(modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp)) {}
         Spinner()
     }
 }

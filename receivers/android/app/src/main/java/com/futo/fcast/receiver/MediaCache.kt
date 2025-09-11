@@ -93,7 +93,7 @@ class MediaCache(private var _playlist: PlaylistContent) {
             if (it > 0) {
                 var cacheAmount = it
 
-                for (i in playlistIndex + 1 ..< _playlist.items.size) {
+                for (i in playlistIndex + 1..<_playlist.items.size) {
                     if (cacheAmount == 0) {
                         break
                     }
@@ -145,8 +145,7 @@ class MediaCache(private var _playlist: PlaylistContent) {
                 if (abs(_playlistIndex - i) < minDistance) {
                     minDistance = abs(_playlistIndex - i)
                     itemIndex = i
-                }
-                else if (abs(_playlistIndex - i) == minDistance && i > _playlistIndex) {
+                } else if (abs(_playlistIndex - i) == minDistance && i > _playlistIndex) {
                     itemIndex = i
                 }
             }
@@ -154,7 +153,10 @@ class MediaCache(private var _playlist: PlaylistContent) {
 
             // Due to downloads being async, pending downloads can become out-of-sync with the current playlist index/target cache window
             if (!shouldDownloadItem(itemIndex)) {
-                Log.d(TAG, "Discarding download index $itemIndex since its outside cache window [${_cacheWindowStart} - ${_cacheWindowEnd}]")
+                Log.d(
+                    TAG,
+                    "Discarding download index $itemIndex since its outside cache window [${_cacheWindowStart} - ${_cacheWindowEnd}]"
+                )
                 downloadItems()
                 return
             }
@@ -190,8 +192,7 @@ class MediaCache(private var _playlist: PlaylistContent) {
 //                    downloadItems()
 //                }
 //            })
-        }
-        else {
+        } else {
             _isDownloading = false
         }
     }
@@ -211,16 +212,14 @@ class MediaCache(private var _playlist: PlaylistContent) {
 
                             if (i == index) {
                                 download = true
-                            }
-                            else if (forwardCacheItems == 0) {
+                            } else if (forwardCacheItems == 0) {
                                 break
                             }
                         }
                     }
                 }
             }
-        }
-        else if (index < _playlistIndex) {
+        } else if (index < _playlistIndex) {
             _playlist.backwardCache?.let {
                 if (it > 0) {
                     val indexList = _cache.keys.sortedDescending()
@@ -232,8 +231,7 @@ class MediaCache(private var _playlist: PlaylistContent) {
 
                             if (i == index) {
                                 download = true
-                            }
-                            else if (backwardCacheItems == 0) {
+                            } else if (backwardCacheItems == 0) {
                                 break
                             }
                         }
@@ -251,7 +249,10 @@ class MediaCache(private var _playlist: PlaylistContent) {
         while (_cacheSize + downloadedBytes > _quota) {
             var purgeIndex = _playlistIndex
             var purgeDistance = 0
-            Log.d(TAG, "Downloading item $downloadItem with playlist index $_playlistIndex and cache window: [${_cacheWindowStart} - ${_cacheWindowEnd}]")
+            Log.d(
+                TAG,
+                "Downloading item $downloadItem with playlist index $_playlistIndex and cache window: [${_cacheWindowStart} - ${_cacheWindowEnd}]"
+            )
 
             // Priority:
             // 1. Purge first encountered item outside cache window
@@ -264,8 +265,7 @@ class MediaCache(private var _playlist: PlaylistContent) {
                 if (index < _cacheWindowStart || index > _cacheWindowEnd) {
                     purgeIndex = index
                     break
-                }
-                else if (abs(_playlistIndex - index) > purgeDistance) {
+                } else if (abs(_playlistIndex - index) > purgeDistance) {
                     purgeDistance = abs(_playlistIndex - index)
                     purgeIndex = index
                 }
@@ -278,11 +278,16 @@ class MediaCache(private var _playlist: PlaylistContent) {
 //                _cacheUrlMap.delete(deleteItem.url)
 //                _cache.delete(purgeIndex)
                 this.updateCacheWindow()
-                Log.i(TAG, "Item $downloadItem pending download (${downloadedBytes} bytes) cannot fit in cache, purging $purgeIndex from cache. Remaining quota ${_quota - _cacheSize} bytes")
-            }
-            else {
+                Log.i(
+                    TAG,
+                    "Item $downloadItem pending download (${downloadedBytes} bytes) cannot fit in cache, purging $purgeIndex from cache. Remaining quota ${_quota - _cacheSize} bytes"
+                )
+            } else {
                 // Cannot purge current item since we may already be streaming it
-                Log.w(TAG, "Aborting item caching, cannot fit item $downloadItem (${downloadedBytes} bytes) within remaining space quota (${_quota - _cacheSize} bytes)")
+                Log.w(
+                    TAG,
+                    "Aborting item caching, cannot fit item $downloadItem (${downloadedBytes} bytes) within remaining space quota (${_quota - _cacheSize} bytes)"
+                )
                 underQuota = false
                 break
             }
@@ -295,7 +300,10 @@ class MediaCache(private var _playlist: PlaylistContent) {
 //        val size = fs.statSync(cacheObject.path).size
 //        cacheObject.size = size
 //        _cacheSize += size
-        Log.i(TAG, "Cached item $index (${cacheObject.size} bytes) with remaining quota ${_quota - _cacheSize} bytes: ${cacheObject.url}")
+        Log.i(
+            TAG,
+            "Cached item $index (${cacheObject.size} bytes) with remaining quota ${_quota - _cacheSize} bytes: ${cacheObject.url}"
+        )
 
         _cache[index] = cacheObject
         _cacheUrlMap[cacheObject.url] = index

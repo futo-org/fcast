@@ -17,25 +17,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.constraintlayout.compose.ConstraintLayout
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
-import androidx.media3.ui.compose.state.rememberPresentationState
-import com.futo.fcast.receiver.R
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
-import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.ui.compose.modifiers.resizeWithContentScale
 import coil3.compose.AsyncImage
+import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.composables.PlayerActivityViewConnectionMonitor
 import com.futo.fcast.receiver.composables.PlayerState
 import com.futo.fcast.receiver.composables.Spinner
@@ -51,7 +50,8 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
 //    val presentationState = rememberPresentationState(exoPlayer)
 //    val scaledModifier = Modifier.resizeWithContentScale(ContentScale.Fit, presentationState.videoSizeDp)
     val playerState = if (exoPlayer != null) rememberPlayerState(exoPlayer) else previewPlayerState
-    val scaledModifier = Modifier.resizeWithContentScale(ContentScale.Fit, playerState.currentVideoSize)
+    val scaledModifier =
+        Modifier.resizeWithContentScale(ContentScale.Fit, playerState.currentVideoSize)
 
     PlayerActivityViewConnectionMonitor(context)
 
@@ -61,7 +61,9 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
         PlayerSurface(
             player = exoPlayer,
             surfaceType = SURFACE_TYPE_SURFACE_VIEW,
-            modifier = scaledModifier.noRippleClickable { viewModel.showControls = !viewModel.showControls },
+            modifier = scaledModifier.noRippleClickable {
+                viewModel.showControls = !viewModel.showControls
+            },
         )
 
 //        AndroidView(
@@ -79,44 +81,48 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
 
         if (viewModel.isLoading) {
             // TODO: Replace with new background load screen in next update
-            Box(Modifier.matchParentSize().background(Color.Black))
-            ConstraintLayout(modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x66000000))
+            Box(Modifier
+                .matchParentSize()
+                .background(Color.Black))
+            ConstraintLayout(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x66000000))
             ) {
                 val imageRef = createRef()
 
-                Spinner(Modifier
-                    .size(80.dp)
+                Spinner(
+                    Modifier
+                        .size(80.dp)
 //                .padding(start = 8.dp)
-                    .alpha(0.5f)
-                    .constrainAs(imageRef) {
-                        top.linkTo(parent.top)
-                        bottom.linkTo(parent.bottom)
-                        start.linkTo(parent.start)
-                        end.linkTo(parent.end)
-                    })
+                        .alpha(0.5f)
+                        .constrainAs(imageRef) {
+                            top.linkTo(parent.top)
+                            bottom.linkTo(parent.bottom)
+                            start.linkTo(parent.start)
+                            end.linkTo(parent.end)
+                        })
             }
-        }
-        else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {
+        } else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {
             AsyncImage(
                 model = playerState.mediaThumbnail,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize()
             )
-        }
-        else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MIXED) {
+        } else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MIXED) {
             AsyncImage(
                 model = viewModel.playMessage?.url,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize()
             )
-        }
-        else if (viewModel.isIdle) {
-            Box(Modifier.matchParentSize().background(Color.Black))
-            ConstraintLayout(modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x66000000))
+        } else if (viewModel.isIdle) {
+            Box(Modifier
+                .matchParentSize()
+                .background(Color.Black))
+            ConstraintLayout(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x66000000))
             ) {
                 val imageRef = createRef()
 
@@ -155,9 +161,10 @@ fun ConstraintLayoutGroup(viewModel: PlayerActivityViewModel) {
     val visible = viewModel.statusMessage != null
 
     if (visible) {
-        ConstraintLayout(modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0x66000000))
+        ConstraintLayout(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0x66000000))
         ) {
             val textRef = createRef()
 
@@ -188,8 +195,8 @@ fun ConstraintLayoutGroup(viewModel: PlayerActivityViewModel) {
 fun PlayerActivity(viewModel: PlayerActivityViewModel, exoPlayer: Player? = null) {
     Box(
         modifier = Modifier
-        .fillMaxSize()
-        .background(Color.Black)
+            .fillMaxSize()
+            .background(Color.Black)
     ) {
         CustomPlayerViewScreen(viewModel, exoPlayer)
         ConstraintLayoutGroup(viewModel)

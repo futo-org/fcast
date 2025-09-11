@@ -24,7 +24,8 @@ fun MainActivityViewConnectionMonitor(context: Context) {
 
     LaunchedEffect(key1 = frontendConnections.size) {
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && connectionsLastSize > frontendConnections.size) {
-            val textResource = if (frontendConnections.isEmpty()) R.string.main_device_disconnected else R.string.main_device_disconnected_multiple
+            val textResource =
+                if (frontendConnections.isEmpty()) R.string.main_device_disconnected else R.string.main_device_disconnected_multiple
             Toast.makeText(context, context.getString(textResource), Toast.LENGTH_LONG).show()
         }
 
@@ -40,13 +41,19 @@ fun PlayerActivityViewConnectionMonitor(context: Context) {
 
     LaunchedEffect(key1 = frontendConnections.size) {
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && connectionsLastSize > frontendConnections.size) {
-            Toast.makeText(context, context.getString(R.string.player_device_disconnected), Toast.LENGTH_LONG).show()
-        }
-        else {
+            Toast.makeText(
+                context,
+                context.getString(R.string.player_device_disconnected),
+                Toast.LENGTH_LONG
+            ).show()
+        } else {
             if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && !initialUpdate) {
-                Toast.makeText(context, context.getString(R.string.player_device_connected), Toast.LENGTH_LONG).show()
-            }
-            else {
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.player_device_connected),
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
                 initialUpdate = false
             }
         }
