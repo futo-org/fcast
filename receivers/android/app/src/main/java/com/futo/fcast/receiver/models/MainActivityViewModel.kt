@@ -1,6 +1,7 @@
 package com.futo.fcast.receiver.models
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -17,7 +18,7 @@ class MainActivityViewModel : ViewModel() {
     var updateStatus by mutableStateOf<String?>("")
     var updateAvailable by mutableStateOf(false)
     var updating by mutableStateOf(false)
-    var updateProgress by mutableStateOf("")
+    var updateProgress by mutableFloatStateOf(0f)
     var updateResultSuccessful by mutableStateOf<Boolean?>(null)
 
     var ipInfo = mutableStateListOf<NetworkInterfaceData>()

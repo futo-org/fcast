@@ -11,10 +11,12 @@
     <string name="installing_update">Installing update…</string>
     <string name="success">Success</string>
     <string name="failed_to_update_with_error">Failed to update package with error</string>
-    <string name="update_status">There is an update available for FCast receiver, do you wish to update?</string>
+    <string name="update_available">FCast update available</string>
+    <string name="update_status">Do you wish to update now?</string>
     <string name="never">Never</string>
     <string name="close">Close</string>
     <string name="update">Update</string>
+    <string name="update_later">Later</string>
     <string name="checking_for_updates">Checking for updates…</string>
     <string name="no_updates_available">No updates available</string>
     <string name="permission_dialog_title">System Alert Window Permission</string>
@@ -34,7 +36,7 @@
     <string name="connection_details">Connection Details</string>
     <string name="port">Port</string>
     <string name="scan_to_connect">Scan with a FCast sender app</string>
-
+    <string name="network_no_interfaces">Device not connected to a network</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Application Icon</string>

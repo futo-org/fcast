@@ -95,9 +95,7 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
                         bottom.linkTo(parent.bottom)
                         start.linkTo(parent.start)
                         end.linkTo(parent.end)
-                    },
-                    R.drawable.ic_loader_animated
-                )
+                    })
             }
         }
         else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {

@@ -3,8 +3,8 @@ package com.futo.fcast.receiver.views
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import androidx.annotation.OptIn
-import androidx.annotation.StringRes
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -12,35 +12,25 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
-import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.ColorPainter
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -54,12 +44,10 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Devices.TV_720p
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.PlayerSurface
@@ -71,23 +59,15 @@ import com.futo.fcast.receiver.NetworkInterfaceType
 import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.composables.MainActivityViewConnectionMonitor
 import com.futo.fcast.receiver.composables.Spinner
+import com.futo.fcast.receiver.composables.ThemedText
+import com.futo.fcast.receiver.composables.WipeEffect
+import com.futo.fcast.receiver.composables.colorCardBackground
+import com.futo.fcast.receiver.composables.colorPrimary
 import com.futo.fcast.receiver.composables.frontendConnections
 import com.futo.fcast.receiver.composables.interFontFamily
 import com.futo.fcast.receiver.composables.outfitFontFamilyExtraBold
+import com.futo.fcast.receiver.composables.strokeCardBorder
 import com.futo.fcast.receiver.models.MainActivityViewModel
-
-@Composable
-fun ThemedText(text: String, modifier: Modifier = Modifier, fontWeight: FontWeight = FontWeight.Normal) {
-    Text(
-        text = text,
-        modifier = modifier,
-        color = Color.White,
-        fontSize = 14.sp,
-        fontFamily = interFontFamily,
-        fontWeight = fontWeight,
-        textAlign = TextAlign.Center,
-    )
-}
 
 @Composable
 fun SenderAppDownloadText() {
@@ -117,7 +97,7 @@ fun SenderAppDownloadText() {
         )
         addStyle(
             style = SpanStyle(
-                color = Color.Blue,
+                color = colorPrimary,
                 fontSize = 14.sp,
                 fontFamily = interFontFamily,
                 fontWeight = FontWeight.Normal,
@@ -142,51 +122,38 @@ fun SenderAppDownloadText() {
 
 @Composable
 fun ConnectionDetailsView(viewModel: MainActivityViewModel, modifier: Modifier) {
-    if (viewModel.ipInfo.isEmpty()) {
-        Text(
-            text = "add no connection info error",
-            modifier = Modifier
-                .padding(start = 8.dp, end = 8.dp, bottom = 10.dp),
-            color = Color.White,
-            fontSize = 14.sp,
-            fontFamily = interFontFamily,
-            fontWeight = FontWeight.Normal,
-            textAlign = TextAlign.Center,
-        )
-    }
-    else {
-        for (ip in viewModel.ipInfo) {
-            val icon = when (ip.type) {
-                NetworkInterfaceType.Wired, NetworkInterfaceType.Unknown -> R.drawable.network_light
-                NetworkInterfaceType.Wireless -> {
-                    // todo: review/fix ranges
-                    if (ip.signalLevel != null) {
-                        when {
-                            ip.signalLevel == 0 || ip.signalLevel >= 90 -> R.drawable.wifi_strength_4
-                            ip.signalLevel >= 70 -> R.drawable.wifi_strength_3
-                            ip.signalLevel >= 50 -> R.drawable.wifi_strength_2
-                            ip.signalLevel >= 30 -> R.drawable.wifi_strength_1
-                            else -> R.drawable.wifi_strength_outline
-                        }
-                    }
-                    else {
-                        R.drawable.wifi_strength_3
+    for (ip in viewModel.ipInfo) {
+        val icon = when (ip.type) {
+            NetworkInterfaceType.Wired, NetworkInterfaceType.Unknown -> R.drawable.network_light
+            NetworkInterfaceType.Wireless -> {
+                // todo: review/fix ranges
+                if (ip.signalLevel != null) {
+                    when {
+                        ip.signalLevel == 0 || ip.signalLevel >= 90 -> R.drawable.wifi_strength_4
+                        ip.signalLevel >= 70 -> R.drawable.wifi_strength_3
+                        ip.signalLevel >= 50 -> R.drawable.wifi_strength_2
+                        ip.signalLevel >= 30 -> R.drawable.wifi_strength_1
+                        else -> R.drawable.wifi_strength_outline
                     }
                 }
+                else {
+                    R.drawable.wifi_strength_3
+                }
             }
+        }
 
-            Row (
-                Modifier.padding(vertical = 2.dp)
-            ) {
-                Image(
-                    painter = painterResource(icon),
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(18.dp)
-                )
-                ThemedText(ip.address, Modifier.padding(horizontal = 8.dp))
-                ThemedText(ip.name)
-            }
+        Row (
+            Modifier.padding(vertical = 2.dp)
+        ) {
+            Image(
+                painter = painterResource(icon),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(18.dp)
+            )
+            ThemedText(ip.address, Modifier.padding(horizontal = 8.dp))
+            ThemedText(ip.name)
+        }
 
 //            Row (
 //                Modifier.padding(vertical = 2.dp)
@@ -200,16 +167,15 @@ fun ConnectionDetailsView(viewModel: MainActivityViewModel, modifier: Modifier) 
 //                ThemedText(ip.address, Modifier.padding(horizontal = 8.dp))
 //                ThemedText(ip.name)
 //            }
-        }
-
-        Spacer(modifier = Modifier.padding(vertical = 10.dp))
-        ThemedText(stringResource(R.string.port))
-        ThemedText(viewModel.textPorts)
     }
+
+    Spacer(modifier = Modifier.padding(vertical = 10.dp))
+    ThemedText(stringResource(R.string.port))
+    ThemedText(viewModel.textPorts)
 }
 
 @Composable
-fun ConnectionStatusView(viewModel: MainActivityViewModel) {
+fun ConnectionStatusView(viewModel: MainActivityViewModel, modifier: Modifier) {
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
 
     val connectionStatus = when (frontendConnections.size) {
@@ -218,31 +184,37 @@ fun ConnectionStatusView(viewModel: MainActivityViewModel) {
         else -> stringResource(R.string.connected_multiple)
     }
 
-    val textModifier = if (isPortrait) Modifier.padding(end = 8.dp) else Modifier
+    val textModifier = if (isPortrait) Modifier.padding(end = 15.dp) else modifier
     ThemedText(connectionStatus, textModifier)
     Spacer(Modifier.height(20.dp))
 
     val iconModifier = if (isPortrait) Modifier.size(35.dp) else Modifier.size(55.dp)
+    val wipePercentage = animateFloatAsState(
+        targetValue = if (frontendConnections.isNotEmpty()) 1f else 0.4f,
+        animationSpec = tween(durationMillis = 500)
+    )
+
     if (frontendConnections.isEmpty()) {
-        Spinner(
-            modifier = iconModifier,
-            R.drawable.ic_loader_animated
-        )
+        Spinner(modifier = iconModifier)
     }
     else {
-        // todo: image / animation update
-        Image(
-            painter = painterResource(R.drawable.ic_update_success),
-            contentDescription = null,
+        Box(
             modifier = iconModifier
-        )
+                .clip(CircleShape)
+                .background(colorPrimary)
+        ) {
+            Image(
+                painter = painterResource(R.drawable.checked),
+                contentDescription = null,
+                modifier = iconModifier
+                    .clip(WipeEffect(wipePercentage))
+            )
+        }
     }
 }
 
 @Composable
-fun TitleStatusGroupView(viewModel: MainActivityViewModel, modifier: Modifier) {
-    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
-
+fun TitleView(viewModel: MainActivityViewModel, modifier: Modifier) {
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.Top,
@@ -270,18 +242,6 @@ fun TitleStatusGroupView(viewModel: MainActivityViewModel, modifier: Modifier) {
                 )
             )
         }
-
-        Spacer(Modifier.fillMaxWidth().height(20.dp))
-        if (isPortrait) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ConnectionStatusView(viewModel)
-            }
-        }
-        else {
-            ConnectionStatusView(viewModel)
-        }
     }
 }
 
@@ -293,9 +253,9 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 //                Spacer(Modifier.fillMaxWidth().height(spacerSize))
     Surface(
         modifier = modifier,
-        color = Color(0x801D1D1D),
+        color = colorCardBackground,
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, Color(0xFF2E2E2E))
+        border = strokeCardBorder
     ) {
         Column(modifier = Modifier
             .padding(horizontal = 15.dp, vertical = paddingSize),
@@ -310,45 +270,46 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
                     .background(Color.Gray)
             )
 
-            if (viewModel.showQR) {
-                val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
-                val configuration = LocalConfiguration.current
-                val density = LocalDensity.current
+            if (viewModel.ipInfo.isNotEmpty()) {
+                if (viewModel.showQR) {
+                    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+                    val configuration = LocalConfiguration.current
+                    val density = LocalDensity.current
 
-                val width = with(density) { configuration.screenWidthDp.dp.toPx() }.toInt()
-                val height = with(density) { configuration.screenHeightDp.dp.toPx() }.toInt()
+                    val width = with(density) { configuration.screenWidthDp.dp.toPx() }.toInt()
+                    val height = with(density) { configuration.screenHeightDp.dp.toPx() }.toInt()
 
-                var qrSize = 170.dp
+                    var qrSize = 170.dp
 
-                // todo centralize handling of qr creation and display sizes
-                if (isPortrait) {
-                    if (height >= 2560 || width >= 1440) {
-                        qrSize = 165.dp
+                    // todo centralize handling of qr creation and display sizes
+                    if (isPortrait) {
+                        if (height >= 2560 || width >= 1440) {
+                            qrSize = 165.dp
+                        }
+                        if ((height >= 1920 && height < 2560) || (width >= 1080 && width < 1440)) {
+                            qrSize = 125.dp
+                        }
+                        if ((height >= 1280 && height < 1920) || (width >= 720 && width < 1080)) {
+                            qrSize = 85.dp
+                        }
+                        if (height < 1280 || width < 720) {
+                            qrSize = 60.dp
+                        }
                     }
-                    if ((height >= 1920 && height < 2560) || (width >= 1080 && width < 1440)) {
-                        qrSize = 125.dp
+                    else {
+                        if (width >= 2560 || height >= 1440) {
+                            qrSize = 165.dp
+                        }
+                        if ((width >= 1920 && width < 2560) || (height >= 1080 && height < 1440)) {
+                            qrSize = 125.dp
+                        }
+                        if ((width >= 1280 && width < 1920) || (height >= 720 && height < 1080)) {
+                            qrSize = 85.dp
+                        }
+                        if (width < 1280 || height < 720) {
+                            qrSize = 60.dp
+                        }
                     }
-                    if ((height >= 1280 && height < 1920) || (width >= 720 && width < 1080)) {
-                        qrSize = 85.dp
-                    }
-                    if (height < 1280 || width < 720) {
-                        qrSize = 60.dp
-                    }
-                }
-                else {
-                    if (width >= 2560 || height >= 1440) {
-                        qrSize = 165.dp
-                    }
-                    if ((width >= 1920 && width < 2560) || (height >= 1080 && height < 1440)) {
-                        qrSize = 125.dp
-                    }
-                    if ((width >= 1280 && width < 1920) || (height >= 720 && height < 1080)) {
-                        qrSize = 85.dp
-                    }
-                    if (width < 1280 || height < 720) {
-                        qrSize = 60.dp
-                    }
-                }
 
 
 //                val qrSize = when {
@@ -360,28 +321,37 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
 //                ThemedText(width.toString() + " " + height.toString())
 
-                ThemedText(stringResource(R.string.scan_to_connect), Modifier.padding(bottom = paddingSize), FontWeight.Bold)
-                Image(
-                    painter = if (viewModel.imageQR != null)
-                        BitmapPainter(viewModel.imageQR!!)
-                    else ColorPainter(Color.Gray),
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(qrSize)
-                )
-                SenderAppDownloadText()
+                    ThemedText(stringResource(R.string.scan_to_connect), Modifier.padding(bottom = paddingSize), FontWeight.Bold)
+                    Image(
+                        painter = if (viewModel.imageQR != null)
+                            BitmapPainter(viewModel.imageQR!!)
+                        else ColorPainter(Color.Gray),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(qrSize)
+                    )
+                    SenderAppDownloadText()
 
-                ThemedText(stringResource(R.string.connection_details), Modifier.padding(top = paddingSize), FontWeight.Bold)
-                Spacer(
-                    modifier = Modifier
-                        .padding(top = paddingSize, bottom = paddingSize - 2.dp)
-                        .height(1.dp)
-                        .fillMaxWidth()
-                        .background(Color.Gray)
-                )
+                    ThemedText(stringResource(R.string.connection_details), Modifier.padding(top = paddingSize), FontWeight.Bold)
+                    Spacer(
+                        modifier = Modifier
+                            .padding(top = paddingSize, bottom = paddingSize - 2.dp)
+                            .height(1.dp)
+                            .fillMaxWidth()
+                            .background(Color.Gray)
+                    )
+                }
+
+                ConnectionDetailsView(viewModel, modifier)
             }
-
-            ConnectionDetailsView(viewModel, modifier)
+            else {
+                Image(
+                    painter = painterResource(R.drawable.error),
+                    contentDescription = null,
+                    modifier = Modifier.size(55.dp)
+                )
+                ThemedText(stringResource(R.string.network_no_interfaces), Modifier.padding(top = paddingSize), fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -399,7 +369,8 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
     ) {
         PlayerSurface(
             player = exoPlayer,
@@ -414,47 +385,62 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
                 Modifier.padding(horizontal = 40.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                TitleStatusGroupView(viewModel, Modifier.weight(2f))
-                ConnectionInfoView(viewModel, Modifier.weight(4f))
+                TitleView(viewModel, Modifier)
+                Spacer(Modifier.fillMaxWidth().height(20.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ConnectionStatusView(viewModel, Modifier.fillMaxWidth())
+                }
                 Spacer(Modifier.fillMaxWidth().height(spacerSize))
-                UpdateView(viewModel, modifier = Modifier.weight(1f))
+
+                ConnectionInfoView(viewModel, Modifier)
+                Spacer(Modifier.fillMaxWidth().height(spacerSize))
+                Surface(
+                    modifier = Modifier.padding(horizontal = 30.dp),
+                    color = colorCardBackground,
+                    shape = RoundedCornerShape(10.dp),
+                    border = strokeCardBorder
+                ) {
+                    UpdateView(viewModel, modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp))
+                }
             }
         }
         else {
             Row(
-                modifier = Modifier.padding(vertical = 40.dp)
+                modifier = Modifier.padding(vertical = 40.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 val columnPadding = 80.dp
 
                 Column(
                     modifier = Modifier
-//                        .padding(horizontal = 140.dp, vertical = 80.dp)
-//                        .padding(horizontal = 40.dp, vertical = 40.dp)
                         .padding(horizontal = columnPadding)
                         .weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    TitleStatusGroupView(viewModel, Modifier.weight(2f).fillMaxWidth())
-                    Spacer(Modifier.height(spacerSize))
+                    TitleView(viewModel, Modifier.fillMaxWidth())
+                    Spacer(Modifier.fillMaxWidth().height(spacerSize))
+                    ConnectionStatusView(viewModel, Modifier.fillMaxWidth())
+
+                    Spacer(Modifier.fillMaxWidth().height(spacerSize * 2))
                     Surface(
-                        modifier = Modifier.weight(1f),
-                        color = Color(0x801D1D1D),
+                        modifier = Modifier.padding(horizontal = 30.dp),
+                        color = colorCardBackground,
                         shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, Color(0xFF2E2E2E))
+                        border = strokeCardBorder
                     ) {
-                        UpdateView(viewModel, modifier = Modifier.weight(1f))
+                        UpdateView(viewModel, modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp))
                     }
                 }
                 Column(
                     modifier = Modifier
-//                        .padding(horizontal = 140.dp, vertical = 80.dp)
-//                        .padding(horizontal = 40.dp, vertical = 40.dp)
-//                        .padding(start = 40.dp)
                         .padding(horizontal = columnPadding)
                         .weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    ConnectionInfoView(viewModel, Modifier.weight(4f))
+                    ConnectionInfoView(viewModel, Modifier)
                 }
             }
         }

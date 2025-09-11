@@ -479,7 +479,7 @@ class MainActivity : AppCompatActivity() {
 
                         lifecycleScope.launch(Dispatchers.Main) {
 //                            _textProgress.text = progressText
-                            viewModel.updateProgress = progressText
+                            viewModel.updateProgress = progress
                         }
                     }
                 }
@@ -501,7 +501,7 @@ class MainActivity : AppCompatActivity() {
 
             withContext(Dispatchers.Main) {
 //                _textProgress.text = ""
-                viewModel.updateProgress = ""
+//                viewModel.updateProgress = ""
 //                setText(resources.getText(R.string.installing_update))
                 viewModel.updateStatus = getString(R.string.installing_update)
             }
