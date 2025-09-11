@@ -1,6 +1,7 @@
 package com.futo.fcast.receiver
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.Intent
@@ -14,42 +15,48 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.util.TypedValue
 import android.view.Display
+import android.view.KeyEvent
 import android.view.WindowManager
 import android.view.WindowMetrics
-import android.widget.*
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import com.google.zxing.BarcodeFormat
-import com.journeyapps.barcodescanner.BarcodeEncoder
-import kotlinx.coroutines.*
-import kotlinx.serialization.json.Json
-import okhttp3.OkHttpClient
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.NetworkInterface
-import androidx.core.net.toUri
+import com.futo.fcast.receiver.models.EventMessage
+import com.futo.fcast.receiver.models.EventType
 import com.futo.fcast.receiver.models.FCastNetworkConfig
 import com.futo.fcast.receiver.models.FCastService
 import com.futo.fcast.receiver.models.MainActivityViewModel
 import com.futo.fcast.receiver.views.MainActivity
+import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
+import java.io.InputStream
+import java.io.OutputStream
 
 
 class MainActivity : AppCompatActivity() {
     private lateinit var _player: ExoPlayer
     private lateinit var _systemAlertWindowPermissionLauncher: ActivityResultLauncher<Intent>
     private var _updateAvailable: Boolean? = null
-//    private var _updating: Boolean = false
+
+    //    private var _updating: Boolean = false
     private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
 
     val viewModel = MainActivityViewModel()
@@ -63,23 +70,30 @@ class MainActivity : AppCompatActivity() {
         }
 
 
-        _systemAlertWindowPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
-            if (Settings.canDrawOverlays(this)) {
-                // Permission granted, you can launch the activity from the foreground service
-                Toast.makeText(this, "Alert window permission granted", Toast.LENGTH_LONG).show()
-                Log.i(TAG, "Alert window permission granted")
-            } else {
-                // Permission denied, notify the user and request again if necessary
-                Toast.makeText(this, "Permission is required to work in background", Toast.LENGTH_LONG).show()
-                Log.i(TAG, "Alert window permission denied")
+        _systemAlertWindowPermissionLauncher =
+            registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+                if (Settings.canDrawOverlays(this)) {
+                    // Permission granted, you can launch the activity from the foreground service
+                    Toast.makeText(this, "Alert window permission granted", Toast.LENGTH_LONG)
+                        .show()
+                    Log.i(TAG, "Alert window permission granted")
+                } else {
+                    // Permission denied, notify the user and request again if necessary
+                    Toast.makeText(
+                        this,
+                        "Permission is required to work in background",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    Log.i(TAG, "Alert window permission denied")
+                }
             }
-        }
 
-        _updateAvailable = if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
-            savedInstanceState.getBoolean("updateAvailable", false)
-        } else {
-            null
-        }
+        _updateAvailable =
+            if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
+                savedInstanceState.getBoolean("updateAvailable", false)
+            } else {
+                null
+            }
 
         startVideo()
 
@@ -122,7 +136,8 @@ class MainActivity : AppCompatActivity() {
 //        val ips = getIPs()
         //        _textIPs.text = "IPs\n${ips.joinToString("\n")}\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
 //        viewModel.textIPs = ips.joinToString("\n")
-        viewModel.textPorts = "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+        viewModel.textPorts =
+            "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
 
         val resolution = getScreenResolution()
         val width = resolution.first
@@ -151,7 +166,11 @@ class MainActivity : AppCompatActivity() {
 
         try {
             val barcodeEncoder = BarcodeEncoder()
-            val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, qrSize, resources.displayMetrics).toInt()
+            val px = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                qrSize,
+                resources.displayMetrics
+            ).toInt()
             val hints = mapOf(EncodeHintType.MARGIN to 1)
             val json = Json.encodeToString(
                 FCastNetworkConfig(
@@ -161,7 +180,10 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
             )
-            val base64 = Base64.encodeToString(json.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val base64 = Base64.encodeToString(
+                json.toByteArray(),
+                Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+            )
             val url = "fcast://r/${base64}"
             Log.i(TAG, "connection url: $url")
             val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px, hints)
@@ -233,10 +255,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVideo() {
-//        _player = ExoPlayer.Builder(this).build()
-//        _videoBackground.player = _player
-
-        val mediaItem = MediaItem.fromUri(("android.resource://" + packageName + "/" + R.raw.c).toUri())
+        val mediaItem =
+            MediaItem.fromUri(("android.resource://" + packageName + "/" + R.raw.c).toUri())
         _player.setMediaItem(mediaItem)
         _player.prepare()
         _player.repeatMode = Player.REPEAT_MODE_ALL
@@ -246,7 +266,8 @@ class MainActivity : AppCompatActivity() {
     private fun checkAndRequestPermissions(): Boolean {
         val listPermissionsNeeded = arrayListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val notificationPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            val notificationPermission =
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             if (notificationPermission != PackageManager.PERMISSION_GRANTED) {
                 listPermissionsNeeded.add(Manifest.permission.POST_NOTIFICATIONS)
             }
@@ -257,7 +278,11 @@ class MainActivity : AppCompatActivity() {
             val sharedPref = this.getSharedPreferences(_preferenceFileKey, MODE_PRIVATE)
             val hasRequestedPermission = sharedPref.getBoolean(permissionRequestedKey, false)
             if (!hasRequestedPermission) {
-                ActivityCompat.requestPermissions(this, listPermissionsNeeded.toTypedArray(), REQUEST_ID_MULTIPLE_PERMISSIONS)
+                ActivityCompat.requestPermissions(
+                    this,
+                    listPermissionsNeeded.toTypedArray(),
+                    REQUEST_ID_MULTIPLE_PERMISSIONS
+                )
                 with(sharedPref.edit()) {
                     putBoolean(permissionRequestedKey, true)
                     apply()
@@ -284,17 +309,27 @@ class MainActivity : AppCompatActivity() {
                         .setMessage(R.string.permission_dialog_message)
                         .setPositiveButton(R.string.permission_dialog_positive_button) { _, _ ->
                             try {
-                                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    "package:$packageName".toUri())
+                                val intent = Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    "package:$packageName".toUri()
+                                )
                                 _systemAlertWindowPermissionLauncher.launch(intent)
                             } catch (e: Throwable) {
                                 Log.e("OverlayPermission", "Error requesting overlay permission", e)
-                                Toast.makeText(this, "An error occurred: ${e.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    this,
+                                    "An error occurred: ${e.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                         .setNegativeButton(R.string.permission_dialog_negative_button) { dialog, _ ->
                             dialog.dismiss()
-                            Toast.makeText(this, "Permission is required to work in background", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                this,
+                                "Permission is required to work in background",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                         .create()
                         .show()
@@ -304,7 +339,11 @@ class MainActivity : AppCompatActivity() {
                         apply()
                     }
                 } else {
-                    Toast.makeText(this, "Optional system alert window permission missing", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        "Optional system alert window permission missing",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         } catch (_: Throwable) {
@@ -312,14 +351,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
         when (requestCode) {
             REQUEST_ID_MULTIPLE_PERMISSIONS -> {
                 val perms: MutableMap<String, Int> = HashMap()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    perms[Manifest.permission.POST_NOTIFICATIONS] = PackageManager.PERMISSION_GRANTED
+                    perms[Manifest.permission.POST_NOTIFICATIONS] =
+                        PackageManager.PERMISSION_GRANTED
                 }
 
                 if (grantResults.isNotEmpty()) {
@@ -332,11 +376,19 @@ class MainActivity : AppCompatActivity() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         if (perms[Manifest.permission.POST_NOTIFICATIONS] == PackageManager.PERMISSION_GRANTED) {
                             Log.i(TAG, "Notification permission granted")
-                            Toast.makeText(this, "Notification permission granted", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                this,
+                                "Notification permission granted",
+                                Toast.LENGTH_LONG
+                            ).show()
                             restartService()
                         } else {
                             Log.i(TAG, "Notification permission not granted")
-                            Toast.makeText(this, "App may not fully work without notification permission", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                this,
+                                "App may not fully work without notification permission",
+                                Toast.LENGTH_LONG
+                            ).show()
                             restartService()
                         }
                     }
@@ -367,14 +419,22 @@ class MainActivity : AppCompatActivity() {
                         Log.w(TAG, "Failed to retrieve version from version URL.")
 
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(this@MainActivity, "Failed to retrieve version", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Failed to retrieve version",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
                 } catch (e: Throwable) {
                     Log.w(TAG, "Failed to check for updates.", e)
 
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "Failed to check for updates", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Failed to check for updates",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
             }
@@ -383,20 +443,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setUpdateAvailable(updateAvailable: Boolean) {
         if (updateAvailable) {
-            try {
-//                (_updateSpinner.drawable as Animatable?)?.stop()
-//                _updateSpinner.visibility = View.INVISIBLE
-//                setText(resources.getText(R.string.update_status))
-                viewModel.updateStatus = getString(R.string.update_status)
-//                _buttonUpdate.visibility = View.VISIBLE
-            } catch (_: Throwable) {
-                Toast.makeText(this@MainActivity, "Failed to show update dialog", Toast.LENGTH_LONG).show()
-                Log.w(TAG, "Error occurred in update dialog.")
-            }
+            viewModel.updateStatus = getString(R.string.update_status)
         } else {
-//            _updateSpinner.visibility = View.INVISIBLE
-//            _buttonUpdate.visibility = View.INVISIBLE
-//            setText(null)
             viewModel.updateStatus = null
         }
 
@@ -421,13 +469,8 @@ class MainActivity : AppCompatActivity() {
 
     fun update() {
         viewModel.updating = true
-//        _updateSpinner.visibility = View.VISIBLE
-//        _buttonUpdate.visibility = Button.INVISIBLE
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-//        setText(resources.getText(R.string.downloading_update))
         viewModel.updateStatus = getString(R.string.downloading_update)
-//        (_updateSpinner.drawable as Animatable?)?.start()
 
         lifecycleScope.launch(Dispatchers.IO) {
             var inputStream: InputStream? = null
@@ -448,7 +491,11 @@ class MainActivity : AppCompatActivity() {
                     throw Exception("Failed to download latest version of app.")
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "Exception thrown while downloading and installing latest version of app.", e)
+                Log.w(
+                    TAG,
+                    "Exception thrown while downloading and installing latest version of app.",
+                    e
+                )
                 withContext(Dispatchers.Main) {
                     onReceiveResult("Failed to download update.")
                 }
@@ -459,7 +506,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun install(inputStream: InputStream, dataLength: Long) {
-        var lastProgressText = ""
+        var lastProgressInt = 0
         var session: PackageInstaller.Session? = null
 
         try {
@@ -467,18 +514,18 @@ class MainActivity : AppCompatActivity() {
             InstallReceiver.onReceiveResult = { message -> onReceiveResult(message) }
 
             val packageInstaller: PackageInstaller = packageManager.packageInstaller
-            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            val params =
+                PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
             val sessionId = packageInstaller.createSession(params)
             session = packageInstaller.openSession(sessionId)
 
             session.openWrite("package", 0, dataLength).use { sessionStream ->
                 inputStream.copyToOutputStream(dataLength, sessionStream) { progress ->
-                    val progressText = "${(progress * 100.0f).toInt()}%"
-                    if (lastProgressText != progressText) {
-                        lastProgressText = progressText
+                    val progressInt = (progress * 100.0f).toInt()
+                    if (lastProgressInt != progressInt) {
+                        lastProgressInt = progressInt
 
                         lifecycleScope.launch(Dispatchers.Main) {
-//                            _textProgress.text = progressText
                             viewModel.updateProgress = progress
                         }
                     }
@@ -500,19 +547,20 @@ class MainActivity : AppCompatActivity() {
             session.close()
 
             withContext(Dispatchers.Main) {
-//                _textProgress.text = ""
-//                viewModel.updateProgress = ""
-//                setText(resources.getText(R.string.installing_update))
+                viewModel.updateProgress = 1f
                 viewModel.updateStatus = getString(R.string.installing_update)
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Exception thrown while downloading and installing latest version of app.", e)
+            Log.w(
+                TAG,
+                "Exception thrown while downloading and installing latest version of app.",
+                e
+            )
             session?.abandon()
             withContext(Dispatchers.Main) {
                 onReceiveResult("Failed to download update.")
             }
-        }
-        finally {
+        } finally {
             withContext(Dispatchers.Main) {
                 window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
@@ -523,22 +571,21 @@ class MainActivity : AppCompatActivity() {
         InstallReceiver.onReceiveResult = null
         Log.i(TAG, "Cleared InstallReceiver.onReceiveResult handler.")
 
-//        (_updateSpinner.drawable as Animatable?)?.stop()
-
         if (result.isNullOrBlank()) {
             viewModel.updateResultSuccessful = true
-//            _updateSpinner.setImageResource(R.drawable.ic_update_success)
-//            setText(resources.getText(R.string.success))
             viewModel.updateStatus = getString(R.string.success)
         } else {
             viewModel.updateResultSuccessful = false
-//            _updateSpinner.setImageResource(R.drawable.ic_update_fail)
-//            setText("${resources.getText(R.string.failed_to_update_with_error)}: '$result'.")
-            viewModel.updateStatus = "${getString(R.string.failed_to_update_with_error)}: '$result'."
+            viewModel.updateStatus =
+                "${getString(R.string.failed_to_update_with_error)}: '$result'."
         }
     }
 
-    private fun InputStream.copyToOutputStream(inputStreamLength: Long, outputStream: OutputStream, onProgress: (Float) -> Unit) {
+    private fun InputStream.copyToOutputStream(
+        inputStreamLength: Long,
+        outputStream: OutputStream,
+        onProgress: (Float) -> Unit
+    ) {
         val buffer = ByteArray(16384)
         var n: Int
         var total = 0
@@ -549,6 +596,65 @@ class MainActivity : AppCompatActivity() {
             outputStream.write(buffer, 0, n)
             onProgress.invoke(total.toFloat() / inputStreamLengthFloat)
         }
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @OptIn(UnstableApi::class)
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        //        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
+//        var handledCase = false
+        var key = event.displayLabel.toString()
+
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_CENTER -> key = "Enter"
+                KeyEvent.KEYCODE_DPAD_UP -> key = "ArrowUp"
+                KeyEvent.KEYCODE_DPAD_DOWN -> key = "ArrowDown"
+                KeyEvent.KEYCODE_DPAD_LEFT -> key = "ArrowLeft"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> key = "ArrowRight"
+                KeyEvent.KEYCODE_MEDIA_STOP -> key = "Stop"
+                KeyEvent.KEYCODE_MEDIA_REWIND -> key = "Rewind"
+                KeyEvent.KEYCODE_MEDIA_PLAY -> key = "Play"
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> key = "Pause"
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> key = "FastForward"
+                KeyEvent.KEYCODE_BACK -> key = "Back"
+            }
+        }
+
+        if (NetworkService.instance?.getSubscribedKeys()?.first?.contains(key) == true) {
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    com.futo.fcast.receiver.models.KeyEvent(
+                        EventType.KeyDown,
+                        key,
+                        event.repeatCount > 0,
+//                    handledCase
+                        true
+                    )
+                )
+            )
+        }
+        if (NetworkService.instance?.getSubscribedKeys()?.second?.contains(key) == true) {
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    com.futo.fcast.receiver.models.KeyEvent(
+                        EventType.KeyUp,
+                        key,
+                        event.repeatCount > 0,
+//                    handledCase
+                        true
+                    )
+                )
+            )
+        }
+
+//        if (handledCase) {
+//            return true
+//        }
+
+        return super.dispatchKeyEvent(event)
     }
 
     companion object {

@@ -15,8 +15,13 @@ import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_VIDEO
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -29,18 +34,6 @@ import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
-import java.io.File
-import java.io.FileOutputStream
-import kotlin.math.abs
-import kotlin.math.max
-import androidx.core.net.toUri
-import androidx.media3.common.MediaMetadata
-import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
-import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
-import androidx.media3.common.MediaMetadata.MEDIA_TYPE_VIDEO
 import com.futo.fcast.receiver.models.ControlFocus
 import com.futo.fcast.receiver.models.EventMessage
 import com.futo.fcast.receiver.models.EventType
@@ -59,7 +52,14 @@ import com.futo.fcast.receiver.models.streamingMediaTypes
 import com.futo.fcast.receiver.models.supportedAudioTypes
 import com.futo.fcast.receiver.models.supportedVideoTypes
 import com.futo.fcast.receiver.views.PlayerActivity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
+import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
 
 enum class ControlBarMode {
@@ -77,7 +77,8 @@ class PlayerActivity : AppCompatActivity() {
     private var _lastPlayerUpdateGenerationTime: Long = 0
 
     private var _cachedPlaylist: PlaylistContent = PlaylistContent(items = arrayListOf())
-    private var _cachedPlayMediaItem: com.futo.fcast.receiver.models.MediaItem = com.futo.fcast.receiver.models.MediaItem("")
+    private var _cachedPlayMediaItem: com.futo.fcast.receiver.models.MediaItem =
+        com.futo.fcast.receiver.models.MediaItem("")
     private var _playlistIndex: Int = 0
     private var _isMediaItem: Boolean = false
     private var _playItemCached = false
@@ -90,7 +91,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }, 5000)
     private val _showDurationTimer = Timer(::mediaEndHandler, 0, false)
-    
+
     private var _controlMode = ControlBarMode.KeyboardMouse
 
     private val _connectivityEvents = object : ConnectivityManager.NetworkCallback() {
@@ -105,13 +106,16 @@ class PlayerActivity : AppCompatActivity() {
                     val pos = _exoPlayer.currentPosition
                     val dur = _exoPlayer.duration
                     if (_shouldPlaybackRestartOnConnectivity && abs(pos - dur) > 2000) {
-                        Log.i(TAG, "Playback ended due to connection loss, resuming playback since connection is restored.")
+                        Log.i(
+                            TAG,
+                            "Playback ended due to connection loss, resuming playback since connection is restored."
+                        )
                         _exoPlayer.playWhenReady = true
                         _exoPlayer.prepare()
                         _exoPlayer.play()
                     }
                 }
-            } catch(ex: Throwable) {
+            } catch (ex: Throwable) {
                 Log.w(TAG, "Failed to handle connection available event", ex)
             }
         }
@@ -145,7 +149,11 @@ class PlayerActivity : AppCompatActivity() {
             sendPlaybackUpdate()
         }
 
-        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
             super.onPositionDiscontinuity(oldPosition, newPosition, reason)
             sendPlaybackUpdate()
         }
@@ -224,6 +232,7 @@ class PlayerActivity : AppCompatActivity() {
                     PlaybackState.Paused
                 }
             }
+
             ExoPlayer.STATE_BUFFERING -> {
                 state = if (_exoPlayer.playWhenReady) {
                     PlaybackState.Playing
@@ -231,9 +240,11 @@ class PlayerActivity : AppCompatActivity() {
                     PlaybackState.Paused
                 }
             }
+
             ExoPlayer.STATE_ENDED -> {
                 state = PlaybackState.Paused
             }
+
             else -> {
                 state = PlaybackState.Idle
             }
@@ -388,12 +399,10 @@ class PlayerActivity : AppCompatActivity() {
             if (immediateHide) {
                 viewModel.controlFocus = ControlFocus.None
                 viewModel.showControls = false
-            }
-            else {
+            } else {
                 _uiHideTimer.start()
             }
-        }
-        else {
+        } else {
             viewModel.controlFocus = ControlFocus.ProgressBar
             viewModel.showControls = true
             _uiHideTimer.start()
@@ -418,13 +427,11 @@ class PlayerActivity : AppCompatActivity() {
         if (!skipBackRepeat && repeat) {
             skipBackRepeat = true
             skipBackTimer.start()
-        }
-        else if (skipBackRepeat && skipBackIntervalIncrease && repeat) {
+        } else if (skipBackRepeat && skipBackIntervalIncrease && repeat) {
             skipBackInterval = if (skipBackInterval == 10) 30 else min(skipBackInterval + 30, 300)
             skipBackIntervalIncrease = false
             skipBackTimer.start()
-        }
-        else if (!repeat) {
+        } else if (!repeat) {
             skipBackTimer.stop()
             skipBackRepeat = false
             skipBackIntervalIncrease = false
@@ -438,13 +445,12 @@ class PlayerActivity : AppCompatActivity() {
         if (!skipForwardRepeat && repeat) {
             skipForwardRepeat = true
             skipForwardTimer.start()
-        }
-        else if (skipForwardRepeat && skipForwardIntervalIncrease && repeat) {
-            skipForwardInterval = if (skipForwardInterval == 10) 30 else min(skipForwardInterval + 30, 300)
+        } else if (skipForwardRepeat && skipForwardIntervalIncrease && repeat) {
+            skipForwardInterval =
+                if (skipForwardInterval == 10) 30 else min(skipForwardInterval + 30, 300)
             skipForwardIntervalIncrease = false
             skipForwardTimer.start()
-        }
-        else if (!repeat) {
+        } else if (!repeat) {
             skipForwardTimer.stop()
             skipForwardRepeat = false
             skipForwardIntervalIncrease = false
@@ -453,7 +459,12 @@ class PlayerActivity : AppCompatActivity() {
 
         // todo: handle livestreams
 //        if (!isLivePosition) {
-            _exoPlayer.seekTo(min(_exoPlayer.currentPosition + (skipForwardInterval * 1000), _exoPlayer.duration))
+        _exoPlayer.seekTo(
+            min(
+                _exoPlayer.currentPosition + (skipForwardInterval * 1000),
+                _exoPlayer.duration
+            )
+        )
 //        }
     }
 
@@ -502,7 +513,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
 //        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
         var handledCase = false
-        var key = ""
+        var key = event.displayLabel.toString()
 
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
@@ -511,12 +522,10 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                     if (!_exoPlayer.isPlaying) {
                         resume()
-                    }
-                    else {
+                    } else {
                         pause()
                     }
 
-                    key = event.displayLabel.toString()
                     handledCase = true
                 }
 
@@ -524,21 +533,17 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_DPAD_CENTER -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
-                    }
-                    else {
+                    } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar || viewModel.controlFocus == ControlFocus.Action) {
                             // Play/pause toggle
                             if (!_exoPlayer.isPlaying) {
                                 resume()
-                            }
-                            else {
+                            } else {
                                 pause()
                             }
-                        }
-                        else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
+                        } else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
                             previousPlaylistItem()
-                        }
-                        else if (viewModel.controlFocus == ControlFocus.PlayNext) {
+                        } else if (viewModel.controlFocus == ControlFocus.PlayNext) {
                             nextPlaylistItem()
                         }
                     }
@@ -550,12 +555,10 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
-                    }
-                    else {
+                    } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
                             setControlMode(ControlBarMode.KeyboardMouse)
-                        }
-                        else {
+                        } else {
                             viewModel.controlFocus = ControlFocus.ProgressBar
                         }
                     }
@@ -567,12 +570,10 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
-                    }
-                    else {
+                    } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
                             viewModel.controlFocus = ControlFocus.Action
-                        }
-                        else {
+                        } else {
                             setControlMode(ControlBarMode.KeyboardMouse)
                         }
                     }
@@ -584,16 +585,13 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
-                    }
-                    else {
+                    } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar || !_isMediaItem) {
                             skipBack(event.repeatCount > 0)
-                        }
-                        else {
+                        } else {
                             if (viewModel.controlFocus == ControlFocus.Action) {
                                 viewModel.controlFocus = ControlFocus.PlayPrevious
-                            }
-                            else if (viewModel.controlFocus == ControlFocus.PlayNext) {
+                            } else if (viewModel.controlFocus == ControlFocus.PlayNext) {
                                 viewModel.controlFocus = ControlFocus.Action
                             }
                         }
@@ -606,16 +604,13 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
-                    }
-                    else {
+                    } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar || !_isMediaItem) {
                             skipForward(event.repeatCount > 0)
-                        }
-                        else {
+                        } else {
                             if (viewModel.controlFocus == ControlFocus.Action) {
                                 viewModel.controlFocus = ControlFocus.PlayNext
-                            }
-                            else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
+                            } else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
                                 viewModel.controlFocus = ControlFocus.Action
                             }
                         }
@@ -632,7 +627,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                skipBack(event.repeatCount > 0)
+                    skipBack(event.repeatCount > 0)
                     key = "Rewind"
                     handledCase = true
                 }
@@ -670,16 +665,36 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
+        if (NetworkService.instance?.getSubscribedKeys()?.first?.contains(key) == true) {
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    com.futo.fcast.receiver.models.KeyEvent(
+                        EventType.KeyDown,
+                        key,
+                        event.repeatCount > 0,
+                        handledCase
+                    )
+                )
+            )
+        }
+        if (NetworkService.instance?.getSubscribedKeys()?.second?.contains(key) == true) {
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    com.futo.fcast.receiver.models.KeyEvent(
+                        EventType.KeyUp,
+                        key,
+                        event.repeatCount > 0,
+                        handledCase
+                    )
+                )
+            )
+        }
+
         if (handledCase) {
             return true
         }
-
-//        if (window.targetAPI.getSubscribedKeys().keyDown.has(key)) {
-//            window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyDown, key, event.repeat, handledCase)));
-//        }
-//        if (window.targetAPI.getSubscribedKeys().keyUp.has(key)) {
-//            window.targetAPI.sendEvent(new EventMessage(Date.now(), new KeyEvent(EventType.KeyUp, key, event.repeat, handledCase)));
-//        }
 
         return super.dispatchKeyEvent(event)
     }
@@ -690,9 +705,11 @@ class PlayerActivity : AppCompatActivity() {
             _cachedPlayMediaItem = mediaItemFromPlayMessage(playMessage)
             _isMediaItem = false
         }
-        NetworkService.instance?.sendEvent(EventMessage(
-            System.currentTimeMillis(),
-            MediaItemEvent(EventType.MediaItemChange, _cachedPlayMediaItem))
+        NetworkService.instance?.sendEvent(
+            EventMessage(
+                System.currentTimeMillis(),
+                MediaItemEvent(EventType.MediaItemChange, _cachedPlayMediaItem)
+            )
         )
         Log.i(TAG, "Media playback changed: $_cachedPlayMediaItem")
         _playItemCached = false
@@ -760,13 +777,14 @@ class PlayerActivity : AppCompatActivity() {
         if ((playMessage.metadata as? GenericMediaMetadata)?.thumbnailUrl != null) {
             mediaMetadataBuilder.setArtworkUri(playMessage.metadata.thumbnailUrl?.toUri())
         }
-        if (streamingMediaTypes.contains(playMessage.container) || supportedVideoTypes.contains(playMessage.container)) {
+        if (streamingMediaTypes.contains(playMessage.container) || supportedVideoTypes.contains(
+                playMessage.container
+            )
+        ) {
             mediaMetadataBuilder.setMediaType(MEDIA_TYPE_VIDEO)
-        }
-        else if (supportedAudioTypes.contains(playMessage.container)) {
+        } else if (supportedAudioTypes.contains(playMessage.container)) {
             mediaMetadataBuilder.setMediaType(MEDIA_TYPE_MUSIC)
-        }
-        else {
+        } else {
             mediaMetadataBuilder.setMediaType(MEDIA_TYPE_MIXED)
         }
 
@@ -777,9 +795,15 @@ class PlayerActivity : AppCompatActivity() {
 
         val mediaItem = mediaItemBuilder.build()
         val mediaSource = when (playMessage.container) {
-            "application/dash+xml" -> DashMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
-            "application/x-mpegurl" -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
-            "application/vnd.apple.mpegurl" -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
+            "application/dash+xml" -> DashMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(mediaItem)
+
+            "application/x-mpegurl" -> HlsMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(mediaItem)
+
+            "application/vnd.apple.mpegurl" -> HlsMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(mediaItem)
+
             else -> DefaultMediaSourceFactory(dataSourceFactory).createMediaSource(mediaItem)
         }
 
@@ -830,8 +854,14 @@ class PlayerActivity : AppCompatActivity() {
         val volume = message.items[offset].volume ?: message.volume
         val speed = message.items[offset].speed ?: message.speed
         val playMessage = PlayMessage(
-            message.items[offset].container, message.items[offset].url, message.items[offset].content,
-            message.items[offset].time, volume, speed, message.items[offset].headers, message.items[offset].metadata
+            message.items[offset].container,
+            message.items[offset].url,
+            message.items[offset].content,
+            message.items[offset].time,
+            volume,
+            speed,
+            message.items[offset].headers,
+            message.items[offset].metadata
         );
 
         _playlistIndex = offset
@@ -850,8 +880,7 @@ class PlayerActivity : AppCompatActivity() {
             sendPlaybackUpdate()
 //            window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
             _showDurationTimer.stop()
-        }
-        else {
+        } else {
             Log.w(TAG, "Playlist index out of bounds $index, ignoring...")
         }
     }
@@ -867,9 +896,11 @@ class PlayerActivity : AppCompatActivity() {
     fun mediaPlayHandler() {
         if (viewModel.isLoading) {
             Log.i(TAG, "Media playback start: $_cachedPlayMediaItem")
-            NetworkService.instance?.sendEvent(EventMessage(
-                System.currentTimeMillis(),
-                MediaItemEvent(EventType.MediaItemStart, _cachedPlayMediaItem))
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    MediaItemEvent(EventType.MediaItemStart, _cachedPlayMediaItem)
+                )
             )
             viewModel.isLoading = false
             viewModel.isIdle = false
@@ -878,8 +909,7 @@ class PlayerActivity : AppCompatActivity() {
             if (_isMediaItem && _cachedPlayMediaItem.showDuration != null && _cachedPlayMediaItem.showDuration!! > 0) {
                 _showDurationTimer.start((_cachedPlayMediaItem.showDuration!! * 1000).toLong())
             }
-        }
-        else {
+        } else {
             _showDurationTimer.resume()
         }
 
@@ -896,26 +926,28 @@ class PlayerActivity : AppCompatActivity() {
                 _cachedPlayMediaItem = _cachedPlaylist.items[_playlistIndex]
                 _playItemCached = true
 //                window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
-            }
-            else {
+            } else {
                 Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
                 sendPlaybackUpdate()
-                NetworkService.instance?.sendEvent(EventMessage(
-                    System.currentTimeMillis(),
-                    MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem))
+                NetworkService.instance?.sendEvent(
+                    EventMessage(
+                        System.currentTimeMillis(),
+                        MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem)
+                    )
                 )
 
 //                player.setAutoPlay(false);
                 viewModel.isIdle = true
                 _exoPlayer.stop()
             }
-        }
-        else {
+        } else {
             Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
             sendPlaybackUpdate()
-            NetworkService.instance?.sendEvent(EventMessage(
-                System.currentTimeMillis(),
-                MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem))
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem)
+                )
             )
 
 //            player.setAutoPlay(false);

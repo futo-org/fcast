@@ -1,6 +1,10 @@
 package com.futo.fcast.receiver
 
-import android.app.*
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -29,7 +33,11 @@ import com.futo.fcast.receiver.models.UnsubscribeEventMessage
 import com.futo.fcast.receiver.models.VersionMessage
 import com.futo.fcast.receiver.models.VolumeUpdateMessage
 import com.futo.fcast.receiver.models.streamingMediaTypes
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.net.SocketAddress
 import java.util.UUID
@@ -68,7 +76,8 @@ class NetworkService : Service() {
         _stopped = false
 
         val name = "Network Listener Service"
-        val descriptionText = "Listening on port ${TcpListenerService.PORT} (TCP) and port ${WebSocketListenerService.PORT} (Websocket)"
+        val descriptionText =
+            "Listening on port ${TcpListenerService.PORT} (TCP) and port ${WebSocketListenerService.PORT} (Websocket)"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val importance = NotificationManager.IMPORTANCE_DEFAULT
@@ -76,7 +85,8 @@ class NetworkService : Service() {
                 description = descriptionText
             }
 
-            val notificationManager: NotificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val notificationManager: NotificationManager =
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
         }
 
@@ -87,7 +97,11 @@ class NetworkService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -193,7 +207,9 @@ class NetworkService : Service() {
         rendererMessage = proxyPlayIfRequired(rendererMessage)
 
         if (message.container === "application/json") {
-            val jsonStr: String = if (message.url != null) fetchJSON(message.url).toString() else message.content ?: ""
+            val jsonStr: String =
+                if (message.url != null) fetchJSON(message.url).toString() else message.content
+                    ?: ""
 
             try {
                 val json = Json.decodeFromString<ContentObject>(jsonStr)
@@ -208,9 +224,11 @@ class NetworkService : Service() {
                         return
                     }
                 }
-            }
-            catch (e: IllegalArgumentException) {
-                Log.w(com.futo.fcast.receiver.TAG, "JSON format is not a supported format, attempting to render as text: error=$e")
+            } catch (e: IllegalArgumentException) {
+                Log.w(
+                    com.futo.fcast.receiver.TAG,
+                    "JSON format is not a supported format, attempting to render as text: error=$e"
+                )
             }
         }
 
@@ -248,10 +266,20 @@ class NetworkService : Service() {
                     if (activityCount > 0) {
                         startActivity(i)
                     } else if (Settings.canDrawOverlays(this@NetworkService)) {
-                        val pi = PendingIntent.getActivity(this@NetworkService, 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                        val pi = PendingIntent.getActivity(
+                            this@NetworkService,
+                            0,
+                            i,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
                         pi.send()
                     } else {
-                        val pi = PendingIntent.getActivity(this@NetworkService, 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                        val pi = PendingIntent.getActivity(
+                            this@NetworkService,
+                            0,
+                            i,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
                         val playNotification = createNotificationBuilder()
                             .setContentTitle("FCast")
                             .setContentText("New content received. Tap to play.")
@@ -261,7 +289,8 @@ class NetworkService : Service() {
                             .setAutoCancel(true)
                             .build()
 
-                        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                        val notificationManager =
+                            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
                     }
                 } else {
@@ -420,6 +449,19 @@ class NetworkService : Service() {
         }
     }
 
+    fun getSubscribedKeys(): Pair<Set<String>, Set<String>> {
+        val tcpListenerSubscribedKeys =
+            _tcpListenerService?.getAllSubscribedKeys() ?: Pair(emptySet(), emptySet())
+        val webSocketListenerSubscribedKeys =
+            _webSocketListenerService?.getAllSubscribedKeys() ?: Pair(emptySet(), emptySet())
+        val subscribeData = Pair(
+            tcpListenerSubscribedKeys.first + webSocketListenerSubscribedKeys.first,
+            tcpListenerSubscribedKeys.second + webSocketListenerSubscribedKeys.second
+        )
+
+        return subscribeData
+    }
+
     companion object {
         private const val CHANNEL_ID = "NetworkListenerServiceChannel"
         private const val NOTIFICATION_ID = 1
@@ -428,14 +470,21 @@ class NetworkService : Service() {
         var activityCount = 0
         var instance: NetworkService? = null
 
-        val cache: AppCache = AppCache(null,BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE.toString(), null, null, setOf())
+        val cache: AppCache = AppCache(
+            null,
+            BuildConfig.VERSION_NAME,
+            BuildConfig.VERSION_CODE.toString(),
+            null,
+            null,
+            setOf()
+        )
         private var _mediaCache: MediaCache? = null
 
 
-        
         var key: String? = null
         var cert: String? = null
-//        var proxyServer: http.Server
+
+        //        var proxyServer: http.Server
 //        var proxyServerAddress: AddressInfo
         var proxiedFiles: MutableMap<String, PlayMessage> = mutableMapOf()
 
@@ -544,7 +593,10 @@ class NetworkService : Service() {
         }
 
         suspend fun proxyPlayIfRequired(message: PlayMessage): PlayMessage {
-            if (message.url !== null && (message.url.startsWith("app://") || (message.headers !== null && !streamingMediaTypes.contains(message.container.lowercase())))) {
+            if (message.url !== null && (message.url.startsWith("app://") || (message.headers !== null && !streamingMediaTypes.contains(
+                    message.container.lowercase()
+                )))
+            ) {
                 return PlayMessage(
                     message.container, proxyFile(message),
                     message.content, message.time, message.volume,
