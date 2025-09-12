@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
 use xtask::{
-    kotlin,
+    csharp, kotlin,
     swift::{self, SwiftArgs, SwiftCommand},
 };
 
@@ -11,6 +11,7 @@ enum Command {
     Swift(swift::SwiftArgs),
     GenerateIos,
     Hack,
+    CSharp(csharp::CSharpArgs),
 }
 
 #[derive(Parser)]
@@ -34,5 +35,6 @@ fn main() {
             .run()
             .unwrap();
         }
+        Command::CSharp(cmd) => cmd.run().unwrap(),
     }
 }

@@ -348,21 +348,22 @@ pub struct ApplicationInfo {
     pub display_name: String,
 }
 
+// NOTE: defaults are commented out because uniffi v30 does not work with csharp currently
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, Clone)]
 pub enum LoadRequest {
     Url {
         content_type: String,
         url: String,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         resume_position: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         speed: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         volume: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         metadata: Option<Metadata>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         request_headers: Option<HashMap<String, String>>,
     },
     /// Load content, usually a [DASH](https://en.wikipedia.org/wiki/Dynamic_Adaptive_Streaming_over_HTTP) or
@@ -370,37 +371,37 @@ pub enum LoadRequest {
     Content {
         content_type: String,
         content: String,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         resume_position: f64,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         speed: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         volume: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         metadata: Option<Metadata>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         request_headers: Option<HashMap<String, String>>,
     },
     Video {
         content_type: String,
         url: String,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         resume_position: f64,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         speed: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         volume: Option<f64>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         metadata: Option<Metadata>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         request_headers: Option<HashMap<String, String>>,
     },
     Image {
         content_type: String,
         url: String,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         metadata: Option<Metadata>,
-        #[cfg_attr(feature = "uniffi", uniffi(default))]
+        // #[cfg_attr(all(feature = "uniffi", not(feature = "_uniffi_csharp")), uniffi(default))]
         request_headers: Option<HashMap<String, String>>,
     },
     Playlist {
