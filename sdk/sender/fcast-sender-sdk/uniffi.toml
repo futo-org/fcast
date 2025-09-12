@@ -1,2 +1,6 @@
 [bindings.kotlin]
 package_name = "org.fcast.sender_sdk"
+
+[bindings.csharp]
+namespace = "FCast.SenderSDK"
+access_modifier = "public"
