@@ -7,10 +7,11 @@
     <string name="incompatible">The operation failed because it is fundamentally incompatible with this device</string>
     <string name="invalid">The operation failed because one or more of the APKs was invalid</string>
     <string name="not_enough_storage">The operation failed because of storage issues</string>
-    <string name="downloading_update">Downloading update…</string>
+    <string name="downloading_update">Downloading…</string>
     <string name="installing_update">Installing update…</string>
     <string name="success">Success</string>
-    <string name="failed_to_update_with_error">Failed to update package with error</string>
+    <string name="update_success">Update success</string>
+    <string name="update_error">Update error</string>
     <string name="update_available">FCast update available</string>
     <string name="update_status">Do you wish to update now?</string>
     <string name="never">Never</string>

@@ -38,6 +38,7 @@ import com.futo.fcast.receiver.models.EventType
 import com.futo.fcast.receiver.models.FCastNetworkConfig
 import com.futo.fcast.receiver.models.FCastService
 import com.futo.fcast.receiver.models.MainActivityViewModel
+import com.futo.fcast.receiver.models.UpdateState
 import com.futo.fcast.receiver.views.MainActivity
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
@@ -54,9 +55,6 @@ import java.io.OutputStream
 class MainActivity : AppCompatActivity() {
     private lateinit var _player: ExoPlayer
     private lateinit var _systemAlertWindowPermissionLauncher: ActivityResultLauncher<Intent>
-    private var _updateAvailable: Boolean? = null
-
-    //    private var _updating: Boolean = false
     private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
 
     val viewModel = MainActivityViewModel()
@@ -88,38 +86,16 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-        _updateAvailable =
-            if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
-                savedInstanceState.getBoolean("updateAvailable", false)
-            } else {
-                null
-            }
+        if (savedInstanceState != null && savedInstanceState.containsKey("updateAvailable")) {
+            val ordinalValue =
+                savedInstanceState.getInt("updateAvailable", UpdateState.NoUpdateAvailable.ordinal)
+            viewModel.updateState = UpdateState.entries.toTypedArray()[ordinalValue]
+        }
 
         startVideo()
-
-//        setText(getString(R.string.checking_for_updates))
         viewModel.updateStatus = getString(R.string.checking_for_updates)
-//        _buttonUpdate.visibility = View.INVISIBLE
 
-//        _buttonUpdate.setOnClickListener {
-//            if (_updating) {
-//                return@setOnClickListener
-//            }
-//
-//            _updating = true
-//            update()
-//        }
-
-        if (BuildConfig.IS_PLAYSTORE_VERSION) {
-//            _text.visibility = View.INVISIBLE
-//            _buttonUpdate.visibility = View.INVISIBLE
-//            _updateSpinner.visibility = View.INVISIBLE
-//            (_updateSpinner.drawable as Animatable?)?.stop()
-        } else {
-//            _text.visibility = View.VISIBLE
-//            _updateSpinner.visibility = View.VISIBLE
-//            (_updateSpinner.drawable as Animatable?)?.start()
-
+        if (!BuildConfig.IS_PLAYSTORE_VERSION) {
             lifecycleScope.launch(Dispatchers.IO) {
                 checkForUpdates()
             }
@@ -229,7 +205,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        _updateAvailable?.let { outState.putBoolean("updateAvailable", it) }
+        outState.putInt("updateAvailable", viewModel.updateState.ordinal)
     }
 
     private fun getScreenResolution(): Pair<Int, Int> {
@@ -400,42 +376,37 @@ class MainActivity : AppCompatActivity() {
     private suspend fun checkForUpdates() {
         Log.i(TAG, "Checking for updates...")
 
-        val updateAvailable = _updateAvailable
-        if (updateAvailable != null) {
-            setUpdateAvailable(updateAvailable)
-        } else {
-            withContext(Dispatchers.IO) {
-                try {
-                    val latestVersion = downloadVersionCode()
+        withContext(Dispatchers.IO) {
+            try {
+                val latestVersion = downloadVersionCode()
 
-                    if (latestVersion != null) {
-                        val currentVersion = BuildConfig.VERSION_CODE
-                        Log.i(TAG, "Current version $currentVersion latest version $latestVersion.")
+                if (latestVersion != null) {
+                    val currentVersion = BuildConfig.VERSION_CODE
+                    Log.i(TAG, "Current version $currentVersion latest version $latestVersion.")
 
-                        withContext(Dispatchers.Main) {
-                            setUpdateAvailable(latestVersion > currentVersion)
-                        }
-                    } else {
-                        Log.w(TAG, "Failed to retrieve version from version URL.")
-
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Failed to retrieve version",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
+                    withContext(Dispatchers.Main) {
+                        setUpdateAvailable(latestVersion > currentVersion)
                     }
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to check for updates.", e)
+                } else {
+                    Log.w(TAG, "Failed to retrieve version from version URL.")
 
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
                             this@MainActivity,
-                            "Failed to check for updates",
+                            "Failed to retrieve version",
                             Toast.LENGTH_LONG
                         ).show()
                     }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to check for updates.", e)
+
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Failed to check for updates",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }
@@ -444,12 +415,11 @@ class MainActivity : AppCompatActivity() {
     private fun setUpdateAvailable(updateAvailable: Boolean) {
         if (updateAvailable) {
             viewModel.updateStatus = getString(R.string.update_status)
+            viewModel.updateState = UpdateState.UpdateAvailable
         } else {
-            viewModel.updateStatus = null
+            viewModel.updateStatus = ""
+            viewModel.updateState = UpdateState.NoUpdateAvailable
         }
-
-        viewModel.updateAvailable = updateAvailable
-        _updateAvailable = updateAvailable
     }
 
     private fun downloadVersionCode(): Int? {
@@ -468,7 +438,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun update() {
-        viewModel.updating = true
+        viewModel.updateState = UpdateState.Downloading
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         viewModel.updateStatus = getString(R.string.downloading_update)
 
@@ -549,6 +519,7 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 viewModel.updateProgress = 1f
                 viewModel.updateStatus = getString(R.string.installing_update)
+                viewModel.updateState = UpdateState.Installing
             }
         } catch (e: Throwable) {
             Log.w(
@@ -572,12 +543,20 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "Cleared InstallReceiver.onReceiveResult handler.")
 
         if (result.isNullOrBlank()) {
-            viewModel.updateResultSuccessful = true
+            viewModel.updateState = UpdateState.InstallSuccess
             viewModel.updateStatus = getString(R.string.success)
         } else {
-            viewModel.updateResultSuccessful = false
-            viewModel.updateStatus =
-                "${getString(R.string.failed_to_update_with_error)}: '$result'."
+            viewModel.updateState = UpdateState.InstallFailure
+            viewModel.updateStatus = result
+
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.update_error))
+                .setIcon(android.R.drawable.ic_dialog_alert)
+                .setMessage(result)
+                .setPositiveButton("OK") { dialog, _ ->
+                    dialog.dismiss()
+                }
+                .show()
         }
     }
 
@@ -661,8 +640,10 @@ class MainActivity : AppCompatActivity() {
         var instance: MainActivity? = null
 
         private const val TAG = "MainActivity"
-        private const val VERSION_URL = "https://dl.fcast.org/android/fcast-version.txt"
-        private const val APK_URL = "https://dl.fcast.org/android/fcast-release.apk"
+        private val VERSION_URL =
+            if (BuildConfig.DEBUG) "https://dl.fcast.org/dev/unstable/android/fcast-version.txt" else "https://dl.fcast.org/android/fcast-version.txt"
+        private val APK_URL =
+            if (BuildConfig.DEBUG) "https://dl.fcast.org/dev/unstable/android/app-defaultFlavor-debug.apk" else "https://dl.fcast.org/android/fcast-release.apk"
         private const val REQUEST_ID_MULTIPLE_PERMISSIONS = 1
         private const val REQUEST_CODE = 2
     }

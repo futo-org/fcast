@@ -10,15 +10,22 @@ import androidx.lifecycle.ViewModel
 import com.futo.fcast.receiver.MainActivity
 import com.futo.fcast.receiver.NetworkInterfaceData
 
+enum class UpdateState {
+    NoUpdateAvailable,
+    UpdateAvailable,
+    Downloading,
+    Installing,
+    InstallSuccess,
+    InstallFailure,
+}
+
 class MainActivityViewModel : ViewModel() {
     var showQR by mutableStateOf(true)
     var imageQR by mutableStateOf<ImageBitmap?>(null)
     var textPorts by mutableStateOf("")
-    var updateStatus by mutableStateOf<String?>("")
-    var updateAvailable by mutableStateOf(false)
-    var updating by mutableStateOf(false)
+    var updateState by mutableStateOf(UpdateState.NoUpdateAvailable)
+    var updateStatus by mutableStateOf("")
     var updateProgress by mutableFloatStateOf(0f)
-    var updateResultSuccessful by mutableStateOf<Boolean?>(null)
 
     var ipInfo = mutableStateListOf<NetworkInterfaceData>()
 

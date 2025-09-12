@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ import com.futo.fcast.receiver.composables.ThemedText
 import com.futo.fcast.receiver.composables.colorButtonPrimary
 import com.futo.fcast.receiver.composables.colorButtonSecondary
 import com.futo.fcast.receiver.models.MainActivityViewModel
+import com.futo.fcast.receiver.models.UpdateState
 
 @Composable
 fun ProgressBarView(viewModel: MainActivityViewModel) {
@@ -70,17 +72,23 @@ fun ProgressBarView(viewModel: MainActivityViewModel) {
 
 @Composable
 fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) {
-    if (viewModel.updateAvailable) {
-        @Suppress("SENSELESS_COMPARISON")
-        if (!BuildConfig.IS_PLAYSTORE_VERSION) {
+    @Suppress("SENSELESS_COMPARISON")
+    if (!BuildConfig.IS_PLAYSTORE_VERSION) {
+        if (viewModel.updateState != UpdateState.NoUpdateAvailable) {
             Column(
                 modifier = modifier,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                val cardTitle = when (viewModel.updateState) {
+                    UpdateState.InstallSuccess -> R.string.update_success
+                    UpdateState.InstallFailure -> R.string.update_error
+                    else -> R.string.update_available
+                }
+
                 ThemedText(
-                    stringResource(R.string.update_available),
+                    stringResource(cardTitle),
                     Modifier.padding(top = 10.dp),
-                    FontWeight.Bold
+                    fontWeight = FontWeight.Bold
                 )
                 Spacer(
                     modifier = Modifier
@@ -90,71 +98,70 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                         .background(Color.Gray)
                 )
 
-                Row(
-                    modifier = Modifier.padding(bottom = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (viewModel.updateStatus != null) {
-                        ThemedText(viewModel.updateStatus!!)
-//                        Text(
-//                            text = viewModel.updateStatus!!,
-//                            modifier = Modifier
-//                                .padding(horizontal = 30.dp, vertical = 10.dp),
-//                            color = Color.White,
-//                            fontSize = 14.sp,
-//                            fontFamily = interFontFamily,
-//                            fontWeight = FontWeight.Normal,
-//                            textAlign = TextAlign.Center,
-//                            maxLines = 2,
-//                            overflow = TextOverflow.Ellipsis
-//                        )
-                        if (viewModel.updateResultSuccessful != null) {
-                            Image(
-                                painter = if (viewModel.updateResultSuccessful!!)
-                                    painterResource(R.drawable.checked)
-                                else painterResource(R.drawable.error),
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .size(30.dp)
-                            )
-                        }
-                    }
+                if (viewModel.updateState == UpdateState.InstallSuccess || viewModel.updateState == UpdateState.InstallFailure) {
+                    Image(
+                        painter = if (viewModel.updateState == UpdateState.InstallSuccess)
+                            painterResource(R.drawable.ic_checked)
+                        else painterResource(R.drawable.ic_error),
+                        contentDescription = null,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(10.dp)
+                    )
                 }
+                ThemedText(viewModel.updateStatus, Modifier.padding(bottom = 10.dp))
 
-                if (!viewModel.updating) {
-                    Row(
-                        modifier = Modifier,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Button(
-                            onClick = viewModel::update,
+                when (viewModel.updateState) {
+                    UpdateState.UpdateAvailable -> {
+                        Row(
                             modifier = Modifier,
-                            enabled = true,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colorButtonPrimary
-                            )
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            ThemedText(stringResource(R.string.update))
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Button(
-                            onClick = { viewModel.updateAvailable = false },
-                            modifier = Modifier,
-                            enabled = true,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colorButtonSecondary
-                            )
-                        ) {
-                            ThemedText(stringResource(R.string.update_later))
+                            Button(
+                                onClick = viewModel::update,
+                                modifier = Modifier,
+                                enabled = true,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colorButtonPrimary
+                                )
+                            ) {
+                                ThemedText(stringResource(R.string.update))
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Button(
+                                onClick = { viewModel.updateState = UpdateState.NoUpdateAvailable },
+                                modifier = Modifier,
+                                enabled = true,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colorButtonSecondary
+                                )
+                            ) {
+                                ThemedText(stringResource(R.string.update_later))
+                            }
                         }
                     }
-                } else {
-                    Row(
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        ProgressBarView(viewModel)
+
+                    UpdateState.Downloading -> {
+                        Row(
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ProgressBarView(viewModel)
+                        }
                     }
+
+                    UpdateState.Installing -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(40.dp),
+                            color = Color.White,
+                            strokeWidth = 4.dp
+                        )
+                    }
+
+                    else -> {}
                 }
             }
         }
@@ -165,8 +172,7 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
 @Composable
 fun UpdateViewPreview() {
     val viewModel = MainActivityViewModel()
-    viewModel.updateAvailable = true
-    viewModel.updating = false
+    viewModel.updateState = UpdateState.UpdateAvailable
     viewModel.updateStatus = stringResource(R.string.update_status)
     UpdateView(viewModel)
 }
@@ -175,8 +181,7 @@ fun UpdateViewPreview() {
 @Composable
 fun UpdateViewPreviewUpdating() {
     val viewModel = MainActivityViewModel()
-    viewModel.updateAvailable = true
-    viewModel.updating = true
+    viewModel.updateState = UpdateState.Downloading
     viewModel.updateStatus = stringResource(R.string.downloading_update)
     viewModel.updateProgress = 0.5f
     UpdateView(viewModel)
@@ -184,12 +189,19 @@ fun UpdateViewPreviewUpdating() {
 
 @Preview
 @Composable
+fun UpdateViewPreviewUpdateInstalling() {
+    val viewModel = MainActivityViewModel()
+    viewModel.updateState = UpdateState.Installing
+    viewModel.updateStatus = stringResource(R.string.installing_update)
+    UpdateView(viewModel)
+}
+
+@Preview
+@Composable
 fun UpdateViewPreviewUpdateSuccess() {
     val viewModel = MainActivityViewModel()
-    viewModel.updateAvailable = false
-    viewModel.updating = false
+    viewModel.updateState = UpdateState.InstallSuccess
     viewModel.updateStatus = stringResource(R.string.success)
-    viewModel.updateResultSuccessful = true
     UpdateView(viewModel)
 }
 
@@ -197,10 +209,7 @@ fun UpdateViewPreviewUpdateSuccess() {
 @Composable
 fun UpdateViewPreviewUpdateFail() {
     val viewModel = MainActivityViewModel()
-    viewModel.updateAvailable = false
-    viewModel.updating = false
-    viewModel.updateStatus = stringResource(R.string.failed_to_update_with_error)
-    viewModel.updateResultSuccessful = false
+    viewModel.updateState = UpdateState.InstallFailure
+    viewModel.updateStatus = "Error text"
     UpdateView(viewModel)
 }
-
