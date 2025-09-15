@@ -600,7 +600,9 @@ impl InnerDevice {
                                         }
                                     }
                                     is_running = new_is_running;
-                                    if !is_running {
+                                    if is_running {
+                                        changed!(volume, status.volume.level, volume_changed);
+                                    } else {
                                         self.launch_app().await?;
                                     }
                                 }
