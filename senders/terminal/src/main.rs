@@ -81,8 +81,8 @@ struct TerminalSender {
     #[arg(long, short('H'), default_value_t = String::from("127.0.0.1"))]
     host: String,
     /// The port to send the command to
-    #[arg(long, short)]
-    port: Option<u16>,
+    #[arg(long, short, default_value_t = 46899)]
+    port: u16,
     /// A comma separated list of events to subscribe to (e.g. MediaItemStart,KeyDown).
     /// Available events: [MediaItemStart, MediaItemEnd, MediaItemChange, KeyDown, KeyUp]
     #[arg(long, short)]
@@ -164,27 +164,13 @@ fn main() {
 
     let app = TerminalSender::parse();
 
-    let connection_type = "tcp";
-
-    let port = match app.port {
-        Some(s) => s,
-        _ => match connection_type {
-            "tcp" => 46899,
-            "ws" => 46898,
-            _ => {
-                eprintln!("Unknown connection type, cannot automatically determine port.");
-                std::process::exit(1);
-            }
-        },
-    };
-
     let context = CastContext::new().unwrap();
     let file_server = context.start_file_server();
 
     let device_info = fcast_sender_sdk::device::DeviceInfo::fcast(
         "FCast Receiver".to_owned(),
         vec![app.host.parse::<IpAddr>().unwrap().into()],
-        port,
+        app.port,
     );
 
     let device = context.create_device_from_info(device_info);
