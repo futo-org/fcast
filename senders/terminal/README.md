@@ -16,47 +16,47 @@ Example usage of the fcast client.
 
 ```
 # Play a mp4 video URL (1.0 playbackspeed explicit)
-./fcast -h localhost play --mime_type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
+./fcast -H 127.0.0.1 play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
 
-# Play a mp4 video URL using WebSockets
-./fcast -h localhost -c ws play --mime_type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10
+<!-- # Play a mp4 video URL using WebSockets -->
+<!-- ./fcast -H 127.0.0.1 -c ws play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -->
 
 # Play a local mp4
-./fcast -h 192.168.1.62 play --mime_type video/mp4 -f /home/koen/Downloads/BigBuckBunny.mp4
+./fcast -H 192.168.1.62 play --mime-type video/mp4 -f /home/koen/Downloads/BigBuckBunny.mp4
 
 # Play a DASH URL
-./fcast -h localhost play --mime_type application/dash+xml --url https://dash.akamaized.net/digitalprimates/fraunhofer/480p_video/heaac_2_0_with_video/Sintel/sintel_480p_heaac2_0.mpd
+./fcast -H 127.0.0.1 play --mime-type application/dash+xml --url https://dash.akamaized.net/digitalprimates/fraunhofer/480p_video/heaac_2_0_with_video/Sintel/sintel_480p_heaac2_0.mpd
 
 # Play local DASH content
-cat dash.mpd | ./fcast -h localhost play --mime_type application/dash+xml
+cat dash.mpd | ./fcast -H localhost play --mime-type application/dash+xml
 
 # Pause playing
-./fcast -h localhost pause
+./fcast -H 127.0.0.1 pause
 
 # Resume playback
-./fcast -h localhost resume
+./fcast -H 127.0.0.1 resume
 
 # Seek to time 100
-./fcast -h localhost seek -t 100
+./fcast -H 127.0.0.1 seek -t 100
 
 # Listen for playback updates
-./fcast -h localhost listen
+./fcast -H 127.0.0.1 listen
 
 # Stop playback
-./fcast -h localhost stop
+./fcast -H 127.0.0.1 stop
 
 # Set volume to half
-./fcast -h localhost setvolume -v 0.5
+./fcast -H 127.0.0.1 set-volume -v 0.5
 
 # Set speed to double
-./fcast -h localhost setspeed -s 2.0
+./fcast -H 127.0.0.1 set-speed -s 2.0
 
 # Receive keyboard events
-./fcast -h localhost -s KeyDown,KeyUp listen
+./fcast -H 127.0.0.1 -s KeyDown,KeyUp listen
 
 # Show image playlist
-cat image_playlist_example.json | ./fcast -h localhost play --mime_type application/json
+cat image_playlist_example.json | ./fcast -H 127.0.0.1 play --mime-type application/json
 
 # Play from video playlist
-cat video_playlist_example.json | ./fcast -h localhost play --mime_type application/json
+cat video_playlist_example.json | ./fcast -H 127.0.0.1 play --mime-type application/json
 ```
