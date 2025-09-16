@@ -285,10 +285,11 @@ class FCastSession(
                                 DiscoveryService.getServiceName(),
                                 NetworkService.cache.appName,
                                 NetworkService.cache.appVersion,
-                                NetworkService.cache.playMessage,
+                                NetworkService.getPlayMessage(),
                             )
                         )
 
+                        this.send(Opcode.PlaybackUpdate, NetworkService.cache.playbackUpdate)
                         this._sentInitialMessage = true
                     }
 
@@ -303,8 +304,16 @@ class FCastSession(
                 Opcode.Pong -> _service.onPong(id)
                 Opcode.Initial -> _service.onInitial(json.decodeFromString(body!!))
                 Opcode.SetPlaylistItem -> _service.onSetPlaylistItem(json.decodeFromString(body!!))
-                Opcode.SubscribeEvent -> _service.onSubscribeEvent(json.decodeFromString(body!!))
-                Opcode.UnsubscribeEvent -> _service.onUnsubscribeEvent(json.decodeFromString(body!!))
+                Opcode.SubscribeEvent -> _service.onSubscribeEvent(
+                    id,
+                    json.decodeFromString(body!!)
+                )
+
+                Opcode.UnsubscribeEvent -> _service.onUnsubscribeEvent(
+                    id,
+                    json.decodeFromString(body!!)
+                )
+
                 else -> {}
             }
         } catch (e: Throwable) {

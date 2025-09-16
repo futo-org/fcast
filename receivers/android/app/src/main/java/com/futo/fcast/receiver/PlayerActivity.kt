@@ -204,7 +204,7 @@ class PlayerActivity : AppCompatActivity() {
             super.onVolumeChanged(volume)
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    NetworkService.instance?.sendCastVolumeUpdate(
+                    NetworkService.instance?.sendVolumeUpdate(
                         VolumeUpdateMessage(
                             System.currentTimeMillis(),
                             volume.toDouble()
@@ -267,6 +267,7 @@ class PlayerActivity : AppCompatActivity() {
             speed,
             if (_isMediaItem) _playlistIndex else null
         )
+        NetworkService.cache.playbackUpdate = updateMessage
 
         if (updateMessage.generationTime > _lastPlayerUpdateGenerationTime) {
             _lastPlayerUpdateGenerationTime = updateMessage.generationTime
@@ -337,7 +338,12 @@ class PlayerActivity : AppCompatActivity() {
 //            }
 //        }
 //        playMessage?.let { play(it) }
-        NetworkService.cache.playMessage?.let { play(it) }
+
+        NetworkService.cache.playlistContent?.also {
+            onPlayPlaylist(it)
+        } ?: run {
+            NetworkService.cache.playMessage?.let { play(it) }
+        }
 
         instance = this
         NetworkService.activityCount++
@@ -509,6 +515,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("GestureBackNavigation")
     @OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
 //        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
@@ -656,12 +663,7 @@ class PlayerActivity : AppCompatActivity() {
                     handledCase = true
                 }
 
-                // todo handling
-                KeyEvent.KEYCODE_BACK -> {
-//            window.parent.webOSApp.loadPage('main_window/index.html');
-                    key = "Back"
-                    handledCase = true
-                }
+                KeyEvent.KEYCODE_BACK -> key = "Back"
             }
         }
 
@@ -868,7 +870,7 @@ class PlayerActivity : AppCompatActivity() {
         _isMediaItem = true
         _cachedPlayMediaItem = message.items[offset]
         _playItemCached = true
-//        window.targetAPI.sendPlayRequest(playMessage, playlistIndex);
+        NetworkService.instance?.playRequest(playMessage, _playlistIndex)
     }
 
     fun setPlaylistItem(index: Int) {
@@ -878,7 +880,10 @@ class PlayerActivity : AppCompatActivity() {
             _cachedPlayMediaItem = _cachedPlaylist.items[_playlistIndex]
             _playItemCached = true
             sendPlaybackUpdate()
-//            window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
+            NetworkService.instance?.playRequest(
+                playMessageFromMediaItem(_cachedPlaylist.items[_playlistIndex]),
+                _playlistIndex
+            )
             _showDurationTimer.stop()
         } else {
             Log.w(TAG, "Playlist index out of bounds $index, ignoring...")
@@ -925,7 +930,10 @@ class PlayerActivity : AppCompatActivity() {
             if (_playlistIndex < _cachedPlaylist.items.size) {
                 _cachedPlayMediaItem = _cachedPlaylist.items[_playlistIndex]
                 _playItemCached = true
-//                window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);
+                NetworkService.instance?.playRequest(
+                    playMessageFromMediaItem(_cachedPlaylist.items[_playlistIndex]),
+                    _playlistIndex
+                )
             } else {
                 Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
                 sendPlaybackUpdate()

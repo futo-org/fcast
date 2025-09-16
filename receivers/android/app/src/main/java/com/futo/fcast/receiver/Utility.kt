@@ -10,7 +10,6 @@ import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import okio.IOException
-import org.json.JSONObject
 import java.util.Calendar
 
 const val TAG = "Utility"
@@ -18,7 +17,7 @@ const val TAG = "Utility"
 fun ensureNotMainThread() {
     if (Looper.myLooper() == Looper.getMainLooper()) {
         Log.e(
-            "Utility",
+            TAG,
             "Throwing exception because a function that should not be called on main thread, is called on main thread"
         )
         throw IllegalStateException("Cannot run on main thread")
@@ -57,7 +56,7 @@ inline fun setInterval(handler: Handler, crossinline block: () -> Unit, interval
 
 // preparePlayMessage defined in NetworkService.kt
 
-suspend fun fetchJSON(url: String): JSONObject {
+suspend fun fetchJSON(url: String): String {
     val client = OkHttpClient()
     val request = okhttp3.Request.Builder()
         .method("GET", null)
@@ -69,7 +68,7 @@ suspend fun fetchJSON(url: String): JSONObject {
         throw Exception("Error fetching JSON: $response")
     }
 
-    return JSONObject(response.body.toString())
+    return response.body.string()
 }
 
 suspend fun downloadFile(
