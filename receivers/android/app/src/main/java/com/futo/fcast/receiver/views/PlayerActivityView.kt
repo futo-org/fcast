@@ -81,9 +81,11 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
 
         if (viewModel.isLoading) {
             // TODO: Replace with new background load screen in next update
-            Box(Modifier
-                .matchParentSize()
-                .background(Color.Black))
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(Color.Black)
+            )
             ConstraintLayout(
                 modifier = Modifier
                     .fillMaxSize()
@@ -116,9 +118,11 @@ fun CustomPlayerViewScreen(viewModel: PlayerActivityViewModel, exoPlayer: Player
                 modifier = Modifier.fillMaxSize()
             )
         } else if (viewModel.isIdle) {
-            Box(Modifier
-                .matchParentSize()
-                .background(Color.Black))
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(Color.Black)
+            )
             ConstraintLayout(
                 modifier = Modifier
                     .fillMaxSize()
@@ -210,6 +214,7 @@ val previewPlayerState = PlayerState(
     1000L * 45,
     true,
     true,
+    false,
     "Video Title",
     null,
     0

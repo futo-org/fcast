@@ -12,6 +12,7 @@ val colorCardBackground = Color(0x80141414)
 val colorPrimary = Color(0xFF019BE7)
 val colorButtonPrimary = Color(0xFF008BD7)
 val colorButtonSecondary = Color(0xFF3E3E3E)
+val colorLive = Color(0xFFFB2C2C)
 
 val outfitFontFamilyExtraBold = FontFamily(Font(R.font.outfit_extra_bold))
 val interFontFamily = FontFamily(

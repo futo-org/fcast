@@ -38,6 +38,7 @@
     <string name="port">Port</string>
     <string name="scan_to_connect">Scan with a FCast sender app</string>
     <string name="network_no_interfaces">Device not connected to a network</string>
+    <string name="live_badge">LIVE</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Application Icon</string>

@@ -31,6 +31,7 @@ fun rememberPlayerState(player: Player): PlayerState {
     var bufferedPosition by remember { mutableLongStateOf(0L) }
     var isPlaying by remember { mutableStateOf(false) }
     var isPlaylist by remember { mutableStateOf(false) }
+    var isLive by remember { mutableStateOf(false) }
     var mediaTitle by remember { mutableStateOf<String?>(null) }
     var mediaThumbnail by remember { mutableStateOf<Uri?>(null) }
     var mediaType by remember { mutableStateOf<Int?>(null) }
@@ -48,6 +49,7 @@ fun rememberPlayerState(player: Player): PlayerState {
         bufferedPosition = player.bufferedPosition
         isPlaying = player.isPlaying
         isPlaylist = player.mediaItemCount > 0
+        isLive = player.isCurrentMediaItemLive
         mediaTitle =
             if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
         mediaThumbnail = player.mediaMetadata.artworkUri
@@ -98,6 +100,7 @@ fun rememberPlayerState(player: Player): PlayerState {
         bufferedPosition,
         isPlaying,
         isPlaylist,
+        isLive,
         mediaTitle,
         mediaThumbnail,
         mediaType
@@ -109,6 +112,7 @@ fun rememberPlayerState(player: Player): PlayerState {
             bufferedPosition,
             isPlaying,
             isPlaylist,
+            isLive,
             mediaTitle,
             mediaThumbnail,
             mediaType
@@ -126,6 +130,7 @@ data class PlayerState(
     val bufferedPosition: Long,
     val isPlaying: Boolean,
     val isPlaylist: Boolean,
+    val isLive: Boolean,
     val mediaTitle: String?,
     val mediaThumbnail: Uri?,
     val mediaType: Int?
