@@ -39,7 +39,7 @@ buildSenderSDKDockerContainerCrossX64Windows:
     - cd sdk/sender
   script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
-    - docker build -t $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest -f Dockerfile.cross--pc-windows-gnu .
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest -f Dockerfile.cross-x86_64-pc-windows-gnu .
     - docker push $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest
   when: manual
 
