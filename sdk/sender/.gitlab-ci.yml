@@ -108,7 +108,7 @@ crossCompileForDarwinCSharp:
 
 crossCompileForAarch64LinuxCSharp:
   stage: buildSenderSDK
-  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest
   script:
     - cargo build --release --target aarch64-unknown-linux-gnu -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
   tags:
@@ -124,7 +124,7 @@ crossCompileForAarch64LinuxCSharp:
 
 compileForx64LinuxCSharp:
   stage: buildSenderSDK
-  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
   script:
     - cargo build --release --target x86_64-unknown-linux-gnu -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
   tags:
@@ -140,7 +140,7 @@ compileForx64LinuxCSharp:
 
 compileForx64WindowsCSharp:
   stage: buildSenderSDK
-  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu-linux-gnu:latest
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest
   script:
     - cargo build --release --target x86_64-pc-windows-gnu -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
   tags:
