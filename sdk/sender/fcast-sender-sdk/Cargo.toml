@@ -38,12 +38,11 @@ url = { version = "2.5.4", optional = true }
 fcast-protocol = { path = "../../common/fcast-protocol", version = "0.1.0", optional = true }
 base64 = { version = "0.22.1", optional = true }
 
+env_logger = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = { version = "0.15.0", optional = true }
 log-panics = { version = "2.1.0", features = ["with-backtrace"], optional = true }
-
-[target.'cfg(target_os = "ios")'.dependencies]
-env_logger = { workspace = true, optional = true }
 
 [build-dependencies]
 cfg_aliases = "0.2.1"
@@ -64,7 +63,7 @@ discovery_types = []
 _mobile_defaults = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery_types"]
 _android_defaults = ["_mobile_defaults"]
 _ios_defaults = ["_mobile_defaults"]
-_uniffi_csharp = []
+_uniffi_csharp = ["dep:env_logger"]
 
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
