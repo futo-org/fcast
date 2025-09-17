@@ -11,7 +11,8 @@ RUN cargo install cargo-hack --locked
 RUN rustup target add aarch64-linux-android \
     armv7-linux-androideabi \
     x86_64-linux-android \
-    i686-linux-android
+    i686-linux-android \
+    x86_64-unknown-linux-gnu
 
 RUN mkdir -p ndk
 RUN wget2 https://dl.google.com/android/repository/android-ndk-r27d-linux.zip -O ndk/android-ndk-r27d-linux.zip
