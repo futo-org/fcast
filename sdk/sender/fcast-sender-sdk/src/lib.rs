@@ -428,14 +428,20 @@ impl From<std::net::IpAddr> for IpAddr {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[cfg(all(any(target_os = "android", target_os = "ios"), feature = "logging"))]
+#[cfg(all(
+    any(target_os = "android", target_os = "ios", feature = "_uniffi_csharp"),
+    feature = "logging"
+))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogLevelFilter {
     Debug,
     Info,
 }
 
-#[cfg(all(any(target_os = "android", target_os = "ios"), feature = "logging"))]
+#[cfg(all(
+    any(target_os = "android", target_os = "ios", feature = "_uniffi_csharp"),
+    feature = "logging"
+))]
 impl LogLevelFilter {
     pub fn to_log_compat(&self) -> log::LevelFilter {
         match self {
@@ -460,6 +466,17 @@ pub fn init_logger(level_filter: LogLevelFilter) {
     env_logger::Builder::new()
         .filter(None, level_filter.to_log_compat())
         .init();
+}
+
+#[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+pub fn init_stderr_logger(level_filter: LogLevelFilter) {
+    if let Err(err) = env_logger::Builder::new()
+        .filter(Some("fcast_sender_sdk"), level_filter.to_log_compat())
+        .try_init()
+    {
+        error!("Failed to initialize logger: {err}")
+    }
 }
 
 #[cfg(test)]
