@@ -49,6 +49,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation(libs.androidx.compose.material)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -56,7 +57,9 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-    implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-minimal:0.3.1") {
+    // implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-minimal:0.3.1") {
+    // implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-full:0.3.1") {
+    implementation("org.fcast:sender-sdk-full:0.3.0") {
         exclude(group = "net.java.dev.jna")
     }
     implementation("net.java.dev.jna:jna:5.13.0@aar")
