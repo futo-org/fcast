@@ -41,9 +41,10 @@ chrome.webRequest.onHeadersReceived.addListener(
         if (!contentType) {
             return;
         }
-        
+
         const isMedia = contentType.startsWith('video/') ||
             contentType.startsWith('audio/') ||
+            contentType.startsWith('image/') ||
             contentType.toLowerCase() == "application/x-mpegurl" ||
             contentType.toLowerCase() == "application/dash+xml";
         const isSegment = details.url.endsWith(".ts");
@@ -53,9 +54,9 @@ chrome.webRequest.onHeadersReceived.addListener(
 
             if (!mediaUrls.some(v => v.url === details.url)) {
                 mediaUrls.unshift({contentType, url: details.url});
-                if (mediaUrls.length > 5) {
-                    mediaUrls.pop();
-                }
+                // if (mediaUrls.length > 5) {
+                //     mediaUrls.pop();
+                // }
 
                 notifyPopup('updateUrls');
             }
@@ -65,7 +66,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     ["responseHeaders"]
 );
 
-chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+chrome.runtime.onMessage.addListener(async function(request, sender, sendResponse) {
     if (request.action === 'getUrls') {
         sendResponse({ urls: mediaUrls, selectedHost });
     } else if (request.action === 'clearAll') {
@@ -104,9 +105,26 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
         notifyPopup('updateHosts');
         notifyPopup('updateUrls');
     } else if (request.action === 'castVideo') {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab || !tab.url) return;
+        const url = tab.url;
+
+        const cookies = await chrome.cookies.getAll({ url });
+
+        const map = new Map();
+        for (const cookie in cookies) {
+            map.set(cookies[cookie].name, cookies[cookie].value);
+        }
+
         play(selectedHost, {
             container: request.url.contentType,
-            url: request.url.url
+            url: request.url.url,
+            headers: {
+                Cookie: Array.from(map.entries())
+                .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+                .join('; ')
+            }
         });
     } else if (request.action === 'getHosts') {
         sendResponse({ hosts, selectedHost });
@@ -127,6 +145,58 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     } else if (request.action === 'seek') {
         seek(selectedHost, request.time);
     }
+});
+
+// https://github.com/GoogleChrome/chrome-extensions-samples/blob/main/api-samples/contextMenus/basic/sample.js
+async function onContextMenuClick(info) {
+    switch (info.menuItemId) {
+    case "cast":
+        // chrome.runtime.sendMessage({ action: 'castVideo', url });
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab || !tab.url) return;
+        const url = tab.url;
+
+        const cookies = await chrome.cookies.getAll({ url });
+
+        const map = new Map();
+        for (const cookie in cookies) {
+            map.set(cookies[cookie].name, cookies[cookie].value);
+        }
+
+        const resp = await fetch(info.srcUrl, {
+            method: "HEAD",
+        });
+
+        if (!resp.ok) {
+            return;
+        }
+
+        console.log(resp);
+
+        play(selectedHost, {
+            // container: request.url.contentType,
+            container: resp.headers.get("Content-Type"),
+            url: info.srcUrl,
+            headers: {
+                Cookie: Array.from(map.entries())
+                .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+                .join('; ')
+            }
+        });
+        break;
+    default:
+        break;
+    }
+    console.log(info);
+}
+
+chrome.contextMenus.onClicked.addListener(onContextMenuClick);
+
+chrome.contextMenus.create({
+    title: "Cast to Fcast",
+    contexts: ["video", "audio", "image"],
+    id: "cast"
 });
 
 function closeCurrentWebSocket() {
@@ -197,22 +267,22 @@ function maintainWebSocketConnection(host) {
             buffer[bytesRead + i] = dataView.getUint8(offset + i);
         }
         bytesRead += bytesToRead;
-    
+
         if (bytesRead >= LENGTH_BYTES) {
             packetLength = dataView.getUint32(0, true); // true for little-endian
             bytesRead = 0;
             state = SessionState.WaitingForData;
-    
+
             if (packetLength > MAXIMUM_PACKET_LENGTH) {
                 throw new Error("Maximum packet length exceeded");
             }
-    
+
             if (bytesRemaining > 0) {
                 handlePacketBytes(dataView, offset + bytesToRead, bytesRemaining);
             }
         }
     }
-    
+
     function handlePacketBytes(dataView, offset, count) {
         let bytesToRead = Math.min(packetLength - bytesRead, count);
         let bytesRemaining = count - bytesToRead;
@@ -220,30 +290,30 @@ function maintainWebSocketConnection(host) {
             buffer[bytesRead + i] = dataView.getUint8(offset + i);
         }
         bytesRead += bytesToRead;
-    
+
         if (bytesRead >= packetLength) {
             handlePacket();
-    
+
             state = SessionState.WaitingForLength;
             packetLength = 0;
             bytesRead = 0;
-    
+
             if (bytesRemaining > 0) {
                 handleLengthBytes(dataView, offset + bytesToRead, bytesRemaining);
             }
         }
     }
-    
+
 
     function handlePacket() {
         console.log(`Processing packet of ${bytesRead} bytes`);
-    
+
         // Parse opcode and body
         const opcode = buffer[0];
         const body = bytesRead > 1 ? new TextDecoder().decode(buffer.slice(1, bytesRead)) : null;
-    
+
         console.log("Received body:", body);
-    
+
         switch (opcode) {
             case Opcode.PlaybackUpdate:
                 if (body) {
@@ -259,7 +329,7 @@ function maintainWebSocketConnection(host) {
                     }
                 }
                 break;
-    
+
             case Opcode.VolumeUpdate:
                 if (body) {
                     try {
@@ -275,13 +345,13 @@ function maintainWebSocketConnection(host) {
                     }
                 }
                 break;
-    
+
             default:
                 console.log(`Error handling packet`);
                 break;
         }
-    }   
-    
+    }
+
     currentWebSocket.onmessage = function(event) {
         if (typeof event.data === "string") {
             console.log("Text message received, not handled:", event.data);
@@ -312,7 +382,7 @@ function sendWebSocketPacket(h, packet) {
         host = h.substring(0, portIndex);
         port = h.substring(portIndex + 1, h.length);
     }
-    
+
     const wsUrl = `ws://${host}:${port}`;
     const socket = new WebSocket(wsUrl);
     socket.onopen = function() {

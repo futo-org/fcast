@@ -54,7 +54,7 @@ function updateUrlList() {
                     console.log("castVideo", url);
                     chrome.runtime.sendMessage({ action: 'castVideo', url });
                 }
-            });    
+            });
             buttonContainer.appendChild(castButton);
 
             listItem.appendChild(urlText);
@@ -120,7 +120,7 @@ function updateHostList() {
         const pauseButton = document.getElementById('pauseButton');
         const stopButton = document.getElementById('stopButton');
         const volumeControl = document.getElementById('volumeControl');
-    
+
         if (response.selectedHost) {
             controlsDiv.style.opacity = 1;
             timeBar.disabled = false;
@@ -128,7 +128,7 @@ function updateHostList() {
             pauseButton.disabled = false;
             stopButton.disabled = false;
             volumeControl.disabled = false;
-    
+
             timeBar.addEventListener('input', handleSeek);
             resumeButton.addEventListener('click', handleResume);
             pauseButton.addEventListener('click', handlePause);
@@ -141,7 +141,7 @@ function updateHostList() {
             pauseButton.disabled = true;
             stopButton.disabled = true;
             volumeControl.disabled = true;
-    
+
             timeBar.removeEventListener('input', handleSeek);
             resumeButton.removeEventListener('click', handleResume);
             pauseButton.removeEventListener('click', handlePause);
@@ -199,7 +199,7 @@ function updatePlaybackState() {
                 resumeButton.disabled = false;
                 pauseButton.disabled = true;
                 break;
-        }        
+        }
     });
 }
 

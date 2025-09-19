@@ -4,7 +4,11 @@
     "version": "1.0",
     "permissions": [
         "webRequest",
-        "storage"
+        "storage",
+        "cookies",
+        "tabs",
+        "activeTab",
+        "contextMenus"
     ],
     "host_permissions": [
         "<all_urls>"
@@ -19,5 +23,10 @@
             "48": "icons/icon48.png",
             "128": "icons/icon128.png"
         }
+    },
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
     }
 }
