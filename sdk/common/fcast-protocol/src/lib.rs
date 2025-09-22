@@ -91,35 +91,35 @@ impl TryFrom<u8> for Opcode {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PlaybackErrorMessage {
     pub message: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct VersionMessage {
     pub version: u64,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SetSpeedMessage {
     pub speed: f64,
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct VolumeUpdateMessage {
     #[serde(rename = "generationTime")]
     pub generation_time: u64,
     pub volume: f64, //(0-1)
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SetVolumeMessage {
     pub volume: f64,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SeekMessage {
     pub time: f64,
 }

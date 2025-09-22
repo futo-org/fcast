@@ -10,7 +10,7 @@ macro_rules! get_from_map {
     };
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetadataObject {
     Generic {
         title: Option<String>,
@@ -98,7 +98,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayMessage {
     /// The MIME type (video/mp4)
     pub container: String,
@@ -117,14 +117,14 @@ pub struct PlayMessage {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Deserialize_repr, Serialize_repr, Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize_repr, Serialize_repr)]
 #[repr(u8)]
 pub enum ContentType {
     #[default]
     Playlist = 0,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct MediaItem {
     /// The MIME type (video/mp4)
     pub container: String,
@@ -148,7 +148,7 @@ pub struct MediaItem {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Serialize, Debug, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct PlaylistContent {
     #[serde(rename = "contentType")]
     pub variant: ContentType,
@@ -168,7 +168,7 @@ pub struct PlaylistContent {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Serialize_repr, Deserialize_repr, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum PlaybackState {
     Idle = 0,
@@ -176,7 +176,7 @@ pub enum PlaybackState {
     Paused = 2,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PlaybackUpdateMessage {
     // The time the packet was generated (unix time milliseconds)
     #[serde(rename = "generationTime")]
@@ -194,7 +194,7 @@ pub struct PlaybackUpdateMessage {
     pub item_index: Option<u64>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialSenderMessage {
     #[serde(rename = "displayName")]
     pub display_name: Option<String>,
@@ -205,7 +205,7 @@ pub struct InitialSenderMessage {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialReceiverMessage {
     #[serde(rename = "displayName")]
     pub display_name: Option<String>,
@@ -218,7 +218,7 @@ pub struct InitialReceiverMessage {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct PlayUpdateMessage {
     #[serde(rename = "generationTime")]
     pub generation_time: Option<u64>,
@@ -226,13 +226,13 @@ pub struct PlayUpdateMessage {
     pub play_data: Option<PlayMessage>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct SetPlaylistItemMessage {
     #[serde(rename = "itemIndex")]
     pub item_index: u64,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum KeyNames {
     ArrowLeft,
     ArrowRight,
@@ -254,7 +254,7 @@ impl KeyNames {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum EventSubscribeObject {
     MediaItemStart,
     MediaItemEnd,
@@ -328,17 +328,17 @@ impl<'de> Deserialize<'de> for EventSubscribeObject {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct SubscribeEventMessage {
     pub event: EventSubscribeObject,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct UnsubscribeEventMessage {
     pub event: EventSubscribeObject,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
 pub enum EventType {
     MediaItemStart = 0,
@@ -348,7 +348,7 @@ pub enum EventType {
     KeyUp = 4,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum EventObject {
     MediaItem {
@@ -456,7 +456,7 @@ impl<'de> Deserialize<'de> for EventObject {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct EventMessage {
     #[serde(rename = "generationTime")]
     pub generation_time: u64,

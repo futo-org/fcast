@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PlayMessage {
     pub container: String,
     pub url: Option<String>,
@@ -13,7 +13,7 @@ pub struct PlayMessage {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PlaybackUpdateMessage {
     #[serde(rename = "generationTime")]
     pub generation_time: u64,

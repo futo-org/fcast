@@ -2,7 +2,7 @@
 name = "fcast-protocol"
 description = "Data types for FCast"
 repository = "https://gitlab.futo.org/videostreaming/fcast"
-version = "0.1.0"
+version = "0.1.1"
 license.workspace = true
 edition = "2021"
 
