@@ -1,10 +1,11 @@
 #[cfg(any_protocol)]
+use std::sync::Arc;
+
+#[cfg(any_protocol)]
 use crate::device::{CastingDevice, DeviceInfo, ProtocolType};
 #[cfg(all(feature = "discovery", any_protocol))]
 use crate::discovery;
 use crate::{AsyncRuntime, AsyncRuntimeError};
-#[cfg(any_protocol)]
-use std::sync::Arc;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct CastContext {
@@ -32,10 +33,7 @@ impl CastContext {
                 self.runtime.handle().clone(),
             )),
             #[cfg(feature = "fcast")]
-            ProtocolType::FCast => Arc::new(crate::fcast::FCastDevice::new(
-                info,
-                self.runtime.handle().clone(),
-            )),
+            ProtocolType::FCast => Arc::new(crate::fcast::FCastDevice::new(info, self.runtime.handle().clone())),
         }
     }
 }
@@ -44,8 +42,7 @@ impl CastContext {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
     pub fn start_discovery(&self, event_handler: Arc<dyn crate::DeviceDiscovererEventHandler>) {
-        self.runtime
-            .spawn(discovery::discover_devices(event_handler));
+        self.runtime.spawn(discovery::discover_devices(event_handler));
     }
 }
 

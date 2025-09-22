@@ -1,27 +1,21 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io,
-    marker::Unpin,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    str::FromStr,
-    sync::{
-        atomic::{AtomicU16, Ordering},
-        Arc,
-    },
-};
+use std::collections::HashMap;
+use std::fs::File;
+use std::io;
+use std::marker::Unpin;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::Arc;
+
+use anyhow::bail;
+use http::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map, KnownHeaderNames};
+use log::{debug, error};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::runtime::Handle;
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::http;
-use anyhow::bail;
-use http::KnownHeaderNames;
-use http::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map};
-use log::{debug, error};
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
-    runtime::Handle,
-    sync::Mutex,
-};
-use uuid::Uuid;
 
 const MAX_CHUNK_SIZE: u64 = 1024 * 512;
 const DEFAULT_REQUEST_BUF_CAP: usize = 1024;
@@ -59,10 +53,7 @@ enum FileRequestError {
     Utf8(#[from] std::str::Utf8Error),
 }
 
-async fn write_header_map<T: AsyncWrite + Unpin>(
-    writer: &mut T,
-    headers: &[(&str, &str)],
-) -> Result<(), io::Error> {
+async fn write_header_map<T: AsyncWrite + Unpin>(writer: &mut T, headers: &[(&str, &str)]) -> Result<(), io::Error> {
     for header in headers {
         writer.write_all(header.0.as_bytes()).await?;
         writer.write_all(b": ").await?;
@@ -134,8 +125,8 @@ impl FileServer {
         let file_length = file_meta.len();
         let mut reader = tokio::io::BufReader::new(file);
         if let Some(range) = headers.get(KnownHeaderNames::RANGE) {
-            let mut ranges = http_range::HttpRange::parse(range, file_length)
-                .map_err(|_| FileRequestError::HttpRangeParse)?;
+            let mut ranges =
+                http_range::HttpRange::parse(range, file_length).map_err(|_| FileRequestError::HttpRangeParse)?;
             if let Some(range) = ranges.get_mut(0) {
                 range.length = range.length.min(MAX_CHUNK_SIZE);
                 let start_line = http::ResponseStartLine {
@@ -145,11 +136,7 @@ impl FileServer {
                 .serialize();
                 writer.write_all(&start_line).await?;
 
-                let bytes_range_str = format!(
-                    "bytes {}-{}/{file_length}",
-                    range.start,
-                    range.start + range.length - 1
-                );
+                let bytes_range_str = format!("bytes {}-{}/{file_length}", range.start, range.start + range.length - 1);
                 let content_length = range.length.to_string();
 
                 let headers = [
@@ -223,10 +210,7 @@ impl FileServer {
         Ok(())
     }
 
-    async fn dispatch_request(
-        mut stream: tokio::net::TcpStream,
-        files: FileMapLock,
-    ) -> anyhow::Result<()> {
+    async fn dispatch_request(mut stream: tokio::net::TcpStream, files: FileMapLock) -> anyhow::Result<()> {
         let mut request_buf = Vec::<u8>::with_capacity(DEFAULT_REQUEST_BUF_CAP);
         let mut read_buf = [0u8; 1024];
         let start_line_end = 'out: {

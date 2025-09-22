@@ -1,7 +1,8 @@
-use crate::IpAddr;
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::Arc;
+
+use crate::IpAddr;
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug)]
@@ -117,11 +118,10 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
 
     let connection_info = url.path_segments()?.next()?;
 
-    use base64::{
-        alphabet::URL_SAFE,
-        engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
-        Engine as _,
-    };
+    use base64::alphabet::URL_SAFE;
+    use base64::engine::general_purpose::GeneralPurpose;
+    use base64::engine::{DecodePaddingMode, GeneralPurposeConfig};
+    use base64::Engine as _;
     let b64_engine = GeneralPurpose::new(
         &URL_SAFE,
         GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
@@ -355,9 +355,11 @@ pub enum LoadRequest {
 pub trait CastingDevice: Send + Sync {
     // NOTE: naming it `protocol` causes iOS builds to fail
     fn casting_protocol(&self) -> ProtocolType;
-    /// Returns `true` if the device has the required information needed to start a connection.
+    /// Returns `true` if the device has the required information needed to
+    /// start a connection.
     fn is_ready(&self) -> bool;
-    /// Some features may only be present after the device has emitted the [`Connected`] event.
+    /// Some features may only be present after the device has emitted the
+    /// [`Connected`] event.
     ///
     /// [`Connected`]: DeviceConnectionState::Connected
     fn supports_feature(&self, feature: DeviceFeature) -> bool;
@@ -366,7 +368,8 @@ pub trait CastingDevice: Send + Sync {
     fn seek(&self, time_seconds: f64) -> Result<(), CastingDeviceError>;
     /// Stop the media that is playing on the receiver.
     ///
-    /// This will usually result in the receiver closing the media viewer and show a default screen.
+    /// This will usually result in the receiver closing the media viewer and
+    /// show a default screen.
     fn stop_playback(&self) -> Result<(), CastingDeviceError>;
     fn pause_playback(&self) -> Result<(), CastingDeviceError>;
     fn resume_playback(&self) -> Result<(), CastingDeviceError>;
@@ -387,8 +390,8 @@ pub trait CastingDevice: Send + Sync {
     /// Connect to the device.
     ///
     /// # Arguments
-    ///   * `reconnect_interval_millis`: the interval between each reconnect attempt. Setting this to `0`
-    ///     indicates that reconnects should not be attempted.
+    ///   * `reconnect_interval_millis`: the interval between each reconnect attempt. Setting this
+    ///     to `0` indicates that reconnects should not be attempted.
     #[cfg_attr(feature = "uniffi", uniffi::method(default(app_info = None)))]
     fn connect(
         &self,
@@ -403,16 +406,10 @@ pub trait CastingDevice: Send + Sync {
     fn set_port(&self, port: u16);
     /// Attempt to subscribe to an event group.
     ///
-    /// An error will be returned if the device does not support the group. Use [`supports_feature`]
-    /// to check if the group is supported.
+    /// An error will be returned if the device does not support the group. Use
+    /// [`supports_feature`] to check if the group is supported.
     ///
     /// [`supports_feature`]: Self::supports_feature
-    fn subscribe_event(
-        &self,
-        group: GenericEventSubscriptionGroup,
-    ) -> Result<(), CastingDeviceError>;
-    fn unsubscribe_event(
-        &self,
-        group: GenericEventSubscriptionGroup,
-    ) -> Result<(), CastingDeviceError>;
+    fn subscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError>;
+    fn unsubscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError>;
 }

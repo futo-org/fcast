@@ -3,13 +3,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use log::debug;
-use mdns_sd::ScopedIp;
-use mdns_sd::ServiceEvent;
+use mdns_sd::{ScopedIp, ServiceEvent};
 use tokio_stream::StreamExt;
 
 use crate::device::DeviceInfo;
-use crate::DeviceDiscovererEventHandler;
-use crate::IpAddr;
+use crate::{DeviceDiscovererEventHandler, IpAddr};
 
 #[cfg(feature = "chromecast")]
 pub const CHROMECAST_FRIENDLY_NAME_TXT: &str = "fn";
@@ -84,11 +82,8 @@ enum Message {
     ChromecastServiceEvent(ServiceEvent),
 }
 
-pub(crate) async fn discover_devices(
-    event_handler: Arc<dyn DeviceDiscovererEventHandler>,
-) -> anyhow::Result<()> {
-    let service_daemon =
-        mdns_sd::ServiceDaemon::new().context("Failed to create mDNS ServiceDaemon")?;
+pub(crate) async fn discover_devices(event_handler: Arc<dyn DeviceDiscovererEventHandler>) -> anyhow::Result<()> {
+    let service_daemon = mdns_sd::ServiceDaemon::new().context("Failed to create mDNS ServiceDaemon")?;
     let mut devices: HashSet<String> = HashSet::new();
 
     macro_rules! browse {
@@ -142,10 +137,7 @@ pub(crate) async fn discover_devices(
         chromecast_mdns_receiver,
         |chromecast_mdns_receiver: mdns_sd::Receiver<ServiceEvent>| async move {
             let event = chromecast_mdns_receiver.recv_async().await.ok()?;
-            Some((
-                Message::ChromecastServiceEvent(event),
-                chromecast_mdns_receiver,
-            ))
+            Some((Message::ChromecastServiceEvent(event), chromecast_mdns_receiver))
         },
     );
     #[cfg(feature = "chromecast")]

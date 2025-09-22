@@ -1,8 +1,10 @@
 #[cfg(any_protocol)]
 mod any_protocol_prelude {
+    pub use std::net::SocketAddr;
+    pub use std::time::Duration;
+
     pub use anyhow::{anyhow, bail};
     pub use log::debug;
-    pub use std::{net::SocketAddr, time::Duration};
     pub use tokio::net::TcpStream;
 }
 

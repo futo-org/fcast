@@ -43,14 +43,12 @@ pub enum Opcode {
     Ping = 12,
     /// Message to respond to a ping from the other party, no body
     Pong = 13,
-    /// Message to notify the other party of device information and state, body is InitialSenderMessage
-    /// if receiver or [`v3::InitialReceiverMessage`] if sender
+    /// Message to notify the other party of device information and state, body is InitialSenderMessage if receiver or
+    /// [`v3::InitialReceiverMessage`] if sender
     Initial = 14,
-    /// Receiver message to notify all senders when any device has sent a [`v3::PlayMessage`], body is
-    /// [`v3::PlayUpdateMessage`]
+    /// Receiver message to notify all senders when any device has sent a [`v3::PlayMessage`], body is [`v3::PlayUpdateMessage`]
     PlayUpdate = 15,
-    /// Sender message to set the item index in a playlist to play content from, body is
-    /// [`v3::SetPlaylistItemMessage`]
+    /// Sender message to set the item index in a playlist to play content from, body is [`v3::SetPlaylistItemMessage`]
     SetPlaylistItem = 16,
     /// Sender message to subscribe to a receiver event, body is [`v3::SubscribeEventMessage`]
     SubscribeEvent = 17,

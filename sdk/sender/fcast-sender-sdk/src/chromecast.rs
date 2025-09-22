@@ -1,40 +1,33 @@
-use crate::googlecast_protocol;
-use crate::{
-    device::{
-        ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
-        DeviceEventHandler, DeviceFeature, DeviceInfo, GenericEventSubscriptionGroup, LoadRequest,
-        Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
-    },
-    utils, IpAddr,
-};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use anyhow::{anyhow, bail, Result};
 use futures::StreamExt;
+use googlecast_protocol::prost::Message;
 use googlecast_protocol::{
-    self as protocol, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
-    QueueRepeatMode, StreamType, CONNECTION_NAMESPACE,
+    self as protocol, namespaces, protos, MediaInformation, PlayerState, QueueItem, QueueRepeatMode, StreamType,
+    CONNECTION_NAMESPACE, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE,
 };
-use googlecast_protocol::{namespaces, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE};
 use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
 use serde_json as json;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-    time::Duration,
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
+
+use crate::device::{
+    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
+    DeviceInfo, GenericEventSubscriptionGroup, LoadRequest, Metadata, PlaybackState, PlaylistItem, ProtocolType,
+    Source,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-    runtime::Handle,
-    sync::mpsc::{Receiver, Sender},
-};
-use tokio_rustls::{
-    client::TlsStream,
-    rustls::{self, ClientConfig, RootCertStore},
-    TlsConnector,
-};
+use crate::{googlecast_protocol, utils, IpAddr};
 
 const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
 const RECEIVER_APP_ID: &str = "CC1AD845";
@@ -247,10 +240,7 @@ impl InnerDevice {
         T: Serialize + namespaces::Namespace + std::fmt::Debug,
     {
         match self.transport_id.as_ref() {
-            Some(transport_id) => {
-                self.send_channel_message("sender-0", transport_id.clone(), obj)
-                    .await
-            }
+            Some(transport_id) => self.send_channel_message("sender-0", transport_id.clone(), obj).await,
             None => {
                 bail!("`transport_id` is missing")
             }
@@ -431,12 +421,11 @@ impl InnerDevice {
         self.writer = None;
         self.request_id = RequestId::new();
 
-        let Some(stream) =
-            utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
-                cmd == Command::Quit
-            })
-            .await
-            .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
+        let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
+            cmd == Command::Quit
+        })
+        .await
+        .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
         else {
             debug!("Received Quit command in connect loop");
             return Ok(());
@@ -479,10 +468,7 @@ impl InnerDevice {
                     let size = u32::from_be_bytes(size_buf) as usize;
 
                     if size > body_buf.len() {
-                        bail!(
-                            "Packet size ({size}) exceeded the maximum ({})",
-                            body_buf.len()
-                        );
+                        bail!("Packet size ({size}) exceeded the maximum ({})", body_buf.len());
                     }
 
                     reader.read_exact(&mut body_buf[..size]).await?;
@@ -868,15 +854,7 @@ impl CastingDevice for ChromecastDevice {
                 url,
                 metadata,
                 request_headers,
-            } => self.load_url(
-                content_type,
-                url,
-                None,
-                None,
-                None,
-                metadata,
-                request_headers,
-            ),
+            } => self.load_url(content_type, url, None, None, None, metadata, request_headers),
             LoadRequest::Playlist { items } => self.send_command(Command::LoadPlaylist(items)),
         }
     }
@@ -971,18 +949,12 @@ impl CastingDevice for ChromecastDevice {
     }
 
     #[allow(unused_variables)]
-    fn subscribe_event(
-        &self,
-        group: GenericEventSubscriptionGroup,
-    ) -> Result<(), CastingDeviceError> {
+    fn subscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedSubscription)
     }
 
     #[allow(unused_variables)]
-    fn unsubscribe_event(
-        &self,
-        group: GenericEventSubscriptionGroup,
-    ) -> Result<(), CastingDeviceError> {
+    fn unsubscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedSubscription)
     }
 }

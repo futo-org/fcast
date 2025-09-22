@@ -1,6 +1,7 @@
 //! # FCast Sender SDK
 //!
-//! An all in one SDK for casting media to [FCast], [Chromecast] and [Google Cast] receiver devices.
+//! An all in one SDK for casting media to [FCast], [Chromecast] and [Google
+//! Cast] receiver devices.
 //!
 //! ## Supported languages
 //!
@@ -17,15 +18,13 @@
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
-//! use fcast_sender_sdk::{
-//!     context::CastContext,
-//!     device::{
-//!         ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
-//!         GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
-//!     },
-//!     DeviceDiscovererEventHandler,
-//!     IpAddr,
+//!
+//! use fcast_sender_sdk::context::CastContext;
+//! use fcast_sender_sdk::device::{
+//!     ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
+//!     GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
 //! };
+//! use fcast_sender_sdk::{DeviceDiscovererEventHandler, IpAddr};
 //!
 //! struct DevEventHandler {}
 //!
@@ -98,11 +97,13 @@
 //!     port: 46899,
 //! });
 //!
-//! dev.connect(None, Arc::new(DevEventHandler {}), 1000).unwrap();
+//! dev.connect(None, Arc::new(DevEventHandler {}), 1000)
+//!     .unwrap();
 //!
 //! dev.load(LoadRequest::Video {
 //!     content_type: "video/mp4".to_string(),
-//!     url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4".to_string(),
+//!     url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+//!         .to_string(),
 //!     resume_position: 0.0,
 //!     speed: None,
 //!     volume: None,
@@ -144,20 +145,23 @@ pub trait DeviceDiscovererEventHandler: Send + Sync {
     fn device_removed(&self, device_name: String);
     /// Called when a device has changed.
     ///
-    /// The `name` field of `device_info` will correspond to a device announced from `device_available`.
+    /// The `name` field of `device_info` will correspond to a device announced
+    /// from `device_available`.
     fn device_changed(&self, device_info: device::DeviceInfo);
 }
 
 #[cfg(all(feature = "discovery", any_protocol))]
 use std::future::Future;
+
 #[cfg(any(feature = "http-file-server", any_protocol))]
 use tokio::runtime;
 #[cfg(any_protocol)]
 pub mod device;
 #[cfg(any_protocol)]
-use log::error;
-#[cfg(any_protocol)]
 use std::str::FromStr;
+
+#[cfg(any_protocol)]
+use log::error;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
@@ -272,9 +276,7 @@ pub enum ParseIpAddrError {
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 fn try_ip_addr_from_str(s: &str) -> Result<IpAddr, ParseIpAddrError> {
-    Ok(IpAddr::from(&std::net::IpAddr::from_str(
-        s.trim_matches(['[', ']']),
-    )?))
+    Ok(IpAddr::from(&std::net::IpAddr::from_str(s.trim_matches(['[', ']']))?))
 }
 
 #[allow(dead_code)]
@@ -303,8 +305,7 @@ pub fn url_format_ip_addr(addr: &IpAddr) -> String {
             scope_id,
         } => {
             let addr = std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
-                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
-                *o16,
+                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15, *o16,
             ]));
             format!("[{addr}%{scope_id}]")
         }
@@ -337,8 +338,7 @@ fn octets_from_ip_addr(addr: &IpAddr) -> Vec<u8> {
             ..
         } => {
             vec![
-                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
-                *o16,
+                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15, *o16,
             ]
         }
     }
@@ -387,9 +387,7 @@ impl From<&std::net::IpAddr> for IpAddr {
 impl From<&IpAddr> for std::net::IpAddr {
     fn from(value: &IpAddr) -> Self {
         match value {
-            IpAddr::V4 { o1, o2, o3, o4 } => {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(*o1, *o2, *o3, *o4))
-            }
+            IpAddr::V4 { o1, o2, o3, o4 } => std::net::IpAddr::V4(std::net::Ipv4Addr::new(*o1, *o2, *o3, *o4)),
             IpAddr::V6 {
                 o1,
                 o2,
@@ -409,8 +407,7 @@ impl From<&IpAddr> for std::net::IpAddr {
                 o16,
                 ..
             } => std::net::IpAddr::V6(std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
-                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
-                *o16,
+                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15, *o16,
             ]))),
         }
     }
@@ -445,9 +442,7 @@ impl LogLevelFilter {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn init_logger(level_filter: LogLevelFilter) {
     log_panics::init();
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(level_filter.to_log_compat()),
-    );
+    android_logger::init_once(android_logger::Config::default().with_max_level(level_filter.to_log_compat()));
 }
 
 #[cfg(all(target_os = "ios", feature = "logging"))]

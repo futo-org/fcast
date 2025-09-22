@@ -1,6 +1,5 @@
-use serde::{de, ser, Deserialize, Serialize};
-
 pub use prost;
+use serde::{de, ser, Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod protos {
@@ -14,7 +13,8 @@ pub const CONNECTION_NAMESPACE: &str = "urn:x-cast:com.google.cast.tp.connection
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Volume {
-    /// Current stream volume level as a value between 0.0 and 1.0 where 1.0 is the maximum volume.
+    /// Current stream volume level as a value between 0.0 and 1.0 where 1.0 is
+    /// the maximum volume.
     pub level: Option<f64>,
     /// Whether the Cast device is muted, independent of the volume level
     pub muted: Option<bool>,
@@ -76,8 +76,9 @@ impl Serialize for Metadata {
                 map.insert(
                     "images".to_owned(),
                     match images {
-                        Some(i) => serde_json::to_value(i)
-                            .map_err(|_| ser::Error::custom("failed to serialize `images`"))?,
+                        Some(i) => {
+                            serde_json::to_value(i).map_err(|_| ser::Error::custom("failed to serialize `images`"))?
+                        }
                         None => Value::Null,
                     },
                 );
@@ -123,13 +124,9 @@ impl<'de> Deserialize<'de> for Metadata {
                         Some(images) => Some(
                             images
                                 .iter()
-                                .map(|maybe_image| {
-                                    serde_json::from_value::<Image>(maybe_image.clone())
-                                })
+                                .map(|maybe_image| serde_json::from_value::<Image>(maybe_image.clone()))
                                 .collect::<Result<Vec<Image>, serde_json::Error>>()
-                                .map_err(|_| {
-                                    de::Error::custom("`images` is not an array of images")
-                                })?,
+                                .map_err(|_| de::Error::custom("`images` is not an array of images"))?,
                         ),
                         None => None,
                     },
@@ -155,9 +152,10 @@ impl<'de> Deserialize<'de> for Metadata {
 /// <https://developers.google.com/cast/docs/media/messages#MediaInformation>
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MediaInformation {
-    /// Service-specific identifier of the content currently loaded by the media player. This is a
-    /// free form string and is specific to the application. In most cases, this will be the URL to
-    /// the media, but the sender can choose to pass a string that the receiver can interpret
+    /// Service-specific identifier of the content currently loaded by the media
+    /// player. This is a free form string and is specific to the
+    /// application. In most cases, this will be the URL to the media, but
+    /// the sender can choose to pass a string that the receiver can interpret
     /// properly. Max length: 1k
     #[serde(rename = "contentId")]
     pub content_id: String,
@@ -182,8 +180,8 @@ pub enum IdleReason {
     /// The media playback completed
     #[serde(rename = "FINISHED")]
     Finished,
-    /// The media was interrupted due to an error; for example, if the player could not download the
-    /// media due to network issues
+    /// The media was interrupted due to an error; for example, if the player
+    /// could not download the media due to network issues
     #[serde(rename = "ERROR")]
     Error,
 }
@@ -196,7 +194,8 @@ pub enum PlayerState {
     /// Player is actively playing content
     #[serde(rename = "PLAYING")]
     Playing,
-    /// Player is in PLAY mode but not actively playing content (currentTime is not changing)
+    /// Player is in PLAY mode but not actively playing content (currentTime is
+    /// not changing)
     #[serde(rename = "BUFFERING")]
     Buffering,
     /// Player is paused
@@ -204,34 +203,39 @@ pub enum PlayerState {
     Paused,
 }
 
-/// Describes the current status of the media artifact with respect to the session.
+/// Describes the current status of the media artifact with respect to the
+/// session.
 ///
 /// <https://developers.google.com/cast/docs/media/messages#MediaStatus>
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MediaStatus {
-    /// Unique ID for the playback of this specific session. This ID is set by the receiver at LOAD
-    /// and can be used to identify a specific instance of a playback. For example, two playbacks
-    /// of "Wish you were here" within the same session would each have a unique mediaSessionId.
+    /// Unique ID for the playback of this specific session. This ID is set by
+    /// the receiver at LOAD and can be used to identify a specific instance
+    /// of a playback. For example, two playbacks of "Wish you were here"
+    /// within the same session would each have a unique mediaSessionId.
     #[serde(rename = "mediaSessionId")]
     pub media_session_id: u64,
-    /// optional (for status messages) Full description of the content that is being played back.
-    /// Only be returned in a status messages if the MediaInformation has changed.
+    /// optional (for status messages) Full description of the content that is
+    /// being played back. Only be returned in a status messages if the
+    /// MediaInformation has changed.
     pub media: Option<MediaInformation>,
-    /// Indicates whether the media time is progressing, and at what rate. This is independent of the
-    /// player state since the media time can stop in any state.
-    /// 1.0 is regular time, 0.5 is slow motion
+    /// Indicates whether the media time is progressing, and at what rate. This
+    /// is independent of the player state since the media time can stop in
+    /// any state. 1.0 is regular time, 0.5 is slow motion
     #[serde(rename = "playbackRate")]
     pub playback_rate: f64,
     #[serde(rename = "playerState")]
     pub player_state: PlayerState,
-    /// optional If the playerState is IDLE and the reason it became IDLE is known, this property is
-    /// provided. If the player is IDLE because it just started, this property will not be provided;
-    /// if the player is in any other state this property should not be provided.
+    /// optional If the playerState is IDLE and the reason it became IDLE is
+    /// known, this property is provided. If the player is IDLE because it
+    /// just started, this property will not be provided; if the player is
+    /// in any other state this property should not be provided.
     #[serde(rename = "idleReason")]
     pub idle_reason: Option<IdleReason>,
-    /// The current position of the media player since the beginning of the content, in seconds.
-    /// If this a live stream content, then this field represents the time in seconds from the
-    /// beginning of the event that should be known to the player.
+    /// The current position of the media player since the beginning of the
+    /// content, in seconds. If this a live stream content, then this field
+    /// represents the time in seconds from the beginning of the event that
+    /// should be known to the player.
     #[serde(rename = "currentTime")]
     pub current_time: f64,
     /// Flags describing which media commands the media player supports:
@@ -243,7 +247,8 @@ pub struct MediaStatus {
     /// * 16  Skip forward
     /// * 32  Skip backward
     ///
-    /// Combinations are described as summations; for example, Pause+Seek+StreamVolume+Mute == 15.
+    /// Combinations are described as summations; for example,
+    /// Pause+Seek+StreamVolume+Mute == 15.
     #[serde(rename = "supportedMediaCommands")]
     pub supported_media_commands: u64,
     /// Stream volume
@@ -256,24 +261,26 @@ pub struct QueueItem {
     /// Whether the media will automatically play.
     pub autoplay: bool,
     pub media: MediaInformation,
-    /// Playback duration of the item in seconds. If it is larger than the actual duration - startTime it will be
-    /// limited to the actual duration - startTime. It can be negative, in such case the duration will be the actual
-    /// item duration minus the duration provided. A duration of value zero effectively means that the item will not be
-    /// played.
+    /// Playback duration of the item in seconds. If it is larger than the
+    /// actual duration - startTime it will be limited to the actual
+    /// duration - startTime. It can be negative, in such case the duration will
+    /// be the actual item duration minus the duration provided. A duration
+    /// of value zero effectively means that the item will not be played.
     #[serde(rename = "playbackDuration")]
     pub playback_duration: i32,
-    // This parameter is a hint for the receiver to preload this media item before it is played. It allows for a smooth
-    // transition between items played from the queue.
+    // This parameter is a hint for the receiver to preload this media item before it is played. It
+    // allows for a smooth transition between items played from the queue.
     //
-    // The time is expressed in seconds, relative to the beginning of this item playback (usually the end of the
-    // previous item playback). Only positive values are valid. For example, if the value is 10 seconds, this item will
-    // be preloaded 10 seconds before the previous item has finished. The receiver will try to honor this value but
-    // will not guarantee it, for example if the value is larger than the previous item duration the receiver may just
-    // preload this item shortly after the previous item has started playing (there will never be two items being
-    // preloaded in parallel). Also, if an item is inserted in the queue just after the currentItem and the time to
-    // preload is higher than the time left on the currentItem, the preload will just happen as soon as possible.
-    // #[serde(rename = "preloadTime")]
-    // pub preload_time: f64,
+    // The time is expressed in seconds, relative to the beginning of this item playback (usually
+    // the end of the previous item playback). Only positive values are valid. For example, if
+    // the value is 10 seconds, this item will be preloaded 10 seconds before the previous item
+    // has finished. The receiver will try to honor this value but will not guarantee it, for
+    // example if the value is larger than the previous item duration the receiver may just
+    // preload this item shortly after the previous item has started playing (there will never be
+    // two items being preloaded in parallel). Also, if an item is inserted in the queue just
+    // after the currentItem and the time to preload is higher than the time left on the
+    // currentItem, the preload will just happen as soon as possible. #[serde(rename =
+    // "preloadTime")] pub preload_time: f64,
     /// Seconds from the beginning of the media to start playback.
     #[serde(rename = "startTime")]
     pub start_time: f64,
@@ -311,20 +318,21 @@ pub struct Application {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum QueueRepeatMode {
-    /// Items are played in order, and when the queue is completed (the last item has ended) the media session is
-    /// terminated.
+    /// Items are played in order, and when the queue is completed (the last
+    /// item has ended) the media session is terminated.
     #[serde(rename = "REPEAT_OFF")]
     Off,
-    /// The items in the queue will be played indefinitely. When the last item has ended, the first item will be played
-    /// again.
+    /// The items in the queue will be played indefinitely. When the last item
+    /// has ended, the first item will be played again.
     #[serde(rename = "REPEAT_ALL")]
     All,
     /// The current item will be repeated indefinitely.
     #[serde(rename = "REPEAT_SINGLE")]
     Single,
-    /// The items in the queue will be played indefinitely. When the last item has ended, the list of items will be
-    /// randomly shuffled by the receiver, and the queue will continue to play starting from the first item of the
-    /// shuffled items.
+    /// The items in the queue will be played indefinitely. When the last item
+    /// has ended, the list of items will be randomly shuffled by the
+    /// receiver, and the queue will continue to play starting from the first
+    /// item of the shuffled items.
     #[serde(rename = "REPEAT_ALL_AND_SHUFFLE")]
     AllAndShuffle,
 }
@@ -458,25 +466,29 @@ pub mod namespaces {
             request_id: u64,
             /// Metadata (including contentId) of the media to load
             media: MediaInformation,
-            /// If the autoplay parameter is specified, the media player will begin playing the
-            /// content when it is loaded. Even if autoplay is not specified, media player
-            /// implementation may choose to begin playback immediately. If playback is started,
-            /// the player state in the response should be set to BUFFERING, otherwise it should
+            /// If the autoplay parameter is specified, the media player will
+            /// begin playing the content when it is loaded. Even if
+            /// autoplay is not specified, media player
+            /// implementation may choose to begin playback immediately. If
+            /// playback is started, the player state in the
+            /// response should be set to BUFFERING, otherwise it should
             /// be set to PAUSED. default is true
             #[serde(rename = "autoPlay")]
             auto_play: Option<bool>,
-            /// Seconds since beginning of content. If the content is live content, and position is
-            /// not specified, the stream will start at the live position
+            /// Seconds since beginning of content. If the content is live
+            /// content, and position is not specified, the stream
+            /// will start at the live position
             #[serde(rename = "currentTime")]
             current_time: Option<f64>,
             /// The media playback rate.
             #[serde(rename = "playbackRate", skip_serializing_if = "Option::is_none")]
             playback_rate: Option<f64>,
         },
-        /// Sets the current position in the stream. Triggers a STATUS event notification to all
-        /// sender applications. If the position provided is outside the range of valid positions
-        /// for the current content, then the player should pick a valid position as close to the
-        /// requested position as possible.
+        /// Sets the current position in the stream. Triggers a STATUS event
+        /// notification to all sender applications. If the position
+        /// provided is outside the range of valid positions
+        /// for the current content, then the player should pick a valid
+        /// position as close to the requested position as possible.
         ///
         /// <https://developers.google.com/cast/docs/media/messages#Seek>
         #[serde(rename = "SEEK")]
@@ -491,8 +503,8 @@ pub mod namespaces {
             #[serde(rename = "currentTime")]
             current_time: Option<f64>,
         },
-        /// Begins playback of the content that was loaded with the load call, playback is continued
-        /// from the current time position.
+        /// Begins playback of the content that was loaded with the load call,
+        /// playback is continued from the current time position.
         ///
         /// <https://developers.google.com/cast/docs/media/messages#Play>
         #[serde(rename = "PLAY")]
@@ -502,8 +514,8 @@ pub mod namespaces {
             #[serde(rename = "requestId")]
             request_id: u64,
         },
-        /// Pauses playback of the current content. Triggers a STATUS event notification to all sender
-        /// applications.
+        /// Pauses playback of the current content. Triggers a STATUS event
+        /// notification to all sender applications.
         ///
         /// <https://developers.google.com/cast/docs/media/messages#Pause>
         #[serde(rename = "PAUSE")]
@@ -515,9 +527,10 @@ pub mod namespaces {
             #[serde(rename = "requestId")]
             request_id: u64,
         },
-        /// Stops playback of the current content. Triggers a STATUS event notification to all sender
-        /// applications. After this command the content will no longer be loaded and the
-        /// mediaSessionId is invalidated.
+        /// Stops playback of the current content. Triggers a STATUS event
+        /// notification to all sender applications. After this command
+        /// the content will no longer be loaded and the mediaSessionId
+        /// is invalidated.
         ///
         /// <https://developers.google.com/cast/docs/media/messages#Stop>
         #[serde(rename = "STOP")]
@@ -534,28 +547,32 @@ pub mod namespaces {
         /// <https://developers.google.com/cast/docs/media/messages#GetStatus>
         #[serde(rename = "GET_STATUS")]
         GetStatus {
-            /// Media session ID of the media for which the media status should be returned. If none
-            /// is provided, then the status for all media session IDs will be provided.
+            /// Media session ID of the media for which the media status should
+            /// be returned. If none is provided, then the status
+            /// for all media session IDs will be provided.
             #[serde(rename = "mediaSessionId")]
             media_session_id: Option<u64>,
             /// ID of the request, to correlate request and response
             #[serde(rename = "requestId")]
             request_id: u64,
         },
-        /// Sent after a state change or after a media status request. Only the MediaStatus objects
-        /// that changed or were requested will be sent.
+        /// Sent after a state change or after a media status request. Only the
+        /// MediaStatus objects that changed or were requested will be
+        /// sent.
         ///
         /// <https://developers.google.com/cast/docs/media/messages#MediaStatusMess>
         #[serde(rename = "MEDIA_STATUS")]
         Status {
-            /// ID used to correlate this status response with the request that originated it or 0
-            /// if the status message is spontaneous (not triggered by a sender request). Sender
-            /// applications will generate unique request IDs by selecting a random number and
-            /// continuously increasing it (they will not use 0).
+            /// ID used to correlate this status response with the request that
+            /// originated it or 0 if the status message is
+            /// spontaneous (not triggered by a sender request). Sender
+            /// applications will generate unique request IDs by selecting a
+            /// random number and continuously increasing it (they
+            /// will not use 0).
             #[serde(rename = "requestId")]
             request_id: u64,
-            /// Array of Media Status objects. NOTE: the media element in MediaStatus will only be
-            /// returned if it has changed.
+            /// Array of Media Status objects. NOTE: the media element in
+            /// MediaStatus will only be returned if it has changed.
             status: Vec<MediaStatus>,
         },
         #[serde(rename = "SET_PLAYBACK_RATE")]
@@ -571,17 +588,23 @@ pub mod namespaces {
         QueueLoad {
             #[serde(rename = "requestId")]
             request_id: u64,
-            /// Array of items to load. It is sorted (first element will be played first). Must not be null or empty.
+            /// Array of items to load. It is sorted (first element will be
+            /// played first). Must not be null or empty.
             items: Vec<QueueItem>,
             #[serde(rename = "repeatMode")]
             repeat_mode: QueueRepeatMode,
-            /// The index of the item in the items array that must be the first currentItem (the item that will be
-            /// played first). Note this is the index of the array (starts at 0) and not the itemId (as it is not known
-            /// until the queue is created). If repeatMode is chrome.cast.media.RepeatMode.OFF playback will end when
-            /// the last item in the array is played (elements before the startIndex will not be played). This may be
-            /// useful for continuation scenarios where the user was already using the sender app and in the middle
-            /// decides to cast. In this way the sender app does not need to map between the local and remote queue
-            /// positions or saves one extra request to update the queue.
+            /// The index of the item in the items array that must be the first
+            /// currentItem (the item that will be played first).
+            /// Note this is the index of the array (starts at 0) and not the
+            /// itemId (as it is not known until the queue is
+            /// created). If repeatMode is chrome.cast.media.RepeatMode.OFF
+            /// playback will end when the last item in the array is
+            /// played (elements before the startIndex will not be played). This
+            /// may be useful for continuation scenarios where the
+            /// user was already using the sender app and in the middle
+            /// decides to cast. In this way the sender app does not need to map
+            /// between the local and remote queue positions or
+            /// saves one extra request to update the queue.
             #[serde(rename = "startIndex")]
             start_index: u32,
             #[serde(rename = "queueType")]
@@ -621,7 +644,8 @@ pub mod namespaces {
             #[serde(rename = "itemId")]
             item_id: u64,
         },
-        /// Sent when the load request was cancelled (a second load request was received).
+        /// Sent when the load request was cancelled (a second load request was
+        /// received).
         ///
         /// <https://developers.google.com/cast/docs/media/messages#LoadCancelled>
         #[serde(rename = "LOAD_CANCELLED")]
@@ -629,7 +653,8 @@ pub mod namespaces {
             #[serde(rename = "requestId")]
             request_id: u64,
         },
-        /// Sent when the request is invalid (an unknown request type, for example).
+        /// Sent when the request is invalid (an unknown request type, for
+        /// example).
         ///
         /// <https://developers.google.com/cast/docs/media/messages#InvalidRequest>
         #[serde(rename = "INVALID_REQUEST")]
@@ -666,9 +691,7 @@ mod tests {
         let meta = Metadata::Generic {
             title: Some("title".to_owned()),
             subtitle: Some("subtitle".to_owned()),
-            images: Some(vec![Image {
-                url: "url".to_owned(),
-            }]),
+            images: Some(vec![Image { url: "url".to_owned() }]),
             release_date: None,
         };
         assert_eq!(

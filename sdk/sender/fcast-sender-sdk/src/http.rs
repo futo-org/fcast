@@ -11,7 +11,8 @@ pub fn find_first_cr_lf(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Find the first `\r\n\r\n` sequence in `data` and returns the index of the first `\r`.
+/// Find the first `\r\n\r\n` sequence in `data` and returns the index of the
+/// first `\r`.
 pub fn find_first_double_cr_lf(data: &[u8]) -> Option<usize> {
     for (i, win) in data.windows(4).enumerate() {
         if win == b"\r\n\r\n" {
@@ -45,8 +46,8 @@ pub enum ParseHeaderMapError {
 /// Parse an RTSP/HTTP header map.
 ///
 /// # Arguments
-///   - `data` a byte buffer with key value pairs in the format `<key>: <value>\r\n` that must include
-///     the trailing `\r\n` line.
+///   - `data` a byte buffer with key value pairs in the format `<key>: <value>\r\n` that must
+///     include the trailing `\r\n` line.
 pub fn parse_header_map(data: &[u8]) -> Result<HashMap<&'_ str, &'_ str>, ParseHeaderMapError> {
     let mut map = HashMap::new();
     let mut i = 0;
@@ -179,9 +180,7 @@ pub enum ParseStartLineError {
     InvalidProtocol,
 }
 
-pub fn parse_request_start_line(
-    line: &[u8],
-) -> Result<(Method, &[u8], Protocol), ParseStartLineError> {
+pub fn parse_request_start_line(line: &[u8]) -> Result<(Method, &[u8], Protocol), ParseStartLineError> {
     let methods: [(&[u8], Method); 5] = [
         (b"GET", Method::Get),
         (b"POST", Method::Post),
@@ -328,10 +327,7 @@ mod tests {
                     \r\n"
             )
             .unwrap(),
-            HashMap::from([
-                ("Content-Length", "0"),
-                ("Content-Type", "application/octet-stream",),
-            ])
+            HashMap::from([("Content-Length", "0"), ("Content-Type", "application/octet-stream",),])
         );
         assert_eq!(parse_header_map(b"\r\n").unwrap(), HashMap::new());
     }
@@ -360,10 +356,7 @@ mod tests {
     fn valid_parse_request_start_line() {
         let cases: &[(&[u8], (Method, &[u8], Protocol))] = &[
             (b"GET / HTTP/1.0\r\n", (m!(Get), b"/", p!(Http1))),
-            (
-                b"POST /index HTTP/1.1\r\n",
-                (m!(Post), b"/index", p!(Http11)),
-            ),
+            (b"POST /index HTTP/1.1\r\n", (m!(Post), b"/index", p!(Http11))),
         ];
         for case in cases {
             assert_eq!(parse_request_start_line(case.0).unwrap(), case.1,);
