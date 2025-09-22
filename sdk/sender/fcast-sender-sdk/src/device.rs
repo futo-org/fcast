@@ -206,15 +206,53 @@ pub struct PlaylistItem {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug)]
-pub enum GenericEventSubscriptionGroup {
-    Keys,
-    Media,
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyName {
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
+    Ok,
+}
+
+impl KeyName {
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::ArrowLeft,
+            Self::ArrowRight,
+            Self::ArrowUp,
+            Self::ArrowDown,
+            Self::Ok,
+        ]
+    }
+}
+
+impl ToString for KeyName {
+    fn to_string(&self) -> String {
+        match self {
+            KeyName::ArrowLeft => "ArrowLeft",
+            KeyName::ArrowRight => "ArrowRight",
+            KeyName::ArrowUp => "ArrowUp",
+            KeyName::ArrowDown => "ArrowDown",
+            KeyName::Ok => "Ok",
+        }
+        .to_owned()
+    }
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventSubscription {
+    MediaItemStart,
+    MediaItemEnd,
+    MediaItemChange,
+    KeyDown { keys: Vec<KeyName> },
+    KeyUp { keys: Vec<KeyName> },
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug)]
-pub struct GenericKeyEvent {
+pub struct KeyEvent {
     pub released: bool,
     pub repeat: bool,
     pub handled: bool,
@@ -222,11 +260,31 @@ pub struct GenericKeyEvent {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaItemEventType {
+    Start,
+    End,
+    Change,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug)]
-pub enum GenericMediaEvent {
-    Started,
-    Ended,
-    Changed,
+pub struct MediaItem {
+    pub content_type: String,
+    pub url: Option<String>,
+    pub content: Option<String>,
+    pub time: Option<f64>,
+    pub volume: Option<f64>,
+    pub speed: Option<f64>,
+    pub show_duration: Option<f64>,
+    pub metadata: Option<Metadata>,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug)]
+pub struct MediaEvent {
+    pub type_: MediaItemEventType,
+    pub item: MediaItem,
 }
 
 #[allow(unused_variables)]
@@ -239,8 +297,8 @@ pub trait DeviceEventHandler: Send + Sync {
     fn duration_changed(&self, duration: f64);
     fn speed_changed(&self, speed: f64);
     fn source_changed(&self, source: Source);
-    fn key_event(&self, event: GenericKeyEvent);
-    fn media_event(&self, event: GenericMediaEvent);
+    fn key_event(&self, event: KeyEvent);
+    fn media_event(&self, event: MediaEvent);
     fn playback_error(&self, message: String);
 }
 
@@ -410,6 +468,6 @@ pub trait CastingDevice: Send + Sync {
     /// [`supports_feature`] to check if the group is supported.
     ///
     /// [`supports_feature`]: Self::supports_feature
-    fn subscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError>;
-    fn unsubscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError>;
+    fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
+    fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
 }
