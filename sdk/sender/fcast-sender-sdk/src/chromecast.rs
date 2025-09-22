@@ -7,8 +7,9 @@ use anyhow::{anyhow, bail, Result};
 use futures::StreamExt;
 use googlecast_protocol::prost::Message;
 use googlecast_protocol::{
-    self as protocol, namespaces, protos, MediaInformation, PlayerState, QueueItem, QueueRepeatMode, StreamType,
-    CONNECTION_NAMESPACE, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, RECEIVER_NAMESPACE,
+    self as protocol, namespaces, protos, MediaInformation, PlayerState, QueueItem,
+    QueueRepeatMode, StreamType, CONNECTION_NAMESPACE, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE,
+    RECEIVER_NAMESPACE,
 };
 use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
@@ -23,9 +24,9 @@ use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
 use crate::device::{
-    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
-    DeviceInfo, GenericEventSubscriptionGroup, LoadRequest, Metadata, PlaybackState, PlaylistItem, ProtocolType,
-    Source,
+    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
+    DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, Metadata, PlaybackState,
+    PlaylistItem, ProtocolType, Source,
 };
 use crate::{googlecast_protocol, utils, IpAddr};
 
@@ -949,12 +950,12 @@ impl CastingDevice for ChromecastDevice {
     }
 
     #[allow(unused_variables)]
-    fn subscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError> {
+    fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedSubscription)
     }
 
     #[allow(unused_variables)]
-    fn unsubscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError> {
+    fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedSubscription)
     }
 }

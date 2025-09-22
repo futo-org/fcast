@@ -3,8 +3,8 @@ use std::sync::Arc;
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
-        GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
+        ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, KeyEvent,
+        MediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
     },
     IpAddr,
 };
@@ -41,11 +41,11 @@ impl DeviceEventHandler for EventHandler {
         info!("Source changed: {source:?}");
     }
 
-    fn key_event(&self, event: GenericKeyEvent) {
+    fn key_event(&self, event: KeyEvent) {
         info!("Key event: {event:?}");
     }
 
-    fn media_event(&self, event: GenericMediaEvent) {
+    fn media_event(&self, event: MediaEvent) {
         info!("Media event: {event:?}");
     }
 
