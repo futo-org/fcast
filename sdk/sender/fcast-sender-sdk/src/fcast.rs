@@ -7,8 +7,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use fcast_protocol::v3::{self, InitialReceiverMessage, MetadataObject, SetPlaylistItemMessage};
 use fcast_protocol::{
-    v2, Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
-    VolumeUpdateMessage,
+    v2, Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage,
+    VersionMessage, VolumeUpdateMessage,
 };
 use futures::StreamExt;
 use log::{debug, error};
@@ -18,9 +18,9 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::device::{
-    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
-    DeviceInfo, GenericEventSubscriptionGroup, GenericKeyEvent, GenericMediaEvent, LoadRequest, Metadata,
-    PlaybackState, PlaylistItem, ProtocolType, Source,
+    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
+    DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent,
+    MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
 };
 use crate::{utils, IpAddr};
 
@@ -55,14 +55,30 @@ enum Command {
     PauseVideo,
     ResumeVideo,
     Quit,
-    SubscribeToAllMediaItemEvents,
-    SubscribeToAllKeyEvents,
-    UnsubscribeToAllMediaItemEvents,
-    UnsubscribeToAllKeyEvents,
+    Subscribe(EventSubscription),
+    Unsubscribe(EventSubscription),
     SetPlaylistItemIndex(u32),
     JumpPlaylist(i32),
     LoadPlaylist(Vec<PlaylistItem>),
     ConnectedEventDeadlineElapsed,
+}
+
+fn key_names_to_string(keys: &[KeyName]) -> Vec<String> {
+    keys.iter().map(|key| key.to_string()).collect()
+}
+
+fn event_sub_to_object(sub: &EventSubscription) -> v3::EventSubscribeObject {
+    match sub {
+        EventSubscription::MediaItemStart => v3::EventSubscribeObject::MediaItemStart,
+        EventSubscription::MediaItemEnd => v3::EventSubscribeObject::MediaItemEnd,
+        EventSubscription::MediaItemChange => v3::EventSubscribeObject::MediaItemChanged,
+        EventSubscription::KeyDown { keys } => v3::EventSubscribeObject::KeyDown {
+            keys: key_names_to_string(keys),
+        },
+        EventSubscription::KeyUp { keys } => v3::EventSubscribeObject::KeyDown {
+            keys: key_names_to_string(keys),
+        },
+    }
 }
 
 struct State {
@@ -439,21 +455,37 @@ impl InnerDevice {
                                 continue;
                             };
                             match msg.event {
-                                v3::EventObject::MediaItem { variant, .. } => {
+                                v3::EventObject::MediaItem { variant, item } => {
+                                    let type_ = match variant {
+                                        v3::EventType::MediaItemStart => MediaItemEventType::Start,
+                                        v3::EventType::MediaItemEnd => MediaItemEventType::End,
+                                        v3::EventType::MediaItemChange => MediaItemEventType::Change,
+                                        _ => {
+                                            error!("Received event of type {variant:?} when a media event was expected");
+                                            continue;
+                                        }
+                                    };
                                     self.event_handler.media_event(
-                                        match variant {
-                                            v3::EventType::MediaItemStart => GenericMediaEvent::Started,
-                                            v3::EventType::MediaItemEnd => GenericMediaEvent::Ended,
-                                            v3::EventType::MediaItemChange => GenericMediaEvent::Changed,
-                                            _ => {
-                                                error!("Expected a MediaItem event, got {variant:?}");
-                                                continue;
+                                        MediaEvent {
+                                            type_,
+                                            item: MediaItem {
+                                                content_type: item.container,
+                                                url: item.url,
+                                                content: item.content,
+                                                time: item.time,
+                                                volume: item.volume,
+                                                speed: item.speed,
+                                                show_duration: item.show_duration,
+                                                metadata: item.metadata.map(|m| match m {
+                                                    MetadataObject::Generic {title, thumbnail_url, ..} =>
+                                                        Metadata { title: title, thumbnail_url: thumbnail_url },
+                                                }),
                                             }
                                         }
                                     );
                                 }
                                 v3::EventObject::Key { variant, key, repeat, handled } => {
-                                    let event = GenericKeyEvent {
+                                    let event = KeyEvent {
                                         released: match variant {
                                             v3::EventType::KeyDown => false,
                                             v3::EventType::KeyUp => true,
@@ -664,10 +696,7 @@ impl InnerDevice {
                         Command::PauseVideo => self.send_empty(Opcode::Pause).await?,
                         Command::ResumeVideo => self.send_empty(Opcode::Resume).await?,
                         Command::Quit => break,
-                        Command::SubscribeToAllMediaItemEvents
-                            | Command::SubscribeToAllKeyEvents
-                            | Command::UnsubscribeToAllMediaItemEvents
-                            | Command::UnsubscribeToAllKeyEvents => {
+                        Command::Subscribe(ref event) | Command::Unsubscribe(ref event) => {
                             if self.session_version.get() != EVENT_SUB_MIN_PROTO_VERSION {
                                 error!(
                                     "Current protocol version ({}) does not support event subscriptions, version >=3 is required",
@@ -675,31 +704,13 @@ impl InnerDevice {
                                 );
                                 continue;
                             }
-                                let op = if cmd == Command::SubscribeToAllMediaItemEvents
-                                    || cmd == Command::SubscribeToAllKeyEvents {
+                            let event = event_sub_to_object(event);
+                            let op = if matches!(cmd, Command::Subscribe(_)) {
                                 Opcode::SubscribeEvent
                             } else {
                                 Opcode::UnsubscribeEvent
                             };
-                                let objs =  if cmd == Command::SubscribeToAllMediaItemEvents
-                                    || cmd == Command::UnsubscribeToAllMediaItemEvents {
-                                vec![
-                                    v3::EventSubscribeObject::MediaItemStart,
-                                    v3::EventSubscribeObject::MediaItemEnd,
-                                    v3::EventSubscribeObject::MediaItemChanged,
-                                ]
-                            } else {
-                                vec![
-                                    v3::EventSubscribeObject::KeyDown { keys: v3::KeyNames::all() },
-                                    v3::EventSubscribeObject::KeyUp { keys: v3::KeyNames::all() },
-                                ]
-                            };
-                            for obj in objs {
-                                self.send(
-                                    op,
-                                    v3::SubscribeEventMessage { event: obj }
-                                ).await?;
-                            }
+                            self.send(op, v3::SubscribeEventMessage { event }).await?;
                         }
                         Command::SetPlaylistItemIndex(item_index) =>
                             self.send(Opcode::SetPlaylistItem, SetPlaylistItemMessage { item_index: item_index as u64 }).await?,
@@ -1033,23 +1044,17 @@ impl CastingDevice for FCastDevice {
         state.port = port;
     }
 
-    fn subscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError> {
+    fn subscribe_event(&self, subscription: EventSubscription) -> Result<(), CastingDeviceError> {
         if self.session_version.get() >= EVENT_SUB_MIN_PROTO_VERSION {
-            self.send_command(match group {
-                GenericEventSubscriptionGroup::Keys => Command::SubscribeToAllKeyEvents,
-                GenericEventSubscriptionGroup::Media => Command::SubscribeToAllMediaItemEvents,
-            })
+            self.send_command(Command::Subscribe(subscription))
         } else {
             Err(CastingDeviceError::UnsupportedFeature)
         }
     }
 
-    fn unsubscribe_event(&self, group: GenericEventSubscriptionGroup) -> Result<(), CastingDeviceError> {
+    fn unsubscribe_event(&self, subscription: EventSubscription) -> Result<(), CastingDeviceError> {
         if self.session_version.get() >= EVENT_SUB_MIN_PROTO_VERSION {
-            self.send_command(match group {
-                GenericEventSubscriptionGroup::Keys => Command::UnsubscribeToAllKeyEvents,
-                GenericEventSubscriptionGroup::Media => Command::UnsubscribeToAllMediaItemEvents,
-            })
+            self.send_command(Command::Unsubscribe(subscription))
         } else {
             Err(CastingDeviceError::UnsupportedFeature)
         }

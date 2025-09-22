@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
 use fcast_sender_sdk::context::CastContext;
 use fcast_sender_sdk::device::{
-    DeviceConnectionState, DeviceEventHandler, GenericEventSubscriptionGroup, GenericKeyEvent,
-    GenericMediaEvent, LoadRequest, PlaybackState, Source,
+    DeviceConnectionState, DeviceEventHandler, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent, PlaybackState, Source
 };
 use std::collections::HashMap;
 use std::fs::File;
@@ -146,11 +145,11 @@ impl DeviceEventHandler for EventHandler {
         println!("Source changed: {source:#?}");
     }
 
-    fn key_event(&self, event: GenericKeyEvent) {
+    fn key_event(&self, event: KeyEvent) {
         println!("Key event: {event:#?}");
     }
 
-    fn media_event(&self, event: GenericMediaEvent) {
+    fn media_event(&self, event: MediaEvent) {
         println!("Media event: {event:#?}");
     }
 
@@ -191,18 +190,19 @@ fn main() {
     if let Some(subscriptions) = app.subscriptions {
         let subs = subscriptions.split(',');
         for sub in subs {
-            let event_group = match sub.to_lowercase().as_str() {
-                "mediaitemstart" | "mediaitemend" | "mediaitemchange" => {
-                    GenericEventSubscriptionGroup::Media
-                }
-                "keydown" | "keyup" => GenericEventSubscriptionGroup::Keys,
+            let subscription = match sub.to_lowercase().as_str() {
+                "mediaitemstart" => EventSubscription::MediaItemStart,
+                "mediaitemend" => EventSubscription::MediaItemEnd,
+                "mediaitemchange" => EventSubscription::MediaItemChange,
+                "keydown" => EventSubscription::KeyDown { keys: KeyName::all() },
+                "keyup" => EventSubscription::KeyUp { keys: KeyName::all() },
                 _ => {
                     println!("Invalid event in subscriptions list: {sub}");
                     continue;
                 }
             };
-            device.subscribe_event(event_group.clone()).unwrap();
-            println!("Subscribed to {event_group:?} events");
+            device.subscribe_event(subscription.clone()).unwrap();
+            println!("Subscribed to {subscription:?}");
         }
     }
 
