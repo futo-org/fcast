@@ -1,6 +1,6 @@
 {
     "manifest_version": 3,
-    "name": "Video URL Collector",
+    "name": "FCast Sender",
     "version": "1.0",
     "permissions": [
         "webRequest",

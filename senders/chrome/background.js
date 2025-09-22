@@ -194,7 +194,7 @@ async function onContextMenuClick(info) {
 chrome.contextMenus.onClicked.addListener(onContextMenuClick);
 
 chrome.contextMenus.create({
-    title: "Cast to Fcast",
+    title: "Cast to FCast",
     contexts: ["video", "audio", "image"],
     id: "cast"
 });
