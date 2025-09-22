@@ -269,15 +269,21 @@ pub enum MediaItemEventType {
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug)]
-pub struct MediaEvent {
-    pub type_: MediaItemEventType,
+pub struct MediaItem {
     pub url: Option<String>,
     pub content: Option<String>,
     pub time: Option<f64>,
     pub volume: Option<f64>,
     pub speed: Option<f64>,
-    pub duration: Option<f64>,
+    pub show_duration: Option<f64>,
     pub metadata: Option<Metadata>,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug)]
+pub struct MediaEvent {
+    pub type_: MediaItemEventType,
+    pub item: MediaItem,
 }
 
 #[allow(unused_variables)]

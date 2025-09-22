@@ -468,16 +468,18 @@ impl InnerDevice {
                                     self.event_handler.media_event(
                                         MediaEvent {
                                             type_,
-                                            url: item.url,
-                                            content: item.content,
-                                            time: item.time,
-                                            volume: item.volume,
-                                            speed: item.speed,
-                                            duration: item.show_duration,
-                                            metadata: item.metadata.map(|m| match m {
-                                                MetadataObject::Generic {title, thumbnail_url, ..} =>
-                                                    Metadata { title: title, thumbnail_url: thumbnail_url },
-                                            }),
+                                            item: MediaItem {
+                                                url: item.url,
+                                                content: item.content,
+                                                time: item.time,
+                                                volume: item.volume,
+                                                speed: item.speed,
+                                                show_duration: item.show_duration,
+                                                metadata: item.metadata.map(|m| match m {
+                                                    MetadataObject::Generic {title, thumbnail_url, ..} =>
+                                                        Metadata { title: title, thumbnail_url: thumbnail_url },
+                                                }),
+                                            }
                                         }
                                     );
                                 }
