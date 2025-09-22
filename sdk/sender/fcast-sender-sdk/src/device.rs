@@ -270,6 +270,7 @@ pub enum MediaItemEventType {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug)]
 pub struct MediaItem {
+    pub content_type: String,
     pub url: Option<String>,
     pub content: Option<String>,
     pub time: Option<f64>,

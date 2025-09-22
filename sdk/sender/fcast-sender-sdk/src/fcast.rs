@@ -469,6 +469,7 @@ impl InnerDevice {
                                         MediaEvent {
                                             type_,
                                             item: MediaItem {
+                                                content_type: item.container,
                                                 url: item.url,
                                                 content: item.content,
                                                 time: item.time,
