@@ -27,10 +27,13 @@
     <string name="waiting_for_connection">Waiting for a connection</string>
     <string name="connected">Connected: Ready to cast</string>
     <string name="connected_multiple">Multiple devices connected:\n Ready to cast</string>
+    <string name="network_changed">Network connections has changed, please reconnect sender devices to receiver if you experience issues</string>
+    <string name="network_lost">Lost network connection, please reconnect to a network</string>
     <string name="main_device_disconnected">Device disconnected</string>
     <string name="main_device_disconnected_multiple">A device has disconnected</string>
     <string name="player_device_connected">Device connected</string>
     <string name="player_device_disconnected">Device disconnected. If you experience playback issues, please reconnect.</string>
+    <string name="qr_code_error">Error generating QR code</string>
     <string name="connection_information">Connection Information</string>
     <string name="sender_app_download_text">Need a sender app?\nDownload Grayjay at </string>
     <string name="sender_app_download_url">https://grayjay.app</string>

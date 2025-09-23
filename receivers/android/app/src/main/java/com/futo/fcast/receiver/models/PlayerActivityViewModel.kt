@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.media3.common.Player
 
 enum class ControlFocus {
     None,
@@ -14,7 +15,8 @@ enum class ControlFocus {
 }
 
 class PlayerActivityViewModel : ViewModel() {
-    var statusMessage by mutableStateOf<String?>(null)
+    var exoPlayer by mutableStateOf<Player?>(null)
+    var errorMessage by mutableStateOf<String?>(null)
     var showControls by mutableStateOf(false)
 
     var isLoading by mutableStateOf(false)

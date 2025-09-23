@@ -12,7 +12,9 @@ import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
+import androidx.media3.common.util.UnstableApi
 import com.futo.fcast.receiver.composables.frontendConnections
 import com.futo.fcast.receiver.models.ContentObject
 import com.futo.fcast.receiver.models.ContentType
@@ -44,24 +46,27 @@ import java.net.SocketAddress
 import java.util.UUID
 
 data class AppCache(
-    var interfaces: Any? = null,
     // TODO: fix version name (currently 1.0.0)
     val appName: String = BuildConfig.VERSION_NAME,
     val appVersion: String = BuildConfig.VERSION_CODE.toString(),
     var playMessage: PlayMessage? = null,
+    var playlistContent: PlaylistContent? = null,
     var playerVolume: Double? = null,
     var playbackUpdate: PlaybackUpdateMessage? = null,
     var subscribedKeys: Set<String> = setOf(),
-
-    var playlistContent: PlaylistContent? = null,
 )
 
 class NetworkService : Service() {
-    private var _discoveryService: DiscoveryService? = null
-    private var _stopped = false
-    private var _tcpListenerService: TcpListenerService? = null
-    private var _webSocketListenerService: WebSocketListenerService? = null
-    private var _scope: CoroutineScope? = null
+    lateinit var networkWorker: NetworkWorker
+    lateinit var discoveryService: DiscoveryService
+
+    private lateinit var _tcpListenerService: TcpListenerService
+    private lateinit var _webSocketListenerService: WebSocketListenerService
+    private lateinit var _proxyService: ProxyService
+    private lateinit var _scope: CoroutineScope
+    private var _delayedStart: Boolean = false
+
+//    lateinit var imageLoader: ImageLoader
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -71,13 +76,31 @@ class NetworkService : Service() {
         if (instance != null) {
             throw Exception("Do not start service when already running")
         }
-
-        instance = this
-
         Log.i(TAG, "Starting ListenerService")
 
         _scope = CoroutineScope(Dispatchers.Main)
-        _stopped = false
+        networkWorker = NetworkWorker(this)
+        discoveryService = DiscoveryService(this)
+
+        val onNewSession: (FCastSession) -> Unit = { session ->
+            _scope.launch(Dispatchers.Main) {
+                Log.i(TAG, "On new session ${session.id}")
+
+                withContext(Dispatchers.IO) {
+                    try {
+                        Log.i(TAG, "Sending version ${session.id}")
+                        session.send(Opcode.Version, VersionMessage(PROTOCOL_VERSION))
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed to send version ${session.id}", e)
+                    }
+                }
+            }
+        }
+
+        _tcpListenerService = TcpListenerService(this) { onNewSession(it) }
+        _webSocketListenerService = WebSocketListenerService(this) { onNewSession(it) }
+        ConnectionMonitor(_scope)
+        _proxyService = ProxyService()
 
         val name = "Network Listener Service"
         val descriptionText =
@@ -110,42 +133,30 @@ class NetworkService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        val onNewSession: (FCastSession) -> Unit = { session ->
-            _scope?.launch(Dispatchers.Main) {
-                Log.i(TAG, "On new session ${session.id}")
-
-                withContext(Dispatchers.IO) {
-                    try {
-                        Log.i(TAG, "Sending version ${session.id}")
-                        session.send(Opcode.Version, VersionMessage(PROTOCOL_VERSION))
-                    } catch (e: Throwable) {
-                        Log.e(TAG, "Failed to send version ${session.id}", e)
-                    }
-                }
-            }
+        discoveryService.start()
+        _tcpListenerService.start()
+        _webSocketListenerService.start()
+        if (networkWorker.interfaces.isEmpty()) {
+            _delayedStart = true
+        } else {
+            _proxyService.start()
         }
 
-        _discoveryService = DiscoveryService(this).apply {
-            start()
-        }
+//        imageLoader = newImageLoader(this)
 
-        _tcpListenerService = TcpListenerService(this) { onNewSession(it) }.apply {
-            start()
-        }
-
-        _webSocketListenerService = WebSocketListenerService(this) { onNewSession(it) }.apply {
-            start()
-        }
-
-        ConnectionMonitor(_scope!!)
-        ProxyService().apply {
-            start()
-        }
-
+        instance = this
         Log.i(TAG, "Started NetworkService")
         Toast.makeText(this, "Started FCast service", Toast.LENGTH_LONG).show()
 
+        // Force UI update after all network services are initialized
+        MainActivity.instance?.networkChanged()
+
         return START_STICKY
+    }
+
+    fun start() {
+        _delayedStart = false
+        _proxyService.start()
     }
 
     @Suppress("DEPRECATION")
@@ -163,24 +174,17 @@ class NetworkService : Service() {
 
         Log.i(TAG, "Stopped NetworkService")
 
-        _stopped = true
-
-        _discoveryService?.stop()
-        _discoveryService = null
-
-        _tcpListenerService?.stop()
-        _tcpListenerService = null
+        discoveryService.stop()
+        _tcpListenerService.stop()
 
         try {
-            _webSocketListenerService?.stop()
+            _webSocketListenerService.stop()
         } catch (_: Throwable) {
             //Ignored
-        } finally {
-            _webSocketListenerService = null
         }
 
-        _scope?.cancel()
-        _scope = null
+        _proxyService.stop()
+        _scope.cancel()
 
         Toast.makeText(this, "Stopped FCast service", Toast.LENGTH_LONG).show()
         instance = null
@@ -188,7 +192,7 @@ class NetworkService : Service() {
 
     private inline fun <reified T> send(opcode: Opcode, message: T) {
         val sender: (FCastSession) -> Unit = { session: FCastSession ->
-            _scope?.launch(Dispatchers.IO) {
+            _scope.launch(Dispatchers.IO) {
                 try {
                     session.send(opcode, message)
                     Log.i(TAG, "Opcode sent (opcode = $opcode) ${session.id}")
@@ -198,14 +202,16 @@ class NetworkService : Service() {
             }
         }
 
-        _tcpListenerService?.forEachSession(sender)
-        _webSocketListenerService?.forEachSession(sender)
+        _tcpListenerService.forEachSession(sender)
+        _webSocketListenerService.forEachSession(sender)
     }
 
-    suspend fun preparePlayMessage(
+    fun preparePlayMessage(
         message: PlayMessage,
         cachedPlayerVolume: Double?
-    ): Pair<PlayMessage?, PlaylistContent?> {
+    ) {
+        cache.playlistContent = null
+
         // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
         // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
         // is cached in the play message when volume is not set in v3 PlayMessage.
@@ -219,7 +225,7 @@ class NetworkService : Service() {
 
         if (message.container == "application/json") {
             val jsonStr: String =
-                if (message.url != null) fetchJSON(message.url).toString() else message.content
+                if (message.url != null) fetchJSON(message.url) else message.content
                     ?: ""
 
             try {
@@ -232,31 +238,28 @@ class NetworkService : Service() {
                         _mediaCache = MediaCache(playlistContent)
 
                         cache.playlistContent = playlistContent
-                        return Pair(null, playlistContent)
                     }
                 }
             } catch (e: IllegalArgumentException) {
                 Log.w(
-                    com.futo.fcast.receiver.TAG,
+                    TAG,
                     "JSON format is not a supported format, attempting to render as text: error=$e"
                 )
             }
         }
 
         cache.playMessage = rendererMessage
-        return Pair(rendererMessage, null)
     }
 
+    @OptIn(UnstableApi::class)
     fun onPlay(playMessage: PlayMessage) {
-        _scope?.launch(Dispatchers.IO) {
+        _scope.launch(Dispatchers.IO) {
             send(Opcode.PlayUpdate, PlayUpdateMessage(System.currentTimeMillis(), playMessage))
-            cache.playMessage = playMessage
-
-            val messageInfo = withContext(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 preparePlayMessage(playMessage, cache.playerVolume)
             }
 
-            _scope?.launch(Dispatchers.Main) {
+            _scope.launch(Dispatchers.Main) {
                 try {
                     if (PlayerActivity.instance == null) {
                         val i = Intent(this@NetworkService, PlayerActivity::class.java)
@@ -293,11 +296,7 @@ class NetworkService : Service() {
                             notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
                         }
                     } else {
-                        if (playMessage.container == "application/json") {
-                            PlayerActivity.instance?.onPlayPlaylist(messageInfo.second!!)
-                        } else {
-                            PlayerActivity.instance?.play(messageInfo.first!!)
-                        }
+                        PlayerActivity.instance?.play(cache.playMessage!!)
                     }
                 } catch (e: Throwable) {
                     Log.e(TAG, "Failed to play", e)
@@ -306,8 +305,9 @@ class NetworkService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     fun onPause() {
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.pause()
             } catch (e: Throwable) {
@@ -316,8 +316,9 @@ class NetworkService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     fun onResume() {
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.resume()
             } catch (e: Throwable) {
@@ -326,12 +327,13 @@ class NetworkService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     fun onStop() {
         cache.playMessage = null
         cache.playlistContent = null
         cache.playbackUpdate = null
 
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.finish()
             } catch (e: Throwable) {
@@ -340,8 +342,9 @@ class NetworkService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     fun onSeek(message: SeekMessage) {
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.seek(message)
             } catch (e: Throwable) {
@@ -350,10 +353,11 @@ class NetworkService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     fun onSetVolume(message: SetVolumeMessage) {
         cache.playerVolume = message.volume
 
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.setVolume(message)
             } catch (e: Throwable) {
@@ -362,8 +366,9 @@ class NetworkService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     fun onSetSpeed(message: SetSpeedMessage) {
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.setSpeed(message)
             } catch (e: Throwable) {
@@ -400,8 +405,9 @@ class NetworkService : Service() {
         Log.i(TAG, "Received 'Initial' message from sender: $message")
     }
 
+    @OptIn(UnstableApi::class)
     fun onSetPlaylistItem(message: SetPlaylistItemMessage) {
-        _scope?.launch(Dispatchers.Main) {
+        _scope.launch(Dispatchers.Main) {
             try {
                 PlayerActivity.instance?.setPlaylistItem(message.itemIndex)
             } catch (e: Throwable) {
@@ -411,20 +417,20 @@ class NetworkService : Service() {
     }
 
     fun onSubscribeEvent(id: UUID, message: SubscribeEventMessage) {
-        if (_tcpListenerService?.getSessions()?.contains(id) == true) {
-            _tcpListenerService?.subscribeEvent(id, message.event)
+        if (_tcpListenerService.getSessions().contains(id)) {
+            _tcpListenerService.subscribeEvent(id, message.event)
         }
-        if (_webSocketListenerService?.getSessions()?.contains(id) == true) {
-            _webSocketListenerService?.subscribeEvent(id, message.event)
+        if (_webSocketListenerService.getSessions().contains(id)) {
+            _webSocketListenerService.subscribeEvent(id, message.event)
         }
     }
 
     fun onUnsubscribeEvent(id: UUID, message: UnsubscribeEventMessage) {
-        if (_tcpListenerService?.getSessions()?.contains(id) == true) {
-            _tcpListenerService?.unsubscribeEvent(id, message.event)
+        if (_tcpListenerService.getSessions().contains(id)) {
+            _tcpListenerService.unsubscribeEvent(id, message.event)
         }
-        if (_webSocketListenerService?.getSessions()?.contains(id) == true) {
-            _webSocketListenerService?.unsubscribeEvent(id, message.event)
+        if (_webSocketListenerService.getSessions().contains(id)) {
+            _webSocketListenerService.unsubscribeEvent(id, message.event)
         }
     }
 
@@ -443,36 +449,15 @@ class NetworkService : Service() {
     }
 
     fun sendEvent(message: EventMessage) {
-        _tcpListenerService?.send(Opcode.Event, message)
-        _webSocketListenerService?.send(Opcode.Event, message)
-    }
-
-    fun playRequest(message: PlayMessage, playlistIndex: Int) {
-        Log.d(TAG, "Received play request for index $playlistIndex: $message")
-        val updatedMessage = if (_mediaCache?.has(playlistIndex) == true) {
-            PlayMessage(
-                message.container,
-                _mediaCache?.getUrl(playlistIndex),
-                message.content,
-                message.time,
-                message.volume,
-                message.speed,
-                message.headers,
-                message.metadata
-            )
-        } else {
-            message
-        }
-
-        _mediaCache?.cacheItems(playlistIndex)
-        onPlay(updatedMessage)
+        _tcpListenerService.send(Opcode.Event, message)
+        _webSocketListenerService.send(Opcode.Event, message)
     }
 
     fun getSubscribedKeys(): Pair<Set<String>, Set<String>> {
         val tcpListenerSubscribedKeys =
-            _tcpListenerService?.getAllSubscribedKeys() ?: Pair(emptySet(), emptySet())
+            _tcpListenerService.getAllSubscribedKeys()
         val webSocketListenerSubscribedKeys =
-            _webSocketListenerService?.getAllSubscribedKeys() ?: Pair(emptySet(), emptySet())
+            _webSocketListenerService.getAllSubscribedKeys()
         val subscribeData = Pair(
             tcpListenerSubscribedKeys.first + webSocketListenerSubscribedKeys.first,
             tcpListenerSubscribedKeys.second + webSocketListenerSubscribedKeys.second
@@ -480,6 +465,12 @@ class NetworkService : Service() {
 
         return subscribeData
     }
+
+//    override fun newImageLoader(context: Context): ImageLoader {
+//        return ImageLoader.Builder(context)
+////            .crossfade(true)
+//            .build()
+//    }
 
     companion object {
         private const val CHANNEL_ID = "NetworkListenerServiceChannel"

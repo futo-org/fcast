@@ -5,11 +5,7 @@ import android.os.Looper
 import android.util.Log
 import com.futo.fcast.receiver.models.MediaItem
 import com.futo.fcast.receiver.models.PlayMessage
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.OkHttpClient
-import okhttp3.Response
-import okio.IOException
 import java.util.Calendar
 
 const val TAG = "Utility"
@@ -56,7 +52,7 @@ inline fun setInterval(handler: Handler, crossinline block: () -> Unit, interval
 
 // preparePlayMessage defined in NetworkService.kt
 
-suspend fun fetchJSON(url: String): String {
+fun fetchJSON(url: String): String {
     val client = OkHttpClient()
     val request = okhttp3.Request.Builder()
         .method("GET", null)
@@ -69,73 +65,6 @@ suspend fun fetchJSON(url: String): String {
     }
 
     return response.body.string()
-}
-
-suspend fun downloadFile(
-    downloadUrl: String, destination: String, inMemory: Boolean = false,
-    requestHeaders: Map<String, String>? = null,
-    startCb: ((downloadSize: Long) -> Boolean)? = null,
-    progressCb: ((downloadedBytes: Long, downloadSize: Long) -> Void)? = null
-) {
-    val client = OkHttpClient()
-    val requestBuilder = okhttp3.Request.Builder()
-        .url(downloadUrl)
-        .get()
-
-    requestHeaders?.forEach { requestBuilder.addHeader(it.key, it.value) }
-    val request = requestBuilder.build()
-
-    client.newCall(request).enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) {
-            e.printStackTrace()
-        }
-
-        override fun onResponse(call: Call, response: Response) {
-            response.use {
-                if (!response.isSuccessful) {
-                    throw Exception("Error downloading file: $response")
-                }
-
-                val downloadSize = response.body.contentLength()
-                Log.i(
-                    TAG,
-                    "Downloading file $downloadUrl to $destination with size: $downloadSize bytes"
-                )
-
-                startCb?.let {
-                    if (!startCb(downloadSize)) {
-                        throw Exception("Error: Aborted download")
-                    }
-                }
-
-                // val file = inMemory ? memfs.fs.createWriteStream(destination) : fs.createWriteStream(destination)
-                val sourceBytes = response.body.source()
-//                val sink: BufferedSink = File(downloadLocationFilePath).sink().buffer()
-
-                var downloadedBytes: Long = 0
-
-//                response.on('data', (chunk) => {
-//                    downloadedBytes += chunk.length
-//                    if (progressCb) {
-//                        progressCb(downloadedBytes, downloadSize)
-//                    }
-//                })
-
-//                var lastRead: Long
-//                while (sourceBytes
-//                        .read(sink.buffer, 8L * 1024)
-//                        .also { lastRead = it } != -1L
-//                ) {
-//                    totalRead += lastRead
-//                    sink.emitCompleteSegments()
-//                    // Call your listener/callback here with the totalRead value
-//                }
-//
-//                sink.writeAll(sourceBytes)
-//                sink.close()
-            }
-        }
-    })
 }
 
 fun playMessageFromMediaItem(item: MediaItem?): PlayMessage {

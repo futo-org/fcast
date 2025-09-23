@@ -50,6 +50,8 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.io.InputStream
 import java.io.OutputStream
+import kotlin.math.max
+import kotlin.math.min
 
 
 class MainActivity : AppCompatActivity() {
@@ -101,82 +103,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // updated impl tbd
-        val networkWorker = NetworkWorker(this)
-        val ipInfo = networkWorker.getNetworkInfo()
-        val ips = ipInfo.map { it.address }
-        viewModel.ipInfo.addAll(ipInfo)
-
-
-//        val ips = networkWorker.getIPs()
-//        val ips = getIPs()
-        //        _textIPs.text = "IPs\n${ips.joinToString("\n")}\n\nPorts\n${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
-//        viewModel.textIPs = ips.joinToString("\n")
-        viewModel.textPorts =
-            "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
-
-        val resolution = getScreenResolution()
-        val width = resolution.first
-        val height = resolution.second
-//        val qrSize = when {
-//            (width >= 2560 || height >= 1440) -> 384f
-//            (width >= 1920) || (height >= 1080) -> 256f
-//            (width >= 1280) || (height >= 720) -> 192f
-//            else -> 128f
-//        }
-        // todo: finalize qr code sizes
-        var qrSize = 200f
-        if (width >= 2560 || height >= 1440) {
-            qrSize = 200f
-        }
-        if ((width >= 1920 && width < 2560) || (height >= 1080 && height >= 1440)) {
-            qrSize = 150f
-        }
-        if ((width >= 1280 && width < 1920) || (height >= 720 && height >= 1080)) {
-            qrSize = 90f
-        }
-        if (width < 1280 || height < 720) {
-            qrSize = 60f
-        }
-
-
-        try {
-            val barcodeEncoder = BarcodeEncoder()
-            val px = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP,
-                qrSize,
-                resources.displayMetrics
-            ).toInt()
-            val hints = mapOf(EncodeHintType.MARGIN to 1)
-            val json = Json.encodeToString(
-                FCastNetworkConfig(
-                    "${Build.MANUFACTURER}-${Build.MODEL}", ips, listOf(
-                        FCastService(TcpListenerService.PORT, 0),
-                        FCastService(WebSocketListenerService.PORT, 1)
-                    )
-                )
-            )
-            val base64 = Base64.encodeToString(
-                json.toByteArray(),
-                Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
-            )
-            val url = "fcast://r/${base64}"
-            Log.i(TAG, "connection url: $url")
-            val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px, hints)
-//            _imageQr.setImageBitmap(bitmap)
-            viewModel.imageQR = bitmap.asImageBitmap()
-        } catch (_: java.lang.Exception) {
-            viewModel.showQR = false
-            // show error notification as toast, not in UI
-//            _textScanToConnect.visibility = View.GONE
-//            _imageQr.visibility = View.GONE
-        }
-
+        renderIPsAndQRCode()
         instance = this
         NetworkService.activityCount++
 
         checkAndRequestPermissions()
-        if (savedInstanceState == null) {
+        if (savedInstanceState == null && NetworkService.instance == null) {
             restartService()
         }
 
@@ -206,6 +138,185 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt("updateAvailable", viewModel.updateState.ordinal)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        when (requestCode) {
+            REQUEST_ID_MULTIPLE_PERMISSIONS -> {
+                val perms: MutableMap<String, Int> = HashMap()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    perms[Manifest.permission.POST_NOTIFICATIONS] =
+                        PackageManager.PERMISSION_GRANTED
+                }
+
+                if (grantResults.isNotEmpty()) {
+                    var i = 0
+                    while (i < permissions.size) {
+                        perms[permissions[i]] = grantResults[i]
+                        i++
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (perms[Manifest.permission.POST_NOTIFICATIONS] == PackageManager.PERMISSION_GRANTED) {
+                            Log.i(TAG, "Notification permission granted")
+                            Toast.makeText(
+                                this,
+                                "Notification permission granted",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            restartService()
+                        } else {
+                            Log.i(TAG, "Notification permission not granted")
+                            Toast.makeText(
+                                this,
+                                "App may not fully work without notification permission",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            restartService()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @OptIn(UnstableApi::class)
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        //        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
+//        var handledCase = false
+        var key = event.displayLabel.toString()
+
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_CENTER -> key = "Enter"
+                KeyEvent.KEYCODE_DPAD_UP -> key = "ArrowUp"
+                KeyEvent.KEYCODE_DPAD_DOWN -> key = "ArrowDown"
+                KeyEvent.KEYCODE_DPAD_LEFT -> key = "ArrowLeft"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> key = "ArrowRight"
+                KeyEvent.KEYCODE_MEDIA_STOP -> key = "Stop"
+                KeyEvent.KEYCODE_MEDIA_REWIND -> key = "Rewind"
+                KeyEvent.KEYCODE_MEDIA_PLAY -> key = "Play"
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> key = "Pause"
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> key = "FastForward"
+                KeyEvent.KEYCODE_BACK -> key = "Back"
+            }
+        }
+
+        if (NetworkService.instance?.getSubscribedKeys()?.first?.contains(key) == true) {
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    com.futo.fcast.receiver.models.KeyEvent(
+                        EventType.KeyDown,
+                        key,
+                        event.repeatCount > 0,
+//                    handledCase
+                        true
+                    )
+                )
+            )
+        }
+        if (NetworkService.instance?.getSubscribedKeys()?.second?.contains(key) == true) {
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    com.futo.fcast.receiver.models.KeyEvent(
+                        EventType.KeyUp,
+                        key,
+                        event.repeatCount > 0,
+//                    handledCase
+                        true
+                    )
+                )
+            )
+        }
+
+//        if (handledCase) {
+//            return true
+//        }
+
+        return super.dispatchKeyEvent(event)
+    }
+
+    fun networkChanged() {
+        NetworkService.instance?.discoveryService?.stop()
+        NetworkService.instance?.discoveryService?.start()
+
+        renderIPsAndQRCode()
+    }
+
+    private fun renderIPsAndQRCode() {
+        val ipInfo = NetworkService.instance?.networkWorker?.interfaces ?: listOf()
+        val ips = ipInfo.map { it.address }
+        viewModel.ipInfo.clear()
+        viewModel.ipInfo.addAll(ipInfo)
+        viewModel.textPorts =
+            "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+
+        val resolution = getScreenResolution()
+        val width = resolution.first
+        val height = resolution.second
+        val long = max(width, height)
+        val short = min(width, height)
+        var qrSize = 165f
+
+        // todo: finish testing QR sizes
+        if (long >= 2560 || short >= 1440) {
+            qrSize = 165f
+        }
+        if ((long >= 1920 && long < 2560) || (short >= 1080 && short < 1440)) {
+            qrSize = 225f // 125f
+        }
+        if ((long >= 1280 && long < 1920) || (short >= 720 && short < 1080)) {
+            qrSize = 85f
+        }
+        if (long < 1280 || short < 720) {
+            qrSize = 60f
+        }
+        viewModel.qrSize = qrSize
+        Log.i(TAG, "QR code size: $width $height $qrSize")
+
+        try {
+            val barcodeEncoder = BarcodeEncoder()
+            val px = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                qrSize,
+                resources.displayMetrics
+            ).toInt()
+            val hints = mapOf(EncodeHintType.MARGIN to 1)
+            val json = Json.encodeToString(
+                FCastNetworkConfig(
+                    "${Build.MANUFACTURER}-${Build.MODEL}", ips, listOf(
+                        FCastService(TcpListenerService.PORT, 0),
+                        FCastService(WebSocketListenerService.PORT, 1)
+                    )
+                )
+            )
+            val base64 = Base64.encodeToString(
+                json.toByteArray(),
+                Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+            )
+            val url = "fcast://r/${base64}"
+            Log.i(TAG, "connection url: $url")
+            val bitmap = barcodeEncoder.encodeBitmap(url, BarcodeFormat.QR_CODE, px, px, hints)
+            viewModel.imageQR = bitmap.asImageBitmap()
+        } catch (e: Exception) {
+            viewModel.showQR = false
+
+            Log.e(TAG, "Error generating QR code: ${e.message}")
+            Toast.makeText(
+                this,
+                this.getString(R.string.qr_code_error),
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun getScreenResolution(): Pair<Int, Int> {
@@ -324,52 +435,6 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Throwable) {
             Log.e(TAG, "Failed to request system alert window permissions")
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        when (requestCode) {
-            REQUEST_ID_MULTIPLE_PERMISSIONS -> {
-                val perms: MutableMap<String, Int> = HashMap()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    perms[Manifest.permission.POST_NOTIFICATIONS] =
-                        PackageManager.PERMISSION_GRANTED
-                }
-
-                if (grantResults.isNotEmpty()) {
-                    var i = 0
-                    while (i < permissions.size) {
-                        perms[permissions[i]] = grantResults[i]
-                        i++
-                    }
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        if (perms[Manifest.permission.POST_NOTIFICATIONS] == PackageManager.PERMISSION_GRANTED) {
-                            Log.i(TAG, "Notification permission granted")
-                            Toast.makeText(
-                                this,
-                                "Notification permission granted",
-                                Toast.LENGTH_LONG
-                            ).show()
-                            restartService()
-                        } else {
-                            Log.i(TAG, "Notification permission not granted")
-                            Toast.makeText(
-                                this,
-                                "App may not fully work without notification permission",
-                                Toast.LENGTH_LONG
-                            ).show()
-                            restartService()
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -575,65 +640,6 @@ class MainActivity : AppCompatActivity() {
             outputStream.write(buffer, 0, n)
             onProgress.invoke(total.toFloat() / inputStreamLengthFloat)
         }
-    }
-
-    @SuppressLint("GestureBackNavigation")
-    @OptIn(UnstableApi::class)
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        //        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
-//        var handledCase = false
-        var key = event.displayLabel.toString()
-
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_DPAD_CENTER -> key = "Enter"
-                KeyEvent.KEYCODE_DPAD_UP -> key = "ArrowUp"
-                KeyEvent.KEYCODE_DPAD_DOWN -> key = "ArrowDown"
-                KeyEvent.KEYCODE_DPAD_LEFT -> key = "ArrowLeft"
-                KeyEvent.KEYCODE_DPAD_RIGHT -> key = "ArrowRight"
-                KeyEvent.KEYCODE_MEDIA_STOP -> key = "Stop"
-                KeyEvent.KEYCODE_MEDIA_REWIND -> key = "Rewind"
-                KeyEvent.KEYCODE_MEDIA_PLAY -> key = "Play"
-                KeyEvent.KEYCODE_MEDIA_PAUSE -> key = "Pause"
-                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> key = "FastForward"
-                KeyEvent.KEYCODE_BACK -> key = "Back"
-            }
-        }
-
-        if (NetworkService.instance?.getSubscribedKeys()?.first?.contains(key) == true) {
-            NetworkService.instance?.sendEvent(
-                EventMessage(
-                    System.currentTimeMillis(),
-                    com.futo.fcast.receiver.models.KeyEvent(
-                        EventType.KeyDown,
-                        key,
-                        event.repeatCount > 0,
-//                    handledCase
-                        true
-                    )
-                )
-            )
-        }
-        if (NetworkService.instance?.getSubscribedKeys()?.second?.contains(key) == true) {
-            NetworkService.instance?.sendEvent(
-                EventMessage(
-                    System.currentTimeMillis(),
-                    com.futo.fcast.receiver.models.KeyEvent(
-                        EventType.KeyUp,
-                        key,
-                        event.repeatCount > 0,
-//                    handledCase
-                        true
-                    )
-                )
-            )
-        }
-
-//        if (handledCase) {
-//            return true
-//        }
-
-        return super.dispatchKeyEvent(event)
     }
 
     companion object {

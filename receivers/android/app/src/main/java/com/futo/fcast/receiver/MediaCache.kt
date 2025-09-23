@@ -2,6 +2,10 @@ package com.futo.fcast.receiver
 
 import android.app.ActivityManager
 import android.util.Log
+import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
+import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
 import com.futo.fcast.receiver.models.PlaylistContent
 import java.util.UUID
 import kotlin.math.abs
@@ -11,6 +15,44 @@ import kotlin.math.min
 //import { downloadFile } from 'common/UtilityBackend'
 //import { fs } from 'modules/memfs'
 //import { Readable } from 'stream'
+
+// todo: finish implementation
+@UnstableApi
+class MediaPreloadStatusControl(val _playlistContent: PlaylistContent) : TargetPreloadStatusControl<Int, DefaultPreloadManager.PreloadStatus> {
+    var currentItemIndex: Int = C.INDEX_UNSET
+
+
+    override fun getTargetPreloadStatus(index: Int): DefaultPreloadManager.PreloadStatus? {
+        Log.i("preload", "preload index: $index")
+//        return null
+
+        if (index < 0 || index >= _playlistContent.items.size) {
+            return null
+        }
+        if (_playlistContent.items[index].cache != true) {
+            return null
+        }
+
+        val forwardCacheAmount = _playlistContent.forwardCache ?: 0
+        val isForwardCacheCandidate = (index > currentItemIndex) &&
+                (index <= currentItemIndex + forwardCacheAmount)
+
+        val backwardCacheAmount = _playlistContent.backwardCache ?: 0
+        val isBackwardCacheCandidate = (index < currentItemIndex) &&
+                (index >= currentItemIndex - backwardCacheAmount)
+
+
+        // todo test out loading duration beyond content length
+        return if (isForwardCacheCandidate || isBackwardCacheCandidate) {
+            DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(
+                _playlistContent.items[index].time?.toLong()?.times(1000) ?: 0,
+//                10_000)
+                1_000)
+        } else {
+            null
+        }
+    }
+}
 
 data class CacheObject(
     val id: UUID = UUID.randomUUID(),

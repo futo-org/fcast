@@ -34,7 +34,6 @@ import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -128,14 +127,13 @@ fun ConnectionDetailsView(viewModel: MainActivityViewModel, modifier: Modifier) 
         val icon = when (ip.type) {
             NetworkInterfaceType.Wired, NetworkInterfaceType.Unknown -> R.drawable.ic_network_light
             NetworkInterfaceType.Wireless -> {
-                // todo: review/fix ranges
                 if (ip.signalLevel != null) {
-                    when {
-                        ip.signalLevel == 0 || ip.signalLevel >= 90 -> R.drawable.ic_wifi_strength_4
-                        ip.signalLevel >= 70 -> R.drawable.ic_wifi_strength_3
-                        ip.signalLevel >= 50 -> R.drawable.ic_wifi_strength_2
-                        ip.signalLevel >= 30 -> R.drawable.ic_wifi_strength_1
-                        else -> R.drawable.ic_wifi_strength_outline
+                    when (ip.signalLevel) {
+                        0 -> R.drawable.ic_wifi_strength_outline
+                        1 -> R.drawable.ic_wifi_strength_1
+                        2 -> R.drawable.ic_wifi_strength_2
+                        3 -> R.drawable.ic_wifi_strength_3
+                        else -> R.drawable.ic_wifi_strength_4
                     }
                 } else {
                     R.drawable.ic_wifi_strength_3
@@ -277,55 +275,6 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
             if (viewModel.ipInfo.isNotEmpty()) {
                 if (viewModel.showQR) {
-                    val isPortrait =
-                        LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
-                    val configuration = LocalConfiguration.current
-                    val density = LocalDensity.current
-
-                    val width = with(density) { configuration.screenWidthDp.dp.toPx() }.toInt()
-                    val height = with(density) { configuration.screenHeightDp.dp.toPx() }.toInt()
-
-                    var qrSize = 170.dp
-
-                    // todo centralize handling of qr creation and display sizes
-                    if (isPortrait) {
-                        if (height >= 2560 || width >= 1440) {
-                            qrSize = 165.dp
-                        }
-                        if ((height >= 1920 && height < 2560) || (width >= 1080 && width < 1440)) {
-                            qrSize = 125.dp
-                        }
-                        if ((height >= 1280 && height < 1920) || (width >= 720 && width < 1080)) {
-                            qrSize = 85.dp
-                        }
-                        if (height < 1280 || width < 720) {
-                            qrSize = 60.dp
-                        }
-                    } else {
-                        if (width >= 2560 || height >= 1440) {
-                            qrSize = 165.dp
-                        }
-                        if ((width >= 1920 && width < 2560) || (height >= 1080 && height < 1440)) {
-                            qrSize = 125.dp
-                        }
-                        if ((width >= 1280 && width < 1920) || (height >= 720 && height < 1080)) {
-                            qrSize = 85.dp
-                        }
-                        if (width < 1280 || height < 720) {
-                            qrSize = 60.dp
-                        }
-                    }
-
-
-//                val qrSize = when {
-//                    (width >= 2560 || height >= 1440) -> 200.dp
-//                    (width >= 1920) || (height >= 1080) -> 150.dp
-//                    (width >= 1280) || (height >= 720) -> 90.dp
-//                    else -> 60.dp
-//                }
-
-//                ThemedText(width.toString() + " " + height.toString())
-
                     ThemedText(
                         stringResource(R.string.scan_to_connect),
                         Modifier.padding(bottom = paddingSize),
@@ -337,7 +286,7 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
                         else ColorPainter(Color.Gray),
                         contentDescription = null,
                         modifier = Modifier
-                            .size(qrSize)
+                            .size(viewModel.qrSize.dp)
                     )
                     SenderAppDownloadText()
 
@@ -497,6 +446,7 @@ fun MainActivityLandscapePreview() {
     viewModel.updateState = UpdateState.NoUpdateAvailable
     viewModel.textPorts = "46899 (TCP), 46898 (WS)"
     viewModel.showQR = true
+    viewModel.qrSize = 165f
 //    viewModel.updating = true
 
     viewModel.ipInfo = mutableStateListOf(
@@ -518,6 +468,7 @@ fun MainActivityPortraitPreview() {
     viewModel.updateState = UpdateState.NoUpdateAvailable
     viewModel.textPorts = "46899 (TCP), 46898 (WS)"
     viewModel.showQR = true
+    viewModel.qrSize = 90f
 //    viewModel.updating = true
     viewModel.ipInfo = mutableStateListOf(
         NetworkInterfaceData(

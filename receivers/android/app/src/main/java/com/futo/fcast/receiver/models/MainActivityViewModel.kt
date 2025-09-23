@@ -21,6 +21,7 @@ enum class UpdateState {
 
 class MainActivityViewModel : ViewModel() {
     var showQR by mutableStateOf(true)
+    var qrSize by mutableFloatStateOf(0f)
     var imageQR by mutableStateOf<ImageBitmap?>(null)
     var textPorts by mutableStateOf("")
     var updateState by mutableStateOf(UpdateState.NoUpdateAvailable)
