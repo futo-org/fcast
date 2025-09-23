@@ -8,14 +8,14 @@ import com.futo.fcast.receiver.models.PROTOCOL_VERSION
 
 class DiscoveryService(private val _context: Context) {
     private var _nsdManager: NsdManager? = null
-    private val _registrationListenerTcp = DefaultRegistrationListener()
-    private val _registrationListenerWs = DefaultRegistrationListener()
+    private var _registrationListenerTcp: DefaultRegistrationListener? = null
 
     fun start() {
         if (_nsdManager != null) return
 
         val serviceName = getServiceName()
         Log.i(TAG, "Discovery service started. Name: $serviceName")
+        _registrationListenerTcp = DefaultRegistrationListener()
 
         _nsdManager = _context.getSystemService(Context.NSD_SERVICE) as NsdManager
         _nsdManager?.registerService(NsdServiceInfo().apply {
@@ -27,16 +27,6 @@ class DiscoveryService(private val _context: Context) {
             this.setAttribute("appName", BuildConfig.VERSION_NAME)
             this.setAttribute("appVersion", BuildConfig.VERSION_CODE.toString())
         }, NsdManager.PROTOCOL_DNS_SD, _registrationListenerTcp)
-
-        _nsdManager?.registerService(NsdServiceInfo().apply {
-            this.serviceName = serviceName
-            this.serviceType = "_fcast._ws"
-            this.port = WebSocketListenerService.PORT
-
-            this.setAttribute("version", PROTOCOL_VERSION.toString())
-            this.setAttribute("appName", BuildConfig.VERSION_NAME)
-            this.setAttribute("appVersion", BuildConfig.VERSION_CODE.toString())
-        }, NsdManager.PROTOCOL_DNS_SD, _registrationListenerWs)
     }
 
     fun stop() {
@@ -48,12 +38,7 @@ class DiscoveryService(private val _context: Context) {
             Log.e(TAG, "Failed to unregister TCP Listener.")
         }
 
-        try {
-            _nsdManager?.unregisterService(_registrationListenerWs)
-        } catch (_: Throwable) {
-            Log.e(TAG, "Failed to unregister TCP Listener.")
-        }
-
+        _registrationListenerTcp = null
         _nsdManager = null
     }
 

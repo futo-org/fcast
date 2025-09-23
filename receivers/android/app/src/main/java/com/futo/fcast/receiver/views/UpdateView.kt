@@ -20,10 +20,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
@@ -75,6 +79,13 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
     @Suppress("SENSELESS_COMPARISON")
     if (!BuildConfig.IS_PLAYSTORE_VERSION) {
         if (viewModel.updateState != UpdateState.NoUpdateAvailable) {
+            val focusRequester = remember { FocusRequester() }
+            if (viewModel.updateState == UpdateState.UpdateAvailable) {
+                LaunchedEffect(Unit) {
+                    focusRequester.requestFocus()
+                }
+            }
+
             Column(
                 modifier = modifier,
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -122,7 +133,7 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                         ) {
                             Button(
                                 onClick = viewModel::update,
-                                modifier = Modifier,
+                                modifier = Modifier.focusRequester(focusRequester),
                                 enabled = true,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = colorButtonPrimary

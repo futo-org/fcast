@@ -99,7 +99,7 @@ class TcpListenerService(
     }
 
     private fun listenForIncomingConnections() {
-        Log.i(TAG, "Started listening for incoming connections")
+        Log.i(TAG, "Started listening for incoming connections on port $PORT")
 
         while (!_stopped) {
             try {
