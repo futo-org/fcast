@@ -17,9 +17,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,12 +61,17 @@ import com.futo.fcast.receiver.NetworkInterfaceData
 import com.futo.fcast.receiver.NetworkInterfaceType
 import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.composables.MainActivityViewConnectionMonitor
-import com.futo.fcast.receiver.composables.Spinner
+import com.futo.fcast.receiver.composables.ScreenSize
 import com.futo.fcast.receiver.composables.ThemedText
 import com.futo.fcast.receiver.composables.WipeEffect
 import com.futo.fcast.receiver.composables.colorCardBackground
 import com.futo.fcast.receiver.composables.colorPrimary
 import com.futo.fcast.receiver.composables.frontendConnections
+import com.futo.fcast.receiver.composables.getDefaultFontSize
+import com.futo.fcast.receiver.composables.getDefaultSpacerHeight
+import com.futo.fcast.receiver.composables.getQrSize
+import com.futo.fcast.receiver.composables.getScreenResolution
+import com.futo.fcast.receiver.composables.getScreenSize
 import com.futo.fcast.receiver.composables.interFontFamily
 import com.futo.fcast.receiver.composables.outfitFontFamilyExtraBold
 import com.futo.fcast.receiver.composables.strokeCardBorder
@@ -80,7 +89,7 @@ fun SenderAppDownloadText() {
         addStyle(
             style = SpanStyle(
                 color = Color.White,
-                fontSize = 14.sp,
+                fontSize = getDefaultFontSize(),
                 fontFamily = interFontFamily,
                 fontWeight = FontWeight.Normal,
             ),
@@ -98,7 +107,7 @@ fun SenderAppDownloadText() {
         addStyle(
             style = SpanStyle(
                 color = colorPrimary,
-                fontSize = 14.sp,
+                fontSize = getDefaultFontSize(),
                 fontFamily = interFontFamily,
                 fontWeight = FontWeight.Normal,
                 textDecoration = TextDecoration.Underline
@@ -123,6 +132,13 @@ fun SenderAppDownloadText() {
 
 @Composable
 fun ConnectionDetailsView(viewModel: MainActivityViewModel, modifier: Modifier) {
+    val (iconSize, paddingSize) = when (getScreenSize((getScreenResolution()))) {
+        ScreenSize.Tiny -> Pair(14.dp, 6.dp)
+        ScreenSize.Small -> Pair(14.dp, 6.dp)
+        ScreenSize.Medium -> Pair(18.dp, 8.dp)
+        ScreenSize.Large -> Pair(18.dp, 8.dp)
+    }
+
     for (ip in viewModel.ipInfo) {
         val icon = when (ip.type) {
             NetworkInterfaceType.Wired, NetworkInterfaceType.Unknown -> R.drawable.ic_network_light
@@ -148,27 +164,27 @@ fun ConnectionDetailsView(viewModel: MainActivityViewModel, modifier: Modifier) 
                 painter = painterResource(icon),
                 contentDescription = null,
                 modifier = Modifier
-                    .size(18.dp)
+                    .size(iconSize)
             )
-            ThemedText(ip.address, Modifier.padding(horizontal = 8.dp))
+            ThemedText(ip.address, Modifier.padding(horizontal = paddingSize))
             ThemedText(ip.name)
         }
 
-//            Row (
-//                Modifier.padding(vertical = 2.dp)
-//            ) {
-//                Image(
-//                    painter = painterResource(icon),
-//                    contentDescription = null,
-//                    modifier = Modifier
-//                        .size(18.dp)
-//                )
-//                ThemedText(ip.address, Modifier.padding(horizontal = 8.dp))
-//                ThemedText(ip.name)
-//            }
+//        Row(
+//            Modifier.padding(vertical = 2.dp)
+//        ) {
+//            Image(
+//                painter = painterResource(icon),
+//                contentDescription = null,
+//                modifier = Modifier
+//                    .size(iconSize)
+//            )
+//            ThemedText(ip.address, Modifier.padding(horizontal = paddingSize))
+//            ThemedText(ip.name)
+//        }
     }
 
-    Spacer(modifier = Modifier.padding(vertical = 10.dp))
+    Spacer(modifier = Modifier.padding(vertical = paddingSize))
     ThemedText(stringResource(R.string.port))
     ThemedText(viewModel.textPorts)
 }
@@ -185,26 +201,53 @@ fun ConnectionStatusView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
     val textModifier = if (isPortrait) Modifier.padding(end = 15.dp) else modifier
     ThemedText(connectionStatus, textModifier)
-    Spacer(Modifier.height(20.dp))
+    Spacer(Modifier.height(getDefaultSpacerHeight()))
 
-    val iconModifier = if (isPortrait) Modifier.size(35.dp) else Modifier.size(55.dp)
+    val iconSize = if (isPortrait) {
+        when (getScreenSize((getScreenResolution()))) {
+            ScreenSize.Tiny -> 25.dp
+            ScreenSize.Small -> 25.dp
+            ScreenSize.Medium -> 35.dp
+            ScreenSize.Large -> 35.dp
+        }
+    } else {
+        when (getScreenSize((getScreenResolution()))) {
+            ScreenSize.Tiny -> 45.dp
+            ScreenSize.Small -> 45.dp
+            ScreenSize.Medium -> 55.dp
+            ScreenSize.Large -> 55.dp
+        }
+    }
     val wipePercentage = animateFloatAsState(
         targetValue = if (frontendConnections.isNotEmpty()) 1f else 0.4f,
         animationSpec = tween(durationMillis = 500)
     )
 
     if (frontendConnections.isEmpty()) {
-        Spinner(modifier = iconModifier)
+        val strokeWidth = when (getScreenSize((getScreenResolution()))) {
+            ScreenSize.Tiny -> 3.dp
+            ScreenSize.Small -> 3.dp
+            ScreenSize.Medium -> 4.dp
+            ScreenSize.Large -> 4.dp
+        }
+
+        CircularProgressIndicator(
+            modifier = Modifier.size(iconSize),
+            color = Color.White,
+            strokeWidth = strokeWidth
+        )
     } else {
         Box(
-            modifier = iconModifier
+            modifier = Modifier
+                .size(iconSize)
                 .clip(CircleShape)
                 .background(colorPrimary)
         ) {
             Image(
                 painter = painterResource(R.drawable.ic_checked),
                 contentDescription = null,
-                modifier = iconModifier
+                modifier = Modifier
+                    .size(iconSize)
                     .clip(WipeEffect(wipePercentage))
             )
         }
@@ -218,21 +261,28 @@ fun TitleView(viewModel: MainActivityViewModel, modifier: Modifier) {
         verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        val (rowPadding, titleSize) = when (getScreenSize((getScreenResolution()))) {
+            ScreenSize.Tiny -> Pair(5, 40)
+            ScreenSize.Small -> Pair(5, 40)
+            ScreenSize.Medium -> Pair(10, 55)
+            ScreenSize.Large -> Pair(10, 55)
+        }
+
         Row(
-            modifier = Modifier.padding(vertical = 20.dp),
+            modifier = Modifier.padding(vertical = rowPadding.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Image(
                 painter = painterResource(R.drawable.ic_icon),
                 contentDescription = null,
-                modifier = Modifier.size(55.dp)
+                modifier = Modifier.size(titleSize.dp)
             )
             Text(
                 text = "FCast",
                 modifier = Modifier
                     .padding(start = 15.dp),
                 color = Color.White,
-                fontSize = 60.sp,
+                fontSize = (titleSize + 5).sp,
                 fontFamily = outfitFontFamilyExtraBold,
                 textAlign = TextAlign.Center,
                 style = TextStyle(
@@ -246,9 +296,13 @@ fun TitleView(viewModel: MainActivityViewModel, modifier: Modifier) {
 @SuppressLint("ConfigurationScreenWidthHeight")
 @Composable
 fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
-    val paddingSize = 10.dp
+    val paddingSize = when (getScreenSize((getScreenResolution()))) {
+        ScreenSize.Tiny -> 5.dp
+        ScreenSize.Small -> 5.dp
+        ScreenSize.Medium -> 10.dp
+        ScreenSize.Large -> 10.dp
+    }
 
-//                Spacer(Modifier.fillMaxWidth().height(spacerSize))
     Surface(
         modifier = modifier,
         color = colorCardBackground,
@@ -280,13 +334,14 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
                         Modifier.padding(bottom = paddingSize),
                         fontWeight = FontWeight.Bold
                     )
+
                     Image(
                         painter = if (viewModel.imageQR != null)
                             BitmapPainter(viewModel.imageQR!!)
                         else ColorPainter(Color.Gray),
                         contentDescription = null,
                         modifier = Modifier
-                            .size(viewModel.qrSize.dp)
+                            .size(getQrSize(getScreenResolution()).dp)
                     )
                     SenderAppDownloadText()
 
@@ -306,10 +361,17 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
                 ConnectionDetailsView(viewModel, modifier)
             } else {
+                val iconSize = when (getScreenSize((getScreenResolution()))) {
+                    ScreenSize.Tiny -> 45.dp
+                    ScreenSize.Small -> 45.dp
+                    ScreenSize.Medium -> 55.dp
+                    ScreenSize.Large -> 55.dp
+                }
+
                 Image(
                     painter = painterResource(R.drawable.ic_error),
                     contentDescription = null,
-                    modifier = Modifier.size(55.dp)
+                    modifier = Modifier.size(iconSize)
                 )
                 ThemedText(
                     stringResource(R.string.network_no_interfaces),
@@ -326,7 +388,25 @@ fun ConnectionInfoView(viewModel: MainActivityViewModel, modifier: Modifier) {
 fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
     val context = LocalContext.current
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
-    val spacerSize = 20.dp
+    val spacerSize = getDefaultSpacerHeight()
+    val (connInfoWidth, updateViewWidth) = when (getScreenSize((getScreenResolution()))) {
+        ScreenSize.Tiny -> Pair(255.dp, 205.dp)
+        ScreenSize.Small -> Pair(255.dp, 205.dp)
+        ScreenSize.Medium -> Pair(300.dp, 250.dp)
+        ScreenSize.Large -> Pair(300.dp, 250.dp)
+    }
+    val rootPadding = when (getScreenSize((getScreenResolution()))) {
+        ScreenSize.Tiny -> 30.dp
+        ScreenSize.Small -> 30.dp
+        ScreenSize.Medium -> 40.dp
+        ScreenSize.Large -> 40.dp
+    }
+    val (updateViewPaddingWidth, updateViewPaddingHeight) = when (getScreenSize((getScreenResolution()))) {
+        ScreenSize.Tiny -> Pair(10.dp, 5.dp)
+        ScreenSize.Small -> Pair(10.dp, 5.dp)
+        ScreenSize.Medium -> Pair(15.dp, 10.dp)
+        ScreenSize.Large -> Pair(15.dp, 10.dp)
+    }
 
     val presentationState = rememberPresentationState(exoPlayer)
     MainActivityViewConnectionMonitor(context)
@@ -346,34 +426,30 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
         )
 
         if (isPortrait) {
+            val columnScrollState = rememberScrollState()
+
             Column(
-                Modifier.padding(horizontal = 40.dp),
+                Modifier
+                    .padding(horizontal = rootPadding)
+                    .verticalScroll(columnScrollState),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 TitleView(viewModel, Modifier)
-                Spacer(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(20.dp)
-                )
+                Spacer(Modifier.height(spacerSize - 5.dp))
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     ConnectionStatusView(viewModel, Modifier.fillMaxWidth())
                 }
-                Spacer(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(spacerSize)
+                Spacer(Modifier.height(spacerSize - 5.dp))
+
+                ConnectionInfoView(
+                    viewModel,
+                    Modifier.width(connInfoWidth)
                 )
 
-                ConnectionInfoView(viewModel, Modifier)
-                Spacer(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(spacerSize)
-                )
+                Spacer(Modifier.height(spacerSize - 5.dp))
                 Surface(
                     modifier = Modifier.padding(horizontal = 30.dp),
                     color = colorCardBackground,
@@ -382,21 +458,34 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
                 ) {
                     UpdateView(
                         viewModel,
-                        modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp)
+                        modifier = Modifier
+                            .width(updateViewWidth)
+                            .padding(
+                                horizontal = updateViewPaddingWidth,
+                                vertical = updateViewPaddingHeight
+                            )
                     )
                 }
             }
         } else {
             Row(
-                modifier = Modifier.padding(vertical = 40.dp),
+                modifier = Modifier.padding(vertical = rootPadding),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val columnPadding = 80.dp
+                val leftColumnScrollState = rememberScrollState()
+                val rightColumnScrollState = rememberScrollState()
+                val columnPadding = when (getScreenSize((getScreenResolution()))) {
+                    ScreenSize.Tiny -> 30.dp
+                    ScreenSize.Small -> 30.dp
+                    ScreenSize.Medium -> 60.dp
+                    ScreenSize.Large -> 60.dp
+                }
 
                 Column(
                     modifier = Modifier
                         .padding(horizontal = columnPadding)
-                        .weight(1f),
+                        .weight(1f)
+                        .verticalScroll(leftColumnScrollState),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     TitleView(viewModel, Modifier.fillMaxWidth())
@@ -420,17 +509,23 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
                     ) {
                         UpdateView(
                             viewModel,
-                            modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp)
+                            modifier = Modifier
+                                .width(updateViewWidth)
+                                .padding(
+                                    horizontal = updateViewPaddingWidth,
+                                    vertical = updateViewPaddingHeight
+                                )
                         )
                     }
                 }
                 Column(
                     modifier = Modifier
                         .padding(horizontal = columnPadding)
-                        .weight(1f),
+                        .weight(1f)
+                        .verticalScroll(rightColumnScrollState),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    ConnectionInfoView(viewModel, Modifier)
+                    ConnectionInfoView(viewModel, Modifier.width(connInfoWidth))
                 }
             }
         }
@@ -469,7 +564,7 @@ fun MainActivityPortraitPreview() {
     viewModel.textPorts = "46899 (TCP), 46898 (WS)"
     viewModel.showQR = true
     viewModel.qrSize = 90f
-//    viewModel.updating = true
+    viewModel.updateState = UpdateState.UpdateAvailable
     viewModel.ipInfo = mutableStateListOf(
         NetworkInterfaceData(
             NetworkInterfaceType.Wired, "Ethernet", "123.456.7.890", null

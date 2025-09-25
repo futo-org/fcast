@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -37,21 +38,30 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.futo.fcast.receiver.BuildConfig
 import com.futo.fcast.receiver.R
+import com.futo.fcast.receiver.composables.ScreenSize
 import com.futo.fcast.receiver.composables.ThemedText
 import com.futo.fcast.receiver.composables.colorButtonPrimary
 import com.futo.fcast.receiver.composables.colorButtonSecondary
+import com.futo.fcast.receiver.composables.getScreenResolution
+import com.futo.fcast.receiver.composables.getScreenSize
 import com.futo.fcast.receiver.models.MainActivityViewModel
 import com.futo.fcast.receiver.models.UpdateState
 
 @Composable
 fun ProgressBarView(viewModel: MainActivityViewModel) {
     val animatedProgress by animateFloatAsState(targetValue = viewModel.updateProgress)
+    val (height, padding) = when (getScreenSize((getScreenResolution()))) {
+        ScreenSize.Tiny -> Pair(30.dp, 8.dp)
+        ScreenSize.Small -> Pair(30.dp, 8.dp)
+        ScreenSize.Medium -> Pair(40.dp, 10.dp)
+        ScreenSize.Large -> Pair(40.dp, 10.dp)
+    }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(40.dp)
-            .padding(top = 10.dp)
+            .height(height)
+            .padding(top = padding)
             .clip(RoundedCornerShape(50.dp))
             .border(1.dp, Color(0xFF4E4E4E), RoundedCornerShape(50.dp))
             .background(
@@ -90,6 +100,13 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                 modifier = modifier,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                val (spacing, iconSize, strokeWidth) = when (getScreenSize((getScreenResolution()))) {
+                    ScreenSize.Tiny -> Triple(5.dp, 30.dp, 3.dp)
+                    ScreenSize.Small -> Triple(5.dp, 30.dp, 3.dp)
+                    ScreenSize.Medium -> Triple(10.dp, 40.dp, 4.dp)
+                    ScreenSize.Large -> Triple(10.dp, 40.dp, 4.dp)
+                }
+
                 val cardTitle = when (viewModel.updateState) {
                     UpdateState.InstallSuccess -> R.string.update_success
                     UpdateState.InstallFailure -> R.string.update_error
@@ -98,12 +115,12 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
 
                 ThemedText(
                     stringResource(cardTitle),
-                    Modifier.padding(top = 10.dp),
+                    Modifier.padding(top = spacing),
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(
                     modifier = Modifier
-                        .padding(vertical = 10.dp)
+                        .padding(vertical = spacing)
                         .height(1.dp)
                         .fillMaxWidth()
                         .background(Color.Gray)
@@ -115,15 +132,15 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                             painterResource(R.drawable.ic_checked)
                         else painterResource(R.drawable.ic_error),
                         contentDescription = null,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(iconSize)
                     )
                     Spacer(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(10.dp)
+                            .height(spacing)
                     )
                 }
-                ThemedText(viewModel.updateStatus, Modifier.padding(bottom = 10.dp))
+                ThemedText(viewModel.updateStatus, Modifier.padding(bottom = spacing))
 
                 when (viewModel.updateState) {
                     UpdateState.UpdateAvailable -> {
@@ -131,23 +148,49 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                             modifier = Modifier,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val (width, height) = when (getScreenSize((getScreenResolution()))) {
+                                ScreenSize.Tiny -> Pair(70.dp, 30.dp)
+                                ScreenSize.Small -> Pair(70.dp, 30.dp)
+                                ScreenSize.Medium -> Pair(90.dp, 40.dp)
+                                ScreenSize.Large -> Pair(90.dp, 40.dp)
+                            }
+                            val (paddingWidth, paddingHeight) = when (getScreenSize((getScreenResolution()))) {
+                                ScreenSize.Tiny -> Pair(15.dp, 5.dp)
+                                ScreenSize.Small -> Pair(15.dp, 5.dp)
+                                ScreenSize.Medium -> Pair(20.dp, 8.dp)
+                                ScreenSize.Large -> Pair(20.dp, 8.dp)
+                            }
+
                             Button(
                                 onClick = viewModel::update,
-                                modifier = Modifier.focusRequester(focusRequester),
+                                modifier = Modifier
+                                    .width(width)
+                                    .height(height)
+                                    .focusRequester(focusRequester),
                                 enabled = true,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = colorButtonPrimary
+                                ),
+                                contentPadding = PaddingValues(
+                                    horizontal = paddingWidth,
+                                    vertical = paddingHeight
                                 )
                             ) {
                                 ThemedText(stringResource(R.string.update))
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(spacing))
                             Button(
                                 onClick = { viewModel.updateState = UpdateState.NoUpdateAvailable },
-                                modifier = Modifier,
+                                modifier = Modifier
+                                    .width(width)
+                                    .height(height),
                                 enabled = true,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = colorButtonSecondary
+                                ),
+                                contentPadding = PaddingValues(
+                                    horizontal = paddingWidth,
+                                    vertical = paddingHeight
                                 )
                             ) {
                                 ThemedText(stringResource(R.string.update_later))
@@ -166,9 +209,9 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
 
                     UpdateState.Installing -> {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(iconSize),
                             color = Color.White,
-                            strokeWidth = 4.dp
+                            strokeWidth = strokeWidth
                         )
                     }
 

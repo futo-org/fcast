@@ -11,13 +11,10 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Base64
-import android.util.DisplayMetrics
 import android.util.Log
 import android.util.TypedValue
-import android.view.Display
 import android.view.KeyEvent
 import android.view.WindowManager
-import android.view.WindowMetrics
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -33,6 +30,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import com.futo.fcast.receiver.composables.getQrSize
+import com.futo.fcast.receiver.composables.getScreenResolution
 import com.futo.fcast.receiver.models.EventMessage
 import com.futo.fcast.receiver.models.EventType
 import com.futo.fcast.receiver.models.FCastNetworkConfig
@@ -50,8 +49,6 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.io.InputStream
 import java.io.OutputStream
-import kotlin.math.max
-import kotlin.math.min
 
 
 class MainActivity : AppCompatActivity() {
@@ -60,12 +57,14 @@ class MainActivity : AppCompatActivity() {
     private val _preferenceFileKey get() = "$packageName.PREFERENCE_FILE_KEY"
 
     val viewModel = MainActivityViewModel()
+    private var _screenResolution: Pair<Int, Int> = Pair(0, 0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         _player = ExoPlayer.Builder(this).build()
         setContent {
+            _screenResolution = getScreenResolution()
             MainActivity(viewModel, _player)
         }
 
@@ -189,7 +188,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("GestureBackNavigation")
     @OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        //        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
+//        Log.d(TAG, "KeyEvent: label=${event.displayLabel}, event=$event")
 //        var handledCase = false
         var key = event.displayLabel.toString()
 
@@ -260,28 +259,9 @@ class MainActivity : AppCompatActivity() {
         viewModel.textPorts =
             "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
 
-        val resolution = getScreenResolution()
-        val width = resolution.first
-        val height = resolution.second
-        val long = max(width, height)
-        val short = min(width, height)
-        var qrSize = 165f
-
-        // todo: finish testing QR sizes
-        if (long >= 2560 || short >= 1440) {
-            qrSize = 165f
-        }
-        if ((long >= 1920 && long < 2560) || (short >= 1080 && short < 1440)) {
-            qrSize = 225f // 125f
-        }
-        if ((long >= 1280 && long < 1920) || (short >= 720 && short < 1080)) {
-            qrSize = 85f
-        }
-        if (long < 1280 || short < 720) {
-            qrSize = 60f
-        }
+        val qrSize = getQrSize(_screenResolution)
         viewModel.qrSize = qrSize
-        Log.i(TAG, "QR code size: $width $height $qrSize")
+        Log.i(TAG, "QR code size: $qrSize")
 
         try {
             val barcodeEncoder = BarcodeEncoder()
@@ -317,23 +297,6 @@ class MainActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
-    }
-
-    private fun getScreenResolution(): Pair<Int, Int> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val windowMetrics: WindowMetrics = windowManager.currentWindowMetrics
-            val bounds = windowMetrics.bounds
-            Pair(bounds.width(), bounds.height())
-        } else {
-            getScreenResolutionLegacy()
-        }
-    }
-
-    private fun getScreenResolutionLegacy(): Pair<Int, Int> {
-        val displayMetrics = DisplayMetrics()
-        val display: Display? = (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay
-        display?.getRealMetrics(displayMetrics)
-        return Pair(displayMetrics.widthPixels, displayMetrics.heightPixels)
     }
 
     private fun restartService() {
@@ -651,6 +614,5 @@ class MainActivity : AppCompatActivity() {
         private val APK_URL =
             if (BuildConfig.DEBUG) "https://dl.fcast.org/dev/unstable/android/app-defaultFlavor-debug.apk" else "https://dl.fcast.org/android/fcast-release.apk"
         private const val REQUEST_ID_MULTIPLE_PERMISSIONS = 1
-        private const val REQUEST_CODE = 2
     }
 }
