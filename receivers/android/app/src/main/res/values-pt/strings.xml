@@ -7,19 +7,51 @@
     <string name="incompatible">A operação falhou pois é fundamentalmente incompatível com este dispositivo</string>
     <string name="invalid">A operação falhou pois um ou mais dos APKs eram inválidos</string>
     <string name="not_enough_storage">A operação falhou por causa de problemas de armazenamento</string>
-    <string name="downloading_update">Baixando a atualização…</string>
+    <string name="downloading_update">Baixando…</string>
     <string name="installing_update">Instalando a atualização…</string>
     <string name="success">Sucesso</string>
-    <string name="failed_to_update_with_error">Falhou em atualizar pacote com erro</string>
-    <string name="update_status">Há uma atualização nova para o receptor do FCast, você quer atualizar?</string>
+    <string name="update_success">Atualização bem-sucedida</string>
+    <string name="update_error">Erro de atualização</string>
+    <string name="update_available">Atualização do FCast disponível</string>
+    <string name="update_status">Deseja atualizar agora?</string>
     <string name="never">Nunca</string>
     <string name="close">Fechar</string>
     <string name="update">Atualizar</string>
+    <string name="update_later">Mais tarde</string>
     <string name="checking_for_updates">Buscando atualizações…</string>
     <string name="no_updates_available">Não há atualizações disponíveis</string>
     <string name="permission_dialog_title">Sobrepor outros apps</string> <!-- Adapted to just use the translation from AOSP, Display over other apps -->
     <string name="permission_dialog_message">Este app precisa da permissão para sobrepor outros apps para que possa exibir conteúdo em cima de outros apps. Por favor conceda a permissão.</string>
     <string name="permission_dialog_positive_button">Permitir</string>
     <string name="permission_dialog_negative_button">Cancelar</string>
-    <string name="waiting_for_connection">Aguardando mídia</string>
+    <string name="waiting_for_connection">Aguarda uma conexão</string>
+    <string name="connected">Ligado: Pronto para transmitir</string>
+    <string name="connected_multiple">Vários dispositivos ligados:\n Pronto para transmitir</string>
+    <string name="network_changed">As ligações de rede foram alteradas. Volte a ligar os dispositivos emissores ao recetor caso tenha problemas.</string>
+    <string name="network_lost">Perda de ligação de rede, volte a ligar a uma rede</string>
+    <string name="main_device_disconnected">Dispositivo desligado</string>
+    <string name="main_device_disconnected_multiple">Um dispositivo foi desligado</string>
+    <string name="player_device_connected">Dispositivo ligado</string>
+    <string name="player_device_disconnected">Dispositivo desligado. Se tiver problemas de reprodução, volte a ligar-se.</string>
+    <string name="qr_code_error">Erro ao gerar código QR</string>
+    <string name="connection_information">Informações de ligação</string>
+    <string name="sender_app_download_text">Precisa de uma aplicação de envio?\nDescarregue o Grayjay em </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">Detalhes da ligação</string>
+    <string name="port">Porto</string>
+    <string name="scan_to_connect">Digitalize com uma aplicação de envio FCast</string>
+    <string name="network_no_interfaces">Dispositivo não ligado a uma rede</string>
+    <string name="live_badge">VIVO</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">Ícone da aplicação</string>
+    <string name="player_button_play">Brincadeira</string>
+    <string name="player_button_pause">Pausa</string>
+    <string name="player_next_button">Seguinte</string>
+    <string name="player_previous_button">Anterior</string>
+
+    <string name="player_captions_button">Legendas</string>
+    <string name="player_settings_button">Configurações</string>
+    <string name="player_seek_forward">Buscar para a frente</string>
+    <string name="player_seek_backward">Procure para trás</string>
 </resources>

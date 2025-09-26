@@ -7,19 +7,51 @@
     <string name="incompatible">فشلت العملية لأنها غير متوافقة بشكل أساسي مع هذا الجهاز</string>
     <string name="invalid">فشلت العملية لأن أحد ملفات APK أو أكثر كان غير صالح</string>
     <string name="not_enough_storage">فشلت العملية بسبب مشاكل التخزين</string>
-    <string name="downloading_update">جاري تنزيل التحديث…</string>
+    <string name="downloading_update">جاري التحميل…</string>
     <string name="installing_update">جاري تثبيت التحديث…</string>
     <string name="success">نجاح</string>
-    <string name="failed_to_update_with_error">فشل تحديث الحزمة بسبب الخطأ</string>
-    <string name="update_status">هناك تحديث متاح لجهاز الاستقبال FCast، هل ترغب في التحديث؟</string>
+    <string name="update_success">نجاح التحديث</string>
+    <string name="update_error">خطأ التحديث</string>
+    <string name="update_available">تحديث FCast متاح</string>
+    <string name="update_status">هل ترغب بالتحديث الآن؟</string>
     <string name="never">أبداً</string>
     <string name="close">يغلق</string>
     <string name="update">تحديث</string>
+    <string name="update_later">لاحقاً</string>
     <string name="checking_for_updates">التحقق من التحديثات…</string>
     <string name="no_updates_available">لا توجد تحديثات متاحة</string>
     <string name="permission_dialog_title">إذن نافذة تنبيه النظام</string>
     <string name="permission_dialog_message">يتطلب هذا التطبيق إذن "نافذة تنبيه النظام" لعرض المحتوى فوق التطبيقات الأخرى. يُرجى منح الإذن.</string>
     <string name="permission_dialog_positive_button">يسمح</string>
     <string name="permission_dialog_negative_button">يلغي</string>
-    <string name="waiting_for_connection">في انتظار وسائل الإعلام</string>
+    <string name="waiting_for_connection">في انتظار اتصال</string>
+    <string name="connected">متصل: جاهز للإرسال</string>
+    <string name="connected_multiple">أجهزة متعددة متصلة:\n جاهز للبث</string>
+    <string name="network_changed">لقد تغيرت اتصالات الشبكة، يرجى إعادة توصيل أجهزة المرسل بجهاز المستقبل إذا واجهت أي مشاكل</string>
+    <string name="network_lost">تم فقدان الاتصال بالشبكة، يرجى إعادة الاتصال بالشبكة</string>
+    <string name="main_device_disconnected">تم فصل الجهاز</string>
+    <string name="main_device_disconnected_multiple">تم فصل الجهاز</string>
+    <string name="player_device_connected">الجهاز متصل</string>
+    <string name="player_device_disconnected">الجهاز غير متصل. إذا واجهت مشاكل في التشغيل، يُرجى إعادة الاتصال.</string>
+    <string name="qr_code_error">خطأ في إنشاء رمز الاستجابة السريعة</string>
+    <string name="connection_information">معلومات الاتصال</string>
+    <string name="sender_app_download_text"> هل تحتاج إلى تطبيق مرسل؟\nقم بتنزيل Grayjay على</string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">تفاصيل الاتصال</string>
+    <string name="port">ميناء</string>
+    <string name="scan_to_connect">المسح الضوئي باستخدام تطبيق مرسل FCast</string>
+    <string name="network_no_interfaces">الجهاز غير متصل بالشبكة</string>
+    <string name="live_badge">يعيش</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">أيقونة التطبيق</string>
+    <string name="player_button_play">يلعب</string>
+    <string name="player_button_pause">يوقف</string>
+    <string name="player_next_button">التالي</string>
+    <string name="player_previous_button">سابق</string>
+
+    <string name="player_captions_button">التعليقات التوضيحية</string>
+    <string name="player_settings_button">إعدادات</string>
+    <string name="player_seek_forward">ابحث للأمام</string>
+    <string name="player_seek_backward">ابحث للخلف</string>
 </resources>

@@ -7,19 +7,51 @@
     <string name="incompatible">操作失败，因为它与该设备根本不兼容</string>
     <string name="invalid">操作失败，因为一个或多个 APK 无效</string>
     <string name="not_enough_storage">由于存储问题，操作失败</string>
-    <string name="downloading_update">正在下载更新…</string>
+    <string name="downloading_update">正在下载…</string>
     <string name="installing_update">正在安装更新…</string>
     <string name="success">成功</string>
-    <string name="failed_to_update_with_error">更新包失败并出现错误</string>
-    <string name="update_status">FCast 接收器有可用的更新，您是否要更新？</string>
+    <string name="update_success">更新成功</string>
+    <string name="update_error">更新错误</string>
+    <string name="update_available">FCast 更新可用</string>
+    <string name="update_status">您想现在更新吗？</string>
     <string name="never">绝不</string>
     <string name="close">关闭</string>
     <string name="update">更新</string>
+    <string name="update_later">之后</string>
     <string name="checking_for_updates">正在检查更新…</string>
     <string name="no_updates_available">没有可用更新</string>
     <string name="permission_dialog_title">系统警报窗口权限</string>
     <string name="permission_dialog_message">此应用需要“系统警报窗口”权限才能在其他应用上方显示内容。请授予此权限。</string>
     <string name="permission_dialog_positive_button">允许</string>
     <string name="permission_dialog_negative_button">取消</string>
-    <string name="waiting_for_connection">等待媒体</string>
+    <string name="waiting_for_connection">等待连接</string>
+    <string name="connected">已连接：准备投放</string>
+    <string name="connected_multiple">已连接多个设备：\n 准备投射</string>
+    <string name="network_changed">网络连接已更改，如果遇到问题，请重新连接发送器设备到接收器</string>
+    <string name="network_lost">网络连接丢失，请重新连接网络</string>
+    <string name="main_device_disconnected">设备已断开连接</string>
+    <string name="main_device_disconnected_multiple">设备已断开连接</string>
+    <string name="player_device_connected">设备已连接</string>
+    <string name="player_device_disconnected">设备已断开连接。如果您遇到播放问题，请重新连接。</string>
+    <string name="qr_code_error">生成二维码时出错</string>
+    <string name="connection_information">连接信息</string>
+    <string name="sender_app_download_text">需要发送器应用程序？\n下载 Grayjay： </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">连接详细信息</string>
+    <string name="port">港口</string>
+    <string name="scan_to_connect">使用 FCast 发送器应用程序扫描</string>
+    <string name="network_no_interfaces">设备未连接到网络</string>
+    <string name="live_badge">居住</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">应用程序图标</string>
+    <string name="player_button_play">玩</string>
+    <string name="player_button_pause">暂停</string>
+    <string name="player_next_button">下一个</string>
+    <string name="player_previous_button">以前的</string>
+
+    <string name="player_captions_button">字幕</string>
+    <string name="player_settings_button">设置</string>
+    <string name="player_seek_forward">向前搜索</string>
+    <string name="player_seek_backward">向后搜索</string>
 </resources>

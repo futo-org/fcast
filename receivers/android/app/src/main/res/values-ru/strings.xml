@@ -7,19 +7,51 @@
     <string name="incompatible">Операция не удалась, так как она принципиально несовместима с этим устройством.</string>
     <string name="invalid">Операция не удалась, так как один или несколько APK-файлов оказались недействительными.</string>
     <string name="not_enough_storage">Операция не удалась из-за проблем с хранением</string>
-    <string name="downloading_update">Загрузка обновления…</string>
+    <string name="downloading_update">Загрузка…</string>
     <string name="installing_update">Установка обновления…</string>
     <string name="success">Успех</string>
-    <string name="failed_to_update_with_error">Не удалось обновить пакет из-за ошибки</string>
-    <string name="update_status">Доступно обновление для приемника FCast. Хотите обновиться?</string>
+    <string name="update_success">Обновление прошло успешно</string>
+    <string name="update_error">Ошибка обновления</string>
+    <string name="update_available">Доступно обновление FCast</string>
+    <string name="update_status">Хотите обновить сейчас?</string>
     <string name="never">Никогда</string>
     <string name="close">Закрывать</string>
     <string name="update">Обновлять</string>
+    <string name="update_later">Позже</string>
     <string name="checking_for_updates">Проверка обновлений…</string>
     <string name="no_updates_available">Нет доступных обновлений</string>
     <string name="permission_dialog_title">Разрешение окна системного оповещения</string>
     <string name="permission_dialog_message">Этому приложению требуется разрешение System Alert Window для отображения контента поверх других приложений. Пожалуйста, предоставьте разрешение.</string>
     <string name="permission_dialog_positive_button">Позволять</string>
     <string name="permission_dialog_negative_button">Отмена</string>
-    <string name="waiting_for_connection">Ожидание СМИ</string>
+    <string name="waiting_for_connection">Ожидание соединения</string>
+    <string name="connected">Подключено: готово к трансляции</string>
+    <string name="connected_multiple">Подключено несколько устройств:\n Готово к трансляции</string>
+    <string name="network_changed">Сетевые подключения изменились. Если у вас возникли проблемы, переподключите устройства-отправители к устройствам-получателям.</string>
+    <string name="network_lost">Потеряно сетевое соединение. Пожалуйста, подключитесь к сети заново.</string>
+    <string name="main_device_disconnected">Устройство отключено</string>
+    <string name="main_device_disconnected_multiple">Устройство отключилось.</string>
+    <string name="player_device_connected">Устройство подключено</string>
+    <string name="player_device_disconnected">Устройство отключено. Если возникли проблемы с воспроизведением, подключитесь снова.</string>
+    <string name="qr_code_error">Ошибка генерации QR-кода</string>
+    <string name="connection_information">Информация о подключении</string>
+    <string name="sender_app_download_text">Вам нужно приложение-отправитель?\nЗагрузите Grayjay по адресу </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">Подробности подключения</string>
+    <string name="port">Порт</string>
+    <string name="scan_to_connect">Сканировать с помощью приложения-отправителя FCast</string>
+    <string name="network_no_interfaces">Устройство не подключено к сети</string>
+    <string name="live_badge">ЖИТЬ</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">Значок приложения</string>
+    <string name="player_button_play">Играть</string>
+    <string name="player_button_pause">Пауза</string>
+    <string name="player_next_button">Следующий</string>
+    <string name="player_previous_button">Предыдущий</string>
+
+    <string name="player_captions_button">Подписи</string>
+    <string name="player_settings_button">Настройки</string>
+    <string name="player_seek_forward">Искать вперед</string>
+    <string name="player_seek_backward">Искать назад</string>
 </resources>

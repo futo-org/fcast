@@ -7,19 +7,51 @@
     <string name="incompatible">このデバイスと根本的に互換性がないため、操作は失敗しました</string>
     <string name="invalid">1 つ以上の APK が無効であったため、操作に失敗しました</string>
     <string name="not_enough_storage">ストレージの問題により操作が失敗しました</string>
-    <string name="downloading_update">アップデートをダウンロードしています…</string>
+    <string name="downloading_update">ダウンロード中…</string>
     <string name="installing_update">アップデートをインストールしています…</string>
     <string name="success">成功</string>
-    <string name="failed_to_update_with_error">エラーのためパッケージの更新に失敗しました</string>
-    <string name="update_status">FCast レシーバーのアップデートが利用可能です。アップデートしますか?</string>
+    <string name="update_success">更新成功</string>
+    <string name="update_error">更新エラー</string>
+    <string name="update_available">FCastアップデートが利用可能</string>
+    <string name="update_status">今すぐ更新しますか?</string>
     <string name="never">一度もない</string>
     <string name="close">近い</string>
     <string name="update">アップデート</string>
+    <string name="update_later">後で</string>
     <string name="checking_for_updates">アップデートを確認しています…</string>
     <string name="no_updates_available">更新情報はありません</string>
     <string name="permission_dialog_title">システム警告ウィンドウの権限</string>
     <string name="permission_dialog_message">このアプリは、他のアプリの上にコンテンツを表示するためにシステムアラートウィンドウの権限が必要です。権限を付与してください。</string>
     <string name="permission_dialog_positive_button">許可する</string>
     <string name="permission_dialog_negative_button">キャンセル</string>
-    <string name="waiting_for_connection">メディアを待っています</string>
+    <string name="waiting_for_connection">接続を待っています</string>
+    <string name="connected">接続済み: キャスト準備完了</string>
+    <string name="connected_multiple">複数のデバイスが接続されています:\n キャスト準備完了</string>
+    <string name="network_changed">ネットワーク接続が変更されました。問題が発生した場合は、送信側のデバイスを受信側に再接続してください。</string>
+    <string name="network_lost">ネットワーク接続が失われました。ネットワークに再接続してください</string>
+    <string name="main_device_disconnected">デバイスが切断されました</string>
+    <string name="main_device_disconnected_multiple">デバイスが切断されました</string>
+    <string name="player_device_connected">デバイスが接続されました</string>
+    <string name="player_device_disconnected">デバイスが切断されました。再生に問題が発生した場合は、再接続してください。</string>
+    <string name="qr_code_error">QRコード生成エラー</string>
+    <string name="connection_information">接続情報</string>
+    <string name="sender_app_download_text">送信側アプリが必要ですか?\nGrayjay をダウンロードするには </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">接続の詳細</string>
+    <string name="port">ポート</string>
+    <string name="scan_to_connect">FCast送信アプリでスキャンする</string>
+    <string name="network_no_interfaces">デバイスがネットワークに接続されていません</string>
+    <string name="live_badge">ライブ</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">アプリケーションアイコン</string>
+    <string name="player_button_play">遊ぶ</string>
+    <string name="player_button_pause">一時停止</string>
+    <string name="player_next_button">次</string>
+    <string name="player_previous_button">前の</string>
+
+    <string name="player_captions_button">キャプション</string>
+    <string name="player_settings_button">設定</string>
+    <string name="player_seek_forward">前進を模索する</string>
+    <string name="player_seek_backward">過去を振り返る</string>
 </resources>

@@ -7,19 +7,51 @@
     <string name="incompatible">Der Vorgang ist fehlgeschlagen, da er grundsätzlich nicht mit diesem Gerät kompatibel ist</string>
     <string name="invalid">Der Vorgang ist fehlgeschlagen, da eine oder mehrere APKs ungültig waren</string>
     <string name="not_enough_storage">Der Vorgang ist aufgrund von Speicherproblemen fehlgeschlagen</string>
-    <string name="downloading_update">Update wird heruntergeladen…</string>
+    <string name="downloading_update">Wird heruntergeladen…</string>
     <string name="installing_update">Update wird installiert…</string>
     <string name="success">Erfolg</string>
-    <string name="failed_to_update_with_error">Paket konnte nicht aktualisiert werden. Fehler</string>
-    <string name="update_status">Für den FCast-Receiver ist ein Update verfügbar. Möchten Sie ein Update durchführen?</string>
+    <string name="update_success">Update erfolgreich</string>
+    <string name="update_error">Aktualisierungsfehler</string>
+    <string name="update_available">FCast-Update verfügbar</string>
+    <string name="update_status">Möchten Sie jetzt aktualisieren?</string>
     <string name="never">Niemals</string>
     <string name="close">Schließen</string>
     <string name="update">Aktualisieren</string>
+    <string name="update_later">Später</string>
     <string name="checking_for_updates">Suche nach Updates…</string>
     <string name="no_updates_available">Keine Updates verfügbar</string>
     <string name="permission_dialog_title">Berechtigung für das Systemwarnungsfenster</string>
     <string name="permission_dialog_message">Diese App benötigt die Berechtigung „Systemwarnfenster“, um Inhalte über anderen Apps anzuzeigen. Bitte erteilen Sie die Berechtigung.</string>
     <string name="permission_dialog_positive_button">Erlauben</string>
     <string name="permission_dialog_negative_button">Stornieren</string>
-    <string name="waiting_for_connection">Warten auf Medien</string>
+    <string name="waiting_for_connection">Warten auf eine Verbindung</string>
+    <string name="connected">Verbunden: Bereit zum Casting</string>
+    <string name="connected_multiple">Mehrere Geräte verbunden:\n Bereit zum Übertragen</string>
+    <string name="network_changed">Die Netzwerkverbindungen haben sich geändert. Bitte verbinden Sie die Sendergeräte erneut mit dem Empfänger, wenn Probleme auftreten.</string>
+    <string name="network_lost">Netzwerkverbindung verloren, bitte stellen Sie die Verbindung zu einem Netzwerk wieder her</string>
+    <string name="main_device_disconnected">Gerät getrennt</string>
+    <string name="main_device_disconnected_multiple">Ein Gerät wurde getrennt</string>
+    <string name="player_device_connected">Gerät verbunden</string>
+    <string name="player_device_disconnected">Gerät getrennt. Wenn bei der Wiedergabe Probleme auftreten, stellen Sie die Verbindung erneut her.</string>
+    <string name="qr_code_error">Fehler beim Generieren des QR-Codes</string>
+    <string name="connection_information">Verbindungsinformationen</string>
+    <string name="sender_app_download_text">Benötigen Sie eine Absender-App?\nLaden Sie Grayjay herunter unter </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">Verbindungsdetails</string>
+    <string name="port">Hafen</string>
+    <string name="scan_to_connect">Scannen Sie mit einer FCast-Sender-App</string>
+    <string name="network_no_interfaces">Gerät nicht mit einem Netzwerk verbunden</string>
+    <string name="live_badge">LIVE</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">Anwendungssymbol</string>
+    <string name="player_button_play">Spielen</string>
+    <string name="player_button_pause">Pause</string>
+    <string name="player_next_button">Nächste</string>
+    <string name="player_previous_button">Vorherige</string>
+
+    <string name="player_captions_button">Untertitel</string>
+    <string name="player_settings_button">Einstellungen</string>
+    <string name="player_seek_forward">Suche nach vorn</string>
+    <string name="player_seek_backward">Rückwärts suchen</string>
 </resources>
