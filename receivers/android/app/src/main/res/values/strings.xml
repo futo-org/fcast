@@ -52,4 +52,6 @@
 
     <string name="player_captions_button">Captions</string>
     <string name="player_settings_button">Settings</string>
+    <string name="player_seek_forward">Seek Forward</string>
+    <string name="player_seek_backward">Seek Backward</string>
 </resources>

@@ -171,7 +171,7 @@ class FCastSession(
                 else -> send(opcode, message?.let { Json.encodeToString(it) })
             }
         } catch (e: Throwable) {
-            Log.i(TAG, "Failed to encode message to string ${id}.", e)
+            Log.e(TAG, "Failed to encode message to string ${id}.", e)
             throw e
         }
     }
@@ -185,7 +185,7 @@ class FCastSession(
             return
         }
 
-        Log.i(TAG, "$count bytes received from $_remoteSocketAddress")
+        Log.d(TAG, "$count bytes received from $_remoteSocketAddress")
 
         when (_state) {
             SessionState.WaitingForLength -> handleLengthBytes(data, offset, count)
@@ -200,7 +200,7 @@ class FCastSession(
         System.arraycopy(data, offset, _buffer, _bytesRead, bytesToRead)
         _bytesRead += bytesToRead
 
-        Log.i(TAG, "Read $bytesToRead bytes from packet")
+        Log.d(TAG, "Read $bytesToRead bytes from packet")
 
         if (_bytesRead >= LENGTH_BYTES) {
             _state = SessionState.WaitingForData
@@ -211,10 +211,10 @@ class FCastSession(
                     (_buffer[3].toUByte().toLong() shl 24)).toInt()
             _bytesRead = 0
 
-            Log.i(TAG, "Packet length header received from ${_remoteSocketAddress}: $_packetLength")
+            Log.d(TAG, "Packet length header received from ${_remoteSocketAddress}: $_packetLength")
 
             if (_packetLength > MAXIMUM_PACKET_LENGTH) {
-                Log.i(
+                Log.e(
                     TAG,
                     "Maximum packet length is 32kB, killing socket ${_remoteSocketAddress}: $_packetLength"
                 )
@@ -222,7 +222,7 @@ class FCastSession(
             }
 
             if (bytesRemaining > 0) {
-                Log.i(
+                Log.d(
                     TAG,
                     "$bytesRemaining remaining bytes $_remoteSocketAddress pushed to handlePacketBytes"
                 )
@@ -237,10 +237,10 @@ class FCastSession(
         System.arraycopy(data, offset, _buffer, _bytesRead, bytesToRead)
         _bytesRead += bytesToRead
 
-        Log.i(TAG, "Read $bytesToRead bytes from packet")
+        Log.d(TAG, "Read $bytesToRead bytes from packet")
 
         if (_bytesRead >= _packetLength) {
-            Log.i(
+            Log.d(
                 TAG,
                 "Packet finished receiving from $_remoteSocketAddress of $_packetLength bytes."
             )
@@ -251,7 +251,7 @@ class FCastSession(
             _bytesRead = 0
 
             if (bytesRemaining > 0) {
-                Log.i(
+                Log.d(
                     TAG,
                     "$bytesRemaining remaining bytes $_remoteSocketAddress pushed to handleLengthBytes"
                 )
@@ -322,13 +322,13 @@ class FCastSession(
     }
 
     private fun handleNextPacket() {
-        Log.i(TAG, "Processing packet of $_bytesRead bytes from $_remoteSocketAddress")
+        Log.d(TAG, "Processing packet of $_bytesRead bytes from $_remoteSocketAddress")
 
         val opcode = Opcode.find(_buffer[0])
         val body = if (_packetLength > 1) _buffer.copyOfRange(1, _packetLength)
             .toString(Charsets.UTF_8) else null
 
-        Log.i(TAG, "Received packet (opcode: ${opcode}, body: '${body}')")
+        Log.d(TAG, "Received packet (opcode: ${opcode}, body: '${body}')")
         handlePacket(opcode, body)
     }
 

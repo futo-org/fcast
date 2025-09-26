@@ -1,12 +1,6 @@
 package com.futo.fcast.receiver
 
-//import coil.ImageLoader
-//import coil.request.ImageRequest
 import android.annotation.SuppressLint
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -25,7 +19,6 @@ import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_VIDEO
 import androidx.media3.common.PlaybackException
-import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -77,64 +70,31 @@ enum class ControlBarMode {
 @UnstableApi
 class PlayerActivity : AppCompatActivity() {
     private lateinit var _exoPlayer: ExoPlayer
+
+    private var _shouldPlaybackRestartOnConnectivity: Boolean = false
     private var _preloadManager: DefaultPreloadManager? = null
     private var _preloadMediaControl: MediaPreloadStatusControl? = null
-    private var _shouldPlaybackRestartOnConnectivity: Boolean = false
-    private lateinit var _connectivityManager: ConnectivityManager
     private var _wasPlaying = false
 
-    val viewModel = PlayerActivityViewModel()
     private var _lastPlayerUpdateGenerationTime: Long = 0
-
     private var _isPlaylist: Boolean = false
     private var _usingPreloader: Boolean = false
     private val _mediaSources = mutableListOf<MediaSource>()
-
-    //    private var _cachedPlaylist: PlaylistContent = PlaylistContent(items = arrayListOf())
     private var _cachedPlayMediaItem: com.futo.fcast.receiver.models.MediaItem =
         com.futo.fcast.receiver.models.MediaItem("")
 //    private var _playlistIndex: Int = 0
-//    private var _isMediaItem: Boolean = false
+
+    val viewModel = PlayerActivityViewModel()
 
     private val _uiHideTimer = Timer({
-        if (!_exoPlayer.isPlaying) {
+        if (_exoPlayer.isPlaying) {
             _controlMode = ControlBarMode.KeyboardMouse
             viewModel.controlFocus = ControlFocus.None
             viewModel.showControls = false
         }
     }, 5000)
     private val _showDurationTimer = Timer(::mediaEndHandler, 0, false)
-
     private var _controlMode = ControlBarMode.KeyboardMouse
-
-//    private lateinit var _imageLoader: ImageLoader
-
-    private val _connectivityEvents = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            super.onAvailable(network)
-            Log.i(TAG, "_connectivityEvents onAvailable")
-
-            try {
-                lifecycleScope.launch(Dispatchers.Main) {
-                    Log.i(TAG, "onConnectionAvailable")
-
-                    val pos = _exoPlayer.currentPosition
-                    val dur = _exoPlayer.duration
-                    if (_shouldPlaybackRestartOnConnectivity && abs(pos - dur) > 2000) {
-                        Log.i(
-                            TAG,
-                            "Playback ended due to connection loss, resuming playback since connection is restored."
-                        )
-                        _exoPlayer.playWhenReady = true
-                        _exoPlayer.prepare()
-                        _exoPlayer.play()
-                    }
-                }
-            } catch (ex: Throwable) {
-                Log.w(TAG, "Failed to handle connection available event", ex)
-            }
-        }
-    }
 
     private val _playerEventListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -150,20 +110,6 @@ class PlayerActivity : AppCompatActivity() {
                 viewModel.errorMessage = null
             }
 
-            sendPlaybackUpdate()
-        }
-
-        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-            super.onPlayWhenReadyChanged(playWhenReady, reason)
-            sendPlaybackUpdate()
-        }
-
-        override fun onPositionDiscontinuity(
-            oldPosition: Player.PositionInfo,
-            newPosition: Player.PositionInfo,
-            reason: Int
-        ) {
-            super.onPositionDiscontinuity(oldPosition, newPosition, reason)
             sendPlaybackUpdate()
         }
 
@@ -208,86 +154,6 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
-
-        override fun onVolumeChanged(volume: Float) {
-            super.onVolumeChanged(volume)
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    NetworkService.instance?.sendVolumeUpdate(
-                        VolumeUpdateMessage(
-                            System.currentTimeMillis(),
-                            volume.toDouble()
-                        )
-                    )
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Unhandled error sending volume update", e)
-                }
-            }
-        }
-
-        override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
-            super.onPlaybackParametersChanged(playbackParameters)
-            sendPlaybackUpdate()
-        }
-    }
-
-    fun sendPlaybackUpdate() {
-        val state: PlaybackState
-        when (_exoPlayer.playbackState) {
-            ExoPlayer.STATE_READY -> {
-                state = if (_exoPlayer.playWhenReady) {
-                    PlaybackState.Playing
-                } else {
-                    PlaybackState.Paused
-                }
-            }
-
-            ExoPlayer.STATE_BUFFERING -> {
-                state = if (_exoPlayer.playWhenReady) {
-                    PlaybackState.Playing
-                } else {
-                    PlaybackState.Paused
-                }
-            }
-
-            ExoPlayer.STATE_ENDED -> {
-                state = PlaybackState.Paused
-            }
-
-            else -> {
-                state = PlaybackState.Idle
-            }
-        }
-
-        var time: Double? = null
-        var duration: Double? = null
-        var speed: Double? = null
-        if (state != PlaybackState.Idle) {
-            duration = (_exoPlayer.duration / 1000.0).coerceAtLeast(0.0)
-            time = (_exoPlayer.currentPosition / 1000.0).coerceAtLeast(0.0).coerceAtMost(duration)
-            speed = _exoPlayer.playbackParameters.speed.toDouble().coerceAtLeast(0.01)
-        }
-
-        val updateMessage = PlaybackUpdateMessage(
-            System.currentTimeMillis(),
-            state.value.toInt(),
-            time,
-            duration,
-            speed,
-            if (_isPlaylist) _exoPlayer.currentMediaItemIndex else null
-        )
-        NetworkService.cache.playbackUpdate = updateMessage
-
-        if (updateMessage.generationTime > _lastPlayerUpdateGenerationTime) {
-            _lastPlayerUpdateGenerationTime = updateMessage.generationTime
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    NetworkService.instance?.sendPlaybackUpdate(updateMessage)
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Unhandled error sending playback update", e)
-                }
-            }
-        }
     }
 
     @OptIn(UnstableApi::class)
@@ -303,16 +169,6 @@ class PlayerActivity : AppCompatActivity() {
         setFullScreen()
         viewModel.errorMessage = null
 
-        Log.i(TAG, "Attached onConnectionAvailable listener.")
-        _connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        val netReq = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-            .build()
-        _connectivityManager.registerNetworkCallback(netReq, _connectivityEvents)
-
         instance = this
         NetworkService.activityCount++
         NetworkService.cache.playMessage?.let { play(it) }
@@ -326,6 +182,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
 
+        _uiHideTimer.stop()
         _wasPlaying = _exoPlayer.isPlaying
         _exoPlayer.pause()
     }
@@ -333,6 +190,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (_wasPlaying) {
+            _uiHideTimer.start()
             _exoPlayer.play()
         }
     }
@@ -342,7 +200,6 @@ class PlayerActivity : AppCompatActivity() {
         Log.i(TAG, "onDestroy")
 
         instance = null
-        _connectivityManager.unregisterNetworkCallback(_connectivityEvents)
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         NetworkService.activityCount--
@@ -376,15 +233,12 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_K,
                 KeyEvent.KEYCODE_SPACE,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    if (!_exoPlayer.isPlaying) {
-                        resume()
-                    } else {
-                        pause()
-                    }
-
+                    playPauseToggle()
                     handledCase = true
                 }
 
+                // todo add seekforward backward for remote control
+                // todo reset hide timer on focus change if controls shown
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_DPAD_CENTER -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
@@ -392,11 +246,7 @@ class PlayerActivity : AppCompatActivity() {
                     } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar || viewModel.controlFocus == ControlFocus.Action) {
                             // Play/pause toggle
-                            if (!_exoPlayer.isPlaying) {
-                                resume()
-                            } else {
-                                pause()
-                            }
+                            playPauseToggle()
                         } else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
                             _exoPlayer.seekToPreviousMediaItem()
                         } else if (viewModel.controlFocus == ControlFocus.PlayNext) {
@@ -477,7 +327,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_MEDIA_STOP -> {
-//            window.parent.webOSApp.loadPage('main_window/index.html');
+                    finish()
                     key = "Stop"
                     handledCase = true
                 }
@@ -563,17 +413,14 @@ class PlayerActivity : AppCompatActivity() {
 
         val exoPlayerBuilder = ExoPlayer.Builder(this)
             .setTrackSelector(trackSelector)
-
-//        _exoPlayer = ExoPlayer.Builder(this)
-//            .setTrackSelector(trackSelector)
-//            .setRenderersFactory(renderersFactory)
-//            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setExternalImageLoader(loader))
-//            .build()
+            .setSeekForwardIncrementMs(SEEK_FORWARD_MILLIS)
+            .setSeekBackIncrementMs(SEEK_BACKWARD_MILLIS)
 
         _exoPlayer = if (usePreloader) {
             if (_preloadManager != null) {
                 _preloadMediaControl = null
                 _preloadManager!!.release()
+                _exoPlayer.removeListener(_playerEventListener)
                 _exoPlayer.release()
             }
 
@@ -730,15 +577,93 @@ class PlayerActivity : AppCompatActivity() {
             skipForwardInterval = minSkipInterval
         }
 
-        // todo: handle livestreams
-//        if (!isLivePosition) {
         _exoPlayer.seekTo(
             min(
                 _exoPlayer.currentPosition + (skipForwardInterval * 1000),
                 _exoPlayer.duration
             )
         )
-//        }
+    }
+
+    fun onNetworkConnectionAvailable() {
+        try {
+            lifecycleScope.launch(Dispatchers.Main) {
+                Log.i(TAG, "onNetworkConnectionAvailable")
+
+                val pos = _exoPlayer.currentPosition
+                val dur = _exoPlayer.duration
+                if (_shouldPlaybackRestartOnConnectivity && abs(pos - dur) > 2000) {
+                    Log.i(
+                        TAG,
+                        "Playback ended due to connection loss, resuming playback since connection is restored."
+                    )
+                    _exoPlayer.playWhenReady = true
+                    _exoPlayer.prepare()
+                    _exoPlayer.play()
+                }
+            }
+        } catch (ex: Throwable) {
+            Log.w(TAG, "Failed to handle connection available event", ex)
+        }
+    }
+
+    fun sendPlaybackUpdate() {
+        val state: PlaybackState
+        when (_exoPlayer.playbackState) {
+            ExoPlayer.STATE_READY -> {
+                state = if (_exoPlayer.playWhenReady) {
+                    PlaybackState.Playing
+                } else {
+                    PlaybackState.Paused
+                }
+            }
+
+            ExoPlayer.STATE_BUFFERING -> {
+                state = if (_exoPlayer.playWhenReady) {
+                    PlaybackState.Playing
+                } else {
+                    PlaybackState.Paused
+                }
+            }
+
+            ExoPlayer.STATE_ENDED -> {
+                state = PlaybackState.Paused
+            }
+
+            else -> {
+                state = PlaybackState.Idle
+            }
+        }
+
+        var time: Double? = null
+        var duration: Double? = null
+        var speed: Double? = null
+        if (state != PlaybackState.Idle) {
+            duration = (_exoPlayer.duration / 1000.0).coerceAtLeast(0.0)
+            time = (_exoPlayer.currentPosition / 1000.0).coerceAtLeast(0.0).coerceAtMost(duration)
+            speed = _exoPlayer.playbackParameters.speed.toDouble().coerceAtLeast(0.01)
+        }
+
+        val updateMessage = PlaybackUpdateMessage(
+            System.currentTimeMillis(),
+            state.value.toInt(),
+            time,
+            duration,
+            speed,
+            if (_isPlaylist) _exoPlayer.currentMediaItemIndex else null
+        )
+        NetworkService.cache.playbackUpdate = updateMessage
+
+        if (updateMessage.generationTime > _lastPlayerUpdateGenerationTime) {
+            _lastPlayerUpdateGenerationTime = updateMessage.generationTime
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    NetworkService.instance?.sendPlaybackUpdate(updateMessage)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Unhandled error sending playback update", e)
+                }
+            }
+        }
     }
 
     @OptIn(UnstableApi::class)
@@ -747,8 +672,8 @@ class PlayerActivity : AppCompatActivity() {
         val playlistOffset =
             if (_isPlaylist) NetworkService.cache.playlistContent!!.offset ?: 0 else 0
         _usingPreloader = _isPlaylist &&
-                (NetworkService.cache.playlistContent!!.forwardCache != null && NetworkService.cache.playlistContent!!.forwardCache!! > 0) ||
-                (NetworkService.cache.playlistContent!!.backwardCache != null && NetworkService.cache.playlistContent!!.backwardCache!! > 0)
+                ((NetworkService.cache.playlistContent!!.forwardCache != null && NetworkService.cache.playlistContent!!.forwardCache!! > 0) ||
+                        (NetworkService.cache.playlistContent!!.backwardCache != null && NetworkService.cache.playlistContent!!.backwardCache!! > 0))
 
         if (_usingPreloader) {
             initializeExoPlayer(true)
@@ -791,27 +716,11 @@ class PlayerActivity : AppCompatActivity() {
         Log.i(TAG, "Media playback changed: $_cachedPlayMediaItem")
         _showDurationTimer.stop()
 
-//        if (player) {
-//            if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
-//                if (value.time) {
-//                    console.info('Skipped changing video URL because URL is the same. Discarding time and using current receiver time instead');
-//                }
-//                return;
-//            }
-//
-//            player.destroy();
-//            player = null;
-//        }
-
-        // todo finish electron implementation review
         viewModel.isLoading = true
         viewModel.isIdle = false
         viewModel.playMessage = message
         sendPlaybackUpdate()
-//        _playerPrevTime = 0
         _lastPlayerUpdateGenerationTime = 0
-//        _isLive = false
-//        _isLivePosition = false
 
         _exoPlayer.clearMediaItems()
         _mediaSources.clear()
@@ -917,20 +826,35 @@ class PlayerActivity : AppCompatActivity() {
 
         onMediaLoad(message, playlistOffset)
         viewModel.errorMessage = null
+        viewModel.hasDuration = true
         _wasPlaying = false
 //        _exoPlayer.playWhenReady = true
 //        _exoPlayer.prepare()
     }
 
+    fun playPauseToggle() {
+        if (!_exoPlayer.isPlaying) {
+            resume()
+        } else {
+            pause()
+        }
+    }
+
     fun pause() {
+        _uiHideTimer.stop()
         _exoPlayer.pause()
     }
 
     fun resume() {
         if (_exoPlayer.playbackState == ExoPlayer.STATE_ENDED && _exoPlayer.duration - _exoPlayer.currentPosition < 1000) {
             _exoPlayer.seekTo(0)
+        } else if (viewModel.isIdle) {
+            _exoPlayer.seekTo(0)
+            _exoPlayer.prepare()
+            mediaPlayHandler()
         }
 
+        _uiHideTimer.start()
         _exoPlayer.play()
     }
 
@@ -948,44 +872,48 @@ class PlayerActivity : AppCompatActivity() {
 
     fun setPlaylistItem(index: Int) {
         if (index >= 0 && index < _exoPlayer.mediaItemCount) {
+            _showDurationTimer.stop()
             Log.i(TAG, "Setting playlist item to index $index")
+
             _cachedPlayMediaItem = NetworkService.cache.playlistContent!!.items[index]
-            sendPlaybackUpdate()
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    MediaItemEvent(EventType.MediaItemChange, _cachedPlayMediaItem)
+                )
+            )
+            Log.i(TAG, "Media playback changed: $_cachedPlayMediaItem")
 
             if (_usingPreloader) {
                 _preloadMediaControl?.currentItemIndex = index
                 _preloadManager?.setCurrentPlayingIndex(index)
                 _preloadManager?.invalidate()
             }
-            onMediaLoad(playMessageFromMediaItem(_cachedPlayMediaItem), index)
 
-            _showDurationTimer.stop()
+            onMediaLoad(playMessageFromMediaItem(_cachedPlayMediaItem), index)
+            sendPlaybackUpdate()
         } else {
             Log.w(TAG, "Playlist index out of bounds $index, ignoring...")
         }
     }
 
     fun mediaPlayHandler() {
-        if (viewModel.isLoading) {
-            Log.i(TAG, "Item index: ${_exoPlayer.currentMediaItemIndex}")
-            Log.i(TAG, "Media playback start: $_cachedPlayMediaItem")
-            NetworkService.instance?.sendEvent(
-                EventMessage(
-                    System.currentTimeMillis(),
-                    MediaItemEvent(EventType.MediaItemStart, _cachedPlayMediaItem)
-                )
+        Log.i(TAG, "Media playback start: $_cachedPlayMediaItem")
+        NetworkService.instance?.sendEvent(
+            EventMessage(
+                System.currentTimeMillis(),
+                MediaItemEvent(EventType.MediaItemStart, _cachedPlayMediaItem)
             )
-            viewModel.isLoading = false
-            viewModel.isIdle = false
-            // TODO: thumbnail display
+        )
+        viewModel.isLoading = false
+        viewModel.isIdle = false
+        viewModel.hasDuration =
+            (_cachedPlayMediaItem.showDuration != null && _cachedPlayMediaItem.showDuration!! > 0) || _exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED
 
-            if (_isPlaylist && _cachedPlayMediaItem.showDuration != null && _cachedPlayMediaItem.showDuration!! > 0) {
-                if (!supportedImageTypes.contains(_cachedPlayMediaItem.container)) {
-                    _showDurationTimer.start((_cachedPlayMediaItem.showDuration!! * 1000).toLong())
-                }
+        if (_isPlaylist && _cachedPlayMediaItem.showDuration != null && _cachedPlayMediaItem.showDuration!! > 0) {
+            if (!supportedImageTypes.contains(_cachedPlayMediaItem.container)) {
+                _showDurationTimer.start((_cachedPlayMediaItem.showDuration!! * 1000).toLong())
             }
-        } else {
-            _showDurationTimer.resume()
         }
 
         sendPlaybackUpdate()
@@ -997,18 +925,7 @@ class PlayerActivity : AppCompatActivity() {
         if (_isPlaylist) {
             if (_exoPlayer.currentMediaItemIndex < _exoPlayer.mediaItemCount) {
                 Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
-                _cachedPlayMediaItem =
-                    NetworkService.cache.playlistContent?.items[_exoPlayer.nextMediaItemIndex]!!
-
-                if (_usingPreloader) {
-                    _preloadMediaControl?.currentItemIndex = _exoPlayer.nextMediaItemIndex
-                    _preloadManager?.setCurrentPlayingIndex(_preloadMediaControl!!.currentItemIndex)
-                    _preloadManager?.invalidate()
-                }
-                onMediaLoad(
-                    playMessageFromMediaItem(_cachedPlayMediaItem),
-                    _exoPlayer.nextMediaItemIndex
-                )
+                setPlaylistItem(_exoPlayer.nextMediaItemIndex)
             } else {
                 Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
                 sendPlaybackUpdate()
@@ -1039,9 +956,18 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    fun uiHideControlsTimerStateChange() {
+        if (viewModel.showControls) {
+            _uiHideTimer.start()
+        }
+    }
+
     companion object {
         var instance: PlayerActivity? = null
         const val TAG = "PlayerActivity"
+
+        private const val SEEK_BACKWARD_MILLIS = 10_000L
+        private const val SEEK_FORWARD_MILLIS = 10_000L
 
         @SuppressLint("DefaultLocale")
         fun formatDuration(duration: Long): String {

@@ -34,10 +34,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
@@ -47,14 +47,17 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.times
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.compose.state.rememberPlayPauseButtonState
+import androidx.media3.ui.compose.state.rememberSeekBackButtonState
+import androidx.media3.ui.compose.state.rememberSeekForwardButtonState
 import com.futo.fcast.receiver.PlayerActivity
 import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.composables.PlayerState
 import com.futo.fcast.receiver.composables.ThemedText
 import com.futo.fcast.receiver.composables.colorLive
 import com.futo.fcast.receiver.composables.interFontFamily
+import com.futo.fcast.receiver.composables.isAndroidTV
 import com.futo.fcast.receiver.models.ControlFocus
 import com.futo.fcast.receiver.models.PlayerActivityViewModel
 
@@ -63,7 +66,9 @@ enum class ButtonType {
     PlayNext,
     PlayPrevious,
     Captions,
-    Settings
+    Settings,
+    SeekForward,
+    SeekBackward,
 }
 
 @OptIn(UnstableApi::class)
@@ -71,7 +76,8 @@ enum class ButtonType {
 fun ControlButton(
     viewModel: PlayerActivityViewModel,
     modifier: Modifier = Modifier,
-    buttonType: ButtonType
+    buttonType: ButtonType,
+    playerState: PlayerState,
 ) {
     var selected by remember { mutableStateOf(false) }
 
@@ -84,39 +90,50 @@ fun ControlButton(
 
             ButtonType.PlayNext -> {
                 selected = viewModel.controlFocus == ControlFocus.PlayNext
-                Triple({
-                    null
-                    Unit
-                }, true, true)
+                Triple({}, true, true)
             }
 
             ButtonType.PlayPrevious -> {
                 selected = viewModel.controlFocus == ControlFocus.PlayPrevious
-                Triple({
-                    null
-                    Unit
-                }, true, true)
+                Triple({}, true, true)
             }
 
             ButtonType.Captions -> Triple({}, true, previewShowCaptionsOff)
             ButtonType.Settings -> Triple({}, true, true)
+            ButtonType.SeekForward -> {
+                selected = viewModel.controlFocus == ControlFocus.SeekForward
+                Triple({}, true, true)
+            }
+
+            ButtonType.SeekBackward -> {
+                selected = viewModel.controlFocus == ControlFocus.SeekBackward
+                Triple({}, true, true)
+            }
         }
     } else {
         when (buttonType) {
             ButtonType.PlayPause -> {
-                val state = rememberPlayPauseButtonState(viewModel.exoPlayer!!)
+//                val state = rememberPlayPauseButtonState(viewModel.exoPlayer!!)
                 selected = viewModel.controlFocus == ControlFocus.Action
-                Triple(state::onClick, state.isEnabled, state.showPlay)
+//                Triple(state::onClick, state.isEnabled, state.showPlay)
+                Triple({
+                    PlayerActivity.instance?.playPauseToggle()
+                    Unit
+                }, true, !playerState.isPlaying && !playerState.isBuffering)
             }
 
             ButtonType.PlayNext -> {
 //                val state = rememberNextButtonState(viewModel.exoPlayer!!)
                 selected = viewModel.controlFocus == ControlFocus.PlayNext
 //                Triple(state::onClick, state.isEnabled, false)
-                Triple({
-                    PlayerActivity.instance?.setPlaylistItem(viewModel.exoPlayer!!.nextMediaItemIndex)
-                    Unit
-                }, true, false)
+                Triple(
+                    {
+                        PlayerActivity.instance?.setPlaylistItem(viewModel.exoPlayer!!.nextMediaItemIndex)
+                        Unit
+                    },
+                    viewModel.exoPlayer!!.currentMediaItemIndex < viewModel.exoPlayer!!.mediaItemCount - 1,
+                    false
+                )
             }
 
             ButtonType.PlayPrevious -> {
@@ -126,11 +143,22 @@ fun ControlButton(
                 Triple({
                     PlayerActivity.instance?.setPlaylistItem(viewModel.exoPlayer!!.previousMediaItemIndex)
                     Unit
-                }, true, false)
+                }, viewModel.exoPlayer!!.currentMediaItemIndex > 0, false)
             }
 
             ButtonType.Captions -> Triple({}, false, true)
             ButtonType.Settings -> Triple({}, false, true)
+            ButtonType.SeekForward -> {
+                val state = rememberSeekForwardButtonState(viewModel.exoPlayer!!)
+                selected = viewModel.controlFocus == ControlFocus.SeekForward
+                Triple(state::onClick, state.isEnabled, false)
+            }
+
+            ButtonType.SeekBackward -> {
+                val state = rememberSeekBackButtonState(viewModel.exoPlayer!!)
+                selected = viewModel.controlFocus == ControlFocus.SeekBackward
+                Triple(state::onClick, state.isEnabled, false)
+            }
         }
     }
 
@@ -162,6 +190,16 @@ fun ControlButton(
             ImageVector.vectorResource(R.drawable.ic_settings),
             stringResource(R.string.player_settings_button)
         )
+
+        ButtonType.SeekForward -> Pair(
+            ImageVector.vectorResource(R.drawable.ic_seek_forward),
+            stringResource(R.string.player_settings_button)
+        )
+
+        ButtonType.SeekBackward -> Pair(
+            ImageVector.vectorResource(R.drawable.ic_seek_backward),
+            stringResource(R.string.player_settings_button)
+        )
     }
 
 
@@ -179,7 +217,7 @@ fun ControlButton(
                 modifier = modifier,
                 imageVector = imageVector,
                 contentDescription = contentDescription,
-                tint = Color.Unspecified
+                tint = if (enabled) Color.Unspecified else Color(0x80FFFFFF)
             )
         }
     }
@@ -196,8 +234,11 @@ fun PlayerProgressBar(
     selected = viewModel.controlFocus == ControlFocus.ProgressBar
 
     val duration = playerState.duration.toFloat().coerceAtLeast(0.0f)
-    val currentPosition =
+    val currentPosition = if (playerState.isLive && !playerState.isLiveSeekable) {
+        duration
+    } else {
         playerState.currentPosition.toFloat().coerceAtLeast(0.0f).coerceAtMost(duration)
+    }
     val bufferedPosition =
         playerState.bufferedPosition.toFloat().coerceAtLeast(0.0f).coerceAtMost(duration)
 
@@ -208,7 +249,7 @@ fun PlayerProgressBar(
             modifier = Modifier.padding(top = 16.dp),
             value = if (duration > 0) currentPosition else 0f,
             onValueChange =
-                if (viewModel.exoPlayer != null) {
+                if (viewModel.exoPlayer != null && (!playerState.isLive || playerState.isLiveSeekable)) {
                     {
                         viewModel.exoPlayer!!.seekTo(it.toLong())
                     }
@@ -217,21 +258,21 @@ fun PlayerProgressBar(
                 },
             valueRange = 0f..duration,
             thumb = {
-                if (selected) {
-                    Box(
-                        modifier = Modifier
-                            .size(13.dp)
-                            .offset(y = 1.dp)
-                            .clip(CircleShape)
-                            .background(Color.White)
-                    )
-                } else {
+                if (isAndroidTV(LocalContext.current) && selected) {
                     Box(
                         modifier = Modifier
                             .width(1.dp)
                             .height(13.dp)
                             .offset(y = 1.dp)
                             .clip(RoundedCornerShape(50))
+                            .background(Color.White)
+                    )
+                } else if (!isAndroidTV(LocalContext.current)) {
+                    Box(
+                        modifier = Modifier
+                            .size(13.dp)
+                            .offset(y = 1.dp)
+                            .clip(CircleShape)
                             .background(Color.White)
                     )
                 }
@@ -274,7 +315,15 @@ fun PlayerControlsAV(
     modifier: Modifier,
     playerState: PlayerState
 ) {
-    val height = if (playerState.mediaTitle != null) 310.dp else 274.dp
+    val height = if (playerState.mediaType != MEDIA_TYPE_MIXED) {
+        if (playerState.mediaTitle != null) 310.dp else 274.dp
+    } else {
+        if (playerState.isPlaylist) {
+            if (playerState.mediaTitle != null) 150.dp else 114.dp
+        } else {
+            if (playerState.mediaTitle != null) 80.dp else 0.dp
+        }
+    }
 
     Box(modifier, contentAlignment = Alignment.BottomCenter) {
         Box(
@@ -336,99 +385,133 @@ fun PlayerControlsAV(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Spacer(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(16.dp)
-                )
-                Row(
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp)
-                ) {
-                    ThemedText(
-                        PlayerActivity.formatDuration(playerState.currentPosition),
-                        fontSize = 12.sp
-                    )
-                    ThemedText(
-                        PlayerActivity.formatDuration(playerState.duration),
-                        fontSize = 12.sp
-                    )
-                }
-                PlayerProgressBar(
-                    viewModel,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(20.dp),
-                    playerState
-                )
-                Row(
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.Start,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .width(32.dp)
-                    ) {
-                        if (controlPlayerSettingsShow) {
-                            ControlButton(
-                                viewModel,
-                                modifier = Modifier.size(20.dp),
-                                ButtonType.Captions
+
+                if (viewModel.hasDuration || playerState.isPlaylist) {
+                    if ((!playerState.isLive || playerState.isLiveSeekable) && playerState.mediaType != MEDIA_TYPE_MIXED) {
+                        Spacer(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(16.dp)
+                        )
+
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Bottom,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                        ) {
+                            ThemedText(
+                                PlayerActivity.formatDuration(playerState.currentPosition),
+                                fontSize = 12.sp
+                            )
+                            ThemedText(
+                                PlayerActivity.formatDuration(playerState.duration),
+                                fontSize = 12.sp
                             )
                         }
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(36.dp),
-                        modifier = Modifier
-                    ) {
-                        if (playerState.isPlaylist) {
-                            ControlButton(
-                                viewModel,
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .padding(6.dp),
-                                ButtonType.PlayPrevious
-                            )
-                        }
-                        ControlButton(
+                    if (playerState.mediaType != MEDIA_TYPE_MIXED) {
+                        PlayerProgressBar(
                             viewModel,
                             modifier = Modifier
-                                .size(56.dp)
-                                .padding(6.dp),
-                            ButtonType.PlayPause
+                                .fillMaxWidth()
+                                .height(20.dp),
+                            playerState
                         )
-                        if (playerState.isPlaylist) {
-                            ControlButton(
-                                viewModel,
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .padding(6.dp),
-                                ButtonType.PlayNext
-                            )
-                        }
                     }
-
                     Row(
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         modifier = Modifier
-                            .width(32.dp)
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
                     ) {
-                        if (controlPlayerSettingsShow) {
-                            ControlButton(
-                                viewModel,
-                                modifier = Modifier.size(20.dp),
-                                ButtonType.Settings
-                            )
+                        Row(
+                            horizontalArrangement = Arrangement.Start,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.width(32.dp)
+                        ) {
+                            if (controlPlayerSettingsShow) {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier.size(20.dp),
+                                    ButtonType.Captions,
+                                    playerState
+                                )
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(36.dp),
+                            modifier = Modifier
+                        ) {
+                            if (playerState.isPlaylist) {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .padding(6.dp),
+                                    ButtonType.PlayPrevious,
+                                    playerState
+                                )
+                            } else {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .padding(6.dp),
+                                    ButtonType.SeekBackward,
+                                    playerState
+                                )
+                            }
+
+                            if (playerState.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .padding(6.dp),
+                                    ButtonType.PlayPause,
+                                    playerState
+                                )
+                            }
+
+                            if (playerState.isPlaylist) {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .padding(6.dp),
+                                    ButtonType.PlayNext,
+                                    playerState
+                                )
+                            } else {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .padding(6.dp),
+                                    ButtonType.SeekForward,
+                                    playerState
+                                )
+                            }
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.width(32.dp)
+                        ) {
+                            if (controlPlayerSettingsShow) {
+                                ControlButton(
+                                    viewModel,
+                                    modifier = Modifier.size(20.dp),
+                                    ButtonType.Settings,
+                                    playerState
+                                )
+                            }
                         }
                     }
                 }
@@ -437,7 +520,7 @@ fun PlayerControlsAV(
     }
 }
 
-// TODO: Refractor UI when placement is decided on
+// Hiding subtitles and settings buttons until UI 2.0
 var controlPlayerSettingsShow = false
 
 const val previewShowPlayButton = true
@@ -446,7 +529,7 @@ const val previewShowCaptionsOff = true
 @OptIn(UnstableApi::class)
 @Preview
 @Composable
-fun PlayerControlsAVPreview() {
+fun PlayerControlsPreview() {
     val viewModel = PlayerActivityViewModel()
 //    viewModel.controlFocus = ControlFocus.ProgressBar
     viewModel.controlFocus = ControlFocus.Action
@@ -457,8 +540,80 @@ fun PlayerControlsAVPreview() {
         1000L * 45,
         true,
         isBuffering = false,
+        isPlaylist = false,
+        isLive = false,
+        isLiveSeekable = false,
+//        null,
+        "Video Title",
+//        "Lorem ipsum dolor sit amet consectetur adipiscing elit. Consectetur adipiscing",
+        null,
+        1,
+        null,
+    )
+//    controlPlayerSettingsShow = true
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Gray)
+    ) {
+        PlayerControlsAV(viewModel, modifier = Modifier.fillMaxSize(), playerState)
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Preview
+@Composable
+fun PlayerControlsLivePreview() {
+    val viewModel = PlayerActivityViewModel()
+//    viewModel.controlFocus = ControlFocus.ProgressBar
+    viewModel.controlFocus = ControlFocus.Action
+
+    val playerState = PlayerState(
+        1000L * 30,
+        1000L * 60,
+        1000L * 45,
         true,
+        isBuffering = false,
+        isPlaylist = false,
         isLive = true,
+        isLiveSeekable = false,
+//        null,
+        "Video Title",
+//        "Lorem ipsum dolor sit amet consectetur adipiscing elit. Consectetur adipiscing",
+        null,
+        1,
+        null,
+    )
+//    controlPlayerSettingsShow = true
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Gray)
+    ) {
+        PlayerControlsAV(viewModel, modifier = Modifier.fillMaxSize(), playerState)
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Preview
+@Composable
+fun PlayerControlsImagePreview() {
+    val viewModel = PlayerActivityViewModel()
+    viewModel.controlFocus = ControlFocus.Action
+//    viewModel.hasDuration = false
+    viewModel.hasDuration = true
+
+    val playerState = PlayerState(
+        1000L * 30,
+        1000L * 60,
+        1000L * 45,
+        true,
+        isBuffering = false,
+        isPlaylist = true,
+        isLive = false,
+        isLiveSeekable = false,
 //        null,
         "Video Title",
 //        "Lorem ipsum dolor sit amet consectetur adipiscing elit. Consectetur adipiscing",

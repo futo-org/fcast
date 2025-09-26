@@ -25,15 +25,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.constraintlayout.compose.ConstraintLayout
-import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
-import coil3.compose.AsyncImage
+import com.futo.fcast.receiver.PlayerActivity
 import com.futo.fcast.receiver.R
+import com.futo.fcast.receiver.composables.DelayedLoadingIndicator
 import com.futo.fcast.receiver.composables.PlayerActivityViewConnectionMonitor
 import com.futo.fcast.receiver.composables.PlayerState
-import com.futo.fcast.receiver.composables.Spinner
 import com.futo.fcast.receiver.composables.ThemedText
 import com.futo.fcast.receiver.composables.noRippleClickable
 import com.futo.fcast.receiver.composables.rememberPlayerState
@@ -54,7 +53,14 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
         PlayerActivityViewConnectionMonitor(context)
 
         ConstraintLayout(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .noRippleClickable {
+                    if (viewModel.errorMessage == null) {
+                        viewModel.showControls = !viewModel.showControls
+                        PlayerActivity.instance?.uiHideControlsTimerStateChange()
+                    }
+                },
         ) {
             val (imageRef, playerRef, subtitlesRef, controlsRef, errorTextRef) = createRefs()
 
@@ -75,6 +81,11 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
 //                    exoPlayer.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
                     }
                 },
+                update = { view ->
+                    view.player = viewModel.exoPlayer
+                    view.useController = false
+                    view.subtitleView?.visibility = View.GONE
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
@@ -83,12 +94,6 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                         bottom.linkTo(parent.bottom)
                         start.linkTo(parent.start)
                         end.linkTo(parent.end)
-                    }
-                    // todo allow clicking for controls anywhere on screen, not just player
-                    .noRippleClickable {
-                        if (viewModel.errorMessage == null) {
-                            viewModel.showControls = !viewModel.showControls
-                        }
                     }
             )
 
@@ -113,16 +118,15 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
             if (viewModel.isLoading) {
                 // TODO: Replace with new background load screen in next update
                 Box(
-                    Modifier
+                    modifier = Modifier
                         .fillMaxSize()
                         .background(Color.Black)
                 )
             }
 
             if (viewModel.isLoading || playerState.isBuffering) {
-                // todo: consider show delay as in electron
-                Spinner(
-                    Modifier
+                DelayedLoadingIndicator(
+                    modifier = Modifier
                         .size(80.dp)
                         .alpha(0.5f)
                         .constrainAs(imageRef) {
@@ -131,12 +135,6 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             start.linkTo(parent.start)
                             end.linkTo(parent.end)
                         }
-                )
-            } else if (!viewModel.isLoading && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {
-                AsyncImage(
-                    model = playerState.mediaThumbnail,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize()
                 )
             } else if (viewModel.isIdle) {
                 Box(
@@ -199,7 +197,8 @@ val previewPlayerState = PlayerState(
     true,
     isBuffering = false,
     true,
-    false,
+    isLive = false,
+    isLiveSeekable = false,
     "Video Title",
     null,
     0,
@@ -218,4 +217,3 @@ fun PlayerActivityPreview() {
 
     PlayerActivity(viewModel)
 }
-

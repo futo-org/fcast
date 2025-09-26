@@ -132,10 +132,6 @@ abstract class ListenerService {
 
         return isSubscribed
     }
-// TODO: Address error handling for UI 2.0
-//    protected async handleServerError(err: NodeJS.ErrnoException) {
-//        errorHandler(err)
-//    }
 
     companion object {
         private const val TAG = "ListenerService"

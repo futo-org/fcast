@@ -5,24 +5,26 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import com.futo.fcast.receiver.NetworkService
 import com.futo.fcast.receiver.PlayerActivity
-import com.futo.fcast.receiver.PlayerActivity.Companion.TAG
+import com.futo.fcast.receiver.models.VolumeUpdateMessage
 import com.google.common.collect.ImmutableList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -34,6 +36,7 @@ fun rememberPlayerState(player: Player): PlayerState {
     var isBuffering by remember { mutableStateOf(false) }
     var isPlaylist by remember { mutableStateOf(false) }
     var isLive by remember { mutableStateOf(false) }
+    var isLiveSeekable by remember { mutableStateOf(false) }
     var mediaTitle by remember { mutableStateOf<String?>(null) }
     var mediaThumbnail by remember { mutableStateOf<Uri?>(null) }
     var mediaType by remember { mutableStateOf<Int?>(null) }
@@ -53,8 +56,9 @@ fun rememberPlayerState(player: Player): PlayerState {
         bufferedPosition = player.bufferedPosition
         isPlaying = player.isPlaying
         isBuffering = player.playbackState == Player.STATE_BUFFERING
-        isPlaylist = player.mediaItemCount > 0
+        isPlaylist = player.mediaItemCount > 1
         isLive = player.isCurrentMediaItemLive
+        isLiveSeekable = isLive && duration > 60_000
         mediaTitle =
             if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
         mediaThumbnail = player.mediaMetadata.artworkUri
@@ -62,19 +66,6 @@ fun rememberPlayerState(player: Player): PlayerState {
     }
 
     val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        scope.launch(Dispatchers.Main) {
-            while (scope.isActive) {
-                try {
-                    updateState(null)
-                    PlayerActivity.instance?.sendPlaybackUpdate()
-                    delay(1000)
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Failed to send playback update.", e)
-                }
-            }
-        }
-    }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -86,12 +77,74 @@ fun rememberPlayerState(player: Player): PlayerState {
             override fun onCues(cueGroup: CueGroup) {
                 cues = cueGroup.cues
             }
-        }
 
-        // todo listener reattach on new exoplayer reference (preload manager rebuilding)
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                PlayerActivity.instance?.sendPlaybackUpdate()
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                updateState(null)
+                PlayerActivity.instance?.sendPlaybackUpdate()
+            }
+
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                PlayerActivity.instance?.sendPlaybackUpdate()
+            }
+
+            override fun onVolumeChanged(volume: Float) {
+                super.onVolumeChanged(volume)
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        NetworkService.instance?.sendVolumeUpdate(
+                            VolumeUpdateMessage(
+                                System.currentTimeMillis(),
+                                volume.toDouble()
+                            )
+                        )
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Unhandled error sending volume update", e)
+                    }
+                }
+            }
+
+//            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+//                if (isLive && !timeline.isEmpty) {
+//                    val window = timeline.getWindow(player.currentMediaItemIndex, Timeline.Window())
+//                    isLiveSeekable = window.isSeekable
+//                }
+//            }
+        }
         player.addListener(listener)
 
+        val playbackUpdateIntervalMs = 1000L
+        var lastUpdateTime = System.currentTimeMillis()
+        var cancelUpdateLoop = false
+        scope.launch(Dispatchers.Main) {
+            while (scope.isActive && !cancelUpdateLoop) {
+                try {
+                    val now = System.currentTimeMillis()
+                    val delayTime = if (abs(now - lastUpdateTime) > playbackUpdateIntervalMs) {
+                        updateState(null)
+                        PlayerActivity.instance?.sendPlaybackUpdate()
+                        lastUpdateTime = now
+                        playbackUpdateIntervalMs
+                    } else {
+                        abs(now - lastUpdateTime)
+                    }
+
+                    delay(delayTime)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Failed to send playback update.", e)
+                }
+            }
+        }
+
         onDispose {
+            cancelUpdateLoop = true
             player.removeListener(listener)
         }
     }
@@ -104,6 +157,7 @@ fun rememberPlayerState(player: Player): PlayerState {
         isBuffering,
         isPlaylist,
         isLive,
+        isLiveSeekable,
         mediaTitle,
         mediaThumbnail,
         mediaType,
@@ -117,6 +171,7 @@ fun rememberPlayerState(player: Player): PlayerState {
             isBuffering,
             isPlaylist,
             isLive,
+            isLiveSeekable,
             mediaTitle,
             mediaThumbnail,
             mediaType,
@@ -133,8 +188,11 @@ data class PlayerState(
     val isBuffering: Boolean,
     val isPlaylist: Boolean,
     val isLive: Boolean,
+    val isLiveSeekable: Boolean,
     val mediaTitle: String?,
     val mediaThumbnail: Uri?,
     val mediaType: Int?,
     val cues: ImmutableList<Cue>?
 )
+
+const val TAG = "PlayerState"

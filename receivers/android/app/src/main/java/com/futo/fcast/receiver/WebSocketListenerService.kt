@@ -21,7 +21,7 @@ class WebSocketListenerService(
         _stopped = false
 
         _server.start()
-        Log.i(TAG, "WebSocketListenerService started on port $PORT")
+        Log.i(TAG, "$TAG started on port $PORT")
     }
 
     override fun stop() {
@@ -31,7 +31,7 @@ class WebSocketListenerService(
         _stopped = true
 
         _server.stop()
-        Log.i(TAG, "Stopped WebSocketListenerService")
+        Log.i(TAG, "Stopped $TAG")
     }
 
     override fun disconnect(sessionId: UUID) {

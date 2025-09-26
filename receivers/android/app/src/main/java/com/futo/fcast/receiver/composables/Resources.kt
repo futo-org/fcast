@@ -1,5 +1,9 @@
 package com.futo.fcast.receiver.composables
 
+import android.app.UiModeManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -98,4 +102,10 @@ fun getQrSize(resolution: Pair<Int, Int>): Float {
         ScreenSize.Medium -> 160f
         ScreenSize.Large -> 170f
     }
+}
+
+fun isAndroidTV(context: Context): Boolean {
+    val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+    return uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
 }

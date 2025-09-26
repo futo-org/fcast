@@ -12,6 +12,8 @@ enum class ControlFocus {
     Action,
     PlayPrevious,
     PlayNext,
+    SeekForward,
+    SeekBackward,
 }
 
 class PlayerActivityViewModel : ViewModel() {
@@ -22,6 +24,7 @@ class PlayerActivityViewModel : ViewModel() {
     var isLoading by mutableStateOf(false)
     var isIdle by mutableStateOf(true)
     var playMessage by mutableStateOf<PlayMessage?>(null)
+    var hasDuration by mutableStateOf(true)
 
     // Hide
     // [<<][>][>>]

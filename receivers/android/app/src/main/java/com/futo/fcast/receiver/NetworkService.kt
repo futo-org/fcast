@@ -46,9 +46,8 @@ import java.net.SocketAddress
 import java.util.UUID
 
 data class AppCache(
-    // TODO: fix version name (currently 1.0.0)
-    val appName: String = BuildConfig.VERSION_NAME,
-    val appVersion: String = BuildConfig.VERSION_CODE.toString(),
+    val appName: String = "FCast Receiver Android",
+    val appVersion: String = BuildConfig.VERSION_NAME,
     var playMessage: PlayMessage? = null,
     var playlistContent: PlaylistContent? = null,
     var playerVolume: Double? = null,
@@ -65,8 +64,6 @@ class NetworkService : Service() {
     private lateinit var _proxyService: ProxyService
     private lateinit var _scope: CoroutineScope
     private var _delayedStart: Boolean = false
-
-//    lateinit var imageLoader: ImageLoader
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -136,13 +133,12 @@ class NetworkService : Service() {
         discoveryService.start()
         _tcpListenerService.start()
         _webSocketListenerService.start()
+        networkWorker.start()
         if (networkWorker.interfaces.isEmpty()) {
             _delayedStart = true
         } else {
             _proxyService.start()
         }
-
-//        imageLoader = newImageLoader(this)
 
         instance = this
         Log.i(TAG, "Started NetworkService")
@@ -184,6 +180,7 @@ class NetworkService : Service() {
         }
 
         _proxyService.stop()
+        networkWorker.stop()
         _scope.cancel()
 
         Toast.makeText(this, "Stopped FCast service", Toast.LENGTH_LONG).show()
@@ -465,12 +462,6 @@ class NetworkService : Service() {
 
         return subscribeData
     }
-
-//    override fun newImageLoader(context: Context): ImageLoader {
-//        return ImageLoader.Builder(context)
-////            .crossfade(true)
-//            .build()
-//    }
 
     companion object {
         private const val CHANNEL_ID = "NetworkListenerServiceChannel"

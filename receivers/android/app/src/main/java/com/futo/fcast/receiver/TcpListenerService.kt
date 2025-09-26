@@ -18,7 +18,7 @@ class TcpListenerService(
     private val _socketMap: MutableMap<UUID, Socket> = mutableMapOf()
 
     override fun start() {
-        Log.i(TAG, "Starting TcpListenerService")
+        Log.i(TAG, "Starting $TAG")
         if (!_stopped) {
             return
         }
@@ -36,11 +36,11 @@ class TcpListenerService(
 
         _listenThread?.start()
 
-        Log.i(TAG, "Started TcpListenerService")
+        Log.i(TAG, "Started $TAG")
     }
 
     override fun stop() {
-        Log.i(TAG, "Stopping TcpListenerService")
+        Log.i(TAG, "Stopping $TAG")
         if (_stopped) {
             return
         }
@@ -56,7 +56,7 @@ class TcpListenerService(
             _clientThreads.clear()
         }
 
-        Log.i(TAG, "Stopped TcpListenerService")
+        Log.i(TAG, "Stopped $TAG")
     }
 
     override fun disconnect(sessionId: UUID) {
