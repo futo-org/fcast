@@ -28,7 +28,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.futo.fcast.receiver.models.ControlFocus
@@ -79,7 +78,6 @@ class PlayerActivity : AppCompatActivity() {
     private var _lastPlayerUpdateGenerationTime: Long = 0
     private var _isPlaylist: Boolean = false
     private var _usingPreloader: Boolean = false
-    private val _mediaSources = mutableListOf<MediaSource>()
     private var _cachedPlayMediaItem: com.futo.fcast.receiver.models.MediaItem =
         com.futo.fcast.receiver.models.MediaItem("")
 //    private var _playlistIndex: Int = 0
@@ -237,21 +235,32 @@ class PlayerActivity : AppCompatActivity() {
                     handledCase = true
                 }
 
-                // todo add seekforward backward for remote control
-                // todo reset hide timer on focus change if controls shown
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_DPAD_CENTER -> {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
-                        if (viewModel.controlFocus == ControlFocus.ProgressBar || viewModel.controlFocus == ControlFocus.Action) {
-                            // Play/pause toggle
-                            playPauseToggle()
-                        } else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
-                            _exoPlayer.seekToPreviousMediaItem()
-                        } else if (viewModel.controlFocus == ControlFocus.PlayNext) {
-                            _exoPlayer.seekToNextMediaItem()
+                        when (viewModel.controlFocus) {
+                            ControlFocus.None -> {}
+                            ControlFocus.ProgressBar, ControlFocus.Action -> playPauseToggle()
+                            ControlFocus.PlayPrevious -> _exoPlayer.seekToPreviousMediaItem()
+                            ControlFocus.PlayNext -> _exoPlayer.seekToNextMediaItem()
+                            ControlFocus.SeekForward -> _exoPlayer.seekTo(
+                                min(
+                                    _exoPlayer.currentPosition + (skipForwardInterval * 1000),
+                                    _exoPlayer.duration
+                                )
+                            )
+
+                            ControlFocus.SeekBackward -> _exoPlayer.seekTo(
+                                max(
+                                    _exoPlayer.currentPosition - (skipBackInterval * 1000),
+                                    0
+                                )
+                            )
                         }
+
+                        _uiHideTimer.restart()
                     }
 
                     key = "Enter"
@@ -262,11 +271,13 @@ class PlayerActivity : AppCompatActivity() {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
-                        if (viewModel.controlFocus == ControlFocus.ProgressBar) {
-                            setControlMode(ControlBarMode.KeyboardMouse)
-                        } else {
-                            viewModel.controlFocus = ControlFocus.ProgressBar
+                        when (viewModel.controlFocus) {
+                            ControlFocus.None -> {}
+                            ControlFocus.ProgressBar -> setControlMode(ControlBarMode.KeyboardMouse)
+                            else -> viewModel.controlFocus = ControlFocus.ProgressBar
                         }
+
+                        _uiHideTimer.restart()
                     }
 
                     key = "ArrowUp"
@@ -277,11 +288,20 @@ class PlayerActivity : AppCompatActivity() {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
-                        if (viewModel.controlFocus == ControlFocus.ProgressBar) {
-                            viewModel.controlFocus = ControlFocus.Action
-                        } else {
-                            setControlMode(ControlBarMode.KeyboardMouse)
+                        when (viewModel.controlFocus) {
+                            ControlFocus.None -> {}
+                            ControlFocus.ProgressBar -> {
+                                if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
+                                    viewModel.controlFocus = ControlFocus.Action
+                                } else {
+                                    viewModel.controlFocus = ControlFocus.SeekForward
+                                }
+                            }
+
+                            else -> setControlMode(ControlBarMode.KeyboardMouse)
                         }
+
+                        _uiHideTimer.restart()
                     }
 
                     key = "ArrowDown"
@@ -292,15 +312,22 @@ class PlayerActivity : AppCompatActivity() {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
-                        if (viewModel.controlFocus == ControlFocus.ProgressBar || _exoPlayer.mediaItemCount <= 1) {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar) {
                             skipBack(event.repeatCount > 0)
                         } else {
-                            if (viewModel.controlFocus == ControlFocus.Action) {
+                            if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
+                                if (viewModel.controlFocus == ControlFocus.PlayNext || viewModel.controlFocus == ControlFocus.SeekForward) {
+                                    viewModel.controlFocus = ControlFocus.Action
+                                } else {
+                                    viewModel.controlFocus =
+                                        if (_isPlaylist) ControlFocus.PlayPrevious else ControlFocus.SeekBackward
+                                }
+                            } else {
                                 viewModel.controlFocus = ControlFocus.PlayPrevious
-                            } else if (viewModel.controlFocus == ControlFocus.PlayNext) {
-                                viewModel.controlFocus = ControlFocus.Action
                             }
                         }
+
+                        _uiHideTimer.restart()
                     }
 
                     key = "ArrowLeft"
@@ -311,15 +338,23 @@ class PlayerActivity : AppCompatActivity() {
                     if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
-                        if (viewModel.controlFocus == ControlFocus.ProgressBar || _exoPlayer.mediaItemCount <= 1) {
+                        if (viewModel.controlFocus == ControlFocus.ProgressBar) {
+                            Log.i(TAG, "REPEAT COUNT: ${event.repeatCount}")
                             skipForward(event.repeatCount > 0)
                         } else {
-                            if (viewModel.controlFocus == ControlFocus.Action) {
+                            if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
+                                if (viewModel.controlFocus == ControlFocus.PlayPrevious || viewModel.controlFocus == ControlFocus.SeekBackward) {
+                                    viewModel.controlFocus = ControlFocus.Action
+                                } else {
+                                    viewModel.controlFocus =
+                                        if (_isPlaylist) ControlFocus.PlayNext else ControlFocus.SeekForward
+                                }
+                            } else {
                                 viewModel.controlFocus = ControlFocus.PlayNext
-                            } else if (viewModel.controlFocus == ControlFocus.PlayPrevious) {
-                                viewModel.controlFocus = ControlFocus.Action
                             }
                         }
+
+                        _uiHideTimer.restart()
                     }
 
                     key = "ArrowRight"
@@ -432,6 +467,7 @@ class PlayerActivity : AppCompatActivity() {
             exoPlayerBuilder.build()
         }
 
+//        _exoPlayer.preloadConfiguration = ExoPlayer.PreloadConfiguration(5_000_000L)
         _exoPlayer.addListener(_playerEventListener)
         _exoPlayer.playWhenReady = true
 
@@ -461,23 +497,7 @@ class PlayerActivity : AppCompatActivity() {
         mediaPlayHandler()
 
         if (_isPlaylist) {
-            if (_usingPreloader) {
-                val cachedSource =
-                    _preloadManager?.getMediaSource(_mediaSources[playlistIndex].mediaItem)
-
-                // todo investigate preloading being slower than without
-                Log.i(TAG, "Using cached media item $cachedSource")
-                if (cachedSource != null) {
-                    // todo after implementing cache purge handling revert to old sources for player
-                    _mediaSources.removeAt(playlistIndex)
-                    _mediaSources.add(playlistIndex, cachedSource)
-
-                    _exoPlayer.setMediaSources(_mediaSources)
-                    _exoPlayer.seekTo(playlistIndex, 0)
-                }
-            } else {
-                _exoPlayer.seekTo(playlistIndex, 0)
-            }
+            _exoPlayer.seekTo(playlistIndex, 0)
         }
 
         if (message.time != null) {
@@ -723,7 +743,6 @@ class PlayerActivity : AppCompatActivity() {
         _lastPlayerUpdateGenerationTime = 0
 
         _exoPlayer.clearMediaItems()
-        _mediaSources.clear()
         val mediaItemList =
             if (_isPlaylist) NetworkService.cache.playlistContent!!.items else arrayListOf(
                 _cachedPlayMediaItem
@@ -804,14 +823,12 @@ class PlayerActivity : AppCompatActivity() {
                 else -> DefaultMediaSourceFactory(dataSourceFactory).createMediaSource(mediaItem)
             }
 
-            // todo: review for potential ranking issues when select items have cache=false
             if (_usingPreloader) {
-                Log.i(TAG, "Adding preload media source")
                 _preloadManager?.add(mediaSource, index)
+                _exoPlayer.addMediaSource(_preloadManager?.getMediaSource(mediaItem)!!)
+            } else {
+                _exoPlayer.addMediaSource(mediaSource)
             }
-
-            _exoPlayer.addMediaSource(mediaSource)
-            _mediaSources.add(mediaSource)
         }
 
         if (_usingPreloader) {

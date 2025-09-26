@@ -170,4 +170,9 @@ class Timer(
     fun isPaused(): Boolean {
         return _remainingTime != null
     }
+
+    fun restart() {
+        stop()
+        start()
+    }
 }

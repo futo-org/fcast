@@ -231,9 +231,6 @@ class NetworkService : Service() {
                 when (json.contentType) {
                     ContentType.Playlist -> {
                         val playlistContent = Json.decodeFromString<PlaylistContent>(jsonStr)
-                        _mediaCache?.destroy()
-                        _mediaCache = MediaCache(playlistContent)
-
                         cache.playlistContent = playlistContent
                     }
                 }
@@ -472,7 +469,6 @@ class NetworkService : Service() {
         var instance: NetworkService? = null
 
         val cache: AppCache = AppCache()
-        private var _mediaCache: MediaCache? = null
 
         fun getPlayMessage(): PlayMessage? {
             return if (cache.playMessage == null) null else PlayMessage(

@@ -261,7 +261,7 @@ fun PlayerProgressBar(
                 if (isAndroidTV(LocalContext.current) && selected) {
                     Box(
                         modifier = Modifier
-                            .width(1.dp)
+                            .width(2.dp)
                             .height(13.dp)
                             .offset(y = 1.dp)
                             .clip(RoundedCornerShape(50))
@@ -278,10 +278,12 @@ fun PlayerProgressBar(
                 }
             },
             track = {
+                val height = if (selected) 6.dp else 4.dp
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp)
+                        .height(height)
                         .requiredWidth(parentWidth)
                         .clip(RoundedCornerShape(50))
                         .background(Color(0x4DFFFFFF))
@@ -290,7 +292,7 @@ fun PlayerProgressBar(
                     Box(
                         modifier = Modifier
                             .width(bufferWidth)
-                            .height(4.dp)
+                            .height(height)
                             .background(Color(0x33FFFFFF))
                     )
 
@@ -299,7 +301,7 @@ fun PlayerProgressBar(
                     Box(
                         modifier = Modifier
                             .width(progressWidth)
-                            .height(4.dp)
+                            .height(height)
                             .background(progressColor)
                     )
                 }
