@@ -180,7 +180,9 @@ pub enum ParseStartLineError {
     InvalidProtocol,
 }
 
-pub fn parse_request_start_line(line: &[u8]) -> Result<(Method, &[u8], Protocol), ParseStartLineError> {
+pub fn parse_request_start_line(
+    line: &[u8],
+) -> Result<(Method, &[u8], Protocol), ParseStartLineError> {
     let methods: [(&[u8], Method); 5] = [
         (b"GET", Method::Get),
         (b"POST", Method::Post),
@@ -327,7 +329,10 @@ mod tests {
                     \r\n"
             )
             .unwrap(),
-            HashMap::from([("Content-Length", "0"), ("Content-Type", "application/octet-stream",),])
+            HashMap::from([
+                ("Content-Length", "0"),
+                ("Content-Type", "application/octet-stream",),
+            ])
         );
         assert_eq!(parse_header_map(b"\r\n").unwrap(), HashMap::new());
     }
@@ -356,7 +361,10 @@ mod tests {
     fn valid_parse_request_start_line() {
         let cases: &[(&[u8], (Method, &[u8], Protocol))] = &[
             (b"GET / HTTP/1.0\r\n", (m!(Get), b"/", p!(Http1))),
-            (b"POST /index HTTP/1.1\r\n", (m!(Post), b"/index", p!(Http11))),
+            (
+                b"POST /index HTTP/1.1\r\n",
+                (m!(Post), b"/index", p!(Http11)),
+            ),
         ];
         for case in cases {
             assert_eq!(parse_request_start_line(case.0).unwrap(), case.1,);

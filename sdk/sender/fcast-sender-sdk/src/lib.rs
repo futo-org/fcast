@@ -276,7 +276,9 @@ pub enum ParseIpAddrError {
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 fn try_ip_addr_from_str(s: &str) -> Result<IpAddr, ParseIpAddrError> {
-    Ok(IpAddr::from(&std::net::IpAddr::from_str(s.trim_matches(['[', ']']))?))
+    Ok(IpAddr::from(&std::net::IpAddr::from_str(
+        s.trim_matches(['[', ']']),
+    )?))
 }
 
 #[allow(dead_code)]
@@ -305,7 +307,8 @@ pub fn url_format_ip_addr(addr: &IpAddr) -> String {
             scope_id,
         } => {
             let addr = std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
-                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15, *o16,
+                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
+                *o16,
             ]));
             format!("[{addr}%{scope_id}]")
         }
@@ -338,7 +341,8 @@ fn octets_from_ip_addr(addr: &IpAddr) -> Vec<u8> {
             ..
         } => {
             vec![
-                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15, *o16,
+                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
+                *o16,
             ]
         }
     }
@@ -387,7 +391,9 @@ impl From<&std::net::IpAddr> for IpAddr {
 impl From<&IpAddr> for std::net::IpAddr {
     fn from(value: &IpAddr) -> Self {
         match value {
-            IpAddr::V4 { o1, o2, o3, o4 } => std::net::IpAddr::V4(std::net::Ipv4Addr::new(*o1, *o2, *o3, *o4)),
+            IpAddr::V4 { o1, o2, o3, o4 } => {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(*o1, *o2, *o3, *o4))
+            }
             IpAddr::V6 {
                 o1,
                 o2,
@@ -407,7 +413,8 @@ impl From<&IpAddr> for std::net::IpAddr {
                 o16,
                 ..
             } => std::net::IpAddr::V6(std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
-                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15, *o16,
+                *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
+                *o16,
             ]))),
         }
     }
@@ -442,7 +449,9 @@ impl LogLevelFilter {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn init_logger(level_filter: LogLevelFilter) {
     log_panics::init();
-    android_logger::init_once(android_logger::Config::default().with_max_level(level_filter.to_log_compat()));
+    android_logger::init_once(
+        android_logger::Config::default().with_max_level(level_filter.to_log_compat()),
+    );
 }
 
 #[cfg(all(target_os = "ios", feature = "logging"))]

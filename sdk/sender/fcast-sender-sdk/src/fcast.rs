@@ -20,7 +20,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use crate::device::{
     ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
     DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent,
-    MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
+    MediaItem, MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
 };
 use crate::{utils, IpAddr};
 
@@ -188,7 +188,10 @@ impl InnerDevice {
 
         writer.write_all(&packet).await?;
 
-        debug!("Sent {} bytes with opcode: {op:?}, body: {json}", packet.len());
+        debug!(
+            "Sent {} bytes with opcode: {op:?}, body: {json}",
+            packet.len()
+        );
 
         Ok(())
     }
@@ -239,7 +242,8 @@ impl InnerDevice {
                 }
                 self.send(Opcode::Play, msg).await?;
                 if let Some(volume) = volume {
-                    self.send(Opcode::SetVolume, SetVolumeMessage { volume }).await?;
+                    self.send(Opcode::SetVolume, SetVolumeMessage { volume })
+                        .await?;
                 }
             }
             3 => {
@@ -274,9 +278,11 @@ impl InnerDevice {
         cmd_rx: &mut Receiver<Command>,
         cmd_tx: Sender<Command>,
     ) -> Result<(), utils::WorkError> {
-        let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| cmd == Command::Quit)
-            .await
-            .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
+        let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| {
+            cmd == Command::Quit
+        })
+        .await
+        .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
         else {
             debug!("Received Quit command in connect loop");
             return Ok(());
@@ -308,11 +314,19 @@ impl InnerDevice {
                     reader.read_exact(&mut header_buf).await?;
 
                     let opcode = Opcode::try_from(header_buf[4])?;
-                    let body_length =
-                        u32::from_le_bytes([header_buf[0], header_buf[1], header_buf[2], header_buf[3]]) as usize - 1;
+                    let body_length = u32::from_le_bytes([
+                        header_buf[0],
+                        header_buf[1],
+                        header_buf[2],
+                        header_buf[3],
+                    ]) as usize
+                        - 1;
 
                     if body_length > body_buf.len() {
-                        bail!("Message exceeded maximum length: {body_length} > {}", body_buf.len());
+                        bail!(
+                            "Message exceeded maximum length: {body_length} > {}",
+                            body_buf.len()
+                        );
                     }
 
                     let json_body = if body_length > 0 {
@@ -838,7 +852,9 @@ impl CastingDevice for FCastDevice {
             | DeviceFeature::LoadImage
             | DeviceFeature::PlaylistNextAndPrevious
             | DeviceFeature::SetPlaylistItemIndex
-            | DeviceFeature::LoadPlaylist => self.session_version.get() >= V3_FEATURES_MIN_PROTO_VERSION,
+            | DeviceFeature::LoadPlaylist => {
+                self.session_version.get() >= V3_FEATURES_MIN_PROTO_VERSION
+            }
         }
     }
 
@@ -931,7 +947,15 @@ impl CastingDevice for FCastDevice {
                     return Err(CastingDeviceError::UnsupportedFeature);
                 }
 
-                self.load_url(content_type, url, None, None, None, metadata, request_headers)
+                self.load_url(
+                    content_type,
+                    url,
+                    None,
+                    None,
+                    None,
+                    metadata,
+                    request_headers,
+                )
             }
             LoadRequest::Playlist { items } => {
                 if self.session_version.get() < PLAYLIST_MIN_PROTO_VERSION {

@@ -53,7 +53,10 @@ enum FileRequestError {
     Utf8(#[from] std::str::Utf8Error),
 }
 
-async fn write_header_map<T: AsyncWrite + Unpin>(writer: &mut T, headers: &[(&str, &str)]) -> Result<(), io::Error> {
+async fn write_header_map<T: AsyncWrite + Unpin>(
+    writer: &mut T,
+    headers: &[(&str, &str)],
+) -> Result<(), io::Error> {
     for header in headers {
         writer.write_all(header.0.as_bytes()).await?;
         writer.write_all(b": ").await?;
@@ -125,8 +128,8 @@ impl FileServer {
         let file_length = file_meta.len();
         let mut reader = tokio::io::BufReader::new(file);
         if let Some(range) = headers.get(KnownHeaderNames::RANGE) {
-            let mut ranges =
-                http_range::HttpRange::parse(range, file_length).map_err(|_| FileRequestError::HttpRangeParse)?;
+            let mut ranges = http_range::HttpRange::parse(range, file_length)
+                .map_err(|_| FileRequestError::HttpRangeParse)?;
             if let Some(range) = ranges.get_mut(0) {
                 range.length = range.length.min(MAX_CHUNK_SIZE);
                 let start_line = http::ResponseStartLine {
@@ -136,7 +139,11 @@ impl FileServer {
                 .serialize();
                 writer.write_all(&start_line).await?;
 
-                let bytes_range_str = format!("bytes {}-{}/{file_length}", range.start, range.start + range.length - 1);
+                let bytes_range_str = format!(
+                    "bytes {}-{}/{file_length}",
+                    range.start,
+                    range.start + range.length - 1
+                );
                 let content_length = range.length.to_string();
 
                 let headers = [
@@ -210,7 +217,10 @@ impl FileServer {
         Ok(())
     }
 
-    async fn dispatch_request(mut stream: tokio::net::TcpStream, files: FileMapLock) -> anyhow::Result<()> {
+    async fn dispatch_request(
+        mut stream: tokio::net::TcpStream,
+        files: FileMapLock,
+    ) -> anyhow::Result<()> {
         let mut request_buf = Vec::<u8>::with_capacity(DEFAULT_REQUEST_BUF_CAP);
         let mut read_buf = [0u8; 1024];
         let start_line_end = 'out: {

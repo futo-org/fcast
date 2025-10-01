@@ -76,9 +76,8 @@ impl Serialize for Metadata {
                 map.insert(
                     "images".to_owned(),
                     match images {
-                        Some(i) => {
-                            serde_json::to_value(i).map_err(|_| ser::Error::custom("failed to serialize `images`"))?
-                        }
+                        Some(i) => serde_json::to_value(i)
+                            .map_err(|_| ser::Error::custom("failed to serialize `images`"))?,
                         None => Value::Null,
                     },
                 );
@@ -124,9 +123,13 @@ impl<'de> Deserialize<'de> for Metadata {
                         Some(images) => Some(
                             images
                                 .iter()
-                                .map(|maybe_image| serde_json::from_value::<Image>(maybe_image.clone()))
+                                .map(|maybe_image| {
+                                    serde_json::from_value::<Image>(maybe_image.clone())
+                                })
                                 .collect::<Result<Vec<Image>, serde_json::Error>>()
-                                .map_err(|_| de::Error::custom("`images` is not an array of images"))?,
+                                .map_err(|_| {
+                                    de::Error::custom("`images` is not an array of images")
+                                })?,
                         ),
                         None => None,
                     },
@@ -691,7 +694,9 @@ mod tests {
         let meta = Metadata::Generic {
             title: Some("title".to_owned()),
             subtitle: Some("subtitle".to_owned()),
-            images: Some(vec![Image { url: "url".to_owned() }]),
+            images: Some(vec![Image {
+                url: "url".to_owned(),
+            }]),
             release_date: None,
         };
         assert_eq!(

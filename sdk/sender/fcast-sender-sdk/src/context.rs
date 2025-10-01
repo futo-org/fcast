@@ -33,7 +33,10 @@ impl CastContext {
                 self.runtime.handle().clone(),
             )),
             #[cfg(feature = "fcast")]
-            ProtocolType::FCast => Arc::new(crate::fcast::FCastDevice::new(info, self.runtime.handle().clone())),
+            ProtocolType::FCast => Arc::new(crate::fcast::FCastDevice::new(
+                info,
+                self.runtime.handle().clone(),
+            )),
         }
     }
 }
@@ -42,7 +45,8 @@ impl CastContext {
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
     pub fn start_discovery(&self, event_handler: Arc<dyn crate::DeviceDiscovererEventHandler>) {
-        self.runtime.spawn(discovery::discover_devices(event_handler));
+        self.runtime
+            .spawn(discovery::discover_devices(event_handler));
     }
 }
 

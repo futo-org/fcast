@@ -82,8 +82,11 @@ enum Message {
     ChromecastServiceEvent(ServiceEvent),
 }
 
-pub(crate) async fn discover_devices(event_handler: Arc<dyn DeviceDiscovererEventHandler>) -> anyhow::Result<()> {
-    let service_daemon = mdns_sd::ServiceDaemon::new().context("Failed to create mDNS ServiceDaemon")?;
+pub(crate) async fn discover_devices(
+    event_handler: Arc<dyn DeviceDiscovererEventHandler>,
+) -> anyhow::Result<()> {
+    let service_daemon =
+        mdns_sd::ServiceDaemon::new().context("Failed to create mDNS ServiceDaemon")?;
     let mut devices: HashSet<String> = HashSet::new();
 
     macro_rules! browse {
@@ -137,7 +140,10 @@ pub(crate) async fn discover_devices(event_handler: Arc<dyn DeviceDiscovererEven
         chromecast_mdns_receiver,
         |chromecast_mdns_receiver: mdns_sd::Receiver<ServiceEvent>| async move {
             let event = chromecast_mdns_receiver.recv_async().await.ok()?;
-            Some((Message::ChromecastServiceEvent(event), chromecast_mdns_receiver))
+            Some((
+                Message::ChromecastServiceEvent(event),
+                chromecast_mdns_receiver,
+            ))
         },
     );
     #[cfg(feature = "chromecast")]

@@ -241,7 +241,10 @@ impl InnerDevice {
         T: Serialize + namespaces::Namespace + std::fmt::Debug,
     {
         match self.transport_id.as_ref() {
-            Some(transport_id) => self.send_channel_message("sender-0", transport_id.clone(), obj).await,
+            Some(transport_id) => {
+                self.send_channel_message("sender-0", transport_id.clone(), obj)
+                    .await
+            }
             None => {
                 bail!("`transport_id` is missing")
             }
@@ -422,11 +425,12 @@ impl InnerDevice {
         self.writer = None;
         self.request_id = RequestId::new();
 
-        let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
-            cmd == Command::Quit
-        })
-        .await
-        .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
+        let Some(stream) =
+            utils::try_connect_tcp(addrs, Duration::from_secs(5), &mut self.cmd_rx, |cmd| {
+                cmd == Command::Quit
+            })
+            .await
+            .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
         else {
             debug!("Received Quit command in connect loop");
             return Ok(());
@@ -469,7 +473,10 @@ impl InnerDevice {
                     let size = u32::from_be_bytes(size_buf) as usize;
 
                     if size > body_buf.len() {
-                        bail!("Packet size ({size}) exceeded the maximum ({})", body_buf.len());
+                        bail!(
+                            "Packet size ({size}) exceeded the maximum ({})",
+                            body_buf.len()
+                        );
                     }
 
                     reader.read_exact(&mut body_buf[..size]).await?;
@@ -855,7 +862,15 @@ impl CastingDevice for ChromecastDevice {
                 url,
                 metadata,
                 request_headers,
-            } => self.load_url(content_type, url, None, None, None, metadata, request_headers),
+            } => self.load_url(
+                content_type,
+                url,
+                None,
+                None,
+                None,
+                metadata,
+                request_headers,
+            ),
             LoadRequest::Playlist { items } => self.send_command(Command::LoadPlaylist(items)),
         }
     }
