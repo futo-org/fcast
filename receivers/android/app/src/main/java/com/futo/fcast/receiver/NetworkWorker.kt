@@ -164,7 +164,7 @@ class NetworkWorker(private val _context: Context) {
             }
 
             for (address in iface.inetAddresses) {
-                if (address.isLoopbackAddress || address.address.size != 4 || interfaces.find { it.address == address.hostAddress } != null) {
+                if (address.isLoopbackAddress || address.address.size != 4) {
                     continue
                 }
                 Log.i(TAG, "Adding address ${address.hostAddress} to interface list")
@@ -176,16 +176,20 @@ class NetworkWorker(private val _context: Context) {
                     ) else null
                 } else null
 
-                address.hostAddress?.let {
-                    interfaces.add(
-                        NetworkInterfaceData(
-                            type,
-                            displayName,
-                            it,
-                            signalStrength
+                address.hostAddress?.let { it ->
+                    if (interfaces.find { it.address == address.hostAddress } != null) {
+                        Log.i(TAG, "Already added interface $it")
+                    } else {
+                        interfaces.add(
+                            NetworkInterfaceData(
+                                type,
+                                displayName,
+                                it,
+                                signalStrength
+                            )
                         )
-                    )
-                    added = true
+                        added = true
+                    }
                 }
             }
         }
