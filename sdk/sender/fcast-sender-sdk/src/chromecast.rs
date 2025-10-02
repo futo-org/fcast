@@ -34,18 +34,16 @@ const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
 const RECEIVER_APP_ID: &str = "CC1AD845";
 const MAX_LAUNCH_RETRIES: u8 = 15;
 
-struct RequestId {
-    inner: u64,
-}
+struct RequestId(u64);
 
 impl RequestId {
     pub fn new() -> Self {
-        Self { inner: 0 }
+        Self(0)
     }
 
     pub fn inc(&mut self) -> u64 {
-        self.inner += 1;
-        self.inner - 1
+        self.0 += 1;
+        self.0 - 1
     }
 }
 
