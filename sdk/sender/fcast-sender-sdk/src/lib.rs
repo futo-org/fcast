@@ -469,14 +469,60 @@ pub fn init_logger(level_filter: LogLevelFilter) {
 }
 
 #[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
-#[cfg_attr(feature = "uniffi", uniffi::export)]
-pub fn init_stderr_logger(level_filter: LogLevelFilter) {
-    if let Err(err) = env_logger::Builder::new()
-        .filter(Some("fcast_sender_sdk"), level_filter.to_log_compat())
-        .try_init()
-    {
-        error!("Failed to initialize logger: {err}")
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+#[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
+#[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
+pub trait LogHandler: Send + Sync {
+    fn log(&self, level: LogLevel, tag: String, message: String);
+}
+
+#[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
+pub struct CustomLogger {
+    handler: std::sync::Arc<dyn LogHandler>,
+}
+
+#[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
+impl CustomLogger {
+    pub fn init(handler: std::sync::Arc<dyn LogHandler>) -> anyhow::Result<()> {
+        Ok(log::set_boxed_logger(Box::new(Self { handler }))?)
     }
+}
+
+#[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
+impl log::Log for CustomLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.handler.log(
+            match record.level() {
+                log::Level::Error => LogLevel::Error,
+                log::Level::Warn => LogLevel::Warn,
+                log::Level::Info => LogLevel::Info,
+                log::Level::Debug => LogLevel::Debug,
+                log::Level::Trace => LogLevel::Trace,
+            },
+            record.module_path().unwrap_or("n/a").to_string(),
+            record.args().to_string(),
+        );
+    }
+
+    fn flush(&self) {}
+}
+
+#[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+pub fn init_custom_logger(handler: std::sync::Arc<dyn LogHandler>) {
+    let _ = CustomLogger::init(handler);
 }
 
 #[cfg(test)]
