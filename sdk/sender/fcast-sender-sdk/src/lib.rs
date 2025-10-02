@@ -492,7 +492,7 @@ pub struct CustomLogger {
 #[cfg(all(feature = "_uniffi_csharp", feature = "logging"))]
 impl CustomLogger {
     pub fn init(handler: std::sync::Arc<dyn LogHandler>) -> anyhow::Result<()> {
-        log::set_max_level(log::LevelFilter::max());
+        log::set_max_level(log::LevelFilter::Debug);
         Ok(log::set_boxed_logger(Box::new(Self { handler }))?)
     }
 }
