@@ -299,24 +299,24 @@ pub struct Application {
     #[serde(rename = "appId")]
     pub app_id: String,
     #[serde(rename = "appType")]
-    pub app_type: String,
+    pub app_type: Option<String>,
     #[serde(rename = "displayName")]
-    pub display_name: String,
+    pub display_name: Option<String>,
     #[serde(rename = "iconUrl")]
-    pub icon_url: String,
+    pub icon_url: Option<String>,
     #[serde(rename = "isIdleScreen")]
-    pub is_idle_screen: bool,
+    pub is_idle_screen: Option<bool>,
     #[serde(rename = "launchedFromCloud")]
-    pub launched_from_cloud: bool,
-    pub namespaces: Vec<NamespaceMap>,
+    pub launched_from_cloud: Option<bool>,
+    pub namespaces: Option<Vec<NamespaceMap>>,
     #[serde(rename = "sessionId")]
     pub session_id: String,
     #[serde(rename = "statusText")]
-    pub status_text: String,
+    pub status_text: Option<String>,
     #[serde(rename = "transportId")]
     pub transport_id: String,
     #[serde(rename = "universalAppId")]
-    pub universal_app_id: String,
+    pub universal_app_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
