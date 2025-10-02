@@ -109,6 +109,7 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             sendPlaybackUpdate()
+            updateKeepScreenOnFlag()
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -339,7 +340,6 @@ class PlayerActivity : AppCompatActivity() {
                         setControlMode(ControlBarMode.Remote)
                     } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
-                            Log.i(TAG, "REPEAT COUNT: ${event.repeatCount}")
                             skipForward(event.repeatCount > 0)
                         } else {
                             if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
@@ -533,6 +533,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun setControlMode(mode: ControlBarMode, immediateHide: Boolean = true) {
+        if (viewModel.errorMessage != null) {
+            return
+        }
+
         if (mode == ControlBarMode.KeyboardMouse) {
             _uiHideTimer.enable()
 
@@ -624,6 +628,14 @@ class PlayerActivity : AppCompatActivity() {
             }
         } catch (ex: Throwable) {
             Log.w(TAG, "Failed to handle connection available event", ex)
+        }
+    }
+
+    fun updateKeepScreenOnFlag() {
+        if (_exoPlayer.playWhenReady && (_exoPlayer.playbackState == Player.STATE_READY || _exoPlayer.playbackState == Player.STATE_BUFFERING)) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 

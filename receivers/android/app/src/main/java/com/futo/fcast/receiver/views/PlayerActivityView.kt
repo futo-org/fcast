@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.constraintlayout.compose.ConstraintLayout
+import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
@@ -136,7 +137,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             end.linkTo(parent.end)
                         }
                 )
-            } else if (viewModel.isIdle) {
+            } else if (viewModel.isIdle || viewModel.errorMessage != null || (playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail == null)) {
                 Box(
                     Modifier
                         .fillMaxSize()

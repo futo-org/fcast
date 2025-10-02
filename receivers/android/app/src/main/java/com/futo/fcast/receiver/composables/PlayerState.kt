@@ -54,7 +54,6 @@ fun rememberPlayerState(player: Player): PlayerState {
         currentPosition = player.currentPosition
         duration = player.duration
         bufferedPosition = player.bufferedPosition
-        isPlaying = player.isPlaying
         isBuffering = player.playbackState == Player.STATE_BUFFERING
         isPlaylist = player.mediaItemCount > 1
         isLive = player.isCurrentMediaItemLive
@@ -63,6 +62,10 @@ fun rememberPlayerState(player: Player): PlayerState {
             if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
         mediaThumbnail = player.mediaMetadata.artworkUri
         mediaType = player.mediaMetadata.mediaType
+
+        if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && !isBuffering) {
+            isPlaying = player.isPlaying
+        }
     }
 
     val scope = rememberCoroutineScope()
@@ -80,6 +83,7 @@ fun rememberPlayerState(player: Player): PlayerState {
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 PlayerActivity.instance?.sendPlaybackUpdate()
+                PlayerActivity.instance?.updateKeepScreenOnFlag()
             }
 
             override fun onPositionDiscontinuity(

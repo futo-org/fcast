@@ -119,7 +119,7 @@ fun ControlButton(
                 Triple({
                     PlayerActivity.instance?.playPauseToggle()
                     Unit
-                }, true, !playerState.isPlaying && !playerState.isBuffering)
+                }, true, !playerState.isPlaying)
             }
 
             ButtonType.PlayNext -> {
