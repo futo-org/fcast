@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
+use tokio_rustls::rustls::{self, ClientConfig};
 use tokio_rustls::TlsConnector;
 
 use crate::device::{
@@ -437,8 +437,6 @@ impl InnerDevice {
         let remote_addr = stream.peer_addr()?.ip();
         let stream_local_addr = stream.local_addr()?.ip();
 
-        let mut root_cert_store = RootCertStore::empty();
-        root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AllCertVerifier))
