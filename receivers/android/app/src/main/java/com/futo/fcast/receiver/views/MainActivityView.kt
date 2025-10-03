@@ -225,10 +225,10 @@ fun ConnectionStatusView(viewModel: MainActivityViewModel, modifier: Modifier) {
 
     if (frontendConnections.isEmpty()) {
         val strokeWidth = when (getScreenSize((getScreenResolution()))) {
-            ScreenSize.Tiny -> 3.dp
-            ScreenSize.Small -> 3.dp
-            ScreenSize.Medium -> 4.dp
-            ScreenSize.Large -> 4.dp
+            ScreenSize.Tiny -> 4.dp
+            ScreenSize.Small -> 4.dp
+            ScreenSize.Medium -> 5.dp
+            ScreenSize.Large -> 5.dp
         }
 
         CircularProgressIndicator(
@@ -392,8 +392,8 @@ fun MainActivity(viewModel: MainActivityViewModel, exoPlayer: Player? = null) {
     val (connInfoWidth, updateViewWidth) = when (getScreenSize((getScreenResolution()))) {
         ScreenSize.Tiny -> Pair(255.dp, 205.dp)
         ScreenSize.Small -> Pair(255.dp, 205.dp)
-        ScreenSize.Medium -> Pair(300.dp, 250.dp)
-        ScreenSize.Large -> Pair(300.dp, 250.dp)
+        ScreenSize.Medium -> Pair(340.dp, 290.dp)
+        ScreenSize.Large -> Pair(340.dp, 290.dp)
     }
     val rootPadding = when (getScreenSize((getScreenResolution()))) {
         ScreenSize.Tiny -> 30.dp

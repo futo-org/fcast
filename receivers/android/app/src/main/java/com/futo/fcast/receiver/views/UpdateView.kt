@@ -151,14 +151,15 @@ fun UpdateView(viewModel: MainActivityViewModel, modifier: Modifier = Modifier) 
                             val (width, height) = when (getScreenSize((getScreenResolution()))) {
                                 ScreenSize.Tiny -> Pair(70.dp, 30.dp)
                                 ScreenSize.Small -> Pair(70.dp, 30.dp)
-                                ScreenSize.Medium -> Pair(90.dp, 40.dp)
-                                ScreenSize.Large -> Pair(90.dp, 40.dp)
+                                ScreenSize.Medium -> Pair(100.dp, 40.dp)
+                                ScreenSize.Large -> Pair(100.dp, 40.dp)
                             }
-                            val (paddingWidth, paddingHeight) = when (getScreenSize((getScreenResolution()))) {
-                                ScreenSize.Tiny -> Pair(15.dp, 5.dp)
-                                ScreenSize.Small -> Pair(15.dp, 5.dp)
-                                ScreenSize.Medium -> Pair(20.dp, 8.dp)
-                                ScreenSize.Large -> Pair(20.dp, 8.dp)
+                            val paddingWidth = 10.dp
+                            val paddingHeight = when (getScreenSize((getScreenResolution()))) {
+                                ScreenSize.Tiny -> 5.dp
+                                ScreenSize.Small -> 5.dp
+                                ScreenSize.Medium -> 8.dp
+                                ScreenSize.Large -> 8.dp
                             }
 
                             Button(

@@ -29,6 +29,7 @@ import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import coil3.compose.AsyncImage
 import com.futo.fcast.receiver.PlayerActivity
 import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.composables.DelayedLoadingIndicator
@@ -122,6 +123,20 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color.Black)
+                )
+            }
+            if (viewModel.errorMessage == null && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {
+                AsyncImage(
+                    model = playerState.mediaThumbnail,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .constrainAs(imageRef) {
+                            top.linkTo(parent.top)
+                            bottom.linkTo(parent.bottom)
+                            start.linkTo(parent.start)
+                            end.linkTo(parent.end)
+                        }
+                        .fillMaxSize(0.5f)
                 )
             }
 
