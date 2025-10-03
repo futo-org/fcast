@@ -443,8 +443,14 @@ class NetworkService : Service() {
     }
 
     fun sendEvent(message: EventMessage) {
-        _tcpListenerService.send(Opcode.Event, message)
-        _webSocketListenerService.send(Opcode.Event, message)
+        _scope.launch(Dispatchers.IO) {
+            try {
+                _tcpListenerService.send(Opcode.Event, message)
+                _webSocketListenerService.send(Opcode.Event, message)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to send event", e)
+            }
+        }
     }
 
     fun getSubscribedKeys(): Pair<Set<String>, Set<String>> {
