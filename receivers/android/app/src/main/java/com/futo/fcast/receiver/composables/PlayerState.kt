@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.text.Cue
@@ -18,12 +19,14 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import com.futo.fcast.receiver.NetworkService
 import com.futo.fcast.receiver.PlayerActivity
+import com.futo.fcast.receiver.models.GenericMediaMetadata
 import com.futo.fcast.receiver.models.VolumeUpdateMessage
 import com.google.common.collect.ImmutableList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.UUID
 import kotlin.math.abs
 
 @OptIn(UnstableApi::class)
@@ -58,9 +61,6 @@ fun rememberPlayerState(player: Player): PlayerState {
         isPlaylist = player.mediaItemCount > 1
         isLive = player.isCurrentMediaItemLive
         isLiveSeekable = isLive && duration > 60_000
-        mediaTitle =
-            if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
-        mediaThumbnail = player.mediaMetadata.artworkUri
         mediaType = player.mediaMetadata.mediaType
 
         if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && !isBuffering) {
@@ -112,6 +112,17 @@ fun rememberPlayerState(player: Player): PlayerState {
                     } catch (e: Throwable) {
                         Log.e(TAG, "Unhandled error sending volume update", e)
                     }
+                }
+            }
+
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                mediaTitle =
+                    if (mediaMetadata.title.toString() == "null") null else mediaMetadata.title.toString()
+                mediaThumbnail = mediaMetadata.artworkUri
+                val artworkData = mediaMetadata.artworkData
+
+                if ((PlayerActivity.instance?.viewModel?.playMessage?.metadata as? GenericMediaMetadata)?.thumbnailUrl == null && artworkData != null) {
+                    mediaThumbnail = PlayerActivity.instance?.saveArtworkDataToUri(artworkData, UUID.randomUUID().toString())
                 }
             }
 

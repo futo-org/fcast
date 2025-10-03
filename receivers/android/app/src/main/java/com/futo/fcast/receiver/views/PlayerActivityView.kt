@@ -76,6 +76,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                         this.player = viewModel.exoPlayer
                         this.useController = false
                         this.subtitleView?.visibility = View.GONE
+                        this.artworkDisplayMode = PlayerView.ARTWORK_DISPLAY_MODE_OFF
 
 //                    this.useController = true
 //                    setShowSubtitleButton(true)

@@ -92,7 +92,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }, 5000)
     private val _showDurationTimer = Timer(::mediaEndHandler, 0, false)
-    private var _controlMode = ControlBarMode.KeyboardMouse
+    private var _controlMode = ControlBarMode.Remote
 
     private val _playerEventListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -242,7 +242,12 @@ class PlayerActivity : AppCompatActivity() {
                         setControlMode(ControlBarMode.Remote)
                     } else {
                         when (viewModel.controlFocus) {
-                            ControlFocus.None -> {}
+                            ControlFocus.None -> {
+                                if (!viewModel.showControls) {
+                                    setControlMode(ControlBarMode.Remote)
+                                }
+                            }
+
                             ControlFocus.ProgressBar, ControlFocus.Action -> playPauseToggle()
                             ControlFocus.PlayPrevious -> _exoPlayer.seekToPreviousMediaItem()
                             ControlFocus.PlayNext -> _exoPlayer.seekToNextMediaItem()
@@ -273,9 +278,20 @@ class PlayerActivity : AppCompatActivity() {
                         setControlMode(ControlBarMode.Remote)
                     } else {
                         when (viewModel.controlFocus) {
-                            ControlFocus.None -> {}
+                            ControlFocus.None -> {
+                                if (!viewModel.showControls) {
+                                    setControlMode(ControlBarMode.Remote)
+                                }
+                            }
+
                             ControlFocus.ProgressBar -> setControlMode(ControlBarMode.KeyboardMouse)
-                            else -> viewModel.controlFocus = ControlFocus.ProgressBar
+                            else -> {
+                                if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED) {
+                                    viewModel.controlFocus = ControlFocus.ProgressBar
+                                } else {
+                                    setControlMode(ControlBarMode.KeyboardMouse)
+                                }
+                            }
                         }
 
                         _uiHideTimer.restart()
@@ -290,7 +306,12 @@ class PlayerActivity : AppCompatActivity() {
                         setControlMode(ControlBarMode.Remote)
                     } else {
                         when (viewModel.controlFocus) {
-                            ControlFocus.None -> {}
+                            ControlFocus.None -> {
+                                if (!viewModel.showControls) {
+                                    setControlMode(ControlBarMode.Remote)
+                                }
+                            }
+
                             ControlFocus.ProgressBar -> {
                                 if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
                                     viewModel.controlFocus = ControlFocus.Action
@@ -310,7 +331,9 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                    if (!viewModel.showControls && _exoPlayer.mediaMetadata.mediaType == MEDIA_TYPE_MIXED && _isPlaylist) {
+                        setPlaylistItem(_exoPlayer.previousMediaItemIndex)
+                    } else if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
@@ -336,7 +359,9 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (_controlMode == ControlBarMode.KeyboardMouse) {
+                    if (!viewModel.showControls && _exoPlayer.mediaMetadata.mediaType == MEDIA_TYPE_MIXED && _isPlaylist) {
+                        setPlaylistItem(_exoPlayer.nextMediaItemIndex)
+                    } else if (_controlMode == ControlBarMode.KeyboardMouse) {
                         setControlMode(ControlBarMode.Remote)
                     } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
@@ -547,7 +572,14 @@ class PlayerActivity : AppCompatActivity() {
                 _uiHideTimer.start()
             }
         } else {
-            viewModel.controlFocus = ControlFocus.ProgressBar
+            if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED) {
+                viewModel.controlFocus = ControlFocus.ProgressBar
+            } else if (viewModel.hasDuration) {
+                viewModel.controlFocus = ControlFocus.Action
+            } else {
+                viewModel.controlFocus = ControlFocus.PlayNext
+            }
+
             viewModel.showControls = true
             _uiHideTimer.start()
         }
@@ -988,6 +1020,20 @@ class PlayerActivity : AppCompatActivity() {
     fun uiHideControlsTimerStateChange() {
         if (viewModel.showControls) {
             _uiHideTimer.start()
+        }
+    }
+
+    fun saveArtworkDataToUri(artworkData: ByteArray, fileName: String): Uri? {
+        try {
+            val cacheFile = File(this.cacheDir, fileName)
+            FileOutputStream(cacheFile).use { fos ->
+                fos.write(artworkData)
+            }
+
+            return Uri.fromFile(cacheFile)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error creating artwork uri", e)
+            return null
         }
     }
 
