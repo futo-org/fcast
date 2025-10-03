@@ -50,6 +50,7 @@ cfg_aliases = "0.2.1"
 prost-build = { version = "0.14.1", optional = true }
 
 [features]
+# TODO: look at this before releasing
 # default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
 default = ["fcast", "chromecast", "uniffi", "logging", "discovery", "_uniffi_csharp"]
 fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64", "dep:url"]
