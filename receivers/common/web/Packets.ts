@@ -251,7 +251,7 @@ export class UnsubscribeEventMessage {
 export class MediaItemEvent implements EventObject {
     constructor(
         public type: EventType,
-        public mediaItem: MediaItem,
+        public item: MediaItem,
     ) {}
 }
 
