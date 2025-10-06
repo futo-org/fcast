@@ -36,6 +36,7 @@ buildReceiverAndroid:
 
     # Artifact uploads require artifacts to be in project directory
     - mkdir -p ./$ANDROID_VERSION_CODE
+    - mv /artifacts/fcast-version.txt ./$ANDROID_VERSION_CODE/fcast-version.txt
     - mv ./app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk ./$ANDROID_VERSION_CODE/fcast-release.apk
     - mv ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab ./$ANDROID_VERSION_CODE/fcast-playstore-release.aab
   artifacts:
@@ -44,6 +45,7 @@ buildReceiverAndroid:
     access: all
     expire_in: "30 days"
     paths:
+      - receivers/android/$ANDROID_VERSION_CODE/fcast-version.txt
       - receivers/android/$ANDROID_VERSION_CODE/fcast-release.apk
       - receivers/android/$ANDROID_VERSION_CODE/fcast-playstore-release.aab
   when: manual
