@@ -268,7 +268,7 @@ data class UnsubscribeEventMessage(
 @Serializable
 data class MediaItemEvent(
     override val type: EventType,
-    val mediaItem: MediaItem,
+    val item: MediaItem,
 ) : EventObject
 
 @Serializable
