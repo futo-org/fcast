@@ -7,19 +7,51 @@
     <string name="incompatible">이 작업은 이 장치와 근본적으로 호환되지 않기 때문에 실패했습니다.</string>
     <string name="invalid">APK 중 하나 이상이 유효하지 않아 작업이 실패했습니다.</string>
     <string name="not_enough_storage">저장소 문제로 인해 작업이 실패했습니다.</string>
-    <string name="downloading_update">업데이트를 다운로드하는 중…</string>
+    <string name="downloading_update">다운로드 중…</string>
     <string name="installing_update">업데이트를 설치하는 중…</string>
     <string name="success">성공</string>
-    <string name="failed_to_update_with_error">오류로 인해 패키지를 업데이트하지 못했습니다.</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">FCast 수신기에 대한 업데이트가 있습니다. 업데이트하시겠습니까?</string>
+    <string name="update_success">업데이트 성공</string>
+    <string name="update_error">업데이트 오류</string>
+    <string name="update_available">FCast 업데이트 가능</string>
+    <string name="update_status">지금 업데이트하시겠습니까?</string>
     <string name="never">절대</string>
     <string name="close">닫다</string>
     <string name="update">업데이트</string>
+    <string name="update_later">나중에</string>
     <string name="checking_for_updates">업데이트를 확인하는 중…</string>
     <string name="no_updates_available">업데이트가 없습니다</string>
     <string name="permission_dialog_title">시스템 알림 창 권한</string>
     <string name="permission_dialog_message">이 앱은 다른 앱 위에 콘텐츠를 표시하기 위해 시스템 알림 창 권한이 필요합니다. 권한을 부여해 주세요.</string>
     <string name="permission_dialog_positive_button">허용하다</string>
     <string name="permission_dialog_negative_button">취소</string>
-    <string name="waiting_for_media">미디어를 기다리는 중</string>
+    <string name="waiting_for_connection">연결을 기다리는 중</string>
+    <string name="connected">연결됨: 캐스팅 준비 완료</string>
+    <string name="connected_multiple">여러 기기 연결됨:\n 캐스트 준비 완료</string>
+    <string name="network_changed">네트워크 연결이 변경되었습니다. 문제가 발생하면 발신 장치를 수신 장치에 다시 연결하세요.</string>
+    <string name="network_lost">네트워크 연결이 끊어졌습니다. 네트워크에 다시 연결하세요.</string>
+    <string name="main_device_disconnected">장치 연결 해제됨</string>
+    <string name="main_device_disconnected_multiple">장치가 연결 해제되었습니다</string>
+    <string name="player_device_connected">장치가 연결됨</string>
+    <string name="player_device_disconnected">기기 연결이 끊어졌습니다. 재생 문제가 발생하면 다시 연결해 주세요.</string>
+    <string name="qr_code_error">QR 코드 생성 중 오류 발생</string>
+    <string name="connection_information">연결 정보</string>
+    <string name="sender_app_download_text">발신자 앱이 필요하십니까?\nGrayjay를 다운로드하세요. </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">연결 세부 정보</string>
+    <string name="port">포트</string>
+    <string name="scan_to_connect">FCast 발신자 앱으로 스캔</string>
+    <string name="network_no_interfaces">장치가 네트워크에 연결되지 않았습니다</string>
+    <string name="live_badge">살다</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">애플리케이션 아이콘</string>
+    <string name="player_button_play">놀다</string>
+    <string name="player_button_pause">정지시키다</string>
+    <string name="player_next_button">다음</string>
+    <string name="player_previous_button">이전의</string>
+
+    <string name="player_captions_button">캡션</string>
+    <string name="player_settings_button">설정</string>
+    <string name="player_seek_forward">앞으로 나아가다</string>
+    <string name="player_seek_backward">뒤로 찾기</string>
 </resources>

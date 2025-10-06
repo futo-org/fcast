@@ -7,19 +7,51 @@
     <string name="incompatible">La operación falló porque es fundamentalmente incompatible con este dispositivo.</string>
     <string name="invalid">La operación falló porque uno o más de los APK no eran válidos</string>
     <string name="not_enough_storage">La operación falló debido a problemas de almacenamiento.</string>
-    <string name="downloading_update">Descargando actualización…</string>
+    <string name="downloading_update">Descargando…</string>
     <string name="installing_update">Instalando actualización…</string>
     <string name="success">Éxito</string>
-    <string name="failed_to_update_with_error">No se pudo actualizar el paquete con error</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">Hay una actualización disponible para el receptor FCast, ¿desea actualizar?</string>
+    <string name="update_success">Actualización exitosa</string>
+    <string name="update_error">Error de actualización</string>
+    <string name="update_available">Actualización de FCast disponible</string>
+    <string name="update_status">¿Quieres actualizar ahora?</string>
     <string name="never">Nunca</string>
     <string name="close">Cerca</string>
     <string name="update">Actualizar</string>
+    <string name="update_later">Más tarde</string>
     <string name="checking_for_updates">Buscando actualizaciones…</string>
     <string name="no_updates_available">No hay actualizaciones disponibles</string>
     <string name="permission_dialog_title">Permiso de la ventana de alerta del sistema</string>
     <string name="permission_dialog_message">Esta aplicación requiere el permiso de la ventana de alertas del sistema para mostrar contenido sobre otras aplicaciones. Por favor, concédelo.</string>
     <string name="permission_dialog_positive_button">Permitir</string>
     <string name="permission_dialog_negative_button">Cancelar</string>
-    <string name="waiting_for_media">Esperando a los medios</string>
+    <string name="waiting_for_connection">Esperando una conexión</string>
+    <string name="connected">Conectado: Listo para transmitir</string>
+    <string name="connected_multiple">Varios dispositivos conectados:\n Listo para transmitir</string>
+    <string name="network_changed">Las conexiones de red han cambiado, vuelva a conectar los dispositivos transmisores al receptor si experimenta problemas</string>
+    <string name="network_lost">Se perdió la conexión de red, vuelva a conectarse a una red</string>
+    <string name="main_device_disconnected">Dispositivo desconectado</string>
+    <string name="main_device_disconnected_multiple">Un dispositivo se ha desconectado</string>
+    <string name="player_device_connected">Dispositivo conectado</string>
+    <string name="player_device_disconnected">Dispositivo desconectado. Si tiene problemas de reproducción, vuelva a conectarlo.</string>
+    <string name="qr_code_error">Error al generar el código QR</string>
+    <string name="connection_information">Información de conexión</string>
+    <string name="sender_app_download_text">¿Necesitas una aplicación de remitente?\nDescarga Grayjay en </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">Detalles de la conexión</string>
+    <string name="port">Puerto</string>
+    <string name="scan_to_connect">Escanee con una aplicación de envío FCast</string>
+    <string name="network_no_interfaces">Dispositivo no conectado a una red</string>
+    <string name="live_badge">VIVO</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">Icono de la aplicación</string>
+    <string name="player_button_play">Jugar</string>
+    <string name="player_button_pause">Pausa</string>
+    <string name="player_next_button">Próximo</string>
+    <string name="player_previous_button">Previo</string>
+
+    <string name="player_captions_button">Subtítulos</string>
+    <string name="player_settings_button">Ajustes</string>
+    <string name="player_seek_forward">Buscar hacia adelante</string>
+    <string name="player_seek_backward">Buscar hacia atrás</string>
 </resources>

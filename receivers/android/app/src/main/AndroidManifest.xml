@@ -20,7 +20,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
-        android:banner="@drawable/banner"
+        android:banner="@mipmap/ic_banner"
         tools:targetApi="31">
 
         <activity

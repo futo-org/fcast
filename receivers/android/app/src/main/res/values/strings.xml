@@ -7,19 +7,51 @@
     <string name="incompatible">The operation failed because it is fundamentally incompatible with this device</string>
     <string name="invalid">The operation failed because one or more of the APKs was invalid</string>
     <string name="not_enough_storage">The operation failed because of storage issues</string>
-    <string name="downloading_update">Downloading update…</string>
+    <string name="downloading_update">Downloading…</string>
     <string name="installing_update">Installing update…</string>
     <string name="success">Success</string>
-    <string name="failed_to_update_with_error">Failed to update package with error</string>
-    <string name="there_is_an_update_available_do_you_wish_to_update">There is an update available for FCast receiver, do you wish to update?</string>
+    <string name="update_success">Update success</string>
+    <string name="update_error">Update error</string>
+    <string name="update_available">FCast update available</string>
+    <string name="update_status">Do you wish to update now?</string>
     <string name="never">Never</string>
     <string name="close">Close</string>
     <string name="update">Update</string>
+    <string name="update_later">Later</string>
     <string name="checking_for_updates">Checking for updates…</string>
     <string name="no_updates_available">No updates available</string>
     <string name="permission_dialog_title">System Alert Window Permission</string>
     <string name="permission_dialog_message">This app requires the System Alert Window permission to display content on top of other apps. Please grant the permission.</string>
     <string name="permission_dialog_positive_button">Allow</string>
     <string name="permission_dialog_negative_button">Cancel</string>
-    <string name="waiting_for_media">Waiting for media</string>
+    <string name="waiting_for_connection">Waiting for a connection</string>
+    <string name="connected">Connected: Ready to cast</string>
+    <string name="connected_multiple">Multiple devices connected:\n Ready to cast</string>
+    <string name="network_changed">Network connections has changed, please reconnect sender devices to receiver if you experience issues</string>
+    <string name="network_lost">Lost network connection, please reconnect to a network</string>
+    <string name="main_device_disconnected">Device disconnected</string>
+    <string name="main_device_disconnected_multiple">A device has disconnected</string>
+    <string name="player_device_connected">Device connected</string>
+    <string name="player_device_disconnected">Device disconnected. If you experience playback issues, please reconnect.</string>
+    <string name="qr_code_error">Error generating QR code</string>
+    <string name="connection_information">Connection Information</string>
+    <string name="sender_app_download_text">Need a sender app?\nDownload Grayjay at </string>
+    <string name="sender_app_download_url">https://grayjay.app</string>
+    <string name="connection_details">Connection Details</string>
+    <string name="port">Port</string>
+    <string name="scan_to_connect">Scan with a FCast sender app</string>
+    <string name="network_no_interfaces">Device not connected to a network</string>
+    <string name="live_badge">LIVE</string>
+
+    <!-- Accessibility descriptions -->
+    <string name="application_icon">Application Icon</string>
+    <string name="player_button_play">Play</string>
+    <string name="player_button_pause">Pause</string>
+    <string name="player_next_button">Next</string>
+    <string name="player_previous_button">Previous</string>
+
+    <string name="player_captions_button">Captions</string>
+    <string name="player_settings_button">Settings</string>
+    <string name="player_seek_forward">Seek Forward</string>
+    <string name="player_seek_backward">Seek Backward</string>
 </resources>
