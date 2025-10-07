@@ -61,6 +61,8 @@ fun rememberPlayerState(player: Player): PlayerState {
         isPlaylist = player.mediaItemCount > 1
         isLive = player.isCurrentMediaItemLive
         isLiveSeekable = isLive && duration > 60_000
+        mediaTitle =
+            if (player.mediaMetadata.title.toString() == "null") null else player.mediaMetadata.title.toString()
         mediaType = player.mediaMetadata.mediaType
 
         if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && !isBuffering) {
