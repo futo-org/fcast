@@ -12,8 +12,11 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.buildSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -350,13 +353,17 @@ object MetadataObjectSerializer : KSerializer<MetadataObject> {
     }
 
     override fun serialize(encoder: Encoder, value: MetadataObject) {
+        val json = Json { ignoreUnknownKeys = true }
         val jsonEncoder = encoder as? JsonEncoder ?: error("This serializer works only with Json")
 
         when (value) {
-            is GenericMediaMetadata -> jsonEncoder.encodeSerializableValue(
-                GenericMediaMetadata.serializer(),
-                value
-            )
+            is GenericMediaMetadata -> {
+                val jsonObject =
+                    json.encodeToJsonElement(GenericMediaMetadata.serializer(), value).jsonObject
+                val map = jsonObject.toMutableMap()
+                map["type"] = JsonPrimitive(value.type.value)
+                jsonEncoder.encodeJsonElement(JsonObject(map))
+            }
         }
     }
 }
