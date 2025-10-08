@@ -18,7 +18,6 @@ namespace FCastReceiverService
         public static MessagePort IpcPort { get; private set; }
 
         private static DnssdService tcpDnssdService;
-        private static DnssdService wsDnssdService;
         private static TcpListenerService tcpListenerService;
         private static WebSocketListnerService webSocketListenerService;
 
@@ -56,12 +55,6 @@ namespace FCastReceiverService
             tcpDnssdService.Port = TcpListenerService.Port;
             tcpDnssdService.Name = $"{SystemInformation.Manufacturer} {SystemInformation.ModelName}";
             tcpDnssdService.RegisterService();
-
-            //wsDnssdService = new DnssdService("_fcast._ws");
-            wsDnssdService = new DnssdService("_fcast-ws._tcp");
-            wsDnssdService.Port = WebSocketListnerService.Port;
-            wsDnssdService.Name = $"{SystemInformation.Manufacturer} {SystemInformation.ModelName}";
-            wsDnssdService.RegisterService();
 
             tcpListenerService = new TcpListenerService();
             List<IListenerService> listeners = new List<IListenerService>() { tcpListenerService };
@@ -120,9 +113,6 @@ namespace FCastReceiverService
 
             tcpDnssdService.DeregisterService();
             tcpDnssdService.Dispose();
-
-            wsDnssdService.DeregisterService();
-            wsDnssdService.Dispose();
 
             base.OnTerminate();
         }

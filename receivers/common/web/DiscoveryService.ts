@@ -8,10 +8,9 @@ const logger = new Logger('DiscoveryService', LoggerType.BACKEND);
 
 export class DiscoveryService {
     private serviceTcp: any;
-    private serviceWs: any;
 
     start() {
-        if (this.serviceTcp || this.serviceWs) {
+        if (this.serviceTcp) {
             return;
         }
 
@@ -28,24 +27,12 @@ export class DiscoveryService {
             appVersion: getAppVersion(),
         } });
         this.serviceTcp.start();
-        this.serviceWs = mdns.createAdvertisement(mdns.tcp('_fcast-ws'), WebSocketListenerService.PORT,
-        { name: name, txt: {
-            version: PROTOCOL_VERSION,
-            appName: getAppName(),
-            appVersion: getAppVersion(),
-        } });
-        this.serviceWs.start();
     }
 
     stop() {
         if (this.serviceTcp) {
             this.serviceTcp.stop();
             this.serviceTcp = null;
-        }
-
-        if (this.serviceWs) {
-            this.serviceWs.stop();
-            this.serviceWs = null;
         }
     }
 }
