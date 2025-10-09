@@ -17,6 +17,11 @@ import { preparePlayMessage } from 'common/UtilityBackend';
 import * as os from 'os';
 import { EventEmitter } from 'events';
 import { ToastIcon } from 'common/components/Toast';
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+const { version } = __non_webpack_require__('./package.json');
+
 const logger = new Logger('Main', LoggerType.BACKEND);
 const serviceId = 'com.futo.fcast.receiver.service';
 const service = new Service(serviceId);
@@ -27,6 +32,7 @@ class AppCache {
     public appVersion: string = null;
     public playMessage: PlayMessage = null;
     public playerVolume: number = null;
+    public playbackUpdate: PlaybackUpdateMessage = null;
     public subscribedKeys = new Set<string>();
 }
 
@@ -85,7 +91,10 @@ export class Main {
 
 	static {
 		try {
-            logger.info(`OS: ${process.platform} ${process.arch}`);
+            Main.cache.appName = "FCast Receiver webOS"
+            Main.cache.appVersion = version
+
+            logger.info(`${Main.cache.appName}: ${Main.cache.appVersion}, OS: ${process.platform} ${process.arch}`);
 
             // Service will timeout and casting will disconnect if not forced to be kept alive
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -309,7 +318,16 @@ export function getAppVersion() {
 }
 
 export function getPlayMessage() {
-    return Main.cache.playMessage;
+    return Main.cache.playbackUpdate === null ? Main.cache.playMessage : {
+        ...Main.cache.playMessage,
+        time: Main.cache.playbackUpdate.time,
+        volume: Main.cache.playerVolume,
+        speed: Main.cache.playbackUpdate.speed
+    };
+}
+
+export function getPlaybackUpdateMessage() {
+    return Main.cache.playbackUpdate;
 }
 
 export async function errorHandler(error: Error) {
