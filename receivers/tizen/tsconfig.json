@@ -13,6 +13,7 @@
     "baseUrl": ".",
     "paths": {
       "src/*": ["./src/*"],
+      "lib/*": ["./lib/*"],
       "modules/*": ["./node_modules/*"],
       "common/*": ["../common/web/*"],
     }
