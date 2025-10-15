@@ -1,6 +1,7 @@
 /.metadata/
 dist
 certs
+FCastReceiver.wgt
 
 .env
 FCastReceiver/.buildResult
