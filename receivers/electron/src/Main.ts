@@ -484,7 +484,7 @@ export class Main {
     static async main(app: Electron.App) {
         try {
             Main.application = app;
-            Main.cache.appName = app.name;
+            Main.cache.appName = "FCast Receiver Electron";
             Main.cache.appVersion = app.getVersion();
 
             // Using singleton classes for better compatibility running on webOS

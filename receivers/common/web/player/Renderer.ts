@@ -855,6 +855,7 @@ function mediaEndHandler() {
         playlistIndex++;
 
         if (playlistIndex < cachedPlaylist.items.length) {
+            logger.info('Media playback ended:', cachedPlayMediaItem);
             cachedPlayMediaItem = cachedPlaylist.items[playlistIndex];
             playItemCached = true;
             window.targetAPI.sendPlayRequest(playMessageFromMediaItem(cachedPlaylist.items[playlistIndex]), playlistIndex);

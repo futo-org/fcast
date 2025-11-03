@@ -99,7 +99,7 @@ if (TARGET === 'electron') {
         preloadData.subscribedKeys.keyUp = new Set(value.keyUp);
     };
 
-    preloadData.onToast = (message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
+    preloadData.onToastCb = (message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) => {
         toast(message, icon, duration);
     };
 
