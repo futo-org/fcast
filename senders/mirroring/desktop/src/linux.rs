@@ -225,7 +225,7 @@ pub async fn video_source_fetch_worker(
                 event_tx
                     .send(Event::UnsupportedDisplaySystem)
                     .await
-                    .unwrap();
+                    .expect("event loop is not running");
                 return;
             }
         };
@@ -323,7 +323,13 @@ pub async fn video_source_fetch_worker(
                 };
                 let stream = stream.to_owned();
 
-                let fd = new_proxy.open_pipe_wire_remote(&new_session).await.unwrap();
+                let fd = match new_proxy.open_pipe_wire_remote(&new_session).await {
+                    Ok(fd) => fd,
+                    Err(err) => {
+                        error!(?err, "Failed to open PipeWire remote");
+                        continue;
+                    }
+                };
 
                 event_tx
                     .send(Event::VideosAvailable(vec![(
@@ -334,7 +340,7 @@ pub async fn video_source_fetch_worker(
                         },
                     )]))
                     .await
-                    .unwrap();
+                    .expect("event loop is not running");
 
                 _proxy = Some(new_proxy);
                 _session = Some(new_session);
@@ -356,7 +362,7 @@ pub async fn video_source_fetch_worker(
                 event_tx
                     .send(Event::VideosAvailable(sources))
                     .await
-                    .unwrap();
+                    .expect("event loop is not running");
             }
             (FetchEvent::Quit, _) => break,
         }
