@@ -348,6 +348,7 @@ pub struct ApplicationInfo {
     pub display_name: String,
 }
 
+// NOTE: defaults are commented out because uniffi v30 does not work with csharp currently
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, Clone)]
 pub enum LoadRequest {

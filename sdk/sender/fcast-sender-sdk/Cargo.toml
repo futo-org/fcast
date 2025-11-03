@@ -52,7 +52,8 @@ cfg_aliases = "0.2.1"
 prost-build = { version = "0.14.1", optional = true }
 
 [features]
-default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
+# default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
+default = ["fcast", "chromecast", "uniffi", "logging", "discovery", "_uniffi_csharp"]
 fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64", "dep:url"]
 chromecast = ["dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls", "dep:prost", "dep:prost-build"]
 http-file-server = ["dep:uuid", "dep:libc", "dep:http-range"]
@@ -63,6 +64,7 @@ discovery_types = []
 _mobile_defaults = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery_types"]
 _android_defaults = ["_mobile_defaults"]
 _ios_defaults = ["_mobile_defaults"]
+_uniffi_csharp = []
 
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
