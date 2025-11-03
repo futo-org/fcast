@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
+use tokio_rustls::rustls::{self, ClientConfig};
 use tokio_rustls::TlsConnector;
 
 use crate::device::{
@@ -34,18 +34,16 @@ const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
 const RECEIVER_APP_ID: &str = "CC1AD845";
 const MAX_LAUNCH_RETRIES: u8 = 15;
 
-struct RequestId {
-    inner: u64,
-}
+struct RequestId(u64);
 
 impl RequestId {
     pub fn new() -> Self {
-        Self { inner: 0 }
+        Self(0)
     }
 
     pub fn inc(&mut self) -> u64 {
-        self.inner += 1;
-        self.inner - 1
+        self.0 += 1;
+        self.0 - 1
     }
 }
 
@@ -439,8 +437,6 @@ impl InnerDevice {
         let remote_addr = stream.peer_addr()?.ip();
         let stream_local_addr = stream.local_addr()?.ip();
 
-        let mut root_cert_store = RootCertStore::empty();
-        root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AllCertVerifier))

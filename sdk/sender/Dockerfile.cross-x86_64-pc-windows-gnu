@@ -1,0 +1,11 @@
+# https://www.docker.com/blog/cross-compiling-rust-code-for-multiple-architectures/
+# docker build --no-cache -t fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest -f Dockerfile.cross-x86_64-pc-windows-gnu .
+# docker run --rm -it -w /app --entrypoint='bash' --network host -v .:/app fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest
+
+FROM rust:latest
+
+RUN apt update && apt upgrade -y
+RUN apt install -y g++-mingw-w64-x86-64 protobuf-compiler
+
+RUN rustup target add x86_64-pc-windows-gnu
+RUN rustup toolchain install stable-x86_64-pc-windows-gnu --force-non-host
