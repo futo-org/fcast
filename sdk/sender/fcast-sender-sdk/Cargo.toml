@@ -9,7 +9,7 @@ edition = "2021"
 publish = true
 
 [dependencies]
-uniffi = { version = "0.30.0", optional = true }
+uniffi = { version = "0.29.4", optional = true }
 tokio.workspace = true
 log.workspace= true
 anyhow.workspace = true
