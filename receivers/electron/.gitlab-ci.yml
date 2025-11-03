@@ -22,6 +22,7 @@ buildMac:
   variables:
     FCAST_CHANNEL: "stable"
     FCAST_CHANNEL_VERSION: "1"
+    UPLOAD_ARTIFACTS: true
   before_script:
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
     - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
@@ -43,7 +44,10 @@ buildMac:
     - npm run build
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
-    - scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
+    - |
+      if [ "$UPLOAD_ARTIFACTS" == "true" ]; then
+        scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
+      fi
   artifacts:
     untracked: false
     when: on_success
