@@ -1,4 +1,5 @@
-import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell } from 'electron';
+/* eslint-disable @typescript-eslint/ban-ts-comment */
+import { BrowserWindow, ipcMain, IpcMainEvent, nativeImage, Tray, Menu, dialog, shell, MenuItemConstructorOptions, MenuItem } from 'electron';
 import { ToastIcon } from 'common/components/Toast';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage, MetadataType, GenericMediaMetadata } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
@@ -56,40 +57,43 @@ export class Main {
     }
 
     private static async checkForUpdates(silent: boolean) {
-        if (Updater.updateDownloaded) {
-            Main.mainWindow?.webContents?.send("download-complete");
-            return;
-        }
-
-        try {
-            const updateAvailable = await Updater.checkForUpdates();
-
-            if (updateAvailable) {
-                Main.mainWindow?.webContents?.send("update-available");
+        // @ts-ignore
+        if (UPDATER) {
+            if (Updater.updateDownloaded) {
+                Main.mainWindow?.webContents?.send("download-complete");
+                return;
             }
-            else {
+
+            try {
+                const updateAvailable = await Updater.checkForUpdates();
+
+                if (updateAvailable) {
+                    Main.mainWindow?.webContents?.send("update-available");
+                }
+                else {
+                    if (!silent) {
+                        await dialog.showMessageBox({
+                            type: 'info',
+                            title: 'Already up-to-date',
+                            message: 'The application is already on the latest version.',
+                            buttons: ['OK'],
+                            defaultId: 0
+                        });
+                    }
+                }
+            } catch (err) {
                 if (!silent) {
                     await dialog.showMessageBox({
-                        type: 'info',
-                        title: 'Already up-to-date',
-                        message: 'The application is already on the latest version.',
+                        type: 'error',
+                        title: 'Failed to check for updates',
+                        message: err,
                         buttons: ['OK'],
                         defaultId: 0
                     });
                 }
-            }
-        } catch (err) {
-            if (!silent) {
-                await dialog.showMessageBox({
-                    type: 'error',
-                    title: 'Failed to check for updates',
-                    message: err,
-                    buttons: ['OK'],
-                    defaultId: 0
-                });
-            }
 
-            logger.error('Failed to check for updates:', err);
+                logger.error('Failed to check for updates:', err);
+            }
         }
     }
 
@@ -97,7 +101,7 @@ export class Main {
         const icon = (process.platform === 'win32') ? path.join(__dirname, 'assets/icons/app/icon.ico') : path.join(__dirname, 'assets/icons/app/icon.png');
         const trayicon = nativeImage.createFromPath(icon)
         const tray = new Tray(trayicon.resize({ width: 16 }));
-        const contextMenu = Menu.buildFromTemplate([
+        const menuItems: (MenuItemConstructorOptions | MenuItem)[] = [
             {
                 label: 'Toggle window',
                 click: () => { Main.toggleMainWindow(); }
@@ -111,14 +115,17 @@ export class Main {
                 click: async () => {
                     let aboutMessage = `Version: ${Main.application.getVersion()}\n`;
 
-                    if (Updater.getCommit()) {
-                        aboutMessage += `Commit: ${Updater.getCommit()}\n`;
-                    }
+                    // @ts-ignore
+                    if (UPDATER) {
+                        if (Updater.getCommit()) {
+                            aboutMessage += `Commit: ${Updater.getCommit()}\n`;
+                        }
 
-                    aboutMessage += `Release channel: ${Updater.releaseChannel}\n`;
+                        aboutMessage += `Release channel: ${Updater.releaseChannel}\n`;
 
-                    if (Updater.releaseChannel !== 'stable') {
-                        aboutMessage += `Release channel version: ${Updater.getChannelVersion()}\n`;
+                        if (Updater.releaseChannel !== 'stable') {
+                            aboutMessage += `Release channel version: ${Updater.getChannelVersion()}\n`;
+                        }
                     }
 
                     aboutMessage += `OS: ${process.platform} ${process.arch}\n`;
@@ -148,8 +155,14 @@ export class Main {
                     this.application.quit();
                 }
             }
-        ])
+        ];
 
+        // @ts-ignore
+        if (!UPDATER) {
+            menuItems.splice(1, 1);
+        }
+
+        const contextMenu = Menu.buildFromTemplate(menuItems);
         tray.setContextMenu(contextMenu);
 
         // Left-click opens up tray menu, unlike in Windows/Linux
@@ -314,31 +327,35 @@ export class Main {
             Main.mediaCache?.cacheItems(playlistIndex);
             Main.play(value);
         });
-        ipcMain.on('send-download-request', async () => {
-            if (!Updater.isDownloading) {
-                try {
-                    await Updater.downloadUpdate();
-                    Main.mainWindow?.webContents?.send("download-complete");
-                } catch (err) {
-                    await dialog.showMessageBox({
-                        type: 'error',
-                        title: 'Failed to download update',
-                        message: err,
-                        buttons: ['OK'],
-                        defaultId: 0
-                    });
 
-                    logger.error('Failed to download update:', err);
-                    Main.mainWindow?.webContents?.send("download-failed");
+        // @ts-ignore
+        if (UPDATER) {
+            ipcMain.on('send-download-request', async () => {
+                if (!Updater.isDownloading) {
+                    try {
+                        await Updater.downloadUpdate();
+                        Main.mainWindow?.webContents?.send("download-complete");
+                    } catch (err) {
+                        await dialog.showMessageBox({
+                            type: 'error',
+                            title: 'Failed to download update',
+                            message: err,
+                            buttons: ['OK'],
+                            defaultId: 0
+                        });
+
+                        logger.error('Failed to download update:', err);
+                        Main.mainWindow?.webContents?.send("download-failed");
+                    }
                 }
-            }
-        });
+            });
 
-        ipcMain.on('send-restart-request', async () => {
-            Updater.restart();
-        });
+            ipcMain.on('send-restart-request', async () => {
+                Updater.restart();
+            });
 
-        ipcMain.handle('updater-progress', async () => { return Updater.updateProgress; });
+            ipcMain.handle('updater-progress', async () => { return Updater.updateProgress; });
+        }
 
         ipcMain.handle('is-full-screen', async () => {
             const window = Main.playerWindow;
@@ -397,18 +414,21 @@ export class Main {
             Main.openMainWindow();
         }
 
-        if (Updater.updateError) {
-            dialog.showMessageBox({
-                type: 'error',
-                title: 'Error applying update',
-                message: 'Please try again later or visit https://fcast.org to update.',
-                buttons: ['OK'],
-                defaultId: 0
-            });
-        }
+        // @ts-ignore
+        if (UPDATER) {
+            if (Updater.updateError) {
+                dialog.showMessageBox({
+                    type: 'error',
+                    title: 'Error applying update',
+                    message: 'Please try again later or visit https://fcast.org to update.',
+                    buttons: ['OK'],
+                    defaultId: 0
+                });
+            }
 
-        if (Updater.checkForUpdatesOnStart) {
-            Main.checkForUpdates(true);
+            if (Updater.checkForUpdatesOnStart) {
+                Main.checkForUpdates(true);
+            }
         }
 
         Main.mainWindow?.webContents?.setWindowOpenHandler((details) => {
@@ -507,8 +527,13 @@ export class Main {
             })
             .parseSync();
 
-            new Updater();
-            const isUpdating = Updater.isUpdating();
+            let isUpdating = false;
+            // @ts-ignore
+            if (UPDATER) {
+                new Updater();
+                isUpdating = Updater.isUpdating();
+            }
+
             const fileLogType = isUpdating ? 'fileSync' : 'file';
             Logger.initialize({
                 appenders: {
@@ -522,14 +547,21 @@ export class Main {
             logger = new Logger('Main', LoggerType.BACKEND);
             logger.info(`Starting application: ${app.name} | ${app.getAppPath()}`);
             logger.info(`Version: ${app.getVersion()}`);
-            logger.info(`Commit: ${Updater.getCommit()}`);
-            logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
             logger.info(`OS: ${process.platform} ${process.arch}`);
+
+            // @ts-ignore
+            if (UPDATER) {
+                logger.info(`Commit: ${Updater.getCommit()}`);
+                logger.info(`Release channel: ${Updater.releaseChannel} - ${Updater.getChannelVersion()}`);
+            }
 
             process.setUncaughtExceptionCaptureCallback(async (error) => await errorHandler(error));
 
-            if (isUpdating) {
-                await Updater.processUpdate();
+            // @ts-ignore
+            if (UPDATER) {
+                if (isUpdating) {
+                    await Updater.processUpdate();
+                }
             }
 
             Main.startFullscreen = argv.fullscreen === undefined ? Settings.json.ui.fullscreen : argv.fullscreen;

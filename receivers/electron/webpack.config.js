@@ -8,6 +8,8 @@ const TARGET = 'electron';
 // const TARGET = 'webOS';
 // const TARGET = 'tizenOS';
 
+const UPDATER = (process.env.UPDATER != undefined && process.env.UPDATER.toLowerCase() === 'false') ? false : true;
+
 module.exports = [
     {
         mode: buildMode,
@@ -54,7 +56,8 @@ module.exports = [
                 ],
             }),
             new webpack.DefinePlugin({
-                TARGET: JSON.stringify(TARGET)
+                TARGET: JSON.stringify(TARGET),
+                UPDATER: JSON.stringify(UPDATER),
             })
         ]
     },
@@ -102,7 +105,8 @@ module.exports = [
                 ],
             }),
             new webpack.DefinePlugin({
-                TARGET: JSON.stringify(TARGET)
+                TARGET: JSON.stringify(TARGET),
+                UPDATER: JSON.stringify(UPDATER),
             })
         ]
     },
@@ -149,7 +153,8 @@ module.exports = [
                 ],
             }),
             new webpack.DefinePlugin({
-                TARGET: JSON.stringify(TARGET)
+                TARGET: JSON.stringify(TARGET),
+                UPDATER: JSON.stringify(UPDATER),
             })
         ]
     },
@@ -197,7 +202,8 @@ module.exports = [
                 ],
             }),
             new webpack.DefinePlugin({
-                TARGET: JSON.stringify(TARGET)
+                TARGET: JSON.stringify(TARGET),
+                UPDATER: JSON.stringify(UPDATER),
             })
         ]
     }
