@@ -36,10 +36,6 @@ crate-type = ["cdylib"]
 package = "org.fcast.sender"
 build_targets = [ "aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android", "i686-linux-android" ]
 
-# See https://developer.android.com/guide/topics/manifest/uses-sdk-element
-#
-# Defaults to a `min_sdk_version` of 23 and `target_sdk_version` of 30 (or lower if the detected NDK doesn't support this).
-# TODO: should be lower than 35
 [package.metadata.android.sdk]
 min_sdk_version = 26
-target_sdk_version = 35
+target_sdk_version = 34

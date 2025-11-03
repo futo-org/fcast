@@ -1,0 +1,9 @@
+[package]
+name = "receiver-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rcore = { path = "../rcore", features = ["desktop"] }
+env_logger.workspace = true
+anyhow.workspace = true
