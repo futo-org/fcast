@@ -5,6 +5,7 @@
 The uncompressed gstreamer directory is quite large (~14GiB) so make sure you have enough storage space.
 
 ```console
+$ cargo xtask android download-sdk
 $ cargo xtask android download-ndk
 $ cargo xtask android download-gstreamer
 ```

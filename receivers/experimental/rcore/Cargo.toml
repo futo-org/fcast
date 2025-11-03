@@ -1,0 +1,53 @@
+[package]
+name = "rcore"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio.workspace = true
+log.workspace = true
+gst = { workspace = true, features = [ "v1_26" ] }
+fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
+# common.path = "../common"
+gethostname = "1.0.1"
+# slint = { workspace = true, features = ["unstable-wgpu-26", "renderer-femtovg-wgpu"] }
+# slint = { workspace = true, features = ["unstable-wgpu-26"] }
+slint.workspace = true
+anyhow.workspace = true
+# futures.workspace = true
+futures = "0.3"
+# tokio-stream.workspace = true
+tokio-stream = "0.1.17"
+url = "2.5.4"
+thiserror = "2.0.12"
+clap = { version = "4.5.38", features = ["derive"] }
+mdns-sd.workspace = true
+qrcode = "0.14.1"
+gst-app.workspace = true
+gst-video.workspace = true
+gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
+serde_json.workspace = true
+getifaddrs = "0.6.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
+glutin_egl_sys = { version = "0.7.1" }
+glutin_glx_sys = { version = "0.6.1" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+glutin_egl_sys = { version = "0.7.1" }
+
+
+[build-dependencies]
+slint-build.workspace = true
+
+[features]
+# desktop = ["slint/backend-linuxkms"]
+desktop = []
+android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
+default = []

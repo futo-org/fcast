@@ -72,11 +72,10 @@ pub struct WhepSink {
 
 impl WhepSink {
     fn add_video_src(&mut self, sink: &gst::Element, src: VideoSource) -> anyhow::Result<()> {
-        match src {
+        let src_element = match src {
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { node_id, fd } => {
                 use std::os::fd::AsRawFd;
-
                 let src = gst::ElementFactory::make("pipewiresrc")
                     .property("client-name", "FCast Sender Video Capture")
                     .property("fd", fd.as_raw_fd())
@@ -84,32 +83,16 @@ impl WhepSink {
                     // https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/4797
                     .property("use-bufferpool", false)
                     .build()?;
-                let rate = gst::ElementFactory::make("videorate")
-                    .property("drop-only", true)
-                    .build()?;
-                let rate_caps = gst::ElementFactory::make("capsfilter")
-                    .property(
-                        "caps",
-                        gst::Caps::builder("video/x-raw")
-                            .field("framerate", gst::Fraction::new(30, 1))
-                            .build(),
-                    )
-                    .build()?;
 
                 self.extra_video = Some(ExtraVideoContext::PipewireVideoSource { _fd: fd });
 
-                self.pipeline.add_many([&src, &rate_caps, &rate])?;
-                gst::Element::link_many([&src, &rate, &rate_caps, sink])?;
+                src
             }
             #[cfg(target_os = "linux")]
-            VideoSource::XWindow { id, .. } => {
-                let src = gst::ElementFactory::make("ximagesrc")
-                    .property("xid", id as u64)
-                    .property("use-damage", false)
-                    .build()?;
-                self.pipeline.add(&src)?;
-                src.link(sink)?;
-            }
+            VideoSource::XWindow { id, .. } => gst::ElementFactory::make("ximagesrc")
+                .property("xid", id as u64)
+                .property("use-damage", false)
+                .build()?,
             #[cfg(target_os = "linux")]
             VideoSource::XDisplay {
                 id,
@@ -118,84 +101,123 @@ impl WhepSink {
                 x_offset,
                 y_offset,
                 ..
-            } => {
-                let src = gst::ElementFactory::make("ximagesrc")
-                    .property("xid", id as u64)
-                    .property("startx", x_offset as u32)
-                    .property("starty", y_offset as u32)
-                    .property("endx", (x_offset as u32) + (width as u32) - 1)
-                    .property("endy", (y_offset as u32) + (height as u32) - 1)
-                    .property("use-damage", false)
-                    .build()?;
-                self.pipeline.add(&src)?;
-                src.link(sink)?;
-            }
+            } => gst::ElementFactory::make("ximagesrc")
+                .property("xid", id as u64)
+                .property("startx", x_offset as u32)
+                .property("starty", y_offset as u32)
+                .property("endx", (x_offset as u32) + (width as u32) - 1)
+                .property("endy", (y_offset as u32) + (height as u32) - 1)
+                .property("use-damage", false)
+                .build()?,
             #[cfg(target_os = "macos")]
-            VideoSource::CgDisplay { id, .. } => {
-                let src = gst::ElementFactory::make("avfvideosrc")
-                    .property("capture-screen", true)
-                    .property("capture-screen-cursor", true)
-                    .property("device-index", id)
-                    .build()?;
-                let capsfilter = gst::ElementFactory::make("capsfilter")
-                    .property(
-                        "caps",
-                        gst::Caps::builder("video/x-raw")
-                            .field("framerate", gst::Fraction::new(30, 1))
-                            .build(),
-                    )
-                    .build()?;
-                self.pipeline.add_many([&src, &capsfilter])?;
-                gst::Element::link_many([&src, &capsfilter, sink])?;
-            }
+            VideoSource::CgDisplay { id, .. } => gst::ElementFactory::make("avfvideosrc")
+                .property("capture-screen", true)
+                .property("capture-screen-cursor", true)
+                .property("device-index", id)
+                .build()?,
             #[cfg(target_os = "windows")]
             VideoSource::D3d11Monitor { handle, .. } => {
-                let src = gst::ElementFactory::make("d3d11screencapturesrc")
+                gst::ElementFactory::make("d3d11screencapturesrc")
                     .property("show-cursor", true)
                     .property("monitor-handle", handle)
-                    .build()?;
-                let capsfilter = gst::ElementFactory::make("capsfilter")
-                    .property(
-                        "caps",
-                        gst::Caps::builder("video/x-raw")
-                            .field("framerate", gst::Fraction::new(30, 1))
-                            .build(),
-                    )
-                    .build()?;
-                self.pipeline.add_many([&src, &capsfilter])?;
-                gst::Element::link_many([&src, &capsfilter, sink])?;
+                    .build()?
             }
             #[cfg(target_os = "android")]
-            VideoSource::Source(appsrc) => {
-                // let queue = gst::ElementFactory::make("queue").build()?;
-                // let scale = gst::ElementFactory::make("videoscale").build()?;
-                let convertscale = gst::ElementFactory::make("videoconvertscale").build()?;
-                let capsfilter = gst::ElementFactory::make("capsfilter")
-                    .property(
-                        "caps",
-                        gst::Caps::builder("video/x-raw")
-                            // NOTE: Downscale if necessary, many phones are 4K and encoding that in realtime is not a good idea
-                            .field("width", gst::IntRange::new(1, 1920))
-                            .field("height", gst::IntRange::new(1, 1080))
-                            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-                            // .field("format", "I420") // TODO: test perf
-                            .build(),
-                    )
-                    .build()?;
+            VideoSource::Source(appsrc) => appsrc.upcast(),
+        };
 
-                // self.pipeline
-                //     .add_many([appsrc.upcast_ref(), &scale, &capsfilter])?;
-                // gst::Element::link_many([appsrc.upcast_ref(), &scale, &capsfilter, sink])?;
+        let scale = gst::ElementFactory::make("videoscale")
+            .property("add-borders", false)
+            .build()?;
+        let rate = gst::ElementFactory::make("videorate")
+            .property("drop-only", true)
+            .build()?;
+        let capsfilter = gst::ElementFactory::make("capsfilter")
+            .property_from_str("caps-change-mode", "delayed")
+            .property(
+                "caps",
+                gst::Caps::builder("video/x-raw")
+                    // TODO: the user should be able to change framerate and dims if they would like to
+                    .field("framerate", gst::Fraction::new(30, 1))
+                    .field("interlace-mode", "progressive")
+                    .build(),
+            )
+            .build()?;
 
-                self.pipeline
-                    .add_many([appsrc.upcast_ref(), &convertscale, &capsfilter])?;
-                gst::Element::link_many([appsrc.upcast_ref(), &convertscale, &capsfilter, sink])?;
+        let capsfilter_weak = capsfilter.downgrade();
 
-                // self.pipeline
-                // .add_many([appsrc.upcast_ref(), &queue, &scale, &capsfilter])?;
-                // gst::Element::link_many([appsrc.upcast_ref(), &queue, &scale, &capsfilter, sink])?;
-            }
-        }
+        self.pipeline
+            .add_many([&src_element, &scale, &rate, &capsfilter])?;
+        gst::Element::link_many([&src_element, &scale, &rate, &capsfilter, sink])?;
+
+        let caps_sink_pad = capsfilter.static_pad("sink").unwrap();
+        caps_sink_pad
+            .add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+                let Some(event) = info.event() else {
+                    return gst::PadProbeReturn::Ok;
+                };
+
+                use gst::event::EventView;
+
+                if let EventView::Caps(caps) = event.view()
+                    && let Ok(video_info) = gst_video::VideoInfo::from_caps(caps.caps())
+                {
+                    let width = video_info.width();
+                    let height = video_info.height();
+
+                    // TODO: the user should be able to change this if they would like to
+                    let max_dim = 1920;
+
+                    if width <= max_dim && height <= max_dim {
+                        return gst::PadProbeReturn::Ok;
+                    }
+
+                    let (scaled_width, scaled_height) = if width > height {
+                        (
+                            max_dim,
+                            (height as f32 * (max_dim as f32 / width as f32)).trunc() as u32,
+                        )
+                    } else {
+                        (
+                            (width as f32 * (max_dim as f32 / height as f32)).trunc() as u32,
+                            max_dim,
+                        )
+                    };
+
+                    debug!(
+                        width,
+                        height, scaled_width, scaled_height, "Scaling resolution"
+                    );
+
+                    if let Some(capsfilter) = capsfilter_weak.upgrade() {
+                        let mut new_caps =
+                            match gst_video::VideoInfo::builder_from_info(&video_info).build() {
+                                Ok(info) => match info.to_caps() {
+                                    Ok(caps) => caps,
+                                    Err(err) => {
+                                        error!(?err, "Failed to build caps");
+                                        return gst::PadProbeReturn::Ok;
+                                    }
+                                },
+                                Err(err) => {
+                                    error!(?err, "Failed to build VideoInfo");
+                                    return gst::PadProbeReturn::Ok;
+                                }
+                            };
+
+                        let new_caps_mut = new_caps.make_mut();
+                        new_caps_mut.set("width", scaled_width as i32);
+                        new_caps_mut.set("height", scaled_height as i32);
+
+                        capsfilter.set_property("caps", new_caps);
+                    }
+                }
+
+                gst::PadProbeReturn::Ok
+            })
+            .ok_or(anyhow::anyhow!(
+                "Could not add probe to capsfilter's sink pad"
+            ))?;
 
         Ok(())
     }
@@ -477,6 +499,9 @@ impl WhepSink {
         sink.set_property("max-bitrate", WHEP_MAX_BITRATE);
         sink.set_property_from_str("enable-mitigation-modes", "downsampled");
         sink.set_property_from_str("stun-server", ""); // We don't care about internet connections
+        // NOTE: we ask for VP8 only because it's widely available and having few possible formats
+        //       reduces the startup time before streaming
+        sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
 
         let sink = sink.upcast();
 

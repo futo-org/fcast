@@ -67,8 +67,7 @@ mod imp {
             .boxed()
     }
 
-    fn resp_not_found() -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::http::Error>
-    {
+    fn resp_not_found() -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::http::Error> {
         Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(body_empty())
@@ -308,9 +307,7 @@ mod imp {
                 // OPTIONS /endpoint
                 (&Method::OPTIONS, ENDPOINT_PATH, _) => self.options_handler().await,
                 // POST /endpoint/:id
-                (&Method::POST, path, Some(CONTENT_SDP))
-                    if path.starts_with(ENDPOINT_PATH) =>
-                {
+                (&Method::POST, path, Some(CONTENT_SDP)) if path.starts_with(ENDPOINT_PATH) => {
                     match path.strip_prefix(&format!("{ENDPOINT_PATH}/")) {
                         Some(session_id) => {
                             let session_id = session_id.to_string();
