@@ -4,7 +4,7 @@ use fcast_sender_sdk::{
     context::CastContext,
     device::{
         ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, KeyEvent,
-        MediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
+        LoadRequest, MediaEvent, PlaybackState, ProtocolType, Source,
     },
     IpAddr,
 };
@@ -83,7 +83,8 @@ async fn main() {
 
     dev.load(LoadRequest::Video {
         content_type: "video/mp4".to_string(),
-        url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4".to_string(),
+        url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+            .to_string(),
         resume_position: 0.0,
         speed: None,
         volume: None,

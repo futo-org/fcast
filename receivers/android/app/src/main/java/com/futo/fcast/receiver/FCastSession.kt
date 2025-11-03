@@ -1,9 +1,11 @@
 package com.futo.fcast.receiver
 
 import android.util.Log
+import com.futo.fcast.receiver.models.AVCapabilities
 import com.futo.fcast.receiver.models.EventMessage
 import com.futo.fcast.receiver.models.InitialReceiverMessage
 import com.futo.fcast.receiver.models.InitialSenderMessage
+import com.futo.fcast.receiver.models.LivestreamCapabilities
 import com.futo.fcast.receiver.models.Opcode
 import com.futo.fcast.receiver.models.PROTOCOL_VERSION
 import com.futo.fcast.receiver.models.PlayMessage
@@ -14,6 +16,7 @@ import com.futo.fcast.receiver.models.PlaybackErrorMessage
 import com.futo.fcast.receiver.models.PlaybackUpdateMessage
 import com.futo.fcast.receiver.models.PlaybackUpdateMessageV1
 import com.futo.fcast.receiver.models.PlaybackUpdateMessageV2
+import com.futo.fcast.receiver.models.ReceiverCapabilities
 import com.futo.fcast.receiver.models.SeekMessage
 import com.futo.fcast.receiver.models.SetPlaylistItemMessage
 import com.futo.fcast.receiver.models.SetSpeedMessage
@@ -286,6 +289,9 @@ class FCastSession(
                                 NetworkService.cache.appName,
                                 NetworkService.cache.appVersion,
                                 NetworkService.getPlayMessage(),
+                                ReceiverCapabilities(AVCapabilities(
+                                    LivestreamCapabilities(whep = true)
+                                )),
                             )
                         )
 

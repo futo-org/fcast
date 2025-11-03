@@ -1,5 +1,15 @@
 [workspace]
-members = ["sdk/sender/fcast-sender-sdk", "sdk/sender/examples/terminal", "sdk/sender/xtask", "senders/terminal", "sdk/sender/examples/desktop", "sdk/common/fcast-protocol"]
+members = [
+    "xtask",
+    "sdk/sender/fcast-sender-sdk",
+    "sdk/sender/examples/terminal",
+    "senders/terminal",
+    "sdk/sender/examples/desktop",
+    "sdk/common/fcast-protocol",
+    "sdk/mirroring_core",
+    "senders/desktop",
+    "senders/android"
+]
 resolver = "2"
 
 [workspace.package]
@@ -8,14 +18,24 @@ license = "MIT"
 [workspace.dependencies]
 tokio = { version = "1.46.1", features = [ "rt", "rt-multi-thread", "sync", "macros", "net", "time", "io-util", "fs" ] }
 serde = { version = "1.0.219", features = [ "derive" ] }
-serde_json = "1.0.140"
-thiserror = "2.0.12"
-log = "0.4.27"
+gst = { package = "gstreamer", version = "0.24.2" }
+gst-app = { package = "gstreamer-app", version = "0.24.2" }
+gst-video = { package = "gstreamer-video", version = "0.24.2" }
+serde_json = "1.0"
+thiserror = "2.0"
+log = "0.4"
 env_logger = "0.11.8"
 mdns-sd = "0.14.0"
-anyhow = "1.0.98"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3.20"
+parking_lot = "0.12.5"
+slint = "1.14.1"
+slint-build = "1.14.1"
+clap = { version = "4.5", features = ["derive"] }
+uuid = { version = "1.18.1", features = [ "v4" ] }
 
 [profile.release]
 lto = true
 codegen-units = 1
-strip = "debuginfo"
+strip = true

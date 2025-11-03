@@ -4,6 +4,7 @@ import { Opcode, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, Ve
 import { Logger, LoggerType } from 'common/Logger';
 import { getComputerName, getAppName, getAppVersion, getPlayMessage, getPlaybackUpdateMessage } from 'src/Main';
 import { v4 as uuidv4 } from 'modules/uuid';
+import { AVCapabilities, LivestreamCapabilities, ReceiverCapabilities } from './Packets';
 const logger = new Logger('FCastSession', LoggerType.BACKEND);
 
 enum SessionState {
@@ -191,6 +192,11 @@ export class FCastSession {
                             getAppName(),
                             getAppVersion(),
                             getPlayMessage(),
+                            new ReceiverCapabilities(
+                                new AVCapabilities(
+                                    new LivestreamCapabilities(true)
+                                )
+                            ),
                         ));
 
                         this.send(Opcode.PlaybackUpdate, getPlaybackUpdateMessage());
