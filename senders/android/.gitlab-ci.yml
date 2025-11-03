@@ -41,4 +41,3 @@ buildSenderAndroid:
     paths:
       - senders/android/$ANDROID_VERSION_CODE/fcast-sender-release.apk
   when: manual
-
