@@ -6,9 +6,9 @@ members = [
     "senders/terminal",
     "sdk/sender/examples/desktop",
     "sdk/common/fcast-protocol",
-    "sdk/mirroring_core",
-    "senders/desktop",
-    "senders/android"
+    "senders/mirroring/desktop",
+    "senders/mirroring/mcore",
+    "senders/mirroring/android"
 ]
 resolver = "2"
 

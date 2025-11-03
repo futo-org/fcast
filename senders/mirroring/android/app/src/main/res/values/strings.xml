@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FCast Sender</string>
+    <string name="title_activity_screen_capture">ScreenCaptureActivity</string>
+</resources>
