@@ -23,12 +23,18 @@ module.exports = [
                     test: /\.tsx?$/,
                     include: [path.resolve(__dirname, '../common/web'), path.resolve(__dirname, 'src')],
                     use: [{ loader: 'ts-loader' }]
+                },
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, 'lib'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
                 }
             ],
         },
         resolve: {
             alias: {
                 'src': path.resolve(__dirname, 'src'),
+                'lib': path.resolve(__dirname, 'lib'),
                 'modules': path.resolve(__dirname, 'node_modules'),
                 'common': path.resolve(__dirname, '../common/web'),
             },
@@ -86,12 +92,18 @@ module.exports = [
                     test: /\.tsx?$/,
                     include: [path.resolve(__dirname, '../common/web'), path.resolve(__dirname, 'src')],
                     use: [{ loader: 'ts-loader' }]
+                },
+                {
+                    test: /\.tsx?$/,
+                    include: [path.resolve(__dirname, 'lib'), path.resolve(__dirname, 'src')],
+                    use: [{ loader: 'ts-loader' }]
                 }
             ],
         },
         resolve: {
             alias: {
                 'src': path.resolve(__dirname, 'src'),
+                'lib': path.resolve(__dirname, 'lib'),
                 'modules': path.resolve(__dirname, 'node_modules'),
                 'common': path.resolve(__dirname, '../common/web'),
             },

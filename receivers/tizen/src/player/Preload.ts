@@ -4,7 +4,7 @@ import { toast, ToastIcon } from 'common/components/Toast';
 import * as tizen from 'tizen-common-web';
 
 
-const serviceId = 'qL5oFoTHoJ.FCastReceiverService.dll';
+const serviceId = 'ql5ofothoj.FCastReceiverService.dll';
 // const serviceId = 'com.futo.FCastReceiverService';
 const servicePort = tizen.messageport.requestRemoteMessagePort(serviceId, 'ipcPort');
 
@@ -35,6 +35,8 @@ const ipcPort = tizen.messageport.requestLocalMessagePort('ipcPort');
 const ipcListener = ipcPort.addMessagePortListener((data) => {
     const messageIndex = data.findIndex((i) => { return i.key === 'message' });
     const dataIndex = data.findIndex((i) => { return i.key === 'data' });
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
     const message = JSON.parse(data[dataIndex].value as string);
     console.log('Received data:', JSON.stringify(data));
     // console.log('Received message:', JSON.stringify(message));

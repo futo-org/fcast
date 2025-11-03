@@ -1,8 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<manifest package="com.futo.FCastReceiverService" version="1.0.0" api-version="5" xmlns="http://tizen.org/ns/packages">
+<manifest package="com.futo.fcastreceiverservice" version="1.0.0" api-version="5" xmlns="http://tizen.org/ns/packages">
     <author href="https://futo.org">FUTO</author>
     <profile name="tv" />
-    <service-application appid="com.futo.FCastReceiverService" exec="FCastReceiverService.dll" multiple="false" nodisplay="true" taskmanage="false" type="dotnet" auto-restart="true" on-boot="true">
+    <service-application appid="com.futo.fcastreceiverservice" exec="FCastReceiverService.dll" multiple="false" nodisplay="true" taskmanage="false" type="dotnet" auto-restart="true" on-boot="true">
         <label>FCastReceiverService</label>
         <icon>icon.png</icon>
         <background-category value="background-network" />
