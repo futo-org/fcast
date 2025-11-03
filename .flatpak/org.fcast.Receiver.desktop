@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+
+Name=FCast Receiver
+Comment=Receiver for displaying multimedia content from FCast sender applications
+Categories=AudioVideo;Audio;Video;Network;Utility;
+
+Icon=org.fcast.Receiver
+Exec=run.sh
+Terminal=false
