@@ -8,7 +8,10 @@ members = [
     "sdk/common/fcast-protocol",
     "senders/mirroring/desktop",
     "senders/mirroring/mcore",
-    "senders/mirroring/android"
+    "senders/mirroring/android",
+    "receivers/experimental/rcore",
+    "receivers/experimental/desktop",
+    "receivers/experimental/android"
 ]
 resolver = "2"
 

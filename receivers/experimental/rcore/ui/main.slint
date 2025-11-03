@@ -1,0 +1,659 @@
+// Copyright (C) 2025 Marcus L. Hanestad <marlhan@proton.me>
+//
+// This file is part of OpenMirroring.
+//
+// OpenMirroring is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// OpenMirroring is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with OpenMirroring.  If not, see <https://www.gnu.org/licenses/>.
+
+import { Spinner, HorizontalBox, Button, Palette, VerticalBox } from "std-widgets.slint";
+// import { HorizontalRule } from "../../ui-common/horizontal-rule.slint";
+import { SliderBase } from "slider-base.slint";
+
+export enum GuiPlaybackState {
+    Idle,
+    Playing,
+    Paused,
+    Loading,
+    Live,
+}
+
+export enum AppState {
+    Idle,
+    Playing,
+}
+
+export global Bridge {
+    in property <string> label;
+    in property <string> progress-label;
+    in property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
+    in property <AppState> app-state: AppState.Idle;
+
+    in-out property <bool> playing: false;
+    in-out property <float> volume: 1.0;
+    in-out property <bool> is-debugging: false;
+    in-out property <int> connected_devices: 0;
+
+    in property <image> qr-code;
+    in property <image> video-frame;
+
+    callback resume-or-pause();
+    callback seek-to-percent(float);
+    callback toggle-fullscreen();
+    callback set-volume(float);
+    callback force-quit();
+    callback debug-toggled();
+
+    public pure function gui-playback-state-to-string(pbstate: GuiPlaybackState) -> string {
+        if (pbstate == GuiPlaybackState.Idle) {
+            return "Idle";
+        }
+        if (pbstate == GuiPlaybackState.Playing) {
+            return "Playing";
+        }
+        if (pbstate == GuiPlaybackState.Paused) {
+            return "Paused";
+        }
+        if (pbstate == GuiPlaybackState.Loading) {
+            return "Loading";
+        }
+        if (pbstate == GuiPlaybackState.Live) {
+            return "Live";
+        }
+        return "Invalid";
+    }
+
+    public function toggle-debug-mode() {
+        is-debugging = !is-debugging;
+        debug-toggled();
+    }
+
+    public function device-disconnected() {
+        connected_devices = max(connected_devices - 1, 0);
+    }
+}
+
+// TODO: animate in and out transitions
+component ErrorAlert {
+    in property <string> message;
+
+    visible: false;
+
+    public function show() {
+        self.visible = true;
+        timer.counter = 0;
+        timer.running = true;
+    }
+
+    function close() {
+        self.visible = false;
+        timer.running = true;
+    }
+
+    states [
+        hover when ta.has-hover: {
+            im.colorize: #DEDEDE;
+        }
+    ]
+
+    Rectangle {
+        height: hb.preferred-height;
+        background: #FF4131;
+        border-radius: 8px;
+
+        hb := HorizontalBox {
+            alignment: space-between;
+            Text {
+                color: white;
+                vertical-alignment: center;
+                text <=> message;
+                wrap: word-wrap;
+                font-weight: 800;
+            }
+
+            ta := TouchArea {
+                height: 32px;
+                width: 32px;
+                clicked => {
+                    root.close();
+                }
+                Rectangle {
+                    im := Image {
+                        height: 100%;
+                        // source: @image-url("../../assets/icons/xmark.svg");
+                        colorize: white;
+                        animate colorize { duration: 150ms; }
+                    }
+                }
+            }
+        }
+    }
+
+    timer := Timer {
+        property <int> counter: 0;
+        interval: 1s;
+        running: true;
+        triggered => {
+            counter += 1;
+            if counter >= 4 {
+                root.close();
+            }
+        }
+    }
+}
+
+// TODO: accesibility
+component IconButton {
+    in property <image> icon <=> img.source;
+
+    callback clicked <=> ta.clicked;
+
+    out property <bool> is-engaged: ta.has-hover;
+
+    accessible-role: button;
+    accessible-action-default => {
+        ta.clicked();
+    }
+
+    ta := TouchArea { }
+
+    states [
+        active-hover when ta.has-hover: {
+            img.colorize: lightgrey;
+            ta.mouse-cursor: pointer;
+        }
+    ]
+
+    HorizontalLayout {
+        img := Image {
+            width: 17px;
+            colorize: white;
+        }
+    }
+}
+
+component OmSlider {
+    in property <Orientation> orientation <=> base.orientation;
+    in property <float> maximum <=> base.maximum;
+    in property <float> minimum <=> base.minimum;
+    in property <float> step <=> base.step;
+    in property <bool> enabled <=> base.enabled;
+    out property <bool> has-focus: base.has-focus;
+    in-out property <float> value <=> base.value;
+
+    in property <color> foreground: #008BD7;
+
+    out property <bool> handle-pressed;
+
+    min-width: base.vertical ? 20px : 0px;
+    min-height: base.vertical ? 0px : 20px;
+    vertical-stretch: base.vertical ? 1 : 0;
+    horizontal-stretch: base.vertical ? 0 : 1;
+    accessible-role: slider;
+    accessible-enabled: root.enabled;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: min(root.step, (root.maximum - root.minimum) / 100);
+    forward-focus: base;
+
+    callback changed <=> base.changed;
+    callback released <=> base.released;
+
+    rail := Rectangle {
+        width: base.vertical ? 4px : parent.width;
+        height: base.vertical ? parent.height : 4px;
+        background: grey;
+        border-radius: 2px;
+    }
+
+    track := Rectangle {
+        x: base.vertical ? (parent.width - self.width) / 2 : 0;
+        y: base.vertical ? 0 : (parent.height - self.height) / 2;
+        width: base.vertical ? rail.width : thumb.x + (thumb.width / 2);
+        height: base.vertical ? thumb.y + (thumb.height / 2) : rail.height;
+        background: root.foreground;
+    }
+
+    thumb := Rectangle {
+        x: base.vertical ? (parent.width - self.width) / 2 : clamp((parent.width - self.width) * (root.value - root.minimum) / (root.maximum - root.minimum), 0, root.width - self.width);
+        y: base.vertical ? clamp((parent.height - self.height) * (root.value - root.minimum) / (root.maximum - root.minimum), 0, root.height - self.height) : (parent.height - self.height) / 2;
+        width: 18px;
+        height: self.width;
+        border-radius: 10px;
+        background: root.foreground;
+    }
+
+    base := SliderBase {
+        width: 100%;
+        height: 100%;
+        handle-x: thumb.x;
+        handle-y: thumb.y;
+        handle-width: thumb.width;
+        handle-height: thumb.height;
+    }
+}
+
+component PlaybackControl {
+    // TODO: speed changer
+
+    in property <string> progress-label;
+
+    in-out property <GuiPlaybackState> pb-state;
+
+    out property <MouseCursor> suggested-cursor: default;
+
+    property <bool> is-scrubbing: false;
+    property <bool> is-changing-volume: false;
+    property <bool> is-fullscreen: false;
+
+    public function show() {
+        root.visible = true;
+        tim.counter = 0;
+        tim.running = true;
+        suggested-cursor = MouseCursor.default;
+    }
+
+    public function close() {
+        root.visible = false;
+        tim.running = false;
+        suggested-cursor = MouseCursor.none;
+    }
+
+    public function playback-started() {
+        show();
+    }
+
+    public function playback-stopped() {
+        show();
+    }
+
+    public function update-progress-percent(percent: float) {
+        if !is-scrubbing {
+            scrubber.value = percent;
+        }
+    }
+
+    function scrubber-changed() {
+        // Make the bar not disipear when the user is engaging with the scrubber
+        is-scrubbing = true;
+        show();
+    }
+
+    function volume-changed() {
+        is-changing-volume = true;
+        show();
+    }
+
+    // TODO: maybe touch area inside this component
+
+    Rectangle {
+        background: @linear-gradient(180deg, #8a8a8a00 0%, #202020AA 100%);
+
+        VerticalLayout {
+            scrubber := OmSlider {
+                maximum: 100;
+                value: 0;
+                enabled: pb-state != GuiPlaybackState.Loading && pb-state != GuiPlaybackState.Live;
+                changed(_) => {
+                    scrubber-changed();
+                }
+                released(position) => {
+                    is-scrubbing = false;
+                    Bridge.seek-to-percent(position);
+                }
+            }
+
+            HorizontalBox {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 15px;
+                    if pb-state == GuiPlaybackState.Loading: Spinner {
+                        indeterminate: true;
+                    }
+                    // TODO: handle is-engaged for the buttons
+                    if pb-state == GuiPlaybackState.Playing: pause-btn := IconButton {
+                        // icon: @image-url("../../assets/icons/video_pause.svg");
+                        clicked => {
+                            Bridge.resume-or-pause();
+                        }
+                    }
+                    if pb-state == GuiPlaybackState.Paused: IconButton {
+                        // icon: @image-url("../../assets/icons/video_play.svg");
+                        clicked => {
+                            Bridge.resume-or-pause();
+                        }
+                    }
+                    if pb-state == GuiPlaybackState.Live: Text {
+                        text: "LIVE";
+                        font-weight: 800;
+                        vertical-alignment: center;
+                        color: white;
+                    }
+
+                    volume-btn := IconButton {
+                        // icon: volume-slider.value > 0 ? @image-url("../../assets/icons/volume.svg") : @image-url("../../assets/icons/volume-muted.svg");
+                        clicked => {
+                            if volume-slider.value > 0 {
+                                volume-slider.value = 0;
+                                Bridge.set-volume(0);
+                            } else {
+                                // TOOD: probably shouldn't go from 0 to 100%
+                                volume-slider.value = 1;
+                                Bridge.set-volume(1);
+                            }
+                        }
+                    }
+
+                    volume-slider := OmSlider {
+                        // value: 1.0;
+                        value <=> Bridge.volume;
+                        step: 0.01;
+                        maximum: 1.0;
+                        width: 100px;
+                        foreground: white;
+                        changed(new-volume) => {
+                            volume-changed();
+                            Bridge.set-volume(new-volume);
+                        }
+                        released(new-volume) => {
+                            is-changing-volume = false;
+                            Bridge.set-volume(new-volume);
+                        }
+                    }
+
+                    Text {
+                        text <=> progress-label;
+                        vertical-alignment: center;
+                        color: white;
+                        font-size: 13px;
+                    }
+                }
+
+                fullscreen-btn := IconButton {
+                    // icon: root.is-fullscreen ? @image-url("../../assets/icons/compress.svg") : @image-url("../../assets/icons/expand.svg");
+                    clicked => {
+                        Bridge.toggle-fullscreen();
+                        root.is-fullscreen = !root.is-fullscreen;
+                    }
+                }
+            }
+        }
+    }
+
+    tim := Timer {
+        property <int> counter;
+        interval: 500ms;
+        running: true;
+        triggered => {
+            counter += 1;
+            // mouse cursor in root root
+            // Wait 500ms * 4 before hiding the bar
+            if counter >= 4 {
+                if fullscreen-btn.is-engaged || volume-btn.is-engaged {
+                    parent.show();
+                } else {
+                    parent.close();
+                }
+            }
+        }
+    }
+}
+
+component IdleView inherits Rectangle {
+    background: @linear-gradient(155deg, #414141 0%, #000000 100%);
+
+    HorizontalLayout {
+        alignment: center;
+        VerticalBox {
+            visible: !Bridge.playing;
+            alignment: center;
+            Text {
+                font-size: 26pt;
+                text: "Ready to cast";
+                font-weight: 800; // bold
+                horizontal-alignment: center;
+                color: white;
+            }
+
+            if Bridge.connected_devices == 0: Text {
+                font-size: 12pt;
+                text: "Waiting for a connection";
+                horizontal-alignment: center;
+                color: white;
+            }
+            if Bridge.connected_devices > 0: Text {
+                font-size: 12pt;
+                text: "Device is connected";
+                horizontal-alignment: center;
+                color: white;
+            }
+
+            Rectangle {
+                width: 350px;
+                height: 350px;
+                border-radius: 8px;
+                clip: true;
+                background: white;
+                Image {
+                    width: 340px;
+                    height: 340px;
+                    source <=> Bridge.qr-code;
+                    image-rendering: pixelated;
+                }
+            }
+        }
+    }
+}
+
+component VideoPlayerView inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: black;
+
+    Image {
+        source <=> Bridge.video-frame;
+        image-fit: contain;
+        width: 100%;
+        height: 100%;
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+
+        visible: Bridge.playing;
+
+        mouse-cursor: self.visible && !playback-control.visible ? none : default;
+
+        FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Space) {
+                    Bridge.resume-or-pause();
+                    return accept;
+                }
+                // TODO: seeking with arrow keys
+                reject
+            }
+        }
+
+        pointer-event(pe) => {
+            if (pe.kind == PointerEventKind.move) {
+                playback-control.show();
+            }
+        }
+
+        playback-control := PlaybackControl {
+            visible: false;
+            width: 100%;
+            y: parent.height - self.height;
+            progress-label <=> Bridge.progress-label;
+            pb-state: Bridge.playback-state;
+        }
+    }
+
+}
+
+export component MainWindow inherits Window {
+    title: "Open Mirroring Receiver";
+    // width: 100%;
+    // height: 100%;
+
+    public function playback-started() {
+        Bridge.playing = true;
+        // playback-control.playback-started();
+    }
+
+    public function device-connected() {
+        Bridge.connected_devices += 1;
+    }
+
+    // public function device-disconnected() {
+    //     Bridge.connected_devices = max(Bridge.connected_devices - 1, 0);
+    // }
+
+    public function playback-stopped() {
+        Bridge.playing = false;
+        // playback-control.playback-stopped();
+    }
+
+    public function playback-stopped-with-error(error: string) {
+        Bridge.playing = false;
+        error-alert.message = error;
+        error-alert.show();
+        // playback-control.playback-stopped();
+    }
+
+    public function update-progress-percent(percent: float) {
+        // playback-control.update-progress-percent(percent);
+    }
+
+    forward-focus: key-handler;
+
+    key-handler := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "q") {
+                Bridge.force-quit();
+                return accept;
+            }
+            if (event.text == "d") {
+                Bridge.toggle-debug-mode();
+                return accept;
+            }
+            if (event.text == "f") {
+                Bridge.toggle-fullscreen();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // Rectangle {
+    //     width: 100%;
+    //     height: 100%;
+    //     visible: Bridge.playing;
+    //     background: black;
+    //     Image {
+    //         source <=> Bridge.video-frame;
+    //         image-fit: contain;
+    //         width: 100%;
+    //         height: 100%;
+    //     }
+    // }
+
+    if Bridge.app-state == AppState.Idle: IdleView {}
+
+    if Bridge.app-state == AppState.Playing: VideoPlayerView {}
+
+    // Rectangle {
+    //     visible: !Bridge.playing;
+    //     background: @linear-gradient(155deg, #414141 0%, #000000 100%);
+    // }
+
+    // HorizontalLayout {
+    //     alignment: center;
+    //     VerticalBox {
+    //         visible: !Bridge.playing;
+    //         alignment: center;
+    //         Text {
+    //             font-size: 26pt;
+    //             text: "Ready to cast";
+    //             font-weight: 800; // bold
+    //             horizontal-alignment: center;
+    //             color: white;
+    //         }
+
+    //         if Bridge.connected_devices == 0: Text {
+    //             font-size: 12pt;
+    //             text: "Waiting for a connection";
+    //             horizontal-alignment: center;
+    //             color: white;
+    //         }
+    //         if Bridge.connected_devices > 0: Text {
+    //             font-size: 12pt;
+    //             text: "Device is connected";
+    //             horizontal-alignment: center;
+    //             color: white;
+    //         }
+
+    //         Rectangle {
+    //             width: 350px;
+    //             height: 350px;
+    //             border-radius: 8px;
+    //             clip: true;
+    //             background: white;
+    //             Image {
+    //                 width: 340px;
+    //                 height: 340px;
+    //                 source <=> Bridge.qr-code;
+    //                 image-rendering: pixelated;
+    //             }
+    //         }
+    //     }
+    // }
+
+    if (Bridge.is-debugging): Rectangle {
+        background: white.transparentize(0.25);
+        x: 0;
+        y: 0;
+        width: vl.preferred-width;
+        height: vl.preferred-height;
+        vl := VerticalBox {
+            Text {
+                text: "Connected devices: " + Bridge.connected_devices;
+            }
+
+            Text {
+                text: "Volume: " + Bridge.volume;
+            }
+
+            Text {
+                text: "Is playing: " + (Bridge.playing ? "true" : "false");
+            }
+
+            Text {
+                text: "Playback state: " + Bridge.gui-playback-state-to-string(Bridge.playback-state);
+            }
+
+            Text {
+                text: "Progress label: " + Bridge.progress-label;
+            }
+        }
+    }
+
+    // TODO: subtitles
+
+    error-alert := ErrorAlert {
+        width: min(parent.width * 0.8, 700px);
+        y: parent.height - self.height - 20px;
+    }
+}

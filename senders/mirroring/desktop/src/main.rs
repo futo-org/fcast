@@ -82,7 +82,7 @@ impl Application {
                                             .collect(),
                                     ))
                                     .await
-                                    .unwrap();
+                                    .expect("event loop is not running");
                             }
                             Err(err) => {
                                 error!("Failed to get video sources: {err}");
@@ -148,7 +148,7 @@ impl Application {
                             event_tx
                                 .send(Event::VideosAvailable(converted_devs))
                                 .await
-                                .unwrap();
+                                .expect("event loop is not running");
                         }
                         FetchEvent::Quit => break,
                         FetchEvent::ClearState => (),
@@ -361,6 +361,11 @@ impl Application {
                 self.ui_weak.upgrade_in_event_loop(|ui| {
                     ui.global::<Bridge>().invoke_change_state(AppState::Casting);
                 })?;
+
+                // if let Some(tx_sink) = self.tx_sink.as_ref() {
+                //     use gst::prelude::*;
+                //     tx_sink.pipeline.debug_to_dot_file(gst::DebugGraphDetails::ALL, "sender-pipeline");
+                // }
             }
             Event::Quit => return Ok(ShouldQuit::Yes),
             Event::VideosAvailable(sources) => {
@@ -525,6 +530,8 @@ impl Application {
         }
 
         self.video_source_fetcher_tx.send(FetchEvent::Quit).await?;
+
+        let _ = slint::quit_event_loop();
 
         Ok(())
     }
