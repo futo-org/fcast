@@ -3,7 +3,9 @@ use std::rc::Rc;
 use xshell::Shell;
 
 pub mod csharp;
+pub mod android;
 pub mod kotlin;
+pub mod sender;
 pub mod swift;
 pub mod workspace;
 

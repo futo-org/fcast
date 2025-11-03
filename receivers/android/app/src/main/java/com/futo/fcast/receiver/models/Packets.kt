@@ -199,11 +199,27 @@ data class InitialSenderMessage(
 )
 
 @Serializable
+data class LivestreamCapabilities(
+    val whep: Boolean? = null,
+)
+
+@Serializable
+data class AVCapabilities(
+    val livestream: LivestreamCapabilities? = null,
+)
+
+@Serializable
+data class ReceiverCapabilities(
+    val av: AVCapabilities? = null,
+)
+
+@Serializable
 data class InitialReceiverMessage(
     val displayName: String? = null,
     val appName: String? = null,
     val appVersion: String? = null,
     val playData: PlayMessage? = null,
+    val experimentalCapabilities: ReceiverCapabilities? = null,
 )
 
 @Serializable

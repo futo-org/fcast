@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
 use xtask::{
-    csharp, kotlin,
+    android, csharp, kotlin, sender,
     swift::{self, SwiftArgs, SwiftCommand},
 };
 
@@ -12,6 +12,8 @@ enum Command {
     GenerateIos,
     Hack,
     CSharp(csharp::CSharpArgs),
+    Android(android::AndroidArgs),
+    Sender(sender::SenderArgs),
 }
 
 #[derive(Parser)]
@@ -36,5 +38,7 @@ fn main() {
             .unwrap();
         }
         Command::CSharp(cmd) => cmd.run().unwrap(),
+        Command::Android(cmd) => cmd.run().unwrap(),
+        Command::Sender(cmd) => cmd.run().unwrap(),
     }
 }

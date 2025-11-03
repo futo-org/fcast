@@ -331,6 +331,7 @@ pub enum DeviceFeature {
     LoadPlaylist,
     PlaylistNextAndPrevious,
     SetPlaylistItemIndex,
+    WhepStreaming,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]

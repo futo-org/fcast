@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering, AtomicBool};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
-use fcast_protocol::v3::{self, InitialReceiverMessage, MetadataObject, SetPlaylistItemMessage};
+use fcast_protocol::v3::{
+    self, InitialReceiverMessage, MetadataObject, SetPlaylistItemMessage, ReceiverCapabilities,
+    AVCapabilities, LivestreamCapabilities,
+};
 use fcast_protocol::{
     v2, Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage,
     VersionMessage, VolumeUpdateMessage,
@@ -107,6 +110,7 @@ impl State {
 pub struct FCastDevice {
     state: Mutex<State>,
     session_version: FCastVersion,
+    supports_whep: Arc<AtomicBool>,
 }
 
 impl FCastDevice {
@@ -114,6 +118,7 @@ impl FCastDevice {
         Self {
             state: Mutex::new(State::new(device_info, rt_handle)),
             session_version: FCastVersion::new(),
+            supports_whep: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -155,6 +160,7 @@ struct InnerDevice {
     writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     session_version: FCastVersion,
     app_info: Option<ApplicationInfo>,
+    supports_whep: Arc<AtomicBool>,
 }
 
 impl InnerDevice {
@@ -162,12 +168,14 @@ impl InnerDevice {
         app_info: Option<ApplicationInfo>,
         event_handler: Arc<dyn DeviceEventHandler>,
         session_version: FCastVersion,
+        supports_whep: Arc<AtomicBool>,
     ) -> Self {
         Self {
             event_handler,
             writer: None,
             session_version,
             app_info,
+            supports_whep,
         }
     }
 
@@ -492,7 +500,7 @@ impl InnerDevice {
                                                 show_duration: item.show_duration,
                                                 metadata: item.metadata.map(|m| match m {
                                                     MetadataObject::Generic {title, thumbnail_url, ..} =>
-                                                        Metadata { title: title, thumbnail_url: thumbnail_url },
+                                                        Metadata { title, thumbnail_url },
                                                 }),
                                             }
                                         }
@@ -583,9 +591,7 @@ impl InnerDevice {
                                 .context("Failed to send InitialSenderMessage")?;
 
                                 self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
-                            }
-
-                            if !has_emitted_connected_event {
+                            } else {
                                 self.event_handler
                                     .connection_state_changed(DeviceConnectionState::Connected {
                                         used_remote_addr,
@@ -593,6 +599,15 @@ impl InnerDevice {
                                     });
                                 has_emitted_connected_event = true;
                             }
+
+                            // if !has_emitted_connected_event {
+                            //     self.event_handler
+                            //         .connection_state_changed(DeviceConnectionState::Connected {
+                            //             used_remote_addr,
+                            //             local_addr,
+                            //         });
+                            //     has_emitted_connected_event = true;
+                            // }
                         }
                         Opcode::Initial => {
                             let Some(body) = packet.1 else {
@@ -635,6 +650,25 @@ impl InnerDevice {
                                 if let Some(speed) = play_msg.speed {
                                     self.event_handler.speed_changed(speed);
                                 }
+                            }
+
+                            if let Some(ReceiverCapabilities {
+                                av: Some(AVCapabilities {
+                                    livestream: Some(LivestreamCapabilities {
+                                        whep: Some(supports_whep)
+                                    })
+                                })
+                            }) = initial_msg.experimental_capabilities {
+                                self.supports_whep.store(supports_whep, Ordering::Relaxed);
+                            }
+
+                            if !has_emitted_connected_event {
+                                self.event_handler
+                                    .connection_state_changed(DeviceConnectionState::Connected {
+                                        used_remote_addr,
+                                        local_addr,
+                                    });
+                                has_emitted_connected_event = true;
                             }
                         }
                         Opcode::PlaybackError => {
@@ -855,6 +889,7 @@ impl CastingDevice for FCastDevice {
             | DeviceFeature::LoadPlaylist => {
                 self.session_version.get() >= V3_FEATURES_MIN_PROTO_VERSION
             }
+            DeviceFeature::WhepStreaming => self.supports_whep.load(Ordering::Relaxed),
         }
     }
 
@@ -1027,12 +1062,13 @@ impl CastingDevice for FCastDevice {
         state.command_tx = Some(tx.clone());
 
         state.rt_handle.spawn(
-            InnerDevice::new(app_info, event_handler, self.session_version.clone()).work(
-                addrs,
-                rx,
-                tx,
-                reconnect_interval_millis,
-            ),
+            InnerDevice::new(
+                app_info,
+                event_handler,
+                self.session_version.clone(),
+                Arc::clone(&self.supports_whep),
+            )
+            .work(addrs, rx, tx, reconnect_interval_millis),
         );
 
         Ok(())

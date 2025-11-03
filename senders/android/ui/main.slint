@@ -1,0 +1,106 @@
+import { VerticalBox, Button, ListView } from "std-widgets.slint";
+
+enum AppState {
+    Disconnected,
+    WaitingForMedia,
+    Casting,
+}
+
+export global Bridge {
+    in property <[string]> devices: [
+        // "Device 1", "Device 2",
+    ];
+    in-out property <AppState> app-state: AppState.Disconnected;
+
+    callback connect-receiver(string);
+    callback stop-casting();
+    callback scan-qr();
+
+    public function change-state(to: AppState) {
+        Bridge.app-state = to;
+    }
+}
+
+component ConnectView inherits Rectangle {
+    VerticalBox {
+        Text {
+            horizontal-alignment: center;
+            font-size: 16px;
+            font-weight: 600;
+            text: "Connect to your receiver";
+        }
+
+        ListView {
+            for device in Bridge.devices: Rectangle {
+                height: 45px;
+
+                TouchArea {
+                    clicked => Bridge.connect-receiver(device);
+                }
+
+                Rectangle {
+                    width: parent.width - 10px;
+                    height: parent.height - 10px;
+                    background: lightsteelblue;
+                    border-radius: 8px;
+                    Text {
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        text: device;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 45px;
+
+            TouchArea {
+                clicked => Bridge.scan-qr();
+            }
+
+            Rectangle {
+                width: parent.width - 10px;
+                height: parent.height - 10px;
+                background: lightsteelblue;
+                border-radius: 8px;
+                Text {
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    text: "Scan QR";
+                }
+            }
+        }
+    }
+}
+
+component WaitingForMediaView inherits Rectangle {
+    VerticalBox {
+        Text {
+            horizontal-alignment: center;
+            text: "Waiting for media";
+        }
+    }
+}
+
+component CastingView inherits Rectangle {
+    VerticalBox {
+        Text {
+            horizontal-alignment: center;
+            text: "Casting";
+        }
+
+        Button {
+            text: "Stop";
+            clicked => Bridge.stop-casting();
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    if Bridge.app-state == AppState.Disconnected: ConnectView { }
+
+    if Bridge.app-state == AppState.WaitingForMedia: WaitingForMediaView { }
+
+    if Bridge.app-state == AppState.Casting : CastingView {}
+}

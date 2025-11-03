@@ -3,6 +3,7 @@ export const streamingMediaTypes = [
     'application/vnd.apple.mpegurl',
     'application/x-mpegURL',
     'application/dash+xml',
+    'application/x-whep'
 ];
 
 export const supportedVideoTypes = [

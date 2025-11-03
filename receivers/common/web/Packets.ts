@@ -172,12 +172,31 @@ export class InitialSenderMessage {
     ) {}
 }
 
+export class LivestreamCapabilities {
+    constructor(
+        public whep: boolean = null,
+    ) {}
+}
+
+export class AVCapabilities {
+    constructor(
+        public livestream: LivestreamCapabilities = null,
+    ) {}
+}
+
+export class ReceiverCapabilities {
+    constructor(
+        public av: AVCapabilities = null,
+    ) {}
+}
+
 export class InitialReceiverMessage {
     constructor(
         public displayName: string = null,
         public appName: string = null,
         public appVersion: string = null,
         public playData: PlayMessage = null,
+        public experimentalCapabilities: ReceiverCapabilities = null,
     ) {}
 }
 

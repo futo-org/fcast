@@ -70,13 +70,14 @@ fn service_resolved(
     device_info.port = port;
     device_info.addresses = addresses;
     let fullname = resolved_service.fullname;
-    if devices.contains_key(&fullname) {
-        debug!("Updating device `{}`", device_info.name);
-        event_handler.device_changed(device_info);
-    } else {
+
+    if let std::collections::hash_map::Entry::Vacant(entry) = devices.entry(fullname) {
         debug!("New device `{}`", device_info.name);
         event_handler.device_available(device_info.clone());
-        devices.insert(fullname, device_info.name);
+        entry.insert(device_info.name);
+    } else {
+        debug!("Updating device `{}`", device_info.name);
+        event_handler.device_changed(device_info);
     }
 }
 

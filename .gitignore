@@ -11,3 +11,6 @@ node_modules/
 /flake*
 /ios-bindings
 /ios-build
+/.idea
+/senders/mirroring/desktop/.flatpak-builder
+/thirdparty

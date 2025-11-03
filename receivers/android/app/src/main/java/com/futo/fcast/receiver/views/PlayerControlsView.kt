@@ -60,6 +60,7 @@ import com.futo.fcast.receiver.composables.interFontFamily
 import com.futo.fcast.receiver.composables.isAndroidTV
 import com.futo.fcast.receiver.models.ControlFocus
 import com.futo.fcast.receiver.models.PlayerActivityViewModel
+import com.futo.fcast.receiver.models.PlayerSource
 
 enum class ButtonType {
     PlayPause,
@@ -81,7 +82,9 @@ fun ControlButton(
 ) {
     var selected by remember { mutableStateOf(false) }
 
-    val (onClick, enabled, toggleShowPrimary) = if (viewModel.exoPlayer == null) {
+    val source = viewModel.source
+
+    val (onClick, enabled, toggleShowPrimary) = if (source == null) {
         when (buttonType) {
             ButtonType.PlayPause -> {
                 selected = viewModel.controlFocus == ControlFocus.Action
@@ -123,41 +126,57 @@ fun ControlButton(
             }
 
             ButtonType.PlayNext -> {
+                if (source is PlayerSource.Exo) {
 //                val state = rememberNextButtonState(viewModel.exoPlayer!!)
                 selected = viewModel.controlFocus == ControlFocus.PlayNext
 //                Triple(state::onClick, state.isEnabled, false)
                 Triple(
                     {
-                        PlayerActivity.instance?.setPlaylistItem(viewModel.exoPlayer!!.nextMediaItemIndex)
+                        PlayerActivity.instance?.setPlaylistItem(source.exoPlayer.nextMediaItemIndex)
                         Unit
                     },
-                    viewModel.exoPlayer!!.currentMediaItemIndex < viewModel.exoPlayer!!.mediaItemCount - 1,
+                    source.exoPlayer.currentMediaItemIndex < source.exoPlayer.mediaItemCount - 1,
                     false
                 )
+                } else {
+                    Triple({}, false, true)
+                }
             }
 
             ButtonType.PlayPrevious -> {
+                if (source is PlayerSource.Exo) {
 //                val state = rememberPreviousButtonState(viewModel.exoPlayer!!)
-                selected = viewModel.controlFocus == ControlFocus.PlayPrevious
+                    selected = viewModel.controlFocus == ControlFocus.PlayPrevious
 //                Triple(state::onClick, state.isEnabled, false)
-                Triple({
-                    PlayerActivity.instance?.setPlaylistItem(viewModel.exoPlayer!!.previousMediaItemIndex)
-                    Unit
-                }, viewModel.exoPlayer!!.currentMediaItemIndex > 0, false)
+                    Triple({
+                        PlayerActivity.instance?.setPlaylistItem(source.exoPlayer.previousMediaItemIndex)
+                        Unit
+                    }, source.exoPlayer.currentMediaItemIndex > 0, false)
+                } else {
+                    Triple({}, false, true)
+                }
             }
 
             ButtonType.Captions -> Triple({}, false, true)
             ButtonType.Settings -> Triple({}, false, true)
             ButtonType.SeekForward -> {
-                val state = rememberSeekForwardButtonState(viewModel.exoPlayer!!)
-                selected = viewModel.controlFocus == ControlFocus.SeekForward
-                Triple(state::onClick, state.isEnabled, false)
+                if (source is PlayerSource.Exo) {
+                    val state = rememberSeekForwardButtonState(source.exoPlayer)
+                    selected = viewModel.controlFocus == ControlFocus.SeekForward
+                    Triple(state::onClick, state.isEnabled, false)
+                } else {
+                    Triple({}, false, true)
+                }
             }
 
             ButtonType.SeekBackward -> {
-                val state = rememberSeekBackButtonState(viewModel.exoPlayer!!)
-                selected = viewModel.controlFocus == ControlFocus.SeekBackward
-                Triple(state::onClick, state.isEnabled, false)
+                if (source is PlayerSource.Exo) {
+                    val state = rememberSeekBackButtonState(source.exoPlayer)
+                    selected = viewModel.controlFocus == ControlFocus.SeekBackward
+                    Triple(state::onClick, state.isEnabled, false)
+                } else {
+                    Triple({}, false, true)
+                }
             }
         }
     }
@@ -248,14 +267,12 @@ fun PlayerProgressBar(
         Slider(
             modifier = Modifier.padding(top = 16.dp),
             value = if (duration > 0) currentPosition else 0f,
-            onValueChange =
-                if (viewModel.exoPlayer != null && (!playerState.isLive || playerState.isLiveSeekable)) {
-                    {
-                        viewModel.exoPlayer!!.seekTo(it.toLong())
-                    }
-                } else {
-                    {}
-                },
+            onValueChange = {
+                val source = viewModel.source
+                if (source != null && source is PlayerSource.Exo && (!playerState.isLive || playerState.isLiveSeekable)) {
+                    source.exoPlayer.seekTo(it.toLong())
+                }
+            },
             valueRange = 0f..duration,
             thumb = {
                 if (isAndroidTV(LocalContext.current) && selected) {
@@ -388,7 +405,7 @@ fun PlayerControlsAV(
                     )
                 }
 
-                if (viewModel.hasDuration || playerState.isPlaylist) {
+                if (viewModel.source is PlayerSource.Exo && (viewModel.hasDuration || playerState.isPlaylist)) {
                     if ((!playerState.isLive || playerState.isLiveSeekable) && playerState.mediaType != MEDIA_TYPE_MIXED) {
                         Spacer(
                             modifier = Modifier
