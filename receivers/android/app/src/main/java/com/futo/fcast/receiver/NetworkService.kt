@@ -60,7 +60,6 @@ class NetworkService : Service() {
     lateinit var discoveryService: DiscoveryService
 
     private lateinit var _tcpListenerService: TcpListenerService
-    private lateinit var _webSocketListenerService: WebSocketListenerService
     private lateinit var _proxyService: ProxyService
     private lateinit var _scope: CoroutineScope
     private var _delayedStart: Boolean = false
@@ -95,13 +94,11 @@ class NetworkService : Service() {
         }
 
         _tcpListenerService = TcpListenerService(this) { onNewSession(it) }
-        _webSocketListenerService = WebSocketListenerService(this) { onNewSession(it) }
         ConnectionMonitor(_scope)
         _proxyService = ProxyService()
 
         val name = "Network Listener Service"
-        val descriptionText =
-            "Listening on port ${TcpListenerService.PORT} (TCP) and port ${WebSocketListenerService.PORT} (Websocket)"
+        val descriptionText = "Listening on port ${TcpListenerService.PORT} (TCP)"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val importance = NotificationManager.IMPORTANCE_DEFAULT
@@ -132,7 +129,6 @@ class NetworkService : Service() {
 
         discoveryService.start()
         _tcpListenerService.start()
-        _webSocketListenerService.start()
         networkWorker.start()
         if (networkWorker.interfaces.isEmpty()) {
             _delayedStart = true
@@ -173,12 +169,6 @@ class NetworkService : Service() {
         discoveryService.stop()
         _tcpListenerService.stop()
 
-        try {
-            _webSocketListenerService.stop()
-        } catch (_: Throwable) {
-            //Ignored
-        }
-
         _proxyService.stop()
         networkWorker.stop()
         _scope.cancel()
@@ -200,7 +190,6 @@ class NetworkService : Service() {
         }
 
         _tcpListenerService.forEachSession(sender)
-        _webSocketListenerService.forEachSession(sender)
     }
 
     fun preparePlayMessage(
@@ -414,17 +403,11 @@ class NetworkService : Service() {
         if (_tcpListenerService.getSessions().contains(id)) {
             _tcpListenerService.subscribeEvent(id, message.event)
         }
-        if (_webSocketListenerService.getSessions().contains(id)) {
-            _webSocketListenerService.subscribeEvent(id, message.event)
-        }
     }
 
     fun onUnsubscribeEvent(id: UUID, message: UnsubscribeEventMessage) {
         if (_tcpListenerService.getSessions().contains(id)) {
             _tcpListenerService.unsubscribeEvent(id, message.event)
-        }
-        if (_webSocketListenerService.getSessions().contains(id)) {
-            _webSocketListenerService.unsubscribeEvent(id, message.event)
         }
     }
 
@@ -446,7 +429,6 @@ class NetworkService : Service() {
         _scope.launch(Dispatchers.IO) {
             try {
                 _tcpListenerService.send(Opcode.Event, message)
-                _webSocketListenerService.send(Opcode.Event, message)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to send event", e)
             }
@@ -456,12 +438,7 @@ class NetworkService : Service() {
     fun getSubscribedKeys(): Pair<Set<String>, Set<String>> {
         val tcpListenerSubscribedKeys =
             _tcpListenerService.getAllSubscribedKeys()
-        val webSocketListenerSubscribedKeys =
-            _webSocketListenerService.getAllSubscribedKeys()
-        val subscribeData = Pair(
-            tcpListenerSubscribedKeys.first + webSocketListenerSubscribedKeys.first,
-            tcpListenerSubscribedKeys.second + webSocketListenerSubscribedKeys.second
-        )
+        val subscribeData = Pair(tcpListenerSubscribedKeys.first, tcpListenerSubscribedKeys.second)
 
         return subscribeData
     }

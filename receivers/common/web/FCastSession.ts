@@ -3,7 +3,6 @@ import { EventEmitter } from 'events';
 import { Opcode, PlayMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, InitialSenderMessage, SetPlaylistItemMessage, SubscribeEventMessage, UnsubscribeEventMessage, PROTOCOL_VERSION, InitialReceiverMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
 import { getComputerName, getAppName, getAppVersion, getPlayMessage, getPlaybackUpdateMessage } from 'src/Main';
-import { WebSocket } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
 const logger = new Logger('FCastSession', LoggerType.BACKEND);
 
@@ -23,14 +22,14 @@ export class FCastSession {
     buffer: Buffer = Buffer.alloc(MAXIMUM_PACKET_LENGTH);
     bytesRead = 0;
     packetLength = 0;
-    socket: net.Socket | WebSocket;
+    socket: net.Socket;
     writer: (data: Buffer) => void;
     state: SessionState;
     emitter = new EventEmitter();
 
     private sentInitialMessage: boolean;
 
-    constructor(socket: net.Socket | WebSocket, writer: (data: Buffer) => void) {
+    constructor(socket: net.Socket, writer: (data: Buffer) => void) {
         this.sessionId = uuidv4();
         // Not all senders send a version message to the receiver on connection. Choosing version 2
         // as the base version since most/all current senders support this version.
@@ -84,11 +83,7 @@ export class FCastSession {
     }
 
     close() {
-        if (this.socket instanceof WebSocket) {
-            this.socket.close();
-        } else if (this.socket instanceof net.Socket) {
-            this.socket.end();
-        }
+        this.socket.end();
     }
 
     processBytes(receivedBytes: Buffer) {

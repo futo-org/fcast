@@ -539,7 +539,7 @@ fun MainActivityLandscapePreview() {
     val viewModel = MainActivityViewModel()
     viewModel.updateStatus = stringResource(R.string.update_status)
     viewModel.updateState = UpdateState.NoUpdateAvailable
-    viewModel.textPorts = "46899 (TCP), 46898 (WS)"
+    viewModel.textPorts = "46899 (TCP)"
     viewModel.showQR = true
     viewModel.qrSize = 165f
 //    viewModel.updating = true
@@ -561,7 +561,7 @@ fun MainActivityPortraitPreview() {
     val viewModel = MainActivityViewModel()
     viewModel.updateStatus = stringResource(R.string.update_status)
     viewModel.updateState = UpdateState.NoUpdateAvailable
-    viewModel.textPorts = "46899 (TCP), 46898 (WS)"
+    viewModel.textPorts = "46899 (TCP)"
     viewModel.showQR = true
     viewModel.qrSize = 90f
     viewModel.updateState = UpdateState.UpdateAvailable

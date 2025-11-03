@@ -19,9 +19,7 @@ namespace FCastReceiverService
 
         private static DnssdService tcpDnssdService;
         private static TcpListenerService tcpListenerService;
-        private static WebSocketListnerService webSocketListenerService;
 
-        public static bool websocketsSupported = false;
 
         protected override void OnCreate()
         {
@@ -57,49 +55,34 @@ namespace FCastReceiverService
             tcpDnssdService.RegisterService();
 
             tcpListenerService = new TcpListenerService();
-            List<IListenerService> listeners = new List<IListenerService>() { tcpListenerService };
-
             // Older Tizen models seem to throw exceptions when accessing standard .NET APIs for
             // Querying network interface information or using HttpListeners...
             // May need to investigate further however, perhaps its only an issue when running in emulator
 
-            // No API to get Tizen version, so have to go by OS image build date...
-            // Format: YYYYMMDD_HHMMSS
-            if (int.Parse(SystemInformation.BuildDate.Substring(0, 4)) > 2018)
+            tcpListenerService.OnPlay += Program.OnPlay;
+            tcpListenerService.OnPause += (object sender, EventArgs e) => { SendAppMessage("pause"); };
+            tcpListenerService.OnResume += (object sender, EventArgs e) => { SendAppMessage("resume"); };
+            tcpListenerService.OnStop += (object sender, EventArgs e) => { SendAppMessage("stop"); };
+            tcpListenerService.OnSeek += (object sender, SeekMessage e) =>
             {
-                websocketsSupported = true;
-                webSocketListenerService = new WebSocketListnerService();
-                listeners.Add(webSocketListenerService);
-            }
-
-            foreach (IListenerService l in listeners)
+                SendAppMessage("seek", JsonSerializer.Serialize(e));
+            };
+            tcpListenerService.OnSetVolume += (object sender, SetVolumeMessage e) =>
             {
-                l.OnPlay += Program.OnPlay;
-                l.OnPause += (object sender, EventArgs e) => { SendAppMessage("pause"); };
-                l.OnResume += (object sender, EventArgs e) => { SendAppMessage("resume"); };
-                l.OnStop += (object sender, EventArgs e) => { SendAppMessage("stop"); };
-                l.OnSeek += (object sender, SeekMessage e) =>
-                {
-                    SendAppMessage("seek", JsonSerializer.Serialize(e));
-                };
-                l.OnSetVolume += (object sender, SetVolumeMessage e) =>
-                {
-                    SendAppMessage("setvolume", JsonSerializer.Serialize(e));
-                };
-                l.OnSetSpeed += (object sender, SetSpeedMessage e) =>
-                {
-                    SendAppMessage("setspeed", JsonSerializer.Serialize(e));
-                };
-                l.OnPing += (object sender, Dictionary<string, string> e) => { SendAppMessage("ping", e); };
+                SendAppMessage("setvolume", JsonSerializer.Serialize(e));
+            };
+            tcpListenerService.OnSetSpeed += (object sender, SetSpeedMessage e) =>
+            {
+                SendAppMessage("setspeed", JsonSerializer.Serialize(e));
+            };
+            tcpListenerService.OnPing += (object sender, Dictionary<string, string> e) => { SendAppMessage("ping", e); };
 
-                l.OnConnect += (object sender, Dictionary<string, string> e) => { SendAppMessage("connect", e); };
-                l.OnDisconnect += (object sender, Dictionary<string, string> e) => { SendAppMessage("disconnect", e); };
+            tcpListenerService.OnConnect += (object sender, Dictionary<string, string> e) => { SendAppMessage("connect", e); };
+            tcpListenerService.OnDisconnect += (object sender, Dictionary<string, string> e) => { SendAppMessage("disconnect", e); };
 
-                l.ListenAsync();
-            }
+            tcpListenerService.ListenAsync();
 
             SendAppMessage("serviceStarted", new Dictionary<string, string>() {
-                { "websocketsSupported", websocketsSupported.ToString() },
                 { "buildDate", SystemInformation.BuildDate },
                 { "buildId", SystemInformation.BuildId },
                 { "buildRelease", SystemInformation.BuildRelease },
@@ -219,7 +202,6 @@ namespace FCastReceiverService
             {
                 case "getSystemInfo":
                     SendAppMessage("getSystemInfo", new Dictionary<string, string>() {
-                        { "websocketsSupported", websocketsSupported.ToString() },
                         { "buildDate", SystemInformation.BuildDate },
                         { "buildId", SystemInformation.BuildId },
                         { "buildRelease", SystemInformation.BuildRelease },

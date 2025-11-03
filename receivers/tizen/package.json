@@ -18,7 +18,6 @@
     "@types/tizen-tv-webapis": "^2.0.6",
     "@types/webostvjs": "^1.2.6",
     "@types/workerpool": "^6.1.1",
-    "@types/ws": "^8.5.10",
     "copy-webpack-plugin": "^12.0.2",
     "eslint": "^9.10.0",
     "globals": "^15.9.0",
@@ -42,7 +41,6 @@
     "tizen-common-web": "^2.0.1",
     "tizen-tv-webapis": "^2.0.0",
     "url": "^0.11.3",
-    "uuid": "^9.0.1",
-    "ws": "^8.14.2"
+    "uuid": "^9.0.1"
   }
 }

@@ -3,7 +3,6 @@ import { streamingMediaTypes } from 'common/MimeTypes';
 import { MediaCache } from './MediaCache';
 import { http, https } from 'modules/follow-redirects';
 import * as url from 'url';
-import { AddressInfo } from 'modules/ws';
 import { v4 as uuidv4 } from 'modules/uuid';
 import { Logger, LoggerType } from 'common/Logger';
 const logger = new Logger('NetworkService', LoggerType.BACKEND);
@@ -12,7 +11,7 @@ export class NetworkService {
     static key: string = null;
     static cert: string = null;
     static proxyServer: http.Server;
-    static proxyServerAddress: AddressInfo;
+    static proxyServerAddress;
     static proxiedFiles: Map<string, PlayMessage> = new Map();
 
     private static setupProxyServer(): Promise<void> {
@@ -112,7 +111,7 @@ export class NetworkService {
                     reject(e);
                 });
                 NetworkService.proxyServer.listen(port, '127.0.0.1', () => {
-                    NetworkService.proxyServerAddress = NetworkService.proxyServer.address() as AddressInfo;
+                    NetworkService.proxyServerAddress = NetworkService.proxyServer.address();
                     logger.info(`Proxy server running at http://127.0.0.1:${NetworkService.proxyServerAddress.port}/`);
                     resolve();
                 });

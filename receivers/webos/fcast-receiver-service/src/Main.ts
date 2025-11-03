@@ -9,7 +9,6 @@ import { EventMessage, EventType, Opcode, PlayMessage, PlayUpdateMessage, Playba
     SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
-import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { MediaCache } from 'common/MediaCache';
@@ -38,15 +37,12 @@ class AppCache {
 
 export class Main {
     static tcpListenerService: TcpListenerService;
-    static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
     static connectionMonitor: ConnectionMonitor;
     static emitter: EventEmitter;
     static cache: AppCache = new AppCache();
 
-    private static listeners = [];
     private static mediaCache: MediaCache = null;
-
     private static windowVisible: boolean = false;
     private static windowType: string = 'main';
     private static serviceChannelEvents = [
@@ -66,7 +62,7 @@ export class Main {
     private static serviceChannelEventTimestamps: Map<string, number> = new Map();
 
     private static async play(message: PlayMessage) {
-        Main.listeners.forEach(l => l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message)));
+        Main.tcpListenerService.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message));
         Main.cache.playMessage = message;
         const messageInfo = await preparePlayMessage(message, Main.cache.playerVolume, (playMessage: PlaylistContent) => {
             Main.mediaCache?.destroy();
@@ -108,7 +104,6 @@ export class Main {
             Main.discoveryService.start();
 
             Main.tcpListenerService = new TcpListenerService();
-            Main.webSocketListenerService = new WebSocketListenerService();
             Main.emitter = new EventEmitter();
 
             service.register('service_channel', (message: any) => {
@@ -141,26 +136,26 @@ export class Main {
                 switch (message.payload.event) {
                     case 'send_playback_error': {
                         const value: PlaybackErrorMessage = message.payload.value;
-                        Main.listeners.forEach(l => l.send(Opcode.PlaybackError, value));
+                        Main.tcpListenerService.send(Opcode.PlaybackError, value);
                         break;
                     }
 
                     case 'send_playback_update': {
                         const value: PlaybackUpdateMessage = message.payload.value;
-                        Main.listeners.forEach(l => l.send(Opcode.PlaybackUpdate, value));
+                        Main.tcpListenerService.send(Opcode.PlaybackUpdate, value);
                         break;
                     }
 
                     case 'send_volume_update': {
                         const value: VolumeUpdateMessage = message.payload.value;
                         Main.cache.playerVolume = value.volume;
-                        Main.listeners.forEach(l => l.send(Opcode.VolumeUpdate, value));
+                        Main.tcpListenerService.send(Opcode.VolumeUpdate, value);
                         break;
                     }
 
                     case 'send_event': {
                         const value: EventMessage = message.payload.value;
-                        Main.listeners.forEach(l => l.send(Opcode.Event, value));
+                        Main.tcpListenerService.send(Opcode.Event, value);
                         break;
                     }
 
@@ -176,21 +171,19 @@ export class Main {
                     }
 
                     case 'get_sessions': {
-                        // Having to mix and match session ids and ip addresses until querying websocket remote addresses is fixed
                         message.respond({
                             returnValue: true,
-                            value: [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions())
+                            value: Main.tcpListenerService.getSenders()
                         });
                         return;
                     }
 
                     case 'get_subscribed_keys': {
                         const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
-                        const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
                         // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
                         const subscribeData = {
-                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown])),
-                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp])),
+                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown])),
+                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp])),
                         };
 
                         message.respond({
@@ -231,72 +224,67 @@ export class Main {
                 message.respond({ returnValue: true, value: { success: true } });
             });
 
-            Main.listeners = [Main.tcpListenerService, Main.webSocketListenerService];
-            Main.listeners.forEach(l => {
-                l.emitter.on('play', (message: PlayMessage) => Main.play(message));
-                l.emitter.on('pause', () => Main.emitter.emit('pause'));
-                l.emitter.on('resume', () => Main.emitter.emit('resume'));
-                l.emitter.on('stop', () => Main.emitter.emit('stop'));
-                l.emitter.on('seek', (message: SeekMessage) => Main.emitter.emit('seek', message));
-                l.emitter.on('setvolume', (message: SetVolumeMessage) => {
-                    Main.cache.playerVolume = message.volume;
-                    Main.emitter.emit('setvolume', message);
-                });
-                l.emitter.on('setspeed', (message: SetSpeedMessage) => Main.emitter.emit('setspeed', message));
-
-                l.emitter.on('connect', (message) => {
-                    ConnectionMonitor.onConnect(l, message, l instanceof WebSocketListenerService, () => {
-                        Main.emitter.emit('connect', message);
-                    });
-                });
-                l.emitter.on('disconnect', (message) => {
-                    ConnectionMonitor.onDisconnect(message, l instanceof WebSocketListenerService, () => {
-                        Main.emitter.emit('disconnect', message);
-                    });
-                });
-                l.emitter.on('ping', (sessionId: string) => {
-                    ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
-                });
-                l.emitter.on('pong', (sessionId: string) => {
-                    ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
-                });
-                l.emitter.on('initial', (message) => {
-                    logger.info(`Received 'Initial' message from sender: ${message}`);
-                });
-                l.emitter.on('setplaylistitem', (message: SetPlaylistItemMessage) => Main.emitter.emit('setplaylistitem', message));
-                l.emitter.on('subscribeevent', (message) => {
-                    l.subscribeEvent(message.sessionId, message.body.event);
-
-                    if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
-                        const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
-                        const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
-                        // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
-                        const subscribeData = {
-                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown])),
-                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp])),
-                        };
-
-                        console.log('emitting set info ON SUBSCRIBE ONLY', subscribeData)
-                        Main.emitter.emit('event_subscribed_keys_update', subscribeData);
-                    }
-                });
-                l.emitter.on('unsubscribeevent', (message) => {
-                    l.unsubscribeEvent(message.sessionId, message.body.event);
-
-                    if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
-                        const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
-                        const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
-                        // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
-                        const subscribeData = {
-                            keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown])),
-                            keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp])),
-                        };
-
-                        Main.emitter.emit('event_subscribed_keys_update', subscribeData);
-                    }
-                });
-                l.start();
+            Main.tcpListenerService.emitter.on('play', (message: PlayMessage) => Main.play(message));
+            Main.tcpListenerService.emitter.on('pause', () => Main.emitter.emit('pause'));
+            Main.tcpListenerService.emitter.on('resume', () => Main.emitter.emit('resume'));
+            Main.tcpListenerService.emitter.on('stop', () => Main.emitter.emit('stop'));
+            Main.tcpListenerService.emitter.on('seek', (message: SeekMessage) => Main.emitter.emit('seek', message));
+            Main.tcpListenerService.emitter.on('setvolume', (message: SetVolumeMessage) => {
+                Main.cache.playerVolume = message.volume;
+                Main.emitter.emit('setvolume', message);
             });
+            Main.tcpListenerService.emitter.on('setspeed', (message: SetSpeedMessage) => Main.emitter.emit('setspeed', message));
+
+            Main.tcpListenerService.emitter.on('connect', (message) => {
+                ConnectionMonitor.onConnect(Main.tcpListenerService, message, () => {
+                    Main.emitter.emit('connect', message);
+                });
+            });
+            Main.tcpListenerService.emitter.on('disconnect', (message) => {
+                ConnectionMonitor.onDisconnect(message, () => {
+                    Main.emitter.emit('disconnect', message);
+                });
+            });
+            Main.tcpListenerService.emitter.on('ping', (sessionId: string) => {
+                ConnectionMonitor.onPingPong(sessionId);
+            });
+            Main.tcpListenerService.emitter.on('pong', (sessionId: string) => {
+                ConnectionMonitor.onPingPong(sessionId);
+            });
+            Main.tcpListenerService.emitter.on('initial', (message) => {
+                logger.info(`Received 'Initial' message from sender: ${message}`);
+            });
+            Main.tcpListenerService.emitter.on('setplaylistitem', (message: SetPlaylistItemMessage) => Main.emitter.emit('setplaylistitem', message));
+            Main.tcpListenerService.emitter.on('subscribeevent', (message) => {
+                Main.tcpListenerService.subscribeEvent(message.sessionId, message.body.event);
+
+                if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                    const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                    // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
+                    const subscribeData = {
+                        keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown])),
+                        keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp])),
+                    };
+
+                    console.log('emitting set info ON SUBSCRIBE ONLY', subscribeData)
+                    Main.emitter.emit('event_subscribed_keys_update', subscribeData);
+                }
+            });
+            Main.tcpListenerService.emitter.on('unsubscribeevent', (message) => {
+                Main.tcpListenerService.unsubscribeEvent(message.sessionId, message.body.event);
+
+                if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                    const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                    // webOS compatibility: Need to convert set objects to array objects since data needs to be JSON compatible
+                    const subscribeData = {
+                        keyDown: Array.from(new Set([...tcpListenerSubscribedKeys.keyDown])),
+                        keyUp: Array.from(new Set([...tcpListenerSubscribedKeys.keyUp])),
+                    };
+
+                    Main.emitter.emit('event_subscribed_keys_update', subscribeData);
+                }
+            });
+            Main.tcpListenerService.start();
         }
         catch (err)  {
             logger.error("Error initializing service:", err);

@@ -87,7 +87,6 @@ function renderIPsAndQRCode() {
         addresses: addresses,
         services: [
             { port: 46899, type: 0 }, //TCP
-            { port: 46898, type: 1 }, //WS
         ]
     };
 

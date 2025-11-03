@@ -8,7 +8,7 @@ using Tizen.Applications.Messages;
 
 namespace FCastReceiverService
 {
-    public class TcpListenerService : IListenerService, IDisposable
+    public class TcpListenerService : IDisposable
     {
         public const int Port = 46899;
         private const int Timeout = 2500;
@@ -30,7 +30,7 @@ namespace FCastReceiverService
         public event EventHandler<Dictionary<string, string>> OnConnect;
         public event EventHandler<Dictionary<string, string>> OnDisconnect;
 
-        public TcpListenerService() 
+        public TcpListenerService()
         {
             _sessions = new List<FCastSession>();
             _cancellationTokenSource = new CancellationTokenSource();
@@ -54,7 +54,7 @@ namespace FCastReceiverService
                 FCastSession session = new FCastSession(stream);
                 Guid connectionId = Guid.NewGuid();
                 int heartbeatRetries = 0;
-                
+
                 session.OnPlay += OnPlay;
                 session.OnPause += OnPause;
                 session.OnResume += OnResume;
@@ -63,14 +63,14 @@ namespace FCastReceiverService
                 session.OnSetVolume += OnSetVolume;
                 session.OnSetSpeed += OnSetSpeed;
                 session.OnVersion += OnVersion;
-                session.OnPing += (object sender, EventArgs e) => 
+                session.OnPing += (object sender, EventArgs e) =>
                 {
                     OnPing?.Invoke(this, new Dictionary<string, string>() { { "id", connectionId.ToString() } });
                 };
                 session.OnPong += OnPong;
                 _sessions.Add(session);
 
-                EventHandler<MessageReceivedEventArgs> ipcMessageCb = (object sender, MessageReceivedEventArgs e) => 
+                EventHandler<MessageReceivedEventArgs> ipcMessageCb = (object sender, MessageReceivedEventArgs e) =>
                 {
                     Serilog.Log.Information($"Message received in tcp handler with {e.Message.Count} items");
                     e.Message.TryGetItem("opcode", out string opcode);
@@ -118,7 +118,7 @@ namespace FCastReceiverService
                     }
                 };
                 session.OnData += (object sender, EventArgs e) => { heartbeatRetries = 0; };
-                session.OnDispose += (object sender, EventArgs e) => 
+                session.OnDispose += (object sender, EventArgs e) =>
                 {
                     _sessions.Remove(session);
                     Program.IpcPort.MessageReceived -= ipcMessageCb;
@@ -130,16 +130,17 @@ namespace FCastReceiverService
                     });
                 };
 
-                OnConnect?.Invoke(this, new Dictionary<string, string>() { 
+                OnConnect?.Invoke(this, new Dictionary<string, string>() {
                     { "id", connectionId.ToString() },
                     { "type", "tcp" },
                     { "data", JsonSerializer.Serialize(new Dictionary<string, string>() { { "address", client.Client.RemoteEndPoint.ToString() } }) }
                 });
 
+                // Program.DebugAppMessage("TESTING MESSAGE FOR BINDINGS");
                 Serilog.Log.Information("Sending version");
                 _ = session.SendMessageAsync(Opcode.Version, new VersionMessage() { Version = 2, }, _cancellationTokenSource.Token);
                 _ = SessionListenAsync(client, session);
-                
+
             }
         }
 

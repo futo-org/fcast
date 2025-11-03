@@ -18,9 +18,6 @@ Example usage of the fcast client.
 # Play a mp4 video URL (1.0 playbackspeed explicit)
 ./fcast -H 127.0.0.1 play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
 
-<!-- # Play a mp4 video URL using WebSockets -->
-<!-- ./fcast -H 127.0.0.1 -c ws play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -->
-
 # Play a local mp4
 ./fcast -H 192.168.1.62 play --mime-type video/mp4 -f /home/koen/Downloads/BigBuckBunny.mp4
 

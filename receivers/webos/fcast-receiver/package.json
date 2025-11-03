@@ -17,7 +17,6 @@
     "@types/qrcode": "^1.5.5",
     "@types/webostvjs": "^1.2.6",
     "@types/workerpool": "^6.1.1",
-    "@types/ws": "^8.5.10",
     "copy-webpack-plugin": "^13.0.0",
     "eslint": "^9.25.0",
     "globals": "^16.0.0",
@@ -37,8 +36,7 @@
     "log4js": "^6.9.1",
     "qrcode": "^1.5.3",
     "url": "^0.11.4",
-    "uuid": "^9.0.1",
-    "ws": "^8.18.0"
+    "uuid": "^9.0.1"
   },
   "optionalDependencies": {
     "utf-8-validate": "^6.0.5"

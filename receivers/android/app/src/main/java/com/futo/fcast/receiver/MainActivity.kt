@@ -256,8 +256,7 @@ class MainActivity : AppCompatActivity() {
         val ips = ipInfo.map { it.address }
         viewModel.ipInfo.clear()
         viewModel.ipInfo.addAll(ipInfo)
-        viewModel.textPorts =
-            "${TcpListenerService.PORT} (TCP), ${WebSocketListenerService.PORT} (WS)"
+        viewModel.textPorts = "${TcpListenerService.PORT} (TCP)"
 
         val qrSize = getQrSize(_screenResolution)
         viewModel.qrSize = qrSize
@@ -274,8 +273,7 @@ class MainActivity : AppCompatActivity() {
             val json = Json.encodeToString(
                 FCastNetworkConfig(
                     "${Build.MANUFACTURER}-${Build.MODEL}", ips, listOf(
-                        FCastService(TcpListenerService.PORT, 0),
-                        FCastService(WebSocketListenerService.PORT, 1)
+                        FCastService(TcpListenerService.PORT, 0)
                     )
                 )
             )

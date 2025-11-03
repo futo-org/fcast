@@ -3,7 +3,6 @@ import { ToastIcon } from 'common/components/Toast';
 import { Opcode, PlaybackErrorMessage, PlaybackUpdateMessage, VolumeUpdateMessage, PlayMessage, PlayUpdateMessage, EventMessage, EventType, PlaylistContent, SeekMessage, SetVolumeMessage, SetSpeedMessage, SetPlaylistItemMessage, MetadataType, GenericMediaMetadata } from 'common/Packets';
 import { DiscoveryService } from 'common/DiscoveryService';
 import { TcpListenerService } from 'common/TcpListenerService';
-import { WebSocketListenerService } from 'common/WebSocketListenerService';
 import { ConnectionMonitor } from 'common/ConnectionMonitor';
 import { Logger, LoggerType } from 'common/Logger';
 import { MediaCache } from 'common/MediaCache';
@@ -39,14 +38,12 @@ export class Main {
     static mainWindow: Electron.BrowserWindow;
     static application: Electron.App;
     static tcpListenerService: TcpListenerService;
-    static webSocketListenerService: WebSocketListenerService;
     static discoveryService: DiscoveryService;
     static connectionMonitor: ConnectionMonitor;
     static tray: Tray;
     static cache: AppCache = new AppCache();
 
     private static playerWindowContentViewer = null;
-    private static listeners = [];
     private static mediaCache: MediaCache = null;
 
     private static toggleMainWindow() {
@@ -164,7 +161,7 @@ export class Main {
     }
 
     private static async play(message: PlayMessage) {
-        Main.listeners.forEach(l => l.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message)));
+        Main.tcpListenerService.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message));
         Main.cache.playMessage = message;
         const messageInfo = await preparePlayMessage(message, Main.cache.playerVolume, (playMessage: PlaylistContent) => {
             Main.mediaCache?.destroy();
@@ -222,100 +219,93 @@ export class Main {
         Main.discoveryService.start();
 
         Main.tcpListenerService = new TcpListenerService();
-        Main.webSocketListenerService = new WebSocketListenerService();
+        Main.tcpListenerService.emitter.on("play", (message: PlayMessage) => Main.play(message));
+        Main.tcpListenerService.emitter.on("pause", () => Main.playerWindow?.webContents?.send("pause"));
+        Main.tcpListenerService.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
-        Main.listeners = [Main.tcpListenerService, Main.webSocketListenerService];
-        Main.listeners.forEach(l => {
-            l.emitter.on("play", (message: PlayMessage) => Main.play(message));
-            l.emitter.on("pause", () => Main.playerWindow?.webContents?.send("pause"));
-            l.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
+        Main.tcpListenerService.emitter.on("stop", () => {
+            Main.playerWindow?.close();
+            Main.playerWindow = null;
+            Main.playerWindowContentViewer = null;
+            Main.cache.playbackUpdate = null;
+            Main.cache.playMessage = null;
+        });
 
-            l.emitter.on("stop", () => {
-                Main.playerWindow?.close();
-                Main.playerWindow = null;
-                Main.playerWindowContentViewer = null;
-                Main.cache.playbackUpdate = null;
-                Main.cache.playMessage = null;
-            });
+        Main.tcpListenerService.emitter.on("seek", (message: SeekMessage) => Main.playerWindow?.webContents?.send("seek", message));
+        Main.tcpListenerService.emitter.on("setvolume", (message: SetVolumeMessage) => {
+            Main.cache.playerVolume = message.volume;
+            Main.playerWindow?.webContents?.send("setvolume", message);
+        });
+        Main.tcpListenerService.emitter.on("setspeed", (message: SetSpeedMessage) => Main.playerWindow?.webContents?.send("setspeed", message));
 
-            l.emitter.on("seek", (message: SeekMessage) => Main.playerWindow?.webContents?.send("seek", message));
-            l.emitter.on("setvolume", (message: SetVolumeMessage) => {
-                Main.cache.playerVolume = message.volume;
-                Main.playerWindow?.webContents?.send("setvolume", message);
+        Main.tcpListenerService.emitter.on('connect', (message) => {
+            ConnectionMonitor.onConnect(Main.tcpListenerService, message, () => {
+                Main.mainWindow?.webContents?.send('connect', message);
+                Main.playerWindow?.webContents?.send('connect', message);
             });
-            l.emitter.on("setspeed", (message: SetSpeedMessage) => Main.playerWindow?.webContents?.send("setspeed", message));
+        });
+        Main.tcpListenerService.emitter.on('disconnect', (message) => {
+            ConnectionMonitor.onDisconnect(message, () => {
+                Main.mainWindow?.webContents?.send('disconnect', message);
+                Main.playerWindow?.webContents?.send('disconnect', message);
+            });
+        });
+        Main.tcpListenerService.emitter.on('ping', (sessionId: string) => {
+            ConnectionMonitor.onPingPong(sessionId);
+        });
+        Main.tcpListenerService.emitter.on('pong', (sessionId: string) => {
+            ConnectionMonitor.onPingPong(sessionId);
+        });
+        Main.tcpListenerService.emitter.on('initial', (message) => {
+            logger.info(`Received 'Initial' message from sender:`, message);
+        });
+        Main.tcpListenerService.emitter.on("setplaylistitem", (message: SetPlaylistItemMessage) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
+        Main.tcpListenerService.emitter.on('subscribeevent', (message) => {
+            Main.tcpListenerService.subscribeEvent(message.sessionId, message.body.event);
 
-            l.emitter.on('connect', (message) => {
-                ConnectionMonitor.onConnect(l, message, l instanceof WebSocketListenerService, () => {
-                    Main.mainWindow?.webContents?.send('connect', message);
-                    Main.playerWindow?.webContents?.send('connect', message);
-                });
-            });
-            l.emitter.on('disconnect', (message) => {
-                ConnectionMonitor.onDisconnect(message, l instanceof WebSocketListenerService, () => {
-                    Main.mainWindow?.webContents?.send('disconnect', message);
-                    Main.playerWindow?.webContents?.send('disconnect', message);
-                });
-            });
-            l.emitter.on('ping', (sessionId: string) => {
-                ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
-            });
-            l.emitter.on('pong', (sessionId: string) => {
-                ConnectionMonitor.onPingPong(sessionId, l instanceof WebSocketListenerService);
-            });
-            l.emitter.on('initial', (message) => {
-                logger.info(`Received 'Initial' message from sender:`, message);
-            });
-            l.emitter.on("setplaylistitem", (message: SetPlaylistItemMessage) => Main.playerWindow?.webContents?.send("setplaylistitem", message));
-            l.emitter.on('subscribeevent', (message) => {
-                l.subscribeEvent(message.sessionId, message.body.event);
+            if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                const subscribeData = {
+                    keyDown: new Set([...tcpListenerSubscribedKeys.keyDown]),
+                    keyUp: new Set([...tcpListenerSubscribedKeys.keyUp]),
+                };
 
-                if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
-                    const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
-                    const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
-                    const subscribeData = {
-                        keyDown: new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown]),
-                        keyUp: new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp]),
-                    };
+                Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+            }
+        });
+        Main.tcpListenerService.emitter.on('unsubscribeevent', (message) => {
+            Main.tcpListenerService.unsubscribeEvent(message.sessionId, message.body.event);
 
-                    Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
-                    Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
-                }
-            });
-            l.emitter.on('unsubscribeevent', (message) => {
-                l.unsubscribeEvent(message.sessionId, message.body.event);
+            if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
+                const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
+                const subscribeData = {
+                    keyDown: new Set([...tcpListenerSubscribedKeys.keyDown]),
+                    keyUp: new Set([...tcpListenerSubscribedKeys.keyUp]),
+                };
 
-                if (message.body.event.type === EventType.KeyDown.valueOf() || message.body.event.type === EventType.KeyUp.valueOf()) {
-                    const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
-                    const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
-                    const subscribeData = {
-                        keyDown: new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown]),
-                        keyUp: new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp]),
-                    };
+                Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+            }
+        });
+        Main.tcpListenerService.start();
 
-                    Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
-                    Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
-                }
-            });
-            l.start();
+        ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
+            Main.tcpListenerService.send(Opcode.PlaybackError, value);
+        });
 
-            ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
-                l.send(Opcode.PlaybackError, value);
-            });
+        ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
+            Main.cache.playbackUpdate = value;
+            Main.tcpListenerService.send(Opcode.PlaybackUpdate, value);
+        });
 
-            ipcMain.on('send-playback-update', (event: IpcMainEvent, value: PlaybackUpdateMessage) => {
-                Main.cache.playbackUpdate = value;
-                l.send(Opcode.PlaybackUpdate, value);
-            });
+        ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
+            Main.cache.playerVolume = value.volume;
+            Main.tcpListenerService.send(Opcode.VolumeUpdate, value);
+        });
 
-            ipcMain.on('send-volume-update', (event: IpcMainEvent, value: VolumeUpdateMessage) => {
-                Main.cache.playerVolume = value.volume;
-                l.send(Opcode.VolumeUpdate, value);
-            });
-
-            ipcMain.on('send-event', (event: IpcMainEvent, value: EventMessage) => {
-                l.send(Opcode.Event, value);
-            });
+        ipcMain.on('send-event', (event: IpcMainEvent, value: EventMessage) => {
+            Main.tcpListenerService.send(Opcode.Event, value);
         });
 
         ipcMain.on('play-request', (event: IpcMainEvent, value: PlayMessage, playlistIndex: number) => {
@@ -377,17 +367,15 @@ export class Main {
             window.setFullScreen(false);
         });
 
-        // Having to mix and match session ids and ip addresses until querying websocket remote addresses is fixed
         ipcMain.handle('get-sessions', () => {
-            return [].concat(Main.tcpListenerService.getSenders(), Main.webSocketListenerService.getSessions());
+            return Main.tcpListenerService.getSenders();
         });
 
         ipcMain.handle('get-subscribed-keys', () => {
             const tcpListenerSubscribedKeys = Main.tcpListenerService.getAllSubscribedKeys();
-            const webSocketListenerSubscribedKeys = Main.webSocketListenerService.getAllSubscribedKeys();
             const subscribeData = {
-                keyDown: new Set([...tcpListenerSubscribedKeys.keyDown, ...webSocketListenerSubscribedKeys.keyDown]),
-                keyUp: new Set([...tcpListenerSubscribedKeys.keyUp, ...webSocketListenerSubscribedKeys.keyUp]),
+                keyDown: new Set([...tcpListenerSubscribedKeys.keyDown]),
+                keyUp: new Set([...tcpListenerSubscribedKeys.keyUp]),
             };
 
             return subscribeData;

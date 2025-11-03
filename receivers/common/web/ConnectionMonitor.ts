@@ -14,17 +14,13 @@ export function setUiUpdateCallbacks(callbacks: any) {
     let frontendConnections = [];
 
     window.targetAPI.onConnect((_event, value: any) => {
-        const idMapping = value.type === 'ws' ? value.sessionId : value.data.address;
-
-        logger.debug(`Processing connect event for ${idMapping} with current connections:`, frontendConnections);
-        frontendConnections.push(idMapping);
+        logger.debug(`Processing connect event for ${value.data.address} with current connections:`, frontendConnections);
+        frontendConnections.push(value.data.address);
         callbacks.onConnect(frontendConnections);
     });
     window.targetAPI.onDisconnect((_event, value: any) => {
-        const idMapping = value.type === 'ws' ? value.sessionId : value.data.address;
-
-        logger.debug(`Processing disconnect event for ${idMapping} with current connections:`, frontendConnections);
-        const index = frontendConnections.indexOf(idMapping);
+        logger.debug(`Processing disconnect event for ${value.data.address} with current connections:`, frontendConnections);
+        const index = frontendConnections.indexOf(value.data.address);
         if (index != -1) {
             frontendConnections.splice(index, 1);
             callbacks.onDisconnect(frontendConnections);
@@ -79,49 +75,37 @@ export class ConnectionMonitor {
         }, ConnectionMonitor.connectionPingTimeout);
     }
 
-    public static onPingPong(sessionId: string, isWebsockets: boolean) {
+    public static onPingPong(sessionId: string) {
         ConnectionMonitor.logger.debug(`Received response from ${sessionId}`);
-
-        // Websocket clients currently don't support ping-pong commands
-        if (!isWebsockets) {
-            ConnectionMonitor.heartbeatRetries.set(sessionId, 0);
-        }
+        ConnectionMonitor.heartbeatRetries.set(sessionId, 0);
     }
 
-    public static onConnect(listener: any, value: any, isWebsockets: boolean, uiUpdateCallback: any) {
+    public static onConnect(listener: any, value: any, uiUpdateCallback: any) {
         ConnectionMonitor.logger.info(`Device connected: ${JSON.stringify(value)}`);
-        const idMapping = isWebsockets ? value.sessionId : value.data.address;
-
-        if (!isWebsockets) {
-            ConnectionMonitor.backendConnections.set(value.sessionId, listener);
-            ConnectionMonitor.heartbeatRetries.set(value.sessionId, 0);
-        }
+        ConnectionMonitor.backendConnections.set(value.sessionId, listener);
+        ConnectionMonitor.heartbeatRetries.set(value.sessionId, 0);
 
         // Occasionally senders seem to instantaneously disconnect and reconnect, so suppress those ui updates
-        const senderUpdateQueue = ConnectionMonitor.uiUpdateMap.get(idMapping) ?? [];
+        const senderUpdateQueue = ConnectionMonitor.uiUpdateMap.get(value.data.address) ?? [];
         senderUpdateQueue.push({ event: 'connect', uiUpdateCallback: uiUpdateCallback });
-        ConnectionMonitor.uiUpdateMap.set(idMapping, senderUpdateQueue);
+        ConnectionMonitor.uiUpdateMap.set(value.data.address, senderUpdateQueue);
 
         if (senderUpdateQueue.length === 1) {
-            setTimeout(() => { ConnectionMonitor.processUiUpdateCallbacks(idMapping); }, ConnectionMonitor.uiConnectUpdateTimeout);
+            setTimeout(() => { ConnectionMonitor.processUiUpdateCallbacks(value.data.address); }, ConnectionMonitor.uiConnectUpdateTimeout);
         }
     }
 
-    public static onDisconnect(value: any, isWebsockets: boolean, uiUpdateCallback: any) {
+    public static onDisconnect(value: any, uiUpdateCallback: any) {
         ConnectionMonitor.logger.info(`Device disconnected: ${JSON.stringify(value)}`);
+        ConnectionMonitor.backendConnections.delete(value.sessionId);
+        ConnectionMonitor.heartbeatRetries.delete(value.sessionId);
 
-        if (!isWebsockets) {
-            ConnectionMonitor.backendConnections.delete(value.sessionId);
-            ConnectionMonitor.heartbeatRetries.delete(value.sessionId);
-        }
-
-        const idMapping = isWebsockets ? value.sessionId : value.data.address;
-        const senderUpdateQueue = ConnectionMonitor.uiUpdateMap.get(idMapping);
+        const senderUpdateQueue = ConnectionMonitor.uiUpdateMap.get(value.data.address);
         senderUpdateQueue.push({ event: 'disconnect', uiUpdateCallback: uiUpdateCallback });
-        ConnectionMonitor.uiUpdateMap.set(idMapping, senderUpdateQueue);
+        ConnectionMonitor.uiUpdateMap.set(value.data.address, senderUpdateQueue);
 
         if (senderUpdateQueue.length === 1) {
-            setTimeout(() => { ConnectionMonitor.processUiUpdateCallbacks(idMapping); }, ConnectionMonitor.uiDisconnectUpdateTimeout);
+            setTimeout(() => { ConnectionMonitor.processUiUpdateCallbacks(value.data.address); }, ConnectionMonitor.uiDisconnectUpdateTimeout);
         }
     }
 

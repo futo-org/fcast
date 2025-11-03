@@ -51,12 +51,6 @@ const ipcListener = ipcPort.addMessagePortListener((data) => {
             console.log(`BuildId: ${message.buildId}`);
             console.log(`BuildRelease: ${message.buildRelease}`);
             console.log(`BuildString: ${message.buildString}`);
-            console.log(`WebsocketsSupported: ${message.websocketsSupported}`);
-
-            if (!JSON.parse(message.websocketsSupported.toLowerCase())) {
-                const ports = document.getElementById('ip-ports');
-                ports.innerHTML = "Port<br>46899 (TCP)";
-            }
             break;
 
         case 'toast': {

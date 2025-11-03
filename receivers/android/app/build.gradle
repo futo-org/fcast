@@ -100,7 +100,6 @@ dependencies {
     implementation "androidx.media3:media3-exoplayer-hls:$media3_version"
     implementation "com.squareup.okhttp3:okhttp:5.1.0"
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
-    implementation 'org.java-websocket:Java-WebSocket:1.6.0'
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     testImplementation 'junit:junit:4.13.2'

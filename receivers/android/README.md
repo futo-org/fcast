@@ -18,8 +18,7 @@ Commands:
 * `telnet localhost 5554`
 * `auth <YOUR_TOKEN>`
 * `redir add tcp:46899:46899`
-* `redir add tcp:46898:46898`
 
-For your network interface, you must also use port forwarding to localhost on ports 46899 and/or 46898. Then you can connect the sender device to your host machine's IP address.
+For your network interface, you must also use port forwarding to localhost on port 46899. Then you can connect the sender device to your host machine's IP address.
 
 On linux you also may need to enable the kernel parameter to allow forwarding to localhost (interface is 'wlp11s0' for this example): `sudo sysctl -w net.ipv4.conf.wlp11s0.route_localnet=1`

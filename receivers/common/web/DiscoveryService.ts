@@ -3,7 +3,6 @@ import { Logger, LoggerType } from 'common/Logger';
 import { getAppName, getAppVersion, getComputerName } from 'src/Main';
 import { PROTOCOL_VERSION } from 'common/Packets';
 import { TcpListenerService } from './TcpListenerService';
-import { WebSocketListenerService } from './WebSocketListenerService';
 const logger = new Logger('DiscoveryService', LoggerType.BACKEND);
 
 export class DiscoveryService {
