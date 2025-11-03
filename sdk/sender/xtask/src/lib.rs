@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use xshell::Shell;
 
+pub mod csharp;
 pub mod kotlin;
 pub mod swift;
 pub mod workspace;

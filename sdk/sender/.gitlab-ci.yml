@@ -13,6 +13,51 @@ buildSenderSDKDockerContainer:
     - docker push $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev:latest
   when: manual
 
+buildSenderSDKDockerContainerCrossAarch64Linux:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd sdk/sender
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest -f Dockerfile.cross-aarch64-unknown-linux-gnu .
+    - docker push $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest
+  when: manual
+
+buildSenderSDKDockerContainerCrossX64Windows:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd sdk/sender
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest -f Dockerfile.cross-x86_64-pc-windows-gnu .
+    - docker push $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest
+  when: manual
+
+buildSenderSDKDockerContainerCrossX64Linux:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd sdk/sender
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-unknown-linux-gnu:latest -f Dockerfile.cross-x86_64-unknown-linux-gnu .
+    - docker push $CI_REGISTRY/videostreaming/fcast/sender-sdk-dev-cross-x86_64-unknown-linux-gnu:latest
+  when: manual
+
 buildAndroid:
   stage: buildSenderSDK
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
@@ -51,6 +96,77 @@ buildIos:
     paths:
       - ios-bindings/fcast_sender_sdk.xcframework.zip
       - ios-bindings/uniffi/*
+  when: manual
+
+crossCompileForDarwinCSharp:
+  stage: buildSenderSDK
+  image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
+  tags:
+    - tart-installed
+  before_script:
+    - brew install rustup-init protobuf
+    - rustup-init -y
+    - rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    - source $HOME/.cargo/env
+  script:
+    - cargo build --release --target aarch64-apple-darwin -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+    - cargo build --release --target x86_64-apple-darwin -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - target/aarch64-apple-darwin/release/libfcast_sender_sdk.dylib
+      - target/x86_64-apple-darwin/release/libfcast_sender_sdk.dylib
+  when: manual
+
+crossCompileForAarch64LinuxCSharp:
+  stage: buildSenderSDK
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest
+  script:
+    - cargo build --release --target aarch64-unknown-linux-gnu -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+  tags:
+    - fcast-instance-runner
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - target/aarch64-unknown-linux-gnu/release/libfcast_sender_sdk.so
+  when: manual
+
+compileForx64LinuxCSharp:
+  stage: buildSenderSDK
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-x86_64-unknown-linux-gnu:latest
+  script:
+    - cargo build --release --target x86_64-unknown-linux-gnu -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+  tags:
+    - fcast-instance-runner
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - target/x86_64-unknown-linux-gnu/release/libfcast_sender_sdk.so
+  when: manual
+
+compileForx64WindowsCSharp:
+  stage: buildSenderSDK
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest
+  script:
+    - cargo build --release --target x86_64-pc-windows-gnu -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+  tags:
+    - fcast-instance-runner
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - target/x86_64-pc-windows-gnu/release/fcast_sender_sdk.dll
   when: manual
 
 cargoHackSenderSDK:
