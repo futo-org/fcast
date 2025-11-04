@@ -1,10 +1,15 @@
 # FCast Website
 
-Run the following commands in the repository root directory.
+Run the following commands in the website directory.
 
 ## Setup
 ```
 npm install
+```
+
+## Local preview
+```
+npm run dev
 ```
 
 ## Deployment

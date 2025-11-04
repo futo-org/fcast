@@ -3,8 +3,8 @@
 # Ignore VSCode user project settings
 .vscode
 
-node_modules/
-.wrangler/
+/website/node_modules/
+/website/.wrangler/
 .secure_files/
 
 /target
