@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "npx wrangler pages dev dist",
-    "deploy-site": "wrangler pages deploy --directory ./website/dist --branch main --project-name fcast"
+    "deploy-site": "wrangler pages deploy --directory ./dist --branch main --project-name fcast"
   },
   "devDependencies": {
     "wrangler": "^4.45.4"
