@@ -12,11 +12,19 @@ task:
     # Keychain ignores access control, causing to prompt for access and failing in CI environments...: https://stackoverflow.com/a/40039594
     - "security set-key-partition-list -S apple-tool:,apple: -s -k admin ~/Library/Keychains/login.keychain"
 
+    - mkdir -p ~/.ssh/
+    - cp ./.secure_files/id_ed25519 ~/.ssh/id_ed25519
+    - cp ./.secure_files/id_ed25519.pub ~/.ssh/id_ed25519.pub
+    - chmod 700 ~/.ssh/
+    - chmod 600 ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519.pub
+
     - cd receivers/electron
     - npm install
     - npm rebuild
     - npm run build
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
+    - scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
   binary_artifacts:
     path: receivers/electron/out/*

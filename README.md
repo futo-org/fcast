@@ -8,7 +8,7 @@
 
 <p>
 <a href="https://fcast.org/">
-<img src="website/images/ic_banner.svg" height="300">
+<img src="website/dist/images/ic_banner.svg" height="300">
 </a>
 </p>
 <h3> Open source protocol for audio and video content streaming</h3>
