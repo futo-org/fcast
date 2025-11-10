@@ -255,10 +255,10 @@ component SelectingInputTypeView {
 }
 
 component SelectMirroringSourceView inherits Rectangle {
-    property <string> video-scale: "Full HD (1080)";
+    property <int> video-resolution-idx: 2;
     property <[string]> video-resolutions: ["Ultra HD (2160)", "Quad HD (1440)", "Full HD (1080)", "HD (720)", "SD (480)"];
-    property <string> video-framerate: "30";
-    property <[string]> framerates: ["90", "60", "30", "25", "15", "10", "5", "1"];
+    property <int> video-framerate-idx: 2;
+    property <[string]> video-framerates: ["90", "60", "30", "25", "15", "10", "5", "1"];
 
     VerticalBox {
         alignment: center;
@@ -342,7 +342,7 @@ component SelectMirroringSourceView inherits Rectangle {
                 }
 
                 ComboBox {
-                    current-value <=> video-scale;
+                    current-index <=> video-resolution-idx;
                     model: video-resolutions;
                 }
 
@@ -353,8 +353,8 @@ component SelectMirroringSourceView inherits Rectangle {
                 }
 
                 ComboBox {
-                    current-value <=> video-framerate;
-                    model: framerates;
+                    current-index <=> video-framerate-idx;
+                    model: video-framerates;
                 }
             }
         }
@@ -427,13 +427,14 @@ component SelectMirroringSourceView inherits Rectangle {
             enabled: Bridge.selected-audio-src != -1 || Bridge.selected-video-src != -1;
             text: "Start";
             clicked => {
-                let scale = Bridge.str-to-scale(video-scale);
+                let scale = Bridge.str-to-scale(video-resolutions[video-resolution-idx]);
+                debug(scale, video-framerate-idx, video-framerate-idx);
                 Bridge.start-cast(
                     Bridge.selected-video-src,
                     Bridge.selected-audio-src,
                     scale.width,
                     scale.height,
-                    video-framerate.to-float(),
+                    video-framerates[video-framerate-idx].to-float(),
                 );
             }
         }
