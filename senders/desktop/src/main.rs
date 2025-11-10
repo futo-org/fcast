@@ -806,7 +806,7 @@ impl Application {
                         #[cfg(target_os = "linux")]
                         audio_sources,
                         #[cfg(not(target_os = "linux"))]
-                        audio_sources: None,
+                        audio_sources: vec![],
                     };
                 }
 
