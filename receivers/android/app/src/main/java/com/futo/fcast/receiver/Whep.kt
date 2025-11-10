@@ -4,6 +4,8 @@ package com.futo.fcast.receiver
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
@@ -296,12 +298,19 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
             override fun onCreateSuccess(sdp: SessionDescription?) {
                 Log.i(TAG, "On create success: $sdp")
                 peerConnection?.setLocalDescription(object : TestObserver() {
+                    @OptIn(UnstableApi::class)
                     override fun onSetSuccess() {
                         MainScope().launch {
                             val localSdp =
                                 peerConnection?.localDescription?.description ?: sdp?.description
                                 ?: return@launch
-                            val sdpResp = sendSdpOffer(localSdp)
+                            val sdpResp = try {
+                                 sendSdpOffer(localSdp)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to send SDP offer: $e")
+                                PlayerActivity.instance?.viewModel?.errorMessage = "Failed to send SDP offer: $e"
+                                return@launch
+                            }
 
                             try {
                                 iceCandidates.forEach { sendCandidate(it) }
