@@ -502,6 +502,9 @@ impl Application {
             Event::StartCast {
                 video_uid,
                 audio_uid,
+                scale_width,
+                scale_height,
+                max_framerate,
             } => {
                 if let Some(session) = self.session_state.as_mut() {
                     match &mut session.specific {
@@ -547,6 +550,7 @@ impl Application {
                                 source_config,
                                 self.event_tx.clone(),
                                 tokio::runtime::Handle::current(),
+                                scale_width, scale_height, max_framerate,
                             )?);
                         }
                         _ => warn!("Cannot start mirroring in non mirroring session"),
@@ -1317,7 +1321,7 @@ fn main() -> Result<()> {
 
     ui.global::<Bridge>().on_start_cast({
         let event_tx = event_tx.clone();
-        move |video_uid, audio_uid| {
+        move |video_uid, audio_uid, scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
                 .blocking_send(Event::StartCast {
                     video_uid: if video_uid >= 0 {
@@ -1330,6 +1334,9 @@ fn main() -> Result<()> {
                     } else {
                         None
                     },
+                    scale_width: scale_width.max(1) as u32,
+                    scale_height: scale_height.max(1) as u32,
+                    max_framerate: max_framerate.max(1) as u32,
                 })
                 .unwrap();
         }

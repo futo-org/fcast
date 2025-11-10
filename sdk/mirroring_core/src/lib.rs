@@ -155,6 +155,9 @@ pub enum Event {
     StartCast {
         video_uid: Option<usize>,
         audio_uid: Option<usize>,
+        scale_width: u32,
+        scale_height: u32,
+        max_framerate: u32
     },
     #[cfg(not(target_os = "android"))]
     StartLocalMediaSession,

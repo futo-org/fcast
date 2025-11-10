@@ -74,7 +74,7 @@ pub struct WhepSink {
 }
 
 impl WhepSink {
-    fn add_video_src(&mut self, sink: &gst::Element, src: VideoSource) -> anyhow::Result<()> {
+    fn add_video_src(&mut self, sink: &gst::Element, src: VideoSource, max_width: u32, max_height: u32, max_framerate: u32) -> anyhow::Result<()> {
         let src_element = match src {
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { node_id, fd } => {
@@ -141,7 +141,7 @@ impl WhepSink {
                 "caps",
                 gst::Caps::builder("video/x-raw")
                     // TODO: the user should be able to change framerate and dims if they would like to
-                    .field("framerate", gst::Fraction::new(30, 1))
+                    .field("framerate", gst::Fraction::new(max_framerate as i32, 1))
                     .field("interlace-mode", "progressive")
                     .build(),
             )
@@ -168,22 +168,22 @@ impl WhepSink {
                     let width = video_info.width();
                     let height = video_info.height();
 
-                    // TODO: the user should be able to change this if they would like to
-                    let max_dim = 1920;
-
-                    if width <= max_dim && height <= max_dim {
+                    if width <= max_width && height <= max_height {
                         return gst::PadProbeReturn::Ok;
                     }
 
-                    let (scaled_width, scaled_height) = if width > height {
+                    let width_diff = max_width as i32 - width as i32;
+                    let height_diff = max_height as i32 - height as i32;
+
+                    let (scaled_width, scaled_height) = if width_diff > height_diff {
                         (
-                            max_dim,
-                            (height as f32 * (max_dim as f32 / width as f32)).trunc() as u32,
+                            max_width,
+                            (height as f32 * (max_width as f32 / width as f32)).trunc() as u32,
                         )
                     } else {
                         (
-                            (width as f32 * (max_dim as f32 / height as f32)).trunc() as u32,
-                            max_dim,
+                            (width as f32 * (max_height as f32 / height as f32)).trunc() as u32,
+                            max_height,
                         )
                     };
 
@@ -462,6 +462,9 @@ impl WhepSink {
         source_config: SourceConfig,
         event_tx: tokio::sync::mpsc::Sender<Event>,
         rt_handle: tokio::runtime::Handle,
+        max_width: u32,
+        max_height: u32,
+        max_framerate: u32
     ) -> anyhow::Result<Self> {
         let pipeline = gst::Pipeline::new();
 
@@ -519,10 +522,10 @@ impl WhepSink {
         };
 
         match source_config {
-            SourceConfig::Video(src) => self_.add_video_src(&sink, src)?,
+            SourceConfig::Video(src) => self_.add_video_src(&sink, src, max_width, max_height, max_framerate)?,
             SourceConfig::Audio(audio) => self_.add_audio_src(&sink, audio)?,
             SourceConfig::AudioVideo { video, audio } => {
-                self_.add_video_src(&sink, video)?;
+                self_.add_video_src(&sink, video, max_width, max_height, max_framerate)?;
                 self_.add_audio_src(&sink, audio)?;
             }
         }

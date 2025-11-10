@@ -74,8 +74,11 @@ export global Bridge {
     in-out property <UiAppState> app-state: Disconnected;
     in-out property <string> device-name: "";
     in-out property <int> selected-video-src: -1;
+    // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
-    in-out property <[[UiVideoSourceModel]]> video-sources: [];
+    in-out property <[[UiVideoSourceModel]]> video-sources: [
+        // [{ uid: 0, name: "Blob" }],
+    ];
     in-out property <[[UiAudioSourceModel]]> audio-sources: [];
     in-out property <[UiDirectoryEntry]> directories: [
         // { id: 0, name: "Test1" },
@@ -116,9 +119,23 @@ export global Bridge {
         app-state = to;
     }
 
+    public pure function str-to-scale(scale: string) -> { width: int, height: int} {
+        if scale == "Ultra HD (2160)" {
+            { width: 3840, height: 2160 }
+        } else if scale == "Quad HD (1440)" {
+            { width: 2560, height: 1440 }
+        } else if scale == "Full HD (1080)" {
+            { width: 1920, height: 1080 }
+        } else if scale == "HD (720)" {
+            { width: 1280, height: 720 }
+        } else {
+            { width: 720, height: 480 }
+        }
+    }
+
     callback connect-to-device(string);
     callback select-input-type(input-type: UiInputType);
-    callback start-cast(video_uid: int, audio_uid: int);
+    callback start-cast(video_uid: int, audio_uid: int, scale-width: int, scale-height: int, max-framerate: int);
     callback stop-cast();
     callback reload-video-sources();
     callback reload-audio-sources();
@@ -238,6 +255,11 @@ component SelectingInputTypeView {
 }
 
 component SelectMirroringSourceView inherits Rectangle {
+    property <string> video-scale: "Full HD (1080)";
+    property <[string]> video-resolutions: ["Ultra HD (2160)", "Quad HD (1440)", "Full HD (1080)", "HD (720)", "SD (480)"];
+    property <string> video-framerate: "30";
+    property <[string]> framerates: ["90", "60", "30", "25", "15", "10", "5", "1"];
+
     VerticalBox {
         alignment: center;
 
@@ -307,6 +329,32 @@ component SelectMirroringSourceView inherits Rectangle {
                             }
                         }
                     }
+                }
+            }
+
+            if Bridge.selected-video-src != -1: HorizontalBox {
+                alignment: center;
+
+                Text {
+                    font-size: 12pt;
+                    vertical-alignment: center;
+                    text: "Max resolution";
+                }
+
+                ComboBox {
+                    current-value <=> video-scale;
+                    model: video-resolutions;
+                }
+
+                Text {
+                    font-size: 12pt;
+                    vertical-alignment: center;
+                    text: "Max framerate";
+                }
+
+                ComboBox {
+                    current-value <=> video-framerate;
+                    model: framerates;
                 }
             }
         }
@@ -379,7 +427,14 @@ component SelectMirroringSourceView inherits Rectangle {
             enabled: Bridge.selected-audio-src != -1 || Bridge.selected-video-src != -1;
             text: "Start";
             clicked => {
-                Bridge.start-cast(Bridge.selected-video-src, Bridge.selected-audio-src);
+                let scale = Bridge.str-to-scale(video-scale);
+                Bridge.start-cast(
+                    Bridge.selected-video-src,
+                    Bridge.selected-audio-src,
+                    scale.width,
+                    scale.height,
+                    video-framerate.to-float(),
+                );
             }
         }
     }
@@ -563,7 +618,6 @@ component LocalMediaView inherits Rectangle {
                                 source: @image-url("./image.svg");
                             }
                         ]
-
                     }
 
                     Text {

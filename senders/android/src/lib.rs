@@ -360,6 +360,9 @@ impl Application {
                     source_config,
                     self.event_tx.clone(),
                     tokio::runtime::Handle::current(),
+                    1920,
+                    1080,
+                    30,
                 )?);
 
                 self.ui_weak.upgrade_in_event_loop(|ui| {
