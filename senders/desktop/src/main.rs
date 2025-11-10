@@ -1154,8 +1154,14 @@ impl Application {
                 break;
             };
 
-            if self.handle_event(event).await? == ShouldQuit::Yes {
-                break;
+            match self.handle_event(event).await {
+                Ok(res) => if res == ShouldQuit::Yes {
+                    break;
+                },
+                Err(err) => {
+                    let _ = self.end_session(true).await;
+                    return Err(err);
+                }
             }
         }
 
@@ -1481,7 +1487,7 @@ fn main() -> Result<()> {
         event_loop_jh.await
     });
 
-    if matches!(res, Ok(Err(_)) | Err(_)) {
+    if matches!(res, Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_)) {
         let crash_window = CrashWindow::new().unwrap();
 
         let log_string = {
@@ -1490,6 +1496,8 @@ fn main() -> Result<()> {
             [front.join("\n"), back.join("\n")].join("\n")
         }
         .to_shared_string();
+
+        debug!("Starting crash window");
 
         crash_window.set_log(log_string);
 
