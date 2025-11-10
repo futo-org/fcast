@@ -19,7 +19,10 @@ use slint::ToSharedString;
 use std::{
     collections::HashMap,
     rc::Rc,
-    sync::{atomic::{self, AtomicBool}, Arc},
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool},
+    },
     time::{Duration, Instant},
 };
 use std::{fmt::Write, path::PathBuf};
@@ -28,7 +31,7 @@ use tokio::{
     runtime::Runtime,
     sync::mpsc::{Sender, channel},
 };
-use tracing::{debug, error, warn, level_filters::LevelFilter};
+use tracing::{debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
     Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
@@ -58,7 +61,12 @@ impl Canceler {
     }
 }
 
-async fn list_directory(canceler: Canceler, id: u32, path: PathBuf, event_tx: Sender<Event>) -> Result<()> {
+async fn list_directory(
+    canceler: Canceler,
+    id: u32,
+    path: PathBuf,
+    event_tx: Sender<Event>,
+) -> Result<()> {
     let mut dir_entries = tokio::fs::read_dir(&path).await?;
     let mut entries = Vec::new();
     while let Some(entry) = dir_entries.next_entry().await? {
@@ -341,11 +349,7 @@ impl Application {
     }
 
     // TODO: rename to stop_session maybe?
-    fn disconnect_device(
-        &mut self,
-        device: Arc<dyn device::CastingDevice>,
-        stop_playback: bool,
-    ) {
+    fn disconnect_device(&mut self, device: Arc<dyn device::CastingDevice>, stop_playback: bool) {
         tokio::spawn(async move {
             if stop_playback {
                 if let Err(err) = device.stop_playback() {
@@ -428,7 +432,10 @@ impl Application {
         if let Some(session) = self.session_state.as_mut() {
             match &mut session.specific {
                 SessionSpecificState::LocalMedia {
-                    data, current_id, listing_canceler, ..
+                    data,
+                    current_id,
+                    listing_canceler,
+                    ..
                 } => {
                     if let Some(canceler) = listing_canceler.take() {
                         canceler.cancel();
@@ -550,7 +557,9 @@ impl Application {
                                 source_config,
                                 self.event_tx.clone(),
                                 tokio::runtime::Handle::current(),
-                                scale_width, scale_height, max_framerate,
+                                scale_width,
+                                scale_height,
+                                max_framerate,
                             )?);
                         }
                         _ => warn!("Cannot start mirroring in non mirroring session"),
@@ -751,7 +760,7 @@ impl Application {
                         );
                         self.end_session(false).await?;
                     }
-               }
+                }
                 mcore::DeviceEvent::PlaybackError(_) => (),
                 _ => self.update_device_state(event)?,
             },
@@ -822,7 +831,10 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     match &mut session.specific {
                         SessionSpecificState::LocalMedia {
-                            current_id, data, listing_canceler, ..
+                            current_id,
+                            data,
+                            listing_canceler,
+                            ..
                         } => {
                             if let Some(canceler) = listing_canceler.take() {
                                 canceler.cancel();
@@ -871,9 +883,14 @@ impl Application {
                             let canceler = Canceler::new();
                             *listing_canceler = Some(canceler.clone());
                             tokio::spawn(async move {
-                                if let Err(err) =
-                                    process_files(canceler, root_id, root_path, files_to_process, event_tx)
-                                        .await
+                                if let Err(err) = process_files(
+                                    canceler,
+                                    root_id,
+                                    root_path,
+                                    files_to_process,
+                                    event_tx,
+                                )
+                                .await
                                 {
                                     error!(?err, "Failed to process files");
                                 }
@@ -964,17 +981,15 @@ impl Application {
 
                                 let id = file_server.add_file(path);
                                 let url = file_server.get_url(local_addr, &id);
-                                session
-                                    .device
-                                    .load(device::LoadRequest::Url {
-                                        content_type: file_entry.mime_type.to_string(),
-                                        url,
-                                        resume_position: None,
-                                        speed: None,
-                                        volume: None,
-                                        metadata: None,
-                                        request_headers: None,
-                                    })
+                                session.device.load(device::LoadRequest::Url {
+                                    content_type: file_entry.mime_type.to_string(),
+                                    url,
+                                    resume_position: None,
+                                    speed: None,
+                                    volume: None,
+                                    metadata: None,
+                                    request_headers: None,
+                                })
                             } else {
                                 warn!(file_id, "No file found");
                                 return Ok(ShouldQuit::No);
@@ -985,7 +1000,6 @@ impl Application {
                 } else {
                     return Ok(ShouldQuit::No);
                 };
-
 
                 if let Err(err) = res {
                     error!(?err, "Failed to cast local media");
@@ -1060,23 +1074,24 @@ impl Application {
     fn update_audio_sources_in_ui(&self) -> Result<()> {
         if let Some(session) = &self.session_state {
             match &session.specific {
-                SessionSpecificState::Mirroring {
-                    audio_sources, ..
-                } => {
+                SessionSpecificState::Mirroring { audio_sources, .. } => {
                     let audio_sources = audio_sources.clone();
                     self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let audio_devs = slint::VecModel::<slint::ModelRc<UiAudioSourceModel>>::from_iter(
-                            audio_sources.chunks(3).map(|row| {
-                                slint::ModelRc::<UiAudioSourceModel>::new(
-                                    slint::VecModel::<UiAudioSourceModel>::from_iter(row.iter().map(|dev| {
-                                        UiAudioSourceModel {
-                                            name: slint::SharedString::from(dev.1.display_name().as_str()),
+                        let audio_devs =
+                            slint::VecModel::<slint::ModelRc<UiAudioSourceModel>>::from_iter(
+                                audio_sources.chunks(3).map(|row| {
+                                    slint::ModelRc::<UiAudioSourceModel>::new(slint::VecModel::<
+                                        UiAudioSourceModel,
+                                    >::from_iter(
+                                        row.iter().map(|dev| UiAudioSourceModel {
+                                            name: slint::SharedString::from(
+                                                dev.1.display_name().as_str(),
+                                            ),
                                             uid: dev.0 as i32,
-                                        }
-                                    })),
-                                )
-                            }),
-                        );
+                                        }),
+                                    ))
+                                }),
+                            );
 
                         ui.global::<Bridge>()
                             .set_audio_sources(Rc::new(audio_devs).into());
@@ -1155,9 +1170,11 @@ impl Application {
             };
 
             match self.handle_event(event).await {
-                Ok(res) => if res == ShouldQuit::Yes {
-                    break;
-                },
+                Ok(res) => {
+                    if res == ShouldQuit::Yes {
+                        break;
+                    }
+                }
                 Err(err) => {
                     let _ = self.end_session(true).await;
                     return Err(err);
@@ -1447,7 +1464,7 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_disconnect({
         let event_tx = event_tx.clone();
         move || {
-            event_tx .blocking_send(Event::EndSession).unwrap();
+            event_tx.blocking_send(Event::EndSession).unwrap();
         }
     });
 
