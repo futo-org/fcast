@@ -14,3 +14,4 @@ node_modules/
 /.idea
 /senders/mirroring/desktop/.flatpak-builder
 /thirdparty
+/test_corpus

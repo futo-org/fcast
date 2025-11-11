@@ -132,10 +132,8 @@ impl SenderArgs {
                         cmd!(sh, "make -f {ndk_root}/build/core/build-local.mk").run()?;
                     }
                     AndroidSenderCommand::Build { release, target } => {
-                        let out_dir = concat_path(
-                            &root_path,
-                            "senders/android/app/src/main/jniLibs",
-                        );
+                        let out_dir =
+                            concat_path(&root_path, "senders/android/app/src/main/jniLibs");
 
                         let targets = target.map(|t| vec![t]).unwrap_or(vec![
                             AbiTarget::X64,

@@ -47,7 +47,6 @@ impl AndroidArgs {
                 cmd!(sh, "unzip {SDK_ZIP_PATH} -d thirdparty/").run()?;
                 sh.remove_path(SDK_ZIP_PATH)?;
 
-
                 let shell_code = format!("yes | {ANDROID_SDK_PATH}/cmdline-tools/bin/sdkmanager --sdk_root={ANDROID_HOME_PATH} --licenses");
                 cmd!(sh, "sh -c {shell_code}").run()?;
 
