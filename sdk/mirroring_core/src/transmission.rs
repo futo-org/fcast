@@ -65,8 +65,8 @@ impl Drop for ExtraAudioContext {
 fn scale_res_to_fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
     let aspect_ratio = (max_width as f32 / width as f32).min(max_height as f32 / height as f32);
     (
-        (width as f32 * aspect_ratio).trunc() as u32 & !1,
-        (height as f32 * aspect_ratio).trunc() as u32 & !1,
+        (width as f32 * aspect_ratio) as u32 & !1,
+        (height as f32 * aspect_ratio) as u32 & !1,
     )
 }
 
