@@ -186,8 +186,11 @@ impl WhepSink {
                         return gst::PadProbeReturn::Ok;
                     }
 
-                    let (scaled_width, scaled_height) =
-                        scale_res_to_fit(width, height, max_width, max_height);
+                    let (scaled_width, scaled_height) = if width > height {
+                        scale_res_to_fit(width, height, max_width, max_height)
+                    } else {
+                        scale_res_to_fit(width, height, max_height, max_width)
+                    };
 
                     debug!(
                         width,
