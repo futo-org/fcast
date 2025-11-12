@@ -155,7 +155,6 @@ impl WhepSink {
             .property(
                 "caps",
                 gst::Caps::builder("video/x-raw")
-                    // TODO: the user should be able to change framerate and dims if they would like to
                     .field("framerate", gst::Fraction::new(max_framerate as i32, 1))
                     .field("interlace-mode", "progressive")
                     .build(),
@@ -302,10 +301,16 @@ impl WhepSink {
                                 }
                             })));
                     }
-                    context
-                        .borrow_mut()
-                        .connect(None, libpulse_binding::context::FlagSet::NOFLAGS, None)
-                        .unwrap();
+
+                    if let Err(err) = context.borrow_mut().connect(
+                        None,
+                        libpulse_binding::context::FlagSet::NOFLAGS,
+                        None,
+                    ) {
+                        error!(?err, "Failed to connect to pulse");
+                        set_and_notify(&from_pulse_pair_clone, PulseResult::Failed);
+                        return;
+                    }
 
                     mainloop.borrow_mut().lock();
 
