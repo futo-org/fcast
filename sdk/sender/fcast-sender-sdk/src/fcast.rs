@@ -280,6 +280,14 @@ impl InnerDevice {
         Ok(())
     }
 
+    fn emit_connected(&self, used_remote_addr: IpAddr, local_addr: IpAddr) {
+        self.event_handler
+            .connection_state_changed(DeviceConnectionState::Connected {
+                used_remote_addr,
+                local_addr,
+            });
+    }
+
     async fn inner_work(
         &mut self,
         addrs: &[SocketAddr],
@@ -592,22 +600,12 @@ impl InnerDevice {
 
                                 self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
                             } else {
-                                self.event_handler
-                                    .connection_state_changed(DeviceConnectionState::Connected {
-                                        used_remote_addr,
-                                        local_addr,
-                                    });
+                                // Since the user of the SDK should be able to tell what features are available after the connected
+                                // event has occured, we emit that event after the receiver has anounced version 2, for version 3
+                                // we have to wait until the InitialReceiverMessage is received
+                                self.emit_connected(used_remote_addr, local_addr);
                                 has_emitted_connected_event = true;
                             }
-
-                            // if !has_emitted_connected_event {
-                            //     self.event_handler
-                            //         .connection_state_changed(DeviceConnectionState::Connected {
-                            //             used_remote_addr,
-                            //             local_addr,
-                            //         });
-                            //     has_emitted_connected_event = true;
-                            // }
                         }
                         Opcode::Initial => {
                             let Some(body) = packet.1 else {
@@ -663,11 +661,7 @@ impl InnerDevice {
                             }
 
                             if !has_emitted_connected_event {
-                                self.event_handler
-                                    .connection_state_changed(DeviceConnectionState::Connected {
-                                        used_remote_addr,
-                                        local_addr,
-                                    });
+                                self.emit_connected(used_remote_addr, local_addr);
                                 has_emitted_connected_event = true;
                             }
                         }
@@ -782,11 +776,7 @@ impl InnerDevice {
                         }
                         Command::ConnectedEventDeadlineElapsed => {
                             if !has_emitted_connected_event {
-                                self.event_handler
-                                    .connection_state_changed(DeviceConnectionState::Connected {
-                                        used_remote_addr,
-                                        local_addr,
-                                    });
+                                self.emit_connected(used_remote_addr, local_addr);
                                 has_emitted_connected_event = true;
                             }
                         }
