@@ -65,8 +65,8 @@ impl Drop for ExtraAudioContext {
 fn scale_res_to_fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
     let aspect_ratio = (max_width as f32 / width as f32).min(max_height as f32 / height as f32);
     (
-        (width as f32 * aspect_ratio).trunc() as u32,
-        (height as f32 * aspect_ratio).trunc() as u32,
+        (width as f32 * aspect_ratio).trunc() as u32 & !1,
+        (height as f32 * aspect_ratio).trunc() as u32 & !1,
     )
 }
 
@@ -624,9 +624,9 @@ mod tests {
     #[test]
     fn test_scale_res_to_fit() {
         assert_eq!(scale_res_to_fit(1920, 1080, 1920, 1080), (1920, 1080));
-        assert_eq!(scale_res_to_fit(1920, 3944, 1920, 1080), (525, 1080));
+        assert_eq!(scale_res_to_fit(1920, 3944, 1920, 1080), (524, 1080));
         assert_eq!(scale_res_to_fit(3840, 2160, 1920, 1080), (1920, 1080));
         assert_eq!(scale_res_to_fit(4096, 2160, 1920, 1080), (1920, 1012));
-        assert_eq!(scale_res_to_fit(1440, 2768, 1920, 1080), (561, 1080));
+        assert_eq!(scale_res_to_fit(1440, 2768, 1920, 1080), (560, 1080));
     }
 }
