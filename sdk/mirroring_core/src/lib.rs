@@ -157,7 +157,7 @@ pub enum Event {
         audio_uid: Option<usize>,
         scale_width: u32,
         scale_height: u32,
-        max_framerate: u32
+        max_framerate: u32,
     },
     #[cfg(not(target_os = "android"))]
     StartLocalMediaSession,
@@ -187,7 +187,10 @@ pub enum Event {
     #[cfg(not(target_os = "android"))]
     ChangePlaybackState(fcast_sender_sdk::device::PlaybackState),
     #[cfg(not(target_os = "android"))]
-    ChangeVolume { volume: f64, force_complete: bool },
+    ChangeVolume {
+        volume: f64,
+        force_complete: bool,
+    },
 
     #[cfg(target_os = "linux")]
     UnsupportedDisplaySystem,

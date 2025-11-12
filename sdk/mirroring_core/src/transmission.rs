@@ -62,6 +62,14 @@ impl Drop for ExtraAudioContext {
     }
 }
 
+fn scale_res_to_fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
+    let aspect_ratio = (max_width as f32 / width as f32).min(max_height as f32 / height as f32);
+    (
+        (width as f32 * aspect_ratio).trunc() as u32,
+        (height as f32 * aspect_ratio).trunc() as u32,
+    )
+}
+
 #[derive(Debug)]
 pub struct WhepSink {
     pub pipeline: gst::Pipeline,
@@ -74,7 +82,14 @@ pub struct WhepSink {
 }
 
 impl WhepSink {
-    fn add_video_src(&mut self, sink: &gst::Element, src: VideoSource, max_width: u32, max_height: u32, max_framerate: u32) -> anyhow::Result<()> {
+    fn add_video_src(
+        &mut self,
+        sink: &gst::Element,
+        src: VideoSource,
+        max_width: u32,
+        max_height: u32,
+        max_framerate: u32,
+    ) -> anyhow::Result<()> {
         let src_element = match src {
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { node_id, fd } => {
@@ -172,20 +187,8 @@ impl WhepSink {
                         return gst::PadProbeReturn::Ok;
                     }
 
-                    let width_diff = max_width as i32 - width as i32;
-                    let height_diff = max_height as i32 - height as i32;
-
-                    let (scaled_width, scaled_height) = if width_diff > height_diff {
-                        (
-                            max_width,
-                            (height as f32 * (max_width as f32 / width as f32)).trunc() as u32,
-                        )
-                    } else {
-                        (
-                            (width as f32 * (max_height as f32 / height as f32)).trunc() as u32,
-                            max_height,
-                        )
-                    };
+                    let (scaled_width, scaled_height) =
+                        scale_res_to_fit(width, height, max_width, max_height);
 
                     debug!(
                         width,
@@ -464,7 +467,7 @@ impl WhepSink {
         rt_handle: tokio::runtime::Handle,
         max_width: u32,
         max_height: u32,
-        max_framerate: u32
+        max_framerate: u32,
     ) -> anyhow::Result<Self> {
         let pipeline = gst::Pipeline::new();
 
@@ -522,7 +525,9 @@ impl WhepSink {
         };
 
         match source_config {
-            SourceConfig::Video(src) => self_.add_video_src(&sink, src, max_width, max_height, max_framerate)?,
+            SourceConfig::Video(src) => {
+                self_.add_video_src(&sink, src, max_width, max_height, max_framerate)?
+            }
             SourceConfig::Audio(audio) => self_.add_audio_src(&sink, audio)?,
             SourceConfig::AudioVideo { video, audio } => {
                 self_.add_video_src(&sink, video, max_width, max_height, max_framerate)?;
@@ -604,5 +609,19 @@ impl WhepSink {
                 error!("Failed to stop pipeline: {err}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::transmission::scale_res_to_fit;
+
+    #[test]
+    fn test_scale_res_to_fit() {
+        assert_eq!(scale_res_to_fit(1920, 1080, 1920, 1080), (1920, 1080));
+        assert_eq!(scale_res_to_fit(1920, 3944, 1920, 1080), (525, 1080));
+        assert_eq!(scale_res_to_fit(3840, 2160, 1920, 1080), (1920, 1080));
+        assert_eq!(scale_res_to_fit(4096, 2160, 1920, 1080), (1920, 1012));
+        assert_eq!(scale_res_to_fit(1440, 2768, 1920, 1080), (561, 1080));
     }
 }
