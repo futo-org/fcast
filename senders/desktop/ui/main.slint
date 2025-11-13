@@ -251,6 +251,11 @@ component SelectingInputTypeView {
             horizontal-alignment: center;
             text: Bridge.device-name + " does not support mirroring";
         }
+
+        Button {
+            text: "Cancel";
+            clicked => Bridge.stop-cast();
+        }
     }
 }
 
