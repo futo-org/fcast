@@ -50,7 +50,6 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
     var serverUrl: String? = null
 
     var patchEndpoint: String? = null
-    val iceCandidates = mutableListOf<IceCandidate>()
     val client = OkHttpClient().newBuilder().retryOnConnectionFailure(true).build()
     val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default)
     var videoTrack: VideoTrack? = null
@@ -60,11 +59,7 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
     var onConnectionStateChanged: ((PeerConnection.PeerConnectionState) -> Unit)? = null
 
     fun setupPeerConnection() {
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-        )
-
-        val config = PeerConnection.RTCConfiguration(iceServers)
+        val config = PeerConnection.RTCConfiguration(listOf())
 
         config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         config.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
@@ -126,64 +121,6 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
         })
     }
 
-    suspend fun sendCandidate(candidate: IceCandidate) = suspendCoroutine { continuation ->
-        if (serverUrl == null) {
-            continuation.resumeWithException(
-                Exception(
-                    "Cannot send the send ICE Candidate. Connection not setup. Remember to call connect first."
-                )
-            )
-            return@suspendCoroutine
-        }
-
-        if (patchEndpoint == null) {
-            continuation.resumeWithException(
-                Exception("Patch endpoint not found. Make sure the SDP answer is correct.")
-            )
-            return@suspendCoroutine
-        }
-
-        val splitSdp = candidate.sdp.split(" ")
-        val ufrag = splitSdp[splitSdp.indexOf("ufrag") + 1]
-
-        val jsonObject = JSONObject()
-        jsonObject.put("candidate", candidate.sdp)
-        jsonObject.put("sdpMLineIndex", candidate.sdpMLineIndex)
-        jsonObject.put("sdpMid", candidate.sdpMid)
-        jsonObject.put("usernameFragment", ufrag)
-
-        val serverUrl = URL(serverUrl)
-        val requestURL =
-            URI(serverUrl.protocol, null, serverUrl.host, serverUrl.port, patchEndpoint, null, null)
-
-        val request =
-            Request.Builder().url(requestURL.toURL()).patch(jsonObject.toString().toRequestBody())
-                .header("Content-Type", "application/trickle-ice-sdpfrag").build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(
-                call: Call, e: IOException
-            ) {
-                continuation.resumeWithException(e)
-                e.printStackTrace()
-            }
-
-            override fun onResponse(
-                call: Call, response: Response
-            ) {
-                response.use {
-                    if (!it.isSuccessful) {
-                        continuation.resumeWithException(
-                            Exception("Candidate sending error - response was not successful: $response")
-                        )
-                        return
-                    }
-                    continuation.resume(Unit)
-                }
-            }
-        })
-    }
-
     override fun onSignalingChange(p0: PeerConnection.SignalingState?) {
         Log.d(TAG, "RTC signaling state changed:: ${p0?.name}")
     }
@@ -198,13 +135,6 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
 
     override fun onIceCandidate(candidate: IceCandidate) {
         Log.i(TAG, "onIceCandidate: $candidate")
-        if (patchEndpoint == null) {
-            iceCandidates.add(candidate)
-        } else {
-            coroutineScope.launch {
-                sendCandidate(candidate)
-            }
-        }
     }
 
     override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {
@@ -312,12 +242,6 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
                                 return@launch
                             }
 
-                            try {
-                                iceCandidates.forEach { sendCandidate(it) }
-                            } catch (e: Throwable) {
-                                Log.e(TAG, "Failed to send candidate: $e")
-                            }
-
                             val answer = SessionDescription(
                                 SessionDescription.Type.ANSWER, sdpResp
                             )
@@ -326,8 +250,12 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
                                 TAG, "Signalling state: ${peerConnection?.signalingState()}"
                             )
                             peerConnection?.setRemoteDescription(object : TestObserver() {
-                                override fun onCreateSuccess(sdp: SessionDescription?) {
-                                    Log.e(TAG, "All OK")
+                                override fun onSetSuccess() {
+                                    Log.i(TAG, "All OK")
+                                }
+
+                                override fun onSetFailure(err: String?) {
+                                    Log.e(TAG, "Failed to set remote description: $err")
                                 }
                             }, answer)
                         }
@@ -344,7 +272,6 @@ class WhepClient(appContext: Context, eglBase: EglBase) : PeerConnection.Observe
         peerConnection?.dispose()
         peerConnection = null
         patchEndpoint = null
-        iceCandidates.clear()
         videoTrack = null
         audioTrack = null
     }
