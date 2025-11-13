@@ -264,7 +264,7 @@ mod imp {
                 return Ok(res);
             }
 
-            let resource_url = "/".to_owned() + RESOURCE_PATH + "/" + &session_id;
+            let resource_url = RESOURCE_PATH.to_owned() + "/" + &session_id;
             let res = Response::builder()
                 .status(StatusCode::CREATED)
                 .header(hyper::header::CONTENT_TYPE, CONTENT_SDP)
@@ -292,6 +292,8 @@ mod imp {
                 Some(val) => val.to_str().ok(),
                 None => None,
             };
+
+            debug!(?uri, ?path, ?method, ?content_type, "Handling request");
 
             async fn body_to_bytes(body: hyper::body::Incoming) -> Result<Bytes, hyper::Error> {
                 Ok(body.collect().await?.to_bytes())
