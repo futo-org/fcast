@@ -486,7 +486,7 @@ component LocalMediaView inherits Rectangle {
 
         VerticalLayout {
             Rectangle {
-                background: lightgrey.transparentize(0.5);
+                clip: true;
                 HorizontalBox {
                     Button {
                         icon: @image-url("./folder-open.svg");
@@ -532,6 +532,7 @@ component LocalMediaView inherits Rectangle {
 
                         Image {
                             source: @image-url("./folder.svg");
+                            colorize: Palette.foreground;
                             width: 25px;
                         }
 
@@ -574,12 +575,10 @@ component LocalMediaView inherits Rectangle {
     Rectangle {
         x: resizer.x + resizer.width;
         height: 100%;
-        background: whitesmoke;
         width: root.width - resizer.width - dir-list.width;
 
         VerticalLayout {
             Rectangle {
-                background: lightgrey.transparentize(0.5);
                 height: 50px;
                 clip: true;
 
@@ -606,7 +605,7 @@ component LocalMediaView inherits Rectangle {
                     Image {
                         height: 25px;
                         width: 25px;
-                        colorize: black;
+                        colorize: Palette.foreground;
 
                         states [
                             audio when file.type == UiMediaFileType.Audio: {
