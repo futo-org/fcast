@@ -433,7 +433,6 @@ component SelectMirroringSourceView inherits Rectangle {
             text: "Start";
             clicked => {
                 let scale = Bridge.str-to-scale(video-resolutions[video-resolution-idx]);
-                debug(scale, video-framerate-idx, video-framerate-idx);
                 Bridge.start-cast(
                     Bridge.selected-video-src,
                     Bridge.selected-audio-src,
