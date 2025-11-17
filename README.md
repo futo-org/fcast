@@ -44,11 +44,10 @@ A "receiver", in this context, is a software implementation running on various p
   - [**MacOS, Windows, Linux**](receivers/electron) electron.
   - [**webOS**](receivers/webos)
   - [**Tizen**](receivers/tizen)
-  - Apple TV (future)
 
 - Senders
   - [**Grayjay**](https://github.com/futo-org/grayjay-android) is a player that exposes multiple video websites as sources in the app.
-  - Browser plugin (future)
+  - [**Terminal**](https://github.com/futo-org/fcast/tree/master/senders/terminal) sender allows you use the FCast protocol over the command line interface.
 
 ## Contributing
 
