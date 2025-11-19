@@ -1,9 +1,13 @@
-use std::{process::Command, rc::Rc};
+use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::rc::Rc;
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
-use xshell::{cmd, Shell};
+use xshell::cmd;
+#[cfg(target_os = "windows")]
+use xshell::Shell;
 
 use crate::{sh, workspace};
 
@@ -66,6 +70,23 @@ const GSTREAMER_PLUGIN_LIBS: [&'static str; 13] = [
     "gstsrtp",
 ];
 
+#[cfg(target_os = "macos")]
+const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 13] = [
+    "gstcoreelements",
+    "gstnice",
+    "gstapp",
+    "gstvideorate",
+    "gstgio",
+    "gstvideoconvertscale",
+    "gstrtp",
+    "gstrtpmanager",
+    "gstvpx",
+    "gstdtls",
+    "gstwebrtc",
+    "gstsrtp",
+    "gstapplemedia",
+];
+
 #[derive(clap::ValueEnum, Clone)]
 pub enum AbiTarget {
     X64,
@@ -109,6 +130,8 @@ pub enum SenderCommand {
     Android(AndroidSenderArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller,
+    #[cfg(target_os = "macos")]
+    BuildMacosInstaller,
 }
 
 #[derive(Args)]
@@ -228,12 +251,12 @@ impl SenderArgs {
                             let target = target.translate();
 
                             #[rustfmt::skip]
-                            let mut args = vec![
-                                "--target", target,
-                                "-o", out_dir.as_str(),
-                                "build",
-                                "--package", "android-sender",
-                            ];
+                                    let mut args = vec![
+                                        "--target", target,
+                                        "-o", out_dir.as_str(),
+                                        "build",
+                                        "--package", "android-sender",
+                                    ];
                             if release {
                                 args.push("--release");
                             }
@@ -518,9 +541,7 @@ impl SenderArgs {
                     println!("Copied `{src}` to `{dst}`");
 
                     if dst.extension() == Some("dll") {
-                        dll_components += &format!(
-                            r#"<File Source="{dst}" />"#
-                        );
+                        dll_components += &format!(r#"<File Source="{dst}" />"#);
                         dll_components += "\n";
                     }
                 }
@@ -576,7 +597,10 @@ impl SenderArgs {
 </Wix>"#
                 );
 
-                sh.write_file(concat_path(&build_dir_root, &"FCastSenderInstaller.wxs"), product_wxs)?;
+                sh.write_file(
+                    concat_path(&build_dir_root, &"FCastSenderInstaller.wxs"),
+                    product_wxs,
+                )?;
 
                 println!("############### Building installer ###############");
 
@@ -584,6 +608,282 @@ impl SenderArgs {
                     let _win_build_p = sh.push_dir(&build_dir_root);
                     cmd!(sh, "wix build .\\FCastSenderInstaller.wxs").run()?;
                 }
+            }
+            #[cfg(target_os = "macos")]
+            SenderCommand::BuildMacosInstaller => {
+                fn plugins() -> Vec<String> {
+                    GSTREAMER_PLUGIN_LIBS_MACOS
+                        .iter()
+                        .map(|s| format!("lib{s}.dylib"))
+                        .collect()
+                }
+
+                let gstreamer_root =
+                    Utf8PathBuf::from("/Library/Frameworks/GStreamer.framework/Versions/1.0");
+                assert!(gstreamer_root.exists(), "GStreamer is not installed");
+                println!("GStreamer root is: {gstreamer_root:?}");
+                let gstreamer_root_libs = gstreamer_root.join("lib");
+
+                let path_to_dmg_dir = root_path.join("target").join("fcast-sender-dmg");
+                let app_top_level = path_to_dmg_dir.join("FCast Sender.app");
+                let build_dir_root = app_top_level.join("Contents").join("MacOS");
+
+                if sh.remove_path(&path_to_dmg_dir).is_ok() {
+                    println!("Removed old build dir at `{path_to_dmg_dir:?}`")
+                }
+
+                sh.create_dir(&build_dir_root)?;
+
+                let library_target_directory = build_dir_root.join("lib");
+                sh.create_dir(&library_target_directory)?;
+
+                cmd!(sh, "cargo build --release --package desktop-sender").run()?;
+
+                let binary_path =
+                    concat_paths(&[root_path.as_str(), "target", "release", "desktop-sender"]);
+
+                std::fs::copy(&binary_path, build_dir_root.join("fcast-sender"))?;
+
+                fn is_macos_system_library(path: &str) -> bool {
+                    path.starts_with("/usr/lib/")
+                        || path.starts_with("/System/Library/")
+                        || path.contains(".asan.")
+                }
+
+                use std::collections::HashSet;
+
+                fn find_non_system_dependencies_with_otool(
+                    binary_path: &Utf8PathBuf,
+                ) -> HashSet<Utf8PathBuf> {
+                    let binary_path = binary_path.as_str();
+                    let mut cmd = Command::new("/usr/bin/otool");
+                    cmd.arg("-L").arg(&binary_path);
+                    let output = cmd.stdout(std::process::Stdio::piped()).spawn().unwrap();
+
+                    let stdout = output.stdout.expect("failed to capture otool stdout");
+                    use std::io::{BufRead, BufReader};
+                    let reader = BufReader::new(stdout);
+
+                    let mut result = HashSet::new();
+
+                    for line in reader.lines() {
+                        let line = line.unwrap();
+                        if !line.starts_with('\t') {
+                            continue;
+                        }
+                        if let Some((dep, _)) = line[1..].split_once(char::is_whitespace) {
+                            let dependency = dep.to_string();
+                            if !is_macos_system_library(&dependency)
+                                && !dependency.contains("librustc-stable_rt")
+                            {
+                                result.insert(Utf8PathBuf::from(dependency));
+                            }
+                        } else {
+                            let dependency = line[1..].to_string();
+                            if !is_macos_system_library(&dependency)
+                                && !dependency.contains("librustc-stable_rt")
+                            {
+                                result.insert(Utf8PathBuf::from(dependency));
+                            }
+                        }
+                    }
+
+                    result
+                }
+
+                println!("############### Finding libraries ###############");
+
+                let relative_path = Utf8PathBuf::from("lib/");
+                let mut binary_dependencies = find_non_system_dependencies_with_otool(&binary_path);
+                for dep in plugins() {
+                    let dep_path = gstreamer_root_libs.join("gstreamer-1.0").join(dep);
+                    assert!(dep_path.exists(), "Missing plugin `{dep_path}`");
+                    println!("Found `{dep_path}`");
+                    binary_dependencies.insert(dep_path);
+                }
+
+                pub fn rewrite_dependencies_to_be_relative(
+                    binary: &Utf8PathBuf,
+                    dependency_lines: &HashSet<Utf8PathBuf>,
+                    relative_path: &Utf8PathBuf,
+                ) {
+                    for dep in dependency_lines {
+                        if is_macos_system_library(dep.as_str()) || dep.starts_with("@rpath/") {
+                            continue;
+                        }
+
+                        let basename = Utf8Path::new(dep)
+                            .file_name()
+                            .unwrap_or_else(|| dep.as_str());
+
+                        let new_path = Utf8PathBuf::from("@executable_path")
+                            .join(relative_path)
+                            .join(basename);
+
+                        let status = Command::new("install_name_tool")
+                            .arg("-change")
+                            .arg(dep)
+                            .arg(new_path.as_str())
+                            .arg(binary.as_str())
+                            .status()
+                            .unwrap();
+
+                        if !status.success() {
+                            panic!(
+                                "{:?} install_name_tool exited with return value {:?}",
+                                [
+                                    "install_name_tool",
+                                    "-change",
+                                    dep.as_str(),
+                                    new_path.as_str(),
+                                    binary.as_str()
+                                ],
+                                status.code(),
+                            );
+                        }
+                    }
+                }
+
+                println!("############### Rewriting dependencies to be relative ###############");
+                rewrite_dependencies_to_be_relative(
+                    &binary_path,
+                    &binary_dependencies,
+                    &relative_path,
+                );
+
+                pub fn make_rpath_path_absolute(
+                    dylib_path_from_otool: &str,
+                    rpath: &Utf8Path,
+                ) -> Utf8PathBuf {
+                    if !dylib_path_from_otool.starts_with("@rpath/") {
+                        return Utf8PathBuf::from(dylib_path_from_otool);
+                    }
+
+                    let path_relative_to_rpath = &dylib_path_from_otool["@rpath/".len()..];
+                    let candidates = ["", "..", "gstreamer-1.0"];
+
+                    for relative_directory in &candidates {
+                        let mut full = Utf8PathBuf::from(rpath);
+                        if !relative_directory.is_empty() {
+                            full.push(relative_directory);
+                        }
+                        full.push(path_relative_to_rpath);
+
+                        if full.exists() {
+                            let normalized = std::fs::canonicalize(&full)
+                                .map(|p| Utf8PathBuf::try_from(p).unwrap())
+                                .unwrap_or(full);
+                            return normalized;
+                        }
+                    }
+
+                    panic!(
+                        "Unable to satisfy rpath dependency: {}",
+                        dylib_path_from_otool
+                    );
+                }
+
+                println!("############### Processing dependencies ###############");
+
+                let mut pending_to_be_copied: HashSet<Utf8PathBuf> = binary_dependencies.clone();
+                let mut already_copied: HashSet<Utf8PathBuf> = HashSet::new();
+                while !pending_to_be_copied.is_empty() {
+                    let checking: HashSet<Utf8PathBuf> = pending_to_be_copied.drain().collect();
+
+                    for otool_dependency in checking {
+                        already_copied.insert(otool_dependency.clone());
+
+                        let original_dylib_path = make_rpath_path_absolute(
+                            otool_dependency.as_str(),
+                            &gstreamer_root_libs,
+                        );
+                        let transitive_dependencies = HashSet::from_iter(
+                            find_non_system_dependencies_with_otool(&original_dylib_path)
+                                .into_iter(),
+                        );
+
+                        let new_dylib_path = library_target_directory.join(
+                            Utf8Path::new(&original_dylib_path)
+                                .file_name()
+                                .unwrap_or(original_dylib_path.as_str()),
+                        );
+
+                        if !new_dylib_path.exists() {
+                            std::fs::copy(&original_dylib_path, &new_dylib_path)?;
+                            rewrite_dependencies_to_be_relative(
+                                &new_dylib_path,
+                                &transitive_dependencies,
+                                &relative_path,
+                            );
+                        }
+
+                        let mut to_queue = transitive_dependencies;
+                        for seen in &already_copied {
+                            to_queue.remove(seen);
+                        }
+                        pending_to_be_copied.extend(to_queue);
+                    }
+                }
+
+                println!("############### Writing resources ###############");
+
+                let info_list = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>fcast-sender</string>
+	<key>CFBundleGetInfoString</key>
+	<string>FCast Sender</string>
+	<key>CFBundleIconFile</key>
+	<string>fcast.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.fcast.FCastSender</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>FCast Sender</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSQuitAlwaysKeepsWindows</key>
+	<false/>
+	<key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+    <key>NSScreenRecordingUsageDescription</key>
+    <string>
+        We need to record your screen to mirror it to an external receiver
+    </string>
+</dict>
+</plist>
+"#;
+                sh.create_dir(app_top_level.join("Contents").join("Resources"))?;
+                sh.copy_file(
+                    root_path.join("senders").join("extra").join("fcast.icns"),
+                    app_top_level
+                        .join("Contents")
+                        .join("Resources")
+                        .join("fcast.icns"),
+                )?;
+                sh.write_file(app_top_level.join("Contents").join("Info.plist"), info_list)?;
+                std::os::unix::fs::symlink(
+                    Utf8PathBuf::from("/Applications"),
+                    path_to_dmg_dir.join("Applications"),
+                )?;
+
+                let path_to_dmg = root_path.join("target").join("fcast-sender.dmg");
+                sh.remove_path(&path_to_dmg)?;
+
+                println!("############### Creating dmg ###############");
+
+                cmd!(sh, "hdiutil create -volname FCastSender -megabytes 250 {path_to_dmg} -srcfolder {path_to_dmg_dir}").run()?;
             }
         }
 
