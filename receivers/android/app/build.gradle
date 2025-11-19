@@ -98,6 +98,7 @@ dependencies {
     implementation "androidx.media3:media3-ui-compose:$media3_version"
     implementation "androidx.media3:media3-exoplayer-dash:$media3_version"
     implementation "androidx.media3:media3-exoplayer-hls:$media3_version"
+    implementation 'io.github.webrtc-sdk:android:137.7151.04'
     implementation "com.squareup.okhttp3:okhttp:5.1.0"
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")

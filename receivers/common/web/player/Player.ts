@@ -1,6 +1,7 @@
 import { PlayMessage } from 'common/Packets';
 import dashjs from 'modules/dashjs';
 import Hls from 'modules/hls.js';
+import { WHEPClient } from './Whep';
 
 const logger = window.targetAPI.logger;
 
@@ -8,6 +9,7 @@ export enum PlayerType {
     Html,
     Dash,
     Hls,
+    Whep,
 }
 
 export class Player {
@@ -21,6 +23,8 @@ export class Player {
     public playerType: PlayerType;
     public dashPlayer: dashjs.MediaPlayerClass = null;
     public hlsPlayer: Hls = null;
+    public peerConnection: RTCPeerConnection | null = null;
+    public whepClient: WHEPClient | null = null;
 
     constructor(player: HTMLVideoElement, message: PlayMessage) {
         this.player = player;
@@ -62,11 +66,40 @@ export class Player {
             };
 
             this.hlsPlayer = new Hls(config);
-
+        } else if (message.container === 'application/x-whep') {
+            this.playerType = PlayerType.Whep;
+            this.source = message.url;
+            this.peerConnection = new RTCPeerConnection({ bundlePolicy: "max-bundle" });
+            this.peerConnection.addTransceiver("audio", { direction: "recvonly" });
+            this.peerConnection.addTransceiver("video", { direction: "recvonly" });
+            this.peerConnection.onconnectionstatechange = (event) => {
+                switch (this.peerConnection?.connectionState) {
+                    case "disconnected":
+                    case "failed":
+                    case "closed":
+                        break;
+                    default:
+                        break;
+                }
+            }
+            this.whepClient = new WHEPClient();
         } else {
             this.playerType = PlayerType.Html;
             this.source = message.url;
         }
+    }
+
+    private destroy_html_player() {
+        this.player.src = "";
+        this.player.onerror = null;
+        this.player.onloadedmetadata = null;
+        this.player.ontimeupdate = null;
+        this.player.onplay = null;
+        this.player.onpause = null;
+        this.player.onended = null;
+        this.player.ontimeupdate = null;
+        this.player.onratechange = null;
+        this.player.onvolumechange = null;
     }
 
     public destroy() {
@@ -90,16 +123,19 @@ export class Player {
                 // fallthrough
 
             case PlayerType.Html: {
-                this.player.src = "";
-                this.player.onerror = null;
-                this.player.onloadedmetadata = null;
-                this.player.ontimeupdate = null;
-                this.player.onplay = null;
-                this.player.onpause = null;
-                this.player.onended = null;
-                this.player.ontimeupdate = null;
-                this.player.onratechange = null;
-                this.player.onvolumechange = null;
+                this.destroy_html_player();
+
+                break;
+            }
+            case PlayerType.Whep: {
+                try {
+                    this.whepClient?.stop();
+                } catch (e) {
+                     logger.warn("Failed to stop whep client", e);
+                }
+                this.whepClient = null;
+                this.peerConnection = null;
+                this.destroy_html_player();
 
                 break;
             }
@@ -135,6 +171,19 @@ export class Player {
             this.hlsPlayer.loadSource(this.playMessage.url);
             this.hlsPlayer.attachMedia(this.player);
             // hlsPlayer.subtitleDisplay = true;
+        } else if (this.playerType == PlayerType.Whep) {
+            const pc = this.peerConnection;
+            if (pc != null) {
+                pc.ontrack = (event) => {
+                    this.player.srcObject = event.streams[0];
+                }
+
+                try {
+                    this.whepClient?.view(pc, this.playMessage.url);
+                } catch (e) {
+                    logger.warn("WHEP client failed to view", e);
+                }
+            }
         } else { // HTML
             this.player.src = this.playMessage.url;
             this.player.load();

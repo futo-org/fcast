@@ -24,6 +24,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -39,6 +40,7 @@ import com.futo.fcast.receiver.models.PlayMessage
 import com.futo.fcast.receiver.models.PlaybackState
 import com.futo.fcast.receiver.models.PlaybackUpdateMessage
 import com.futo.fcast.receiver.models.PlayerActivityViewModel
+import com.futo.fcast.receiver.models.PlayerSource
 import com.futo.fcast.receiver.models.SeekMessage
 import com.futo.fcast.receiver.models.SetSpeedMessage
 import com.futo.fcast.receiver.models.SetVolumeMessage
@@ -50,7 +52,11 @@ import com.futo.fcast.receiver.models.supportedVideoTypes
 import com.futo.fcast.receiver.views.PlayerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
+import org.webrtc.EglBase
+import org.webrtc.PeerConnectionFactory
+import org.webrtc.VideoTrack
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
@@ -194,6 +200,22 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    fun clearViewModelSource() {
+        try {
+            val source = viewModel.source
+            when (source) {
+                is PlayerSource.Whep -> {
+                    source.client.disconnect()
+                    source.videoTrack.value = null
+                }
+                else -> {}
+            }
+            viewModel.source = null
+        } catch (e: Exception) {
+            Log.e(TAG, "WHEP client failed to disconnect: $e")
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
@@ -202,6 +224,9 @@ class PlayerActivity : AppCompatActivity() {
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         NetworkService.activityCount--
+
+        clearViewModelSource()
+        viewModel.source = null
 
         GlobalScope.launch(Dispatchers.IO) {
             try {
@@ -499,7 +524,7 @@ class PlayerActivity : AppCompatActivity() {
 //        _exoPlayer.setvideoscalingMode
 //        _exoPlayer.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
 
-        viewModel.exoPlayer = _exoPlayer
+        viewModel.source = PlayerSource.Exo(_exoPlayer)
     }
 
     private fun onMediaLoad(message: PlayMessage, playlistIndex: Int) {
@@ -739,10 +764,6 @@ class PlayerActivity : AppCompatActivity() {
                 ((NetworkService.cache.playlistContent!!.forwardCache != null && NetworkService.cache.playlistContent!!.forwardCache!! > 0) ||
                         (NetworkService.cache.playlistContent!!.backwardCache != null && NetworkService.cache.playlistContent!!.backwardCache!! > 0))
 
-        if (_usingPreloader) {
-            initializeExoPlayer(true)
-        }
-
         val message = if (_isPlaylist) {
             val offset = NetworkService.cache.playlistContent!!.offset ?: 0
             val volume =
@@ -785,6 +806,56 @@ class PlayerActivity : AppCompatActivity() {
         viewModel.playMessage = message
         sendPlaybackUpdate()
         _lastPlayerUpdateGenerationTime = 0
+
+        clearViewModelSource()
+
+        if (!_isPlaylist && _cachedPlayMediaItem.container == "application/x-whep") {
+            val client = WhepClient(this, eglBase)
+
+            client.addTrackListener(object : ClientBaseListener {
+                override fun onTrackAdded(track: VideoTrack) {
+                    Log.i("SurfaceViewRenderer", "Video track was added")
+                    val source = viewModel.source
+                    when (source) {
+                        is PlayerSource.Whep -> {
+                            source.videoTrack.value = track
+                        }
+
+                        else -> {}
+                    }
+                }
+            })
+
+            val url = _cachedPlayMediaItem.url ?: return
+            MainScope().launch {
+                client.connect(url)
+            }
+
+            Log.i(TAG, "Starting WHEP playback with: $_cachedPlayMediaItem")
+            NetworkService.instance?.sendEvent(
+                EventMessage(
+                    System.currentTimeMillis(),
+                    MediaItemEvent(EventType.MediaItemStart, _cachedPlayMediaItem)
+                )
+            )
+
+            viewModel.isLoading = false
+            viewModel.isIdle = false
+            viewModel.hasDuration = false
+            viewModel.source = PlayerSource.Whep(client)
+            viewModel.errorMessage = null
+            viewModel.hasDuration = false
+            _wasPlaying = false
+
+            sendPlaybackUpdate()
+            onMediaLoad(message, 0)
+
+            return
+        }
+
+        if (_usingPreloader) {
+            initializeExoPlayer(true)
+        }
 
         _exoPlayer.clearMediaItems()
         val mediaItemList =
@@ -889,6 +960,7 @@ class PlayerActivity : AppCompatActivity() {
         viewModel.errorMessage = null
         viewModel.hasDuration = true
         _wasPlaying = false
+        viewModel.source = PlayerSource.Exo(_exoPlayer)
 //        _exoPlayer.playWhenReady = true
 //        _exoPlayer.prepare()
     }
@@ -1040,6 +1112,7 @@ class PlayerActivity : AppCompatActivity() {
     companion object {
         var instance: PlayerActivity? = null
         const val TAG = "PlayerActivity"
+        val eglBase = EglBase.create()
 
         private const val SEEK_BACKWARD_MILLIS = 10_000L
         private const val SEEK_FORWARD_MILLIS = 10_000L

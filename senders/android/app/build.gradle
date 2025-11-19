@@ -1,0 +1,49 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+android {
+    namespace 'org.fcast.android.sender'
+    compileSdk 34
+
+    sourceSets {
+        main {
+            java {
+                srcDirs = ['src/main/java']
+                jniLibs.srcDirs = ['libs', 'src/main/jniLibs']
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId "org.fcast.android.sender"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    buildFeatures {
+        viewBinding true
+    }
+}
+
+dependencies {
+    implementation libs.material
+    testImplementation libs.junit
+    androidTestImplementation libs.ext.junit
+    androidTestImplementation libs.espresso.core
+    implementation "com.journeyapps:zxing-android-embedded:4.3.0"
+}

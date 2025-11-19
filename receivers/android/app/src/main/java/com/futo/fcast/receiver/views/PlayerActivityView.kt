@@ -1,5 +1,7 @@
 package com.futo.fcast.receiver.views
 
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -15,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
@@ -39,18 +43,27 @@ import com.futo.fcast.receiver.composables.ThemedText
 import com.futo.fcast.receiver.composables.noRippleClickable
 import com.futo.fcast.receiver.composables.rememberPlayerState
 import com.futo.fcast.receiver.models.PlayerActivityViewModel
+import com.futo.fcast.receiver.models.PlayerSource
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 
 @OptIn(UnstableApi::class)
 @Composable
 fun PlayerActivity(viewModel: PlayerActivityViewModel) {
+    remember { Handler(Looper.getMainLooper()) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
         val context = LocalContext.current
-        val playerState =
-            if (viewModel.exoPlayer != null) rememberPlayerState(viewModel.exoPlayer!!) else previewPlayerState
+        val source = viewModel.source
+        val playerState = when (source) {
+            is PlayerSource.Exo -> rememberPlayerState(source.exoPlayer)
+            is PlayerSource.Whep -> whepPlayerState
+            null -> previewPlayerState
+        }
 
         PlayerActivityViewConnectionMonitor(context)
 
@@ -66,57 +79,83 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
         ) {
             val (imageRef, playerRef, subtitlesRef, controlsRef, errorTextRef) = createRefs()
 
-            // Notes:
-            // * Cannot use PlayerSurface since it does not work for images
-            // * Emulator tends to have issues rendering videos (e.g. when playing nonstandard
-            //   resolutions like 854x480 or having invalid colors/artifacting when seeking)
-            AndroidView(
-                factory = {
-                    PlayerView(context).apply {
-                        this.player = viewModel.exoPlayer
-                        this.useController = false
-                        this.subtitleView?.visibility = View.GONE
-                        this.artworkDisplayMode = PlayerView.ARTWORK_DISPLAY_MODE_OFF
+            when (source) {
+                is PlayerSource.Exo -> {
+                    // Notes:
+                    // * Cannot use PlayerSurface since it does not work for images
+                    // * Emulator tends to have issues rendering videos (e.g. when playing nonstandard
+                    //   resolutions like 854x480 or having invalid colors/artifacting when seeking)
+                    AndroidView(
+                        factory = { ctx ->
+                        PlayerView(context).apply {
+                            this.player = source.exoPlayer
+                            this.useController = false
+                            this.subtitleView?.visibility = View.GONE
+                            this.artworkDisplayMode = PlayerView.ARTWORK_DISPLAY_MODE_OFF
 
-//                    this.useController = true
-//                    setShowSubtitleButton(true)
-//                    this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
-//                    exoPlayer.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
-                    }
-                },
-                update = { view ->
-                    view.player = viewModel.exoPlayer
-                    view.useController = false
-                    view.subtitleView?.visibility = View.GONE
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .constrainAs(playerRef) {
-                        top.linkTo(parent.top)
-                        bottom.linkTo(parent.bottom)
-                        start.linkTo(parent.start)
-                        end.linkTo(parent.end)
-                    }
-            )
+                            // this.useController = true
+                            // setShowSubtitleButton(true)
+                            // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
+                            // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
+                            // exoPlayer.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
+                        }
+                    },
+                        update = { view ->
+                            // view.player = viewModel.exoPlayer
+                            view.player = source.exoPlayer
+                            view.useController = false
+                            view.subtitleView?.visibility = View.GONE
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .constrainAs(playerRef) {
+                                top.linkTo(parent.top)
+                                bottom.linkTo(parent.bottom)
+                                start.linkTo(parent.start)
+                                end.linkTo(parent.end)
+                            }
 
-            AndroidView(
-                factory = {
-                    SubtitleView(context).apply {
-                        this.setCues(playerState.cues)
-                    }
-                },
-                update = { view ->
-                    view.setCues(playerState.cues)
-                },
-                modifier = Modifier.constrainAs(subtitlesRef) {
-                    if (viewModel.showControls) {
-                        bottom.linkTo(controlsRef.top, margin = (-120).dp)
-                    } else {
-                        bottom.linkTo(parent.bottom, margin = 10.dp)
+                    )
+
+                    AndroidView(factory = {
+                        SubtitleView(context).apply {
+                            this.setCues(playerState.cues)
+                        }
+                    }, update = { view ->
+                        view.setCues(playerState.cues)
+                    }, modifier = Modifier.constrainAs(subtitlesRef) {
+                        if (viewModel.showControls) {
+                            bottom.linkTo(controlsRef.top, margin = (-120).dp)
+                        } else {
+                            bottom.linkTo(parent.bottom, margin = 10.dp)
+                        }
+                    })
+                }
+
+                is PlayerSource.Whep -> {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        AndroidView(factory = { ctx ->
+                            SurfaceViewRenderer(ctx).apply {
+                                setEnableHardwareScaler(true)
+                                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                            }
+                        }, update = {
+                            if (!source.surfaceIsInit.value) {
+                                it.init(PlayerActivity.eglBase.eglBaseContext, null)
+                                source.surfaceIsInit.value = true
+                            }
+                            source.videoTrack.value?.addSink(it)
+                        }, onRelease = {
+                            it.release()
+                            source.surfaceIsInit.value = false
+                        })
                     }
                 }
-            )
+
+                else -> {}
+            }
+
 
             if (viewModel.isLoading) {
                 // TODO: Replace with new background load screen in next update
@@ -137,8 +176,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             start.linkTo(parent.start)
                             end.linkTo(parent.end)
                         }
-                        .fillMaxSize(0.5f)
-                )
+                        .fillMaxSize(0.5f))
             }
 
             if (viewModel.isLoading || playerState.isBuffering) {
@@ -151,8 +189,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             bottom.linkTo(parent.bottom)
                             start.linkTo(parent.start)
                             end.linkTo(parent.end)
-                        }
-                )
+                        })
             } else if (viewModel.isIdle || viewModel.errorMessage != null || (playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail == null)) {
                 Box(
                     Modifier
@@ -177,15 +214,12 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                 visible = viewModel.showControls,
                 enter = fadeIn(animationSpec = tween(durationMillis = 200)),
                 exit = fadeOut(animationSpec = tween(durationMillis = 200)),
-                modifier = Modifier
-                    .constrainAs(controlsRef) {
-                        bottom.linkTo(parent.bottom)
-                    },
+                modifier = Modifier.constrainAs(controlsRef) {
+                    bottom.linkTo(parent.bottom)
+                },
             ) {
                 PlayerControlsAV(
-                    viewModel,
-                    Modifier,
-                    playerState
+                    viewModel, Modifier, playerState
                 )
             }
 
@@ -207,6 +241,11 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
     }
 }
 
+val whepPlayerState = PlayerState(
+    isPlaying = true,
+    isLive = true,
+)
+
 val previewPlayerState = PlayerState(
     1000L * 30,
     1000L * 60,
@@ -217,9 +256,7 @@ val previewPlayerState = PlayerState(
     isLive = false,
     isLiveSeekable = false,
     "Video Title",
-    null,
-    0,
-    null,
+    mediaType = 0,
 )
 
 @Preview

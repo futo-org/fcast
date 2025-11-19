@@ -1,0 +1,12 @@
+buildAndroidSenderDockerContainer:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/android-sender-dev:latest senders/android/
+    - docker push $CI_REGISTRY/videostreaming/fcast/android-sender-dev:latest
+  when: manual

@@ -11,3 +11,7 @@
 /flake*
 /ios-bindings
 /ios-build
+/.idea
+/senders/mirroring/desktop/.flatpak-builder
+/thirdparty
+/test_corpus
