@@ -1303,6 +1303,14 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        let mut plugin_dir = std::env::current_exe()?;
+        plugin_dir.pop();
+        plugin_dir.push("lib");
+        unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
+    }
+
     let fmt_layer = tracing_subscriber::fmt::layer().with_filter(log_level());
     let tracing_events: Arc<parking_lot::Mutex<std::collections::VecDeque<String>>> =
         Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
