@@ -16,13 +16,13 @@
 //!
 //! ## Example usage
 //!
-//! ```rust,no_run
+//! ```no_run
 //! use std::sync::Arc;
 //!
 //! use fcast_sender_sdk::context::CastContext;
 //! use fcast_sender_sdk::device::{
-//!     ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, GenericKeyEvent,
-//!     GenericMediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
+//!     ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, KeyEvent,
+//!     MediaEvent, LoadRequest, PlaybackState, ProtocolType, Source,
 //! };
 //! use fcast_sender_sdk::{DeviceDiscovererEventHandler, IpAddr};
 //!
@@ -57,11 +57,11 @@
 //!         println!("Source changed: {source:?}");
 //!     }
 //!
-//!     fn key_event(&self, event: GenericKeyEvent) {
+//!     fn key_event(&self, event: KeyEvent) {
 //!         println!("Key event: {event:?}");
 //!     }
 //!
-//!     fn media_event(&self, event: GenericMediaEvent) {
+//!     fn media_event(&self, event: MediaEvent) {
 //!         println!("Media event: {event:?}");
 //!     }
 //!
@@ -159,9 +159,6 @@ use tokio::runtime;
 pub mod device;
 #[cfg(any_protocol)]
 use std::str::FromStr;
-
-#[cfg(any_protocol)]
-use log::error;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();

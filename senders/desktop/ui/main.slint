@@ -1,0 +1,896 @@
+import {
+    VerticalBox,
+    HorizontalBox,
+    Button,
+    ComboBox,
+    Palette,
+    Spinner,
+    Switch,
+    ListView,
+    TextEdit,
+    Slider,
+    LineEdit,
+} from "std-widgets.slint";
+
+export enum UiAppState {
+    Disconnected,
+    Connecting,
+    SelectingInputType,
+    SelectingMirroringSource,
+    LocalMedia,
+    UnsupportedReceiver,
+    StartingCast,
+    Mirroring,
+}
+
+export enum UiInputType {
+    LocalMedia,
+    Mirroring,
+}
+
+export struct UiVideoSourceModel {
+    name: string,
+    uid: int,
+}
+
+export struct UiAudioSourceModel {
+    name: string,
+    uid: int,
+}
+
+export struct UiDirectoryEntry {
+    id: int,
+    name: string,
+}
+
+export enum UiMediaFileType {
+    Audio,
+    Video,
+    Image,
+}
+
+export enum UiPlaybackState {
+    Idle,
+    Buffering,
+    Playing,
+    Paused,
+}
+
+export enum UiCastProtocol {
+    FCast,
+    GCast,
+}
+
+export struct UiMediaFileEntry {
+    id: int,
+    name: string,
+    type: UiMediaFileType,
+}
+
+export global Bridge {
+    // in-out property <AppState> app-state: SelectingInputType;
+    // in-out property <string> device-name: "FCast-localhost";
+    // in property <string> current-directory: "Testing";
+
+    in property <bool> is-audio-supported: false;
+    in property <bool> is-mirroring-supported: false;
+    in property <string> current-directory: "";
+    in property <[string]> devices: [];
+
+    in-out property <UiAppState> app-state: Disconnected;
+    in-out property <string> device-name: "";
+    in-out property <int> selected-video-src: -1;
+    // in-out property <int> selected-video-src: 0;
+    in-out property <int> selected-audio-src: -1;
+    in-out property <[[UiVideoSourceModel]]> video-sources: [
+        // [{ uid: 0, name: "Blob" }],
+    ];
+    in-out property <[[UiAudioSourceModel]]> audio-sources: [];
+    in-out property <[UiDirectoryEntry]> directories: [
+        // { id: 0, name: "Test1" },
+        // { id: 0, name: "Test1" },
+        // { id: 0, name: "Test1" },
+        // { id: 0, name: "Test1" },
+        // { id: 0, name: "Test1" },
+        // { id: 0, name: "Test1" },
+    ];
+    in-out property <[UiMediaFileEntry]> files: [
+        // { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", type: UiMediaFileType.Audio },
+        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        // { id: 0, name: "Test1", type: UiMediaFileType.Video },
+        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
+    ];
+    in-out property <float> volume: 1.0;
+    in-out property <float> playback-position: 0.0;
+    in-out property <UiPlaybackState> playback-state: UiPlaybackState.Idle;
+    in-out property <float> track-duration: 0.0;
+    in-out property <float> playback-rate: 1.0;
+    in-out property <string> track-name: "";
+    in-out property <UiMediaFileType> track-type;
+
+    public function change-state(to: UiAppState) {
+        if to == UiAppState.Disconnected {
+            selected-video-src = -1;
+            selected-audio-src = -1;
+            device-name = "";
+            video-sources = [];
+            audio-sources = [];
+
+            playback-state = UiPlaybackState.Idle;
+            playback-position = 0.0;
+            track-duration = 0.0;
+        }
+        app-state = to;
+    }
+
+    public pure function str-to-scale(scale: string) -> { width: int, height: int} {
+        if scale == "Ultra HD (2160)" {
+            { width: 3840, height: 2160 }
+        } else if scale == "Quad HD (1440)" {
+            { width: 2560, height: 1440 }
+        } else if scale == "Full HD (1080)" {
+            { width: 1920, height: 1080 }
+        } else if scale == "HD (720)" {
+            { width: 1280, height: 720 }
+        } else {
+            { width: 720, height: 480 }
+        }
+    }
+
+    public pure function is-valid-port(port: float) -> bool {
+        port > 0.0 && port <= 65535.0
+    }
+
+    callback connect-to-device(string);
+    callback select-input-type(input-type: UiInputType);
+    callback start-cast(video_uid: int, audio_uid: int, scale-width: int, scale-height: int, max-framerate: int);
+    callback stop-cast();
+    callback reload-video-sources();
+    callback reload-audio-sources();
+    callback change-dir-parent();
+    callback change-dir-child(dir-id: int);
+    callback cast-local-media(file-id: int);
+    callback seek(seconds: float, force-complete: bool);
+    // When `state` is:
+    //   - Idle -> Stop playback
+    //   - Playing -> Resume playback
+    //   - Paused -> Pause playback
+    //   - Buffering -> Ignored
+    callback change-playback-state(state: UiPlaybackState);
+    callback change-volume(volume: float, force-complete: bool);
+    callback disconnect();
+    callback connect-manually(proto: UiCastProtocol, name: string, port: int, address: string);
+
+    pure callback str-fmt-seconds(seconds: float) -> string;
+    pure callback is-valid-ip-address(address: string) -> bool;
+}
+
+component Spacer inherits Rectangle { }
+
+component ConnectView inherits Rectangle {
+    VerticalBox {
+        Text {
+            horizontal-alignment: center;
+            font-weight: 600;
+            text: "Connect to your receiver";
+        }
+
+        ListView {
+            for device in Bridge.devices: Rectangle {
+                states [
+                    hover when ta.has-hover: {
+                        background: whitesmoke;
+                    }
+                ]
+
+                ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        // Bridge.state = State.Connecting;
+                        self.mouse-cursor = MouseCursor.default;
+                        Bridge.connect-to-device(device);
+                        // Bridge.connected-device = device;
+                    }
+                }
+
+                HorizontalBox {
+                    Text {
+                        text: device;
+                    }
+                }
+            }
+        }
+
+        property <bool> is-showing-manual-connect: false;
+
+        Text {
+            text: (is-showing-manual-connect ? "↓ " : "→ ") + " Connect manually";
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    is-showing-manual-connect = !is-showing-manual-connect;
+                }
+            }
+        }
+
+        if is-showing-manual-connect: VerticalBox {
+            HorizontalBox {
+                Text {
+                    vertical-alignment: center;
+                    text: "Protocol:";
+                    width: 15%;
+                }
+
+                protocol-input := ComboBox {
+                    model: ["FCast", "Google cast"];
+                }
+            }
+
+            HorizontalBox {
+                Text {
+                    vertical-alignment: center;
+                    text: "Name:";
+                    width: 15%;
+                }
+
+                name-input := LineEdit {
+                    placeholder-text: "My Fcast Receiver";
+                }
+            }
+
+            HorizontalBox {
+                Text {
+                    vertical-alignment: center;
+                    text: "Port:";
+                    width: 15%;
+                }
+
+                port-input := LineEdit {
+                    input-type: number;
+                    text: "46899";
+                }
+            }
+
+            property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
+
+            if !port-input.text.is-empty && !port-is-valid: Text {
+                horizontal-alignment: center;
+                color: red;
+                text: "Invalid port (must be in the range 1-65535)";
+            }
+
+            HorizontalBox {
+                Text {
+                    vertical-alignment: center;
+                    text: "Address:";
+                    width: 15%;
+                }
+
+                address-input := LineEdit { }
+            }
+
+            property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
+
+            if !address-input.text.is-empty && !address-is-valid: Text {
+                horizontal-alignment: center;
+                color: red;
+                text: "Invalid address";
+            }
+
+            Button {
+                enabled: !name-input.text.is-empty && port-is-valid && address-is-valid;
+                text: "Connect";
+                clicked => Bridge.connect-manually(
+                    protocol-input.current-value == "FCast" ? UiCastProtocol.FCast : UiCastProtocol.GCast,
+                    name-input.text,
+                    port-input.text.to-float(),
+                    address-input.text);
+            }
+        }
+    }
+}
+
+component ConnectingView inherits Rectangle {
+    width: vb.preferred-width;
+    height: vb.preferred-height;
+
+    vb := VerticalBox {
+        Spinner {
+            indeterminate: true;
+        }
+
+        Text {
+            text: "Connecting to " + Bridge.device-name;
+            horizontal-alignment: center;
+            font-weight: 600;
+        }
+    }
+}
+
+component UnsupportedReceiverView inherits Rectangle {
+    width: vb.preferred-width;
+    height: vb.preferred-height;
+
+    vb := VerticalBox {
+        Text {
+            text: Bridge.device-name + " is unsupported";
+            horizontal-alignment: center;
+            font-weight: 600;
+        }
+
+        Button {
+            text: "Ok";
+            clicked => Bridge.change-state(UiAppState.Disconnected);
+        }
+    }
+}
+
+component SelectingInputTypeView {
+    VerticalBox {
+        Text {
+            font-size: 14pt;
+            horizontal-alignment: center;
+            text: "What do you want to cast?";
+        }
+
+        Button {
+            text: "Local media";
+            clicked => Bridge.select-input-type(UiInputType.LocalMedia);
+        }
+
+        Button {
+            enabled: Bridge.is-mirroring-supported;
+            text: "Mirroring";
+            clicked => Bridge.select-input-type(UiInputType.Mirroring);
+        }
+
+        if !Bridge.is-mirroring-supported: Text {
+            horizontal-alignment: center;
+            text: Bridge.device-name + " does not support mirroring";
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => Bridge.stop-cast();
+        }
+    }
+}
+
+component SelectMirroringSourceView inherits Rectangle {
+    property <int> video-resolution-idx: 2;
+    property <[string]> video-resolutions: ["Ultra HD (2160)", "Quad HD (1440)", "Full HD (1080)", "HD (720)", "SD (480)"];
+    property <int> video-framerate-idx: 2;
+    property <[string]> video-framerates: ["90", "60", "30", "25", "15", "10", "5", "1"];
+
+    VerticalBox {
+        alignment: center;
+
+        HorizontalBox {
+            alignment: space-between;
+            Text {
+                horizontal-alignment: center;
+                text: "Video";
+                font-weight: 600;
+            }
+
+            Button {
+                text: "Reload";
+                clicked => {
+                    Bridge.video-sources = [];
+                    Bridge.reload-video-sources();
+                }
+            }
+        }
+
+        // TODO: ScrollView
+
+        VerticalLayout {
+            for row in Bridge.video-sources: HorizontalBox {
+                // alignment: center;
+                for source in row: Rectangle {
+                    height: 100px;
+                    // height: 200px;
+                    background: grey;
+                    border-radius: 8px;
+
+                    border-width: source.uid == Bridge.selected-video-src ? 8px : 0px;
+                    border-color: source.uid == Bridge.selected-video-src ? lightgreen : white;
+
+                    states [
+                        hover when ta.has-hover: {
+                            background: grey.transparentize(0.1);
+                        }
+                    ]
+
+                    ta := TouchArea {
+                        mouse-cursor: self.has-hover ? pointer : default;
+
+                        clicked() => {
+                            if source.uid == Bridge.selected-video-src {
+                                Bridge.selected-video-src = -1;
+                            } else {
+                                Bridge.selected-video-src = source.uid;
+                            }
+                        }
+                    }
+
+                    Image {
+                        y: (parent.height - vl-video.height / 2) / 2;
+                        source: @image-url("./video.svg");
+                    }
+
+                    vl-video := VerticalLayout {
+                        Rectangle { }
+
+                        Rectangle {
+                            background: whitesmoke.transparentize(0.1);
+                            height: 40px;
+
+                            Text {
+                                text: source.name;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if Bridge.selected-video-src != -1: HorizontalBox {
+                alignment: center;
+
+                Text {
+                    font-size: 12pt;
+                    vertical-alignment: center;
+                    text: "Max resolution";
+                }
+
+                ComboBox {
+                    current-index <=> video-resolution-idx;
+                    model: video-resolutions;
+                }
+
+                Text {
+                    font-size: 12pt;
+                    vertical-alignment: center;
+                    text: "Max framerate";
+                }
+
+                ComboBox {
+                    current-index <=> video-framerate-idx;
+                    model: video-framerates;
+                }
+            }
+        }
+
+        if Bridge.is-audio-supported: HorizontalBox {
+            alignment: space-between;
+            Text {
+                horizontal-alignment: center;
+                text: "Audio";
+                font-weight: 600;
+            }
+
+            Spacer { }
+        }
+
+        if Bridge.is-audio-supported: VerticalBox {
+            for row in Bridge.audio-sources: HorizontalBox {
+                // alignment: center;
+                for source in row: Rectangle {
+                    height: 100px;
+                    // width: (parent.width / row.length - parent.padding).min(250px); //  250px;
+                    // width: ((parent.width - parent.padding) / row.length).min(250px); //  250px;
+                    background: grey;
+                    border-radius: 8px;
+
+                    border-width: source.uid == Bridge.selected-audio-src ? 8px : 0px;
+                    border-color: source.uid == Bridge.selected-audio-src ? lightgreen : white;
+
+                    states [
+                        hover when ta-aud.has-hover: {
+                            background: grey.transparentize(0.1);
+                        }
+                    ]
+
+                    ta-aud := TouchArea {
+                        mouse-cursor: pointer;
+
+                        clicked() => {
+                            if source.uid == Bridge.selected-audio-src {
+                                Bridge.selected-audio-src = -1;
+                            } else {
+                                Bridge.selected-audio-src = source.uid;
+                            }
+                        }
+                    }
+
+                    Image {
+                        y: (parent.height - vl-audio.height / 2) / 2;
+                        source: @image-url("./audio.svg");
+                    }
+
+                    vl-audio := VerticalLayout {
+                        Rectangle { }
+
+                        Rectangle {
+                            background: whitesmoke.transparentize(0.1);
+                            height: 40px;
+
+                            Text {
+                                overflow: TextOverflow.clip;
+                                text: source.name;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Button {
+            enabled: Bridge.selected-audio-src != -1 || Bridge.selected-video-src != -1;
+            text: "Start";
+            clicked => {
+                let scale = Bridge.str-to-scale(video-resolutions[video-resolution-idx]);
+                Bridge.start-cast(
+                    Bridge.selected-video-src,
+                    Bridge.selected-audio-src,
+                    scale.width,
+                    scale.height,
+                    video-framerates[video-framerate-idx].to-float(),
+                );
+            }
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => Bridge.stop-cast();
+        }
+    }
+}
+
+component StartingCastView {
+    VerticalBox {
+        Spinner {
+            indeterminate: true;
+        }
+
+        Text {
+            text: "Starting";
+            horizontal-alignment: center;
+            font-weight: 600;
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => Bridge.stop-cast();
+        }
+    }
+}
+
+component MirroringView inherits Rectangle {
+    height: vb.preferred-height;
+
+    vb := VerticalBox {
+        Text {
+            horizontal-alignment: center;
+            text: "Casting to " + Bridge.device-name;
+        }
+
+        Button {
+            text: "Stop casting";
+            clicked => Bridge.stop-cast();
+        }
+    }
+}
+
+component LocalMediaView inherits Rectangle {
+    property <float> dir-list-width-percent: 0.25;
+
+    dir-list := Rectangle {
+        x: 0;
+        width: root.width * clamp(dir-list-width-percent, 0.0, 0.9);
+        height: 100%;
+
+        VerticalLayout {
+            Rectangle {
+                clip: true;
+                HorizontalBox {
+                    Button {
+                        icon: @image-url("./folder-open.svg");
+                        colorize-icon: true;
+                        clicked => {
+                            Bridge.files = [];
+                            Bridge.change-dir-parent();
+                        }
+                    }
+
+                    Text {
+                        font-weight: 600;
+                        font-size: 14pt;
+                        vertical-alignment: center;
+                        text: Bridge.current-directory;
+                    }
+
+                    Spacer { }
+                }
+            }
+
+            ListView {
+                for dir in Bridge.directories: Rectangle {
+                    height: 35px;
+
+                    states [
+                        hover when dir-ta.has-hover: {
+                            background: lightgrey;
+                        }
+                    ]
+
+                    dir-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Bridge.files = [];
+                            Bridge.change-dir-child(dir.id);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 5px;
+                        spacing: 10px;
+
+                        Image {
+                            source: @image-url("./folder.svg");
+                            colorize: Palette.foreground;
+                            width: 25px;
+                        }
+
+                        Text {
+                            font-size: 12pt;
+                            vertical-alignment: center;
+                            text: dir.name;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    resizer := Rectangle {
+        x: dir-list.width;
+        background: grey;
+        width: 5px;
+        height: 100%;
+
+        states [
+            hover when ta.has-hover: {
+                background: lightskyblue;
+            }
+        ]
+
+        animate background { duration: 50ms; }
+
+        ta := TouchArea {
+            mouse-cursor: ew-resize;
+            moved => {
+                if self.pressed {
+                    let new-width = dir-list.width + (self.mouse-x - self.pressed-x);
+                    dir-list-width-percent = new-width / root.width;
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: resizer.x + resizer.width;
+        height: 100%;
+        width: root.width - resizer.width - dir-list.width;
+
+        VerticalLayout {
+            Rectangle {
+                height: 50px;
+                clip: true;
+
+                HorizontalBox {
+                    alignment: LayoutAlignment.center;
+
+                    Text {
+                        font-size: 14pt;
+                        vertical-alignment: center;
+                        text: "Connected to " + Bridge.device-name;
+                    }
+
+                    Button {
+                        text: "Disconnect";
+                        clicked => Bridge.disconnect();
+                    }
+                }
+            }
+
+            ListView {
+                for file in Bridge.files: HorizontalBox {
+                    spacing: 10px;
+
+                    Image {
+                        height: 25px;
+                        width: 25px;
+                        colorize: Palette.foreground;
+
+                        states [
+                            audio when file.type == UiMediaFileType.Audio: {
+                                source: @image-url("./audio.svg");
+                            }
+                            video when file.type == UiMediaFileType.Video: {
+                                source: @image-url("./video.svg");
+                            }
+                            img when file.type == UiMediaFileType.Image: {
+                                source: @image-url("./image.svg");
+                            }
+                        ]
+                    }
+
+                    Text {
+                        vertical-alignment: center;
+                        overflow: elide;
+                        text: file.name;
+                    }
+
+                    Spacer { }
+
+                    Button {
+                        clicked => {
+                            Bridge.cast-local-media(file.id);
+                            Bridge.track-name = file.name;
+                            Bridge.track-type = file.type;
+                        }
+                        text: "Cast";
+                    }
+                }
+            }
+
+            if Bridge.playback-state != UiPlaybackState.Idle && Bridge.track-type != UiMediaFileType.Image: Rectangle {
+                background: lightgrey.transparentize(0.5);
+
+                VerticalLayout {
+                    HorizontalBox {
+                        Text {
+                            vertical-alignment: center;
+                            text: Bridge.str-fmt-seconds(Bridge.playback-position);
+                        }
+
+                        Slider {
+                            minimum: 0.0;
+                            step: 5.0;
+                            value <=> Bridge.playback-position;
+                            maximum: Bridge.track-duration;
+                            changed(new-position) => Bridge.seek(new-position, false);
+                            released() => Bridge.seek(Bridge.playback-position, true);
+                        }
+
+                        Text {
+                            vertical-alignment: center;
+                            text: Bridge.str-fmt-seconds(Bridge.track-duration);
+                        }
+                    }
+
+                    HorizontalBox {
+                        Button {
+                            colorize-icon: true;
+                            icon: @image-url("./stop.svg");
+                            clicked => Bridge.change-playback-state(UiPlaybackState.Idle);
+                        }
+
+                        if Bridge.playback-state == UiPlaybackState.Buffering: Spinner {
+                            indeterminate: true;
+                        }
+                        if Bridge.playback-state == UiPlaybackState.Playing: Button {
+                            colorize-icon: true;
+                            icon: @image-url("./pause.svg");
+                            clicked => Bridge.change-playback-state(UiPlaybackState.Paused);
+                        }
+                        if Bridge.playback-state == UiPlaybackState.Paused: Button {
+                            colorize-icon: true;
+                            icon: @image-url("./play.svg");
+                            clicked => Bridge.change-playback-state(UiPlaybackState.Playing);
+                        }
+
+                        Text {
+                            font-size: 14pt;
+                            vertical-alignment: center;
+                            text: Bridge.track-name;
+                            overflow: elide;
+                            max-width: parent.width * 60%;
+                        }
+
+                        Image {
+                            width: 25px;
+                            colorize: black;
+
+                            states [
+                                muted when Bridge.volume == 0.0: {
+                                    source: @image-url("./volume-muted.svg");
+                                }
+                                low when Bridge.volume <= 0.5: {
+                                    source: @image-url("./volume-low.svg");
+                                }
+                                high when Bridge.volume > 0.5: {
+                                    source: @image-url("./volume-high.svg");
+                                }
+                            ]
+                        }
+
+                        vol-slider := Slider {
+                            value <=> Bridge.volume;
+                            minimum: 0.0;
+                            maximum: 1.0;
+                            changed(new-volume) => Bridge.change-volume(new-volume, false);
+                            released() => Bridge.change-volume(Bridge.volume, true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "FCast Sender";
+
+    preferred-width: 800px;
+    preferred-height: 500px;
+
+    if Bridge.app-state == UiAppState.Disconnected: ConnectView {
+        width: root.width.min(500px);
+        height: root.height.min(500px);
+    }
+
+    if Bridge.app-state == UiAppState.Connecting: ConnectingView { }
+
+    if Bridge.app-state == UiAppState.UnsupportedReceiver: UnsupportedReceiverView { }
+
+    if Bridge.app-state == UiAppState.SelectingInputType: SelectingInputTypeView { }
+
+    if Bridge.app-state == UiAppState.SelectingMirroringSource: SelectMirroringSourceView {
+        width: root.width.min(900px);
+    }
+
+    if Bridge.app-state == UiAppState.StartingCast: StartingCastView { }
+
+    if Bridge.app-state == UiAppState.Mirroring: MirroringView {
+        width: root.width.min(900px);
+    }
+
+    if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
+}
+
+export component CrashWindow inherits Window {
+    title: "FCast Sender Crash Reporter";
+
+    preferred-width: 800px;
+    preferred-height: 500px;
+
+    in property <string> log: "";
+
+    VerticalBox {
+        Text {
+            font-weight: 600;
+            font-size: 18px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            text: "FCast Sender encountered an error!";
+        }
+
+        Text {
+            font-size: 18px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            text: "Please report your issue including the log below to: https://github.com/futo-org/fcast/issues";
+        }
+
+        TextEdit {
+            text: log;
+            read-only: true;
+        }
+    }
+}

@@ -204,6 +204,22 @@ pub struct InitialSenderMessage {
     pub app_version: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
+pub struct LivestreamCapabilities {
+    /// https://datatracker.ietf.org/doc/draft-murillo-whep/
+    pub whep: Option<bool>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
+pub struct AVCapabilities {
+    pub livestream: Option<LivestreamCapabilities>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
+pub struct ReceiverCapabilities {
+    pub av: Option<AVCapabilities>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialReceiverMessage {
@@ -215,6 +231,8 @@ pub struct InitialReceiverMessage {
     pub app_version: Option<String>,
     #[serde(rename = "playData")]
     pub play_data: Option<PlayMessage>,
+    #[serde(rename = "experimentalCapabilities")]
+    pub experimental_capabilities: Option<ReceiverCapabilities>,
 }
 
 #[allow(dead_code)]

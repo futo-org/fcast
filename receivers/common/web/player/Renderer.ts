@@ -306,7 +306,7 @@ function onPlay(_event, value: PlayMessage) {
         }
 
         // Player event handlers
-        if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html) {
+        if (player.playerType === PlayerType.Hls || player.playerType === PlayerType.Html || player.playerType === PlayerType.Whep) {
             videoElement.onplay = () => { mediaPlayHandler(value); };
             videoElement.onpause = () => { sendPlaybackUpdate(PlaybackState.Paused); playerCtrlStateUpdate(PlayerControlEvent.Pause); };
             videoElement.onended = () => { mediaEndHandler(); };

@@ -198,18 +198,18 @@ fun rememberPlayerState(player: Player): PlayerState {
 }
 
 data class PlayerState(
-    val currentPosition: Long,
-    val duration: Long,
-    val bufferedPosition: Long,
-    val isPlaying: Boolean,
-    val isBuffering: Boolean,
-    val isPlaylist: Boolean,
-    val isLive: Boolean,
-    val isLiveSeekable: Boolean,
-    val mediaTitle: String?,
-    val mediaThumbnail: Uri?,
-    val mediaType: Int?,
-    val cues: ImmutableList<Cue>?
+    val currentPosition: Long = 0,
+    val duration: Long = 0,
+    val bufferedPosition: Long = 0,
+    val isPlaying: Boolean = false,
+    val isBuffering: Boolean = false,
+    val isPlaylist: Boolean = false,
+    val isLive: Boolean = false,
+    val isLiveSeekable: Boolean = false,
+    val mediaTitle: String? = null,
+    val mediaThumbnail: Uri? = null,
+    val mediaType: Int? = null,
+    val cues: ImmutableList<Cue>? = null
 )
 
 const val TAG = "PlayerState"
