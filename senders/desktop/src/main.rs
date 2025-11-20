@@ -1276,12 +1276,25 @@ impl<S: tracing::Subscriber> Layer<S> for VecLayer {
     ) {
         let mut events = self.events.lock();
 
-        if events.len() >= MAX_VEC_LOG_ENTRIES {
-            _ = events.pop_front();
-        }
+        let mut event_line = if events.len() >= MAX_VEC_LOG_ENTRIES {
+            match events.pop_front() {
+                Some(mut old_line) => {
+                    old_line.clear();
+                    old_line
+                }
+                None => String::new(),
+            }
+        } else {
+            String::new()
+        };
 
         let meta = event.metadata();
-        let event_line = format!("{} {}:", meta.level(), meta.module_path().unwrap_or("n/a"));
+        let _ = write!(
+            &mut event_line,
+            "{} {}:",
+            meta.level(),
+            meta.module_path().unwrap_or("n/a")
+        );
         let mut visitor = StringVisitor { res: event_line };
         event.record(&mut visitor);
         events.push_back(visitor.res);
@@ -1526,6 +1539,19 @@ fn main() -> Result<()> {
                 .unwrap();
         }
     });
+
+    ui.global::<Bridge>()
+        .on_reload_log_string({
+            let ui_weak = ui.as_weak();
+            let tracing_events = Arc::clone(&tracing_events);
+            move || {
+                let ui = ui_weak.upgrade().expect("Callback handlers are always called from the ui thread");
+                let events = tracing_events.lock();
+                let (front, back) = events.as_slices();
+                let log_string = [front.join("\n"), back.join("\n")].join("\n").to_shared_string();
+                ui.global::<Bridge>().set_log_string(log_string);
+            }
+        });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     ui.global::<Bridge>().set_is_audio_supported(false);
