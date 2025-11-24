@@ -225,47 +225,54 @@ class NetworkService : Service() {
                 preparePlayMessage(playMessage, cache.playerVolume)
             }
 
-            _scope.launch(Dispatchers.Main) {
-                try {
-                    if (PlayerActivity.instance == null) {
-                        val i = Intent(this@NetworkService, PlayerActivity::class.java)
-                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // Prevent multiple instance creation if sender sends multiple play messages at same time
+            if (!PlayerActivity.pendingPlay) {
+                PlayerActivity.pendingPlay = true
 
-                        if (activityCount > 0) {
-                            startActivity(i)
-                        } else if (Settings.canDrawOverlays(this@NetworkService)) {
-                            val pi = PendingIntent.getActivity(
-                                this@NetworkService,
-                                0,
-                                i,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            )
-                            pi.send()
+                _scope.launch(Dispatchers.Main) {
+                    try {
+                        if (PlayerActivity.instance == null) {
+                            Log.i(TAG, "Launching player activity with play message: $playMessage")
+                            val i = Intent(this@NetworkService, PlayerActivity::class.java)
+                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                            if (activityCount > 0) {
+                                startActivity(i)
+                            } else if (Settings.canDrawOverlays(this@NetworkService)) {
+                                val pi = PendingIntent.getActivity(
+                                    this@NetworkService,
+                                    0,
+                                    i,
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                )
+                                pi.send()
+                            } else {
+                                val pi = PendingIntent.getActivity(
+                                    this@NetworkService,
+                                    0,
+                                    i,
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                )
+                                val playNotification = createNotificationBuilder()
+                                    .setContentTitle("FCast")
+                                    .setContentText("New content received. Tap to play.")
+                                    .setSmallIcon(R.drawable.ic_stat_name)
+                                    .setContentIntent(pi)
+                                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                                    .setAutoCancel(true)
+                                    .build()
+
+                                val notificationManager =
+                                    getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                                notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
+                            }
                         } else {
-                            val pi = PendingIntent.getActivity(
-                                this@NetworkService,
-                                0,
-                                i,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            )
-                            val playNotification = createNotificationBuilder()
-                                .setContentTitle("FCast")
-                                .setContentText("New content received. Tap to play.")
-                                .setSmallIcon(R.drawable.ic_stat_name)
-                                .setContentIntent(pi)
-                                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                                .setAutoCancel(true)
-                                .build()
-
-                            val notificationManager =
-                                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
+                            Log.i(TAG, "Reusing player activity with play message: $playMessage")
+                            PlayerActivity.instance?.play(cache.playMessage!!)
                         }
-                    } else {
-                        PlayerActivity.instance?.play(cache.playMessage!!)
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed to play", e)
                     }
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Failed to play", e)
                 }
             }
         }

@@ -24,7 +24,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -55,7 +54,6 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import org.webrtc.EglBase
-import org.webrtc.PeerConnectionFactory
 import org.webrtc.VideoTrack
 import java.io.File
 import java.io.FileOutputStream
@@ -208,6 +206,7 @@ class PlayerActivity : AppCompatActivity() {
                     source.client.disconnect()
                     source.videoTrack.value = null
                 }
+
                 else -> {}
             }
             viewModel.source = null
@@ -220,7 +219,6 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
 
-        instance = null
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         NetworkService.activityCount--
@@ -243,6 +241,12 @@ class PlayerActivity : AppCompatActivity() {
                 Log.e(TAG, "Failed to send playback update.", e)
             }
         }
+    }
+
+    override fun finish() {
+        instance = null
+        viewModel.isIdle = true
+        super.finish()
     }
 
     @SuppressLint("GestureBackNavigation")
@@ -447,7 +451,11 @@ class PlayerActivity : AppCompatActivity() {
                     handledCase = true
                 }
 
-                KeyEvent.KEYCODE_BACK -> key = "Back"
+                KeyEvent.KEYCODE_BACK -> {
+                    finish()
+                    key = "Back"
+                    handledCase = true
+                }
             }
         }
 
@@ -757,6 +765,18 @@ class PlayerActivity : AppCompatActivity() {
 
     @OptIn(UnstableApi::class)
     fun play(playMessage: PlayMessage) {
+        pendingPlay = false
+
+        if ((viewModel.playMessage?.url != null && viewModel.playMessage?.url == playMessage.url) || (viewModel.playMessage?.content != null && viewModel.playMessage?.content == playMessage.content)) {
+            if (playMessage.time != null) {
+                Log.i(
+                    TAG,
+                    "Skipped changing video URL because URL is the same. Discarding time and using current receiver time instead"
+                )
+            }
+            return
+        }
+
         _isPlaylist = NetworkService.cache.playlistContent != null
         val playlistOffset =
             if (_isPlaylist) NetworkService.cache.playlistContent!!.offset ?: 0 else 0
@@ -1053,14 +1073,27 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     fun mediaEndHandler() {
-        _showDurationTimer.stop()
+        if (!viewModel.isIdle) {
+            _showDurationTimer.stop()
 
-        if (_isPlaylist) {
-            if (_exoPlayer.currentMediaItemIndex < _exoPlayer.mediaItemCount) {
-                Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
-                setPlaylistItem(_exoPlayer.nextMediaItemIndex)
+            if (_isPlaylist) {
+                if (_exoPlayer.currentMediaItemIndex < _exoPlayer.mediaItemCount) {
+                    Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
+                    setPlaylistItem(_exoPlayer.nextMediaItemIndex)
+                } else {
+                    Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
+                    sendPlaybackUpdate()
+                    NetworkService.instance?.sendEvent(
+                        EventMessage(
+                            System.currentTimeMillis(),
+                            MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem)
+                        )
+                    )
+
+                    viewModel.isIdle = true
+                }
             } else {
-                Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
+                Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
                 sendPlaybackUpdate()
                 NetworkService.instance?.sendEvent(
                     EventMessage(
@@ -1069,23 +1102,8 @@ class PlayerActivity : AppCompatActivity() {
                     )
                 )
 
-//                player.setAutoPlay(false);
                 viewModel.isIdle = true
-                _exoPlayer.stop()
             }
-        } else {
-            Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
-            sendPlaybackUpdate()
-            NetworkService.instance?.sendEvent(
-                EventMessage(
-                    System.currentTimeMillis(),
-                    MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem)
-                )
-            )
-
-//            player.setAutoPlay(false);
-            viewModel.isIdle = true
-            _exoPlayer.stop()
         }
     }
 
@@ -1111,6 +1129,7 @@ class PlayerActivity : AppCompatActivity() {
 
     companion object {
         var instance: PlayerActivity? = null
+        var pendingPlay = false
         const val TAG = "PlayerActivity"
         val eglBase = EglBase.create()
 
