@@ -42,6 +42,9 @@
     <string name="scan_to_connect">المسح الضوئي باستخدام تطبيق مرسل FCast</string>
     <string name="network_no_interfaces">الجهاز غير متصل بالشبكة</string>
     <string name="live_badge">يعيش</string>
+    <string name="captions">الترجمة</string>
+    <string name="playback_speed">سرعة التشغيل</string>
+    <string name="playback_settings">إعدادات التشغيل</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">أيقونة التطبيق</string>

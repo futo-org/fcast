@@ -51,7 +51,7 @@ import com.futo.fcast.receiver.models.PlayerSource
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
-const val TAG = "PlayerActivityView"
+private const val TAG = "PlayerActivityView"
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -79,6 +79,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                 .noRippleClickable {
                     if (viewModel.errorMessage == null) {
                         viewModel.showControls = !viewModel.showControls
+                        viewModel.hideAllSettingDialogs()
                         PlayerActivity.instance?.uiHideControlsTimerStateChange()
                     }
                 },
@@ -148,7 +149,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             }
                         }, update = {
                             if (!source.surfaceIsInit.value) {
-                                it.init(PlayerActivity.eglBase.eglBaseContext, null)
+                                it.init(PlayerActivity.eglBase?.eglBaseContext, null)
                                 source.surfaceIsInit.value = true
                             }
                             source.videoTrack.value?.addSink(it)

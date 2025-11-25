@@ -42,6 +42,9 @@
     <string name="scan_to_connect">使用 FCast 发送器应用程序扫描</string>
     <string name="network_no_interfaces">设备未连接到网络</string>
     <string name="live_badge">居住</string>
+    <string name="captions">字幕</string>
+    <string name="playback_speed">播放速度</string>
+    <string name="playback_settings">播放设置</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">应用程序图标</string>

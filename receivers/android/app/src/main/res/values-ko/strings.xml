@@ -42,6 +42,9 @@
     <string name="scan_to_connect">FCast 발신자 앱으로 스캔</string>
     <string name="network_no_interfaces">장치가 네트워크에 연결되지 않았습니다</string>
     <string name="live_badge">살다</string>
+    <string name="captions">자막</string>
+    <string name="playback_speed">재생 속도</string>
+    <string name="playback_settings">재생 설정</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">애플리케이션 아이콘</string>

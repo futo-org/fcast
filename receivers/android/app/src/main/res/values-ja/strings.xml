@@ -42,6 +42,9 @@
     <string name="scan_to_connect">FCast送信アプリでスキャンする</string>
     <string name="network_no_interfaces">デバイスがネットワークに接続されていません</string>
     <string name="live_badge">ライブ</string>
+    <string name="captions">字幕</string>
+    <string name="playback_speed">再生速度</string>
+    <string name="playback_settings">再生設定</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">アプリケーションアイコン</string>

@@ -42,6 +42,9 @@
     <string name="scan_to_connect">Escanee con una aplicación de envío FCast</string>
     <string name="network_no_interfaces">Dispositivo no conectado a una red</string>
     <string name="live_badge">VIVO</string>
+    <string name="captions">Subtítulos</string>
+    <string name="playback_speed">Velocidad de reproducción</string>
+    <string name="playback_settings">Configuración de reproducción</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Icono de la aplicación</string>
