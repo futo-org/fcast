@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.core.net.toUri
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -68,6 +69,12 @@ fun rememberPlayerState(player: Player): PlayerState {
         if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && !isBuffering) {
             isPlaying = player.isPlaying
         }
+
+        val thumbnailUrl =
+            (PlayerActivity.instance?.viewModel?.playMessage?.metadata as? GenericMediaMetadata)?.thumbnailUrl
+        if (thumbnailUrl != null) {
+            mediaThumbnail = thumbnailUrl.toUri()
+        }
     }
 
     val scope = rememberCoroutineScope()
@@ -124,7 +131,10 @@ fun rememberPlayerState(player: Player): PlayerState {
                 val artworkData = mediaMetadata.artworkData
 
                 if ((PlayerActivity.instance?.viewModel?.playMessage?.metadata as? GenericMediaMetadata)?.thumbnailUrl == null && artworkData != null) {
-                    mediaThumbnail = PlayerActivity.instance?.saveArtworkDataToUri(artworkData, UUID.randomUUID().toString())
+                    mediaThumbnail = PlayerActivity.instance?.saveArtworkDataToUri(
+                        artworkData,
+                        UUID.randomUUID().toString()
+                    )
                 }
             }
 
