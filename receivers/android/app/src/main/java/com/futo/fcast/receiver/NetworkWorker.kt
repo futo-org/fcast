@@ -1,5 +1,6 @@
 package com.futo.fcast.receiver
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkAddress
@@ -7,7 +8,10 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
+import android.net.wifi.WifiManager.WifiLock
 import android.os.Build
+import android.os.PowerManager
+import android.os.PowerManager.WakeLock
 import android.util.Log
 import android.widget.Toast
 import androidx.annotation.OptIn
@@ -17,9 +21,12 @@ import java.net.NetworkInterface
 class NetworkWorker(private val _context: Context) {
     private val _connectivityManager =
         _context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    private val wifiManager =
+    private val _wifiManager =
         _context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    private val _powerManager = _context.getSystemService(Context.POWER_SERVICE) as PowerManager
     private var _stopped: Boolean = true
+    private var _wifiLock: WifiLock? = null
+    private var _cpuWakeLock: WakeLock? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         @OptIn(UnstableApi::class)
@@ -83,12 +90,27 @@ class NetworkWorker(private val _context: Context) {
 
     val interfaces = mutableListOf<NetworkInterfaceData>()
 
+    @SuppressLint("WakelockTimeout")
     fun start() {
         Log.i(TAG, "Starting $TAG")
         if (!_stopped) {
             return
         }
         _stopped = false
+        if (_cpuWakeLock == null) {
+            _cpuWakeLock =
+                _powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:cpu-lock")
+        }
+        if (_wifiLock == null) {
+            _wifiLock =
+                _wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$TAG:wifi-lock")
+        }
+        if (_cpuWakeLock?.isHeld == false) {
+            _cpuWakeLock?.acquire()
+        }
+        if (_wifiLock?.isHeld == false) {
+            _wifiLock?.acquire()
+        }
 
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -118,6 +140,12 @@ class NetworkWorker(private val _context: Context) {
         }
         _stopped = true
         _connectivityManager.unregisterNetworkCallback(networkCallback)
+        if (_cpuWakeLock?.isHeld == true) {
+            _cpuWakeLock?.release()
+        }
+        if (_wifiLock?.isHeld == true) {
+            _wifiLock?.release()
+        }
 
         Log.i(TAG, "Stopped $TAG")
     }
@@ -171,7 +199,7 @@ class NetworkWorker(private val _context: Context) {
 
                 // Note: Holding off on real-time signal strength and SSID querying due to requiring location permissions
                 val signalStrength = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    if (type == NetworkInterfaceType.Wireless) wifiManager.calculateSignalLevel(
+                    if (type == NetworkInterfaceType.Wireless) _wifiManager.calculateSignalLevel(
                         capabilities.signalStrength
                     ) else null
                 } else null
