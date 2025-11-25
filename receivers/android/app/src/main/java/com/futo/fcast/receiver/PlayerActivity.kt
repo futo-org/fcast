@@ -536,7 +536,8 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun onMediaLoad(message: PlayMessage, playlistIndex: Int) {
-        _exoPlayer.setPlaybackSpeed(viewModel.playMessage?.speed?.toFloat() ?: 1.0f)
+        viewModel.playMessage = message
+        _exoPlayer.setPlaybackSpeed(message.speed?.toFloat() ?: 1.0f)
 
         if (message.volume != null && message.volume >= 0 && message.volume <= 1) {
             _exoPlayer.volume = message.volume.toFloat()
@@ -823,7 +824,6 @@ class PlayerActivity : AppCompatActivity() {
 
         viewModel.isLoading = true
         viewModel.isIdle = false
-        viewModel.playMessage = message
         sendPlaybackUpdate()
         _lastPlayerUpdateGenerationTime = 0
 
@@ -885,19 +885,19 @@ class PlayerActivity : AppCompatActivity() {
         mediaItemList.forEachIndexed { index, item ->
             val mediaMetadataBuilder = MediaMetadata.Builder()
 
-            if ((message.metadata as? GenericMediaMetadata)?.title != null) {
-                mediaMetadataBuilder.setTitle(message.metadata.title)
+            if ((item.metadata as? GenericMediaMetadata)?.title != null) {
+                mediaMetadataBuilder.setTitle(item.metadata.title)
             }
-            if ((message.metadata as? GenericMediaMetadata)?.thumbnailUrl != null) {
-                mediaMetadataBuilder.setArtworkUri(message.metadata.thumbnailUrl?.toUri())
+            if ((item.metadata as? GenericMediaMetadata)?.thumbnailUrl != null) {
+                mediaMetadataBuilder.setArtworkUri(item.metadata.thumbnailUrl?.toUri())
             }
 
             val mediaType = when {
-                streamingMediaTypes.contains(message.container) || supportedVideoTypes.contains(
-                    message.container
+                streamingMediaTypes.contains(item.container) || supportedVideoTypes.contains(
+                    item.container
                 ) -> MEDIA_TYPE_VIDEO
 
-                supportedAudioTypes.contains(message.container) -> MEDIA_TYPE_MUSIC
+                supportedAudioTypes.contains(item.container) -> MEDIA_TYPE_MUSIC
                 else -> MEDIA_TYPE_MIXED
             }
             mediaMetadataBuilder.setMediaType(mediaType)
@@ -906,7 +906,7 @@ class PlayerActivity : AppCompatActivity() {
             mediaItemBuilder.setMediaMetadata(mediaMetadataBuilder.build())
 
             if (item.container.isNotEmpty()) {
-                mediaItemBuilder.setMimeType(message.container)
+                mediaItemBuilder.setMimeType(item.container)
             }
 
             if (!item.url.isNullOrEmpty()) {
@@ -916,7 +916,7 @@ class PlayerActivity : AppCompatActivity() {
                 tempFile.deleteOnExit()
                 FileOutputStream(tempFile).use { output ->
                     output.bufferedWriter().use { writer ->
-                        writer.write(message.content)
+                        writer.write(item.content)
                     }
                 }
 
