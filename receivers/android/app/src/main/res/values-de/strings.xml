@@ -42,6 +42,9 @@
     <string name="scan_to_connect">Scannen Sie mit einer FCast-Sender-App</string>
     <string name="network_no_interfaces">Gerät nicht mit einem Netzwerk verbunden</string>
     <string name="live_badge">LIVE</string>
+    <string name="captions">Untertitel</string>
+    <string name="playback_speed">Wiedergabegeschwindigkeit</string>
+    <string name="playback_settings">Wiedergabeeinstellungen</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Anwendungssymbol</string>

@@ -42,6 +42,9 @@
     <string name="scan_to_connect">Сканировать с помощью приложения-отправителя FCast</string>
     <string name="network_no_interfaces">Устройство не подключено к сети</string>
     <string name="live_badge">ЖИТЬ</string>
+    <string name="captions">Субтитры</string>
+    <string name="playback_speed">Скорость воспроизведения</string>
+    <string name="playback_settings">Настройки воспроизведения</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Значок приложения</string>

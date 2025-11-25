@@ -35,7 +35,6 @@ import com.futo.fcast.receiver.models.SubscribeEventMessage
 import com.futo.fcast.receiver.models.UnsubscribeEventMessage
 import com.futo.fcast.receiver.models.VersionMessage
 import com.futo.fcast.receiver.models.VolumeUpdateMessage
-import com.futo.fcast.receiver.proxy.ProxyService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -60,9 +59,7 @@ class NetworkService : Service() {
     lateinit var discoveryService: DiscoveryService
 
     private lateinit var _tcpListenerService: TcpListenerService
-    private lateinit var _proxyService: ProxyService
     private lateinit var _scope: CoroutineScope
-    private var _delayedStart: Boolean = false
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -95,7 +92,6 @@ class NetworkService : Service() {
 
         _tcpListenerService = TcpListenerService(this) { onNewSession(it) }
         ConnectionMonitor(_scope)
-        _proxyService = ProxyService()
 
         val name = "Network Listener Service"
         val descriptionText = "Listening on port ${TcpListenerService.PORT} (TCP)"
@@ -130,11 +126,6 @@ class NetworkService : Service() {
         discoveryService.start()
         _tcpListenerService.start()
         networkWorker.start()
-        if (networkWorker.interfaces.isEmpty()) {
-            _delayedStart = true
-        } else {
-            _proxyService.start()
-        }
 
         instance = this
         Log.i(TAG, "Started NetworkService")
@@ -144,11 +135,6 @@ class NetworkService : Service() {
         MainActivity.instance?.networkChanged()
 
         return START_STICKY
-    }
-
-    fun start() {
-        _delayedStart = false
-        _proxyService.start()
     }
 
     @Suppress("DEPRECATION")
@@ -169,7 +155,6 @@ class NetworkService : Service() {
         discoveryService.stop()
         _tcpListenerService.stop()
 
-        _proxyService.stop()
         networkWorker.stop()
         _scope.cancel()
 
@@ -201,13 +186,11 @@ class NetworkService : Service() {
         // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
         // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
         // is cached in the play message when volume is not set in v3 PlayMessage.
-        var rendererMessage = PlayMessage(
+        val rendererMessage = PlayMessage(
             message.container, message.url,
             message.content, message.time, message.volume ?: cachedPlayerVolume,
             message.speed, message.headers, message.metadata
         )
-
-        rendererMessage = ProxyService.proxyPlayIfRequired(rendererMessage)
 
         if (message.container == "application/json") {
             val jsonStr: String =
@@ -242,47 +225,54 @@ class NetworkService : Service() {
                 preparePlayMessage(playMessage, cache.playerVolume)
             }
 
-            _scope.launch(Dispatchers.Main) {
-                try {
-                    if (PlayerActivity.instance == null) {
-                        val i = Intent(this@NetworkService, PlayerActivity::class.java)
-                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // Prevent multiple instance creation if sender sends multiple play messages at same time
+            if (!PlayerActivity.pendingPlay) {
+                PlayerActivity.pendingPlay = true
 
-                        if (activityCount > 0) {
-                            startActivity(i)
-                        } else if (Settings.canDrawOverlays(this@NetworkService)) {
-                            val pi = PendingIntent.getActivity(
-                                this@NetworkService,
-                                0,
-                                i,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            )
-                            pi.send()
+                _scope.launch(Dispatchers.Main) {
+                    try {
+                        if (PlayerActivity.instance == null) {
+                            Log.i(TAG, "Launching player activity with play message: $playMessage")
+                            val i = Intent(this@NetworkService, PlayerActivity::class.java)
+                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                            if (activityCount > 0) {
+                                startActivity(i)
+                            } else if (Settings.canDrawOverlays(this@NetworkService)) {
+                                val pi = PendingIntent.getActivity(
+                                    this@NetworkService,
+                                    0,
+                                    i,
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                )
+                                pi.send()
+                            } else {
+                                val pi = PendingIntent.getActivity(
+                                    this@NetworkService,
+                                    0,
+                                    i,
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                )
+                                val playNotification = createNotificationBuilder()
+                                    .setContentTitle("FCast")
+                                    .setContentText("New content received. Tap to play.")
+                                    .setSmallIcon(R.drawable.ic_stat_name)
+                                    .setContentIntent(pi)
+                                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                                    .setAutoCancel(true)
+                                    .build()
+
+                                val notificationManager =
+                                    getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                                notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
+                            }
                         } else {
-                            val pi = PendingIntent.getActivity(
-                                this@NetworkService,
-                                0,
-                                i,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            )
-                            val playNotification = createNotificationBuilder()
-                                .setContentTitle("FCast")
-                                .setContentText("New content received. Tap to play.")
-                                .setSmallIcon(R.drawable.ic_stat_name)
-                                .setContentIntent(pi)
-                                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                                .setAutoCancel(true)
-                                .build()
-
-                            val notificationManager =
-                                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            notificationManager.notify(PLAY_NOTIFICATION_ID, playNotification)
+                            Log.i(TAG, "Reusing player activity with play message: $playMessage")
+                            PlayerActivity.instance?.play(cache.playMessage!!)
                         }
-                    } else {
-                        PlayerActivity.instance?.play(cache.playMessage!!)
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed to play", e)
                     }
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Failed to play", e)
                 }
             }
         }

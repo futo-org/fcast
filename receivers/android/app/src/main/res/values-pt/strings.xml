@@ -42,6 +42,9 @@
     <string name="scan_to_connect">Digitalize com uma aplicação de envio FCast</string>
     <string name="network_no_interfaces">Dispositivo não ligado a uma rede</string>
     <string name="live_badge">VIVO</string>
+    <string name="captions">Legendas</string>
+    <string name="playback_speed">Velocidade de reprodução</string>
+    <string name="playback_settings">Configurações de reprodução</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Ícone da aplicação</string>

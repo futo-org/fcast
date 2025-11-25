@@ -42,6 +42,9 @@
     <string name="scan_to_connect">Numériser avec une application d\'envoi FCast</string>
     <string name="network_no_interfaces">Appareil non connecté à un réseau</string>
     <string name="live_badge">EN DIRECT</string>
+    <string name="captions">Sous-titres</string>
+    <string name="playback_speed">Vitesse de lecture</string>
+    <string name="playback_settings">Paramètres de lecture</string>
 
     <!-- Accessibility descriptions -->
     <string name="application_icon">Icône de l\'application</string>

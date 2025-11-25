@@ -64,7 +64,11 @@ class DiscoveryService(private val _context: Context) {
         private const val TAG = "DiscoveryService"
 
         fun getServiceName(): String {
-            return "FCast-${android.os.Build.MANUFACTURER}-${android.os.Build.MODEL}"
+            val modelName = if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER))
+                android.os.Build.MODEL.removePrefix(android.os.Build.MANUFACTURER).trim()
+            else android.os.Build.MODEL
+
+            return "FCast-${android.os.Build.MANUFACTURER}-$modelName"
         }
     }
 }

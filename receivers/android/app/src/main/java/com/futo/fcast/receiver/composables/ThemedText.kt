@@ -14,7 +14,8 @@ fun ThemedText(
     text: String,
     modifier: Modifier = Modifier,
     fontSize: TextUnit = getDefaultFontSize(),
-    fontWeight: FontWeight = FontWeight.Normal
+    fontWeight: FontWeight = FontWeight.Normal,
+    textAlign: TextAlign = TextAlign.Center
 ) {
     Text(
         text = text,
@@ -23,7 +24,7 @@ fun ThemedText(
         fontSize = fontSize,
         fontFamily = interFontFamily,
         fontWeight = fontWeight,
-        textAlign = TextAlign.Center,
+        textAlign = textAlign,
         overflow = TextOverflow.Ellipsis
     )
 }

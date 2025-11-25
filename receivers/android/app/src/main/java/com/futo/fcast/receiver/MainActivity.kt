@@ -120,10 +120,17 @@ class MainActivity : AppCompatActivity() {
         _player.pause()
     }
 
+    @OptIn(UnstableApi::class)
     override fun onResume() {
         super.onResume()
         _player.playWhenReady = true
         _player.play()
+
+        if (PlayerActivity.instance != null && PlayerActivity.instance?.viewModel?.isIdle == false) {
+            val intent = Intent(this@MainActivity, PlayerActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            startActivity(intent)
+        }
     }
 
     override fun onDestroy() {

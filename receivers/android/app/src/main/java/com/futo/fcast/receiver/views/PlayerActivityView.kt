@@ -2,6 +2,7 @@ package com.futo.fcast.receiver.views
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.View
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -34,6 +36,9 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil3.compose.AsyncImage
+import coil3.network.NetworkHeaders
+import coil3.network.httpHeaders
+import coil3.request.ImageRequest
 import com.futo.fcast.receiver.PlayerActivity
 import com.futo.fcast.receiver.R
 import com.futo.fcast.receiver.composables.DelayedLoadingIndicator
@@ -46,6 +51,8 @@ import com.futo.fcast.receiver.models.PlayerActivityViewModel
 import com.futo.fcast.receiver.models.PlayerSource
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
+
+private const val TAG = "PlayerActivityView"
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -73,6 +80,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                 .noRippleClickable {
                     if (viewModel.errorMessage == null) {
                         viewModel.showControls = !viewModel.showControls
+                        viewModel.hideAllSettingDialogs()
                         PlayerActivity.instance?.uiHideControlsTimerStateChange()
                     }
                 },
@@ -87,19 +95,19 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                     //   resolutions like 854x480 or having invalid colors/artifacting when seeking)
                     AndroidView(
                         factory = { ctx ->
-                        PlayerView(context).apply {
-                            this.player = source.exoPlayer
-                            this.useController = false
-                            this.subtitleView?.visibility = View.GONE
-                            this.artworkDisplayMode = PlayerView.ARTWORK_DISPLAY_MODE_OFF
+                            PlayerView(context).apply {
+                                this.player = source.exoPlayer
+                                this.useController = false
+                                this.subtitleView?.visibility = View.GONE
+                                this.artworkDisplayMode = PlayerView.ARTWORK_DISPLAY_MODE_OFF
 
-                            // this.useController = true
-                            // setShowSubtitleButton(true)
-                            // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
-                            // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
-                            // exoPlayer.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
-                        }
-                    },
+                                // this.useController = true
+                                // setShowSubtitleButton(true)
+                                // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
+                                // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
+                                // exoPlayer.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
+                            }
+                        },
                         update = { view ->
                             // view.player = viewModel.exoPlayer
                             view.player = source.exoPlayer
@@ -124,7 +132,9 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                         }
                     }, update = { view ->
                         view.setCues(playerState.cues)
-                    }, modifier = Modifier.constrainAs(subtitlesRef) {
+                    }, modifier = Modifier
+                        .offset(0.dp, (-20).dp)
+                        .constrainAs(subtitlesRef) {
                         if (viewModel.showControls) {
                             bottom.linkTo(controlsRef.top, margin = (-120).dp)
                         } else {
@@ -142,7 +152,7 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             }
                         }, update = {
                             if (!source.surfaceIsInit.value) {
-                                it.init(PlayerActivity.eglBase.eglBaseContext, null)
+                                it.init(PlayerActivity.eglBase?.eglBaseContext, null)
                                 source.surfaceIsInit.value = true
                             }
                             source.videoTrack.value?.addSink(it)
@@ -167,7 +177,12 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
             }
             if (viewModel.errorMessage == null && playerState.mediaType == MEDIA_TYPE_MUSIC && playerState.mediaThumbnail != null) {
                 AsyncImage(
-                    model = playerState.mediaThumbnail,
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(playerState.mediaThumbnail)
+                        .httpHeaders(
+                            NetworkHeaders.Builder().add("User-Agent", "Mozilla/5.0").build()
+                        )
+                        .build(),
                     contentDescription = null,
                     modifier = Modifier
                         .constrainAs(imageRef) {
@@ -176,7 +191,17 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                             start.linkTo(parent.start)
                             end.linkTo(parent.end)
                         }
-                        .fillMaxSize(0.5f))
+                        .fillMaxSize(0.5f),
+                    onError = {
+                        Log.e(TAG, "Error loading media thumbnail: ${it.result.throwable}")
+                    },
+                    onLoading = {
+                        Log.i(TAG, "Loading media thumbnail: ${playerState.mediaThumbnail}")
+                    },
+                    onSuccess = {
+                        Log.i(TAG, "Successfully loaded media thumbnail")
+                    }
+                )
             }
 
             if (viewModel.isLoading || playerState.isBuffering) {

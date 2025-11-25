@@ -11,9 +11,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.core.net.toUri
+import androidx.media3.common.C
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.Tracks
 import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
@@ -26,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 
@@ -44,6 +49,9 @@ fun rememberPlayerState(player: Player): PlayerState {
     var mediaThumbnail by remember { mutableStateOf<Uri?>(null) }
     var mediaType by remember { mutableStateOf<Int?>(null) }
     var cues by remember { mutableStateOf<ImmutableList<Cue>?>(null) }
+    var subtitles by remember { mutableStateOf(listOf("Off")) }
+    var selectedSubtitles by remember { mutableStateOf("Off") }
+    var selectedPlaybackSpeed by remember { mutableStateOf("1.00") }
 
     val updateState: (events: Player.Events?) -> Unit = {
         if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && player.isPlaying) {
@@ -67,6 +75,12 @@ fun rememberPlayerState(player: Player): PlayerState {
 
         if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && !isBuffering) {
             isPlaying = player.isPlaying
+        }
+
+        val thumbnailUrl =
+            (PlayerActivity.instance?.viewModel?.playMessage?.metadata as? GenericMediaMetadata)?.thumbnailUrl
+        if (thumbnailUrl != null) {
+            mediaThumbnail = thumbnailUrl.toUri()
         }
     }
 
@@ -99,6 +113,11 @@ fun rememberPlayerState(player: Player): PlayerState {
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 PlayerActivity.instance?.sendPlaybackUpdate()
+
+                if (playbackParameters.speed.toString() != selectedPlaybackSpeed) {
+                    selectedPlaybackSpeed =
+                        String.format(Locale.getDefault(), "%.2f", playbackParameters.speed)
+                }
             }
 
             override fun onVolumeChanged(volume: Float) {
@@ -124,8 +143,60 @@ fun rememberPlayerState(player: Player): PlayerState {
                 val artworkData = mediaMetadata.artworkData
 
                 if ((PlayerActivity.instance?.viewModel?.playMessage?.metadata as? GenericMediaMetadata)?.thumbnailUrl == null && artworkData != null) {
-                    mediaThumbnail = PlayerActivity.instance?.saveArtworkDataToUri(artworkData, UUID.randomUUID().toString())
+                    mediaThumbnail = PlayerActivity.instance?.saveArtworkDataToUri(
+                        artworkData,
+                        UUID.randomUUID().toString()
+                    )
                 }
+            }
+
+            override fun onTrackSelectionParametersChanged(parameters: TrackSelectionParameters) {
+                super.onTrackSelectionParametersChanged(parameters)
+
+                if (parameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
+                    selectedSubtitles = "Off"
+                } else {
+                    val textOverrides =
+                        parameters.overrides.values.filter { it.type == C.TRACK_TYPE_TEXT }
+
+                    if (textOverrides.isNotEmpty()) {
+                        val selectedOverride = textOverrides.first()
+                        val selectedTrackIndex = selectedOverride.trackIndices.firstOrNull()
+
+                        if (selectedTrackIndex != null) {
+                            val trackFormat =
+                                selectedOverride.mediaTrackGroup.getFormat(selectedTrackIndex)
+                            val languageCode = trackFormat.language ?: "und"
+                            val language = PlayerActivity.instance?.getSubtitleString(languageCode)
+
+                            if (language != null && language != "") {
+                                selectedSubtitles = language
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                super.onTracksChanged(tracks)
+
+                val subtitleList = mutableListOf("Off")
+                for (trackGroup in tracks.groups) {
+                    if (trackGroup.type == C.TRACK_TYPE_TEXT) {
+                        for (i in 0 until trackGroup.length) {
+                            val trackFormat = trackGroup.getTrackFormat(i)
+                            val languageCode = trackFormat.language ?: "und"
+                            val language = PlayerActivity.instance?.getSubtitleString(languageCode)
+
+                            if (language != null && language != "") {
+                                subtitleList.add(language)
+                            }
+                        }
+                    }
+                }
+
+                subtitles = subtitleList
+                PlayerActivity.instance?.viewModel?.subtitles = subtitles
             }
 
 //            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -179,6 +250,9 @@ fun rememberPlayerState(player: Player): PlayerState {
         mediaThumbnail,
         mediaType,
         cues,
+        subtitles,
+        selectedSubtitles,
+        selectedPlaybackSpeed,
     ) {
         PlayerState(
             currentPosition,
@@ -193,6 +267,9 @@ fun rememberPlayerState(player: Player): PlayerState {
             mediaThumbnail,
             mediaType,
             cues,
+            subtitles,
+            selectedSubtitles,
+            selectedPlaybackSpeed,
         )
     }
 }
@@ -209,7 +286,10 @@ data class PlayerState(
     val mediaTitle: String? = null,
     val mediaThumbnail: Uri? = null,
     val mediaType: Int? = null,
-    val cues: ImmutableList<Cue>? = null
+    val cues: ImmutableList<Cue>? = null,
+    val subtitles: List<String> = listOf("Off"),
+    val selectedSubtitles: String = "Off",
+    val selectedPlaybackSpeed: String = "1.00",
 )
 
 const val TAG = "PlayerState"

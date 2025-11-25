@@ -13,6 +13,8 @@ import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MIXED
@@ -20,11 +22,12 @@ import androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC
 import androidx.media3.common.MediaMetadata.MEDIA_TYPE_VIDEO
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -44,7 +47,9 @@ import com.futo.fcast.receiver.models.PlayerSource
 import com.futo.fcast.receiver.models.SeekMessage
 import com.futo.fcast.receiver.models.SetSpeedMessage
 import com.futo.fcast.receiver.models.SetVolumeMessage
+import com.futo.fcast.receiver.models.SettingsDialogMenuType
 import com.futo.fcast.receiver.models.VolumeUpdateMessage
+import com.futo.fcast.receiver.models.playbackSpeeds
 import com.futo.fcast.receiver.models.streamingMediaTypes
 import com.futo.fcast.receiver.models.supportedAudioTypes
 import com.futo.fcast.receiver.models.supportedImageTypes
@@ -55,7 +60,6 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import org.webrtc.EglBase
-import org.webrtc.PeerConnectionFactory
 import org.webrtc.VideoTrack
 import java.io.File
 import java.io.FileOutputStream
@@ -65,6 +69,7 @@ import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sign
 
 
 enum class ControlBarMode {
@@ -91,7 +96,7 @@ class PlayerActivity : AppCompatActivity() {
     val viewModel = PlayerActivityViewModel()
 
     private val _uiHideTimer = Timer({
-        if (_exoPlayer.isPlaying) {
+        if (_exoPlayer.isPlaying && !viewModel.showSettingsDialog && !viewModel.showSubtitlesSettingsDialog && !viewModel.showPlaybackSpeedSettingsDialog) {
             _controlMode = ControlBarMode.KeyboardMouse
             viewModel.controlFocus = ControlFocus.None
             viewModel.showControls = false
@@ -208,6 +213,7 @@ class PlayerActivity : AppCompatActivity() {
                     source.client.disconnect()
                     source.videoTrack.value = null
                 }
+
                 else -> {}
             }
             viewModel.source = null
@@ -220,7 +226,6 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
 
-        instance = null
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         NetworkService.activityCount--
@@ -243,6 +248,12 @@ class PlayerActivity : AppCompatActivity() {
                 Log.e(TAG, "Failed to send playback update.", e)
             }
         }
+    }
+
+    override fun finish() {
+        instance = null
+        viewModel.isIdle = true
+        super.finish()
     }
 
     @SuppressLint("GestureBackNavigation")
@@ -289,6 +300,17 @@ class PlayerActivity : AppCompatActivity() {
                                     0
                                 )
                             )
+
+                            ControlFocus.Settings -> {
+                                viewModel.toggleSettingsDialog()
+                                if (viewModel.showSettingsDialog) {
+                                    viewModel.settingsControlFocus =
+                                        Pair(SettingsDialogMenuType.Settings, 1)
+                                    viewModel.controlFocus = ControlFocus.SettingsDialog
+                                }
+                            }
+
+                            ControlFocus.SettingsDialog -> settingsDialogEnter()
                         }
 
                         _uiHideTimer.restart()
@@ -310,6 +332,34 @@ class PlayerActivity : AppCompatActivity() {
                             }
 
                             ControlFocus.ProgressBar -> setControlMode(ControlBarMode.KeyboardMouse)
+                            ControlFocus.Settings -> {
+                                if (!viewModel.showSettingsDialog && !viewModel.showSubtitlesSettingsDialog && !viewModel.showPlaybackSpeedSettingsDialog) {
+                                    if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED) {
+                                        viewModel.controlFocus = ControlFocus.ProgressBar
+                                    } else {
+                                        setControlMode(ControlBarMode.KeyboardMouse)
+                                    }
+                                } else {
+                                    viewModel.controlFocus = ControlFocus.SettingsDialog
+
+                                    if (viewModel.showSettingsDialog) {
+                                        viewModel.settingsControlFocus =
+                                            Pair(SettingsDialogMenuType.Settings, 2)
+                                    } else if (viewModel.showSubtitlesSettingsDialog) {
+                                        viewModel.settingsControlFocus = Pair(
+                                            SettingsDialogMenuType.Subtitles,
+                                            viewModel.subtitles.size + 1
+                                        )
+                                    } else if (viewModel.showPlaybackSpeedSettingsDialog) {
+                                        viewModel.settingsControlFocus = Pair(
+                                            SettingsDialogMenuType.PlaybackSpeed,
+                                            playbackSpeeds.size + 1
+                                        )
+                                    }
+                                }
+                            }
+
+                            ControlFocus.SettingsDialog -> settingsDialogFocusMove(-1)
                             else -> {
                                 if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED) {
                                     viewModel.controlFocus = ControlFocus.ProgressBar
@@ -345,6 +395,7 @@ class PlayerActivity : AppCompatActivity() {
                                 }
                             }
 
+                            ControlFocus.SettingsDialog -> settingsDialogFocusMove(1)
                             else -> setControlMode(ControlBarMode.KeyboardMouse)
                         }
 
@@ -363,13 +414,25 @@ class PlayerActivity : AppCompatActivity() {
                     } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
                             skipBack(event.repeatCount > 0)
+                        } else if (viewModel.controlFocus == ControlFocus.SettingsDialog) {
+                            settingsDialogBack()
                         } else {
                             if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
-                                if (viewModel.controlFocus == ControlFocus.PlayNext || viewModel.controlFocus == ControlFocus.SeekForward) {
-                                    viewModel.controlFocus = ControlFocus.Action
-                                } else {
-                                    viewModel.controlFocus =
-                                        if (_isPlaylist) ControlFocus.PlayPrevious else ControlFocus.SeekBackward
+                                when (viewModel.controlFocus) {
+                                    ControlFocus.None -> {}
+                                    ControlFocus.Settings -> {
+                                        viewModel.controlFocus =
+                                            if (_isPlaylist) ControlFocus.PlayNext else ControlFocus.SeekForward
+                                    }
+
+                                    ControlFocus.PlayNext, ControlFocus.SeekForward -> {
+                                        viewModel.controlFocus = ControlFocus.Action
+                                    }
+
+                                    else -> {
+                                        viewModel.controlFocus =
+                                            if (_isPlaylist) ControlFocus.PlayPrevious else ControlFocus.SeekBackward
+                                    }
                                 }
                             } else {
                                 viewModel.controlFocus = ControlFocus.PlayPrevious
@@ -391,13 +454,26 @@ class PlayerActivity : AppCompatActivity() {
                     } else {
                         if (viewModel.controlFocus == ControlFocus.ProgressBar) {
                             skipForward(event.repeatCount > 0)
+                        } else if (viewModel.controlFocus == ControlFocus.SettingsDialog) {
+                            settingsDialogEnter()
                         } else {
                             if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
-                                if (viewModel.controlFocus == ControlFocus.PlayPrevious || viewModel.controlFocus == ControlFocus.SeekBackward) {
-                                    viewModel.controlFocus = ControlFocus.Action
-                                } else {
-                                    viewModel.controlFocus =
-                                        if (_isPlaylist) ControlFocus.PlayNext else ControlFocus.SeekForward
+                                when (viewModel.controlFocus) {
+                                    ControlFocus.None -> {}
+                                    ControlFocus.PlayPrevious, ControlFocus.SeekBackward -> {
+                                        viewModel.controlFocus = ControlFocus.Action
+                                    }
+
+                                    ControlFocus.Action -> {
+                                        viewModel.controlFocus =
+                                            if (_isPlaylist) ControlFocus.PlayNext else ControlFocus.SeekForward
+                                    }
+
+                                    else -> {
+                                        if (_exoPlayer.mediaMetadata.mediaType != MEDIA_TYPE_MIXED) {
+                                            viewModel.controlFocus = ControlFocus.Settings
+                                        }
+                                    }
                                 }
                             } else {
                                 viewModel.controlFocus = ControlFocus.PlayNext
@@ -447,7 +523,11 @@ class PlayerActivity : AppCompatActivity() {
                     handledCase = true
                 }
 
-                KeyEvent.KEYCODE_BACK -> key = "Back"
+                KeyEvent.KEYCODE_BACK -> {
+                    finish()
+                    key = "Back"
+                    handledCase = true
+                }
             }
         }
 
@@ -489,8 +569,8 @@ class PlayerActivity : AppCompatActivity() {
         val trackSelector = DefaultTrackSelector(this)
         trackSelector.parameters = trackSelector.parameters
             .buildUpon()
-            .setPreferredTextLanguages(Locale.getDefault().language, "en", "df")
-            .setSelectUndeterminedTextLanguage(true)
+//            .setPreferredTextLanguages(Locale.getDefault().language, "en", "df")
+//            .setSelectUndeterminedTextLanguage(true)
 //            .setViewportSizeToPhysicalDisplaySize(true)
 //            .setMinVideoSize(0, 0)
 //            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
@@ -528,7 +608,8 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun onMediaLoad(message: PlayMessage, playlistIndex: Int) {
-        _exoPlayer.setPlaybackSpeed(viewModel.playMessage?.speed?.toFloat() ?: 1.0f)
+        viewModel.playMessage = message
+        _exoPlayer.setPlaybackSpeed(message.speed?.toFloat() ?: 1.0f)
 
         if (message.volume != null && message.volume >= 0 && message.volume <= 1) {
             _exoPlayer.volume = message.volume.toFloat()
@@ -593,6 +674,7 @@ class PlayerActivity : AppCompatActivity() {
             if (immediateHide) {
                 viewModel.controlFocus = ControlFocus.None
                 viewModel.showControls = false
+                viewModel.hideAllSettingDialogs()
             } else {
                 _uiHideTimer.start()
             }
@@ -757,6 +839,18 @@ class PlayerActivity : AppCompatActivity() {
 
     @OptIn(UnstableApi::class)
     fun play(playMessage: PlayMessage) {
+        pendingPlay = false
+
+        if ((viewModel.playMessage?.url != null && viewModel.playMessage?.url == playMessage.url) || (viewModel.playMessage?.content != null && viewModel.playMessage?.content == playMessage.content)) {
+            if (playMessage.time != null) {
+                Log.i(
+                    TAG,
+                    "Skipped changing video URL because URL is the same. Discarding time and using current receiver time instead"
+                )
+            }
+            return
+        }
+
         _isPlaylist = NetworkService.cache.playlistContent != null
         val playlistOffset =
             if (_isPlaylist) NetworkService.cache.playlistContent!!.offset ?: 0 else 0
@@ -803,14 +897,14 @@ class PlayerActivity : AppCompatActivity() {
 
         viewModel.isLoading = true
         viewModel.isIdle = false
-        viewModel.playMessage = message
         sendPlaybackUpdate()
         _lastPlayerUpdateGenerationTime = 0
 
         clearViewModelSource()
 
         if (!_isPlaylist && _cachedPlayMediaItem.container == "application/x-whep") {
-            val client = WhepClient(this, eglBase)
+            eglBase = EglBase.create()
+            val client = WhepClient(this, eglBase!!)
 
             client.addTrackListener(object : ClientBaseListener {
                 override fun onTrackAdded(track: VideoTrack) {
@@ -865,19 +959,19 @@ class PlayerActivity : AppCompatActivity() {
         mediaItemList.forEachIndexed { index, item ->
             val mediaMetadataBuilder = MediaMetadata.Builder()
 
-            if ((message.metadata as? GenericMediaMetadata)?.title != null) {
-                mediaMetadataBuilder.setTitle(message.metadata.title)
+            if ((item.metadata as? GenericMediaMetadata)?.title != null) {
+                mediaMetadataBuilder.setTitle(item.metadata.title)
             }
-            if ((message.metadata as? GenericMediaMetadata)?.thumbnailUrl != null) {
-                mediaMetadataBuilder.setArtworkUri(message.metadata.thumbnailUrl?.toUri())
+            if ((item.metadata as? GenericMediaMetadata)?.thumbnailUrl != null) {
+                mediaMetadataBuilder.setArtworkUri(item.metadata.thumbnailUrl?.toUri())
             }
 
             val mediaType = when {
-                streamingMediaTypes.contains(message.container) || supportedVideoTypes.contains(
-                    message.container
+                streamingMediaTypes.contains(item.container) || supportedVideoTypes.contains(
+                    item.container
                 ) -> MEDIA_TYPE_VIDEO
 
-                supportedAudioTypes.contains(message.container) -> MEDIA_TYPE_MUSIC
+                supportedAudioTypes.contains(item.container) -> MEDIA_TYPE_MUSIC
                 else -> MEDIA_TYPE_MIXED
             }
             mediaMetadataBuilder.setMediaType(mediaType)
@@ -886,7 +980,7 @@ class PlayerActivity : AppCompatActivity() {
             mediaItemBuilder.setMediaMetadata(mediaMetadataBuilder.build())
 
             if (item.container.isNotEmpty()) {
-                mediaItemBuilder.setMimeType(message.container)
+                mediaItemBuilder.setMimeType(item.container)
             }
 
             if (!item.url.isNullOrEmpty()) {
@@ -896,7 +990,7 @@ class PlayerActivity : AppCompatActivity() {
                 tempFile.deleteOnExit()
                 FileOutputStream(tempFile).use { output ->
                     output.bufferedWriter().use { writer ->
-                        writer.write(message.content)
+                        writer.write(item.content)
                     }
                 }
 
@@ -1025,6 +1119,7 @@ class PlayerActivity : AppCompatActivity() {
 
             onMediaLoad(playMessageFromMediaItem(_cachedPlayMediaItem), index)
             sendPlaybackUpdate()
+            viewModel.hideAllSettingDialogs()
         } else {
             Log.w(TAG, "Playlist index out of bounds $index, ignoring...")
         }
@@ -1053,14 +1148,27 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     fun mediaEndHandler() {
-        _showDurationTimer.stop()
+        if (!viewModel.isIdle) {
+            _showDurationTimer.stop()
 
-        if (_isPlaylist) {
-            if (_exoPlayer.currentMediaItemIndex < _exoPlayer.mediaItemCount) {
-                Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
-                setPlaylistItem(_exoPlayer.nextMediaItemIndex)
+            if (_isPlaylist) {
+                if (_exoPlayer.currentMediaItemIndex < _exoPlayer.mediaItemCount) {
+                    Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
+                    setPlaylistItem(_exoPlayer.nextMediaItemIndex)
+                } else {
+                    Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
+                    sendPlaybackUpdate()
+                    NetworkService.instance?.sendEvent(
+                        EventMessage(
+                            System.currentTimeMillis(),
+                            MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem)
+                        )
+                    )
+
+                    viewModel.isIdle = true
+                }
             } else {
-                Log.i(TAG, "End of playlist: $_cachedPlayMediaItem")
+                Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
                 sendPlaybackUpdate()
                 NetworkService.instance?.sendEvent(
                     EventMessage(
@@ -1069,23 +1177,8 @@ class PlayerActivity : AppCompatActivity() {
                     )
                 )
 
-//                player.setAutoPlay(false);
                 viewModel.isIdle = true
-                _exoPlayer.stop()
             }
-        } else {
-            Log.i(TAG, "Media playback ended: $_cachedPlayMediaItem")
-            sendPlaybackUpdate()
-            NetworkService.instance?.sendEvent(
-                EventMessage(
-                    System.currentTimeMillis(),
-                    MediaItemEvent(EventType.MediaItemEnd, _cachedPlayMediaItem)
-                )
-            )
-
-//            player.setAutoPlay(false);
-            viewModel.isIdle = true
-            _exoPlayer.stop()
         }
     }
 
@@ -1109,10 +1202,188 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    fun startUIHideTimer() {
+        _uiHideTimer.restart()
+    }
+
+    fun settingsDialogEnter() {
+        val menu = viewModel.settingsControlFocus.first
+        val index = viewModel.settingsControlFocus.second
+
+        when (menu) {
+            SettingsDialogMenuType.None -> {}
+            SettingsDialogMenuType.Settings -> {
+                if (index <= 0 || index > 2) {
+                    viewModel.hideAllSettingDialogs()
+                } else if (index == 1) {
+                    viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Subtitles, 1)
+                    viewModel.showSubtitlesSettingsDialog()
+                } else {
+                    viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.PlaybackSpeed, 1)
+                    viewModel.showPlaybackSpeedSettingsDialog()
+                }
+            }
+
+            SettingsDialogMenuType.Subtitles -> {
+                if (index <= 0 || index > viewModel.subtitles.size + 1) {
+                    viewModel.hideAllSettingDialogs()
+                } else if (index == 1) {
+                    viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Settings, 1)
+                    viewModel.showSettingsDialog()
+                } else {
+                    updateSubtitles(viewModel.subtitles[index - 2])
+                    viewModel.hideAllSettingDialogs()
+                    viewModel.controlFocus = ControlFocus.Settings
+                }
+            }
+
+            SettingsDialogMenuType.PlaybackSpeed -> {
+                if (index <= 0 || index > playbackSpeeds.size + 1) {
+                    viewModel.hideAllSettingDialogs()
+                } else if (index == 1) {
+                    viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Settings, 2)
+                    viewModel.showSettingsDialog()
+                } else {
+                    updatePlaybackSpeed(playbackSpeeds[index - 2].toFloat())
+                    viewModel.hideAllSettingDialogs()
+                    viewModel.controlFocus = ControlFocus.Settings
+                }
+            }
+        }
+    }
+
+    fun settingsDialogBack() {
+        val menu = viewModel.settingsControlFocus.first
+
+        when (menu) {
+            SettingsDialogMenuType.None -> {}
+            SettingsDialogMenuType.Settings -> {
+                viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.None, 0)
+                viewModel.hideAllSettingDialogs()
+                viewModel.controlFocus = ControlFocus.Settings
+            }
+
+            SettingsDialogMenuType.Subtitles -> {
+                viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Settings, 1)
+                viewModel.showSettingsDialog()
+            }
+
+            SettingsDialogMenuType.PlaybackSpeed -> {
+                viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Settings, 2)
+                viewModel.showSettingsDialog()
+            }
+        }
+    }
+
+    fun settingsDialogFocusMove(direction: Int) {
+        val menu = viewModel.settingsControlFocus.first
+        val index = viewModel.settingsControlFocus.second + direction
+
+        when (menu) {
+            SettingsDialogMenuType.None -> {}
+            SettingsDialogMenuType.Settings -> {
+                if (index <= 0 || index > 2) {
+                    if (direction.sign == 1) {
+                        viewModel.controlFocus = ControlFocus.Settings
+                        viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Settings, 3)
+                    } else {
+                        setControlMode(ControlBarMode.KeyboardMouse)
+                    }
+                } else {
+                    viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Settings, index)
+                }
+            }
+
+            SettingsDialogMenuType.Subtitles -> {
+                if (index <= 0 || index > viewModel.subtitles.size + 1) {
+                    if (direction.sign == 1) {
+                        viewModel.controlFocus = ControlFocus.Settings
+                        viewModel.settingsControlFocus =
+                            Pair(SettingsDialogMenuType.Settings, viewModel.subtitles.size + 2)
+                    } else {
+                        setControlMode(ControlBarMode.KeyboardMouse)
+                    }
+                } else {
+                    viewModel.settingsControlFocus = Pair(SettingsDialogMenuType.Subtitles, index)
+                }
+            }
+
+            SettingsDialogMenuType.PlaybackSpeed -> {
+                if (index <= 0 || index > playbackSpeeds.size + 1) {
+                    if (direction.sign == 1) {
+                        viewModel.controlFocus = ControlFocus.Settings
+                        viewModel.settingsControlFocus =
+                            Pair(SettingsDialogMenuType.Settings, playbackSpeeds.size + 2)
+                    } else {
+                        setControlMode(ControlBarMode.KeyboardMouse)
+                    }
+                } else {
+                    viewModel.settingsControlFocus =
+                        Pair(SettingsDialogMenuType.PlaybackSpeed, index)
+                }
+            }
+        }
+    }
+
+    fun getSubtitleString(languageCode: String): String {
+        val locale = if (languageCode.contains('-')) {
+            Locale.forLanguageTag(languageCode)
+        } else {
+            Locale(languageCode)
+        }
+
+        return locale.displayLanguage
+    }
+
+    fun updateSubtitles(subtitle: String) {
+        val currentParameters = _exoPlayer.trackSelectionParameters
+
+        if (subtitle == "Off") {
+            val newParameters = currentParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setDisabledTrackTypes(setOf(C.TRACK_TYPE_TEXT))
+                .build()
+
+            _exoPlayer.trackSelectionParameters = newParameters
+        } else {
+
+            var textTrackIndex = Pair(TrackGroup(Format.Builder().build()), 0)
+            for (trackGroup in _exoPlayer.currentTracks.groups) {
+                if (trackGroup.type == C.TRACK_TYPE_TEXT) {
+                    for (i in 0 until trackGroup.length) {
+                        val trackFormat = trackGroup.getTrackFormat(i)
+                        val languageCode = trackFormat.language ?: "und"
+
+                        if (subtitle == getSubtitleString(languageCode)) {
+                            textTrackIndex = Pair(trackGroup.mediaTrackGroup, i)
+                        }
+                    }
+                }
+            }
+
+            val newOverride = TrackSelectionOverride(
+                textTrackIndex.first,
+                textTrackIndex.second
+            )
+
+            val newParameters = currentParameters.buildUpon()
+                .addOverride(newOverride)
+                .setDisabledTrackTypes(emptySet())
+                .build()
+
+            _exoPlayer.trackSelectionParameters = newParameters
+        }
+    }
+
+    fun updatePlaybackSpeed(speed: Float) {
+        _exoPlayer.setPlaybackSpeed(speed)
+    }
+
     companion object {
         var instance: PlayerActivity? = null
+        var pendingPlay = false
         const val TAG = "PlayerActivity"
-        val eglBase = EglBase.create()
+        var eglBase: EglBase? = null
 
         private const val SEEK_BACKWARD_MILLIS = 10_000L
         private const val SEEK_FORWARD_MILLIS = 10_000L

@@ -61,6 +61,8 @@ import com.futo.fcast.receiver.composables.isAndroidTV
 import com.futo.fcast.receiver.models.ControlFocus
 import com.futo.fcast.receiver.models.PlayerActivityViewModel
 import com.futo.fcast.receiver.models.PlayerSource
+import com.futo.fcast.receiver.models.SettingsDialogMenuType
+import com.futo.fcast.receiver.models.playbackSpeeds
 
 enum class ButtonType {
     PlayPause,
@@ -128,16 +130,17 @@ fun ControlButton(
             ButtonType.PlayNext -> {
                 if (source is PlayerSource.Exo) {
 //                val state = rememberNextButtonState(viewModel.exoPlayer!!)
-                selected = viewModel.controlFocus == ControlFocus.PlayNext
+                    selected = viewModel.controlFocus == ControlFocus.PlayNext
 //                Triple(state::onClick, state.isEnabled, false)
-                Triple(
-                    {
-                        PlayerActivity.instance?.setPlaylistItem(source.exoPlayer.nextMediaItemIndex)
-                        Unit
-                    },
-                    source.exoPlayer.currentMediaItemIndex < source.exoPlayer.mediaItemCount - 1,
-                    false
-                )
+                    Triple(
+                        {
+                            PlayerActivity.instance?.setPlaylistItem(source.exoPlayer.nextMediaItemIndex)
+                            PlayerActivity.instance?.startUIHideTimer()
+                            Unit
+                        },
+                        source.exoPlayer.currentMediaItemIndex < source.exoPlayer.mediaItemCount - 1,
+                        false
+                    )
                 } else {
                     Triple({}, false, true)
                 }
@@ -150,6 +153,7 @@ fun ControlButton(
 //                Triple(state::onClick, state.isEnabled, false)
                     Triple({
                         PlayerActivity.instance?.setPlaylistItem(source.exoPlayer.previousMediaItemIndex)
+                        PlayerActivity.instance?.startUIHideTimer()
                         Unit
                     }, source.exoPlayer.currentMediaItemIndex > 0, false)
                 } else {
@@ -158,12 +162,38 @@ fun ControlButton(
             }
 
             ButtonType.Captions -> Triple({}, false, true)
-            ButtonType.Settings -> Triple({}, false, true)
+            ButtonType.Settings -> {
+                if (source is PlayerSource.Exo) {
+                    selected = viewModel.controlFocus == ControlFocus.Settings
+                    Triple(
+                        {
+                            if (viewModel.showSubtitlesSettingsDialog || viewModel.showPlaybackSpeedSettingsDialog) {
+                                viewModel.hideAllSettingDialogs()
+                            } else {
+                                viewModel.showSettingsDialog = !viewModel.showSettingsDialog
+                            }
+
+                            if (!viewModel.showSettingsDialog && !viewModel.showSubtitlesSettingsDialog && !viewModel.showPlaybackSpeedSettingsDialog) {
+                                PlayerActivity.instance?.startUIHideTimer()
+                            }
+                        },
+                        true,
+                        false
+                    )
+                } else {
+                    Triple({}, false, true)
+                }
+            }
+
             ButtonType.SeekForward -> {
                 if (source is PlayerSource.Exo) {
                     val state = rememberSeekForwardButtonState(source.exoPlayer)
                     selected = viewModel.controlFocus == ControlFocus.SeekForward
-                    Triple(state::onClick, state.isEnabled, false)
+                    Triple({
+                        (state::onClick)()
+                        PlayerActivity.instance?.startUIHideTimer()
+                        Unit
+                    }, state.isEnabled, false)
                 } else {
                     Triple({}, false, true)
                 }
@@ -173,7 +203,11 @@ fun ControlButton(
                 if (source is PlayerSource.Exo) {
                     val state = rememberSeekBackButtonState(source.exoPlayer)
                     selected = viewModel.controlFocus == ControlFocus.SeekBackward
-                    Triple(state::onClick, state.isEnabled, false)
+                    Triple({
+                        (state::onClick)()
+                        PlayerActivity.instance?.startUIHideTimer()
+                        Unit
+                    }, state.isEnabled, false)
                 } else {
                     Triple({}, false, true)
                 }
@@ -405,7 +439,7 @@ fun PlayerControlsAV(
                     )
                 }
 
-                if (viewModel.source is PlayerSource.Exo && (viewModel.hasDuration || playerState.isPlaylist)) {
+                if (previewControls || viewModel.source is PlayerSource.Exo && (viewModel.hasDuration || playerState.isPlaylist)) {
                     if ((!playerState.isLive || playerState.isLiveSeekable) && playerState.mediaType != MEDIA_TYPE_MIXED) {
                         Spacer(
                             modifier = Modifier
@@ -440,98 +474,131 @@ fun PlayerControlsAV(
                             playerState
                         )
                     }
+
                     Row(
                         horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 12.dp)
                     ) {
-                        Row(
-                            horizontalArrangement = Arrangement.Start,
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.width(32.dp)
-                        ) {
-                            if (controlPlayerSettingsShow) {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier.size(20.dp),
-                                    ButtonType.Captions,
-                                    playerState
-                                )
-                            }
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(36.dp),
+                        Spacer(
                             modifier = Modifier
-                        ) {
-                            if (playerState.isPlaylist) {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .padding(6.dp),
-                                    ButtonType.PlayPrevious,
-                                    playerState
-                                )
-                            } else {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .padding(6.dp),
-                                    ButtonType.SeekBackward,
-                                    playerState
-                                )
-                            }
+                                .size(44.dp)
+                                .padding(6.dp)
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
 
-                            if (playerState.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier
-                                        .size(56.dp)
-                                        .padding(6.dp),
-                                    ButtonType.PlayPause,
-                                    playerState
-                                )
-                            }
-
-                            if (playerState.isPlaylist) {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .padding(6.dp),
-                                    ButtonType.PlayNext,
-                                    playerState
-                                )
-                            } else {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .padding(6.dp),
-                                    ButtonType.SeekForward,
-                                    playerState
-                                )
-                            }
+                        if (playerState.isPlaylist) {
+                            ControlButton(
+                                viewModel,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .padding(6.dp),
+                                ButtonType.PlayPrevious,
+                                playerState
+                            )
+                        } else {
+                            ControlButton(
+                                viewModel,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .padding(6.dp),
+                                ButtonType.SeekBackward,
+                                playerState
+                            )
                         }
 
-                        Row(
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.width(32.dp)
-                        ) {
-                            if (controlPlayerSettingsShow) {
-                                ControlButton(
-                                    viewModel,
-                                    modifier = Modifier.size(20.dp),
-                                    ButtonType.Settings,
-                                    playerState
-                                )
-                            }
+                        Spacer(modifier = Modifier.width(36.dp))
+                        if (playerState.mediaType != MEDIA_TYPE_MIXED || viewModel.hasDuration) {
+                            ControlButton(
+                                viewModel,
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .padding(6.dp),
+                                ButtonType.PlayPause,
+                                playerState
+                            )
                         }
+
+                        Spacer(modifier = Modifier.width(36.dp))
+                        if (playerState.isPlaylist) {
+                            ControlButton(
+                                viewModel,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .padding(6.dp),
+                                ButtonType.PlayNext,
+                                playerState
+                            )
+                        } else {
+                            ControlButton(
+                                viewModel,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .padding(6.dp),
+                                ButtonType.SeekForward,
+                                playerState
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+                        if (playerState.mediaType != MEDIA_TYPE_MIXED) {
+                            ControlButton(
+                                viewModel,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .padding(6.dp),
+                                ButtonType.Settings,
+                                playerState
+                            )
+                        }
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(height),
+                contentAlignment = Alignment.BottomEnd
+            ) {
+                val dialogModifier = Modifier
+                    .width(250.dp)
+                    .offset((-15).dp, (-70).dp)
+                    .padding(16.dp)
+
+                if (viewModel.showSettingsDialog) {
+                    SettingsDialog(
+                        viewModel,
+                        modifier = dialogModifier,
+                        playerState
+                    )
+                }
+
+                if (viewModel.showSubtitlesSettingsDialog) {
+                    ListItemSettingsDialog(
+                        viewModel,
+                        modifier = dialogModifier,
+                        playerState,
+                        SettingsDialogMenuType.Subtitles,
+                        stringResource(R.string.captions),
+                        playerState.subtitles
+                    ) {
+                        viewModel.showSettingsDialog()
+                    }
+                }
+
+                if (viewModel.showPlaybackSpeedSettingsDialog) {
+                    ListItemSettingsDialog(
+                        viewModel,
+                        modifier = dialogModifier,
+                        playerState,
+                        SettingsDialogMenuType.PlaybackSpeed,
+                        stringResource(R.string.playback_speed),
+                        playbackSpeeds
+                    ) {
+                        viewModel.showSettingsDialog()
                     }
                 }
             }
@@ -539,8 +606,7 @@ fun PlayerControlsAV(
     }
 }
 
-// Hiding subtitles and settings buttons until UI 2.0
-var controlPlayerSettingsShow = false
+var previewControls = false
 
 const val previewShowPlayButton = true
 const val previewShowCaptionsOff = true
@@ -549,9 +615,12 @@ const val previewShowCaptionsOff = true
 @Preview
 @Composable
 fun PlayerControlsPreview() {
+    previewControls = true
     val viewModel = PlayerActivityViewModel()
 //    viewModel.controlFocus = ControlFocus.ProgressBar
     viewModel.controlFocus = ControlFocus.Action
+//    viewModel.showSettingsDialog = true
+//    viewModel.showPlaybackSpeedSettingsDialog = true
 
     val playerState = PlayerState(
         1000L * 30,
@@ -569,7 +638,6 @@ fun PlayerControlsPreview() {
         1,
         null,
     )
-//    controlPlayerSettingsShow = true
 
     Box(
         modifier = Modifier
@@ -584,6 +652,7 @@ fun PlayerControlsPreview() {
 @Preview
 @Composable
 fun PlayerControlsLivePreview() {
+    previewControls = true
     val viewModel = PlayerActivityViewModel()
 //    viewModel.controlFocus = ControlFocus.ProgressBar
     viewModel.controlFocus = ControlFocus.Action
@@ -604,7 +673,6 @@ fun PlayerControlsLivePreview() {
         1,
         null,
     )
-//    controlPlayerSettingsShow = true
 
     Box(
         modifier = Modifier
@@ -619,6 +687,7 @@ fun PlayerControlsLivePreview() {
 @Preview
 @Composable
 fun PlayerControlsImagePreview() {
+    previewControls = true
     val viewModel = PlayerActivityViewModel()
     viewModel.controlFocus = ControlFocus.Action
 //    viewModel.hasDuration = false
@@ -640,7 +709,6 @@ fun PlayerControlsImagePreview() {
         0,
         null,
     )
-//    controlPlayerSettingsShow = true
 
     Box(
         modifier = Modifier
