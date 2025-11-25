@@ -62,6 +62,7 @@ impl Drop for ExtraAudioContext {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn scale_res_to_fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
     let aspect_ratio = (max_width as f32 / width as f32).min(max_height as f32 / height as f32);
     (
@@ -82,6 +83,26 @@ pub struct WhepSink {
 }
 
 impl WhepSink {
+    #[cfg(target_os = "android")]
+    fn add_video_src(
+        &mut self,
+        sink: &gst::Element,
+        src: VideoSource,
+        _max_width: u32,
+        _max_height: u32,
+        _max_framerate: u32,
+    ) -> anyhow::Result<()> {
+        let VideoSource::Source(appsrc) = src else {
+            unreachable!();
+        };
+
+        self.pipeline.add_many([&appsrc])?;
+        gst::Element::link_many([appsrc.upcast_ref(), sink])?;
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "android"))]
     fn add_video_src(
         &mut self,
         sink: &gst::Element,
@@ -140,8 +161,6 @@ impl WhepSink {
                     .property("monitor-handle", handle)
                     .build()?
             }
-            #[cfg(target_os = "android")]
-            VideoSource::Source(appsrc) => appsrc.upcast(),
         };
 
         let scale = gst::ElementFactory::make("videoscale")
@@ -539,12 +558,14 @@ impl WhepSink {
             SourceConfig::Audio(audio) => self_.add_audio_src(&sink, audio)?,
             SourceConfig::AudioVideo { video, audio } => {
                 self_.add_video_src(&sink, video, max_width, max_height, max_framerate)?;
+
                 self_.add_audio_src(&sink, audio)?;
             }
         }
 
         self_.pipeline.call_async(|pipeline| {
             debug!("Starting pipeline...");
+
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
                 error!("Failed to start pipeline: {err}");
             } else {
