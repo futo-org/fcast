@@ -44,7 +44,7 @@ impl AndroidArgs {
             AndroidCommand::DownloadSdk => {
                 cmd!(sh, "wget {ANDROID_SDK_URL} -O {SDK_ZIP_PATH}").run()?;
                 sh.create_dir(ANDROID_SDK_PATH)?;
-                cmd!(sh, "unzip {SDK_ZIP_PATH} -d thirdparty/").run()?;
+                cmd!(sh, "unzip {SDK_ZIP_PATH} -d {ANDROID_SDK_PATH}").run()?;
                 sh.remove_path(SDK_ZIP_PATH)?;
 
                 let shell_code = format!("yes | {ANDROID_SDK_PATH}/cmdline-tools/bin/sdkmanager --sdk_root={ANDROID_HOME_PATH} --licenses");
