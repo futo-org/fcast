@@ -165,6 +165,18 @@ fn meta_to_gcast_meta(meta: Option<Metadata>) -> Option<protocol::Metadata> {
     })
 }
 
+struct SharedReceiverState {
+    pub time: f64,
+    pub duration: f64,
+    pub volume: f64,
+    pub speed: f64,
+    pub playback_state: PlaybackState,
+    pub source: Option<Source>,
+    pub is_running: bool,
+    pub remote_addr: std::net::IpAddr,
+    pub stream_local_addr: std::net::IpAddr,
+}
+
 struct InnerDevice {
     write_buffer: Vec<u8>,
     cmd_rx: Receiver<Command>,
@@ -414,6 +426,168 @@ impl InnerDevice {
         Ok(false)
     }
 
+    /// Returns true if session was closed
+    async fn handle_message(&mut self, shared_state: &mut SharedReceiverState, message: protos::CastMessage) -> Result<bool> {
+        macro_rules! changed {
+            ($param:ident, $new:expr, $fun:ident) => {
+                if shared_state.$param != $new {
+                    self.event_handler.$fun($new);
+                    shared_state.$param = $new;
+                }
+            };
+        }
+
+        if message.payload_type() != protos::cast_message::PayloadType::String {
+            return Err(anyhow!("Payload type {:?} is not implemented", message.payload_type()).into());
+        }
+        let json_payload = message.payload_utf8();
+        match message.namespace.as_str() {
+            HEARTBEAT_NAMESPACE => {
+                let msg: namespaces::Heartbeat = json::from_str(json_payload)?;
+                match msg {
+                    namespaces::Heartbeat::Ping => {
+                        self.send_channel_message(
+                            "sender-0",
+                            "receiver-0",
+                            namespaces::Heartbeat::Pong
+                        ).await?;
+                    }
+                    namespaces::Heartbeat::Pong => (),
+                }
+            }
+            RECEIVER_NAMESPACE => {
+                let msg: namespaces::Receiver = json::from_str(json_payload)?;
+                match msg {
+                    namespaces::Receiver::Status { status, .. } => {
+                        debug!("Receiver status: {status:#?}");
+                        let Some(applications) = status.applications else {
+                            debug!("Got ReceiverStatus with no `applications` field");
+                            if !shared_state.is_running {
+                                self.launch_app().await?;
+                            }
+                            return Ok(false);
+                        };
+                        let mut new_is_running = false;
+                        for application in applications {
+                            if application.app_id == RECEIVER_APP_ID {
+                                new_is_running = true;
+                                if self.session_id.is_empty() {
+                                    self.session_id = application.session_id;
+                                    self.transport_id = Some(application.transport_id);
+
+                                    self.send_media_channel_message(
+                                        namespaces::Connection::Connect { conn_type: 0 }
+                                    ).await?;
+
+                                    debug!("Connected to media channel {:?}", self.transport_id);
+
+                                    let request_id = self.request_id.inc();
+                                    self.send_media_channel_message(
+                                        namespaces::Media::GetStatus {
+                                            media_session_id: None,
+                                            request_id,
+                                        },
+                                    ).await?;
+
+                                    if !shared_state.is_running {
+                                        self.event_handler
+                                            .connection_state_changed(DeviceConnectionState::Connected {
+                                                used_remote_addr: shared_state.remote_addr.into(),
+                                                local_addr: shared_state.stream_local_addr.into(),
+                                            });
+                                    }
+                                }
+                            }
+                        }
+                        shared_state.is_running = new_is_running;
+                        if shared_state.is_running {
+                            changed!(volume, status.volume.level, volume_changed);
+                        } else {
+                            self.launch_app().await?;
+                        }
+                    }
+                    _ => debug!("Ignored receiver message: {msg:#?}"),
+                }
+            }
+            MEDIA_NAMESPACE => {
+                let msg = match json::from_str::<namespaces::Media>(json_payload) {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        error!("Failed to parse media message: {err}");
+                        return Ok(false);
+                    }
+                };
+                #[allow(clippy::single_match)]
+                match msg {
+                    namespaces::Media::Status { status, .. } => {
+                        for stat in status {
+                            self.media_session_id = stat.media_session_id;
+                            if let Some(media) = stat.media {
+                                if let Some(duration_update) = media.duration {
+                                    changed!(duration, duration_update, duration_changed);
+                                }
+                                let new_source = Source::Url {
+                                    url: media.content_id,
+                                    content_type: media.content_type,
+                                };
+                                if shared_state.source != Some(new_source.clone()) {
+                                    self.event_handler.source_changed(new_source.clone());
+                                    shared_state.source = Some(new_source);
+                                }
+                            }
+                            debug!("New media_session_id: {}", self.media_session_id);
+                            changed!(speed, stat.playback_rate, speed_changed);
+                            changed!(time, stat.current_time, time_changed);
+                            changed!(
+                                playback_state,
+                                match stat.player_state {
+                                    protocol::PlayerState::Idle => PlaybackState::Idle,
+                                    protocol::PlayerState::Buffering => PlaybackState::Buffering,
+                                    protocol::PlayerState::Playing => PlaybackState::Playing,
+                                    protocol::PlayerState::Paused => PlaybackState::Paused,
+                                },
+                                playback_state_changed
+                            );
+                            self.current_player_state = stat.player_state;
+                            if let Some(idle_reason) = stat.idle_reason {
+                                match idle_reason {
+                                    googlecast_protocol::IdleReason::Cancelled => todo!(),
+                                    googlecast_protocol::IdleReason::Interrupted => todo!(),
+                                    googlecast_protocol::IdleReason::Finished => {
+                                    }
+                                    googlecast_protocol::IdleReason::Error => todo!(),
+                                }
+                            }
+                        }
+                    }
+                    namespaces::Media::Error { reason: Some(error_reason), .. } => {
+                        self.event_handler.playback_error(error_reason);
+                    }
+                    _ => (),
+                }
+            }
+            CONNECTION_NAMESPACE => {
+                let msg = match json::from_str::<namespaces::Connection>(json_payload) {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        error!("Failed to parse media message: {err}");
+                        return Ok(false);
+                    }
+                };
+
+                debug!("Connection message: {msg:#?}");
+
+                if matches!(msg, namespaces::Connection::Close) {
+                    debug!("Session closed");
+                    return Ok(true);
+                }
+            }
+            _ => warn!("Unsupported namespace: {}", message.namespace),
+        }
+
+        Ok(false)
+    }
+
     async fn inner_work(&mut self, addrs: &[SocketAddr]) -> Result<(), utils::WorkError> {
         self.session_id.clear();
         self.media_session_id = 0;
@@ -499,174 +673,26 @@ impl InnerDevice {
 
         tokio::pin!(packet_stream);
 
-        #[derive(Default)]
-        struct SharedState {
-            pub time: f64,
-            pub duration: f64,
-            pub volume: f64,
-            pub speed: f64,
-            pub playback_state: PlaybackState,
-            pub source: Option<Source>,
-        }
-
-        let mut shared_state = SharedState::default();
-        let mut is_running = false;
-
-        macro_rules! changed {
-            ($param:ident, $new:expr, $fun:ident) => {
-                if shared_state.$param != $new {
-                    self.event_handler.$fun($new);
-                    shared_state.$param = $new;
-                }
-            };
-        }
+        let mut shared_state = SharedReceiverState {
+            time: 0.0,
+            duration: 0.0,
+            volume: 0.0,
+            speed: 0.0,
+            playback_state: PlaybackState::Idle,
+            source: None,
+            is_running: false,
+            remote_addr,
+            stream_local_addr,
+        };
 
         let mut get_status_interval = tokio::time::interval(DEFAULT_GET_STATUS_DELAY);
 
         loop {
             tokio::select! {
                 packet = packet_stream.next() => {
-                    let packet = packet.ok_or(anyhow!("No more packets"))?;
-                    if packet.payload_type() != protos::cast_message::PayloadType::String {
-                        return Err(anyhow!("Payload type {:?} is not implemented", packet.payload_type()).into());
-                    }
-                    let json_payload = packet.payload_utf8();
-                    match packet.namespace.as_str() {
-                        HEARTBEAT_NAMESPACE => {
-                            let msg: namespaces::Heartbeat = json::from_str(json_payload)?;
-                            match msg {
-                                namespaces::Heartbeat::Ping => {
-                                    self.send_channel_message(
-                                        "sender-0",
-                                        "receiver-0",
-                                        namespaces::Heartbeat::Pong
-                                    ).await?;
-                                }
-                                namespaces::Heartbeat::Pong => (),
-                            }
-                        }
-                        RECEIVER_NAMESPACE => {
-                            let msg: namespaces::Receiver = json::from_str(json_payload)?;
-                            match msg {
-                                namespaces::Receiver::Status { status, .. } => {
-                                    debug!("Receiver status: {status:#?}");
-                                    let Some(applications) = status.applications else {
-                                        debug!("Got ReceiverStatus with no `applications` field");
-                                        if !is_running {
-                                            self.launch_app().await?;
-                                        }
-                                        continue;
-                                    };
-                                    let mut new_is_running = false;
-                                    for application in applications {
-                                        if application.app_id == RECEIVER_APP_ID {
-                                            new_is_running = true;
-                                            if self.session_id.is_empty() {
-                                                self.session_id = application.session_id;
-                                                self.transport_id = Some(application.transport_id);
-
-                                                self.send_media_channel_message(
-                                                    namespaces::Connection::Connect { conn_type: 0 }
-                                                ).await?;
-
-                                                debug!("Connected to media channel {:?}", self.transport_id);
-
-                                                let request_id = self.request_id.inc();
-                                                self.send_media_channel_message(
-                                                    namespaces::Media::GetStatus {
-                                                        media_session_id: None,
-                                                        request_id,
-                                                    },
-                                                ).await?;
-
-                                                if !is_running {
-                                                    self.event_handler
-                                                        .connection_state_changed(DeviceConnectionState::Connected {
-                                                            used_remote_addr: remote_addr.into(),
-                                                            local_addr: stream_local_addr.into(),
-                                                        });
-                                                }
-                                            }
-                                        }
-                                    }
-                                    is_running = new_is_running;
-                                    if is_running {
-                                        changed!(volume, status.volume.level, volume_changed);
-                                    } else {
-                                        self.launch_app().await?;
-                                    }
-                                }
-                                _ => debug!("Ignored receiver message: {msg:#?}"),
-                            }
-                        }
-                        MEDIA_NAMESPACE => {
-                            let msg = match json::from_str::<namespaces::Media>(json_payload) {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    error!("Failed to parse media message: {err}");
-                                    continue;
-                                }
-                            };
-                            #[allow(clippy::single_match)]
-                            match msg {
-                                namespaces::Media::Status { status, .. } => {
-                                    for stat in status {
-                                        self.media_session_id = stat.media_session_id;
-                                        if let Some(media) = stat.media {
-                                            if let Some(duration_update) = media.duration {
-                                                changed!(duration, duration_update, duration_changed);
-                                            }
-                                            let new_source = Source::Url {
-                                                url: media.content_id,
-                                                content_type: media.content_type,
-                                            };
-                                            if shared_state.source != Some(new_source.clone()) {
-                                                self.event_handler.source_changed(new_source.clone());
-                                                shared_state.source = Some(new_source);
-                                            }
-                                        }
-                                        debug!("New media_session_id: {}", self.media_session_id);
-                                        changed!(speed, stat.playback_rate, speed_changed);
-                                        changed!(time, stat.current_time, time_changed);
-                                        if let Some(level) = stat.volume.level {
-                                            changed!(volume, level, volume_changed);
-                                        }
-                                        changed!(
-                                            playback_state,
-                                            match stat.player_state {
-                                                protocol::PlayerState::Idle => PlaybackState::Idle,
-                                                protocol::PlayerState::Buffering => PlaybackState::Buffering,
-                                                protocol::PlayerState::Playing => PlaybackState::Playing,
-                                                protocol::PlayerState::Paused => PlaybackState::Paused,
-                                            },
-                                            playback_state_changed
-                                        );
-                                        self.current_player_state = stat.player_state;
-                                    }
-                                }
-                                namespaces::Media::Error { reason: Some(error_reason), .. } => {
-                                    self.event_handler.playback_error(error_reason);
-                                }
-                                _ => (),
-                            }
-                        }
-                        CONNECTION_NAMESPACE => {
-                            let msg = match json::from_str::<namespaces::Connection>(json_payload) {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    error!("Failed to parse media message: {err}");
-                                    continue;
-                                }
-                            };
-
-                            debug!("Connection message: {msg:#?}");
-
-                            if matches!(msg, namespaces::Connection::Close) {
-                                debug!("Session closed");
-                                break;
-                            }
-                        }
-                        _ => warn!("Unsupported namespace: {}", packet.namespace),
+                    let message = packet.ok_or(anyhow!("No more packets"))?;
+                    if self.handle_message(&mut shared_state, message).await? {
+                        break;
                     }
                 }
                 cmd = self.cmd_rx.recv() => {
@@ -676,7 +702,7 @@ impl InnerDevice {
                     }
                 }
                 _ = get_status_interval.tick() => {
-                    if !is_running {
+                    if !shared_state.is_running {
                         debug!("Requesting receiver status");
                         let request_id = self.request_id.inc();
                         self.send_channel_message(
