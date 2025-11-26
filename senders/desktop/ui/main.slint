@@ -76,6 +76,7 @@ export global Bridge {
     in property <bool> is-mirroring-supported: false;
     in property <string> current-directory: "";
     in property <[string]> devices: [];
+    in property <string> log-string;
 
     in-out property <UiAppState> app-state: Disconnected;
     in-out property <string> device-name: "";
@@ -162,6 +163,7 @@ export global Bridge {
     callback change-volume(volume: float, force-complete: bool);
     callback disconnect();
     callback connect-manually(proto: UiCastProtocol, name: string, port: int, address: string);
+    callback reload-log-string();
 
     pure callback str-fmt-seconds(seconds: float) -> string;
     pure callback is-valid-ip-address(address: string) -> bool;
@@ -838,6 +840,20 @@ export component MainWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 500px;
 
+    property <bool> is-showing-log-view: false;
+
+    FocusScope {
+        capture-key-pressed(key) => {
+            if key.modifiers.control && key.modifiers.shift && (key.text == "L" || key.text == "l") {
+                Bridge.reload-log-string();
+                is-showing-log-view = !is-showing-log-view;
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
     if Bridge.app-state == UiAppState.Disconnected: ConnectView {
         width: root.width.min(500px);
         height: root.height.min(500px);
@@ -860,6 +876,36 @@ export component MainWindow inherits Window {
     }
 
     if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
+
+    if is-showing-log-view: Rectangle {
+        background: parent.background.transparentize(0.0);
+        width: 100%;
+        height: 100%;
+
+        VerticalBox {
+            HorizontalBox {
+                alignment: space-between;
+
+                Text {
+                    font-weight: 600;
+                    font-size: 18px;
+                    text: "Application log";
+                }
+
+                Button {
+                    text: "Close";
+                    clicked => {
+                        is-showing-log-view = false;
+                    }
+                }
+            }
+
+            TextEdit {
+                text: Bridge.log-string;
+                read-only: true;
+            }
+        }
+    }
 }
 
 export component CrashWindow inherits Window {
