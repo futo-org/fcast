@@ -3,8 +3,7 @@ use std::{rc::Rc, sync::Arc};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceInfo, KeyEvent,
-        LoadRequest, MediaEvent, PlaybackState, ProtocolType, Source,
+        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, LoadRequest, MediaEvent, PlaybackState, ProtocolType, Source
     },
     file_server::FileServer,
     url_format_ip_addr, DeviceDiscovererEventHandler, IpAddr,
@@ -146,7 +145,9 @@ impl DeviceEventHandler for DevEventHandler {
 
     fn key_event(&self, _event: KeyEvent) {}
 
-    fn media_event(&self, _event: MediaEvent) {}
+    fn media_event(&self, event: MediaEvent) {
+        debug!("Media event: {event:?}");
+    }
 
     fn playback_error(&self, message: String) {
         error!("Playback error: {message}");
@@ -310,6 +311,11 @@ impl App {
                                 self.ui_weak.upgrade_in_event_loop(|ui| {
                                     ui.global::<Bridge>().invoke_connected();
                                 })?;
+                                if let Some(active_device) = &active_device {
+                                    if active_device.supports_feature(DeviceFeature::MediaEventSubscription) {
+                                        let _ = active_device.subscribe_event(EventSubscription::MediaItemEnd);
+                                    }
+                                }
                             }
                         },
                         DeviceEvent::VolumeChanged(volume) => {
@@ -443,7 +449,8 @@ impl App {
 
 fn main() {
     env_logger::Builder::new()
-        .filter(None, log::LevelFilter::Debug)
+        .filter(Some("desktop"), log::LevelFilter::Debug)
+        .filter(Some("fcast_sender_sdk"), log::LevelFilter::Debug)
         .init();
 
     let runtime = Runtime::new().unwrap();

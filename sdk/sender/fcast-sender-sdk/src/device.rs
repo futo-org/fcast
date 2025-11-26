@@ -206,7 +206,7 @@ pub struct PlaylistItem {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum KeyName {
     ArrowLeft,
     ArrowRight,
@@ -241,7 +241,7 @@ impl ToString for KeyName {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EventSubscription {
     MediaItemStart,
     MediaItemEnd,

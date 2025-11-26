@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,7 +25,7 @@ use tokio_rustls::TlsConnector;
 
 use crate::device::{
     ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-    DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, Metadata, PlaybackState,
+    DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, MediaItem, Metadata, PlaybackState,
     PlaylistItem, ProtocolType, Source,
 };
 use crate::{googlecast_protocol, utils, IpAddr};
@@ -89,6 +89,8 @@ enum Command {
     PausePlayback,
     ResumePlayback,
     JumpPlaylist(i32),
+    Subscribe(EventSubscription),
+    Unsubscribe(EventSubscription),
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
@@ -175,6 +177,7 @@ struct SharedReceiverState {
     pub is_running: bool,
     pub remote_addr: std::net::IpAddr,
     pub stream_local_addr: std::net::IpAddr,
+    pub media_item: Option<MediaItem>,
 }
 
 struct InnerDevice {
@@ -188,6 +191,7 @@ struct InnerDevice {
     current_player_state: PlayerState,
     session_id: String,
     launch_retries: u8,
+    subscriptions: HashSet<EventSubscription>,
 }
 
 impl InnerDevice {
@@ -203,6 +207,7 @@ impl InnerDevice {
             current_player_state: PlayerState::Idle,
             session_id: String::new(),
             launch_retries: 0,
+            subscriptions: HashSet::new(),
         }
     }
 
@@ -421,13 +426,23 @@ impl InnerDevice {
                 })
                 .await?;
             }
+            Command::Subscribe(subscription) => {
+                let _ = self.subscriptions.insert(subscription);
+            }
+            Command::Unsubscribe(subscription) => {
+                let _ = self.subscriptions.remove(&subscription);
+            }
         }
 
         Ok(false)
     }
 
     /// Returns true if session was closed
-    async fn handle_message(&mut self, shared_state: &mut SharedReceiverState, message: protos::CastMessage) -> Result<bool> {
+    async fn handle_message(
+        &mut self,
+        shared_state: &mut SharedReceiverState,
+        message: protos::CastMessage,
+    ) -> Result<bool> {
         macro_rules! changed {
             ($param:ident, $new:expr, $fun:ident) => {
                 if shared_state.$param != $new {
@@ -438,7 +453,11 @@ impl InnerDevice {
         }
 
         if message.payload_type() != protos::cast_message::PayloadType::String {
-            return Err(anyhow!("Payload type {:?} is not implemented", message.payload_type()).into());
+            return Err(anyhow!(
+                "Payload type {:?} is not implemented",
+                message.payload_type()
+            )
+            .into());
         }
         let json_payload = message.payload_utf8();
         match message.namespace.as_str() {
@@ -449,8 +468,9 @@ impl InnerDevice {
                         self.send_channel_message(
                             "sender-0",
                             "receiver-0",
-                            namespaces::Heartbeat::Pong
-                        ).await?;
+                            namespaces::Heartbeat::Pong,
+                        )
+                        .await?;
                     }
                     namespaces::Heartbeat::Pong => (),
                 }
@@ -476,25 +496,26 @@ impl InnerDevice {
                                     self.transport_id = Some(application.transport_id);
 
                                     self.send_media_channel_message(
-                                        namespaces::Connection::Connect { conn_type: 0 }
-                                    ).await?;
+                                        namespaces::Connection::Connect { conn_type: 0 },
+                                    )
+                                    .await?;
 
                                     debug!("Connected to media channel {:?}", self.transport_id);
 
                                     let request_id = self.request_id.inc();
-                                    self.send_media_channel_message(
-                                        namespaces::Media::GetStatus {
-                                            media_session_id: None,
-                                            request_id,
-                                        },
-                                    ).await?;
+                                    self.send_media_channel_message(namespaces::Media::GetStatus {
+                                        media_session_id: None,
+                                        request_id,
+                                    })
+                                    .await?;
 
                                     if !shared_state.is_running {
-                                        self.event_handler
-                                            .connection_state_changed(DeviceConnectionState::Connected {
+                                        self.event_handler.connection_state_changed(
+                                            DeviceConnectionState::Connected {
                                                 used_remote_addr: shared_state.remote_addr.into(),
                                                 local_addr: shared_state.stream_local_addr.into(),
-                                            });
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -527,9 +548,30 @@ impl InnerDevice {
                                     changed!(duration, duration_update, duration_changed);
                                 }
                                 let new_source = Source::Url {
-                                    url: media.content_id,
-                                    content_type: media.content_type,
+                                    url: media.content_id.clone(),
+                                    content_type: media.content_type.clone(),
                                 };
+                                shared_state.media_item = Some(MediaItem {
+                                    content_type: media.content_type,
+                                    url: Some(media.content_id),
+                                    content: None,
+                                    time: None,
+                                    volume: None,
+                                    speed: None,
+                                    show_duration: media.duration,
+                                    metadata: media.metadata.map(|meta| match meta {
+                                        googlecast_protocol::Metadata::Generic {
+                                            title,
+                                            images,
+                                            ..
+                                        } => crate::device::Metadata {
+                                            title,
+                                            thumbnail_url: images
+                                                .map(|imgs| imgs.get(0).map(|img| img.url.clone()))
+                                                .flatten(),
+                                        },
+                                    }),
+                                });
                                 if shared_state.source != Some(new_source.clone()) {
                                     self.event_handler.source_changed(new_source.clone());
                                     shared_state.source = Some(new_source);
@@ -551,16 +593,29 @@ impl InnerDevice {
                             self.current_player_state = stat.player_state;
                             if let Some(idle_reason) = stat.idle_reason {
                                 match idle_reason {
-                                    googlecast_protocol::IdleReason::Cancelled => todo!(),
-                                    googlecast_protocol::IdleReason::Interrupted => todo!(),
-                                    googlecast_protocol::IdleReason::Finished => {
+                                    googlecast_protocol::IdleReason::Finished
+                                        if self
+                                            .subscriptions
+                                            .contains(&EventSubscription::MediaItemEnd) =>
+                                    {
+                                        if let Some(media_item) = shared_state.media_item.take() {
+                                            self.event_handler.media_event(
+                                                crate::device::MediaEvent {
+                                                    type_: crate::device::MediaItemEventType::End,
+                                                    item: media_item,
+                                                },
+                                            );
+                                        }
                                     }
-                                    googlecast_protocol::IdleReason::Error => todo!(),
+                                    _ => (),
                                 }
                             }
                         }
                     }
-                    namespaces::Media::Error { reason: Some(error_reason), .. } => {
+                    namespaces::Media::Error {
+                        reason: Some(error_reason),
+                        ..
+                    } => {
                         self.event_handler.playback_error(error_reason);
                     }
                     _ => (),
@@ -683,6 +738,7 @@ impl InnerDevice {
             is_running: false,
             remote_addr,
             stream_local_addr,
+            media_item: None,
         };
 
         let mut get_status_interval = tokio::time::interval(DEFAULT_GET_STATUS_DELAY);
@@ -811,7 +867,8 @@ impl CastingDevice for ChromecastDevice {
             | DeviceFeature::LoadUrl
             | DeviceFeature::LoadImage
             | DeviceFeature::LoadPlaylist
-            | DeviceFeature::PlaylistNextAndPrevious => true,
+            | DeviceFeature::PlaylistNextAndPrevious
+            | DeviceFeature::MediaEventSubscription => true,
             _ => false,
         }
     }
@@ -988,11 +1045,14 @@ impl CastingDevice for ChromecastDevice {
 
     #[allow(unused_variables)]
     fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
-        Err(CastingDeviceError::UnsupportedSubscription)
+        match group {
+            EventSubscription::MediaItemEnd => self.send_command(Command::Subscribe(group)),
+            _ => Err(CastingDeviceError::UnsupportedSubscription),
+        }
     }
 
     #[allow(unused_variables)]
     fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
-        Err(CastingDeviceError::UnsupportedSubscription)
+        self.send_command(Command::Unsubscribe(group))
     }
 }
