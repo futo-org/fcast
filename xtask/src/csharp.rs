@@ -27,7 +27,7 @@ impl CSharpArgs {
             CSharpCommand::BuildCSharpLibrary { .. } => {
                 cmd!(
                     sh,
-                    "cargo build -p fcast-sender-sdk --features _uniffi_csharp"
+                    "cargo build -p fcast-sender-sdk --no-default-features --features _uniffi_csharp"
                 )
                 .run()?;
                 cmd!(sh, "uniffi-bindgen-cs target/debug/libfcast_sender_sdk.so --library --config sdk/sender/fcast-sender-sdk/uniffi.toml --out-dir bindings-cs").run()?;

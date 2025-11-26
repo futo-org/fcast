@@ -61,7 +61,7 @@ discovery_types = []
 _mobile_defaults = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery_types"]
 _android_defaults = ["_mobile_defaults"]
 _ios_defaults = ["_mobile_defaults"]
-_uniffi_csharp = ["dep:env_logger"]
+_uniffi_csharp = ["dep:env_logger", "fcast", "chromecast", "uniffi", "logging", "discovery"]
 
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
