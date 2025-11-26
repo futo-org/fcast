@@ -1,7 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use fcast_sender_sdk::{context::CastContext, device, device::DeviceInfo};
 use gst::prelude::{BufferPoolExt, BufferPoolExtManual};
-use gst_video::VideoFrameExt;
+use gst_video::{VideoColorimetry, VideoFrameExt};
 use jni::{
     objects::{JByteBuffer, JObject, JString},
     JavaVM,
@@ -15,10 +15,8 @@ use tracing::{debug, error};
 lazy_static::lazy_static! {
     pub static ref GLOB_EVENT_CHAN: (crossbeam_channel::Sender<Event>, crossbeam_channel::Receiver<Event>)
         = crossbeam_channel::bounded(2);
-
     pub static ref FRAME_PAIR: (Mutex<Option<gst_video::VideoFrame<gst_video::video_frame::Writable>>>, Condvar) = (Mutex::new(None), Condvar::new());
-
-    pub static ref FRAME_POOL: gst_video::VideoBufferPool = gst_video::VideoBufferPool::new();
+    pub static ref FRAME_POOL: Mutex<gst_video::VideoBufferPool> = Mutex::new(gst_video::VideoBufferPool::new());
 }
 
 slint::include_modules!();
@@ -296,12 +294,32 @@ impl Application {
                     }
                 }
             }
+            Event::CaptureStopped => (),
+            Event::CaptureCancelled => {
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.global::<Bridge>()
+                        .invoke_change_state(AppState::Disconnected);
+                })?;
+
+                self.stop_cast(false).await?;
+            }
+            Event::QrScanResult(result) => {
+                // self.cast_ctx
+                match fcast_sender_sdk::device::device_info_from_url(result) {
+                    Some(device_info) => {
+                        self.connect_with_device_info(device_info)?;
+                    }
+                    None => {
+                        error!("QR code scan result is not a valid device");
+                    }
+                }
+            }
             Event::CaptureStarted => {
                 let appsrc = gst_app::AppSrc::builder()
                     .caps(
                         &gst_video::VideoCapsBuilder::new()
-                            .format(gst_video::VideoFormat::Rgba)
-                            .framerate(gst::Fraction::new(30, 1))
+                            .format(gst_video::VideoFormat::I420)
+                            // .framerate(gst::Fraction::new(0, 1))
                             .build(),
                     )
                     .is_live(true)
@@ -369,26 +387,6 @@ impl Application {
                     ui.global::<Bridge>().invoke_change_state(AppState::Casting);
                 })?;
             }
-            Event::CaptureStopped => (),
-            Event::CaptureCancelled => {
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.global::<Bridge>()
-                        .invoke_change_state(AppState::Disconnected);
-                })?;
-
-                self.stop_cast(false).await?;
-            }
-            Event::QrScanResult(result) => {
-                // self.cast_ctx
-                match fcast_sender_sdk::device::device_info_from_url(result) {
-                    Some(device_info) => {
-                        self.connect_with_device_info(device_info)?;
-                    }
-                    None => {
-                        error!("QR code scan result is not a valid device");
-                    }
-                }
-            }
         }
 
         Ok(ShouldQuit::No)
@@ -401,13 +399,10 @@ impl Application {
         tracing_gstreamer::integrate_events();
         gst::log::remove_default_log_function();
         gst::log::set_default_threshold(gst::DebugLevel::Fixme);
-        gst::log::set_threshold_for_name("webrtcsink", gst::DebugLevel::Debug);
-        gst::log::set_threshold_for_name("webrtcbin", gst::DebugLevel::Debug);
         gst::init().unwrap();
         debug!("GStreamer version: {:?}", gst::version());
 
         // self.add_or_update_device(fcast_sender_sdk::device::DeviceInfo::fcast("Localhost for android emulator".to_owned(), vec![fcast_sender_sdk::IpAddr::v4(10, 0, 2, 2)], 46899))?;
-
 
         loop {
             let Some(event) = event_rx.recv().await else {
@@ -651,136 +646,159 @@ pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeCaptureCancel
     );
 }
 
-#[allow(non_snake_case)]
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeProcessFrame<'local>(
+fn process_frame<'local>(
     env: jni::JNIEnv<'local>,
-    _class: jni::objects::JClass<'local>,
-    buffer: JByteBuffer<'local>,
     width: jni::sys::jint,
     height: jni::sys::jint,
-    pixel_stride: jni::sys::jint,
-    _row_stride: jni::sys::jint,
-) {
+    buffer_y: JByteBuffer<'local>,
+    buffer_u: JByteBuffer<'local>,
+    buffer_v: JByteBuffer<'local>,
+) -> Result<()> {
     let width = width as usize;
     let height = height as usize;
-    let pixel_stride = pixel_stride as usize;
-    let frame_size = width * height * pixel_stride;
 
-    let buffer_cap = match env.get_direct_buffer_capacity(&buffer) {
-        Ok(cap) => cap,
-        Err(err) => {
-            error!("Failed to get capacity of the byte buffer: {err}");
-            return;
+    fn buffer_as_slice<'local>(
+        env: &jni::JNIEnv<'local>,
+        buffer: &JByteBuffer<'local>,
+        size: usize,
+    ) -> Result<&'local [u8]> {
+        let buffer_cap = match env.get_direct_buffer_capacity(&buffer) {
+            Ok(cap) => cap,
+            Err(err) => {
+                bail!("Failed to get capacity of the byte buffer: {err}");
+            }
+        };
+
+        if buffer_cap < size {
+            bail!("buffer_cap < size: {buffer_cap} < {size}");
         }
-    };
 
-    if buffer_cap < frame_size {
-        error!("buffer_cap < frame_size: {buffer_cap} < {frame_size}");
-        return;
+        let buffer_ptr = match env.get_direct_buffer_address(&buffer) {
+            Ok(ptr) => {
+                assert!(!ptr.is_null());
+                ptr
+            }
+            Err(err) => {
+                bail!("Failed to get buffer address: {err}");
+            }
+        };
+
+        unsafe { Ok(std::slice::from_raw_parts(buffer_ptr, buffer_cap)) }
     }
 
-    let buffer_ptr = match env.get_direct_buffer_address(&buffer) {
-        Ok(ptr) => {
-            assert!(!ptr.is_null());
-            ptr
-        }
-        Err(err) => {
-            error!("Failed to get buffer address: {err}");
-            return;
-        }
-    };
-
-    let buffer_slice: &[u8] = unsafe { std::slice::from_raw_parts(buffer_ptr, buffer_cap) };
+    let slice_y = buffer_as_slice(&env, &buffer_y, width * height)?;
+    let slice_u = buffer_as_slice(&env, &buffer_u, (width / 2) * (height / 2))?;
+    let slice_v = buffer_as_slice(&env, &buffer_v, (width / 2) * (height / 2))?;
 
     let info = match gst_video::VideoInfo::builder(
-        gst_video::VideoFormat::Rgba,
+        gst_video::VideoFormat::I420,
         width as u32,
         height as u32,
     )
+    .colorimetry(&VideoColorimetry::new(
+        gst_video::VideoColorRange::Range0_255,
+        gst_video::VideoColorMatrix::Bt709,
+        gst_video::VideoTransferFunction::Bt709,
+        gst_video::VideoColorPrimaries::Bt709,
+    ))
     .build()
     {
         Ok(info) => info,
         Err(err) => {
-            error!("Failed to crate video info: {err}");
-            return;
+            bail!("Failed to crate video info: {err}");
         }
     };
 
-    // TODO: test this more thoroughly
     let new_caps = match info.to_caps() {
         Ok(caps) => caps,
         Err(err) => {
-            error!(?err, "Failed to create caps from video info");
-            return;
+            bail!("Failed to create caps from video info: {err}");
         }
     };
-    let mut old_config = FRAME_POOL.config();
-    if !FRAME_POOL.is_active() {
-        if let Err(err) = FRAME_POOL.set_config({
-            old_config.set_params(Some(&new_caps), frame_size as u32, 1, 30);
+
+    fn init_frame_pool(
+        pool: &gst_video::VideoBufferPool,
+        mut old_config: gst::BufferPoolConfig,
+        new_caps: &gst::Caps,
+        frame_size: u32,
+    ) -> Result<()> {
+        pool.set_config({
+            old_config.set_params(Some(&new_caps), frame_size, 1, 30);
             old_config
-        }) {
-            error!(?err, "Failed to set frame pool config");
-            return;
-        }
-        if let Err(err) = FRAME_POOL.set_active(true) {
-            error!(?err, "Failed to activate frame pool");
-            return;
-        }
-    } else {
-        let (old_caps, old_frame_size) = match old_config.params() {
-            Some((Some(old_caps), old_frame_size, _, _)) => (old_caps, old_frame_size),
-            _ => {
-                error!("Frame pool configuration does not have any params");
-                return;
-            }
-        };
-        if old_caps != new_caps || old_frame_size != frame_size as u32 {
-            if let Err(err) = FRAME_POOL.set_active(false) {
-                error!(?err, "Failed to deactivate frame pool");
-                return;
-            }
-            if let Err(err) = FRAME_POOL.set_config({
-                old_config.set_params(Some(&new_caps), frame_size as u32, 1, 30);
-                old_config
-            }) {
-                error!(?err, "Failed to set frame pool config");
-                return;
-            }
-            if let Err(err) = FRAME_POOL.set_active(true) {
-                error!(?err, "Failed to activate frame pool");
-                return;
-            }
-        }
+        })?;
+        pool.set_active(true)?;
+        Ok(())
     }
 
-    let buffer = match FRAME_POOL.acquire_buffer(None) {
+    let mut frame_pool = FRAME_POOL.lock();
+    let old_config = frame_pool.config();
+    let frame_size = width * height + 2 * ((width / 2) * (height / 2));
+    if !frame_pool.is_active() {
+        init_frame_pool(&frame_pool, old_config, &new_caps, frame_size as u32)?;
+    } else {
+        let _ = frame_pool.set_active(false);
+        let new_frame_pool = gst_video::VideoBufferPool::new();
+        init_frame_pool(&new_frame_pool, old_config, &new_caps, frame_size as u32)?;
+        *frame_pool = new_frame_pool;
+    }
+
+    let buffer = match frame_pool.acquire_buffer(None) {
         Ok(buffer) => buffer,
         Err(err) => {
-            error!(?err, "Failed to acquire buffer from pool");
-            return;
+            bail!("Failed to acquire buffer from pool: {err}");
         }
     };
     let Ok(mut vframe) = gst_video::VideoFrame::from_buffer_writable(buffer, &info) else {
-        error!("Failed to crate VideoFrame from buffer");
-        return;
+        bail!("Failed to crate VideoFrame from buffer");
     };
 
-    let dest_stride = vframe.plane_stride()[0] as usize;
-    let dest = vframe.plane_data_mut(0).unwrap();
+    fn copy(
+        vframe: &mut gst_video::VideoFrame<gst_video::video_frame::Writable>,
+        plane_idx: u32,
+        src_plane: &[u8],
+    ) -> Result<()> {
+        let dest_y_stride = *vframe
+            .plane_stride()
+            .get(plane_idx as usize)
+            .ok_or(anyhow::anyhow!("Could not get plane stride"))?
+            as usize;
+        let dest_y = vframe.plane_data_mut(plane_idx)?;
+        for (dest, src) in dest_y
+            .chunks_exact_mut(dest_y_stride)
+            .zip(src_plane.chunks_exact(dest_y_stride))
+        {
+            dest[..dest_y_stride].copy_from_slice(&src[..dest_y_stride]);
+        }
 
-    for (dest, src) in dest
-        .chunks_exact_mut(dest_stride)
-        .zip(buffer_slice.chunks_exact(dest_stride))
-    {
-        dest[..dest_stride].copy_from_slice(&src[..dest_stride]);
+        Ok(())
     }
+
+    copy(&mut vframe, 0, slice_y)?;
+    copy(&mut vframe, 1, slice_u)?;
+    copy(&mut vframe, 2, slice_v)?;
 
     let (lock, cvar) = &*FRAME_PAIR;
     let mut frame = lock.lock();
     *frame = Some(vframe);
     cvar.notify_one();
+
+    Ok(())
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeProcessFrame<'local>(
+    env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    width: jni::sys::jint,
+    height: jni::sys::jint,
+    buffer_y: JByteBuffer<'local>,
+    buffer_u: JByteBuffer<'local>,
+    buffer_v: JByteBuffer<'local>,
+) {
+    if let Err(err) = process_frame(env, width, height, buffer_y, buffer_u, buffer_v) {
+        error!(?err, "Failed to process frame");
+    }
 }
 
 #[allow(non_snake_case)]
