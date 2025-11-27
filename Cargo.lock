@@ -1901,7 +1901,7 @@ dependencies = [
 
 [[package]]
 name = "fcast-sender-sdk"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "android_logger",
  "anyhow",
