@@ -11,6 +11,7 @@ import {
     Slider,
     LineEdit,
 } from "std-widgets.slint";
+import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
 
 export enum UiAppState {
     Disconnected,
@@ -124,20 +125,6 @@ export global Bridge {
             track-duration = 0.0;
         }
         app-state = to;
-    }
-
-    public pure function str-to-scale(scale: string) -> { width: int, height: int} {
-        if scale == "Ultra HD (2160)" {
-            { width: 3840, height: 2160 }
-        } else if scale == "Quad HD (1440)" {
-            { width: 2560, height: 1440 }
-        } else if scale == "Full HD (1080)" {
-            { width: 1920, height: 1080 }
-        } else if scale == "HD (720)" {
-            { width: 1280, height: 720 }
-        } else {
-            { width: 720, height: 480 }
-        }
     }
 
     public pure function is-valid-port(port: float) -> bool {
@@ -362,9 +349,7 @@ component SelectingInputTypeView {
 
 component SelectMirroringSourceView inherits Rectangle {
     property <int> video-resolution-idx: 2;
-    property <[string]> video-resolutions: ["Ultra HD (2160)", "Quad HD (1440)", "Full HD (1080)", "HD (720)", "SD (480)"];
     property <int> video-framerate-idx: 2;
-    property <[string]> video-framerates: ["90", "60", "30", "25", "15", "10", "5", "1"];
 
     VerticalBox {
         alignment: center;
@@ -447,9 +432,8 @@ component SelectMirroringSourceView inherits Rectangle {
                     text: "Max resolution";
                 }
 
-                ComboBox {
+                VideoResolutionPicker {
                     current-index <=> video-resolution-idx;
-                    model: video-resolutions;
                 }
 
                 Text {
@@ -458,9 +442,8 @@ component SelectMirroringSourceView inherits Rectangle {
                     text: "Max framerate";
                 }
 
-                ComboBox {
+                FrameratePicker {
                     current-index <=> video-framerate-idx;
-                    model: video-framerates;
                 }
             }
         }
@@ -533,13 +516,13 @@ component SelectMirroringSourceView inherits Rectangle {
             enabled: Bridge.selected-audio-src != -1 || Bridge.selected-video-src != -1;
             text: "Start";
             clicked => {
-                let scale = Bridge.str-to-scale(video-resolutions[video-resolution-idx]);
+                let scale = Utils.str-to-scale(video-resolution-idx);
                 Bridge.start-cast(
                     Bridge.selected-video-src,
                     Bridge.selected-audio-src,
                     scale.width,
                     scale.height,
-                    video-framerates[video-framerate-idx].to-float(),
+                    Utils.video-framerates[video-framerate-idx].to-float(),
                 );
             }
         }

@@ -172,7 +172,12 @@ class Dimensions {
         this.height = height;
     }
 
+    // TODO: should probably make one rust function shared between all
     public Dimensions scale(Dimensions maxDims) {
+        if (height <= maxDims.width && height <= maxDims.height) {
+            return new Dimensions(width, height);
+        }
+
         int x = width;
         int y = height;
 
@@ -219,6 +224,9 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     private Handler glHandler;
     private DisplayManager displayManager;
     private final ReentrantLock captureLock = new ReentrantLock();
+    private int userMaxWidth = 1920;
+    private int userMaxHeight = 1080;
+    private int userMaxFps = 30;
 
     @Override
     public void onDisplayAdded(int displayId) { }
@@ -257,7 +265,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
             android.util.DisplayMetrics m = new android.util.DisplayMetrics();
             this.getWindowManager().getDefaultDisplay().getMetrics(m);
             cleanupCapture(false);
-            glHandler.post(() -> setupGles(new Dimensions(1920, 1080), 30, newDims));
+            glHandler.post(() -> setupGles(new Dimensions(userMaxWidth, userMaxHeight), newDims));
         }
     }
 
@@ -377,7 +385,6 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     AtomicBoolean shouldCapture = new AtomicBoolean(false);
     int oesTexId;
     Instant lastFrameSent = Instant.EPOCH;
-    int maxFps;
 
     private int createOesTexture() {
         int[] tex = new int[1];
@@ -559,7 +566,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
         Instant now = Instant.now();
         // Drop early frames
-        if (Duration.between(lastFrameSent, now).compareTo(Duration.ofMillis(1000 / maxFps)) < 0) {
+        if (Duration.between(lastFrameSent, now).compareTo(Duration.ofMillis(1000 / userMaxFps)) < 0) {
             return;
         }
 
@@ -582,10 +589,8 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     }
 
     // TODO: handle errors
-    private void setupGles(Dimensions maxDims, int maxFps, Dimensions suggestedDims) {
+    private void setupGles(Dimensions maxDims, Dimensions suggestedDims) {
         captureLock.lock();
-
-        this.maxFps = maxFps;
 
         Log.d(TAG, "Getting EGL eglDisplay");
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
@@ -701,8 +706,11 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     }
 
     // Called from native code
-    private void startScreenCapture() {
+    private void startScreenCapture(int scaleWidth, int scaleHeight, int maxFramerate) {
         Log.d(TAG, "Requesting screen capture permissions");
+        userMaxWidth = scaleWidth;
+        userMaxHeight = scaleHeight;
+        userMaxFps = maxFramerate;
         MediaProjectionManager projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_CODE);
     }
@@ -795,7 +803,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     private void initializeCapture(int resultCode, Intent data) {
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
         mediaProjection.registerCallback(projectionCallback, null);
-        glHandler.post(() -> setupGles(new Dimensions(1920, 1080), 30, null));
+        glHandler.post(() -> setupGles(new Dimensions(userMaxWidth, userMaxHeight), null));
         nativeCaptureStarted();
     }
 

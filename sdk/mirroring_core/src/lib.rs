@@ -206,6 +206,12 @@ pub enum Event {
     CaptureCancelled,
     #[cfg(target_os = "android")]
     QrScanResult(String),
+    #[cfg(target_os = "android")]
+    StartCast {
+        scale_width: u32,
+        scale_height: u32,
+        max_framerate: u32,
+    },
 }
 
 pub struct Discoverer {

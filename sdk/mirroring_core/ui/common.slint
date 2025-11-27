@@ -1,0 +1,29 @@
+import { ComboBox } from "std-widgets.slint";
+
+export global Utils {
+    out property <[string]> video-framerates: ["90", "60", "30", "25", "15", "10", "5", "1"];
+
+    public pure function str-to-scale(scale: int) -> { width: int, height: int} {
+        if scale == 0 {
+            { width: 3840, height: 2160 }
+        } else if scale == 1 {
+            { width: 2560, height: 1440 }
+        } else if scale == 2 {
+            { width: 1920, height: 1080 }
+        } else if scale == 3 {
+            { width: 1280, height: 720 }
+        } else {
+            { width: 720, height: 480 }
+        }
+    }
+}
+
+export component VideoResolutionPicker inherits ComboBox {
+    current-index: 2;
+    model: ["Ultra HD (2160)", "Quad HD (1440)", "Full HD (1080)", "HD (720)", "SD (480)"];
+}
+
+export component FrameratePicker inherits ComboBox {
+    current-index: 2;
+    model: Utils.video-framerates;
+}

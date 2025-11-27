@@ -32,9 +32,9 @@ include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
 GSTREAMER_PLUGINS_CORE_CUSTOM := coreelements app videorate videoconvertscale videofilter videoparsersbad
 GSTREAMER_PLUGINS_NET_CUSTOM := tcp rtpmanager udp srtp dtls nice webrtc rtp rsrtp
 GSTREAMER_PLUGINS_CODECS_CUSTOM := vpx
-GSTREAMER_PLUGINS         := $(GSTREAMER_PLUGINS_CORE_CUSTOM) $(GSTREAMER_PLUGINS_CODECS_CUSTOM) $(GSTREAMER_PLUGINS_NET_CUSTOM) opengl
+GSTREAMER_PLUGINS         := $(GSTREAMER_PLUGINS_CORE_CUSTOM) $(GSTREAMER_PLUGINS_CODECS_CUSTOM) $(GSTREAMER_PLUGINS_NET_CUSTOM)
 
-GSTREAMER_EXTRA_DEPS      := gstreamer-video-1.0 glib-2.0 gstreamer-app-1.0 gstreamer-base-1.0 gstreamer-webrtc-1.0 gstreamer-rtp-1.0 gstreamer-gl-1.0
+GSTREAMER_EXTRA_DEPS      := gstreamer-video-1.0 glib-2.0 gstreamer-app-1.0 gstreamer-base-1.0 gstreamer-webrtc-1.0 gstreamer-rtp-1.0
 
 G_IO_MODULES = openssl
 

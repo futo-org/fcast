@@ -1,7 +1,10 @@
-import { VerticalBox, Button, ListView } from "std-widgets.slint";
+import { VerticalBox, Button, ListView, Spinner } from "std-widgets.slint";
+import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
 
 enum AppState {
     Disconnected,
+    Connecting,
+    SelectingSettings,
     WaitingForMedia,
     Casting,
 }
@@ -13,6 +16,7 @@ export global Bridge {
     in-out property <AppState> app-state: AppState.Disconnected;
 
     callback connect-receiver(string);
+    callback start-casting(scale-width: int, scale-height: int, max-framerate: int);
     callback stop-casting();
     callback scan-qr();
 
@@ -74,6 +78,57 @@ component ConnectView inherits Rectangle {
     }
 }
 
+component ConnectingView inherits Rectangle {
+    VerticalBox {
+        Spinner {
+            indeterminate: true;
+        }
+
+        Text {
+            font-size: 12pt;
+            vertical-alignment: center;
+            text: "Connecting";
+        }
+
+        // TODO: cancel button
+    }
+}
+
+component SelectingSettingsView inherits Rectangle {
+    property <int> video-resolution-idx: 2;
+    property <int> video-framerate-idx: 2;
+
+    VerticalBox {
+        Text {
+            font-size: 12pt;
+            vertical-alignment: center;
+            text: "Max resolution";
+        }
+
+        VideoResolutionPicker {
+            current-index <=> video-resolution-idx;
+        }
+
+        Text {
+            font-size: 12pt;
+            vertical-alignment: center;
+            text: "Max framerate";
+        }
+
+        FrameratePicker {
+            current-index <=> video-framerate-idx;
+        }
+
+        Button {
+            text: "Start";
+            clicked => {
+                let scale = Utils.str-to-scale(video-resolution-idx);
+                Bridge.start-casting(scale.width, scale.height, Utils.video-framerates[video-framerate-idx].to-float())
+            }
+        }
+    }
+}
+
 component WaitingForMediaView inherits Rectangle {
     VerticalBox {
         Text {
@@ -99,6 +154,10 @@ component CastingView inherits Rectangle {
 
 export component MainWindow inherits Window {
     if Bridge.app-state == AppState.Disconnected: ConnectView { }
+
+    if Bridge.app-state == AppState.Connecting: ConnectingView {}
+
+    if Bridge.app-state == AppState.SelectingSettings: SelectingSettingsView {}
 
     if Bridge.app-state == AppState.WaitingForMedia: WaitingForMediaView { }
 

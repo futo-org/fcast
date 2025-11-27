@@ -31,7 +31,6 @@ macro_rules! log_err {
 
 #[derive(Debug)]
 enum JavaMethod {
-    StartScreenCapture,
     StopCapture,
     ScanQr,
 }
@@ -49,7 +48,6 @@ fn call_java_method_no_args(app: &slint::android::AndroidApp, method: JavaMethod
     };
 
     let method_name = match method {
-        JavaMethod::StartScreenCapture => "startScreenCapture",
         JavaMethod::StopCapture => "stopCapture",
         JavaMethod::ScanQr => "scanQr",
     };
@@ -184,7 +182,7 @@ impl Application {
         // TODO: should be connecting
         self.ui_weak.upgrade_in_event_loop(|ui| {
             ui.global::<Bridge>()
-                .invoke_change_state(AppState::WaitingForMedia);
+                .invoke_change_state(AppState::Connecting);
         })?;
 
         Ok(())
@@ -263,12 +261,9 @@ impl Application {
                                 device::DeviceConnectionState::Connected { local_addr, .. } => {
                                     self.local_address = Some(local_addr);
 
-                                    let android_app = self.android_app.clone();
-                                    self.ui_weak.upgrade_in_event_loop(move |_| {
-                                        call_java_method_no_args(
-                                            &android_app,
-                                            JavaMethod::StartScreenCapture,
-                                        );
+                                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                                        ui.global::<Bridge>()
+                                            .invoke_change_state(AppState::SelectingSettings);
                                     })?;
                                 }
                                 _ => (),
@@ -304,7 +299,6 @@ impl Application {
                 self.stop_cast(false).await?;
             }
             Event::QrScanResult(result) => {
-                // self.cast_ctx
                 match fcast_sender_sdk::device::device_info_from_url(result) {
                     Some(device_info) => {
                         self.connect_with_device_info(device_info)?;
@@ -387,6 +381,53 @@ impl Application {
                     ui.global::<Bridge>().invoke_change_state(AppState::Casting);
                 })?;
             }
+            Event::StartCast {
+                scale_width,
+                scale_height,
+                max_framerate,
+            } => {
+                let android_app = self.android_app.clone();
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let vm = unsafe {
+                        let ptr = android_app.vm_as_ptr() as *mut jni::sys::JavaVM;
+                        assert!(!ptr.is_null(), "JavaVM ptr is null");
+                        JavaVM::from_raw(ptr).unwrap()
+                    };
+                    let activity = unsafe {
+                        let ptr = android_app.activity_as_ptr() as *mut jni::sys::_jobject;
+                        assert!(!ptr.is_null(), "Activity ptr is null");
+                        JObject::from_raw(ptr)
+                    };
+
+                    let scale_width = scale_width as jni::sys::jint;
+                    let scale_height = scale_height as jni::sys::jint;
+                    let max_framerate = max_framerate as jni::sys::jint;
+
+                    match vm.get_env() {
+                        Ok(mut env) => match env.call_method(
+                            activity,
+                            "startScreenCapture",
+                            "(III)V",
+                            &[
+                                scale_width.into(),
+                                scale_height.into(),
+                                max_framerate.into(),
+                            ],
+                        ) {
+                            Ok(_) => (),
+                            Err(err) => error!(
+                                ?err,
+                                method = "startScreenCapture",
+                                "Failed to call java method"
+                            ),
+                        },
+                        Err(err) => error!(?err, "Failed to get env from VM"),
+                    }
+
+                    ui.global::<Bridge>()
+                        .invoke_change_state(AppState::WaitingForMedia);
+                })?;
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -443,6 +484,19 @@ fn android_main(app: slint::android::AndroidApp) {
         move |device_name| {
             event_tx
                 .blocking_send(Event::ConnectToDevice(device_name.to_string()))
+                .unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_start_casting({
+        let event_tx = event_tx.clone();
+        move |scale_width: i32, scale_height: i32, max_framerate: i32| {
+            event_tx
+                .blocking_send(Event::StartCast {
+                    scale_width: scale_width as u32,
+                    scale_height: scale_height as u32,
+                    max_framerate: max_framerate as u32,
+                })
                 .unwrap();
         }
     });
