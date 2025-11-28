@@ -123,6 +123,12 @@ pub enum AndroidSenderCommand {
 pub struct AndroidSenderArgs {
     #[clap(subcommand)]
     pub cmd: AndroidSenderCommand,
+    #[clap(long)]
+    pub android_home_override: Option<String>,
+    #[clap(long)]
+    pub android_ndk_root_override: Option<String>,
+    #[clap(long)]
+    pub gstreamer_root_override: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -163,20 +169,41 @@ impl SenderArgs {
             SenderCommand::Android(args) => {
                 let _env_andr_sdk = sh.push_env(
                     "ANDROID_HOME",
-                    concat_path(&root_path, crate::android::ANDROID_HOME_PATH),
+                    concat_path(
+                        &root_path,
+                        &args
+                            .android_home_override
+                            .unwrap_or(crate::android::ANDROID_HOME_PATH.to_owned()),
+                    ),
                 );
                 let _env_ndk = sh.push_env(
                     "ANDROID_NDK_ROOT",
-                    concat_path(&root_path, crate::android::NDK_PATH),
+                    concat_path(
+                        &root_path,
+                        &args
+                            .android_ndk_root_override
+                            .clone()
+                            .unwrap_or(crate::android::NDK_PATH.to_owned()),
+                    ),
                 );
                 // Needed for some skia stuff on some arm target
                 let _env_andr_ndk = sh.push_env(
                     "ANDROID_NDK",
-                    concat_path(&root_path, crate::android::NDK_PATH),
+                    concat_path(
+                        &root_path,
+                        &args
+                            .android_ndk_root_override
+                            .unwrap_or(crate::android::NDK_PATH.to_owned()),
+                    ),
                 );
                 let _env_gst = sh.push_env(
                     "GSTREAMER_ROOT_ANDROID",
-                    concat_path(&root_path, crate::android::GST_ANDROID_PATH),
+                    concat_path(
+                        &root_path,
+                        &args
+                            .gstreamer_root_override
+                            .unwrap_or(crate::android::GST_ANDROID_PATH.to_owned()),
+                    ),
                 );
                 let _env_jar = sh.push_env(
                     "ANDROID_JAR",
@@ -228,10 +255,10 @@ impl SenderArgs {
                             concat_path(&root_path, "senders/android/app/src/main/jniLibs");
 
                         let targets = target.map(|t| vec![t]).unwrap_or(vec![
-                            AbiTarget::X64,
-                            AbiTarget::X86,
+                            // AbiTarget::X64,
+                            // AbiTarget::X86,
                             AbiTarget::Arm64,
-                            AbiTarget::Arm32,
+                            // AbiTarget::Arm32,
                         ]);
 
                         for target in targets {
@@ -250,13 +277,15 @@ impl SenderArgs {
 
                             let target = target.translate();
 
-                            #[rustfmt::skip]
-                                    let mut args = vec![
-                                        "--target", target,
-                                        "-o", out_dir.as_str(),
-                                        "build",
-                                        "--package", "android-sender",
-                                    ];
+                            let mut args = vec![
+                                "--target",
+                                target,
+                                "-o",
+                                out_dir.as_str(),
+                                "build",
+                                "--package",
+                                "android-sender",
+                            ];
                             if release {
                                 args.push("--release");
                             }

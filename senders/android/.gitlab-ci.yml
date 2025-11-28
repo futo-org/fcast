@@ -10,3 +10,35 @@ buildAndroidSenderDockerContainer:
     - docker build -t $CI_REGISTRY/videostreaming/fcast/android-sender-dev:latest senders/android/
     - docker push $CI_REGISTRY/videostreaming/fcast/android-sender-dev:latest
   when: manual
+
+buildSenderAndroid:
+  stage: senders
+  image: gitlab.futo.org:5050/videostreaming/fcast/android-sender-dev:latest
+  tags:
+    - fcast-instance-runner
+  variables:
+    APP_VERSION_NAME: "1"
+    APP_VERSION_CODE: "1"
+  before_script:
+    - cd senders/android
+  script:
+    - cargo xtask sender android
+      --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.26.8"
+      build-lib-gst
+
+    - cargo xtask sender android
+      --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.26.8"
+      build --release
+
+    - ANDROID_HOME="$ANDROID_HOME_PATH" ANDROID_NDK_ROOT="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" ./gradlew assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
+    - mkdir -p "./$ANDROID_VERSION_CODE"
+    - mv ./app/build/outputs/apk/release/app-release-unsigned.apk "./$ANDROID_VERSION_CODE/fcast-sender-release.apk"
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - senders/android/$ANDROID_VERSION_CODE/fcast-sender-release.apk
+  when: manual
+
