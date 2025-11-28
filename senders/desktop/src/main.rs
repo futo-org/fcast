@@ -1540,18 +1540,21 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>()
-        .on_reload_log_string({
-            let ui_weak = ui.as_weak();
-            let tracing_events = Arc::clone(&tracing_events);
-            move || {
-                let ui = ui_weak.upgrade().expect("Callback handlers are always called from the ui thread");
-                let events = tracing_events.lock();
-                let (front, back) = events.as_slices();
-                let log_string = [front.join("\n"), back.join("\n")].join("\n").to_shared_string();
-                ui.global::<Bridge>().set_log_string(log_string);
-            }
-        });
+    ui.global::<Bridge>().on_reload_log_string({
+        let ui_weak = ui.as_weak();
+        let tracing_events = Arc::clone(&tracing_events);
+        move || {
+            let ui = ui_weak
+                .upgrade()
+                .expect("Callback handlers are always called from the ui thread");
+            let events = tracing_events.lock();
+            let (front, back) = events.as_slices();
+            let log_string = [front.join("\n"), back.join("\n")]
+                .join("\n")
+                .to_shared_string();
+            ui.global::<Bridge>().set_log_string(log_string);
+        }
+    });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     ui.global::<Bridge>().set_is_audio_supported(false);

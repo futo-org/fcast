@@ -280,6 +280,7 @@ pub async fn video_source_fetch_worker(
                         continue;
                     }
                 };
+                debug!(?cursor_modes, "Cursor modes");
                 let cursor_mode = if cursor_modes.contains(CursorMode::Embedded) {
                     CursorMode::Embedded
                 } else if cursor_modes.contains(CursorMode::Hidden) {
@@ -287,12 +288,21 @@ pub async fn video_source_fetch_worker(
                 } else {
                     CursorMode::Metadata
                 };
+
+                let mut source_types = SourceType::Monitor | SourceType::Window;
+                if let Ok(true) = new_proxy
+                    .available_source_types()
+                    .await
+                    .map(|types| types.contains(SourceType::Virtual))
+                {
+                    source_types |= SourceType::Virtual;
+                }
+
                 if let Err(err) = new_proxy
                     .select_sources(
                         &new_session,
                         cursor_mode,
-                        // SourceType::Monitor | SourceType::Window | SourceType::Virtual,
-                        SourceType::Monitor | SourceType::Window,
+                        source_types,
                         false,
                         None,
                         PersistMode::DoNot,
