@@ -6,6 +6,7 @@ stages:
   - buildTizenOSReceiver
   - buildSenderSDK
   - testSDK
+  - senders
 
 variables:
   ANDROID_VERSION_NAME:
