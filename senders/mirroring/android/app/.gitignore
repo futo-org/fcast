@@ -1,8 +1,0 @@
-/build
-/src/main/jniLibs
-/obj
-/libs
-/src/assets
-/src/main/java/org/freedesktop
-/gst-android-build
-/.idea
