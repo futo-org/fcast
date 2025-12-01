@@ -255,10 +255,10 @@ impl SenderArgs {
                             concat_path(&root_path, "senders/android/app/src/main/jniLibs");
 
                         let targets = target.map(|t| vec![t]).unwrap_or(vec![
-                            // AbiTarget::X64,
-                            // AbiTarget::X86,
+                            AbiTarget::X64,
+                            AbiTarget::X86,
                             AbiTarget::Arm64,
-                            // AbiTarget::Arm32,
+                            AbiTarget::Arm32,
                         ]);
 
                         for target in targets {
