@@ -15,9 +15,27 @@ finish-args:
   - --socket=fallback-x11
   - --socket=pulseaudio
   - --filesystem=xdg-run/pipewire-0
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /bin/protoc
+  - /lib/*.a
 modules:
 
-  # Example using simple buildsystem
+  - name: protobuf
+    buildsystem: cmake-ninja
+    config-opts:
+      - -Dprotobuf_BUILD_TESTS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/protocolbuffers/protobuf/releases/download/v33.1/protobuf-33.1.tar.gz
+        sha256: fda132cb0c86400381c0af1fe98bd0f775cb566cb247cdcc105e344e00acc30e
+        x-checker-data:
+          type: anitya
+          project-id: 3715
+          stable-only: true
+          url-template: https://github.com/protocolbuffers/protobuf/releases/download/v$version/protobuf-$version.tar.gz
+
   - name: fcast-sender
     buildsystem: simple
     build-options:
@@ -28,14 +46,14 @@ modules:
         CARGO_NET_OFFLINE: 'true'
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      - cargo build --offline --release -p desktop-mirroring
-      - install -Dm0755 target/release/desktop-mirroring ${FLATPAK_DEST}/bin/fcast-sender
+      - cargo build --offline --release -p desktop-sender
+      - install -Dm0755 target/release/desktop-sender ${FLATPAK_DEST}/bin/fcast-sender
     sources:
       - type: git
-        branch: marcus/mirroring
-        path: ../../../
+        branch: master
+        path: ../../
       # - type: archive
       #   url: https://[...].git
       #   tag: "..."
       #   commit "..."
-      - ../../../cargo-sources.json
+      - ../../cargo-sources.json
