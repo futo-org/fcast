@@ -246,18 +246,6 @@ pub async fn video_source_fetch_worker(
         };
 
         match (event, &winsys) {
-            (FetchEvent::ClearState, WindowingSystem::Wayland) => {
-                // Since some genius put a lifetime on the `Screencast` related types, we
-                // have to take care of this here because we can't move them around
-                if let Some(session) = _session.take()
-                    && let Err(err) = session.close().await
-                {
-                    error!(?err, "Failed to close xdg portal session");
-                }
-                _proxy = None;
-                _stream = None;
-            }
-            (FetchEvent::ClearState, WindowingSystem::X11) => (),
             (FetchEvent::Fetch, WindowingSystem::Wayland) => {
                 let new_proxy = match Screencast::new().await {
                     Ok(proxy) => proxy,
@@ -376,6 +364,12 @@ pub async fn video_source_fetch_worker(
                     .expect("event loop is not running");
             }
             (FetchEvent::Quit, _) => break,
+        }
+    }
+
+    if let Some(session) = _session.take() {
+        if let Err(err) = session.close().await {
+            error!(?err, "Failed to close screen capture session");
         }
     }
 

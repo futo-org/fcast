@@ -6,7 +6,6 @@ pub mod linux;
 pub mod macos;
 
 pub enum FetchEvent {
-    ClearState,
     Fetch,
     Quit,
 }

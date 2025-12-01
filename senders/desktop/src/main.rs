@@ -257,7 +257,6 @@ async fn spawn_video_source_fetcher(event_tx: Sender<Event>) -> Sender<FetchEven
                         }
                     },
                     FetchEvent::Quit => break,
-                    FetchEvent::ClearState => (),
                 }
             }
 
@@ -317,7 +316,6 @@ async fn spawn_video_source_fetcher(event_tx: Sender<Event>) -> Sender<FetchEven
                             .expect("event loop is not running");
                     }
                     FetchEvent::Quit => break,
-                    FetchEvent::ClearState => (),
                 }
             }
 
