@@ -24,6 +24,8 @@ use tokio::{
 use tracing::{debug, error};
 use uuid::Uuid;
 
+const MAX_PARTIAL_CONTENT_SIZE: u64 = 10 * 1024 * 1024;
+
 #[derive(PartialEq, Eq)]
 enum FileSeekState {
     NeedSeek,
@@ -137,10 +139,18 @@ fn bad_request() -> Result<Response<FileBody>, hyper::http::Error> {
     empty(StatusCode::BAD_REQUEST)
 }
 
+#[derive(Debug, Clone)]
+struct FileEntry {
+    path: PathBuf,
+    content_type: &'static str,
+}
+
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
-    files: Arc<RwLock<HashMap<Uuid, PathBuf>>>,
+    files: Arc<RwLock<HashMap<Uuid, FileEntry>>>,
 ) -> Result<Response<FileBody>, hyper::http::Error> {
+    debug!(?req, "Got request");
+
     if req.method() != hyper::Method::GET {
         return empty(StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -158,22 +168,22 @@ async fn handle_request(
         return not_found();
     };
 
-    let file = {
-        let path = {
+    let (file, content_type) = {
+        let entry = {
             let files = files.read();
-            let Some(path) = files.get(&uuid) else {
+            let Some(entry) = files.get(&uuid) else {
                 error!(?uuid, "File not found");
                 return not_found();
             };
 
-            path.clone()
+            entry.clone()
         };
 
-        let Ok(file) = File::open(path).await else {
+        let Ok(file) = File::open(&entry.path).await else {
             return not_found();
         };
 
-        file
+        (file, entry.content_type)
     };
 
     let Ok(meta) = file.metadata().await else {
@@ -189,7 +199,7 @@ async fn handle_request(
             };
 
             if let Some(range) = ranges.get_mut(0) {
-                range.length = range.length.min(10 * 1024 * 1024);
+                range.length = range.length.min(MAX_PARTIAL_CONTENT_SIZE);
 
                 let bytes_range_str = format!(
                     "bytes {}-{}/{file_len}",
@@ -199,8 +209,9 @@ async fn handle_request(
 
                 Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_TYPE, content_type)
                     .header(header::CONTENT_RANGE, bytes_range_str)
+                    .header(header::CONTENT_LENGTH, range.length)
                     .header(header::ACCEPT_RANGES, "bytes")
                     .body(FileBody::Range {
                         file,
@@ -214,7 +225,9 @@ async fn handle_request(
         }
         None => Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_LENGTH, file_len)
+            .header(header::ACCEPT_RANGES, "bytes")
             .body(FileBody::Full {
                 file,
                 remaining: file_len,
@@ -229,7 +242,7 @@ struct BoundPortPair {
 }
 
 async fn run_server(
-    files: Arc<RwLock<HashMap<Uuid, PathBuf>>>,
+    files: Arc<RwLock<HashMap<Uuid, FileEntry>>>,
     bound_port_tx: Sender<BoundPortPair>,
     mut quit_rx: Receiver<()>,
 ) -> Result<()> {
@@ -254,7 +267,7 @@ async fn run_server(
     }
 
     async fn handle_connection(
-        files: &Arc<RwLock<HashMap<Uuid, PathBuf>>>,
+        files: &Arc<RwLock<HashMap<Uuid, FileEntry>>>,
         conn: std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)>,
     ) {
         let (stream, _) = match conn {
@@ -314,7 +327,7 @@ async fn run_server(
 
 #[derive(Debug)]
 pub struct FileServer {
-    files: Arc<RwLock<HashMap<Uuid, PathBuf>>>,
+    files: Arc<RwLock<HashMap<Uuid, FileEntry>>>,
     bound_ports: BoundPortPair,
     quit_tx: Option<Sender<()>>,
 }
@@ -345,11 +358,11 @@ impl FileServer {
         })
     }
 
-    pub fn add_file(&self, path: PathBuf) -> Uuid {
+    pub fn add_file(&self, path: PathBuf, content_type: &'static str) -> Uuid {
         let id = Uuid::new_v4();
         let mut files = self.files.write();
         debug!(?id, ?path, "Adding file");
-        let _ = files.insert(id, path);
+        let _ = files.insert(id, FileEntry { path, content_type });
         id
     }
 

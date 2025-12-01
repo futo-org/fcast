@@ -979,7 +979,7 @@ impl Application {
                                     return Ok(ShouldQuit::No);
                                 };
 
-                                let id = file_server.add_file(path);
+                                let id = file_server.add_file(path, file_entry.mime_type);
                                 let url = file_server.get_url(local_addr, &id);
                                 session.device.load(device::LoadRequest::Url {
                                     content_type: file_entry.mime_type.to_string(),
