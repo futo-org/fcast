@@ -6,8 +6,10 @@ use fcast_protocol::{
     v3::PlaybackState,
 };
 use gst::glib::base64_encode;
+use gst::prelude::*;
 use log::{debug, error, warn};
-use pipeline::Pipeline;
+// use pipeline::Pipeline;
+use futures::StreamExt;
 use session::{Session, SessionId};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -251,6 +253,16 @@ pub mod common {
 }
 
 #[derive(Debug)]
+enum PlayerEvent {
+    StateChanged(gst_play::PlayState),
+    MediaInfoUpdated(gst_play::PlayMediaInfo),
+    DurationChanged(gst::ClockTime),
+    PositionChanged(gst::ClockTime),
+    VolumeChanged(f64),
+    Eos,
+}
+
+#[derive(Debug)]
 pub enum Event {
     Pause,
     Play(PlayMessage),
@@ -267,6 +279,7 @@ pub enum Event {
     SeekPercent(f32),
     PipelineStateChanged(gst::State),
     ToggleDebug,
+    Player(PlayerEvent),
 }
 
 #[macro_export]
@@ -291,13 +304,17 @@ fn current_time_millis() -> u64 {
 }
 
 struct Application {
-    pipeline: Pipeline,
+    // pipeline: Pipeline,
     event_tx: Sender<Event>,
     ui_weak: slint::Weak<MainWindow>,
     updates_tx: broadcast::Sender<Arc<Vec<u8>>>,
     mdns: mdns_sd::ServiceDaemon,
     last_sent_update: Instant,
     debug_mode: bool,
+    player: gst_play::Play,
+    player_state: gst_play::PlayState,
+    current_media: Option<gst_play::PlayMediaInfo>,
+    current_duration: Option<gst::ClockTime>,
 }
 
 fn get_all_available_addrs_ignore_v6_and_localhost() -> Result<Vec<Ipv4Addr>> {
@@ -322,7 +339,86 @@ impl Application {
         event_tx: Sender<Event>,
         ui_weak: slint::Weak<MainWindow>,
     ) -> Result<Self> {
-        let pipeline = Pipeline::new(appsink, event_tx.clone()).await?;
+        // let pipeline = Pipeline::new(appsink, event_tx.clone()).await?;
+
+        let video_renderer = gst_play::PlayVideoOverlayVideoRenderer::with_sink(&appsink);
+
+        let player =
+            gst_play::Play::new(Some(video_renderer.upcast::<gst_play::PlayVideoRenderer>()));
+
+        let mut player_config = player.config();
+        player_config.set_position_update_interval(250);
+        player
+            .set_config(player_config)
+            .context("Failed to set gst player config")?;
+
+        tokio::spawn({
+            let player_bus = player.message_bus();
+            let player_weak = player.downgrade();
+            let event_tx = event_tx.clone();
+
+            async move {
+                let mut messages = player_bus.stream();
+
+                while let Some(msg) = messages.next().await {
+                    let Ok(play_message) = gst_play::PlayMessage::parse(&msg) else {
+                        continue;
+                    };
+
+                    // debug!("Play message: {play_message:?}");
+
+                    match play_message {
+                        gst_play::PlayMessage::UriLoaded(loaded) => {
+                            debug!("URI loaded uri={}", loaded.uri());
+                            if let Some(player) = player_weak.upgrade() {
+                                player.play();
+                            }
+                        }
+                        gst_play::PlayMessage::PositionUpdated(update) => {
+                            if let Some(position) = update.position() {
+                                let _ = event_tx
+                                    .send(Event::Player(PlayerEvent::PositionChanged(position)))
+                                    .await;
+                            }
+                        }
+                        gst_play::PlayMessage::DurationChanged(update) => {
+                            if let Some(duration) = update.duration() {
+                                let _ = event_tx
+                                    .send(Event::Player(PlayerEvent::DurationChanged(duration)));
+                            }
+                        }
+                        gst_play::PlayMessage::StateChanged(state) => {
+                            let _ = event_tx
+                                .send(Event::Player(PlayerEvent::StateChanged(state.state())))
+                                .await;
+                        }
+                        // gst_play::PlayMessage::Buffering(buffering) => todo!(),
+                        gst_play::PlayMessage::EndOfStream(_) => {
+                            let _ = event_tx.send(Event::Player(PlayerEvent::Eos)).await;
+                        }
+                        // gst_play::PlayMessage::Error(error) => todo!(),
+                        // gst_play::PlayMessage::Warning(warning) => todo!(),
+                        // gst_play::PlayMessage::VideoDimensionsChanged(video_dimensions_changed) => todo!(),
+                        gst_play::PlayMessage::MediaInfoUpdated(info) => {
+                            let _ = event_tx
+                                .send(Event::Player(PlayerEvent::MediaInfoUpdated(
+                                    info.media_info().clone(),
+                                )))
+                                .await;
+                        }
+                        gst_play::PlayMessage::VolumeChanged(update) => {
+                            let _ = event_tx
+                                .send(Event::Player(PlayerEvent::VolumeChanged(update.volume())))
+                                .await;
+                        }
+                        // gst_play::PlayMessage::MuteChanged(mute_changed) => todo!(),
+                        // gst_play::PlayMessage::SeekDone(seek_done) => todo!(),
+                        _ => (),
+                    }
+                }
+            }
+        });
+
         let (updates_tx, _) = broadcast::channel(10);
 
         // TODO: IPv6?
@@ -358,34 +454,68 @@ impl Application {
         };
 
         Ok(Self {
-            pipeline,
+            // pipeline,
             event_tx,
             ui_weak,
             updates_tx,
             mdns,
             last_sent_update: Instant::now() - SENDER_UPDATE_INTERVAL,
             debug_mode: false,
+            player,
+            player_state: gst_play::PlayState::Stopped,
+            current_media: None,
+            current_duration: None,
         })
     }
 
     fn notify_updates(&mut self) -> Result<()> {
-        let pipeline_playback_state = match self.pipeline.get_playback_state() {
-            Ok(s) => s,
-            Err(err) => {
-                error!("Failed to get playback state: {err}");
-                return Ok(());
-            }
+        // let pipeline_playback_state = match self.pipeline.get_playback_state() {
+        //     Ok(s) => s,
+        //     Err(err) => {
+        //         error!("Failed to get playback state: {err}");
+        //         return Ok(());
+        //     }
+        // };
+
+        let Some(info) = self.current_media.as_ref() else {
+            error!("No current media");
+            return Ok(());
         };
 
-        let progress_str = {
-            let update = &pipeline_playback_state;
-            let time_secs = update.time % 60.0;
-            let time_mins = (update.time / 60.0) % 60.0;
-            let time_hours = update.time / 60.0 / 60.0;
+        let Some(position) = self.player.position() else {
+            error!("No position");
+            return Ok(());
+        };
+        let position = position.seconds_f64();
+        // debug!("Getting current duration: {:?}", self.player.duration());
+        let duration = self
+            .current_duration
+            .as_ref()
+            .unwrap_or(&gst::ClockTime::default())
+            .seconds_f64();
+        // let Some(duration) = self.player.duration() else {
+        // let Some(duration) = info.duration() else {
+        //     error!("No duration");
+        //     return Ok(());
+        // };
 
-            let duration_secs = update.duration % 60.0;
-            let duration_mins = (update.duration / 60.0) % 60.0;
-            let duration_hours = update.duration / 60.0 / 60.0;
+        let progress_str = {
+            //     let update = &pipeline_playback_state;
+            //     let time_secs = update.time % 60.0;
+            //     let time_mins = (update.time / 60.0) % 60.0;
+            //     let time_hours = update.time / 60.0 / 60.0;
+
+            //     let duration_secs = update.duration % 60.0;
+            //     let duration_mins = (update.duration / 60.0) % 60.0;
+            //     let duration_hours = update.duration / 60.0 / 60.0;
+
+            let time_secs = position % 60.0;
+            let time_mins = (position / 60.0) % 60.0;
+            let time_hours = position / 60.0 / 60.0;
+
+            let duration_secs = duration % 60.0;
+            let duration_mins = (duration / 60.0) % 60.0;
+            let duration_hours = duration / 60.0 / 60.0;
 
             format!(
                 "{:02}:{:02}:{:02} / {:02}:{:02}:{:02}",
@@ -397,24 +527,44 @@ impl Application {
                 duration_secs as u32,
             )
         };
-        let progress_percent =
-            (pipeline_playback_state.time / pipeline_playback_state.duration * 100.0) as f32;
+        let progress_percent = (position / duration) as f32;
+        // (pipeline_playback_state.time / pipeline_playback_state.duration * 100.0) as f32;
         let playback_state = {
-            let is_live = self.pipeline.is_live();
+            let is_live = info.is_live();
+
+            // let is_live = {
+            //     let Some(aaa) = self.player.media_info() else {
+            //         return Ok(());
+            //     };
+            //     aaa.is_live()
+            // };
+            // let is_live = self.pipeline.is_live();
             // use fcast_lib::models::PlaybackState;
-            match pipeline_playback_state.state {
-                PlaybackState::Playing | PlaybackState::Paused if is_live => GuiPlaybackState::Live,
-                PlaybackState::Playing => GuiPlaybackState::Playing,
-                PlaybackState::Paused => GuiPlaybackState::Paused,
-                PlaybackState::Idle => GuiPlaybackState::Loading,
+            // match pipeline_playback_state.state {
+            // debug!("Player state: {:?}", self.player_state);
+            match self.player_state {
+                gst_play::PlayState::Stopped => GuiPlaybackState::Loading,
+                gst_play::PlayState::Buffering => GuiPlaybackState::Loading,
+                gst_play::PlayState::Playing | gst_play::PlayState::Paused if is_live => {
+                    GuiPlaybackState::Live
+                }
+                gst_play::PlayState::Playing => GuiPlaybackState::Playing,
+                gst_play::PlayState::Paused => GuiPlaybackState::Paused,
+                _ => return Ok(()),
             }
+            // PlaybackState::Playing | PlaybackState::Paused if is_live => GuiPlaybackState::Live,
+            // PlaybackState::Playing => GuiPlaybackState::Playing,
+            // PlaybackState::Paused => GuiPlaybackState::Paused,
+            // PlaybackState::Idle => GuiPlaybackState::Loading,
         };
 
         self.ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.global::<Bridge>()
-                .set_progress_label(progress_str.into());
-            ui.invoke_update_progress_percent(progress_percent);
-            ui.global::<Bridge>().set_playback_state(playback_state);
+            let bridge = ui.global::<Bridge>();
+            bridge.set_progress_label(progress_str.into());
+            if !bridge.get_is_scrubbing_position() {
+                bridge.set_playback_position(progress_percent);
+            }
+            bridge.set_playback_state(playback_state);
         })?;
 
         if self.updates_tx.receiver_count() > 0
@@ -422,10 +572,12 @@ impl Application {
         {
             let update = PlaybackUpdateMessage {
                 generation_time: current_time_millis(),
-                time: pipeline_playback_state.time,
-                duration: pipeline_playback_state.duration,
-                state: pipeline_playback_state.state as u8,
-                speed: pipeline_playback_state.speed,
+                // time: pipeline_playback_state.time,
+                time: position,
+                duration: duration,
+                // state: pipeline_playback_state.state as u8,
+                state: 1,
+                speed: self.player.rate(),
             };
             debug!("Sending update ({update:?})");
             self.updates_tx
@@ -438,6 +590,7 @@ impl Application {
 
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
+        // NOTE: all player actions are async (right?)
         match event {
             Event::SessionFinished => {
                 self.ui_weak.upgrade_in_event_loop(|ui| {
@@ -445,7 +598,7 @@ impl Application {
                 })?;
             }
             Event::Pause => {
-                self.pipeline.pause().context("failed to pause pipeline")?;
+                // self.pipeline.pause().context("failed to pause pipeline")?;
                 self.notify_updates()
                     .context("failed to notify about updates")?;
             }
@@ -458,84 +611,109 @@ impl Application {
                     url = url.replace("http://", "fcastwhep://");
                 }
 
-                if let Err(err) = self.pipeline.set_playback_uri(&url) {
-                    use pipeline::SetPlaybackUriError;
-                    match err {
-                        SetPlaybackUriError::PipelineStateChange(state_change_error) => {
-                            return Err(state_change_error.into());
-                        }
-                        _ => {
-                            error!("Failed to set playback URI: {err}");
-                            return Ok(false);
-                        }
-                    }
-                }
-                if let Err(err) = self.pipeline.play_or_resume() {
-                    error!("Failed to play_or_resume pipeline: {err}");
-                } else {
-                    self.ui_weak.upgrade_in_event_loop(|ui| {
-                        ui.invoke_playback_started();
-                        ui.global::<Bridge>().set_app_state(AppState::Playing);
-                    })?;
-                    self.notify_updates()
-                        .context("failed to notify about updates")?;
-                }
+                self.player.set_uri(Some(&url));
+
+                // if let Err(err) = self.pipeline.set_playback_uri(&url) {
+                //     use pipeline::SetPlaybackUriError;
+                //     match err {
+                //         SetPlaybackUriError::PipelineStateChange(state_change_error) => {
+                //             return Err(state_change_error.into());
+                //         }
+                //         _ => {
+                //             error!("Failed to set playback URI: {err}");
+                //             return Ok(false);
+                //         }
+                //     }
+                // }
+                // if let Err(err) = self.pipeline.play_or_resume() {
+                //     error!("Failed to play_or_resume pipeline: {err}");
+                // } else {
+                //     self.ui_weak.upgrade_in_event_loop(|ui| {
+                //         ui.invoke_playback_started();
+                //         ui.global::<Bridge>().set_app_state(AppState::Playing);
+                //     })?;
+                //     self.notify_updates()
+                //         .context("failed to notify about updates")?;
+                // }
             }
-            Event::Resume => self
-                .pipeline
-                .play_or_resume()
-                .context("failed to play or resume pipeline")?,
+            Event::Resume => {
+                self.player.play();
+                // self
+                // .pipeline
+                // .play_or_resume()
+                // .context("failed to play or resume pipeline")?;
+            }
             Event::ResumeOrPause => {
-                let Some(playing) = self.pipeline.is_playing() else {
-                    warn!("Pipeline is not in a state that can be resumed or paused");
-                    return Ok(false);
-                };
-                if let Err(err) = if playing {
-                    self.pipeline.pause()
-                } else {
-                    self.pipeline.play_or_resume()
-                } {
-                    error!("Failed to play or resume: {err}");
+                match self.player_state {
+                    gst_play::PlayState::Paused => self.player.play(),
+                    gst_play::PlayState::Playing => self.player.pause(),
+                    _ => error!(
+                        "Cannot resume or pause in player current state: {:?}",
+                        self.player_state
+                    ),
                 }
+                // let Some(playing) = self.pipeline.is_playing() else {
+                //     warn!("Pipeline is not in a state that can be resumed or paused");
+                //     return Ok(false);
+                // };
+                // if let Err(err) = if playing {
+                //     self.pipeline.pause()
+                // } else {
+                //     self.pipeline.play_or_resume()
+                // } {
+                //     error!("Failed to play or resume: {err}");
+                // }
                 self.notify_updates()
                     .context("failed to notify about updates")?;
             }
             Event::Stop => {
-                self.pipeline.stop()?;
+                // self.pipeline.stop()?;
                 self.ui_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_playback_stopped();
                     ui.global::<Bridge>().set_app_state(AppState::Idle);
                 })?;
             }
-            Event::SetSpeed(set_speed_message) => self
-                .pipeline
-                .set_speed(set_speed_message.speed)
-                .context("failed to set speed")?,
+            Event::SetSpeed(set_speed_message) => {
+                self.player.set_rate(set_speed_message.speed);
+                // self
+                // .pipeline
+                // .set_speed(set_speed_message.speed)
+                // .context("failed to set speed")?;
+            }
             Event::Seek(seek_message) => {
-                if let Err(err) = self.pipeline.seek(seek_message.time) {
-                    error!("Seek error: {err}");
-                    return Ok(false);
-                }
-                self.notify_updates()?;
+                self.player
+                    .seek(gst::ClockTime::from_seconds_f64(seek_message.time));
+                // if let Err(err) = self.pipeline.seek(seek_message.time) {
+                //     error!("Seek error: {err}");
+                //     return Ok(false);
+                // }
+                // self.notify_updates()?;
             }
             Event::SeekPercent(percent) => {
-                let Some(duration) = self.pipeline.get_duration() else {
-                    error!("Failed to get playback duration");
-                    return Ok(false);
-                };
-                if duration.is_zero() {
-                    error!("Cannot seek when the duration is zero");
-                    return Ok(false);
+                debug!("SeekPercent({percent})");
+                if let Some(duration) = self.current_duration {
+                    // let seconds = percent / 100.0 * duration.seconds_f32();
+                    let seconds = percent * duration.seconds_f32();
+                    self.player.seek(gst::ClockTime::from_seconds_f32(seconds));
                 }
-                let seek_to = duration.seconds_f64() * (percent as f64 / 100.0);
-                if let Err(err) = self.pipeline.seek(seek_to) {
-                    error!("Seek error: {err}");
-                    return Ok(false);
-                }
-                self.notify_updates()?;
+                // let Some(duration) = self.pipeline.get_duration() else {
+                //     error!("Failed to get playback duration");
+                //     return Ok(false);
+                // };
+                // if duration.is_zero() {
+                //     error!("Cannot seek when the duration is zero");
+                //     return Ok(false);
+                // }
+                // let seek_to = duration.seconds_f64() * (percent as f64 / 100.0);
+                // if let Err(err) = self.pipeline.seek(seek_to) {
+                //     error!("Seek error: {err}");
+                //     return Ok(false);
+                // }
+                // self.notify_updates()?;
             }
             Event::SetVolume(set_volume_message) => {
-                self.pipeline.set_volume(set_volume_message.volume);
+                self.player.set_volume(set_volume_message.volume);
+                // self.pipeline.set_volume(set_volume_message.volume);
                 self.ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.global::<Bridge>()
                         .set_volume(set_volume_message.volume as f32);
@@ -560,11 +738,11 @@ impl Application {
                 // })?;
             }
             Event::PipelineError => {
-                self.pipeline.stop().context("failed to stop pipeline")?;
-                // TODO: send error message to sessions
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.invoke_playback_stopped_with_error("Error unclear (todo)".into());
-                })?;
+                // self.pipeline.stop().context("failed to stop pipeline")?;
+                // // TODO: send error message to sessions
+                // self.ui_weak.upgrade_in_event_loop(|ui| {
+                //     ui.invoke_playback_stopped_with_error("Error unclear (todo)".into());
+                // })?;
             }
             Event::PipelineStateChanged(state) => match state {
                 gst::State::Paused | gst::State::Playing => self
@@ -573,6 +751,45 @@ impl Application {
                 _ => (),
             },
             Event::ToggleDebug => self.debug_mode = !self.debug_mode,
+            Event::Player(event) => {
+                // #############
+                // self.ui_weak.upgrade_in_event_loop(|ui| {
+                //     ui.invoke_playback_started();
+                //     ui.global::<Bridge>().set_app_state(AppState::Playing);
+                // })?;
+                // ################
+
+                match event {
+                    PlayerEvent::StateChanged(state) => {
+                        self.player_state = state;
+                        match state {
+                            // gst_play::PlayState::Stopped => todo!(),
+                            // gst_play::PlayState::Buffering => todo!(),
+                            gst_play::PlayState::Paused | gst_play::PlayState::Playing => {
+                                self.ui_weak.upgrade_in_event_loop(|ui| {
+                                    ui.invoke_playback_started();
+                                    ui.global::<Bridge>().set_app_state(AppState::Playing);
+                                })?;
+                                self.notify_updates()
+                                    .context("Failed to notify about updates")?;
+                            }
+                            _ => (),
+                        }
+                    }
+                    PlayerEvent::MediaInfoUpdated(info) => {
+                        debug!("Media info updated: {info:?}");
+                        debug!("New duration: {:?}", info.duration());
+                        self.current_duration = info.duration();
+                        self.current_media = Some(info);
+                    }
+                    PlayerEvent::DurationChanged(duration) => {
+                        self.current_duration = Some(duration);
+                    }
+                    PlayerEvent::PositionChanged(position) => {}
+                    PlayerEvent::VolumeChanged(volume) => {}
+                    PlayerEvent::Eos => {}
+                }
+            }
         }
 
         Ok(false)
@@ -586,24 +803,9 @@ impl Application {
         let dispatch_listener = TcpListener::bind("0.0.0.0:46899").await?;
 
         let mut session_id: SessionId = 0;
-        let mut update_interval = tokio::time::interval(Duration::from_millis(100));
+        let mut update_interval = tokio::time::interval(Duration::from_millis(250));
 
-        let event_tx_cl = self.event_tx.clone();
-        // tokio::spawn(async move {
-        //     tokio::time::sleep(Duration::from_millis(1000)).await;
-        //     event_tx_cl.send(Event::Play(PlayMessage {
-        //         // container: "video/mp4".to_string(),
-        //         container: "video/mkv".to_string(),
-        //         // url: Some("http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4".to_string()),
-        //         // url: Some("file:///home/merb/Videos/4K_sample_video.webm".to_string()),
-        //         // url: Some("file:///home/merb/Videos/Ocean's Eleven (2001) (1080p BluRay x265 HEVC 10bit AAC 5.1 Tigole)/Ocean's Eleven (2001) (1080p BluRay x265 10bit Tigole).mkv".to_string()),
-        //         url: Some("file:///home/merb/Videos/Top.Gun.1986.1080p.WEBRip.Regraded.Open.Matte.10Bit.AV1.DD.5.1.ViTO.mkv".to_string()),
-        //         content: None,
-        //         time: Some(0.0),
-        //         speed: Some(1.0),
-        //         headers: None,
-        //     })).await.unwrap();
-        // });
+        // let event_tx_cl = self.event_tx.clone();
 
         loop {
             tokio::select! {
@@ -655,7 +857,7 @@ impl Application {
             }
         }
 
-        self.pipeline.stop()?;
+        // self.pipeline.stop()?;
 
         debug!("Quitting");
 

@@ -15,7 +15,13 @@
 // You should have received a copy of the GNU General Public License
 // along with OpenMirroring.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Spinner, HorizontalBox, Button, Palette, VerticalBox } from "std-widgets.slint";
+import {
+    Spinner,
+    HorizontalBox,
+    Button,
+    Palette,
+    VerticalBox,
+} from "std-widgets.slint";
 // import { HorizontalRule } from "../../ui-common/horizontal-rule.slint";
 import { SliderBase } from "slider-base.slint";
 
@@ -35,13 +41,15 @@ export enum AppState {
 export global Bridge {
     in property <string> label;
     in property <string> progress-label;
-    in property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
+    in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in property <AppState> app-state: AppState.Idle;
 
     in-out property <bool> playing: false;
     in-out property <float> volume: 1.0;
     in-out property <bool> is-debugging: false;
     in-out property <int> connected_devices: 0;
+    in-out property <float> playback-position: 0.0;
+    in-out property <bool> is-scrubbing-position: false;
 
     in property <image> qr-code;
     in property <image> video-frame;
@@ -246,13 +254,13 @@ component OmSlider {
 component PlaybackControl {
     // TODO: speed changer
 
-    in property <string> progress-label;
+    // in property <string> progress-label;
 
-    in-out property <GuiPlaybackState> pb-state;
+    // in-out property <GuiPlaybackState> pb-state;
 
     out property <MouseCursor> suggested-cursor: default;
 
-    property <bool> is-scrubbing: false;
+    // property <bool> is-scrubbing: false;
     property <bool> is-changing-volume: false;
     property <bool> is-fullscreen: false;
 
@@ -278,14 +286,16 @@ component PlaybackControl {
     }
 
     public function update-progress-percent(percent: float) {
-        if !is-scrubbing {
+        // if ! is-scrubbing {
+        if !Bridge.is-scrubbing-position {
             scrubber.value = percent;
         }
     }
 
     function scrubber-changed() {
         // Make the bar not disipear when the user is engaging with the scrubber
-        is-scrubbing = true;
+        // is-scrubbing = true;
+        Bridge.is-scrubbing-position = true;
         show();
     }
 
@@ -301,14 +311,26 @@ component PlaybackControl {
 
         VerticalLayout {
             scrubber := OmSlider {
-                maximum: 100;
-                value: 0;
-                enabled: pb-state != GuiPlaybackState.Loading && pb-state != GuiPlaybackState.Live;
+                // maximum: 100;
+                maximum: 1.0;
+                minimum: 0.0;
+                // value: 0;
+                value <=> Bridge.playback-position;
+                // enabled: pb-state != GuiPlaybackState.Loading && pb-state != GuiPlaybackState.Live;
+                enabled: false;
+
+                states [
+                    enabled when Bridge.playback-state != GuiPlaybackState.Loading && Bridge.playback-state != GuiPlaybackState.Live: {
+                        enabled: true;
+                    }
+                ]
+
                 changed(_) => {
                     scrubber-changed();
                 }
                 released(position) => {
-                    is-scrubbing = false;
+                    // is-scrubbing = false;
+                    Bridge.is-scrubbing-position = false;
                     Bridge.seek-to-percent(position);
                 }
             }
@@ -317,23 +339,32 @@ component PlaybackControl {
                 alignment: space-between;
                 HorizontalLayout {
                     spacing: 15px;
-                    if pb-state == GuiPlaybackState.Loading: Spinner {
+
+
+                    // if pb-state == GuiPlaybackState.Loading: Spinner {
+                    if Bridge.playback-state == GuiPlaybackState.Loading: Spinner {
                         indeterminate: true;
                     }
+
                     // TODO: handle is-engaged for the buttons
-                    if pb-state == GuiPlaybackState.Playing: pause-btn := IconButton {
+                    // if pb-state == GuiPlaybackState.Playing: pause-btn := IconButton {
+                    if Bridge.playback-state == GuiPlaybackState.Playing: pause-btn := IconButton {
                         // icon: @image-url("../../assets/icons/video_pause.svg");
+                        icon: @image-url("../../../../senders/desktop/ui/pause.svg");
                         clicked => {
                             Bridge.resume-or-pause();
                         }
                     }
-                    if pb-state == GuiPlaybackState.Paused: IconButton {
+                    // if pb-state == GuiPlaybackState.Paused: IconButton {
+                    if Bridge.playback-state == GuiPlaybackState.Paused: IconButton {
                         // icon: @image-url("../../assets/icons/video_play.svg");
+                        icon: @image-url("../../../../senders/desktop/ui/play.svg");
                         clicked => {
                             Bridge.resume-or-pause();
                         }
                     }
-                    if pb-state == GuiPlaybackState.Live: Text {
+                    // if pb-state == GuiPlaybackState.Live: Text {
+                    if Bridge.playback-state == GuiPlaybackState.Live: Text {
                         text: "LIVE";
                         font-weight: 800;
                         vertical-alignment: center;
@@ -341,6 +372,7 @@ component PlaybackControl {
                     }
 
                     volume-btn := IconButton {
+                        icon: @image-url("../../../../senders/desktop/ui/volume-high.svg");
                         // icon: volume-slider.value > 0 ? @image-url("../../assets/icons/volume.svg") : @image-url("../../assets/icons/volume-muted.svg");
                         clicked => {
                             if volume-slider.value > 0 {
@@ -372,7 +404,8 @@ component PlaybackControl {
                     }
 
                     Text {
-                        text <=> progress-label;
+                        // text <=> Bridge.progress-label;
+                        text: Bridge.progress-label;
                         vertical-alignment: center;
                         color: white;
                         font-size: 13px;
@@ -496,11 +529,10 @@ component VideoPlayerView inherits Rectangle {
             visible: false;
             width: 100%;
             y: parent.height - self.height;
-            progress-label <=> Bridge.progress-label;
-            pb-state: Bridge.playback-state;
+            // progress-label <=> Bridge.progress-label;
+            // pb-state: Bridge.playback-state;
         }
     }
-
 }
 
 export component MainWindow inherits Window {
@@ -570,9 +602,9 @@ export component MainWindow inherits Window {
     //     }
     // }
 
-    if Bridge.app-state == AppState.Idle: IdleView {}
+    if Bridge.app-state == AppState.Idle: IdleView { }
 
-    if Bridge.app-state == AppState.Playing: VideoPlayerView {}
+    if Bridge.app-state == AppState.Playing: VideoPlayerView { }
 
     // Rectangle {
     //     visible: !Bridge.playing;

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
     num::NonZero,
     sync::{Arc, Mutex},
@@ -184,13 +184,60 @@ impl SlintOpenGLSink {
         }
     }
 
+    fn handle_new_sample<F>(
+        sample: gst::Sample,
+        next_frame_ref: &Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
+        next_frame_available_notifier: &Arc<F>,
+    ) -> Result<gst::FlowSuccess, gst::FlowError>
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let mut buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+        let context = match (buffer.n_memory() > 0)
+            .then(|| buffer.peek_memory(0))
+            .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
+            .map(|m| m.context())
+        {
+            Some(context) => context.clone(),
+            None => {
+                error!("Got non-GL memory");
+                return Err(gst::FlowError::Error);
+            }
+        };
+
+        // Sync point to ensure that the rendering in this context will be complete by the time the
+        // Slint created GL context needs to access the texture.
+        if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
+            meta.set_sync_point(&context);
+        } else {
+            let buffer = buffer.make_mut();
+            let meta = gst_gl::GLSyncMeta::add(buffer, &context);
+            meta.set_sync_point(&context);
+        }
+
+        let Some(info) = sample
+            .caps()
+            .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok())
+        else {
+            error!("Got invalid caps");
+            return Err(gst::FlowError::NotNegotiated);
+        };
+
+        let next_frame_ref = next_frame_ref.clone();
+        *next_frame_ref.lock().unwrap() = Some((info, buffer));
+
+        next_frame_available_notifier();
+
+        Ok(gst::FlowSuccess::Ok)
+    }
+
     pub fn connect<F>(
         &mut self,
         graphics_api: &slint::GraphicsAPI<'_>,
         next_frame_available_notifier: F,
     ) -> Result<()>
     where
-        F: Fn() + Send + 'static,
+        F: Fn() + Send + Sync + 'static,
     {
         #[cfg(target_os = "linux")]
         let (gst_gl_context, gst_gl_display) = {
@@ -209,10 +256,10 @@ impl SlintOpenGLSink {
 
         gst_gl_context
             .activate(true)
-            .expect("could not activate GStreamer GL context");
+            .context("could not activate GStreamer GL context")?;
         gst_gl_context
             .fill_info()
-            .expect("failed to fill GL info for wrapped context");
+            .context("failed to fill GL info for wrapped context")?;
 
         self.gst_gl_context = Some(gst_gl_context.clone());
 
@@ -227,53 +274,29 @@ impl SlintOpenGLSink {
         self.glsink.set_context(&app_ctx);
 
         let next_frame_ref = self.next_frame.clone();
+        let next_frame_available_notifier = Arc::new(next_frame_available_notifier);
 
         self.appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
+                .new_preroll({
+                    let next_frame_ref = Arc::clone(&next_frame_ref);
+                    let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
+                    move |appsink| {
+                        let sample = appsink
+                            .pull_preroll()
+                            .map_err(|_| gst::FlowError::Flushing)?;
+                        Self::handle_new_sample(
+                            sample,
+                            &next_frame_ref,
+                            &next_frame_available_notifier,
+                        )
+                    }
+                })
                 .new_sample(move |appsink| {
                     let sample = appsink
                         .pull_sample()
                         .map_err(|_| gst::FlowError::Flushing)?;
-
-                    let mut buffer = sample.buffer_owned().unwrap();
-                    {
-                        let context = match (buffer.n_memory() > 0)
-                            .then(|| buffer.peek_memory(0))
-                            .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
-                            .map(|m| m.context())
-                        {
-                            Some(context) => context.clone(),
-                            None => {
-                                error!("Got non-GL memory");
-                                return Err(gst::FlowError::Error);
-                            }
-                        };
-
-                        // Sync point to ensure that the rendering in this context will be complete by the time the
-                        // Slint created GL context needs to access the texture.
-                        if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
-                            meta.set_sync_point(&context);
-                        } else {
-                            let buffer = buffer.make_mut();
-                            let meta = gst_gl::GLSyncMeta::add(buffer, &context);
-                            meta.set_sync_point(&context);
-                        }
-                    }
-
-                    let Some(info) = sample
-                        .caps()
-                        .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok())
-                    else {
-                        error!("Got invalid caps");
-                        return Err(gst::FlowError::NotNegotiated);
-                    };
-
-                    let next_frame_ref = next_frame_ref.clone();
-                    *next_frame_ref.lock().unwrap() = Some((info, buffer));
-
-                    next_frame_available_notifier();
-
-                    Ok(gst::FlowSuccess::Ok)
+                    Self::handle_new_sample(sample, &next_frame_ref, &next_frame_available_notifier)
                 })
                 .build(),
         );
