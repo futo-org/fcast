@@ -2905,6 +2905,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-play"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4b6430b6c45221d070379e8205f1577a16db9acb83a242fe3efe2d289eb585e"
+dependencies = [
+ "glib",
+ "gstreamer",
+ "gstreamer-play-sys",
+ "gstreamer-video",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-play-sys"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c7d544269864b671235410387b851ba6ca63c91b2ed616188df8f7f1233377c"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-sys",
+ "gstreamer-video-sys",
+ "libc",
+ "system-deps 7.0.7",
+]
+
+[[package]]
 name = "gstreamer-rtp"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5538,6 +5565,7 @@ dependencies = [
  "gstreamer-gl",
  "gstreamer-gl-egl",
  "gstreamer-gl-x11",
+ "gstreamer-play",
  "gstreamer-video",
  "log",
  "mdns-sd 0.14.1",
