@@ -71,7 +71,7 @@ const GSTREAMER_PLUGIN_LIBS: [&'static str; 13] = [
 ];
 
 #[cfg(target_os = "macos")]
-const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 13] = [
+const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
     "gstcoreelements",
     "gstnice",
     "gstapp",
@@ -84,8 +84,18 @@ const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 13] = [
     "gstdtls",
     "gstwebrtc",
     "gstsrtp",
+];
+
+#[cfg(target_os = "macos")]
+const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = [
     "gstapplemedia",
 ];
+
+#[derive(askama::Template)]
+#[template(path = "Info.plist.askama")]
+struct InfoPlistTemplate {
+    version: String,
+}
 
 #[derive(clap::ValueEnum, Clone)]
 pub enum AbiTarget {
@@ -641,8 +651,9 @@ impl SenderArgs {
             #[cfg(target_os = "macos")]
             SenderCommand::BuildMacosInstaller => {
                 fn plugins() -> Vec<String> {
-                    GSTREAMER_PLUGIN_LIBS_MACOS
+                    GSTREAMER_PLUGIN_LIBS_COMMON
                         .iter()
+                        .chain(GSTREAMER_PLUGIN_LIBS_MACOS.iter())
                         .map(|s| format!("lib{s}.dylib"))
                         .collect()
                 }
@@ -680,6 +691,8 @@ impl SenderArgs {
                 }
 
                 use std::collections::HashSet;
+
+                use askama::Template;
 
                 fn find_non_system_dependencies_with_otool(
                     binary_path: &Utf8PathBuf,
@@ -856,43 +869,7 @@ impl SenderArgs {
 
                 println!("############### Writing resources ###############");
 
-                let info_list = r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleExecutable</key>
-	<string>fcast-sender</string>
-	<key>CFBundleGetInfoString</key>
-	<string>FCast Sender</string>
-	<key>CFBundleIconFile</key>
-	<string>fcast.icns</string>
-	<key>CFBundleIdentifier</key>
-	<string>org.fcast.FCastSender</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundleName</key>
-	<string>FCast Sender</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
-	<key>NSQuitAlwaysKeepsWindows</key>
-	<false/>
-	<key>CFBundleSupportedPlatforms</key>
-    <array>
-        <string>MacOSX</string>
-    </array>
-    <key>NSScreenRecordingUsageDescription</key>
-    <string>
-        We need to record your screen to mirror it to an external receiver
-    </string>
-</dict>
-</plist>
-"#;
+                let info_plist = InfoPlistTemplate { version: "0.1.0".to_owned() }.render()?;
                 sh.create_dir(app_top_level.join("Contents").join("Resources"))?;
                 sh.copy_file(
                     root_path.join("senders").join("extra").join("fcast.icns"),
@@ -901,7 +878,7 @@ impl SenderArgs {
                         .join("Resources")
                         .join("fcast.icns"),
                 )?;
-                sh.write_file(app_top_level.join("Contents").join("Info.plist"), info_list)?;
+                sh.write_file(app_top_level.join("Contents").join("Info.plist"), info_plist)?;
                 std::os::unix::fs::symlink(
                     Utf8PathBuf::from("/Applications"),
                     path_to_dmg_dir.join("Applications"),

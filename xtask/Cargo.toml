@@ -16,3 +16,6 @@ uniffi_bindgen = "0.29.4"
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55.0"
 walkdir = "2.5.0"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+askama = "0.14.0"
