@@ -43,6 +43,7 @@ export class Main {
     static connectionMonitor: ConnectionMonitor;
     static tray: Tray;
     static cache: AppCache = new AppCache();
+    static noFullscreenPlayer = false;
 
     private static playerWindowContentViewer = null;
     private static mediaCache: MediaCache = null;
@@ -189,7 +190,7 @@ export class Main {
 
         if (!Main.playerWindow) {
             Main.playerWindow = new BrowserWindow({
-                fullscreen: true,
+                fullscreen: !Main.noFullscreenPlayer,
                 autoHideMenuBar: true,
                 icon: path.join(__dirname, 'icon512.png'),
                 title: windowTitle,
@@ -524,6 +525,7 @@ export class Main {
                 'no-main-window': { type: 'boolean', desc: "Start minimized to tray" },
                 'fullscreen': { type: 'boolean', desc: "Start application in fullscreen" },
                 'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', desc: "Defines the verbosity level of the logger" },
+                'no-fullscreen-player': { type: 'boolean', desc: "Start player in windowed mode" },
             })
             .parseSync();
 
@@ -566,6 +568,7 @@ export class Main {
 
             Main.startFullscreen = argv.fullscreen === undefined ? Settings.json.ui.fullscreen : argv.fullscreen;
             Main.shouldOpenMainWindow = argv.noMainWindow === undefined ? !Settings.json.ui.noMainWindow : !argv.noMainWindow;
+            Main.noFullscreenPlayer = argv.noFullscreenPlayer === undefined ? Settings.json.ui.noFullscreenPlayer : argv.noFullscreenPlayer;
 
             const lock = Main.application.requestSingleInstanceLock()
             if (!lock) {
