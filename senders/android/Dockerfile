@@ -1,7 +1,7 @@
 FROM rust:1-trixie
 
 RUN apt update && apt install -y build-essential cmake pkg-config automake autoconf libtool \
-  libprotobuf-dev protobuf-compiler wget2 openjdk-21-jdk xz-utils curl
+  libprotobuf-dev protobuf-compiler wget2 openjdk-21-jdk xz-utils curl ninja-build libclang-dev
 
 RUN cargo install cargo-ndk
 
