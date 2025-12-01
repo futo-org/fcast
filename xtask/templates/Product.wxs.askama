@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package Name="FCast Sender"
+             Version="{{ version }}"
+             Manufacturer="FUTO"
+             UpgradeCode="0ce1119d-5dcb-4189-bfe5-04379e088e81"
+             Compressed="yes">
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <StandardDirectory Id="ProgramFiles64Folder">
+            <Directory Id="INSTALLFOLDER" Name="FCastSender">
+                <Component Id="MainExecutableComponent" Guid="c4d3bf7a-bc0d-4773-b27f-f2bb1cb96d2f">
+                    <File Id="MainExecutable" Source="fcast-sender.exe" KeyPath="yes"/>
+                </Component>
+
+                <Component Id="DependencyFiles" Guid="4175ed86-81a6-487c-8f5f-c902cda8cc40">
+                    {{ dll_components }}
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Directory Id="ApplicationProgramsFolder" Name="FCast Sender">
+                <Component Id="StartMenuShortcutComponent" Guid="a1b2c3d4-e5f6-4789-90ab-cdef01234567">
+                    <Shortcut Id="StartMenuShortcut"
+                              Name="FCast Sender"
+                              Description="Launch FCast Sender"
+                              Target="[INSTALLFOLDER]fcast-sender.exe"
+                              WorkingDirectory="INSTALLFOLDER"/>
+                    <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
+                    <RegistryValue Root="HKCU"
+                                   Key="Software\FUTO\FCastSender"
+                                   Name="installed"
+                                   Type="integer"
+                                   Value="1"
+                                   KeyPath="yes"/>
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <Feature Id="MainFeature">
+            <ComponentRef Id="MainExecutableComponent"/>
+            <ComponentRef Id="DependencyFiles"/>
+            <ComponentRef Id="StartMenuShortcutComponent"/>
+        </Feature>
+    </Package>
+</Wix>

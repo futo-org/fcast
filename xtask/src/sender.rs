@@ -53,24 +53,7 @@ const GSTREAMER_WIN_DEPENDENCY_LIBS: [&'static str; 15] = [
     "srtp2-1.dll",
 ];
 
-#[cfg(target_os = "windows")]
-const GSTREAMER_PLUGIN_LIBS: [&'static str; 13] = [
-    "gstcoreelements",
-    "gstnice",
-    "gstapp",
-    "gstvideorate",
-    "gstgio",
-    "gstvideoconvertscale",
-    "gstrtp",
-    "gstrtpmanager",
-    "gstvpx",
-    "gstd3d11",
-    "gstdtls",
-    "gstwebrtc",
-    "gstsrtp",
-];
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
     "gstcoreelements",
     "gstnice",
@@ -86,11 +69,25 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
     "gstsrtp",
 ];
 
+#[cfg(target_os = "windows")]
+const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 1] = [
+    "gstd3d11",
+];
+
 #[cfg(target_os = "macos")]
 const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = [
     "gstapplemedia",
 ];
 
+#[cfg(target_os = "windows")]
+#[derive(askama::Template)]
+#[template(path = "Product.wxs.askama")]
+struct ProductTemplate {
+    version: String,
+    dll_components: String,
+}
+
+#[cfg(target_os = "macos")]
 #[derive(askama::Template)]
 #[template(path = "Info.plist.askama")]
 struct InfoPlistTemplate {
@@ -309,6 +306,8 @@ impl SenderArgs {
             SenderCommand::BuildWindowsInstaller => {
                 // Inspired by https://github.com/servo/servo/tree/main/python/servo
 
+                use askama::Template;
+
                 let gstreamer_root = Utf8PathBuf::from(
                     sh.var("GSTREAMER_1_0_ROOT_MSVC_X86_64")
                         .expect("GStreamer not found"),
@@ -356,8 +355,9 @@ impl SenderArgs {
                 }
 
                 fn plugins() -> Vec<String> {
-                    GSTREAMER_PLUGIN_LIBS
+                    GSTREAMER_PLUGIN_LIBS_COMMON
                         .iter()
+                        .chain(GSTREAMER_PLUGIN_LIBS_WIN.iter())
                         .map(|s| format!("{s}.dll"))
                         .collect()
                 }
@@ -585,56 +585,7 @@ impl SenderArgs {
                     }
                 }
 
-                let product_wxs = format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-    <Package Name="FCast Sender"
-             Version="0.1.0.0"
-             Manufacturer="FUTO"
-             UpgradeCode="0ce1119d-5dcb-4189-bfe5-04379e088e81"
-             Compressed="yes">
-
-        <MediaTemplate EmbedCab="yes" />
-
-        <StandardDirectory Id="ProgramFiles64Folder">
-            <Directory Id="INSTALLFOLDER" Name="FCastSender">
-                <Component Id="MainExecutableComponent" Guid="c4d3bf7a-bc0d-4773-b27f-f2bb1cb96d2f">
-                    <File Id="MainExecutable" Source="fcast-sender.exe" KeyPath="yes"/>
-                </Component>
-
-                <Component Id="DependencyFiles" Guid="4175ed86-81a6-487c-8f5f-c902cda8cc40">
-                    {dll_components}
-                </Component>
-            </Directory>
-        </StandardDirectory>
-
-        <StandardDirectory Id="ProgramMenuFolder">
-            <Directory Id="ApplicationProgramsFolder" Name="FCast Sender">
-                <Component Id="StartMenuShortcutComponent" Guid="a1b2c3d4-e5f6-4789-90ab-cdef01234567">
-                    <Shortcut Id="StartMenuShortcut"
-                              Name="FCast Sender"
-                              Description="Launch FCast Sender"
-                              Target="[INSTALLFOLDER]fcast-sender.exe"
-                              WorkingDirectory="INSTALLFOLDER"/>
-                    <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
-                    <RegistryValue Root="HKCU"
-                                   Key="Software\FUTO\FCastSender"
-                                   Name="installed"
-                                   Type="integer"
-                                   Value="1"
-                                   KeyPath="yes"/>
-                </Component>
-            </Directory>
-        </StandardDirectory>
-
-        <Feature Id="MainFeature">
-            <ComponentRef Id="MainExecutableComponent"/>
-            <ComponentRef Id="DependencyFiles"/>
-            <ComponentRef Id="StartMenuShortcutComponent"/>
-        </Feature>
-    </Package>
-</Wix>"#
-                );
+                let product_wxs = ProductTemplate { version: "0.1.0".to_owned(), dll_components }.render()?;
 
                 sh.write_file(
                     concat_path(&build_dir_root, &"FCastSenderInstaller.wxs"),
