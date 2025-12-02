@@ -16,6 +16,7 @@ export interface UISettings {
     noMainWindow: boolean,
     fullscreen: boolean,
     mainWindowBackground: string,
+    noFullscreenPlayer: boolean,
 }
 
 export interface UpdaterSettings {
@@ -82,6 +83,7 @@ export class Settings {
         Settings.json.ui.noMainWindow = Settings.json.ui.noMainWindow === undefined ? false : Settings.json.ui.noMainWindow;
         Settings.json.ui.fullscreen = Settings.json.ui.fullscreen === undefined ? false : Settings.json.ui.fullscreen;
         Settings.json.ui.mainWindowBackground = Settings.json.ui.mainWindowBackground === undefined ? '' : Settings.json.ui.mainWindowBackground;
+        Settings.json.ui.noFullscreenPlayer = Settings.json.ui.noFullscreenPlayer === undefined ? false : Settings.json.ui.noFullscreenPlayer;
 
         Settings.json.updater.channel = Settings.json.updater.channel === undefined ? 'stable' : Settings.json.updater.channel;
         Settings.json.updater.checkForUpdatesOnStart = Settings.json.updater.checkForUpdatesOnStart === undefined ? true : Settings.json.updater.checkForUpdatesOnStart;
