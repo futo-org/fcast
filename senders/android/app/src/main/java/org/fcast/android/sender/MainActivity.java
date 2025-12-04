@@ -241,7 +241,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
     @Override
     public void onDisplayChanged(int displayId) {
-        if (this.getWindowManager().getDefaultDisplay().getDisplayId() != displayId) {
+        if (srcDims == null || this.getWindowManager().getDefaultDisplay().getDisplayId() != displayId) {
             return;
         }
 
@@ -696,7 +696,13 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
         surface = new Surface(surfaceTexture);
 
-        virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture", srcDims.width, srcDims.height, srcDensity, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR | DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC | DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION, surface, null, null);
+        if (virtualDisplay == null) {
+            virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture", srcDims.width, srcDims.height, srcDensity, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR | DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC | DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION, surface, null, null);
+        } else {
+            Log.d(TAG, "Reusing virtual display");
+            virtualDisplay.setSurface(surface);
+            virtualDisplay.resize(srcDims.width, srcDims.height, srcDensity);
+        }
 
         EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
 
@@ -758,7 +764,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
                 eglDisplay = EGL14.EGL_NO_DISPLAY;
 
-                if (virtualDisplay != null) {
+                if (shouldEmitStopSignal && virtualDisplay != null) {
                     virtualDisplay.release();
                     virtualDisplay = null;
                     Log.d(TAG, "Virtual display released");
@@ -768,6 +774,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
                     mediaProjection = null;
                     Log.d(TAG, "Media projection stopped");
                 }
+
                 if (surfaceTexture != null) {
                     surfaceTexture.release();
                     surfaceTexture = null;
