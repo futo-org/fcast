@@ -2,6 +2,8 @@ use fcast_sender_sdk::device::{self, DeviceInfo};
 use tokio::{runtime, sync::mpsc::Sender};
 use tracing::error;
 
+#[cfg(not(target_os = "android"))]
+pub mod preview;
 pub mod transmission;
 pub mod whep_signaller;
 
@@ -36,8 +38,6 @@ pub enum VideoSource {
     #[cfg(target_os = "linux")]
     PipeWire { node_id: u32, fd: OwnedFd },
     #[cfg(target_os = "linux")]
-    XWindow { id: u32, name: String },
-    #[cfg(target_os = "linux")]
     XDisplay {
         id: u32,
         width: u16,
@@ -60,8 +60,6 @@ impl VideoSource {
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { .. } => "PipeWire Video Source".to_owned(),
             #[cfg(target_os = "linux")]
-            VideoSource::XWindow { name, .. } => name.clone(),
-            #[cfg(target_os = "linux")]
             VideoSource::XDisplay { name, .. } => name.clone(),
             #[cfg(target_os = "macos")]
             VideoSource::CgDisplay { name, .. } => name.clone(),
@@ -75,11 +73,13 @@ impl VideoSource {
 
 #[derive(Debug)]
 pub enum SourceConfig {
+    #[cfg(not(target_os = "android"))]
     AudioVideo {
         video: VideoSource,
         audio: AudioSource,
     },
     Video(VideoSource),
+    #[cfg(not(target_os = "android"))]
     Audio(AudioSource),
 }
 

@@ -1621,8 +1621,11 @@ dependencies = [
  "fcast-protocol",
  "fcast-sender-sdk",
  "flume",
+ "futures",
  "gst-plugin-rtp",
  "gstreamer",
+ "gstreamer-app",
+ "gstreamer-video",
  "http-body-util",
  "http-range",
  "hyper",
@@ -1639,7 +1642,6 @@ dependencies = [
  "tracing-panic",
  "tracing-subscriber",
  "uuid",
- "x11",
  "xcb",
 ]
 
