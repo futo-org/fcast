@@ -6,15 +6,18 @@ use anyhow::{Result, bail};
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
+#[cfg(target_os = "windows")]
+use mcore::VideoSource;
 use desktop_sender::{FetchEvent, file_server::FileServer};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
 };
+use gst_video::prelude::*;
 use mcore::{
-    AudioSource, Event, FileSystemEntry, MediaFileEntry, ShouldQuit, SourceConfig, VideoSource,
-    transmission::WhepSink,
+    AudioSource, Event, FileSystemEntry, MediaFileEntry, ShouldQuit, transmission::WhepSink,
 };
+use slint::Model;
 use slint::ToSharedString;
 use std::{
     collections::HashMap,
@@ -36,7 +39,7 @@ use tracing_subscriber::{
     Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
 
-slint::include_modules!();
+use desktop_sender::slint_generated::*;
 
 const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
@@ -176,6 +179,8 @@ struct LocalMediaDataState {
     pub files: HashMap<FileId, MediaFileEntry>,
 }
 
+use mcore::preview::PreviewPipeline;
+
 #[derive(Debug)]
 enum SessionSpecificState {
     Idle,
@@ -183,7 +188,7 @@ enum SessionSpecificState {
         tx_sink: Option<WhepSink>,
         video_source_fetcher_tx: Sender<FetchEvent>,
         our_source_url: Option<String>,
-        video_sources: Vec<(usize, VideoSource)>,
+        video_sources: Vec<(usize, PreviewPipeline)>,
         audio_sources: Vec<(usize, AudioSource)>,
     },
     LocalMedia {
@@ -499,6 +504,72 @@ impl Application {
         Ok(())
     }
 
+    fn on_preview_sample(
+        id: i32,
+        appsink: &gst_app::AppSink,
+        ui_weak: &slint::Weak<MainWindow>,
+    ) -> std::result::Result<gst::FlowSuccess, gst::FlowError> {
+        let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+        let buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+        let caps = sample.caps().ok_or(gst::FlowError::Error)?;
+        let video_info =
+            gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::Error)?;
+        let frame = gst_video::VideoFrame::from_buffer_readable(buffer, &video_info)
+            .map_err(|_| gst::FlowError::Error)?;
+        let slint_frame = match frame.format() {
+            gst_video::VideoFormat::Rgb => {
+                let mut slint_pixel_buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(
+                    frame.width(),
+                    frame.height(),
+                );
+                if let Err(err) = frame
+                    .buffer()
+                    .copy_to_slice(0, slint_pixel_buffer.make_mut_bytes())
+                {
+                    error!(?err, "Failed to copy buffer");
+                    return Err(gst::FlowError::Error);
+                }
+                slint_pixel_buffer
+            }
+            _ => {
+                error!(format = ?frame.format(), "Recieved buffer with invalid format");
+                return Err(gst::FlowError::NotSupported);
+            }
+        };
+
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            let bridge = ui.global::<Bridge>();
+            let sources = bridge.get_video_sources();
+            for row in sources.iter() {
+                let Some(model) = row
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<UiVideoSourceModel>>()
+                else {
+                    error!("Row is invalid type");
+                    return;
+                };
+
+                let mut a_idx = None;
+                for (idx, src) in model.iter().enumerate() {
+                    if src.uid == id {
+                        a_idx = Some(idx);
+                        break;
+                    }
+                }
+
+                if let Some(idx) = a_idx {
+                    if let Some(mut row) = model.row_data(idx) {
+                        row.preview = slint::Image::from_rgb8(slint_frame);
+                        model.set_row_data(idx, row);
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(gst::FlowSuccess::Ok)
+    }
+
     async fn handle_event(&mut self, event: Event) -> Result<ShouldQuit> {
         let span = tracing::span!(tracing::Level::DEBUG, "handle_event");
         let _enter = span.enter();
@@ -541,24 +612,19 @@ impl Application {
                                 None => None,
                             };
 
-                            let source_config = match (video_src, audio_src) {
-                                (Some(video), Some(audio)) => {
-                                    SourceConfig::AudioVideo { video, audio }
-                                }
-                                (Some(video), None) => SourceConfig::Video(video),
-                                (None, Some(audio)) => SourceConfig::Audio(audio),
-                                _ => unreachable!(),
-                            };
-
-                            debug!("Adding WHEP pipeline");
-                            *tx_sink = Some(mcore::transmission::WhepSink::new(
-                                source_config,
-                                self.event_tx.clone(),
-                                tokio::runtime::Handle::current(),
-                                scale_width,
-                                scale_height,
-                                max_framerate,
-                            )?);
+                            debug!(?video_src, ?audio_src, "Adding WHEP pipeline");
+                            *tx_sink = Some(
+                                mcore::transmission::WhepSink::from_preview(
+                                    self.event_tx.clone(),
+                                    tokio::runtime::Handle::current(),
+                                    video_src,
+                                    audio_src,
+                                    scale_width,
+                                    scale_height,
+                                    max_framerate,
+                                )
+                                .await?,
+                            );
                         }
                         _ => warn!("Cannot start mirroring in non mirroring session"),
                     }
@@ -673,7 +739,23 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     match &mut session.specific {
                         SessionSpecificState::Mirroring { video_sources, .. } => {
-                            *video_sources = sources;
+                            let mut srcs = Vec::new();
+                            for src in sources {
+                                let id = src.0 as i32;
+                                let ui_weak = self.ui_weak.clone();
+                                srcs.push((
+                                    src.0,
+                                    PreviewPipeline::new(
+                                        src.1.display_name(),
+                                        move |appsink| {
+                                            Self::on_preview_sample(id, appsink, &ui_weak)
+                                        },
+                                        src.1,
+                                    )?,
+                                ));
+                            }
+                            *video_sources = srcs;
+
                             self.update_video_sources_in_ui()?;
                         }
                         _ => warn!("Got `VideosAvailable` event in non mirroring session"),
@@ -1113,10 +1195,10 @@ impl Application {
         if let Some(session) = self.session_state.as_mut() {
             match &mut session.specific {
                 SessionSpecificState::Mirroring { video_sources, .. } => {
-                    video_sources.sort_by(|a, b| a.1.display_name().cmp(&b.1.display_name()));
+                    video_sources.sort_by(|a, b| a.1.display_name.cmp(&b.1.display_name));
                     let video_sources = video_sources
                         .iter()
-                        .map(|(uid, s)| (*uid, s.display_name()))
+                        .map(|(uid, s)| (*uid, s.display_name.clone()))
                         .collect::<Vec<(usize, String)>>();
 
                     self.ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1129,6 +1211,7 @@ impl Application {
                                         row.iter().map(|dev| UiVideoSourceModel {
                                             name: slint::SharedString::from(dev.1.as_str()),
                                             uid: dev.0 as i32,
+                                            preview: slint::Image::default(),
                                         }),
                                     ))
                                 }),

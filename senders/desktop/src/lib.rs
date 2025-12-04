@@ -5,6 +5,10 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+pub mod slint_generated {
+    slint::include_modules!();
+}
+
 pub enum FetchEvent {
     Fetch,
     Quit,

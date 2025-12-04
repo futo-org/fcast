@@ -32,6 +32,7 @@ export enum UiInputType {
 export struct UiVideoSourceModel {
     name: string,
     uid: int,
+    preview: image,
 }
 
 export struct UiAudioSourceModel {
@@ -407,12 +408,16 @@ component SelectMirroringSourceView inherits Rectangle {
                     }
 
                     Image {
-                        y: (parent.height - vl-video.height / 2) / 2;
-                        source: @image-url("./video.svg");
+                        width: 100%;
+                        height: 100%;
+                        // y: (parent.height - vl-video.height / 2) / 2;
+                        // source: @image-url("./video.svg");
+                        image-fit: contain;
+                        source: source.preview;
                     }
 
                     vl-video := VerticalLayout {
-                        Rectangle { }
+                        Rectangle {}
 
                         Rectangle {
                             background: whitesmoke.transparentize(0.1);

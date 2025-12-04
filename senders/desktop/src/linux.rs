@@ -1,92 +1,15 @@
 use crate::FetchEvent;
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use ashpd::desktop::{
     PersistMode,
     screencast::{CursorMode, Screencast, SourceType},
 };
 use mcore::{Event, VideoSource};
-use std::ffi::{CStr, CString};
 use tracing::{debug, error};
-use x11::xlib::{XFreeStringList, XGetTextProperty, XTextProperty, XmbTextPropertyToTextList};
 use xcb::{
     Xid,
     randr::{GetCrtcInfo, GetOutputInfo, GetScreenResources},
-    x::{self, GetPropertyReply},
 };
-
-fn get_x11_atom(conn: &xcb::Connection, atom_name: &str) -> Result<x::Atom, xcb::Error> {
-    let cookie = conn.send_request(&x::InternAtom {
-        only_if_exists: true,
-        name: atom_name.as_bytes(),
-    });
-    Ok(conn.wait_for_reply(cookie)?.atom())
-}
-
-fn get_x11_property(
-    conn: &xcb::Connection,
-    win: x::Window,
-    prop: x::Atom,
-    typ: x::Atom,
-    length: u32,
-) -> Result<GetPropertyReply, xcb::Error> {
-    let cookie = conn.send_request(&x::GetProperty {
-        delete: false,
-        window: win,
-        property: prop,
-        r#type: typ,
-        long_offset: 0,
-        long_length: length,
-    });
-    conn.wait_for_reply(cookie)
-}
-
-fn decode_x11_compound_text(
-    conn: &xcb::Connection,
-    value: &[u8],
-    client: &xcb::x::Window,
-    ttype: xcb::x::Atom,
-) -> anyhow::Result<String> {
-    let display = conn.get_raw_dpy();
-    if display.is_null() {
-        bail!("Display is null");
-    }
-
-    let c_string = CString::new(value.to_vec())?;
-    let mut text_prop = XTextProperty {
-        value: std::ptr::null_mut(),
-        encoding: 0,
-        format: 0,
-        nitems: 0,
-    };
-    let res = unsafe {
-        XGetTextProperty(
-            display,
-            client.resource_id() as u64,
-            &mut text_prop,
-            x::ATOM_WM_NAME.resource_id() as u64,
-        )
-    };
-    if res == 0 || text_prop.nitems == 0 {
-        return Ok(String::from("n/a"));
-    }
-
-    let xname = XTextProperty {
-        value: c_string.as_ptr() as *mut u8,
-        encoding: ttype.resource_id() as u64,
-        format: 8,
-        nitems: text_prop.nitems,
-    };
-    let mut list: *mut *mut i8 = std::ptr::null_mut();
-    let mut count: i32 = 0;
-    let result = unsafe { XmbTextPropertyToTextList(display, &xname, &mut list, &mut count) };
-    if result < 1 || list.is_null() || count < 1 {
-        Ok(String::from("n/a"))
-    } else {
-        let title = unsafe { CStr::from_ptr(*list).to_string_lossy().into_owned() };
-        unsafe { XFreeStringList(list) };
-        Ok(title)
-    }
-}
 
 #[derive(Default)]
 struct TargetIdGenerator(usize);
@@ -102,69 +25,9 @@ fn get_x11_targets(conn: &xcb::Connection) -> Result<Vec<(usize, VideoSource)>> 
     let setup = conn.get_setup();
     let screens = setup.roots();
 
-    let wm_client_list =
-        get_x11_atom(conn, "_NET_CLIENT_LIST").context("Failed to get `_NET_CLIENT_LIST`")?;
-
-    let atom_net_wm_name =
-        get_x11_atom(conn, "_NET_WM_NAME").context("Failed to get `_NET_WM_NAME`")?;
-    let atom_text = get_x11_atom(conn, "TEXT").context("Failed to get `TEXT`")?;
-    let atom_utf8_string =
-        get_x11_atom(conn, "UTF8_STRING").context("Failed to get `UTF8_STRING`")?;
-    let atom_compound_text =
-        get_x11_atom(conn, "COMPOUND_TEXT").context("Failed to get `COMPOUND_TEXT`")?;
-
     let mut targets = Vec::new();
     let mut target_id_gen = TargetIdGenerator::default();
     for screen in screens {
-        let window_list = get_x11_property(conn, screen.root(), wm_client_list, x::ATOM_NONE, 100)
-            .context("Failed to get window list")?;
-
-        for client in window_list.value::<x::Window>() {
-            let cr = get_x11_property(conn, *client, atom_net_wm_name, x::ATOM_STRING, 4096)
-                .context("Failed to get client name")?;
-            if !cr.value::<x::Atom>().is_empty() {
-                targets.push((
-                    target_id_gen.next(),
-                    VideoSource::XWindow {
-                        id: client.resource_id(),
-                        name: String::from_utf8(cr.value().to_vec())?,
-                    },
-                ));
-                continue;
-            }
-
-            let reply = get_x11_property(conn, *client, x::ATOM_WM_NAME, x::ATOM_ANY, 4096)?;
-            let value: &[u8] = reply.value();
-            if !value.is_empty() {
-                let ttype = reply.r#type();
-                let title =
-                    if ttype == x::ATOM_STRING || ttype == atom_utf8_string || ttype == atom_text {
-                        String::from_utf8(reply.value().to_vec()).unwrap_or(String::from("n/a"))
-                    } else if ttype == atom_compound_text {
-                        decode_x11_compound_text(conn, value, client, ttype)
-                            .unwrap_or("n/a".to_owned())
-                    } else {
-                        String::from_utf8(reply.value().to_vec()).unwrap_or(String::from("n/a"))
-                    };
-
-                targets.push((
-                    target_id_gen.next(),
-                    VideoSource::XWindow {
-                        id: client.resource_id(),
-                        name: title,
-                    },
-                ));
-                continue;
-            }
-            targets.push((
-                target_id_gen.next(),
-                VideoSource::XWindow {
-                    id: client.resource_id(),
-                    name: "n/a".to_owned(),
-                },
-            ));
-        }
-
         let resources = conn.send_request(&GetScreenResources {
             window: screen.root(),
         });
@@ -247,6 +110,12 @@ pub async fn video_source_fetch_worker(
 
         match (event, &winsys) {
             (FetchEvent::Fetch, WindowingSystem::Wayland) => {
+                if let Some(old_session) = _session.take() {
+                    if let Err(err) = old_session.close().await {
+                        error!(?err, "Failed to close old session");
+                    }
+                }
+
                 let new_proxy = match Screencast::new().await {
                     Ok(proxy) => proxy,
                     Err(err) => {

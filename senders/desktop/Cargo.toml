@@ -17,6 +17,9 @@ slint.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 gst.workspace = true
+gst-app.workspace = true
+gst-video.workspace = true
+futures = "0.3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
@@ -41,7 +44,6 @@ slint-build.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.11.0", default-features = false, features = ["async-std"] } # `tokio` breaks slint
 xcb = { version = "1.6.0", features = ["randr", "xlib_xcb"] }
-x11 = "2.21.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = "0.3.2"
