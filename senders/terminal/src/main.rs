@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use fcast_sender_sdk::context::CastContext;
 use fcast_sender_sdk::device::{
-    DeviceConnectionState, DeviceEventHandler, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent, PlaybackState, Source
+    DeviceConnectionState, DeviceEventHandler, EventSubscription, KeyEvent, KeyName, LoadRequest,
+    MediaEvent, PlaybackState, Source,
 };
 use std::collections::HashMap;
 use std::fs::File;
@@ -194,8 +195,12 @@ fn main() {
                 "mediaitemstart" => EventSubscription::MediaItemStart,
                 "mediaitemend" => EventSubscription::MediaItemEnd,
                 "mediaitemchange" => EventSubscription::MediaItemChange,
-                "keydown" => EventSubscription::KeyDown { keys: KeyName::all() },
-                "keyup" => EventSubscription::KeyUp { keys: KeyName::all() },
+                "keydown" => EventSubscription::KeyDown {
+                    keys: KeyName::all(),
+                },
+                "keyup" => EventSubscription::KeyUp {
+                    keys: KeyName::all(),
+                },
                 _ => {
                     println!("Invalid event in subscriptions list: {sub}");
                     continue;

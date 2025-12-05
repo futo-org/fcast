@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering, AtomicBool};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use fcast_protocol::v3::{
-    self, InitialReceiverMessage, MetadataObject, SetPlaylistItemMessage, ReceiverCapabilities,
-    AVCapabilities, LivestreamCapabilities,
+    self, AVCapabilities, InitialReceiverMessage, LivestreamCapabilities, MetadataObject,
+    ReceiverCapabilities, SetPlaylistItemMessage,
 };
 use fcast_protocol::{
     v2, Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage,

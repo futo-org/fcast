@@ -3,7 +3,8 @@ use std::{rc::Rc, sync::Arc};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, LoadRequest, MediaEvent, PlaybackState, ProtocolType, Source
+        CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceFeature, DeviceInfo,
+        EventSubscription, KeyEvent, LoadRequest, MediaEvent, PlaybackState, ProtocolType, Source,
     },
     file_server::FileServer,
     url_format_ip_addr, DeviceDiscovererEventHandler, IpAddr,
@@ -312,8 +313,11 @@ impl App {
                                     ui.global::<Bridge>().invoke_connected();
                                 })?;
                                 if let Some(active_device) = &active_device {
-                                    if active_device.supports_feature(DeviceFeature::MediaEventSubscription) {
-                                        let _ = active_device.subscribe_event(EventSubscription::MediaItemEnd);
+                                    if active_device
+                                        .supports_feature(DeviceFeature::MediaEventSubscription)
+                                    {
+                                        let _ = active_device
+                                            .subscribe_event(EventSubscription::MediaItemEnd);
                                     }
                                 }
                             }

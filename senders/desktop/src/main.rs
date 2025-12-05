@@ -6,14 +6,14 @@ use anyhow::{Result, bail};
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
-#[cfg(target_os = "windows")]
-use mcore::VideoSource;
 use desktop_sender::{FetchEvent, file_server::FileServer};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
 };
 use gst_video::prelude::*;
+#[cfg(target_os = "windows")]
+use mcore::VideoSource;
 use mcore::{
     AudioSource, Event, FileSystemEntry, MediaFileEntry, ShouldQuit, transmission::WhepSink,
 };

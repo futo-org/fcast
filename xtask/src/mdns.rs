@@ -8,7 +8,7 @@ pub enum MdnsCommand {
         address: String,
         #[clap(default_value = "_fcast._tcp.local.")]
         service_type: String,
-    }
+    },
 }
 
 #[derive(Args)]
@@ -20,7 +20,11 @@ pub struct MdnsArgs {
 impl MdnsArgs {
     pub fn run(self) -> Result<()> {
         match self.cmd {
-            MdnsCommand::Publish { name, address, service_type } => {
+            MdnsCommand::Publish {
+                name,
+                address,
+                service_type,
+            } => {
                 let mdns = mdns_sd::ServiceDaemon::new()?;
                 let service = mdns_sd::ServiceInfo::new(
                     &service_type,

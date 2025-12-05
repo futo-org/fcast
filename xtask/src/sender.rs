@@ -70,14 +70,10 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
 ];
 
 #[cfg(target_os = "windows")]
-const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 1] = [
-    "gstd3d11",
-];
+const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 1] = ["gstd3d11"];
 
 #[cfg(target_os = "macos")]
-const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = [
-    "gstapplemedia",
-];
+const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = ["gstapplemedia"];
 
 #[cfg(target_os = "windows")]
 #[derive(askama::Template)]
@@ -585,7 +581,11 @@ impl SenderArgs {
                     }
                 }
 
-                let product_wxs = ProductTemplate { version: "0.1.0".to_owned(), dll_components }.render()?;
+                let product_wxs = ProductTemplate {
+                    version: "0.1.0".to_owned(),
+                    dll_components,
+                }
+                .render()?;
 
                 sh.write_file(
                     concat_path(&build_dir_root, &"FCastSenderInstaller.wxs"),
@@ -820,7 +820,10 @@ impl SenderArgs {
 
                 println!("############### Writing resources ###############");
 
-                let info_plist = InfoPlistTemplate { version: "0.1.0".to_owned() }.render()?;
+                let info_plist = InfoPlistTemplate {
+                    version: "0.1.0".to_owned(),
+                }
+                .render()?;
                 sh.create_dir(app_top_level.join("Contents").join("Resources"))?;
                 sh.copy_file(
                     root_path.join("senders").join("extra").join("fcast.icns"),
@@ -829,7 +832,10 @@ impl SenderArgs {
                         .join("Resources")
                         .join("fcast.icns"),
                 )?;
-                sh.write_file(app_top_level.join("Contents").join("Info.plist"), info_plist)?;
+                sh.write_file(
+                    app_top_level.join("Contents").join("Info.plist"),
+                    info_plist,
+                )?;
                 std::os::unix::fs::symlink(
                     Utf8PathBuf::from("/Applications"),
                     path_to_dmg_dir.join("Applications"),
