@@ -8274,6 +8274,8 @@ dependencies = [
  "askama 0.14.0",
  "camino",
  "clap",
+ "ctrlc",
+ "mdns-sd 0.14.1",
  "serde",
  "serde_json",
  "uniffi_bindgen",

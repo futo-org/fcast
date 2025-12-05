@@ -5,6 +5,7 @@ use xshell::Shell;
 pub mod android;
 pub mod csharp;
 pub mod kotlin;
+pub mod mdns;
 pub mod sender;
 pub mod swift;
 #[allow(unused_imports)]

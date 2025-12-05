@@ -245,7 +245,11 @@ impl Application {
             Event::Quit => return Ok(ShouldQuit::Yes),
             Event::DeviceAvailable(device_info) => self.add_or_update_device(device_info)?,
             Event::DeviceRemoved(device_name) => {
-                self.devices.remove(&device_name);
+                if self.devices.remove(&device_name).is_some() {
+                    self.update_receivers_in_ui()?;
+                } else {
+                    debug!(device_name, "Tried to remove device but it was not found");
+                }
             }
             Event::DeviceChanged(device_info) => self.add_or_update_device(device_info)?,
             Event::FromDevice { id, event } => {

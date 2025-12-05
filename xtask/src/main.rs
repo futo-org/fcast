@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
 use xtask::{
-    android, csharp, kotlin, sender,
+    android, csharp, kotlin, mdns, sender,
     swift::{self, SwiftArgs, SwiftCommand},
     test_corpus,
 };
@@ -16,6 +16,7 @@ enum Command {
     Android(android::AndroidArgs),
     Sender(sender::SenderArgs),
     TestCorpus(test_corpus::TestCorpusArgs),
+    Mdns(mdns::MdnsArgs),
 }
 
 #[derive(Parser)]
@@ -43,5 +44,6 @@ fn main() {
         Command::Android(cmd) => cmd.run().unwrap(),
         Command::Sender(cmd) => cmd.run().unwrap(),
         Command::TestCorpus(cmd) => cmd.run().unwrap(),
+        Command::Mdns(cmd) => cmd.run().unwrap(),
     }
 }
