@@ -1,0 +1,26 @@
+buildMacosArm64:
+  stage: senders
+  image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
+  tags:
+    - tart-installed
+  before_script:
+    - brew install rustup-init protobuf wget
+    - rustup-init -y
+    - rustup target add aarch64-apple-darwin
+    - source $HOME/.cargo/env
+    - wget "https://gstreamer.freedesktop.org/data/pkg/osx/1.26.8/gstreamer-1.0-1.26.8-universal.pkg" -O /tmp/gst-1.0-1.26.8-universal.pkg
+    - wget "https://gstreamer.freedesktop.org/data/pkg/osx/1.26.8/gstreamer-1.0-devel-1.26.8-universal.pkg" -O /tmp/gst-1.0-devel-1.26.8-universal.pkg
+    - sudo installer -pkg /tmp/gst-1.0-1.26.8-universal.pkg -target /
+    - sudo installer -pkg /tmp/gst-1.0-devel-1.26.8-universal.pkg -target /
+    - export PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig
+    - export PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/bin:$PATH
+    - export DYLD_LIBRARY_PATH=/Library/Frameworks/GStreamer.framework/Libraries:$DYLD_LIBRARY_PATH
+  script:
+    - cargo xtask sender build-macos-installer
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - target/fcast-sender.dmg
+  when: manual
