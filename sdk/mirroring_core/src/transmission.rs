@@ -514,13 +514,14 @@ impl WhepSink {
 
             let capsfilter_src_pad = elems.capsfilter.static_pad("src").unwrap();
 
+            // TODO: it seems that all sources are fine to be set to ready, do we still need to block upstream?
             let needs_ready = {
                 let name = elems
                     .src
                     .factory()
                     .ok_or(anyhow::anyhow!("Source element is missing factory"))?
                     .name();
-                name == "ximagesrc" || name == "d3d11screencapturesrc" || name == "avfvideosrc"
+                name == "ximagesrc" || name == "d3d11screencapturesrc" || name == "avfvideosrc" || name == "pipewiresrc"
             };
 
             if needs_ready {
