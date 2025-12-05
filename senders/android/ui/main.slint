@@ -90,7 +90,10 @@ component ConnectingView inherits Rectangle {
             text: "Connecting";
         }
 
-        // TODO: cancel button
+        Button {
+            text: "Cancel";
+            clicked => Bridge.stop-casting();
+        }
     }
 }
 

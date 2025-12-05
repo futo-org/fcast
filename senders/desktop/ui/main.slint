@@ -299,6 +299,11 @@ component ConnectingView inherits Rectangle {
             horizontal-alignment: center;
             font-weight: 600;
         }
+
+        Button {
+            text: "Cancel";
+            clicked => Bridge.disconnect();
+        }
     }
 }
 
