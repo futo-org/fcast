@@ -25,8 +25,7 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 parking_lot.workspace = true
 uuid.workspace = true
-# TODO: workspace
-bytes = "1.10.1"
+bytes.workspace = true
 hyper = "1.7.0"
 hyper-util = { version = "0.1.17", features = [ "server-auto", "tokio" ] }
 http-body-util = "0.1.3"

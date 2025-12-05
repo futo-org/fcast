@@ -34,6 +34,7 @@ slint = "1.14.1"
 slint-build = "1.14.1"
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.18.1", features = [ "v4" ] }
+bytes = "1.11"
 
 [profile.release]
 lto = true
