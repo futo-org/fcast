@@ -1,16 +1,20 @@
 import {
     VerticalBox,
     HorizontalBox,
+} from "std-widgets.slint";
+import {
     Button,
     ComboBox,
     Palette,
     Spinner,
     Switch,
-    ListView,
     TextEdit,
     Slider,
     LineEdit,
-} from "std-widgets.slint";
+    Palette,
+    FText,
+    ListView,
+} from "../../ui-components/std-widgets.slint";
 import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
 
 export enum UiAppState {
@@ -74,10 +78,13 @@ export global Bridge {
     // in-out property <string> device-name: "FCast-localhost";
     // in property <string> current-directory: "Testing";
 
-    in property <bool> is-audio-supported: false;
+    // in property <bool> is-audio-supported: false;
+    in property <bool> is-audio-supported: true;
     in property <bool> is-mirroring-supported: false;
     in property <string> current-directory: "";
-    in property <[string]> devices: [];
+    in property <[string]> devices: [
+        "Test",
+    ];
     in property <string> log-string;
 
     in-out property <UiAppState> app-state: Disconnected;
@@ -86,24 +93,26 @@ export global Bridge {
     // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
     in-out property <[[UiVideoSourceModel]]> video-sources: [
-        // [{ uid: 0, name: "Blob" }],
+        [{ uid: 0, name: "Blob" }],
     ];
-    in-out property <[[UiAudioSourceModel]]> audio-sources: [];
+    in-out property <[[UiAudioSourceModel]]> audio-sources: [
+        [{ uid: 0, name: "Blob" }],
+    ];
     in-out property <[UiDirectoryEntry]> directories: [
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
+        { id: 0, name: "Test1" },
+        { id: 0, name: "Test1" },
+        { id: 0, name: "Test1" },
+        { id: 0, name: "Test1" },
+        { id: 0, name: "Test1" },
+        { id: 0, name: "Test1" },
     ];
     in-out property <[UiMediaFileEntry]> files: [
-        // { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Video },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
+        { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Video },
+        { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Image },
     ];
     in-out property <float> volume: 1.0;
     in-out property <float> playback-position: 0.0;
@@ -164,7 +173,7 @@ component Spacer inherits Rectangle { }
 
 component ConnectView inherits Rectangle {
     VerticalBox {
-        Text {
+        FText {
             horizontal-alignment: center;
             font-weight: 600;
             text: "Connect to your receiver";
@@ -174,7 +183,7 @@ component ConnectView inherits Rectangle {
             for device in Bridge.devices: Rectangle {
                 states [
                     hover when ta.has-hover: {
-                        background: whitesmoke;
+                        background: Palette.selection-background;
                     }
                 ]
 
@@ -189,7 +198,7 @@ component ConnectView inherits Rectangle {
                 }
 
                 HorizontalBox {
-                    Text {
+                    FText {
                         text: device;
                     }
                 }
@@ -198,7 +207,7 @@ component ConnectView inherits Rectangle {
 
         property <bool> is-showing-manual-connect: false;
 
-        Text {
+        FText {
             text: (is-showing-manual-connect ? "↓ " : "→ ") + " Connect manually";
             TouchArea {
                 mouse-cursor: pointer;
@@ -210,7 +219,7 @@ component ConnectView inherits Rectangle {
 
         if is-showing-manual-connect: VerticalBox {
             HorizontalBox {
-                Text {
+                FText {
                     vertical-alignment: center;
                     text: "Protocol:";
                     width: 15%;
@@ -222,7 +231,7 @@ component ConnectView inherits Rectangle {
             }
 
             HorizontalBox {
-                Text {
+                FText {
                     vertical-alignment: center;
                     text: "Name:";
                     width: 15%;
@@ -234,7 +243,7 @@ component ConnectView inherits Rectangle {
             }
 
             HorizontalBox {
-                Text {
+                FText {
                     vertical-alignment: center;
                     text: "Port:";
                     width: 15%;
@@ -248,14 +257,14 @@ component ConnectView inherits Rectangle {
 
             property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
 
-            if !port-input.text.is-empty && !port-is-valid: Text {
+            if !port-input.text.is-empty && !port-is-valid: FText {
                 horizontal-alignment: center;
                 color: red;
                 text: "Invalid port (must be in the range 1-65535)";
             }
 
             HorizontalBox {
-                Text {
+                FText {
                     vertical-alignment: center;
                     text: "Address:";
                     width: 15%;
@@ -266,7 +275,7 @@ component ConnectView inherits Rectangle {
 
             property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
 
-            if !address-input.text.is-empty && !address-is-valid: Text {
+            if !address-input.text.is-empty && !address-is-valid: FText {
                 horizontal-alignment: center;
                 color: red;
                 text: "Invalid address";
@@ -294,7 +303,7 @@ component ConnectingView inherits Rectangle {
             indeterminate: true;
         }
 
-        Text {
+        FText {
             text: "Connecting to " + Bridge.device-name;
             horizontal-alignment: center;
             font-weight: 600;
@@ -312,7 +321,7 @@ component UnsupportedReceiverView inherits Rectangle {
     height: vb.preferred-height;
 
     vb := VerticalBox {
-        Text {
+        FText {
             text: Bridge.device-name + " is unsupported";
             horizontal-alignment: center;
             font-weight: 600;
@@ -327,7 +336,7 @@ component UnsupportedReceiverView inherits Rectangle {
 
 component SelectingInputTypeView {
     VerticalBox {
-        Text {
+        FText {
             font-size: 14pt;
             horizontal-alignment: center;
             text: "What do you want to cast?";
@@ -344,7 +353,7 @@ component SelectingInputTypeView {
             clicked => Bridge.select-input-type(UiInputType.Mirroring);
         }
 
-        if !Bridge.is-mirroring-supported: Text {
+        if !Bridge.is-mirroring-supported: FText {
             horizontal-alignment: center;
             text: Bridge.device-name + " does not support mirroring";
         }
@@ -360,12 +369,14 @@ component SelectMirroringSourceView inherits Rectangle {
     property <int> video-resolution-idx: 2;
     property <int> video-framerate-idx: 2;
 
+    background: Palette.background;
+
     VerticalBox {
         alignment: center;
 
         HorizontalBox {
             alignment: space-between;
-            Text {
+            FText {
                 horizontal-alignment: center;
                 text: "Video";
                 font-weight: 600;
@@ -386,19 +397,12 @@ component SelectMirroringSourceView inherits Rectangle {
             for row in Bridge.video-sources: HorizontalBox {
                 // alignment: center;
                 for source in row: Rectangle {
-                    height: 100px;
-                    // height: 200px;
-                    background: grey;
-                    border-radius: 8px;
+                    height: 150px;
+                    background: black;
+                    border-radius: 4px;
 
-                    border-width: source.uid == Bridge.selected-video-src ? 8px : 0px;
-                    border-color: source.uid == Bridge.selected-video-src ? lightgreen : white;
-
-                    states [
-                        hover when ta.has-hover: {
-                            background: grey.transparentize(0.1);
-                        }
-                    ]
+                    border-width: source.uid == Bridge.selected-video-src ? 4px : 0px;
+                    border-color: source.uid == Bridge.selected-video-src ? Palette.accent-background : white;
 
                     ta := TouchArea {
                         mouse-cursor: self.has-hover ? pointer : default;
@@ -425,10 +429,10 @@ component SelectMirroringSourceView inherits Rectangle {
                         Rectangle {}
 
                         Rectangle {
-                            background: whitesmoke.transparentize(0.1);
+                            background: blueviolet.transparentize(0.8);
                             height: 40px;
 
-                            Text {
+                            FText {
                                 text: source.name;
                             }
                         }
@@ -439,7 +443,7 @@ component SelectMirroringSourceView inherits Rectangle {
             if Bridge.selected-video-src != -1: HorizontalBox {
                 alignment: center;
 
-                Text {
+                FText {
                     font-size: 12pt;
                     vertical-alignment: center;
                     text: "Max resolution";
@@ -449,7 +453,7 @@ component SelectMirroringSourceView inherits Rectangle {
                     current-index <=> video-resolution-idx;
                 }
 
-                Text {
+                FText {
                     font-size: 12pt;
                     vertical-alignment: center;
                     text: "Max framerate";
@@ -463,7 +467,7 @@ component SelectMirroringSourceView inherits Rectangle {
 
         if Bridge.is-audio-supported: HorizontalBox {
             alignment: space-between;
-            Text {
+            FText {
                 horizontal-alignment: center;
                 text: "Audio";
                 font-weight: 600;
@@ -477,19 +481,17 @@ component SelectMirroringSourceView inherits Rectangle {
                 // alignment: center;
                 for source in row: Rectangle {
                     height: 100px;
-                    // width: (parent.width / row.length - parent.padding).min(250px); //  250px;
-                    // width: ((parent.width - parent.padding) / row.length).min(250px); //  250px;
-                    background: grey;
-                    border-radius: 8px;
+                    background: black;
+                    border-radius: 4px;
 
-                    border-width: source.uid == Bridge.selected-audio-src ? 8px : 0px;
-                    border-color: source.uid == Bridge.selected-audio-src ? lightgreen : white;
+                    border-width: source.uid == Bridge.selected-audio-src ? 4px : 0px;
+                    border-color: source.uid == Bridge.selected-video-src ? Palette.accent-background : white;
 
-                    states [
-                        hover when ta-aud.has-hover: {
-                            background: grey.transparentize(0.1);
-                        }
-                    ]
+                    // states [
+                    //     hover when ta-aud.has-hover: {
+                    //         background: grey.transparentize(0.1);
+                    //     }
+                    // ]
 
                     ta-aud := TouchArea {
                         mouse-cursor: pointer;
@@ -512,10 +514,10 @@ component SelectMirroringSourceView inherits Rectangle {
                         Rectangle { }
 
                         Rectangle {
-                            background: whitesmoke.transparentize(0.1);
+                            background: blueviolet.transparentize(0.8);
                             height: 40px;
 
-                            Text {
+                            FText {
                                 overflow: TextOverflow.clip;
                                 text: source.name;
                             }
@@ -553,7 +555,7 @@ component StartingCastView {
             indeterminate: true;
         }
 
-        Text {
+        FText {
             text: "Starting";
             horizontal-alignment: center;
             font-weight: 600;
@@ -570,7 +572,7 @@ component MirroringView inherits Rectangle {
     height: vb.preferred-height;
 
     vb := VerticalBox {
-        Text {
+        FText {
             horizontal-alignment: center;
             text: "Casting to " + Bridge.device-name;
         }
@@ -584,6 +586,8 @@ component MirroringView inherits Rectangle {
 
 component LocalMediaView inherits Rectangle {
     property <float> dir-list-width-percent: 0.25;
+
+    background: Palette.background;
 
     dir-list := Rectangle {
         x: 0;
@@ -603,7 +607,7 @@ component LocalMediaView inherits Rectangle {
                         }
                     }
 
-                    Text {
+                    FText {
                         font-weight: 600;
                         font-size: 14pt;
                         vertical-alignment: center;
@@ -620,7 +624,7 @@ component LocalMediaView inherits Rectangle {
 
                     states [
                         hover when dir-ta.has-hover: {
-                            background: lightgrey;
+                            background: Palette.selection-background;
                         }
                     ]
 
@@ -642,7 +646,7 @@ component LocalMediaView inherits Rectangle {
                             width: 25px;
                         }
 
-                        Text {
+                        FText {
                             font-size: 12pt;
                             vertical-alignment: center;
                             text: dir.name;
@@ -661,7 +665,7 @@ component LocalMediaView inherits Rectangle {
 
         states [
             hover when ta.has-hover: {
-                background: lightskyblue;
+                background: Palette.selection-background;
             }
         ]
 
@@ -691,7 +695,7 @@ component LocalMediaView inherits Rectangle {
                 HorizontalBox {
                     alignment: LayoutAlignment.center;
 
-                    Text {
+                    FText {
                         font-size: 14pt;
                         vertical-alignment: center;
                         text: "Connected to " + Bridge.device-name;
@@ -726,7 +730,7 @@ component LocalMediaView inherits Rectangle {
                         ]
                     }
 
-                    Text {
+                    FText {
                         vertical-alignment: center;
                         overflow: elide;
                         text: file.name;
@@ -750,7 +754,7 @@ component LocalMediaView inherits Rectangle {
 
                 VerticalLayout {
                     HorizontalBox {
-                        Text {
+                        FText {
                             vertical-alignment: center;
                             text: Bridge.str-fmt-seconds(Bridge.playback-position);
                         }
@@ -764,7 +768,7 @@ component LocalMediaView inherits Rectangle {
                             released() => Bridge.seek(Bridge.playback-position, true);
                         }
 
-                        Text {
+                        FText {
                             vertical-alignment: center;
                             text: Bridge.str-fmt-seconds(Bridge.track-duration);
                         }
@@ -791,7 +795,7 @@ component LocalMediaView inherits Rectangle {
                             clicked => Bridge.change-playback-state(UiPlaybackState.Playing);
                         }
 
-                        Text {
+                        FText {
                             font-size: 14pt;
                             vertical-alignment: center;
                             text: Bridge.track-name;
@@ -835,6 +839,8 @@ export component MainWindow inherits Window {
 
     preferred-width: 800px;
     preferred-height: 500px;
+
+    background: Palette.background;
 
     property <bool> is-showing-log-view: false;
 
@@ -882,7 +888,7 @@ export component MainWindow inherits Window {
             HorizontalBox {
                 alignment: space-between;
 
-                Text {
+                FText {
                     font-weight: 600;
                     font-size: 18px;
                     text: "Application log";
@@ -910,10 +916,12 @@ export component CrashWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 500px;
 
+    background: Palette.background;
+
     in property <string> log: "";
 
     VerticalBox {
-        Text {
+        FText {
             font-weight: 600;
             font-size: 18px;
             horizontal-alignment: center;
@@ -922,7 +930,7 @@ export component CrashWindow inherits Window {
             text: "FCast Sender encountered an error!";
         }
 
-        Text {
+        FText {
             font-size: 18px;
             horizontal-alignment: center;
             vertical-alignment: center;
