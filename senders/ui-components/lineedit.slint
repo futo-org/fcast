@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-import { FluentFontSettings, FluentPalette } from "styling.slint";
+import { FluentFontSettings, FluentPalette, FCastPalette } from "styling.slint";
 import { LineEditBase, LineEditClearIcon, LineEditPasswordIcon } from "lineedit-base.slint";
 
 export component LineEdit {
@@ -11,6 +11,8 @@ export component LineEdit {
     in property <bool> read-only <=> base.read-only;
     in property <length> font-size <=> base.font-size;
     in property <string> placeholder-text <=> base.placeholder-text;
+    // in property <image> icon: @image-url("link.svg");
+    in property <image> icon;
     out property <bool> has-focus <=> base.has-focus;
     in-out property <string> text <=> base.text;
 
@@ -66,16 +68,19 @@ export component LineEdit {
         focused when root.has-focus : {
             background.background: FluentPalette.control-input-active;
             background.border-color: FluentPalette.border;
-            focus-border.background: FluentPalette.accent-background;
+            // focus-border.background: FluentPalette.accent-background;
+            focus-border.background: FCastPalette.brand-600;
             base.placeholder-color: FluentPalette.text-tertiary;
         }
     ]
 
     background := Rectangle {
         border-radius: 4px;
-        background: FluentPalette.control-background;
+        // background: FluentPalette.control-background;
+        background: #13151B;
         border-width: 1px;
-        border-color: FluentPalette.text-control-border;
+        // border-color: FluentPalette.text-control-border;
+        border-color: FCastPalette.border-subtle;
 
         layout := HorizontalLayout {
             padding-left: 12px;
@@ -88,9 +93,12 @@ export component LineEdit {
                 selection-background-color: FluentPalette.selection-background;
                 selection-foreground-color: FluentPalette.accent-foreground;
                 text-color: FluentPalette.foreground;
-                placeholder-color: FluentPalette.text-secondary;
+                // placeholder-color: FluentPalette.text-secondary;
+                placeholder-color: FCastPalette.neutral-800;
                 margin: layout.padding-left + layout.padding-right;
                 horizontal-stretch: 1;
+
+                icon <=> icon;
             }
 
             if !root.text.is-empty && root.input-type != InputType.password && root.enabled && !root.read-only && root.has-focus: LineEditClearIcon {

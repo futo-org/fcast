@@ -191,7 +191,7 @@ impl Application {
         debug!("Handling event: {event:?}");
 
         match event {
-            Event::EndSession => {
+            Event::EndSession { .. } => {
                 self.ui_weak.upgrade_in_event_loop(|ui| {
                     ui.global::<Bridge>()
                         .invoke_change_state(AppState::Disconnected);
@@ -506,7 +506,7 @@ fn android_main(app: slint::android::AndroidApp) {
     ui.global::<Bridge>().on_stop_casting({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.send(Event::EndSession).unwrap();
+            event_tx.send(Event::EndSession { disconnect: true }).unwrap();
         }
     });
 

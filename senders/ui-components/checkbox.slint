@@ -1,8 +1,9 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-import { FluentFontSettings, FluentPalette, Icons } from "styling.slint";
+import { FluentFontSettings, FluentPalette, FCastPalette, Icons } from "styling.slint";
 import { FocusBorder } from "components.slint";
+import { Palette } from "std-widgets-impl.slint";
 
 export component CheckBox {
     in property <string> text;
@@ -12,7 +13,8 @@ export component CheckBox {
 
     callback toggled;
 
-    private property <color> text-color: FluentPalette.foreground;
+    // private property <color> text-color: FluentPalette.foreground;
+    private property <color> text-color: Palette.foreground;
 
     min-height: max(18px, layout.min-height);
     accessible-checkable: true;
@@ -41,10 +43,12 @@ export component CheckBox {
             icon.colorize: FluentPalette.text-accent-foreground-secondary;
         }
         hover when touch-area.has-hover : {
-            background.background: root.checked ?  FluentPalette.secondary-accent-background : FluentPalette.control-alt-tertiary;
+            // background.background: root.checked ?  FluentPalette.secondary-accent-background : FluentPalette.control-alt-tertiary;
+            background.background: root.checked ? FCastPalette.brand-600 : FluentPalette.control-alt-tertiary;
         }
         checked when root.checked && root.enabled : {
-            background.background: FluentPalette.accent-background;
+            // background.background: FluentPalette.accent-background;
+            background.background: FCastPalette.brand-600;
         }
     ]
 
@@ -72,7 +76,7 @@ export component CheckBox {
                 image-fit: contain;
                 visible: root.checked;
                 source: Icons.check-mark;
-                colorize: FluentPalette.accent-foreground;
+                colorize: Palette.foreground;
                 width: 12px;
                 accessible-role: none;
 

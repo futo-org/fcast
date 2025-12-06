@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-import { FluentFontSettings, FluentPalette } from "styling.slint";
+import { FluentFontSettings, FluentPalette, FCastPalette } from "styling.slint";
 import { FocusBorder } from "components.slint";
 
 export component Button {
@@ -12,16 +12,39 @@ export component Button {
     in property <bool> enabled <=> i-touch-area.enabled;
     in property <bool> checkable;
     in property <bool> colorize-icon;
+
+    in property <color> background-default-color: FCastPalette.button-default-background;
+    in property <color> background-default-drop-shadow-color: FCastPalette.button-default-drop-shadow-color;
+
+    in property <color> text-color-disabled: FCastPalette.button-disabled-text-color;
+    in property <color> background-disabled: FCastPalette.button-pressed-background;
+    in property <color> background-drop-shadow-color-disabled: FCastPalette.button-pressed-drop-shadow-color;
+    in property <color> border-color-disabled: FCastPalette.button-pressed-border-color;
+
+    in property <color> text-color-pressed-primary: FluentPalette.text-accent-foreground-secondary;
+    in property <color> text-color-pressed-secondary: FluentPalette.text-secondary;
+    in property <color> background-pressed: FCastPalette.button-pressed-background;
+    in property <color> background-drop-shadow-color-pressed: FCastPalette.button-pressed-drop-shadow-color;
+    in property <color> border-color-pressed: FCastPalette.button-pressed-border-color;
+
+    in property <color> background-hover: FCastPalette.button-hover-background;
+    in property <color> background-drop-shadow-color-hover: FCastPalette.button-hover-drop-shadow-color;
+    in property <color> border-color-hover: FCastPalette.button-hover-border-color;
+
+    in property <color> border-color: FCastPalette.button-default-border-color;
+
     out property <bool> has-focus: i-focus-scope.has-focus;
     out property <bool> pressed: self.enabled && i-touch-area.pressed;
     in-out property <bool> checked;
 
     callback clicked;
 
-    private property <brush> text-color: primary || checked ? FluentPalette.accent-foreground : FluentPalette.control-foreground;
+    // private property <brush> text-color: primary || checked ? FluentPalette.accent-foreground : FluentPalette.control-foreground;
+    in-out property <color> text-color: FluentPalette.control-foreground;
 
-    min-width: max(32px, i-layout.min-width);
-    min-height: max(32px, i-layout.min-height);
+    // min-width: max(32px, i-layout.min-width);
+    min-width: max(36px, i-layout.min-width);
+    min-height: max(36px, i-layout.min-height);
     horizontal-stretch: 0;
     vertical-stretch: 0;
     forward-focus: i-focus-scope;
@@ -35,17 +58,33 @@ export component Button {
 
     states [
         disabled when !root.enabled : {
-            i-background.background: root.primary || root.checked ? FluentPalette.accent-disabled : FluentPalette.control-disabled;
-            i-border.border-color: root.primary || root.checked ? transparent : FluentPalette.border;
-            root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-disabled : FluentPalette.text-disabled;
+            // root.text-color: FCastPalette.button-disabled-text-color;
+            root.text-color: text-color-disabled;
+            // i-background.background: FCastPalette.button-pressed-background;
+            i-background.background: background-disabled;
+            // i-background.drop-shadow-color: FCastPalette.button-pressed-drop-shadow-color;
+            i-background.drop-shadow-color: background-drop-shadow-color-disabled;
+            // i-border.border-color: FCastPalette.button-pressed-border-color;
+            i-border.border-color: border-color-disabled;
         }
         pressed when root.pressed : {
-            i-background.background: root.primary || root.checked ? FluentPalette.tertiary-accent-background : FluentPalette.control-tertiary;
-            i-border.border-color: FluentPalette.border;
-            root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-secondary : FluentPalette.text-secondary;
+            // root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-secondary : FluentPalette.text-secondary;
+            root.text-color: root.primary || root.checked ? text-color-pressed-primary : text-color-pressed-secondary;
+            i-background.background: background-pressed;
+            i-background.drop-shadow-color: background-drop-shadow-color-pressed;
+            i-border.border-color: border-color-pressed;
+            // i-background.background: FCastPalette.button-pressed-background;
+            // i-background.drop-shadow-color: FCastPalette.button-pressed-drop-shadow-color;
+            // i-border.border-color: FCastPalette.button-pressed-border-color;
         }
         hover when i-touch-area.has-hover : {
-            i-background.background: root.primary || root.checked ? FluentPalette.secondary-accent-background : FluentPalette.control-secondary;
+            // i-background.background: FCastPalette.button-hover-background;
+            // i-background.drop-shadow-color: FCastPalette.button-hover-drop-shadow-color;
+            // i-border.border-color: FCastPalette.button-hover-border-color;
+
+            i-background.background: background-hover;
+            i-background.drop-shadow-color: background-drop-shadow-color-hover;
+            i-border.border-color: border-color-hover;
         }
         checked when root.checked : {
             i-background.background: FluentPalette.accent-background;
@@ -55,15 +94,24 @@ export component Button {
     ]
 
     i-background := Rectangle {
-        border-radius: 4px;
-        background: root.primary ? FluentPalette.accent-background : FluentPalette.control-background;
+        // Circle when icon only
+        border-radius: root.text == "" ? self.height : 6px;
 
-        animate background, border-color { duration: 150ms; }
+        // background: FCastPalette.button-default-background;
+        background: background-default-color;
+        // drop-shadow-color: FCastPalette.button-default-drop-shadow-color;
+        drop-shadow-color: background-default-drop-shadow-color;
 
+        animate border-color { duration: 150ms; }
+        // animate background, border-color { duration: 150ms; }
         i-border := Rectangle {
             border-radius: parent.border-radius;
             border-width: 1px;
-            border-color: root.primary ? FluentPalette.accent-control-border : FluentPalette.control-border;
+
+            // border-color: FCastPalette.button-default-border-color;
+            border-color: border-color;
+
+            animate border-color { duration: 50ms; }
         }
 
         i-layout := HorizontalLayout {
@@ -71,7 +119,7 @@ export component Button {
             padding-right: 12px;
             padding-top: 5px;
             padding-bottom: 5px;
-            spacing: 4px;
+            spacing: 8px;
             alignment: center;
 
             if (root.icon.width > 0 && root.icon.height > 0) : Image {
@@ -89,13 +137,15 @@ export component Button {
                 vertical-alignment: center;
                 text: root.text;
                 color: root.text-color;
-                animate color { duration: 150ms; }
+                // animate color { duration: 150ms; }
                 accessible-role: none;
             }
         }
     }
 
     i-touch-area := TouchArea {
+        // mouse-cursor: pointer;
+
         clicked => {
             if (root.checkable) {
                 root.checked = !root.checked;

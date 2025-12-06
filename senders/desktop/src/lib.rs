@@ -1,3 +1,4 @@
+pub mod device_info_parser;
 pub mod file_server;
 pub mod infer;
 #[cfg(target_os = "linux")]

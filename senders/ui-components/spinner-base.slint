@@ -12,10 +12,15 @@ export component SpinnerBase {
         private property <float> start-x: self.viewbox-width / 2;
         private property <float> start-y: self.viewbox-height / 2;
         private property <float> start : !indeterminate ? 0 :
-            1 * mod(animation-tick(), 3s) / 3s;
+            // 1 * mod(animation-tick(), 3s) / 3s;
+            1 * mod(animation-tick(), 2.00s) / 2.00s;
         // min is a workaround to get filled circle by 1.0
+        // private property <float> progress: !root.indeterminate ? min(0.9999, root.progress) :
         private property <float> progress: !root.indeterminate ? min(0.9999, root.progress) :
-            min(0.9999, max(0.20, 1 * abs(sin(360deg * animation-tick() / 1.5s))));
+            // min(0.9999, max(0.20, 1 * abs(sin(360deg * animation-tick() / 2.0s))));
+            // min(0.9999, max(0.20, 0.5));
+            // min(1.0, max(0.20, 0.5));
+            min(0.50);
 
         viewbox-width: 100;
         viewbox-height: 100;

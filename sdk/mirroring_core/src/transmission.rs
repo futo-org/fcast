@@ -302,7 +302,7 @@ fn add_bus_handler(
             while let Some(msg) = messages.next().await {
                 use gst::MessageView;
                 match msg.view() {
-                    MessageView::Eos(..) => if let Err(err) = event_tx.send(Event::EndSession) {
+                    MessageView::Eos(..) => if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
                         error!(?err, "Failed to send event");
                     },
                     MessageView::Error(err) => {
@@ -312,9 +312,9 @@ fn add_bus_handler(
                             debug = ?err.debug(),
                             "Error",
                         );
-                        if let Err(err) = event_tx.send(Event::EndSession) {
-                            error!(?err, "Failed to send event");
-                        }
+                        // if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
+                        //     error!(?err, "Failed to send event");
+                        // }
                     }
                     MessageView::StateChanged(state_changed) => {
                         let Some(pipeline) = pipeline_weak.upgrade() else {
@@ -520,7 +520,11 @@ impl WhepSink {
                     .factory()
                     .ok_or(anyhow::anyhow!("Source element is missing factory"))?
                     .name();
-                name == "ximagesrc" || name == "d3d11screencapturesrc" || name == "avfvideosrc" || name == "pipewiresrc"
+                name == "ximagesrc"
+                    || name == "d3d11screencapturesrc"
+                    || name == "avfvideosrc"
+                    || name == "pipewiresrc"
+                    || name == "videotestsrc"
             };
 
             if needs_ready {

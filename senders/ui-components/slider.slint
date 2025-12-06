@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-import { FluentPalette } from "styling.slint";
+import { FluentPalette, FCastPalette } from "styling.slint";
 import { SliderBase } from "slider-base.slint";
 
 export component Slider {
@@ -10,6 +10,9 @@ export component Slider {
     in property <float> minimum <=> base.minimum;
     in property <float> step <=> base.step;
     in property <bool> enabled <=> base.enabled;
+    in property <color> rail-color: FCastPalette.opacity-light-1100;
+    in property <color> track-color: FCastPalette.foreground;
+    in property <bool> hide-thumb: false;
     out property <bool> has-focus: base.has-focus;
     in-out property <float> value <=> base.value;
 
@@ -57,7 +60,8 @@ export component Slider {
         y: base.vertical ? thumb.height / 2 : (parent.height - self.height) / 2;
         width: base.vertical ? 4px : parent.width - thumb.width;
         height: base.vertical ? parent.height - thumb.height : 4px;
-        background: FluentPalette.border;
+        // background: FluentPalette.border;
+        background: rail-color;
         border-radius: 2px;
     }
 
@@ -66,7 +70,8 @@ export component Slider {
         y: base.vertical ? thumb.y + thumb.height / 2 : (parent.height - self.height) / 2;
         width: base.vertical ? rail.width : thumb.x;
         height: base.vertical ? parent.height - thumb.y - thumb.height : rail.height;
-        background: FluentPalette.accent-background;
+        // background: FluentPalette.accent-background;
+        background: track-color;
         border-radius: rail.border-radius;
     }
 
@@ -77,6 +82,7 @@ export component Slider {
         height: self.width;
         border-radius: 10px;
         background: FluentPalette.control-solid;
+        visible: !hide-thumb || base.has-hover;
 
         thumb-border := Rectangle {
             x: (parent.width - self.width) / 2;

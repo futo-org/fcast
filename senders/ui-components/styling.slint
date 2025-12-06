@@ -26,6 +26,49 @@ export global FluentFontSettings {
     };
 }
 
+export global FCastPalette {
+    out property <brush> button-default-background: @linear-gradient(180deg, #2b2b2b 0%, #141414 100%);
+    out property <brush> button-default-drop-shadow-color: #0000004D;
+    out property <brush> button-default-border-color: @linear-gradient(180deg, #ffffff1a 0%, #ffffff03 100%);
+
+    out property <brush> button-hover-background: @linear-gradient(180deg, #525252 0%, #1f1f1f 100%);
+    out property <brush> button-hover-drop-shadow-color: #0000004D;
+    out property <brush> button-hover-border-color: @linear-gradient(180deg, #ffffff1a 0%, #ffffff03 100%);
+
+    out property <brush> button-pressed-background: @linear-gradient(180deg, #2b2b2b 0%, #141414 100%);
+    out property <brush> button-pressed-drop-shadow-color: #0000004D;
+    out property <brush> button-pressed-border-color: @linear-gradient(180deg, #ffffff1a 0%, #ffffff03 100%);
+
+    out property <brush> button-disabled-background: @linear-gradient(180deg, #2b2b2b 0%, #141414 100%);
+    out property <brush> button-disabled-drop-shadow-color: #0000004D;
+    out property <brush> button-disabled-border-color: @linear-gradient(180deg, #ffffff1a 0%, #ffffff03 100%);
+    out property <brush> button-disabled-text-color: #FFFFFF1A;
+
+    out property <brush> background-color-primary: #0D0E13;
+    out property <brush> background-color-secondary: #15181F;
+    out property <color> bg-brand-solid: #2889E8;
+    out property <color> brand-600: #2889E8;
+    out property <color> text-secondary: #A7ACB8;
+
+    out property <color> neutral-500: #9298A6;
+    out property <color> neutral-600: #7D8494;
+    out property <color> neutral-800: #52525D;
+    out property <color> neutral-1000: #292B32;
+    out property <color> neutral-1100: #15181F;
+    out property <color> neutral-1200: #0D0E13;
+    out property <color> positive-1100: #074F30;
+    out property <color> positive-1200: #053824;
+    out property <color> negative-600: #EB5545;
+    out property <color> status-connected: #2CC87E;
+    out property <color> border-subtle: #292B32;
+    out property <color> border-secondary: #E4E7EC;
+    out property <color> opacity-light-1000: #FFFFFF1A;
+    out property <color> opacity-light-1100: #FFFFFF0D;
+    out property <color> opacity-light-1200: #FFFFFF08;
+
+    out property <brush> foreground: #FFFFFF;
+}
+
 export global FluentPalette {
     // in-out property <ColorScheme> color-scheme: ColorSchemeSelector.color-scheme;
     property <bool> dark-color-scheme: {
@@ -49,6 +92,10 @@ export global FluentPalette {
     out property <brush> selection-background: #0078D4;
     out property <brush> selection-foreground: dark-color-scheme ? #000000 : #FFFFFF;
     out property <brush> border: dark-color-scheme ? #FFFFFF14 : #00000073;
+
+    // FCast
+    out property <brush> neutral-1100: #141720;
+    out property <brush> neutral-1000: #262A35;
 
     // additional palette
     out property <brush> secondary-accent-background: dark-color-scheme ? #60CDFFE6 : #005FB8E6;
