@@ -40,15 +40,17 @@ class NetworkWorker(private val _context: Context) {
 
             if (linkProperties?.interfaceName != null) {
                 val iface = NetworkInterface.getByName(linkProperties.interfaceName)
-                val added = addNetwork(iface, network)
+                if (iface != null) {
+                    val added = addNetwork(iface, network)
 
-                if (added) {
-                    MainActivity.instance?.networkChanged()
-                    Toast.makeText(
-                        _context,
-                        _context.getString(R.string.network_changed),
-                        Toast.LENGTH_LONG
-                    ).show()
+                    if (added) {
+                        MainActivity.instance?.networkChanged()
+                        Toast.makeText(
+                            _context,
+                            _context.getString(R.string.network_changed),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
             } else {
                 Log.w(TAG, "Could not find interface from network object")
