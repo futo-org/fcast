@@ -12,7 +12,10 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
     init {
         setInterval({
             if (_backendConnections.isNotEmpty()) {
-                for (sessionId in _backendConnections.keys) {
+                val keys = _backendConnections.keys.toSet()
+                var removeSession = false
+
+                for (sessionId in keys) {
                     _backendConnections[sessionId]?.let {
                         val version = it.getSessionProtocolVersion(sessionId)
 
@@ -44,9 +47,13 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
                                 TAG,
                                 "Session $sessionId was not found in the list of active sessions. Removing..."
                             )
-                            _backendConnections.remove(sessionId)
+                            removeSession = true
                             _heartbeatRetries.remove(sessionId)
                         }
+                    }
+
+                    if (removeSession) {
+                        _backendConnections.remove(sessionId)
                     }
                 }
             }
