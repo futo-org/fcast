@@ -67,7 +67,8 @@ class NetworkService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (instance != null) {
-            throw Exception("Do not start service when already running")
+            Log.w(TAG, "Service is already running")
+            return START_NOT_STICKY
         }
         Log.i(TAG, "Starting ListenerService")
 
