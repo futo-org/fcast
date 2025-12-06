@@ -27,6 +27,7 @@ val supportedVideoExtensions = arrayListOf(
 val supportedAudioTypes = arrayListOf(
     "audio/aac",
     "audio/flac",
+    "audio/x-flac",
     "audio/mpeg",
     "audio/mp4",
     "audio/ogg",
