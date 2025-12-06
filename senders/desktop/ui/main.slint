@@ -16,6 +16,7 @@ import {
     ListView,
 } from "../../ui-components/std-widgets.slint";
 import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
+import "../../ui-components/fonts/Outfit-Regular.ttf";
 
 export enum UiAppState {
     Disconnected,
@@ -839,6 +840,10 @@ export component MainWindow inherits Window {
 
     preferred-width: 800px;
     preferred-height: 500px;
+
+    default-font-family: "Outfit";
+    default-font-size: 15px;
+    default-font-weight: 400;
 
     background: Palette.background;
 
