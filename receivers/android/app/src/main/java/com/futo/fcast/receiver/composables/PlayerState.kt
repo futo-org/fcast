@@ -186,9 +186,15 @@ fun rememberPlayerState(player: Player): PlayerState {
                         for (i in 0 until trackGroup.length) {
                             val trackFormat = trackGroup.getTrackFormat(i)
                             val languageCode = trackFormat.language ?: "und"
-                            val language = PlayerActivity.instance?.getSubtitleString(languageCode)
 
-                            if (language != null && language != "") {
+                            // df seems Grayjay specific?
+                            val language = if (languageCode == "df") {
+                                "Default"
+                            } else {
+                                PlayerActivity.instance?.getSubtitleString(languageCode)
+                            }
+
+                            if (language != null && language != "" && language != "und") {
                                 subtitleList.add(language)
                             }
                         }
