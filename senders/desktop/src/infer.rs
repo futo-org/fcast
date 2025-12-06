@@ -33,21 +33,6 @@ pub fn is_ogg(_len: usize, buf: InferenceBuffer) -> bool {
     buf[0] == 0x4F && buf[1] == 0x67 && buf[2] == 0x67 && buf[3] == 0x53
 }
 
-pub fn is_ogg_opus(len: usize, buf: InferenceBuffer) -> bool {
-    if !is_ogg(len, buf) {
-        return false;
-    }
-
-    buf[28] == 0x4F
-        && buf[29] == 0x70
-        && buf[30] == 0x75
-        && buf[31] == 0x73
-        && buf[32] == 0x48
-        && buf[33] == 0x65
-        && buf[34] == 0x61
-        && buf[35] == 0x64
-}
-
 pub fn is_flac(_len: usize, buf: InferenceBuffer) -> bool {
     buf.len() > 3 && buf[0] == 0x66 && buf[1] == 0x4C && buf[2] == 0x61 && buf[3] == 0x43
 }
@@ -488,8 +473,6 @@ matcher_map!(
     ("audio/midi", is_midi),
     ("audio/mpeg", is_mp3),
     ("audio/m4a", is_m4a),
-    // NOTE: has to come before ogg
-    ("audio/opus", is_ogg_opus),
     ("audio/ogg", is_ogg),
     ("audio/x-flac", is_flac),
     ("audio/x-wav", is_wav),
