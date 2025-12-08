@@ -1,5 +1,8 @@
 fcast-receiver/dist
 fcast-receiver-service/dist
 
+fcast-receiver/node_modules
+fcast-receiver-service/node_modules
+
 .env
 *.ipk

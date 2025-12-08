@@ -11,3 +11,5 @@ FCastReceiver/.sign
 FCastReceiverService/.vs
 FCastReceiverService/bin
 FCastReceiverService/obj
+
+node_modules
