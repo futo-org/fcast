@@ -179,7 +179,6 @@ impl Application {
             )
             .unwrap();
         self.active_device = Some(device);
-        // TODO: should be connecting
         self.ui_weak.upgrade_in_event_loop(|ui| {
             ui.global::<Bridge>()
                 .invoke_change_state(AppState::Connecting);
