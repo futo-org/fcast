@@ -1,5 +1,5 @@
 use fcast_sender_sdk::device::{self, DeviceInfo};
-use tokio::{runtime, sync::mpsc::Sender};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 
 #[cfg(not(target_os = "android"))]
@@ -215,100 +215,89 @@ pub enum Event {
 }
 
 pub struct Discoverer {
-    event_tx: Sender<Event>,
-    rt_handle: runtime::Handle,
+    event_tx: UnboundedSender<Event>,
 }
 
 impl Discoverer {
-    pub fn new(event_tx: Sender<Event>, rt_handle: runtime::Handle) -> Self {
+    pub fn new(event_tx: UnboundedSender<Event>) -> Self {
         Self {
             event_tx,
-            rt_handle,
         }
     }
 
-    fn send_event_spawned(&self, event: Event) {
-        let tx = self.event_tx.clone();
-        self.rt_handle.spawn(async move {
-            if let Err(err) = tx.send(event).await {
-                error!("Failed to send event: {err}");
-            }
-        });
+    fn send_event(&self, event: Event) {
+        if let Err(err) = self.event_tx.send(event) {
+            error!("Failed to send event: {err}");
+        }
     }
 }
 
 impl fcast_sender_sdk::DeviceDiscovererEventHandler for Discoverer {
     fn device_available(&self, device_info: DeviceInfo) {
-        self.send_event_spawned(Event::DeviceAvailable(device_info));
+        self.send_event(Event::DeviceAvailable(device_info));
     }
 
     fn device_removed(&self, device_name: String) {
-        self.send_event_spawned(Event::DeviceRemoved(device_name));
+        self.send_event(Event::DeviceRemoved(device_name));
     }
 
     fn device_changed(&self, device_info: DeviceInfo) {
-        self.send_event_spawned(Event::DeviceChanged(device_info));
+        self.send_event(Event::DeviceChanged(device_info));
     }
 }
 
 pub struct DeviceHandler {
-    event_tx: Sender<Event>,
-    rt_handle: runtime::Handle,
+    event_tx: UnboundedSender<Event>,
     id: usize,
 }
 
 impl DeviceHandler {
-    pub fn new(id: usize, event_tx: Sender<Event>, rt_handle: runtime::Handle) -> Self {
+    pub fn new(id: usize, event_tx: UnboundedSender<Event>) -> Self {
         Self {
             id,
             event_tx,
-            rt_handle,
         }
     }
 
-    fn send_event_spawned(&self, event: DeviceEvent) {
-        let tx = self.event_tx.clone();
-        let id = self.id;
-        self.rt_handle.spawn(async move {
-            if let Err(err) = tx.send(Event::FromDevice { id, event }).await {
-                error!("Failed to send event: {err}");
-            }
-        });
+    fn send_event(&self, event: DeviceEvent) {
+        if let Err(err) = self.event_tx.send(Event::FromDevice { id: self.id, event }) {
+            error!("Failed to send event: {err}");
+        }
     }
 }
 
 impl device::DeviceEventHandler for DeviceHandler {
     fn connection_state_changed(&self, state: device::DeviceConnectionState) {
-        self.send_event_spawned(DeviceEvent::StateChanged(state));
+        self.send_event(DeviceEvent::StateChanged(state));
     }
 
     fn volume_changed(&self, _volume: f64) {
         #[cfg(not(target_os = "android"))]
-        self.send_event_spawned(DeviceEvent::VolumeChanged(_volume));
+        self.send_event(DeviceEvent::VolumeChanged(_volume));
     }
 
     fn time_changed(&self, _time: f64) {
         #[cfg(not(target_os = "android"))]
-        self.send_event_spawned(DeviceEvent::TimeChanged(_time));
+        self.send_event(DeviceEvent::TimeChanged(_time));
     }
 
     fn playback_state_changed(&self, _state: device::PlaybackState) {
         #[cfg(not(target_os = "android"))]
-        self.send_event_spawned(DeviceEvent::PlaybackStateChanged(_state));
+        self.send_event(DeviceEvent::PlaybackStateChanged(_state));
     }
 
     fn duration_changed(&self, _duration: f64) {
         #[cfg(not(target_os = "android"))]
-        self.send_event_spawned(DeviceEvent::DurationChanged(_duration));
+        self.send_event(DeviceEvent::DurationChanged(_duration));
     }
 
     fn speed_changed(&self, _speed: f64) {
         #[cfg(not(target_os = "android"))]
-        self.send_event_spawned(DeviceEvent::SpeedChanged(_speed));
+        self.send_event(DeviceEvent::SpeedChanged(_speed));
     }
 
     fn source_changed(&self, source: device::Source) {
-        self.send_event_spawned(DeviceEvent::SourceChanged(source));
+        self.send_event(DeviceEvent::SourceChanged(source));
     }
 
     fn key_event(&self, _event: device::KeyEvent) {}

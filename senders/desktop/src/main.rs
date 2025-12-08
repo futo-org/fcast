@@ -32,7 +32,7 @@ use std::{fmt::Write, path::PathBuf};
 use tokio::{
     io::AsyncReadExt,
     runtime::Runtime,
-    sync::mpsc::{Sender, channel},
+    sync::mpsc::{Sender, UnboundedSender, channel},
 };
 use tracing::{debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
@@ -68,7 +68,7 @@ async fn list_directory(
     canceler: Canceler,
     id: u32,
     path: PathBuf,
-    event_tx: Sender<Event>,
+    event_tx: UnboundedSender<Event>,
 ) -> Result<()> {
     let mut dir_entries = tokio::fs::read_dir(&path).await?;
     let mut entries = Vec::new();
@@ -100,9 +100,7 @@ async fn list_directory(
         }
     }
 
-    event_tx
-        .send(Event::DirectoryListing { id, entries })
-        .await?;
+    event_tx.send(Event::DirectoryListing { id, entries })?;
 
     Ok(())
 }
@@ -112,7 +110,7 @@ async fn process_files(
     id: u32,
     mut root_path: PathBuf,
     files: Vec<String>,
-    event_tx: Sender<Event>,
+    event_tx: UnboundedSender<Event>,
 ) -> Result<()> {
     let mut media_files = Vec::new();
     for name in files {
@@ -145,12 +143,10 @@ async fn process_files(
     }
 
     if !media_files.is_empty() {
-        event_tx
-            .send(Event::FilesListing {
-                id,
-                entries: media_files,
-            })
-            .await?;
+        event_tx.send(Event::FilesListing {
+            id,
+            entries: media_files,
+        })?;
     }
 
     Ok(())
@@ -215,14 +211,14 @@ struct SessionState {
 struct Application {
     cast_ctx: CastContext,
     ui_weak: slint::Weak<MainWindow>,
-    event_tx: Sender<Event>,
+    event_tx: UnboundedSender<Event>,
     devices: HashMap<String, DeviceInfo>,
     current_session_id: usize,
     current_local_media_id: u32,
     session_state: Option<SessionState>,
 }
 
-async fn spawn_video_source_fetcher(event_tx: Sender<Event>) -> Sender<FetchEvent> {
+async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<FetchEvent> {
     #[allow(unused_mut)]
     let (video_source_fetcher_tx, mut video_source_fetcher_rx) = channel::<FetchEvent>(10);
 
@@ -333,12 +329,9 @@ async fn spawn_video_source_fetcher(event_tx: Sender<Event>) -> Sender<FetchEven
 
 impl Application {
     /// Must be called from a tokio runtime.
-    pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: Sender<Event>) -> Result<Self> {
+    pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
         let cast_ctx = CastContext::new()?;
-        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(
-            event_tx.clone(),
-            tokio::runtime::Handle::current(),
-        )));
+        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(event_tx.clone())));
 
         Ok(Self {
             cast_ctx,
@@ -653,7 +646,6 @@ impl Application {
                         Arc::new(mcore::DeviceHandler::new(
                             self.current_session_id,
                             self.event_tx.clone(),
-                            tokio::runtime::Handle::current(),
                         )),
                         1000,
                     ) {
@@ -1241,7 +1233,7 @@ impl Application {
 
     pub async fn run_event_loop(
         mut self,
-        mut event_rx: tokio::sync::mpsc::Receiver<Event>,
+        mut event_rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
     ) -> Result<()> {
         tracing_gstreamer::integrate_events();
         gst::log::remove_default_log_function();
@@ -1427,7 +1419,7 @@ fn main() -> Result<()> {
 
     let runtime = Runtime::new()?;
 
-    let (event_tx, event_rx) = channel::<Event>(100);
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
     let ui = MainWindow::new()?;
 
@@ -1451,9 +1443,7 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_connect_to_device({
         let event_tx = event_tx.clone();
         move |device_name| {
-            if let Err(err) =
-                event_tx.blocking_send(Event::ConnectToDevice(device_name.to_string()))
-            {
+            if let Err(err) = event_tx.send(Event::ConnectToDevice(device_name.to_string())) {
                 error!("on_connect_to_device: failed to send event: {err}");
             }
         }
@@ -1463,7 +1453,7 @@ fn main() -> Result<()> {
         let event_tx = event_tx.clone();
         move |video_uid, audio_uid, scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
-                .blocking_send(Event::StartCast {
+                .send(Event::StartCast {
                     video_uid: if video_uid >= 0 {
                         Some(video_uid as usize)
                     } else {
@@ -1485,49 +1475,43 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_stop_cast({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.blocking_send(Event::EndSession).unwrap();
+            event_tx.send(Event::EndSession).unwrap();
         }
     });
 
     ui.global::<Bridge>().on_reload_video_sources({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.blocking_send(Event::ReloadVideoSources).unwrap();
+            event_tx.send(Event::ReloadVideoSources).unwrap();
         }
     });
 
     ui.global::<Bridge>().on_select_input_type({
         let event_tx = event_tx.clone();
         move |input_type| match input_type {
-            UiInputType::LocalMedia => event_tx
-                .blocking_send(Event::StartLocalMediaSession)
-                .unwrap(),
-            UiInputType::Mirroring => event_tx
-                .blocking_send(Event::StartMirroringSession)
-                .unwrap(),
+            UiInputType::LocalMedia => event_tx.send(Event::StartLocalMediaSession).unwrap(),
+            UiInputType::Mirroring => event_tx.send(Event::StartMirroringSession).unwrap(),
         }
     });
 
     ui.global::<Bridge>().on_change_dir_child({
         let event_tx = event_tx.clone();
         move |dir_id| {
-            event_tx.blocking_send(Event::ChangeDir(dir_id)).unwrap();
+            event_tx.send(Event::ChangeDir(dir_id)).unwrap();
         }
     });
 
     ui.global::<Bridge>().on_change_dir_parent({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.blocking_send(Event::ChangeDirParent).unwrap();
+            event_tx.send(Event::ChangeDirParent).unwrap();
         }
     });
 
     ui.global::<Bridge>().on_cast_local_media({
         let event_tx = event_tx.clone();
         move |file_id| {
-            event_tx
-                .blocking_send(Event::CastLocalMedia(file_id))
-                .unwrap();
+            event_tx.send(Event::CastLocalMedia(file_id)).unwrap();
         }
     });
 
@@ -1544,7 +1528,7 @@ fn main() -> Result<()> {
         let event_tx = event_tx.clone();
         move |seconds: f32, force_complete: bool| {
             event_tx
-                .blocking_send(Event::Seek {
+                .send(Event::Seek {
                     seconds: seconds as f64,
                     force_complete,
                 })
@@ -1556,7 +1540,7 @@ fn main() -> Result<()> {
         let event_tx = event_tx.clone();
         move |state: UiPlaybackState| {
             event_tx
-                .blocking_send(Event::ChangePlaybackState(match state {
+                .send(Event::ChangePlaybackState(match state {
                     UiPlaybackState::Idle => device::PlaybackState::Idle,
                     UiPlaybackState::Playing => device::PlaybackState::Playing,
                     UiPlaybackState::Paused => device::PlaybackState::Paused,
@@ -1570,7 +1554,7 @@ fn main() -> Result<()> {
         let event_tx = event_tx.clone();
         move |volume: f32, force_complete: bool| {
             event_tx
-                .blocking_send(Event::ChangeVolume {
+                .send(Event::ChangeVolume {
                     volume: volume as f64,
                     force_complete,
                 })
@@ -1581,7 +1565,7 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_disconnect({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.blocking_send(Event::EndSession).unwrap();
+            event_tx.send(Event::EndSession).unwrap();
         }
     });
 
@@ -1616,11 +1600,9 @@ fn main() -> Result<()> {
                 }
             };
 
+            event_tx.send(Event::DeviceAvailable(device_info)).unwrap();
             event_tx
-                .blocking_send(Event::DeviceAvailable(device_info))
-                .unwrap();
-            event_tx
-                .blocking_send(Event::ConnectToDevice(name_shared.to_string()))
+                .send(Event::ConnectToDevice(name_shared.to_string()))
                 .unwrap();
         }
     });
@@ -1653,7 +1635,7 @@ fn main() -> Result<()> {
     ui.run()?;
 
     let res = runtime.block_on(async move {
-        let _ = event_tx.send(Event::Quit).await;
+        let _ = event_tx.send(Event::Quit);
         event_loop_jh.await
     });
 

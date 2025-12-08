@@ -286,7 +286,7 @@ fn add_audio_src(
 
 fn add_bus_handler(
     pipeline: &gst::Pipeline,
-    event_tx: tokio::sync::mpsc::Sender<Event>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
     rt_handle: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     rt_handle.spawn({
@@ -302,7 +302,7 @@ fn add_bus_handler(
             while let Some(msg) = messages.next().await {
                 use gst::MessageView;
                 match msg.view() {
-                    MessageView::Eos(..) => if let Err(err) = event_tx.send(Event::EndSession).await {
+                    MessageView::Eos(..) => if let Err(err) = event_tx.send(Event::EndSession) {
                         error!(?err, "Failed to send event");
                     },
                     MessageView::Error(err) => {
@@ -312,7 +312,7 @@ fn add_bus_handler(
                             debug = ?err.debug(),
                             "Error",
                         );
-                        if let Err(err) = event_tx.send(Event::EndSession).await {
+                        if let Err(err) = event_tx.send(Event::EndSession) {
                             error!(?err, "Failed to send event");
                         }
                     }
@@ -342,7 +342,7 @@ fn add_bus_handler(
 
 fn create_webrtcsink(
     rt_handle: tokio::runtime::Handle,
-    event_tx: tokio::sync::mpsc::Sender<Event>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
 ) -> anyhow::Result<gst_rs_webrtc::webrtcsink::BaseWebRTCSink> {
     let signaller = crate::whep_signaller::WhepServerSignaller::default();
     signaller.connect(
@@ -364,7 +364,6 @@ fn create_webrtcsink(
             rt_handle.spawn(async move {
                 event_tx
                     .send(Event::SignallerStarted { bound_port })
-                    .await
                     .unwrap();
             });
 
@@ -461,7 +460,7 @@ impl WhepSink {
     #[cfg(target_os = "android")]
     pub fn new(
         source_config: SourceConfig,
-        event_tx: tokio::sync::mpsc::Sender<Event>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
         rt_handle: tokio::runtime::Handle,
         max_width: u32,
         max_height: u32,
@@ -500,7 +499,7 @@ impl WhepSink {
 
     #[cfg(not(target_os = "android"))]
     pub async fn from_preview(
-        event_tx: tokio::sync::mpsc::Sender<Event>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
         rt_handle: tokio::runtime::Handle,
         preview_pipeline: Option<PreviewPipeline>,
         audio_src: Option<AudioSource>,

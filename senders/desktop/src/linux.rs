@@ -66,7 +66,7 @@ fn get_x11_targets(conn: &xcb::Connection) -> Result<Vec<(usize, VideoSource)>> 
 
 pub async fn video_source_fetch_worker(
     mut rx: tokio::sync::mpsc::Receiver<FetchEvent>,
-    event_tx: tokio::sync::mpsc::Sender<Event>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
 ) {
     let mut _proxy = None;
     let mut _session: Option<ashpd::desktop::Session<'_, ashpd::desktop::screencast::Screencast>> =
@@ -87,7 +87,6 @@ pub async fn video_source_fetch_worker(
                 error!(?err, "Failed to connect with XCB");
                 event_tx
                     .send(Event::UnsupportedDisplaySystem)
-                    .await
                     .expect("event loop is not running");
                 return;
             }
@@ -95,10 +94,7 @@ pub async fn video_source_fetch_worker(
         conn = Some(xcb_connection.0);
         WindowingSystem::X11
     } else {
-        event_tx
-            .send(Event::UnsupportedDisplaySystem)
-            .await
-            .unwrap();
+        event_tx.send(Event::UnsupportedDisplaySystem).unwrap();
         return;
     };
 
@@ -207,7 +203,6 @@ pub async fn video_source_fetch_worker(
                             fd,
                         },
                     )]))
-                    .await
                     .expect("event loop is not running");
 
                 _proxy = Some(new_proxy);
@@ -229,7 +224,6 @@ pub async fn video_source_fetch_worker(
                 };
                 event_tx
                     .send(Event::VideosAvailable(sources))
-                    .await
                     .expect("event loop is not running");
             }
             (FetchEvent::Quit, _) => break,

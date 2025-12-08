@@ -63,7 +63,7 @@ fn call_java_method_no_args(app: &slint::android::AndroidApp, method: JavaMethod
 
 struct Application {
     ui_weak: slint::Weak<MainWindow>,
-    event_tx: tokio::sync::mpsc::Sender<Event>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
     devices: HashMap<String, DeviceInfo>,
     cast_ctx: CastContext,
     active_device: Option<Arc<dyn device::CastingDevice>>,
@@ -77,7 +77,7 @@ struct Application {
 impl Application {
     pub async fn new(
         ui_weak: slint::Weak<MainWindow>,
-        event_tx: tokio::sync::mpsc::Sender<Event>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
         android_app: slint::android::AndroidApp,
     ) -> Result<Self> {
         std::thread::spawn({
@@ -85,7 +85,7 @@ impl Application {
             move || loop {
                 match GLOB_EVENT_CHAN.1.recv() {
                     Ok(event) => {
-                        if let Err(err) = event_tx.blocking_send(event) {
+                        if let Err(err) = event_tx.send(event) {
                             error!("Failed to forward event to event loop: {err}");
                             break;
                         }
@@ -173,7 +173,6 @@ impl Application {
                 Arc::new(mcore::DeviceHandler::new(
                     self.current_device_id,
                     self.event_tx.clone(),
-                    tokio::runtime::Handle::current(),
                 )),
                 1000,
             )
@@ -438,7 +437,7 @@ impl Application {
 
     pub async fn run_event_loop(
         mut self,
-        mut event_rx: tokio::sync::mpsc::Receiver<Event>,
+        mut event_rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
     ) -> Result<()> {
         tracing_gstreamer::integrate_events();
         gst::log::remove_default_log_function();
@@ -480,13 +479,13 @@ fn android_main(app: slint::android::AndroidApp) {
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<Event>(100);
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
     ui.global::<Bridge>().on_connect_receiver({
         let event_tx = event_tx.clone();
         move |device_name| {
             event_tx
-                .blocking_send(Event::ConnectToDevice(device_name.to_string()))
+                .send(Event::ConnectToDevice(device_name.to_string()))
                 .unwrap();
         }
     });
@@ -495,7 +494,7 @@ fn android_main(app: slint::android::AndroidApp) {
         let event_tx = event_tx.clone();
         move |scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
-                .blocking_send(Event::StartCast {
+                .send(Event::StartCast {
                     scale_width: scale_width as u32,
                     scale_height: scale_height as u32,
                     max_framerate: max_framerate as u32,
@@ -507,7 +506,7 @@ fn android_main(app: slint::android::AndroidApp) {
     ui.global::<Bridge>().on_stop_casting({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.blocking_send(Event::EndSession).unwrap();
+            event_tx.send(Event::EndSession).unwrap();
         }
     });
 
@@ -533,7 +532,7 @@ fn android_main(app: slint::android::AndroidApp) {
     ui.run().unwrap();
 
     runtime.spawn(async move {
-        event_tx.send(Event::Quit).await.unwrap();
+        event_tx.send(Event::Quit).unwrap();
         app_jh.await.unwrap();
     });
 
