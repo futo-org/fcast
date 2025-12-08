@@ -38,7 +38,7 @@ export component Button {
         disabled when !root.enabled : {
             // i-border.border-color: root.primary || root.checked ? transparent : FluentPalette.border;
             // root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-disabled : FluentPalette.text-disabled;
-            root.text-color: FluentPalette.neutral-1100;
+            root.text-color: FluentPalette.neutral-1000;
 
             // i-background.background: @linear-gradient(133deg, #0f0f0f 0%, #0f0f0f 100%);
             i-background.background: #0f0f0f; // @linear-gradient(133deg, #0f0f0f 0%, #0f0f0f 100%);
@@ -124,6 +124,8 @@ export component Button {
     }
 
     i-touch-area := TouchArea {
+        // mouse-cursor: pointer;
+
         clicked => {
             if (root.checkable) {
                 root.checked = !root.checked;

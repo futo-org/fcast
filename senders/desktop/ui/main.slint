@@ -15,6 +15,7 @@ import {
     FText,
     ListView,
 } from "../../ui-components/std-widgets.slint";
+import { FocusBorder } from "../../ui-components/components.slint";
 import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
 import "../../ui-components/fonts/Outfit-Regular.ttf";
 
@@ -84,7 +85,11 @@ export global Bridge {
     in property <bool> is-mirroring-supported: false;
     in property <string> current-directory: "";
     in property <[string]> devices: [
-        "Test",
+        "Test0 ##################################",
+        "Test1",
+        "Test2",
+        "Test3",
+        "Test4",
     ];
     in property <string> log-string;
 
@@ -172,124 +177,235 @@ export global Bridge {
 
 component Spacer inherits Rectangle { }
 
-component ConnectView inherits Rectangle {
-    VerticalBox {
-        FText {
-            horizontal-alignment: center;
-            font-weight: 600;
-            text: "Connect to your receiver";
+component DeviceListItem {
+    in property <string> dev-name;
+
+    forward-focus: focus-scope;
+
+    accessible-role: list-item;
+
+    states [
+        hover when i-touch-area.has-hover: {
+            // background: Palette.selection-background;
+            i-background.background: #FFFFFF0D;
         }
+    ]
 
-        ListView {
-            for device in Bridge.devices: Rectangle {
-                states [
-                    hover when ta.has-hover: {
-                        background: Palette.selection-background;
-                    }
-                ]
+    i-touch-area := TouchArea {
+        // mouse-cursor: pointer;
+        clicked => {
+            // Bridge.state = State.Connecting;
+            // self.mouse-cursor = MouseCursor.default;
+            // Bridge.connect-to-device(device);
+            Bridge.connect-to-device(dev-name);
+            // Bridge.connected-device = device;
+        }
+    }
 
-                ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        // Bridge.state = State.Connecting;
-                        self.mouse-cursor = MouseCursor.default;
-                        Bridge.connect-to-device(device);
-                        // Bridge.connected-device = device;
+    i-background := Rectangle {
+        VerticalLayout {
+            // padding-top: 13px;
+            // padding-bottom: 13px;
+
+            HorizontalBox {
+                padding-top: 13px;
+                padding-bottom: 13px;
+
+                Image {
+                    source: @image-url("./tv.svg");
+                    width: 24px;
+                    vertical-alignment: center;
+                }
+
+                FText {
+                    text: dev-name;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Spacer {}
+
+                Rectangle {
+                    background: #0DC03F0F;
+                    border-radius: 4px;
+                    // Padding not working for some reason?
+                    // padding-left: 8px;
+                    // padding-right: 8px;
+                    width: available-label.width + 8px * 2;
+
+                    available-label := FText {
+                        text: "Available";
+                        color: #0DC03F;
                     }
                 }
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 1px;
+                background: #FFFFFF0D;
+            }
+        }
+    }
+
+    focus-scope := FocusScope {
+        x: 0;
+        width: 0;
+
+        key-pressed(event) => {
+            if (event.text == "\n") {
+                i-touch-area.clicked();
+                return accept;
+            }
+
+            return reject;
+        }
+    }
+
+    // if (root.has-focus) : FocusBorder {
+    if (focus-scope.has-focus) : FocusBorder {
+        border-radius: i-background.border-radius;
+    }
+}
+
+component ConnectView inherits Rectangle {
+    HorizontalLayout {
+        if root.width > 500px: Rectangle {
+            width: 250px;
+            height: 100%;
+            background: #0000004D;
+
+            VerticalBox {
+                Image {
+                    source: @image-url("fcast-icon.png");
+                    width: 64px;
+                }
+
+                FText {
+                    text: "FCast Sender";
+                    font-size: 20px;
+                    font-weight: 900;
+                }
+
+                FText {
+                    text: "Make sure the FCast Receiver app is open and the device is connected to Wi-Fi or your home network. Once connected, the FCast Sender app will find it automatically.";
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: grey;
+                }
+
+                Spacer {}
+            }
+        }
+
+        Rectangle {
+            VerticalBox {
+                FText {
+                    // horizontal-alignment: center;
+                    font-weight: 700;
+                    text: "Available receivers";
+                }
+
+                ListView {
+                    for device in Bridge.devices: DeviceListItem {
+                        dev-name: device;
+                    }
+                }
+
+                property <bool> is-showing-manual-connect: false;
 
                 HorizontalBox {
+                    alignment: space-between;
+
                     FText {
-                        text: device;
+                        text: "Unable to see the device you're looking for?";
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    Button {
+                        text: "Connect via IP";
+                        clicked => {
+                            is-showing-manual-connect = !is-showing-manual-connect;
+                        }
                     }
                 }
-            }
-        }
 
-        property <bool> is-showing-manual-connect: false;
+                if is-showing-manual-connect: VerticalBox {
+                    HorizontalBox {
+                        FText {
+                            vertical-alignment: center;
+                            text: "Protocol:";
+                            width: 15%;
+                        }
 
-        FText {
-            text: (is-showing-manual-connect ? "↓ " : "→ ") + " Connect manually";
-            TouchArea {
-                mouse-cursor: pointer;
-                clicked => {
-                    is-showing-manual-connect = !is-showing-manual-connect;
+                        protocol-input := ComboBox {
+                            model: ["FCast", "Google cast"];
+                        }
+                    }
+
+                    HorizontalBox {
+                        FText {
+                            vertical-alignment: center;
+                            text: "Name:";
+                            width: 15%;
+                        }
+
+                        name-input := LineEdit {
+                            placeholder-text: "My Fcast Receiver";
+                        }
+                    }
+
+                    HorizontalBox {
+                        FText {
+                            vertical-alignment: center;
+                            text: "Port:";
+                            width: 15%;
+                        }
+
+                        port-input := LineEdit {
+                            input-type: number;
+                            text: "46899";
+                        }
+                    }
+
+                    property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
+
+                    if !port-input.text.is-empty && !port-is-valid: FText {
+                        horizontal-alignment: center;
+                        color: red;
+                        text: "Invalid port (must be in the range 1-65535)";
+                    }
+
+                    HorizontalBox {
+                        FText {
+                            vertical-alignment: center;
+                            text: "Address:";
+                            width: 15%;
+                        }
+
+                        address-input := LineEdit { }
+                    }
+
+                    property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
+
+                    if !address-input.text.is-empty && !address-is-valid: FText {
+                        horizontal-alignment: center;
+                        color: red;
+                        text: "Invalid address";
+                    }
+
+                    Button {
+                        enabled: !name-input.text.is-empty && port-is-valid && address-is-valid;
+                        text: "Connect";
+                        clicked => Bridge.connect-manually(
+                            protocol-input.current-value == "FCast" ? UiCastProtocol.FCast : UiCastProtocol.GCast,
+                            name-input.text,
+                            port-input.text.to-float(),
+                            address-input.text);
+                    }
                 }
-            }
-        }
-
-        if is-showing-manual-connect: VerticalBox {
-            HorizontalBox {
-                FText {
-                    vertical-alignment: center;
-                    text: "Protocol:";
-                    width: 15%;
-                }
-
-                protocol-input := ComboBox {
-                    model: ["FCast", "Google cast"];
-                }
-            }
-
-            HorizontalBox {
-                FText {
-                    vertical-alignment: center;
-                    text: "Name:";
-                    width: 15%;
-                }
-
-                name-input := LineEdit {
-                    placeholder-text: "My Fcast Receiver";
-                }
-            }
-
-            HorizontalBox {
-                FText {
-                    vertical-alignment: center;
-                    text: "Port:";
-                    width: 15%;
-                }
-
-                port-input := LineEdit {
-                    input-type: number;
-                    text: "46899";
-                }
-            }
-
-            property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
-
-            if !port-input.text.is-empty && !port-is-valid: FText {
-                horizontal-alignment: center;
-                color: red;
-                text: "Invalid port (must be in the range 1-65535)";
-            }
-
-            HorizontalBox {
-                FText {
-                    vertical-alignment: center;
-                    text: "Address:";
-                    width: 15%;
-                }
-
-                address-input := LineEdit { }
-            }
-
-            property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
-
-            if !address-input.text.is-empty && !address-is-valid: FText {
-                horizontal-alignment: center;
-                color: red;
-                text: "Invalid address";
-            }
-
-            Button {
-                enabled: !name-input.text.is-empty && port-is-valid && address-is-valid;
-                text: "Connect";
-                clicked => Bridge.connect-manually(
-                    protocol-input.current-value == "FCast" ? UiCastProtocol.FCast : UiCastProtocol.GCast,
-                    name-input.text,
-                    port-input.text.to-float(),
-                    address-input.text);
             }
         }
     }
@@ -862,8 +978,8 @@ export component MainWindow inherits Window {
     }
 
     if Bridge.app-state == UiAppState.Disconnected: ConnectView {
-        width: root.width.min(500px);
-        height: root.height.min(500px);
+        // width: root.width.min(500px);
+        // height: root.height.min(500px);
     }
 
     if Bridge.app-state == UiAppState.Connecting: ConnectingView { }
@@ -920,6 +1036,10 @@ export component CrashWindow inherits Window {
 
     preferred-width: 800px;
     preferred-height: 500px;
+
+    default-font-family: "Outfit";
+    default-font-size: 15px;
+    default-font-weight: 400;
 
     background: Palette.background;
 
