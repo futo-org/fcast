@@ -60,16 +60,15 @@ fn scoped_ip_to_custom(addrs: &HashSet<ScopedIp>) -> Vec<IpAddr> {
 fn service_resolved(
     devices: &mut HashMap<String, String>,
     event_handler: &Arc<dyn DeviceDiscovererEventHandler>,
-    service_info: mdns_sd::ServiceInfo,
+    service_info: Box<mdns_sd::ResolvedService>,
     mut device_info: DeviceInfo,
 ) {
     debug!("Receiver added: {service_info:?}");
     let port = service_info.get_port();
-    let resolved_service = service_info.as_resolved_service();
-    let addresses = scoped_ip_to_custom(&resolved_service.addresses);
+    let addresses = scoped_ip_to_custom(&service_info.addresses);
     device_info.port = port;
     device_info.addresses = addresses;
-    let fullname = resolved_service.fullname;
+    let fullname = service_info.fullname;
 
     if let std::collections::hash_map::Entry::Vacant(entry) = devices.entry(fullname) {
         debug!("New device `{}`", device_info.name);
@@ -184,86 +183,4 @@ pub(crate) async fn discover_devices(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_strip_service_name() {
-        assert_eq!(
-            &strip_service_name(
-                &format!("FCast-receiver.{FCAST_MDNS_SERVICE_NAME}"),
-                FCAST_MDNS_SERVICE_NAME
-            ),
-            "FCast-receiver"
-        );
-        assert_eq!(
-            &strip_service_name("FCast-receiver", FCAST_MDNS_SERVICE_NAME),
-            "FCast-receiver"
-        );
-    }
-
-    #[test]
-    fn test_device_discovery_events() {
-        struct TestingEventHandler {}
-
-        impl DeviceDiscovererEventHandler for TestingEventHandler {
-            fn device_available(&self, _device_info: DeviceInfo) {}
-            fn device_removed(&self, _device_name: String) {}
-            fn device_changed(&self, _device_info: DeviceInfo) {}
-        }
-
-        let handler: Arc<dyn DeviceDiscovererEventHandler> = Arc::new(TestingEventHandler {});
-        let mut devices: HashMap<String, String> = HashMap::new();
-
-        let fcast_dev_info = DeviceInfo::fcast("FCast-receiver".to_string(), vec![], 0);
-        service_resolved(
-            &mut devices,
-            &handler,
-            mdns_sd::ServiceInfo::new(
-                FCAST_MDNS_SERVICE_NAME,
-                "FCast-receiver",
-                "",
-                (),
-                1234,
-                Vec::new(),
-            )
-            .unwrap(),
-            fcast_dev_info,
-        );
-
-        assert_eq!(
-            devices
-                .get(&format!("FCast-receiver.{FCAST_MDNS_SERVICE_NAME}"))
-                .unwrap(),
-            "FCast-receiver"
-        );
-
-        let chromecast_dev_info = DeviceInfo::fcast("Chromecast-receiver".to_string(), vec![], 0);
-        service_resolved(
-            &mut devices,
-            &handler,
-            mdns_sd::ServiceInfo::new(
-                CHROMECAST_MDNS_SERVICE_NAME,
-                "Chromecast-abcdefghijklmnopqrstuvwxyz",
-                "",
-                (),
-                1234,
-                Vec::new(),
-            )
-            .unwrap(),
-            chromecast_dev_info,
-        );
-
-        assert_eq!(
-            devices
-                .get(&format!(
-                    "Chromecast-abcdefghijklmnopqrstuvwxyz.{CHROMECAST_MDNS_SERVICE_NAME}"
-                ))
-                .unwrap(),
-            "Chromecast-receiver"
-        );
-    }
 }

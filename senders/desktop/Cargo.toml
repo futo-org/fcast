@@ -9,7 +9,6 @@ publish = false
 [dependencies]
 fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
 mcore.path = "../../sdk/mirroring_core/"
-mdns-sd = "0.13.9"
 flume = "0.11.1"
 tracing-gstreamer = "0.9.0"
 tracing-panic = "0.1.2"

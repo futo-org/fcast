@@ -32,7 +32,7 @@ use std::{fmt::Write, path::PathBuf};
 use tokio::{
     io::AsyncReadExt,
     runtime::Runtime,
-    sync::mpsc::{Sender, UnboundedSender, channel},
+    sync::mpsc::{channel, Sender, UnboundedSender},
 };
 use tracing::{debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
@@ -100,7 +100,8 @@ async fn list_directory(
         }
     }
 
-    event_tx.send(Event::DirectoryListing { id, entries })?;
+    event_tx
+        .send(Event::DirectoryListing { id, entries })?;
 
     Ok(())
 }
@@ -143,10 +144,11 @@ async fn process_files(
     }
 
     if !media_files.is_empty() {
-        event_tx.send(Event::FilesListing {
-            id,
-            entries: media_files,
-        })?;
+        event_tx
+            .send(Event::FilesListing {
+                id,
+                entries: media_files,
+            })?;
     }
 
     Ok(())
@@ -331,7 +333,9 @@ impl Application {
     /// Must be called from a tokio runtime.
     pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
         let cast_ctx = CastContext::new()?;
-        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(event_tx.clone())));
+        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(
+            event_tx.clone(),
+        )));
 
         Ok(Self {
             cast_ctx,
@@ -1443,7 +1447,9 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_connect_to_device({
         let event_tx = event_tx.clone();
         move |device_name| {
-            if let Err(err) = event_tx.send(Event::ConnectToDevice(device_name.to_string())) {
+            if let Err(err) =
+                event_tx.send(Event::ConnectToDevice(device_name.to_string()))
+            {
                 error!("on_connect_to_device: failed to send event: {err}");
             }
         }
@@ -1489,8 +1495,12 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_select_input_type({
         let event_tx = event_tx.clone();
         move |input_type| match input_type {
-            UiInputType::LocalMedia => event_tx.send(Event::StartLocalMediaSession).unwrap(),
-            UiInputType::Mirroring => event_tx.send(Event::StartMirroringSession).unwrap(),
+            UiInputType::LocalMedia => event_tx
+                .send(Event::StartLocalMediaSession)
+                .unwrap(),
+            UiInputType::Mirroring => event_tx
+                .send(Event::StartMirroringSession)
+                .unwrap(),
         }
     });
 
@@ -1511,7 +1521,9 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_cast_local_media({
         let event_tx = event_tx.clone();
         move |file_id| {
-            event_tx.send(Event::CastLocalMedia(file_id)).unwrap();
+            event_tx
+                .send(Event::CastLocalMedia(file_id))
+                .unwrap();
         }
     });
 
@@ -1600,7 +1612,9 @@ fn main() -> Result<()> {
                 }
             };
 
-            event_tx.send(Event::DeviceAvailable(device_info)).unwrap();
+            event_tx
+                .send(Event::DeviceAvailable(device_info))
+                .unwrap();
             event_tx
                 .send(Event::ConnectToDevice(name_shared.to_string()))
                 .unwrap();

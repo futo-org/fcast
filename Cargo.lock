@@ -1631,7 +1631,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "mcore",
- "mdns-sd 0.13.11",
  "objc2-core-graphics",
  "parking_lot",
  "slint",
@@ -1958,7 +1957,7 @@ dependencies = [
  "libc",
  "log",
  "log-panics",
- "mdns-sd 0.14.1",
+ "mdns-sd",
  "prost",
  "prost-build",
  "rustls-pki-types",
@@ -3571,16 +3570,6 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "if-addrs"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf39cc0423ee66021dc5eccface85580e4a001e0c5288bae8bea7ecb69225e90"
@@ -4137,31 +4126,17 @@ dependencies = [
 
 [[package]]
 name = "mdns-sd"
-version = "0.13.11"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328f4e1041f7cfeb3affccb814ddbe2f004856a2ce769c8bf22080d74c5204c6"
+checksum = "f43e377ae111ceb4630fc8239cf7af8c894193f02bb23976177a475007977417"
 dependencies = [
  "fastrand",
  "flume",
- "if-addrs 0.13.4",
- "log",
- "mio",
- "socket2 0.5.10",
-]
-
-[[package]]
-name = "mdns-sd"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e0a59b04e17a195b0674198b3182931801c4759d00f36acad51b5a97210a692"
-dependencies = [
- "fastrand",
- "flume",
- "if-addrs 0.14.0",
+ "if-addrs",
  "log",
  "mio",
  "socket-pktinfo",
- "socket2 0.6.1",
+ "socket2",
 ]
 
 [[package]]
@@ -6167,18 +6142,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "927136cc2ae6a1b0e66ac6b1210902b75c3f726db004a73bc18686dcd0dcd22f"
 dependencies = [
  "libc",
- "socket2 0.6.1",
+ "socket2",
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6601,7 +6566,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
- "socket2 0.6.1",
+ "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -8275,7 +8240,7 @@ dependencies = [
  "camino",
  "clap",
  "ctrlc",
- "mdns-sd 0.14.1",
+ "mdns-sd",
  "serde",
  "serde_json",
  "uniffi_bindgen",
