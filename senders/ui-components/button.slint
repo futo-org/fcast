@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-import { FluentFontSettings, FluentPalette } from "styling.slint";
+import { FluentFontSettings, FluentPalette, FCastPalette } from "styling.slint";
 import { FocusBorder } from "components.slint";
 
 export component Button {
@@ -21,7 +21,6 @@ export component Button {
     private property <brush> text-color: primary || checked ? FluentPalette.accent-foreground : FluentPalette.control-foreground;
 
     min-width: max(32px, i-layout.min-width);
-    // min-height: max(32px, i-layout.min-height);
     min-height: max(36px, i-layout.min-height);
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -36,34 +35,21 @@ export component Button {
 
     states [
         disabled when !root.enabled : {
-            // i-border.border-color: root.primary || root.checked ? transparent : FluentPalette.border;
-            // root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-disabled : FluentPalette.text-disabled;
-            root.text-color: FluentPalette.neutral-1000;
-
-            // i-background.background: @linear-gradient(133deg, #0f0f0f 0%, #0f0f0f 100%);
-            i-background.background: #0f0f0f; // @linear-gradient(133deg, #0f0f0f 0%, #0f0f0f 100%);
-            i-border.border-color: @linear-gradient(180deg, #ffffff0a 0%, #ffffff00 100%);
-
-            i-background.drop-shadow-blur: 0px;
-            i-background.drop-shadow-color: #00000000;
+            root.text-color: FCastPalette.button-disabled-text-color;
+            i-background.background: FCastPalette.button-pressed-background;
+            i-background.drop-shadow-color: FCastPalette.button-pressed-drop-shadow-color;
+            i-border.border-color: FCastPalette.button-pressed-border-color;
         }
         pressed when root.pressed : {
-            // i-background.background: root.primary || root.checked ? FluentPalette.tertiary-accent-background : FluentPalette.control-tertiary;
-            // i-border.border-color: FluentPalette.border;
             root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-secondary : FluentPalette.text-secondary;
-
-            i-background.background: @linear-gradient(133deg, #1c1c1c 0%, #121212 100%);
-            i-border.border-color: @linear-gradient(180deg, #ffffff0a 0%, #ffffff00 100%);
-
-            i-background.drop-shadow-blur: 0px;
-            i-background.drop-shadow-color: #00000029;
+            i-background.background: FCastPalette.button-pressed-background;
+            i-background.drop-shadow-color: FCastPalette.button-pressed-drop-shadow-color;
+            i-border.border-color: FCastPalette.button-pressed-border-color;
         }
         hover when i-touch-area.has-hover : {
-            // i-background.background: root.primary || root.checked ? FluentPalette.secondary-accent-background : FluentPalette.control-secondary;
-
-            i-background.background: @radial-gradient(circle, #363636 0%, #141414 100%);
-            i-background.drop-shadow-color: #2D7AF803;
-            i-border.border-color: @linear-gradient(91deg, #5192fa 0%, #2d7af8 100%);
+            i-background.background: FCastPalette.button-hover-background;
+            i-background.drop-shadow-color: FCastPalette.button-hover-drop-shadow-color;
+            i-border.border-color: FCastPalette.button-hover-border-color;
         }
         checked when root.checked : {
             i-background.background: FluentPalette.accent-background;
@@ -73,23 +59,18 @@ export component Button {
     ]
 
     i-background := Rectangle {
-        // border-radius: 4px;
-        border-radius: 7px;
-        // background: root.primary ? FluentPalette.accent-background : FluentPalette.control-background;
+        border-radius: 6px;
 
-        background: @radial-gradient(circle, #2b2b2b 0%, #141414 100%);
-
-        drop-shadow-blur: 4px;
-        drop-shadow-color: #000000;
+        background: FCastPalette.button-default-background;
+        drop-shadow-color: FCastPalette.button-default-drop-shadow-color;
 
         animate border-color { duration: 150ms; }
         // animate background, border-color { duration: 150ms; }
         i-border := Rectangle {
             border-radius: parent.border-radius;
             border-width: 1px;
-            // border-color: root.primary ? FluentPalette.accent-control-border : FluentPalette.control-border;
 
-            border-color: @linear-gradient(180deg, #ffffff1a 0%, #ffffff03 100%);
+            border-color: FCastPalette.button-default-border-color;
 
             animate border-color { duration: 50ms; }
         }

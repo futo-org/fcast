@@ -14,14 +14,23 @@ import {
     Palette,
     FText,
     ListView,
+    ScrollView,
 } from "../../ui-components/std-widgets.slint";
 import { FocusBorder } from "../../ui-components/components.slint";
-import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
+import { FCastPalette } from "../../ui-components/styling.slint";
+import {
+    Utils,
+    VideoResolutionPicker,
+    FrameratePicker,
+} from "../../../sdk/mirroring_core/ui/common.slint";
 import "../../ui-components/fonts/Outfit-Regular.ttf";
 
 export enum UiAppState {
+    Else,
+
     Disconnected,
     Connecting,
+    // Ready to cast
     SelectingInputType,
     SelectingMirroringSource,
     LocalMedia,
@@ -93,8 +102,12 @@ export global Bridge {
     ];
     in property <string> log-string;
 
-    in-out property <UiAppState> app-state: Disconnected;
+    in-out property <UiAppState> app-state: SelectingInputType;
+    // in-out property <UiAppState> app-state: Disconnected;
+    // in-out property <UiAppState> app-state: Else;
+    // in-out property <UiAppState> app-state: Connecting;
     in-out property <string> device-name: "";
+    // in-out property <string> device-name: "Test1";
     in-out property <int> selected-video-src: -1;
     // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
@@ -113,7 +126,11 @@ export global Bridge {
         { id: 0, name: "Test1" },
     ];
     in-out property <[UiMediaFileEntry]> files: [
-        { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", type: UiMediaFileType.Audio },
+        {
+            id: 0,
+            name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            type: UiMediaFileType.Audio
+        },
         { id: 0, name: "Test1", type: UiMediaFileType.Audio },
         { id: 0, name: "Test1", type: UiMediaFileType.Video },
         { id: 0, name: "Test1", type: UiMediaFileType.Audio },
@@ -127,6 +144,9 @@ export global Bridge {
     in-out property <float> playback-rate: 1.0;
     in-out property <string> track-name: "";
     in-out property <UiMediaFileType> track-type;
+
+    // in-out property <bool> is-showing-mirroring-popup: false;
+    in-out property <bool> is-showing-mirroring-popup: true;
 
     public function change-state(to: UiAppState) {
         if to == UiAppState.Disconnected {
@@ -186,35 +206,42 @@ component DeviceListItem {
 
     states [
         hover when i-touch-area.has-hover: {
-            // background: Palette.selection-background;
-            i-background.background: #FFFFFF0D;
+            i-background.background: FCastPalette.neutral-1000;
         }
     ]
 
     i-touch-area := TouchArea {
         // mouse-cursor: pointer;
         clicked => {
-            // Bridge.state = State.Connecting;
             // self.mouse-cursor = MouseCursor.default;
-            // Bridge.connect-to-device(device);
+            Bridge.device-name = dev-name;
             Bridge.connect-to-device(dev-name);
-            // Bridge.connected-device = device;
         }
     }
 
+    // height: 66px;
+
     i-background := Rectangle {
+        background: #13151B;
+        border-radius: 8px;
+
         VerticalLayout {
-            // padding-top: 13px;
-            // padding-bottom: 13px;
-
             HorizontalBox {
-                padding-top: 13px;
-                padding-bottom: 13px;
+                // padding-top: 13px;
+                // padding-bottom: 13px;
 
-                Image {
-                    source: @image-url("./tv.svg");
-                    width: 24px;
-                    vertical-alignment: center;
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    background: FCastPalette.neutral-1200;
+                    border-radius: self.height;
+
+                    Image {
+                        source: @image-url("./tv.svg");
+                        width: 24px;
+                        vertical-alignment: center;
+                        colorize: FCastPalette.neutral-800;
+                    }
                 }
 
                 FText {
@@ -224,28 +251,93 @@ component DeviceListItem {
                     overflow: elide;
                 }
 
-                Spacer {}
+                Spacer { }
 
-                Rectangle {
-                    background: #0DC03F0F;
-                    border-radius: 4px;
-                    // Padding not working for some reason?
-                    // padding-left: 8px;
-                    // padding-right: 8px;
-                    width: available-label.width + 8px * 2;
+                if Bridge.app-state == UiAppState.Connecting && Bridge.device-name == dev-name: VerticalLayout {
+                    alignment: center;
 
-                    available-label := FText {
-                        text: "Available";
-                        color: #0DC03F;
+                    HorizontalBox {
+                        Spinner {
+                            indeterminate: true;
+                        }
+
+                        FText {
+                            text: "Connecting";
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                if i-touch-area.has-hover && Bridge.app-state != UiAppState.Connecting: VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        background: FCastPalette.bg-brand-solid;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: @linear-gradient(180deg, #FFFFFF1A 0%, #FFFFFF03 100%);
+                        drop-shadow-color: #0000004D;
+
+                        i-connect-txt := HorizontalLayout {
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+
+                            FText {
+                                text: "Connect";
+                            }
+                        }
+                    }
+                }
+
+                if !i-touch-area.has-hover && Bridge.app-state != UiAppState.Connecting: VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        background: FCastPalette.positive-1200;
+                        width: i-label.preferred-width + 8px * 2;
+                        height: i-label.preferred-height;
+                        border-color: FCastPalette.positive-1100;
+                        border-radius: 4px;
+                        border-width: 1px;
+
+                        i-label := HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            padding-left: 6px;
+                            padding-right: 6px;
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Rectangle {
+                                    width: 4px;
+                                    height: 4px;
+                                    border-radius: self.width;
+                                    background: FCastPalette.status-connected;
+                                }
+                            }
+
+                            available-label := FText {
+                                vertical-alignment: center;
+                                text: "Ready";
+                                color: FCastPalette.status-connected;
+                            }
+                        }
                     }
                 }
             }
 
-            Rectangle {
-                width: 100%;
-                height: 1px;
-                background: #FFFFFF0D;
-            }
+            // Rectangle {
+            //     width: 100%;
+            //     height: 1px;
+            //     background: #FFFFFF0D;
+            // }
         }
     }
 
@@ -258,78 +350,125 @@ component DeviceListItem {
                 i-touch-area.clicked();
                 return accept;
             }
-
             return reject;
         }
     }
 
     // if (root.has-focus) : FocusBorder {
-    if (focus-scope.has-focus) : FocusBorder {
+    if (focus-scope.has-focus): FocusBorder {
         border-radius: i-background.border-radius;
     }
 }
 
+component LabelText inherits Text {
+    color: Palette.foreground;
+    font-weight: 500;
+    font-size: 20px;
+}
+
+component RegularText inherits Text {
+    color: Palette.foreground;
+    font-weight: 400;
+    font-size: 16px;
+}
+
+component SecondaryText inherits Text {
+    color: FCastPalette.neutral-600;
+    font-weight: 300;
+    font-size: 12px;
+}
+
 component ConnectView inherits Rectangle {
-    HorizontalLayout {
-        if root.width > 500px: Rectangle {
-            width: 250px;
-            height: 100%;
-            background: #0000004D;
-
-            VerticalBox {
-                Image {
-                    source: @image-url("fcast-icon.png");
-                    width: 64px;
-                }
-
-                FText {
-                    text: "FCast Sender";
-                    font-size: 20px;
-                    font-weight: 900;
-                }
-
-                FText {
-                    text: "Make sure the FCast Receiver app is open and the device is connected to Wi-Fi or your home network. Once connected, the FCast Sender app will find it automatically.";
-                    wrap: word-wrap;
-                    font-size: 12px;
-                    color: grey;
-                }
-
-                Spacer {}
-            }
-        }
-
+    // HorizontalLayout {
         Rectangle {
-            VerticalBox {
-                FText {
-                    // horizontal-alignment: center;
-                    font-weight: 700;
-                    text: "Available receivers";
-                }
+            background: FCastPalette.background-color-secondary;
 
-                ListView {
-                    for device in Bridge.devices: DeviceListItem {
-                        dev-name: device;
+            VerticalLayout {
+                VerticalBox {
+                    LabelText {
+                        text: "Available receivers";
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 4px;
+                            height: 4px;
+                            y: parent.height / 2 - self.height / 2;
+                            border-radius: self.width;
+                            background: FCastPalette.status-connected;
+                        }
+
+                        SecondaryText {
+                            text: "Scanning local network (mDNS) for FCast-enabled devices...";
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 4px;
+                            for device in Bridge.devices: DeviceListItem {
+                                dev-name: device;
+                            }
+
+                            Spacer { }
+                        }
                     }
                 }
+                // ListView {
+                //     for device in Bridge.devices: DeviceListItem {
+                //         dev-name: device;
+                //     }
+                // }
 
                 property <bool> is-showing-manual-connect: false;
 
+                Rectangle {
+                    height: 1px;
+                    background: #FFFFFF1A;
+                }
+
                 HorizontalBox {
                     alignment: space-between;
+                    padding-top: 18px;
+                    padding-right: 16px;
+                    padding-bottom: 18px;
+                    padding-left: 16px;
 
                     FText {
-                        text: "Unable to see the device you're looking for?";
+                        text: "Unable to see the device you're looking for? Connect via IP";
                         vertical-alignment: center;
                         wrap: word-wrap;
                     }
 
-                    Button {
-                        text: "Connect via IP";
-                        clicked => {
-                            is-showing-manual-connect = !is-showing-manual-connect;
+                    VerticalLayout {
+                        alignment: center;
+
+                        Rectangle {
+                            width: 18.66px;
+                            height: 18.67px;
+                            border-radius: self.height;
+                            background: #FFFFFF1A;
+
+                            Image {
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                width: 8.8px;
+                                height: 5.1px;
+                                source: @image-url("down.svg");
+                                colorize: FCastPalette.neutral-500;
+                            }
                         }
                     }
+
+                    // Button {
+                    //     text: "Connect via IP";
+                    //     clicked => {
+                    //         is-showing-manual-connect = !is-showing-manual-connect;
+                    //     }
+                    // }
                 }
 
                 if is-showing-manual-connect: VerticalBox {
@@ -408,30 +547,30 @@ component ConnectView inherits Rectangle {
                 }
             }
         }
-    }
+    // }
 }
 
-component ConnectingView inherits Rectangle {
-    width: vb.preferred-width;
-    height: vb.preferred-height;
+// component ConnectingView inherits Rectangle {
+//     width: vb.preferred-width;
+//     height: vb.preferred-height;
 
-    vb := VerticalBox {
-        Spinner {
-            indeterminate: true;
-        }
+//     vb := VerticalBox {
+//         Spinner {
+//             indeterminate: true;
+//         }
 
-        FText {
-            text: "Connecting to " + Bridge.device-name;
-            horizontal-alignment: center;
-            font-weight: 600;
-        }
+//         FText {
+//             text: "Connecting to " + Bridge.device-name;
+//             horizontal-alignment: center;
+//             font-weight: 600;
+//         }
 
-        Button {
-            text: "Cancel";
-            clicked => Bridge.disconnect();
-        }
-    }
-}
+//         Button {
+//             text: "Cancel";
+//             clicked => Bridge.disconnect();
+//         }
+//     }
+// }
 
 component UnsupportedReceiverView inherits Rectangle {
     width: vb.preferred-width;
@@ -543,7 +682,7 @@ component SelectMirroringSourceView inherits Rectangle {
                     }
 
                     vl-video := VerticalLayout {
-                        Rectangle {}
+                        Rectangle { }
 
                         Rectangle {
                             background: blueviolet.transparentize(0.8);
@@ -951,6 +1090,199 @@ component LocalMediaView inherits Rectangle {
     }
 }
 
+component SourceItem inherits Rectangle {
+    out property <bool> has-hover: i-touch-area.has-hover;
+    in property <string> label;
+    in property <string> description;
+    in property <image> icon;
+    in property <color> icon-bg-color;
+
+    callback clicked;
+
+    background: FCastPalette.neutral-1100;
+    border-color: FCastPalette.neutral-1000;
+    border-width: 1px;
+    border-radius: 6px;
+
+    preferred-width: 0px;
+
+    // width: 250px;
+    // height: 250px;
+
+    VerticalBox {
+        padding-top: 20px;
+        padding-bottom: 20px;
+
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                background: icon-bg-color;
+                width: 64px;
+                height: 64px;
+                border-radius: self.height;
+                Image {
+                    source: icon;
+                }
+            }
+        }
+
+        RegularText {
+            horizontal-alignment: center;
+            text: label;
+        }
+
+        SecondaryText {
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            text: description;
+
+            states [
+                hover when i-touch-area.has-hover: {
+                    color: white;
+                }
+            ]
+        }
+    }
+
+    // @children
+
+    states [
+        hover when i-touch-area.has-hover: {
+            border-color: FCastPalette.brand-600;
+        }
+    ]
+
+    i-touch-area := TouchArea {
+        // mouse-cursor: pointer;
+
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    i-focus-scope := FocusScope {
+        x: 0;
+        width: 0;
+
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                i-touch-area.clicked();
+                 return accept;
+            }
+
+            return reject;
+        }
+    }
+
+    if (i-focus-scope.has-focus) : FocusBorder {
+        border-radius: root.border-radius;
+    }
+}
+
+component ReadyToCastView inherits Rectangle {
+    // width: 100%;
+
+    Image {
+        width: 100%;
+        height: 100%;
+        source: @image-url("background-img.png");
+    }
+
+    Rectangle {
+        VerticalBox {
+            padding-top: 40px;
+            padding-left: 20px;
+
+            LabelText {
+                font-size: 22px;
+                text: "Ready to cast";
+            }
+
+            SecondaryText {
+                text: "Receiver is idle. Select media to start streaming.";
+                vertical-alignment: center;
+            }
+
+            // HorizontalLayout {
+            GridLayout {
+                spacing: 10px;
+
+                i-cast-media-item := SourceItem {
+                    label: "Cast media file";
+                    description: "Cast MP4, MKV, or MP3 files directly from your hard drive with zero compression.";
+                    icon: @image-url("folder-fcast.svg");
+                    icon-bg-color: #2889E821;
+
+                    clicked => {
+                    }
+                }
+
+                i-mirroring-item := SourceItem {
+                    label: "Mirror screen";
+                    description: "Share your entire desktop or a specific window. Low latency for demos and presentations.";
+                    icon: @image-url("mirror-fcast.svg");
+                    icon-bg-color: #7C3AED29;
+
+                    clicked => {
+                    }
+                }
+
+                i-test-pattern-item := SourceItem {
+                    label: "Video test pattern";
+                    description: "Validate display settings, network latency, and audio synchronization.";
+                    icon: @image-url("media-file-fcast.svg");
+                    icon-bg-color: #DB8C0E33;
+
+                    clicked => {
+                    }
+                }
+            }
+
+            Spacer {}
+        }
+    }
+}
+
+component BackView inherits Rectangle {
+    HorizontalLayout {
+        Rectangle {
+            width: root.width > 600px ? 275px : 0px;
+            background: FCastPalette.background-color-primary;
+
+            animate width { duration: 80ms; }
+
+            VerticalBox {
+                Image {
+                    source: @image-url("fcast-icon.png");
+                    width: 48px;
+                }
+
+                FText {
+                    text: "FCast Sender";
+                    font-size: 20px;
+                    font-weight: 900;
+                }
+
+                FText {
+                    text: "Make sure the FCast Receiver app is open and the device is connected to Wi-Fi or your home network. Once connected, the FCast Sender app will find it automatically.";
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: grey;
+                }
+
+                Spacer { }
+            }
+        }
+
+        if Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting: ConnectView {}
+
+        if Bridge.app-state == UiAppState.SelectingInputType: ReadyToCastView {}
+    }
+}
+
+component FCastPopupWindow inherits PopupWindow {
+}
+
 export component MainWindow inherits Window {
     title: "FCast Sender";
 
@@ -961,7 +1293,7 @@ export component MainWindow inherits Window {
     default-font-size: 15px;
     default-font-weight: 400;
 
-    background: Palette.background;
+    background: FCastPalette.background-color-primary;
 
     property <bool> is-showing-log-view: false;
 
@@ -977,28 +1309,29 @@ export component MainWindow inherits Window {
         }
     }
 
-    if Bridge.app-state == UiAppState.Disconnected: ConnectView {
-        // width: root.width.min(500px);
-        // height: root.height.min(500px);
-    }
+    BackView {}
 
-    if Bridge.app-state == UiAppState.Connecting: ConnectingView { }
+    if Bridge.is-showing-mirroring-popup : Rectangle {}
 
-    if Bridge.app-state == UiAppState.UnsupportedReceiver: UnsupportedReceiverView { }
+    // if Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting: ConnectView {}
 
-    if Bridge.app-state == UiAppState.SelectingInputType: SelectingInputTypeView { }
+    // // if Bridge.app-state == UiAppState.Connecting: ConnectingView { }
 
-    if Bridge.app-state == UiAppState.SelectingMirroringSource: SelectMirroringSourceView {
-        width: root.width.min(900px);
-    }
+    // if Bridge.app-state == UiAppState.UnsupportedReceiver: UnsupportedReceiverView { }
 
-    if Bridge.app-state == UiAppState.StartingCast: StartingCastView { }
+    // if Bridge.app-state == UiAppState.SelectingInputType: SelectingInputTypeView { }
 
-    if Bridge.app-state == UiAppState.Mirroring: MirroringView {
-        width: root.width.min(900px);
-    }
+    // if Bridge.app-state == UiAppState.SelectingMirroringSource: SelectMirroringSourceView {
+    //     width: root.width.min(900px);
+    // }
 
-    if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
+    // if Bridge.app-state == UiAppState.StartingCast: StartingCastView { }
+
+    // if Bridge.app-state == UiAppState.Mirroring: MirroringView {
+    //     width: root.width.min(900px);
+    // }
+
+    // if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
 
     if is-showing-log-view: Rectangle {
         background: parent.background.transparentize(0.0);
