@@ -132,7 +132,9 @@ pub struct MediaFileEntry {
 #[derive(Debug)]
 pub enum Event {
     // Common
-    EndSession,
+    EndSession {
+        disconnect: bool,
+    },
     ConnectToDevice(String),
     SignallerStarted {
         bound_port: u16,
@@ -154,7 +156,8 @@ pub enum Event {
     #[cfg(not(target_os = "android"))]
     StartCast {
         video_uid: Option<usize>,
-        audio_uid: Option<usize>,
+        // audio_uid: Option<usize>,
+        include_audio: bool,
         scale_width: u32,
         scale_height: u32,
         max_framerate: u32,

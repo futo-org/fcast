@@ -302,7 +302,7 @@ fn add_bus_handler(
             while let Some(msg) = messages.next().await {
                 use gst::MessageView;
                 match msg.view() {
-                    MessageView::Eos(..) => if let Err(err) = event_tx.send(Event::EndSession) {
+                    MessageView::Eos(..) => if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
                         error!(?err, "Failed to send event");
                     },
                     MessageView::Error(err) => {
@@ -312,7 +312,7 @@ fn add_bus_handler(
                             debug = ?err.debug(),
                             "Error",
                         );
-                        if let Err(err) = event_tx.send(Event::EndSession) {
+                        if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
                             error!(?err, "Failed to send event");
                         }
                     }

@@ -32,7 +32,7 @@ use std::{fmt::Write, path::PathBuf};
 use tokio::{
     io::AsyncReadExt,
     runtime::Runtime,
-    sync::mpsc::{channel, Sender, UnboundedSender},
+    sync::mpsc::{Sender, UnboundedSender, channel},
 };
 use tracing::{debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
@@ -100,8 +100,7 @@ async fn list_directory(
         }
     }
 
-    event_tx
-        .send(Event::DirectoryListing { id, entries })?;
+    event_tx.send(Event::DirectoryListing { id, entries })?;
 
     Ok(())
 }
@@ -144,11 +143,10 @@ async fn process_files(
     }
 
     if !media_files.is_empty() {
-        event_tx
-            .send(Event::FilesListing {
-                id,
-                entries: media_files,
-            })?;
+        event_tx.send(Event::FilesListing {
+            id,
+            entries: media_files,
+        })?;
     }
 
     Ok(())
@@ -187,7 +185,7 @@ enum SessionSpecificState {
         video_source_fetcher_tx: Sender<FetchEvent>,
         our_source_url: Option<String>,
         video_sources: Vec<(usize, PreviewPipeline)>,
-        audio_sources: Vec<(usize, AudioSource)>,
+        // audio_sources: Vec<(usize, AudioSource)>,
     },
     LocalMedia {
         current_id: u32,
@@ -333,9 +331,7 @@ impl Application {
     /// Must be called from a tokio runtime.
     pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
         let cast_ctx = CastContext::new()?;
-        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(
-            event_tx.clone(),
-        )));
+        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(event_tx.clone())));
 
         Ok(Self {
             cast_ctx,
@@ -362,6 +358,29 @@ impl Application {
                 error!(?err, "Failed to disconnect from device");
             }
         });
+    }
+
+    async fn end_session_no_disconnect(&mut self) -> Result<()> {
+        if let Some(session) = self.session_state.as_mut() {
+            session.device.stop_playback()?;
+
+            if let SessionSpecificState::Mirroring {
+                tx_sink,
+                video_source_fetcher_tx,
+                ..
+            } = &mut session.specific
+            {
+                if let Some(mut tx_sink) = tx_sink.take() {
+                    tx_sink.shutdown();
+                }
+
+                video_source_fetcher_tx.send(FetchEvent::Quit).await?;
+            }
+
+            session.specific = SessionSpecificState::Idle;
+        }
+
+        Ok(())
     }
 
     async fn end_session(&mut self, stop_playback: bool) -> Result<()> {
@@ -537,29 +556,42 @@ impl Application {
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             let sources = bridge.get_video_sources();
-            for row in sources.iter() {
-                let Some(model) = row
-                    .as_any()
-                    .downcast_ref::<slint::VecModel<UiVideoSourceModel>>()
-                else {
-                    error!("Row is invalid type");
-                    return;
-                };
-
-                let mut a_idx = None;
-                for (idx, src) in model.iter().enumerate() {
-                    if src.uid == id {
-                        a_idx = Some(idx);
-                        break;
-                    }
+            let mut a_idx = None;
+            for (idx, src) in sources.iter().enumerate() {
+                if src.uid == id {
+                    a_idx = Some(idx);
+                    break;
                 }
+                // let Some(model) = row
+                //     .as_any()
+                //     .downcast_ref::<slint::VecModel<UiVideoSourceModel>>()
+                // else {
+                //     error!("Row is invalid type");
+                //     return;
+                // };
 
-                if let Some(idx) = a_idx {
-                    if let Some(mut row) = model.row_data(idx) {
-                        row.preview = slint::Image::from_rgb8(slint_frame);
-                        model.set_row_data(idx, row);
-                        return;
-                    }
+                // let mut a_idx = None;
+                // for (idx, src) in model.iter().enumerate() {
+                //     if src.uid == id {
+                //         a_idx = Some(idx);
+                //         break;
+                //     }
+                // }
+
+                // if let Some(idx) = a_idx {
+                //     if let Some(mut row) = model.row_data(idx) {
+                //         row.preview = slint::Image::from_rgb8(slint_frame);
+                //         model.set_row_data(idx, row);
+                //         return;
+                //     }
+                // }
+            }
+
+            if let Some(idx) = a_idx {
+                if let Some(mut item) = sources.row_data(idx) {
+                    item.preview = slint::Image::from_rgb8(slint_frame);
+                    sources.set_row_data(idx, item);
+                    return;
                 }
             }
         });
@@ -574,7 +606,8 @@ impl Application {
         match event {
             Event::StartCast {
                 video_uid,
-                audio_uid,
+                // audio_uid,
+                include_audio,
                 scale_width,
                 scale_height,
                 max_framerate,
@@ -584,7 +617,7 @@ impl Application {
                         SessionSpecificState::Mirroring {
                             tx_sink,
                             video_sources,
-                            audio_sources,
+                            // audio_sources,
                             ..
                         } => {
                             debug!(?video_sources, "Video sources");
@@ -598,15 +631,21 @@ impl Application {
                                 None => None,
                             };
 
-                            debug!(?audio_sources, "Audio sources");
+                            // debug!(?audio_sources, "Audio sources");
 
-                            let audio_sources = std::mem::take(audio_sources);
-                            let audio_src = match audio_uid {
-                                Some(uid) => audio_sources
-                                    .into_iter()
-                                    .find(|(id, _)| uid == *id)
-                                    .map(|(_, dev)| dev),
-                                None => None,
+                            // let audio_sources = std::mem::take(audio_sources);
+                            // let audio_src = match audio_uid {
+                            //     Some(uid) => audio_sources
+                            //         .into_iter()
+                            //         .find(|(id, _)| uid == *id)
+                            //         .map(|(_, dev)| dev),
+                            //     None => None,
+                            // };
+
+                            let audio_src = if include_audio {
+                                Some(AudioSource::PulseVirtualSink)
+                            } else {
+                                None
                             };
 
                             debug!(?video_src, ?audio_src, "Adding WHEP pipeline");
@@ -634,7 +673,13 @@ impl Application {
                         .invoke_change_state(UiAppState::StartingCast);
                 })?;
             }
-            Event::EndSession => self.end_session(true).await?,
+            Event::EndSession { disconnect } => {
+                if disconnect {
+                    self.end_session(true).await?
+                } else {
+                    self.end_session_no_disconnect().await?
+                }
+            }
             Event::ConnectToDevice(device_name) => match self.devices.get(&device_name) {
                 Some(device_info) => {
                     if device_info.addresses.is_empty() || device_info.port == 0 {
@@ -884,23 +929,23 @@ impl Application {
                     let video_source_fetcher_tx = spawn_video_source_fetcher(event_tx).await;
                     video_source_fetcher_tx.send(FetchEvent::Fetch).await?;
 
-                    #[cfg(target_os = "linux")]
-                    let audio_sources = vec![(0, AudioSource::PulseVirtualSink)];
+                    // #[cfg(target_os = "linux")]
+                    // let audio_sources = vec![(0, AudioSource::PulseVirtualSink)];
 
                     session.specific = SessionSpecificState::Mirroring {
                         tx_sink: None,
                         video_source_fetcher_tx,
                         our_source_url: None,
                         video_sources: vec![],
-                        #[cfg(target_os = "linux")]
-                        audio_sources,
-                        #[cfg(not(target_os = "linux"))]
-                        audio_sources: vec![],
+                        // #[cfg(target_os = "linux")]
+                        // audio_sources,
+                        // #[cfg(not(target_os = "linux"))]
+                        // audio_sources: vec![],
                     };
                 }
 
-                #[cfg(target_os = "linux")]
-                self.update_audio_sources_in_ui()?;
+                // #[cfg(target_os = "linux")]
+                // self.update_audio_sources_in_ui()?;
 
                 self.ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.global::<Bridge>()
@@ -1151,45 +1196,45 @@ impl Application {
         Ok(ShouldQuit::No)
     }
 
-    fn update_audio_sources_in_ui(&self) -> Result<()> {
-        if let Some(session) = &self.session_state {
-            match &session.specific {
-                SessionSpecificState::Mirroring { audio_sources, .. } => {
-                    let audio_sources = audio_sources.clone();
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let audio_devs =
-                            slint::VecModel::<slint::ModelRc<UiAudioSourceModel>>::from_iter(
-                                audio_sources.chunks(3).map(|row| {
-                                    slint::ModelRc::<UiAudioSourceModel>::new(slint::VecModel::<
-                                        UiAudioSourceModel,
-                                    >::from_iter(
-                                        row.iter().map(|dev| UiAudioSourceModel {
-                                            name: slint::SharedString::from(
-                                                dev.1.display_name().as_str(),
-                                            ),
-                                            uid: dev.0 as i32,
-                                        }),
-                                    ))
-                                }),
-                            );
+    // fn update_audio_sources_in_ui(&self) -> Result<()> {
+    //     if let Some(session) = &self.session_state {
+    //         match &session.specific {
+    //             SessionSpecificState::Mirroring { audio_sources, .. } => {
+    //                 let audio_sources = audio_sources.clone();
+    //                 self.ui_weak.upgrade_in_event_loop(move |ui| {
+    //                     let audio_devs =
+    //                         slint::VecModel::<slint::ModelRc<UiAudioSourceModel>>::from_iter(
+    //                             audio_sources.chunks(3).map(|row| {
+    //                                 slint::ModelRc::<UiAudioSourceModel>::new(slint::VecModel::<
+    //                                     UiAudioSourceModel,
+    //                                 >::from_iter(
+    //                                     row.iter().map(|dev| UiAudioSourceModel {
+    //                                         name: slint::SharedString::from(
+    //                                             dev.1.display_name().as_str(),
+    //                                         ),
+    //                                         uid: dev.0 as i32,
+    //                                     }),
+    //                                 ))
+    //                             }),
+    //                         );
 
-                        ui.global::<Bridge>()
-                            .set_audio_sources(Rc::new(audio_devs).into());
-                    })?;
-                }
-                _ => {
-                    bail!(
-                        "Attempt to update_audio_sources_in_ui in invalid state state={:?}",
-                        session.specific
-                    );
-                }
-            }
-        } else {
-            bail!("No active session for update_audio_sources_in_ui");
-        };
+    //                     ui.global::<Bridge>()
+    //                         .set_audio_sources(Rc::new(audio_devs).into());
+    //                 })?;
+    //             }
+    //             _ => {
+    //                 bail!(
+    //                     "Attempt to update_audio_sources_in_ui in invalid state state={:?}",
+    //                     session.specific
+    //                 );
+    //             }
+    //         }
+    //     } else {
+    //         bail!("No active session for update_audio_sources_in_ui");
+    //     };
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     fn update_video_sources_in_ui(&mut self) -> Result<()> {
         if let Some(session) = self.session_state.as_mut() {
@@ -1202,20 +1247,28 @@ impl Application {
                         .collect::<Vec<(usize, String)>>();
 
                     self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let video_devs =
-                            slint::VecModel::<slint::ModelRc<UiVideoSourceModel>>::from_iter(
-                                video_sources.chunks(3).map(|row| {
-                                    slint::ModelRc::<UiVideoSourceModel>::new(slint::VecModel::<
-                                        UiVideoSourceModel,
-                                    >::from_iter(
-                                        row.iter().map(|dev| UiVideoSourceModel {
-                                            name: slint::SharedString::from(dev.1.as_str()),
-                                            uid: dev.0 as i32,
-                                            preview: slint::Image::default(),
-                                        }),
-                                    ))
-                                }),
-                            );
+                        // let video_devs =
+                        //     slint::VecModel::<slint::ModelRc<UiVideoSourceModel>>::from_iter(
+                        //         video_sources.chunks(3).map(|row| {
+                        //             slint::ModelRc::<UiVideoSourceModel>::new(slint::VecModel::<
+                        //                 UiVideoSourceModel,
+                        //             >::from_iter(
+                        //                 row.iter().map(|dev| UiVideoSourceModel {
+                        //                     name: slint::SharedString::from(dev.1.as_str()),
+                        //                     uid: dev.0 as i32,
+                        //                     preview: slint::Image::default(),
+                        //                 }),
+                        //             ))
+                        //         }),
+                        //     );
+
+                        let video_devs = slint::VecModel::<UiVideoSourceModel>::from_iter(
+                            video_sources.iter().map(|dev| UiVideoSourceModel {
+                                name: slint::SharedString::from(dev.1.as_str()),
+                                uid: dev.0 as i32,
+                                preview: slint::Image::default(),
+                            }),
+                        );
 
                         ui.global::<Bridge>()
                             .set_video_sources(Rc::new(video_devs).into());
@@ -1447,9 +1500,7 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_connect_to_device({
         let event_tx = event_tx.clone();
         move |device_name| {
-            if let Err(err) =
-                event_tx.send(Event::ConnectToDevice(device_name.to_string()))
-            {
+            if let Err(err) = event_tx.send(Event::ConnectToDevice(device_name.to_string())) {
                 error!("on_connect_to_device: failed to send event: {err}");
             }
         }
@@ -1457,7 +1508,7 @@ fn main() -> Result<()> {
 
     ui.global::<Bridge>().on_start_cast({
         let event_tx = event_tx.clone();
-        move |video_uid, audio_uid, scale_width: i32, scale_height: i32, max_framerate: i32| {
+        move |video_uid, include_audio, scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
                 .send(Event::StartCast {
                     video_uid: if video_uid >= 0 {
@@ -1465,11 +1516,12 @@ fn main() -> Result<()> {
                     } else {
                         None
                     },
-                    audio_uid: if audio_uid >= 0 {
-                        Some(audio_uid as usize)
-                    } else {
-                        None
-                    },
+                    include_audio,
+                    // audio_uid: if audio_uid >= 0 {
+                    //     Some(audio_uid as usize)
+                    // } else {
+                    //     None
+                    // },
                     scale_width: scale_width.max(1) as u32,
                     scale_height: scale_height.max(1) as u32,
                     max_framerate: max_framerate.max(1) as u32,
@@ -1480,8 +1532,8 @@ fn main() -> Result<()> {
 
     ui.global::<Bridge>().on_stop_cast({
         let event_tx = event_tx.clone();
-        move || {
-            event_tx.send(Event::EndSession).unwrap();
+        move |disconnect: bool| {
+            event_tx.send(Event::EndSession { disconnect }).unwrap();
         }
     });
 
@@ -1495,12 +1547,8 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_select_input_type({
         let event_tx = event_tx.clone();
         move |input_type| match input_type {
-            UiInputType::LocalMedia => event_tx
-                .send(Event::StartLocalMediaSession)
-                .unwrap(),
-            UiInputType::Mirroring => event_tx
-                .send(Event::StartMirroringSession)
-                .unwrap(),
+            UiInputType::LocalMedia => event_tx.send(Event::StartLocalMediaSession).unwrap(),
+            UiInputType::Mirroring => event_tx.send(Event::StartMirroringSession).unwrap(),
         }
     });
 
@@ -1521,9 +1569,7 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_cast_local_media({
         let event_tx = event_tx.clone();
         move |file_id| {
-            event_tx
-                .send(Event::CastLocalMedia(file_id))
-                .unwrap();
+            event_tx.send(Event::CastLocalMedia(file_id)).unwrap();
         }
     });
 
@@ -1577,7 +1623,9 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_disconnect({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.send(Event::EndSession).unwrap();
+            event_tx
+                .send(Event::EndSession { disconnect: true })
+                .unwrap();
         }
     });
 
@@ -1612,9 +1660,7 @@ fn main() -> Result<()> {
                 }
             };
 
-            event_tx
-                .send(Event::DeviceAvailable(device_info))
-                .unwrap();
+            event_tx.send(Event::DeviceAvailable(device_info)).unwrap();
             event_tx
                 .send(Event::ConnectToDevice(name_shared.to_string()))
                 .unwrap();

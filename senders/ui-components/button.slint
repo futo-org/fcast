@@ -20,7 +20,8 @@ export component Button {
 
     private property <brush> text-color: primary || checked ? FluentPalette.accent-foreground : FluentPalette.control-foreground;
 
-    min-width: max(32px, i-layout.min-width);
+    // min-width: max(32px, i-layout.min-width);
+    min-width: max(36px, i-layout.min-width);
     min-height: max(36px, i-layout.min-height);
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -59,7 +60,8 @@ export component Button {
     ]
 
     i-background := Rectangle {
-        border-radius: 6px;
+        // Circle when icon only
+        border-radius: root.text == "" ? self.height : 6px;
 
         background: FCastPalette.button-default-background;
         drop-shadow-color: FCastPalette.button-default-drop-shadow-color;

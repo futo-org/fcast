@@ -259,7 +259,7 @@ impl PreviewPipeline {
                 .build(),
         );
 
-        let (_extra_video, elems) = add_video_src(&pipeline, appsink.upcast(), src, 200, 200, 5)?;
+        let (_extra_video, elems) = add_video_src(&pipeline, appsink.upcast(), src, 300, 300, 5)?;
 
         pipeline.call_async(|pipeline| {
             pipeline.set_state(gst::State::Playing).unwrap();
