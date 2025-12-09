@@ -103,11 +103,15 @@ export global Bridge {
     ];
     in property <string> log-string;
 
-    // in-out property <UiAppState> app-state: SelectingInputType;
-    in-out property <UiAppState> app-state: Disconnected;
+    in-out property <UiAppState> app-state: SelectingInputType;
+    // in-out property <UiAppState> app-state: Disconnected;
     // in-out property <UiAppState> app-state: Else;
     // in-out property <UiAppState> app-state: Connecting;
-    in-out property <string> device-name: "";
+    // in-out property <string> device-name: "";
+    in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
+
+    in-out property <string> device-ip: "192.168.1.154";
+
     // in-out property <string> device-name: "Test1";
     in-out property <int> selected-video-src: -1;
     // in-out property <int> selected-video-src: 0;
@@ -161,9 +165,10 @@ export global Bridge {
                 selected-audio-src = -1;
                 device-name = "";
                 video-sources = [];
+                device-ip = "";
         // audio-sources = [];
 
-        playback-state = UiPlaybackState.Idle;
+                playback-state = UiPlaybackState.Idle;
                 playback-position = 0.0;
                 track-duration = 0.0;
 
@@ -392,30 +397,52 @@ if (focus-scope.has-focus): FocusBorder {
             background: FCastPalette.background-color-secondary;
 
             VerticalLayout {
-                VerticalBox {
-                    LabelText {
-                        text: "Available receivers";
-                    }
+                VerticalLayout {
+                    padding: 20px;
 
                     HorizontalLayout {
-                        spacing: 8px;
+                        VerticalLayout {
+                            LabelText {
+                                text: "Available receivers";
+                            }
 
-                        Rectangle {
-                            width: 4px;
-                            height: 4px;
-                            y: parent.height / 2 - self.height / 2;
-                            border-radius: self.width;
-                            background: FCastPalette.status-connected;
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Rectangle {
+                                    width: 4px;
+                                    height: 4px;
+                                    y: parent.height / 2 - self.height / 2;
+                                    border-radius: self.width;
+                                    background: FCastPalette.status-connected;
+                                }
+
+                                SecondaryText {
+                                    text: "Scanning local network (mDNS) for FCast-enabled devices...";
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
 
-                        SecondaryText {
-                            text: "Scanning local network (mDNS) for FCast-enabled devices...";
-                            vertical-alignment: center;
+                        Spacer { }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            Spinner {
+                                indeterminate: true;
+                            }
+
+                            FText {
+                                vertical-alignment: center;
+                                text: "Scanning...";
+                            }
                         }
                     }
 
                     ScrollView {
                         VerticalLayout {
+                            padding-top: 20px;
                             spacing: 4px;
                             for device in Bridge.devices: DeviceListItem {
                                 dev-name: device;
@@ -438,57 +465,56 @@ if (focus-scope.has-focus): FocusBorder {
                     background: #FFFFFF1A;
                 }
 
-            Rectangle {
-                background: FCastPalette.opacity-light-1200;
+                Rectangle {
+                    background: FCastPalette.opacity-light-1200;
 
-                TouchArea {
-                    clicked => {
-                        is-showing-manual-connect = !is-showing-manual-connect;
-                    }
-                }
-
-
-                HorizontalBox {
-                    alignment: space-between;
-                    padding-top: 18px;
-                    padding-right: 16px;
-                    padding-bottom: 18px;
-                    padding-left: 16px;
-
-                    FText {
-                        text: "Unable to see the device you're looking for? Connect via IP";
-                        vertical-alignment: center;
-                        wrap: word-wrap;
-                    }
-
-                    VerticalLayout {
-                        alignment: center;
-
-                        Rectangle {
-                            width: 18.66px;
-                            height: 18.67px;
-                            border-radius: self.height;
-                            background: #FFFFFF1A;
-
-                            Image {
-                                vertical-alignment: center;
-                                horizontal-alignment: center;
-                                width: 8.8px;
-                                height: 5.1px;
-                                source: @image-url("down.svg");
-                                colorize: FCastPalette.neutral-500;
-                            }
+                    TouchArea {
+                        clicked => {
+                            is-showing-manual-connect = !is-showing-manual-connect;
                         }
                     }
 
-                    // Button {
+                    HorizontalBox {
+                        alignment: space-between;
+                        padding-top: 18px;
+                        padding-right: 16px;
+                        padding-bottom: 18px;
+                        padding-left: 16px;
+
+                        FText {
+                            text: "Unable to see the device you're looking for? Connect via IP";
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Rectangle {
+                                width: 18.66px;
+                                height: 18.67px;
+                                border-radius: self.height;
+                                background: #FFFFFF1A;
+
+                                Image {
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                    width: 8.8px;
+                                    height: 5.1px;
+                                    source: @image-url("down.svg");
+                                    colorize: FCastPalette.neutral-500;
+                                }
+                            }
+                        }
+
+                        // Button {
                 //     text: "Connect via IP";
                 //     clicked => {
                 //         is-showing-manual-connect = !is-showing-manual-connect;
                 //     }
                 // }
             }
-            }
+                }
 
                 if is-showing-manual-connect: VerticalBox {
                     HorizontalBox {
@@ -1109,7 +1135,167 @@ if (focus-scope.has-focus): FocusBorder {
 //     }
 // }
 
-component SourceItem inherits Rectangle {
+
+component DisconnectButton {
+        in property <string> text;
+        in property <image> icon;
+        in property <length> icon-size: 20px;
+        in property <bool> primary;
+        in property <bool> checkable;
+        in property <bool> colorize-icon;
+        out property <bool> has-focus: i-focus-scope.has-focus;
+        out property <bool> pressed: i-touch-area.pressed;
+        in-out property <bool> checked;
+
+        callback clicked;
+
+        // private property <brush> text-color: primary || checked ? FluentPalette.accent-foreground : FluentPalette.control-foreground;
+
+    // min-width: max(32px, i-layout.min-width);
+    min-width: max(36px, i-layout.min-width);
+        min-height: max(36px, i-layout.min-height);
+        horizontal-stretch: 0;
+        vertical-stretch: 0;
+        forward-focus: i-focus-scope;
+
+        accessible-role: button;
+        accessible-checkable: root.checkable;
+        accessible-checked: root.checked;
+        accessible-label: root.text;
+        accessible-action-default => {
+            i-touch-area.clicked();
+        }
+
+        states [
+            pressed when root.pressed: {
+            // root.text-color: root.primary || root.checked ? FluentPalette.text-accent-foreground-secondary : FluentPalette.text-secondary;
+            i-background.background: FCastPalette.button-pressed-background;
+                i-background.drop-shadow-color: FCastPalette.button-pressed-drop-shadow-color;
+                i-border.border-color: FCastPalette.button-pressed-border-color;
+            }
+            hover when i-touch-area.has-hover: {
+                i-background.background: FCastPalette.button-hover-background;
+                i-background.drop-shadow-color: FCastPalette.button-hover-drop-shadow-color;
+                i-border.border-color: FCastPalette.button-hover-border-color;
+            }
+            checked when root.checked: {
+            // i-background.background: FluentPalette.accent-background;
+            // i-border.border-color: FluentPalette.accent-control-border;
+            // root.text-color: FluentPalette.accent-foreground;
+        }
+        ]
+
+        i-background := Rectangle {
+        // Circle when icon only
+        border-radius: root.text == "" ? self.height : 6px;
+
+            background: #00000000;
+        // background: FCastPalette.button-default-background;
+        // drop-shadow-color: FCastPalette.button-default-drop-shadow-color;
+
+        animate border-color { duration: 150ms; }
+        // animate background, border-color { duration: 150ms; }
+        i-border := Rectangle {
+                border-radius: parent.border-radius;
+                border-width: 1px;
+
+                // border-color: FCastPalette.button-default-border-color;
+            border-color: FCastPalette.negative-600.transparentize(20%);
+
+                animate border-color { duration: 50ms; }
+            }
+
+            i-layout := HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 5px;
+                padding-bottom: 5px;
+                spacing: 8px;
+                alignment: center;
+
+                // if (root.icon.width > 0 && root.icon.height > 0) : Image {
+            VerticalLayout {
+                    alignment: center;
+                    Image {
+                    // y: (parent.height - self.height) / 2;
+                    source <=> root.icon;
+                        width: 12px;
+                        height: 12px;
+                    // width: root.icon-size;
+                    // min-height: root.icon-size;
+                    colorize: FCastPalette.negative-600;
+                    // colorize: root.colorize-icon ? root.text-color : transparent;
+                }
+                }
+
+                if (root.text != ""): Text {
+                // font-size: FluentFontSettings.body.font-size;
+                // font-weight: FluentFontSettings.body.font-weight;
+                horizontal-alignment: center;
+                    vertical-alignment: center;
+                    text: root.text;
+                // color: root.text-color;
+                color: FCastPalette.negative-600;
+                // animate color { duration: 150ms; }
+                accessible-role: none;
+                }
+            }
+        }
+
+        i-touch-area := TouchArea {
+        // mouse-cursor: pointer;
+
+        clicked => {
+                if (root.checkable) {
+                    root.checked = !root.checked;
+                }
+                root.clicked();
+            }
+        }
+
+        i-focus-scope := FocusScope {
+            x: 0;
+            width: 0; // Do not react on clicks
+
+        key-pressed(event) => {
+                if (event.text == " " || event.text == "\n") {
+                    i-touch-area.clicked();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        // focus border
+    if (root.has-focus): FocusBorder {
+            border-radius: i-background.border-radius;
+        }
+    }
+
+    component IpAddrLabel inherits Rectangle {
+        in property <string> label;
+
+        background: FCastPalette.neutral-1200;
+        border-width: 1px;
+        border-color: #202227;
+        border-radius: 4px;
+
+        i-vl := VerticalLayout {
+            padding: 4px;
+            padding-left: 6px;
+            padding-right: 6px;
+
+            FText {
+                text: label;
+                font-family: "Overfit Mono";
+                font-size: 10px;
+                font-weight: 400;
+                color: FCastPalette.text-secondary;
+            }
+        }
+    }
+
+    component SourceItem inherits Rectangle {
         out property <bool> has-hover: i-touch-area.has-hover;
         in property <string> label;
         in property <string> description;
@@ -1208,18 +1394,54 @@ component SourceItem inherits Rectangle {
         }
 
         Rectangle {
-            VerticalBox {
-                padding-top: 40px;
-                padding-left: 20px;
+            VerticalLayout {
+                spacing: 8px;
 
-                LabelText {
-                    font-size: 22px;
-                    text: "Ready to cast";
+                // VerticalBox {
+                padding-top: 40px;
+                // padding-left: 20px;
+            padding: 20px;
+
+                SecondaryText {
+                    text: "CONNECTED TO";
+                    font-family: "Overfit Mono"; // TODO: fix
+                font-size: 10px;
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    LabelText {
+                        font-size: 22px;
+                    // text: "Ready to cast";
+                    text: Bridge.device-name;
+                    }
+
+                    DisconnectButton {
+                        icon: @image-url("disconnect-icon.svg");
+                        text: "Disconnect";
+
+                        clicked => {
+                            Bridge.disconnect();
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    IpAddrLabel {
+                        label: Bridge.device-ip;
+                    }
+
+                    Spacer { }
                 }
 
                 SecondaryText {
                     text: "Receiver is idle. Select media to start streaming.";
                     vertical-alignment: center;
+                }
+
+                LineEdit {
+                    placeholder-text: "Paste URL (http/https, magnet, .mp4, .m3u8)...";
                 }
 
                 // HorizontalLayout {
@@ -1472,8 +1694,8 @@ pure function compute-width(idx: int, root-width: length) -> length {
             Rectangle {
                 width: root.width > 700px ? 275px : 0px;
                 background: FCastPalette.background-color-primary;
-            border-width: 1px;
-            border-color: FCastPalette.border-subtle;
+                border-width: 1px;
+                border-color: FCastPalette.border-subtle;
 
                 animate width { duration: 50ms; }
 
