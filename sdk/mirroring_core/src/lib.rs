@@ -35,8 +35,12 @@ use std::os::fd::OwnedFd;
 
 #[derive(Debug)]
 pub enum VideoSource {
+    TestSrc,
     #[cfg(target_os = "linux")]
-    PipeWire { node_id: u32, fd: OwnedFd },
+    PipeWire {
+        node_id: u32,
+        fd: OwnedFd,
+    },
     #[cfg(target_os = "linux")]
     XDisplay {
         id: u32,
@@ -47,9 +51,15 @@ pub enum VideoSource {
         name: String,
     },
     #[cfg(target_os = "macos")]
-    CgDisplay { id: i32, name: String },
+    CgDisplay {
+        id: i32,
+        name: String,
+    },
     #[cfg(target_os = "windows")]
-    D3d11Monitor { name: String, handle: u64 },
+    D3d11Monitor {
+        name: String,
+        handle: u64,
+    },
     #[cfg(target_os = "android")]
     Source(gst_app::AppSrc),
 }
@@ -57,6 +67,7 @@ pub enum VideoSource {
 impl VideoSource {
     pub fn display_name(&self) -> String {
         match self {
+            VideoSource::TestSrc => "Test source".to_owned(),
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { .. } => "PipeWire Video Source".to_owned(),
             #[cfg(target_os = "linux")]
@@ -197,6 +208,8 @@ pub enum Event {
 
     #[cfg(target_os = "linux")]
     UnsupportedDisplaySystem,
+    #[cfg(not(target_os = "android"))]
+    CastTestPattern,
 
     // Android
     // #[cfg(target_os = "android")]
@@ -223,9 +236,7 @@ pub struct Discoverer {
 
 impl Discoverer {
     pub fn new(event_tx: UnboundedSender<Event>) -> Self {
-        Self {
-            event_tx,
-        }
+        Self { event_tx }
     }
 
     fn send_event(&self, event: Event) {
@@ -256,10 +267,7 @@ pub struct DeviceHandler {
 
 impl DeviceHandler {
     pub fn new(id: usize, event_tx: UnboundedSender<Event>) -> Self {
-        Self {
-            id,
-            event_tx,
-        }
+        Self { id, event_tx }
     }
 
     fn send_event(&self, event: DeviceEvent) {

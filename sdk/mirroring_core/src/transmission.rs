@@ -520,7 +520,11 @@ impl WhepSink {
                     .factory()
                     .ok_or(anyhow::anyhow!("Source element is missing factory"))?
                     .name();
-                name == "ximagesrc" || name == "d3d11screencapturesrc" || name == "avfvideosrc" || name == "pipewiresrc"
+                name == "ximagesrc"
+                    || name == "d3d11screencapturesrc"
+                    || name == "avfvideosrc"
+                    || name == "pipewiresrc"
+                    || name == "videotestsrc"
             };
 
             if needs_ready {
