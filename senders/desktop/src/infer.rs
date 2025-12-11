@@ -8,10 +8,6 @@ use core::convert::TryInto;
 
 type InferenceBuffer<'a> = &'a [u8; 64];
 
-pub fn is_midi(_len: usize, buf: InferenceBuffer) -> bool {
-    buf[0] == 0x4D && buf[1] == 0x54 && buf[2] == 0x68 && buf[3] == 0x64
-}
-
 pub fn is_mp3(_len: usize, buf: InferenceBuffer) -> bool {
     (buf[0] == 0x49 && buf[1] == 0x44 && buf[2] == 0x33) // ID3v2
 			// Final bit (has crc32) may be or may not be set.
@@ -48,39 +44,8 @@ pub fn is_wav(_len: usize, buf: InferenceBuffer) -> bool {
         && buf[11] == 0x45
 }
 
-pub fn is_amr(len: usize, buf: InferenceBuffer) -> bool {
-    len > 11
-        && buf[0] == 0x23
-        && buf[1] == 0x21
-        && buf[2] == 0x41
-        && buf[3] == 0x4D
-        && buf[4] == 0x52
-        && buf[5] == 0x0A
-}
-
 pub fn is_aac(_len: usize, buf: InferenceBuffer) -> bool {
     buf[0] == 0xFF && (buf[1] == 0xF1 || buf[1] == 0xF9)
-}
-
-pub fn is_aiff(_len: usize, buf: InferenceBuffer) -> bool {
-    buf[0] == 0x46
-        && buf[1] == 0x4F
-        && buf[2] == 0x52
-        && buf[3] == 0x4D
-        && buf[8] == 0x41
-        && buf[9] == 0x49
-        && buf[10] == 0x46
-        && buf[11] == 0x46
-}
-
-pub fn is_dsf(_len: usize, buf: InferenceBuffer) -> bool {
-    // ref: https://dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf
-    buf[0] == b'D' && buf[1] == b'S' && buf[2] == b'D' && buf[3] == b' '
-}
-
-pub fn is_ape(_len: usize, buf: InferenceBuffer) -> bool {
-    // ref: https://github.com/fernandotcl/monkeys-audio/blob/master/src/MACLib/APEHeader.h
-    buf[0] == b'M' && buf[1] == b'A' && buf[2] == b'C' && buf[3] == b' '
 }
 
 pub fn is_jpeg(_len: usize, buf: InferenceBuffer) -> bool {
@@ -115,32 +80,12 @@ pub fn is_webp(_len: usize, buf: InferenceBuffer) -> bool {
     buf[8] == 0x57 && buf[9] == 0x45 && buf[10] == 0x42 && buf[11] == 0x50
 }
 
-pub fn is_cr2(_len: usize, buf: InferenceBuffer) -> bool {
-    ((buf[0] == 0x49 && buf[1] == 0x49 && buf[2] == 0x2A && buf[3] == 0x0)
-        || (buf[0] == 0x4D && buf[1] == 0x4D && buf[2] == 0x0 && buf[3] == 0x2A))
-        && buf[8] == 0x43
-        && buf[9] == 0x52
-        && buf[10] == 0x02 // CR2 major version
-}
-
-pub fn is_tiff(len: usize, buf: InferenceBuffer) -> bool {
-    ((buf[0] == 0x49 && buf[1] == 0x49 && buf[2] == 0x2A && buf[3] == 0x0)
-        || (buf[0] == 0x4D && buf[1] == 0x4D && buf[2] == 0x0 && buf[3] == 0x2A))
-        && buf[8] != 0x43
-        && buf[9] != 0x52
-        && !is_cr2(len, buf) // To avoid conflicts differentiate Tiff from CR2
-}
-
 pub fn is_bmp(_len: usize, buf: InferenceBuffer) -> bool {
     buf[0] == 0x42 && buf[1] == 0x4D
 }
 
 pub fn is_jxr(_len: usize, buf: InferenceBuffer) -> bool {
     buf[0] == 0x49 && buf[1] == 0x49 && buf[2] == 0xBC
-}
-
-pub fn is_psd(_len: usize, buf: InferenceBuffer) -> bool {
-    buf[0] == 0x38 && buf[1] == 0x42 && buf[2] == 0x50 && buf[3] == 0x53
 }
 
 pub fn is_ico(_len: usize, buf: InferenceBuffer) -> bool {
@@ -161,32 +106,6 @@ pub fn is_jxl(_len: usize, buf: InferenceBuffer) -> bool {
             && buf[9] == 0x0A
             && buf[10] == 0x87
             && buf[11] == 0x0A)
-}
-
-pub fn is_heif(len: usize, buf: InferenceBuffer) -> bool {
-    // if buf.is_empty() {
-    //     return false;
-    // }
-
-    if !is_isobmff(len, buf) {
-        return false;
-    }
-
-    if let Some((major, _minor, compatible)) = get_ftyp(len, buf) {
-        if major == b"heic" || major == b"heix" {
-            return true;
-        }
-
-        if major == b"mif1" || major == b"msf1" {
-            for b in compatible {
-                if b == b"heic" {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
 }
 
 pub fn is_avif(len: usize, buf: InferenceBuffer) -> bool {
@@ -227,56 +146,9 @@ fn is_isobmff(len: usize, buf: InferenceBuffer) -> bool {
     len >= ftyp_length
 }
 
-pub fn is_ora(len: usize, buf: InferenceBuffer) -> bool {
-    len > 57
-        && buf[0] == 0x50
-        && buf[1] == 0x4B
-        && buf[2] == 0x3
-        && buf[3] == 0x4
-        && buf[30] == 0x6D
-        && buf[31] == 0x69
-        && buf[32] == 0x6D
-        && buf[33] == 0x65
-        && buf[34] == 0x74
-        && buf[35] == 0x79
-        && buf[36] == 0x70
-        && buf[37] == 0x65
-        && buf[38] == 0x69
-        && buf[39] == 0x6D
-        && buf[40] == 0x61
-        && buf[41] == 0x67
-        && buf[42] == 0x65
-        && buf[43] == 0x2F
-        && buf[44] == 0x6F
-        && buf[45] == 0x70
-        && buf[46] == 0x65
-        && buf[47] == 0x6E
-        && buf[48] == 0x72
-        && buf[49] == 0x61
-        && buf[50] == 0x73
-        && buf[51] == 0x74
-        && buf[52] == 0x65
-        && buf[53] == 0x72
-}
-
-pub fn is_djvu(_len: usize, buf: InferenceBuffer) -> bool {
-    buf[0] == 0x41
-        && buf[1] == 0x54
-        && buf[2] == 0x26
-        && buf[3] == 0x54
-        && buf[4] == 0x46
-        && buf[5] == 0x4F
-        && buf[6] == 0x52
-        && buf[7] == 0x4D
-        && buf[12] == 0x44
-        && buf[13] == 0x4A
-        && buf[14] == 0x56
-}
-
 /// GetFtyp returns the major brand, minor version and compatible brands of the ISO-BMFF data
 fn get_ftyp(
     _len: usize,
-    // buf: InferenceBuffer,
     buf: &[u8; 64],
 ) -> Option<(&[u8], &[u8], impl Iterator<Item = &[u8]>)> {
     if buf.len() < 16 {
@@ -353,25 +225,8 @@ pub fn is_avi(_len: usize, buf: InferenceBuffer) -> bool {
         && buf[10] == 0x49
 }
 
-pub fn is_wmv(_len: usize, buf: InferenceBuffer) -> bool {
-    buf[0] == 0x30
-        && buf[1] == 0x26
-        && buf[2] == 0xB2
-        && buf[3] == 0x75
-        && buf[4] == 0x8E
-        && buf[5] == 0x66
-        && buf[6] == 0xCF
-        && buf[7] == 0x11
-        && buf[8] == 0xA6
-        && buf[9] == 0xD9
-}
-
 pub fn is_mpeg(_len: usize, buf: InferenceBuffer) -> bool {
     buf[0] == 0x0 && buf[1] == 0x0 && buf[2] == 0x1 && buf[3] >= 0xb0 && buf[3] <= 0xbf
-}
-
-pub fn is_flv(_len: usize, buf: InferenceBuffer) -> bool {
-    buf[0] == 0x46 && buf[1] == 0x4C && buf[2] == 0x56 && buf[3] == 0x01
 }
 
 pub fn is_mp4(_len: usize, buf: InferenceBuffer) -> bool {
@@ -448,17 +303,10 @@ matcher_map!(
     ("image/png", is_png),
     ("image/gif", is_gif),
     ("image/webp", is_webp),
-    ("image/x-canon-cr2", is_cr2),
-    ("image/tiff", is_tiff),
     ("image/bmp", is_bmp),
-    ("image/vnd.ms-photo", is_jxr),
-    ("image/vnd.adobe.photoshop", is_psd),
     ("image/vnd.microsoft.icon", is_ico),
-    ("image/heif", is_heif),
     ("image/avif", is_avif),
     ("image/jxl", is_jxl),
-    ("image/openraster", is_ora),
-    ("image/vnd.djvu", is_djvu),
     // Video
     ("video/mp4", is_mp4),
     ("video/x-m4v", is_m4v),
@@ -466,21 +314,14 @@ matcher_map!(
     ("video/webm", is_webm),
     ("video/quicktime", is_mov),
     ("video/x-msvideo", is_avi),
-    ("video/x-ms-wmv", is_wmv),
     ("video/mpeg", is_mpeg),
-    ("video/x-flv", is_flv),
     // Audio
-    ("audio/midi", is_midi),
     ("audio/mpeg", is_mp3),
     ("audio/m4a", is_m4a),
     ("audio/ogg", is_ogg),
-    ("audio/x-flac", is_flac),
-    ("audio/x-wav", is_wav),
-    ("audio/amr", is_amr),
-    ("audio/aac", is_aac),
-    ("audio/x-aiff", is_aiff),
-    ("audio/x-dsf", is_dsf),
-    ("audio/x-ape", is_ape)
+    ("audio/flac", is_flac),
+    ("audio/wav", is_wav),
+    ("audio/aac", is_aac)
 );
 
 pub fn infer_type(len: usize, buf: InferenceBuffer) -> Option<Type> {
