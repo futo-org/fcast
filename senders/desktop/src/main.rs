@@ -252,7 +252,6 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
                                         .map(|(idx, src)| (idx, src))
                                         .collect(),
                                 ))
-                                .await
                                 .expect("event loop is not running");
                         }
                         Err(err) => {
@@ -315,7 +314,6 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
 
                         event_tx
                             .send(Event::VideosAvailable(converted_devs))
-                            .await
                             .expect("event loop is not running");
                     }
                     FetchEvent::Quit => break,
