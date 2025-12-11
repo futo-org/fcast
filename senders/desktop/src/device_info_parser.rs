@@ -1,5 +1,5 @@
-use std::net::IpAddr;
 use fcast_sender_sdk::device::{DeviceInfo, ProtocolType};
+use std::net::IpAddr;
 
 const DEFAULT_FCAST_PORT: u16 = 46899;
 const DEFAULT_GCAST_PORT: u16 = 46899;
@@ -22,6 +22,7 @@ fn try_parse_addr(addr: &str) -> Option<IpAddr> {
     addr.parse::<IpAddr>().ok()
 }
 
+// TODO: accept ipv6 addresses
 pub fn parse(uri: &str) -> Option<fcast_sender_sdk::device::DeviceInfo> {
     let mut protocol: Option<ProtocolType> = None;
     let mut addr: Option<IpAddr> = None;
@@ -76,18 +77,19 @@ mod tests {
     macro_rules! f {
         ($addr:expr, $port:expr) => {
             DeviceInfo::fcast("FCast".to_owned(), vec![$addr], $port)
-        }
+        };
     }
 
     macro_rules! g {
         ($addr:expr, $port:expr) => {
             DeviceInfo::chromecast("Chromecast".to_owned(), vec![$addr], $port)
-        }
+        };
     }
 
     #[test]
     fn test_parse_valid() {
-        let localhost: fcast_sender_sdk::IpAddr = (&IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)).into();
+        let localhost: fcast_sender_sdk::IpAddr =
+            (&IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)).into();
 
         let cases = vec![
             ("127.0.0.1", f!(localhost, DEFAULT_FCAST_PORT)),

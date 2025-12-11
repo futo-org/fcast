@@ -94,7 +94,7 @@ pub enum SourceConfig {
     Audio(AudioSource),
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ShouldQuit {
     Yes,
     No,
@@ -241,7 +241,7 @@ impl Discoverer {
 
     fn send_event(&self, event: Event) {
         if let Err(err) = self.event_tx.send(event) {
-            error!("Failed to send event: {err}");
+            error!("Discoverer: Failed to send event: {err}");
         }
     }
 }
@@ -272,7 +272,7 @@ impl DeviceHandler {
 
     fn send_event(&self, event: DeviceEvent) {
         if let Err(err) = self.event_tx.send(Event::FromDevice { id: self.id, event }) {
-            error!("Failed to send event: {err}");
+            error!("DeviceHandler: Failed to send event: {err}");
         }
     }
 }

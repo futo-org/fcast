@@ -312,9 +312,9 @@ fn add_bus_handler(
                             debug = ?err.debug(),
                             "Error",
                         );
-                        if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
-                            error!(?err, "Failed to send event");
-                        }
+                        // if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
+                        //     error!(?err, "Failed to send event");
+                        // }
                     }
                     MessageView::StateChanged(state_changed) => {
                         let Some(pipeline) = pipeline_weak.upgrade() else {

@@ -87,9 +87,12 @@ export global Bridge {
     // in-out property <string> device-name: "FCast-localhost";
     // in property <string> current-directory: "Testing";
 
-    // in property <bool> is-audio-supported: false;
-    in property <bool> is-audio-supported: true;
+    in property <bool> is-audio-supported: false;
+    // in property <bool> is-audio-supported: true;
+
     in property <bool> is-mirroring-supported: false;
+    // in property <bool> is-mirroring-supported: true;
+
     in property <string> current-directory: "";
     in property <[string]> devices: [
         "Test0 ##################################",
@@ -101,6 +104,7 @@ export global Bridge {
     in property <string> log-string;
 
     // in-out property <UiAppState> app-state: SelectingInputType;
+    // in-out property <UiAppState> app-state: Mirroring;
     in-out property <UiAppState> app-state: Disconnected;
     // in-out property <UiAppState> app-state: LocalMedia;
     // in-out property <UiAppState> app-state: Connecting;
@@ -216,17 +220,13 @@ component DeviceListItem {
     ]
 
     i-touch-area := TouchArea {
-// mouse-cursor: pointer;
-clicked => {
-// self.mouse-cursor = MouseCursor.default;
-Bridge.device-name = dev-name;
+        clicked => {
+            Bridge.device-name = dev-name;
             Bridge.connect-to-device(dev-name);
         }
     }
 
-    // height: 66px;
-
-i-background := Rectangle {
+    i-background := Rectangle {
         background: #13151B;
         border-radius: 8px;
 
@@ -436,8 +436,8 @@ component ConnectView inherits Rectangle {
                 }
             }
 
-            // property <bool> is-showing-manual-connect: false;
-            property <bool> is-showing-manual-connect: true;
+            property <bool> is-showing-manual-connect: false;
+            // property <bool> is-showing-manual-connect: true;
 
             Rectangle {
                 height: 1px;
@@ -1195,6 +1195,7 @@ component SourceItem inherits Rectangle {
     in property <string> description;
     in property <image> icon;
     in property <color> icon-bg-color;
+    in property <bool> enabled: true;
 
     callback clicked;
 
@@ -1205,24 +1206,37 @@ component SourceItem inherits Rectangle {
 
     preferred-width: 0px;
 
+    states [
+        hover when root.enabled && i-touch-area.has-hover: {
+            border-color: FCastPalette.brand-600;
+        }
+        disabled when !root.enabled: {
+            i-icon-bg.background: FCastPalette.neutral-600.transparentize(80%);
+            i-icon.colorize: FCastPalette.neutral-600;
+            root.background: FCastPalette.neutral-800.transparentize(90%);
+            i-title.color: FCastPalette.neutral-600;
+        }
+    ]
+
     VerticalBox {
         padding-top: 20px;
         padding-bottom: 20px;
 
         HorizontalLayout {
             alignment: center;
-            Rectangle {
+            i-icon-bg := Rectangle {
                 background: icon-bg-color;
                 width: 64px;
                 height: 64px;
                 border-radius: self.height;
-                Image {
+
+                i-icon := Image {
                     source: icon;
                 }
             }
         }
 
-        RegularText {
+        i-title := RegularText {
             horizontal-alignment: center;
             text: label;
         }
@@ -1240,13 +1254,8 @@ component SourceItem inherits Rectangle {
         }
     }
 
-    states [
-        hover when i-touch-area.has-hover: {
-            border-color: FCastPalette.brand-600;
-        }
-    ]
-
     i-touch-area := TouchArea {
+        enabled: root.enabled;
 
         clicked => {
             root.clicked();
@@ -1256,6 +1265,7 @@ component SourceItem inherits Rectangle {
     i-focus-scope := FocusScope {
         x: 0;
         width: 0;
+        enabled: root.enabled;
 
         key-pressed(event) => {
             if (event.text == " " || event.text == "\n") {
@@ -1266,7 +1276,7 @@ component SourceItem inherits Rectangle {
         }
     }
 
-    if (i-focus-scope.has-focus): FocusBorder {
+    if (root.enabled && i-focus-scope.has-focus): FocusBorder {
         border-radius: root.border-radius;
     }
 }
@@ -1376,6 +1386,7 @@ component ReadyToCastView inherits Rectangle {
                     description: "Cast MP4, MKV, or MP3 files directly from your hard drive with zero compression.";
                     icon: @image-url("folder-fcast.svg");
                     icon-bg-color: #2889E821;
+                    enabled: false;
 
                     clicked => {
                         show-local-media();
@@ -1387,6 +1398,7 @@ component ReadyToCastView inherits Rectangle {
                     description: "Share your entire desktop or a specific window. Low latency for demos and presentations.";
                     icon: @image-url("mirror-fcast.svg");
                     icon-bg-color: #7C3AED29;
+                    enabled: Bridge.is-mirroring-supported;
 
                     clicked => {
                         Bridge.select-input-type(UiInputType.Mirroring);
@@ -1399,6 +1411,7 @@ component ReadyToCastView inherits Rectangle {
                     description: "Validate display settings, network latency, and audio synchronization.";
                     icon: @image-url("media-file-fcast.svg");
                     icon-bg-color: #DB8C0E33;
+                    enabled: Bridge.is-mirroring-supported;
 
                     clicked => {
                         Bridge.start-test-pattern-cast();
@@ -1407,6 +1420,31 @@ component ReadyToCastView inherits Rectangle {
             }
 
             Spacer { }
+        }
+    }
+}
+
+component MirroringView inherits Rectangle {
+    ImageBackground {
+        img-width: root.width;
+        img-height: root.height;
+    }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+
+        LabelText {
+            text: "Mirroring";
+        }
+
+        Button {
+            text: "Stop";
+
+            clicked => {
+                Bridge.stop-cast(false);
+                Bridge.app-state = UiAppState.SelectingInputType;
+            }
         }
     }
 }
@@ -1646,6 +1684,8 @@ component MirroringPopup inherits FCastPopupWindow {
     property <length> spacing: 20px;
     property <int> n-columns: compute-columns(i-vl.width);
 
+    callback hide;
+
     pure function compute-columns(width: length) -> int {
         if width > 1300px {
             4
@@ -1720,7 +1760,9 @@ component MirroringPopup inherits FCastPopupWindow {
                         1920,
                         1080,
                         30,
-                    )
+                    );
+                    Bridge.app-state = UiAppState.Mirroring;
+                    root.hide();
                 }
             }
         }
@@ -1835,6 +1877,8 @@ component BackView inherits Rectangle {
             }
         }
 
+        if Bridge.app-state == UiAppState.Mirroring: MirroringView { }
+
         if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
     }
 
@@ -1855,6 +1899,10 @@ component BackView inherits Rectangle {
     if is-showing-mirroring-popup: MirroringPopup {
         width: root.width * 75%;
         height: root.height * 85%;
+
+        hide => {
+            is-showing-mirroring-popup = false;
+        }
 
         close => {
             is-showing-mirroring-popup = false;

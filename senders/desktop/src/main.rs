@@ -2,11 +2,11 @@
 
 // TODO: incremental file listing
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
-use desktop_sender::{device_info_parser, file_server::FileServer, FetchEvent};
+use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
@@ -373,7 +373,7 @@ impl Application {
                     tx_sink.shutdown();
                 }
 
-                video_source_fetcher_tx.send(FetchEvent::Quit).await?;
+                let _ = video_source_fetcher_tx.send(FetchEvent::Quit).await;
             }
 
             session.specific = SessionSpecificState::Idle;
@@ -578,6 +578,8 @@ impl Application {
     async fn handle_event(&mut self, event: Event) -> Result<ShouldQuit> {
         let span = tracing::span!(tracing::Level::DEBUG, "handle_event");
         let _enter = span.enter();
+
+        debug!(?event, "Handling event");
 
         match event {
             Event::StartCast {
@@ -853,7 +855,9 @@ impl Application {
                             ?new_source,
                             "The source on the receiver changed, disconnecting"
                         );
-                        self.end_session(false).await?;
+                        self.end_session(false)
+                            .await
+                            .context("Failed to end session")?;
                     }
                 }
                 mcore::DeviceEvent::PlaybackError(_) => (),
@@ -876,7 +880,9 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     session.specific = SessionSpecificState::LocalMedia {
                         current_id: id,
-                        file_server: FileServer::new().await?,
+                        file_server: FileServer::new()
+                            .await
+                            .context("Failed to create file server")?,
                         data: LocalMediaDataState {
                             root: PathBuf::new(),
                             directories: HashMap::new(),
@@ -897,7 +903,10 @@ impl Application {
                 let event_tx = self.event_tx.clone();
                 if let Some(session) = self.session_state.as_mut() {
                     let video_source_fetcher_tx = spawn_video_source_fetcher(event_tx).await;
-                    video_source_fetcher_tx.send(FetchEvent::Fetch).await?;
+                    video_source_fetcher_tx
+                        .send(FetchEvent::Fetch)
+                        .await
+                        .context("Failed to send fetch event to video source fetcher")?;
 
                     session.specific = SessionSpecificState::Mirroring {
                         tx_sink: None,
@@ -1088,7 +1097,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to cast local media");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::Seek {
@@ -1108,7 +1119,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to seek");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::ChangePlaybackState(playback_state) => {
@@ -1125,7 +1138,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to change playback state");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::ChangeVolume {
@@ -1148,7 +1163,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to change volume");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::CastTestPattern => {
@@ -1160,7 +1177,8 @@ impl Application {
                         "Test pattern".to_owned(),
                         move |_| Ok(gst::FlowSuccess::Ok),
                         mcore::VideoSource::TestSrc,
-                    )?;
+                    )
+                    .context("Failed to create preview pipeline")?;
 
                     let tx_sink = mcore::transmission::WhepSink::from_preview(
                         self.event_tx.clone(),
@@ -1171,7 +1189,8 @@ impl Application {
                         480,
                         30,
                     )
-                    .await?;
+                    .await
+                    .context("Failed to create WHEP sink from preview pipeline")?;
 
                     session.specific = SessionSpecificState::Mirroring {
                         tx_sink: Some(tx_sink),
@@ -1246,6 +1265,7 @@ impl Application {
                     }
                 }
                 Err(err) => {
+                    error!(?err, "Failed to handle event");
                     let _ = self.end_session(true).await;
                     return Err(err);
                 }
@@ -1620,9 +1640,10 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_is_device_info_valid(|info: slint::SharedString| -> bool {
-        device_info_parser::parse(info.as_str()).is_some()
-    });
+    ui.global::<Bridge>()
+        .on_is_device_info_valid(|info: slint::SharedString| -> bool {
+            device_info_parser::parse(info.as_str()).is_some()
+        });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     ui.global::<Bridge>().set_is_audio_supported(false);
