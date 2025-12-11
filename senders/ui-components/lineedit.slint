@@ -11,6 +11,8 @@ export component LineEdit {
     in property <bool> read-only <=> base.read-only;
     in property <length> font-size <=> base.font-size;
     in property <string> placeholder-text <=> base.placeholder-text;
+    // in property <image> icon: @image-url("link.svg");
+    in property <image> icon;
     out property <bool> has-focus <=> base.has-focus;
     in-out property <string> text <=> base.text;
 
@@ -95,6 +97,8 @@ export component LineEdit {
                 placeholder-color: FCastPalette.neutral-800;
                 margin: layout.padding-left + layout.padding-right;
                 horizontal-stretch: 1;
+
+                icon <=> icon;
             }
 
             if !root.text.is-empty && root.input-type != InputType.password && root.enabled && !root.read-only && root.has-focus: LineEditClearIcon {

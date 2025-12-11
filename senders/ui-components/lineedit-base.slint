@@ -16,6 +16,7 @@ export component LineEditBase inherits Rectangle {
     in property <color> selection-background-color <=> text-input.selection-background-color;
     in property <color> selection-foreground-color <=> text-input.selection-foreground-color;
     in property <length> margin;
+    in property <image> icon;
 
     callback accepted(text: string);
     callback edited(text: string);
@@ -77,13 +78,14 @@ export component LineEditBase inherits Rectangle {
         height: 40px;
         spacing: 10px;
 
-        VerticalLayout {
+         if icon.width != 0: VerticalLayout {
             alignment: center;
 
             Image {
                 width: 13.32px;
                 height: 13.32px;
-                source: @image-url("link.svg");
+                // source: @image-url("link.svg");
+                source: icon;
             }
         }
 

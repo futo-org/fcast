@@ -101,8 +101,8 @@ export global Bridge {
     in property <string> log-string;
 
     // in-out property <UiAppState> app-state: SelectingInputType;
-    // in-out property <UiAppState> app-state: Disconnected;
-    in-out property <UiAppState> app-state: LocalMedia;
+    in-out property <UiAppState> app-state: Disconnected;
+    // in-out property <UiAppState> app-state: LocalMedia;
     // in-out property <UiAppState> app-state: Connecting;
     // in-out property <string> device-name: "";
     in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
@@ -196,6 +196,8 @@ export global Bridge {
 
     pure callback str-fmt-seconds(seconds: float) -> string;
     pure callback is-valid-ip-address(address: string) -> bool;
+    pure callback is-device-info-valid(info: string) -> bool;
+    // pure function is-device-info-valid(info: string) -> bool {true}
 }
 
 component Spacer inherits Rectangle { }
@@ -409,9 +411,10 @@ component ConnectView inherits Rectangle {
                     HorizontalLayout {
                         spacing: 10px;
 
-                        Spinner {
-                            indeterminate: true;
-                        }
+                        // broken on femtovg
+                        // Spinner {
+                        //     indeterminate: true;
+                        // }
 
                         FText {
                             vertical-alignment: center;
@@ -433,7 +436,8 @@ component ConnectView inherits Rectangle {
                 }
             }
 
-            property <bool> is-showing-manual-connect: false;
+            // property <bool> is-showing-manual-connect: false;
+            property <bool> is-showing-manual-connect: true;
 
             Rectangle {
                 height: 1px;
@@ -484,79 +488,138 @@ component ConnectView inherits Rectangle {
                 }
             }
 
-            if is-showing-manual-connect: VerticalBox {
-                HorizontalBox {
-                    FText {
-                        vertical-alignment: center;
-                        text: "Protocol:";
-                        width: 15%;
+            if is-showing-manual-connect: VerticalLayout {
+                padding-top: 18px;
+                padding-right: 16px;
+                padding-bottom: 18px;
+                padding-left: 16px;
+
+                Rectangle {
+                    height: 1px;
+                    background: FCastPalette.border-subtle;
+                }
+
+                HorizontalLayout {
+                    padding-top: 18px;
+                    padding-right: 16px;
+                    padding-bottom: 18px;
+                    padding-left: 16px;
+                    // height: 200px;
+
+                    i-left := VerticalLayout {
+                        padding-right: 12px;
+                        spacing: 6px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            i-dev-info-input := LineEdit {
+                                placeholder-text: "IP://192.168.1.x";
+                            }
+
+                            Button {
+                                enabled: Bridge.is-device-info-valid(i-dev-info-input.text);
+                                text: "Connect";
+                            }
+                        }
+
+                        SecondaryText {
+                            text: "Use this for devices on different subnets or VPNs. (port 46899).";
+                        }
                     }
 
-                    protocol-input := ComboBox {
-                        model: ["FCast", "Google cast"];
+                    Rectangle {
+                        width: 1px;
+                        height: Math.max(i-right.preferred-height, i-left.preferred-height);
+                        background: FCastPalette.border-subtle;
+                    }
+
+                    i-right := VerticalLayout {
+                        padding-left: 12px;
+
+                        FText {
+                            text: "Device not listed?";
+                        }
+
+                        SecondaryText {
+                            text: "FCast requires a Receiver App running on your target device before it appears here.";
+                            wrap: word-wrap;
+                        }
                     }
                 }
 
-                HorizontalBox {
-                    FText {
-                        vertical-alignment: center;
-                        text: "Name:";
-                        width: 15%;
-                    }
+                // HorizontalBox {
+                //     FText {
+                //         vertical-alignment: center;
+                //         text: "Protocol:";
+                //         width: 15%;
+                //     }
 
-                    name-input := LineEdit {
-                        placeholder-text: "My Fcast Receiver";
-                    }
-                }
+                //     protocol-input := ComboBox {
+                //         model: ["FCast", "Google cast"];
+                //     }
+                // }
 
-                HorizontalBox {
-                    FText {
-                        vertical-alignment: center;
-                        text: "Port:";
-                        width: 15%;
-                    }
+                // HorizontalBox {
+                //     FText {
+                //         vertical-alignment: center;
+                //         text: "Name:";
+                //         width: 15%;
+                //     }
 
-                    port-input := LineEdit {
-                        input-type: number;
-                        text: "46899";
-                    }
-                }
+                //     name-input := LineEdit {
+                //         placeholder-text: "My Fcast Receiver";
+                //     }
+                // }
 
-                property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
+                // HorizontalBox {
+                //     FText {
+                //         vertical-alignment: center;
+                //         text: "Port:";
+                //         width: 15%;
+                //     }
 
-                if !port-input.text.is-empty && !port-is-valid: FText {
-                    horizontal-alignment: center;
-                    color: red;
-                    text: "Invalid port (must be in the range 1-65535)";
-                }
+                //     port-input := LineEdit {
+                //         input-type: number;
+                //         text: "46899";
+                //     }
+                // }
 
-                HorizontalBox {
-                    FText {
-                        vertical-alignment: center;
-                        text: "Address:";
-                        width: 15%;
-                    }
+                // property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
 
-                    address-input := LineEdit { }
-                }
+                // if !port-input.text.is-empty && !port-is-valid: FText {
+                //     horizontal-alignment: center;
+                //     color: red;
+                //     text: "Invalid port (must be in the range 1-65535)";
+                // }
 
-                property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
+                // HorizontalBox {
+                //     FText {
+                //         vertical-alignment: center;
+                //         text: "Address:";
+                //         width: 15%;
+                //     }
 
-                if !address-input.text.is-empty && !address-is-valid: FText {
-                    horizontal-alignment: center;
-                    color: red;
-                    text: "Invalid address";
-                }
+                //     address-input := LineEdit { }
+                // }
 
-                Button {
-                    enabled: !name-input.text.is-empty && port-is-valid && address-is-valid;
-                    text: "Connect";
-                    clicked => Bridge.connect-manually(
-                        protocol-input.current-value == "FCast" ? UiCastProtocol.FCast : UiCastProtocol.GCast,
-                        name-input.text,
-                        port-input.text.to-float(),
-                        address-input.text);
-                }
+                // property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
+
+                // if !address-input.text.is-empty && !address-is-valid: FText {
+                //     horizontal-alignment: center;
+                //     color: red;
+                //     text: "Invalid address";
+                // }
+
+                // Button {
+                //     enabled: !name-input.text.is-empty && port-is-valid && address-is-valid;
+                //     text: "Connect";
+                //     clicked => Bridge.connect-manually(
+                //         protocol-input.current-value == "FCast" ? UiCastProtocol.FCast : UiCastProtocol.GCast,
+                //         name-input.text,
+                //         port-input.text.to-float(),
+                //         address-input.text);
+                // }
             }
         }
     }
@@ -1290,6 +1353,7 @@ component ReadyToCastView inherits Rectangle {
                 // TODO: check that url is valid/supported (i.e. we can detect mime type from extension)
                 i-line-edit-url := LineEdit {
                     placeholder-text: "Paste URL (http/https, .mp4, .m3u8)...";
+                    icon: @image-url("link.svg");
                 }
 
                 Button {
@@ -1395,7 +1459,7 @@ component LocalMediaView inherits Rectangle {
                     padding-top: 12px;
                     alignment: space-between;
 
-                    Spacer {}
+                    Spacer { }
 
                     Button {
                         height: 40px;

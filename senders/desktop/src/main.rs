@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
-use desktop_sender::{FetchEvent, file_server::FileServer};
+use desktop_sender::{device_info_parser, file_server::FileServer, FetchEvent};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
@@ -1618,6 +1618,10 @@ fn main() -> Result<()> {
         move || {
             event_tx.send(Event::CastTestPattern).unwrap();
         }
+    });
+
+    ui.global::<Bridge>().on_is_device_info_valid(|info: slint::SharedString| -> bool {
+        device_info_parser::parse(info.as_str()).is_some()
     });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

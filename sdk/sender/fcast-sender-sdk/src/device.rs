@@ -17,7 +17,7 @@ pub enum DeviceConnectionState {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolType {
     #[cfg(feature = "chromecast")]
     Chromecast,
@@ -60,7 +60,7 @@ pub(crate) fn ips_to_socket_addrs(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> 
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeviceInfo {
     pub name: String,
     pub protocol: ProtocolType,

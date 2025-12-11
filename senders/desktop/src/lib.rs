@@ -4,6 +4,7 @@ pub mod infer;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod device_info_parser;
 
 pub mod slint_generated {
     slint::include_modules!();
