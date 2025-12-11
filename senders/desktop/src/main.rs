@@ -1645,6 +1645,13 @@ fn main() -> Result<()> {
             device_info_parser::parse(info.as_str()).is_some()
         });
 
+    ui.global::<Bridge>().on_open_url(|url: slint::SharedString| {
+        debug!(?url, "Trying to open URL");
+        if let Err(err) = webbrowser::open(&url) {
+            error!(?err, "Failed to open URL");
+        }
+    });
+
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     ui.global::<Bridge>().set_is_audio_supported(false);
 
