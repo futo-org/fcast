@@ -18,32 +18,14 @@ buildMac:
   stage: buildAndDeployElectron
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
-    - tart-installed
+    - macscript
   variables:
     FCAST_CHANNEL: "stable"
     FCAST_CHANNEL_VERSION: "1"
   before_script:
-    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
-    - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
-    - security unlock-keychain -p "admin" ~/Library/Keychains/login.keychain
-    - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$FCAST_CERTIFICATES_PASSWORD" -T /usr/bin/codesign
-    # Keychain ignores access control, causing to prompt for access and failing in CI environments...: https://stackoverflow.com/a/40039594
-    - "security set-key-partition-list -S apple-tool:,apple: -s -k admin ~/Library/Keychains/login.keychain"
-
-    - mkdir -p ~/.ssh/
-    - cp ./.secure_files/id_ed25519 ~/.ssh/id_ed25519
-    - cp ./.secure_files/id_ed25519.pub ~/.ssh/id_ed25519.pub
-    - chmod 700 ~/.ssh/
-    - chmod 600 ~/.ssh/id_ed25519
-    - chmod 600 ~/.ssh/id_ed25519.pub
-    - cd receivers/electron
+    - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
   script:
-    - npm install
-    - npm rebuild
-    - npm run build
-    - npm run make -- --platform="darwin" --arch="arm64"
-    - npm run make -- --platform="darwin" --arch="x64"
-    - scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
+    - cirrus run --artifacts-dir receivers/electron/out/make --env-file .cienv
   artifacts:
     untracked: false
     when: on_success

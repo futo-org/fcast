@@ -5,7 +5,10 @@ task:
   macos_instance:
     image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
   buildReceiverMac_script:
-    - source .secure_files/.env
+    # Local
+    # - source .secure_files/.env
+
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
     - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
     - security unlock-keychain -p "admin" ~/Library/Keychains/login.keychain
     - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$FCAST_CERTIFICATES_PASSWORD" -T /usr/bin/codesign
@@ -26,5 +29,6 @@ task:
     - npm run make -- --platform="darwin" --arch="arm64"
     - npm run make -- --platform="darwin" --arch="x64"
     - scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
+    - tar -czf artifacts.tar out/make/
   binary_artifacts:
-    path: receivers/electron/out/*
+    path: receivers/electron/artifacts.tar
