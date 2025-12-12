@@ -1,6 +1,6 @@
 
-# Run command: `cirrus run --artifacts-dir receivers/electron/out`
-task:
+# Run command: `cirrus run buildReceiverMac --artifacts-dir receivers/electron/out`
+build_electron_receiver_task:
   name: buildReceiverMac
   macos_instance:
     image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
@@ -32,3 +32,23 @@ task:
     - tar -czf artifacts.tar out/make/
   binary_artifacts:
     path: receivers/electron/artifacts.tar
+
+desktop_sender_task:
+  name: buildSenderMacosArm64
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+  buildReceiverMac_script:
+    - brew install rustup-init protobuf wget
+    - rustup-init -y
+    - rustup target add aarch64-apple-darwin
+    - source $HOME/.cargo/env
+    - wget -q "https://gstreamer.freedesktop.org/data/pkg/osx/1.26.8/gstreamer-1.0-1.26.8-universal.pkg" -O /tmp/gst-1.0-1.26.8-universal.pkg
+    - wget -q "https://gstreamer.freedesktop.org/data/pkg/osx/1.26.8/gstreamer-1.0-devel-1.26.8-universal.pkg" -O /tmp/gst-1.0-devel-1.26.8-universal.pkg
+    - sudo installer -pkg /tmp/gst-1.0-1.26.8-universal.pkg -target /
+    - sudo installer -pkg /tmp/gst-1.0-devel-1.26.8-universal.pkg -target /
+    - export PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig
+    - export PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/bin:$PATH
+    - export DYLD_LIBRARY_PATH=/Library/Frameworks/GStreamer.framework/Libraries:$DYLD_LIBRARY_PATH
+    - cargo xtask sender build-macos-installer
+  binary_artifacts:
+    path: target/fcast-sender.dmg

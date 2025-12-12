@@ -1,0 +1,16 @@
+buildMacosArm64:
+  stage: senders
+  image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
+  tags:
+    - macscript
+  before_script:
+    - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
+  script:
+    - cirrus run buildSenderMacosArm64 --artifacts-dir . --env-file .cienv
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - buildSenderMacosArm64/binary/target/fcast-sender.dmg
+  when: manual
