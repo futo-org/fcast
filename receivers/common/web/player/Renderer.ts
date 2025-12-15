@@ -136,8 +136,9 @@ function onPlayerLoad(value: PlayMessage) {
         }
         if (value.speed) {
             player.setPlaybackRate(value.speed);
-            playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
         }
+        playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
+
         if (value.volume !== null && value.volume >= 0) {
             volumeChangeHandler(value.volume);
         }
