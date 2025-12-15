@@ -59,8 +59,5 @@
     "url": "^0.11.4",
     "uuid": "^9.0.1",
     "yargs": "^17.7.2"
-  },
-  "optionalDependencies": {
-    "utf-8-validate": "^6.0.5"
   }
 }
