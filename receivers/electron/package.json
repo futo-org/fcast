@@ -1,6 +1,6 @@
 {
   "name": "fcast-receiver",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "An application implementing a FCast receiver.",
   "main": "dist/bundle.js",
   "author": "FUTO",
