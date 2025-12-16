@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
-import sudo from 'sudo-prompt';
+import sudo from '@vscode/sudo-prompt';
 import { Settings } from 'common/Settings';
 import { Logger, LoggerType } from 'common/Logger';
 import { fetchJSON, downloadFile } from 'common/UtilityBackend';
