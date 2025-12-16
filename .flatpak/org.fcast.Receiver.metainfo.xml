@@ -41,6 +41,9 @@
   </content_rating>
   <releases>
     <!-- TODO: add to this section when future versions are released -->
+    <release version="2.2.4" date="2025-12-16">
+      <url type="details">https://gitlab.futo.org/videostreaming/fcast/-/releases/electron-v2.2.4</url>
+    </release>
     <release version="2.2.3" date="2025-11-03">
       <url type="details">https://gitlab.futo.org/videostreaming/fcast/-/releases/electron-v2.2.3</url>
     </release>
