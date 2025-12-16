@@ -64,7 +64,7 @@ module.exports = [
     {
         mode: buildMode,
         entry: {
-            preload: './src/main/Preload.ts',
+            preload: './src/Preload.ts',
             renderer: './src/main/Renderer.ts',
             networkWorker: './src/main/NetworkWorker.ts'
         },
@@ -113,7 +113,7 @@ module.exports = [
     {
         mode: buildMode,
         entry: {
-            preload: './src/player/Preload.ts',
+            preload: './src/Preload.ts',
             renderer: './src/player/Renderer.ts',
         },
         target: 'electron-renderer',
@@ -161,8 +161,7 @@ module.exports = [
     {
         mode: buildMode,
         entry: {
-            // Player preload is intentionally reused
-            preload: './src/player/Preload.ts',
+            preload: './src/Preload.ts',
             renderer: './src/viewer/Renderer.ts',
         },
         target: 'electron-renderer',

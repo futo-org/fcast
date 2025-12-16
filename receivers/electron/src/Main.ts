@@ -44,6 +44,7 @@ export class Main {
     static tray: Tray;
     static cache: AppCache = new AppCache();
     static noFullscreenPlayer = false;
+    static noPlayerWindow = false;
 
     private static playerWindowContentViewer = null;
     private static mediaCache: MediaCache = null;
@@ -189,27 +190,39 @@ export class Main {
         }
 
         if (!Main.playerWindow) {
-            Main.playerWindow = new BrowserWindow({
-                fullscreen: !Main.noFullscreenPlayer,
-                autoHideMenuBar: true,
-                icon: path.join(__dirname, 'icon512.png'),
-                title: windowTitle,
-                webPreferences: {
-                    preload: path.join(__dirname, 'player/preload.js')
+            if (!Main.noPlayerWindow) {
+                Main.playerWindow = new BrowserWindow({
+                    fullscreen: !Main.noFullscreenPlayer,
+                    autoHideMenuBar: true,
+                    icon: path.join(__dirname, 'icon512.png'),
+                    title: windowTitle,
+                    webPreferences: {
+                        preload: path.join(__dirname, 'player/preload.js')
+                    }
+                });
+
+                Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
+                Main.playerWindow.show();
+
+                Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
+                Main.playerWindow.once('ready-to-show', async () => {
+                    Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
+                });
+                Main.playerWindow.on('closed', () => {
+                    Main.playerWindow = null;
+                    Main.playerWindowContentViewer = null;
+                });
+            } else {
+                if (!Main.mainWindow) {
+                    Main.openMainWindow(messageInfo);
+                } else {
+                    Main.playerWindow = Main.mainWindow;
+                    Main.mainWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
+                    Main.mainWindow.once('ready-to-show', async () => {
+                        Main.mainWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
+                    });
                 }
-            });
-
-            Main.playerWindow.setAlwaysOnTop(false, 'pop-up-menu');
-            Main.playerWindow.show();
-
-            Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
-            Main.playerWindow.once('ready-to-show', async () => {
-                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
-            });
-            Main.playerWindow.on('closed', () => {
-                Main.playerWindow = null;
-                Main.playerWindowContentViewer = null;
-            });
+            }
         }
         else if (Main.playerWindow && messageInfo.contentViewer !== Main.playerWindowContentViewer) {
             Main.playerWindow.setTitle(windowTitle);
@@ -238,7 +251,14 @@ export class Main {
         Main.tcpListenerService.emitter.on("resume", () => Main.playerWindow?.webContents?.send("resume"));
 
         Main.tcpListenerService.emitter.on("stop", () => {
-            Main.playerWindow?.close();
+            if (!Main.noPlayerWindow) {
+                Main.playerWindow?.close();
+            } else {
+                if (Main.mainWindow?.webContents.getURL().lastIndexOf('main/index.html') == -1) {
+                    Main.mainWindow?.loadFile(path.join(__dirname, 'main/index.html'));
+                }
+            }
+
             Main.playerWindow = null;
             Main.playerWindowContentViewer = null;
             Main.cache.playbackUpdate = null;
@@ -254,14 +274,12 @@ export class Main {
 
         Main.tcpListenerService.emitter.on('connect', (message) => {
             ConnectionMonitor.onConnect(Main.tcpListenerService, message, () => {
-                Main.mainWindow?.webContents?.send('connect', message);
-                Main.playerWindow?.webContents?.send('connect', message);
+                Main.sendWindowEvent('connect', message);
             });
         });
         Main.tcpListenerService.emitter.on('disconnect', (message) => {
             ConnectionMonitor.onDisconnect(message, () => {
-                Main.mainWindow?.webContents?.send('disconnect', message);
-                Main.playerWindow?.webContents?.send('disconnect', message);
+                Main.sendWindowEvent('disconnect', message);
             });
         });
         Main.tcpListenerService.emitter.on('ping', (sessionId: string) => {
@@ -284,8 +302,7 @@ export class Main {
                     keyUp: new Set([...tcpListenerSubscribedKeys.keyUp]),
                 };
 
-                Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
-                Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                Main.sendWindowEvent("event-subscribed-keys-update", subscribeData);
             }
         });
         Main.tcpListenerService.emitter.on('unsubscribeevent', (message) => {
@@ -298,8 +315,7 @@ export class Main {
                     keyUp: new Set([...tcpListenerSubscribedKeys.keyUp]),
                 };
 
-                Main.mainWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
-                Main.playerWindow?.webContents?.send("event-subscribed-keys-update", subscribeData);
+                Main.sendWindowEvent("event-subscribed-keys-update", subscribeData);
             }
         });
         Main.tcpListenerService.start();
@@ -438,7 +454,16 @@ export class Main {
         });
     }
 
-    static openMainWindow() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private static sendWindowEvent(event: string, data: any) {
+        Main.mainWindow?.webContents?.send(event, data);
+        if (!Main.noPlayerWindow) {
+            Main.playerWindow?.webContents?.send(event, data);
+        }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    static openMainWindow(playMessageInfo: { rendererEvent: string, rendererMessage: any, contentViewer: string } = null) {
         if (Main.mainWindow) {
             Main.mainWindow.focus();
             return;
@@ -462,9 +487,25 @@ export class Main {
             }
         });
 
-        Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
+        if (!Main.noPlayerWindow || !playMessageInfo) {
+            Main.mainWindow.loadFile(path.join(__dirname, 'main/index.html'));
+        } else if (playMessageInfo) {
+            Main.playerWindow = Main.mainWindow;
+            Main.mainWindow.loadFile(path.join(__dirname, `${playMessageInfo.contentViewer}/index.html`));
+            Main.mainWindow.once('ready-to-show', async () => {
+                Main.mainWindow?.webContents?.send(playMessageInfo.rendererEvent, playMessageInfo.rendererMessage);
+            });
+        }
+
         Main.mainWindow.on('closed', () => {
             Main.mainWindow = null;
+
+            if (Main.noPlayerWindow) {
+                Main.playerWindow = null;
+                Main.playerWindowContentViewer = null;
+                Main.cache.playbackUpdate = null;
+                Main.cache.playMessage = null;
+            }
 
             if (!networkWorker.isDestroyed()) {
                 networkWorker.close();
@@ -482,7 +523,7 @@ export class Main {
             networkWorker.loadFile(path.join(__dirname, 'main/worker.html'));
         });
 
-        Main.mainWindow.webContents.once('dom-ready', () => {
+        Main.mainWindow.webContents.on('dom-ready', () => {
             if (Settings.json.ui.mainWindowBackground !== '') {
                 if (fs.existsSync(Settings.json.ui.mainWindowBackground)) {
                     if (supportedVideoExtensions.find(ext => ext === path.extname(Settings.json.ui.mainWindowBackground).toLocaleLowerCase())) {
@@ -526,6 +567,7 @@ export class Main {
                 'fullscreen': { type: 'boolean', desc: "Start application in fullscreen" },
                 'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', desc: "Defines the verbosity level of the logger" },
                 'no-fullscreen-player': { type: 'boolean', desc: "Start player in windowed mode" },
+                'no-player-window': { type: 'boolean', desc: "Play videos in the main application window" },
             })
             .parseSync();
 
@@ -569,6 +611,7 @@ export class Main {
             Main.startFullscreen = argv.fullscreen === undefined ? Settings.json.ui.fullscreen : argv.fullscreen;
             Main.shouldOpenMainWindow = argv.noMainWindow === undefined ? !Settings.json.ui.noMainWindow : !argv.noMainWindow;
             Main.noFullscreenPlayer = argv.noFullscreenPlayer === undefined ? Settings.json.ui.noFullscreenPlayer : argv.noFullscreenPlayer;
+            Main.noPlayerWindow = argv.noPlayerWindow === undefined ? Settings.json.ui.noPlayerWindow : argv.noPlayerWindow;
 
             const lock = Main.application.requestSingleInstanceLock()
             if (!lock) {
@@ -603,7 +646,9 @@ export class Main {
 
 export function toast(message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) {
     Main.mainWindow?.webContents?.send('toast', message, icon, duration);
-    Main.playerWindow?.webContents?.send('toast', message, icon, duration);
+    if (!Main.noPlayerWindow) {
+        Main.playerWindow?.webContents?.send('toast', message, icon, duration);
+    }
 }
 
 export function getComputerName() {
