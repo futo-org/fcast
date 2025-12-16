@@ -3,11 +3,13 @@ import 'common/main/Renderer';
 const logger = window.targetAPI.logger;
 export function onQRCodeRendered() {}
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function targetKeyDownEventListener(_event: KeyboardEvent): { handledCase: boolean, key: string } {
     // unused in Electron currently
     return { handledCase: false, key: '', };
 };
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function targetKeyUpEventListener(_event: KeyboardEvent): { handledCase: boolean, key: string } {
     // unused in Electron currently
     return { handledCase: false, key: '', };

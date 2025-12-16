@@ -4,7 +4,7 @@ export enum ToastIcon {
     ERROR,
 }
 
-const toastQueue = []
+const toastQueue: { message: string, icon: ToastIcon, duration: number }[] = []
 
 export function toast(message: string, icon: ToastIcon = ToastIcon.INFO, duration: number = 5000) {
     toastQueue.push({ message: message, icon: icon, duration: duration });

@@ -74,6 +74,7 @@ export function targetKeyDownEventListener(event: KeyboardEvent): { handledCase:
     return { handledCase: handledCase, key: event.key, };
 };
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function targetKeyUpEventListener(_event: KeyboardEvent): { handledCase: boolean, key: string } {
     // unused in Electron currently
     return { handledCase: false, key: '', };
