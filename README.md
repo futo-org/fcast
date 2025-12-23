@@ -59,4 +59,4 @@ This project is licensed under the MIT License - see the LICENSE.md file for det
 
 ## Documentation
 
-Click [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-3) to see the protocol documentation.
+Product documentation for the receivers, senders, and SDK can be found at https://docs.fcast.org
