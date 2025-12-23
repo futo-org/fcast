@@ -11,3 +11,21 @@ This assumes you have Zensical [installed](https://zensical.org/docs/get-started
 ```
 uvx zensical serve
 ```
+
+## Deployment
+
+#### Setup
+```
+npm install
+```
+
+#### Local preview
+```
+uvx zensical build
+npm run dev
+```
+
+#### Publish
+```
+npm run deploy-site
+```
