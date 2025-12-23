@@ -1,0 +1,46 @@
+
+[data-md-color-scheme="slate"] {
+  /* neutral-1100 */
+  --md-default-bg-color: #15181F;
+  /* --md-default-bg-color: hsla(var(--md-hue), 15%, 5%, 1); */
+
+  /* neutral-1000 */
+  --md-default-bg-color--light: #292B328A;
+  /* --md-default-bg-color--light: hsla(var(--md-hue), 15%, 5%, 0.54); */
+
+  /* brand-600 */
+  --md-primary-fg-color: #2889E8;
+  /* --md-primary-fg-color: #4051b5; */
+
+  /* brand-500 */
+  --md-primary-fg-color--light: #4d9cef;
+  /* --md-primary-fg-color--light: #5d6cc0; */
+  --md-accent-fg-color: #4d9cef;
+  /* --md-accent-fg-color: #526cfe; */
+
+  /* brand-700 */
+  --md-primary-fg-color--dark: #1977db;
+  /* --md-primary-fg-color--dark: #303fa1; */
+
+
+  h1 {
+    font-family: Outfit;
+    font-size: 40px;
+    font-weight: 800;
+    background: linear-gradient(180deg, #FFFFFF 5.9%, #D3D3D3 100%);
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+}
+
+[data-md-color-scheme="default"] {
+  h1 {
+    font-family: Outfit;
+    font-size: 40px;
+    font-weight: 800;
+    background: linear-gradient(180deg, #5B5B5B 5.9%, #292929 100%);
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
