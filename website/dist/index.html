@@ -451,7 +451,10 @@
 						<hr class="bg-dark opacity-1 m-0">
 						<div class="row py-4 pb-5">
 							<div class="col-md-6 py-4 text-center text-md-start">
-								<p class="mb-0 text-3 opacity-8 negative-ls-05 font-weight-medium">FUTO © Copyright 2023. All Rights Reserved.</p>
+								<p class="mb-0 text-3 opacity-8 negative-ls-05 font-weight-medium">FUTO © Copyright <span id="year">2023</span>. All Rights Reserved.</p>
+								<script type="text/javascript">
+									year.textContent = new Date().getFullYear();
+								</script>
 							</div>
 						</div>
 					</div>
@@ -479,3 +482,4 @@
 
 	</body>
 </html>
+
