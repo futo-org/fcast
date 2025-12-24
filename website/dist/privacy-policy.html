@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- Mac overscroll background-->
+<html lang="en" class="dark-background">
 	<head>
 
 		<!-- Basic -->
@@ -24,6 +25,7 @@
 
 		<!-- Web Fonts  -->
 		<link id="googleFonts" href="https://fonts.googleapis.com/css?family=Poppins:300,400,500,600,700,800%7CShadows+Into+Light&display=swap" rel="stylesheet" type="text/css">
+		<link rel="stylesheet" href="assets/fonts/outfit.css" />
 
 		<!-- Vendor CSS -->
 		<link rel="stylesheet" href="vendor/bootstrap/css/bootstrap.min.css">
@@ -53,36 +55,17 @@
 	</head>
 
 	<body data-plugin-scroll-spy data-plugin-options="{'target': '#header'}">
-
-		<div class="body">
-
-			<div class="custom-svg-1">
-				<img width="1290" height="1290" src="images/shape-1.svg" alt="" data-icon data-plugin-options="{'onlySVG': true, 'extraClass': ''}" />
-			</div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-circle border-color-primary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="0" data-appear-animation-duration="3s" style="top: 20%; left: 50%; width: 38px; height: 38px;"></div></div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-circle border-color-secondary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="200" data-appear-animation-duration="3s" style="top: 27%; left: 55%; width: 15px; height: 15px;"></div></div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-circle border-color-secondary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="400" data-appear-animation-duration="3s" style="top: 54%; left: 50%; width: 15px; height: 15px;"></div></div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-circle custom-el-blur-1 border-color-primary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="300" data-appear-animation-duration="3s" style="top: 70%; left: 47%; width: 48px; height: 48px;"></div></div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-rounded-rectangle custom-rotate-45 custom-el-blur-2 border-color-primary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="700" data-appear-animation-duration="3s" style="top: 60%; left: 42%; width: 27px; height: 27px;"></div></div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-rounded-rectangle custom-rotate-45 custom-el-blur-1 border-color-primary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="800" data-appear-animation-duration="3s" style="top: 64%; left: 56%; width: 18px; height: 18px;"></div></div>
-
-			<div class="opacity-2"><div class="custom-el custom-el-circle border-color-primary appear-animation" data-appear-animation="fadeIn" data-appear-animation-delay="500" data-appear-animation-duration="3s" style="top: 75%; left: 96%; width: 38px; height: 38px;"></div></div>
-
+		<div class="body dark-background" style="min-height: 100vh; display: flex; flex-direction: column;">
 			<header id="header" class="header-transparent header-transparent-light-bottom-border header-transparent-light-bottom-border-1 header-effect-shrink" data-plugin-options="{'stickyEnabled': true, 'stickyEffect': 'shrink', 'stickyEnableOnBoxed': true, 'stickyEnableOnMobile': false, 'stickyChangeLogo': true, 'stickyStartAt': 30, 'stickyHeaderContainerHeight': 70}">
-				<div class="header-body border-top-0 header-body-bottom-border">
+				<div class="header-body border-top-0 header-body-bottom-border nav-bar">
 					<div class="header-container container">
 						<div class="header-row">
 							<div class="header-column">
 								<div class="header-row">
 									<div class="header-logo">
-										<a href="index.html">
-											<img src="images/logo.svg" class="img-fluid" width="48" height="48" alt="" />
+										<a class="header-logo-container" href="https://fcast.org">
+											<img src="images/logo.svg" class="img-fluid" width="48" height="48" alt="" style="user-select: none;" />
+											<div id="header-logo-text" class="non-selectable">FCast</div>
 										</a>
 									</div>
 								</div>
@@ -90,53 +73,58 @@
 						</div>
 					</div>
 				</div>
-
 			</header>
 
-			<div role="main" class="main">
-
+			<div role="main" class="main" style="flex-grow: 1;">
 				<section id="overview" class="section bg-transparent border-0 py-5 m-0 p-relative">
+					<div class="container pt-lg-5 text-color" style="margin-top: 100px;">
+						<h2 class="text-color-dark font-weight-bold text-10 mb-3-5 text-header">Privacy Policy</h2>
+						Last updated: December 5th 2025<br/><br/>
 
-					<div class="container pt-lg-5" style="margin-top: 100px;">
-						<b>Privacy Policy for FCast</b><br/>
-
+						<h4 class="text-subheading">1. Scope of This Policy</h4>
 						This privacy policy ("Policy") pertains to the use of FCast ("App"), developed and published by FUTO ("we", "us", or "our"). This Policy describes the type of information our App interacts with and the protections we put in place to respect your privacy. By using our App, you agree to the terms and conditions within this Policy.<br/><br/>
 
-						<b>Information Interaction</b><br/>
+						<h4 class="text-subheading">2. General Clauses</h4>
+
+						<b class="text-subheading">Information Interaction</b>
 						We want to clarify that our App doesn't collect, store, or share any personal data. The App operates entirely on your device, using your device's local capabilities to play videos sent from another device in your network, such as your computer. This operation is entirely local, and we do not have access to any data involved in this process.<br/><br/>
 
-						<b>Communication</b><br/>
+						<b class="text-subheading">Communication</b>
 						The App uses TCP sockets and mDNS to facilitate local communication with other devices in your network, enabling you to stream content from one device to another. This communication process does not involve the collection, storage, or sharing of personal data.<br/><br/>
 
-						<b>Security</b><br/>
+						<b class="text-subheading">Security</b>
 						Our App operates locally on your device and does not interact with personal data, thereby significantly reducing any associated security risks. The App is designed to respect your privacy and to not create vulnerabilities that are often associated with data transmission or storage over the internet.<br/><br/>
 
-						<b>Changes to This Privacy Policy</b><br/>
-						We may update our Privacy Policy from time to time. We advise you to review this page periodically for any changes. We will notify you of any changes by posting the new Privacy Policy on this page. These changes are effective immediately after they are posted on this page.<br/><br/>
+						<h4 class="text-subheading">3. Changes to This Privacy Policy</h4>
+						We may update our Privacy Policy from time to time. We advise you to review this page periodically for any changes. If we make any changes, we will notify you by revising the "Last updated" date at the top of this policy.<br/><br/>
 
-						<b>Contact Us</b><br/>
-						If you have any questions or suggestions about our Privacy Policy, do not hesitate to contact us at https://chat.futo.org/<br/><br/>
-
-						This policy is effective as of 2023-05-27.
+						<h4 class="text-subheading">4. Contact Us</h4>
+						If you have any questions about this Privacy Policy, please contact us at <a href="mailto:grayjay@futo.org">grayjay@futo.org</a><br/><br/>
 					</div>
-
 				</section>
-
 			</div>
 
 			<footer id="footer" class="bg-transparent border-0 mt-lg-5 pt-lg-5">
 				<div class="footer-copyright bg-transparent">
 					<div class="container py-2">
-						<hr class="bg-dark opacity-1 m-0">
-						<div class="row py-4 pb-5">
+						<hr class="bg-light opacity-2 m-0">
+						<div class="row py-3 pb-3">
 							<div class="col-md-6 py-4 text-center text-md-start">
-								<p class="mb-0 text-3 opacity-8 negative-ls-05 font-weight-medium">FUTO © Copyright 2023. All Rights Reserved.</p>
+								<div class="d-inline-flex">
+									<a href="https://futo.org" target="_blank" class="mb-0 me-3 text-5 opacity-8 font-weight-medium">FUTO Website</a>
+									<a href="https://grayjay.app" target="_blank" class="mb-0 me-3 text-5 opacity-8 font-weight-medium">Grayjay Website</a>
+								</div>
+							</div>
+							<div class="col-md-6 py-4 text-center text-md-end">
+								<div class="d-inline-flex flex-row-reverse">
+									<a href="https://www.youtube.com/@FUTOTECH" target="_blank" class="mb-0 me-0 w-inline-block"><img src="images/youtube.svg" loading="lazy" alt="Youtube social icon"></a>
+									<a href="https://twitter.com/FUTO_Tech" target="_blank" class="mb-0 me-3 w-inline-block"><img src="images/x.svg" loading="lazy" alt="X social icon"></a>
+								</div>
 							</div>
 						</div>
 					</div>
 				</div>
 			</footer>
-
 		</div>
 
 		<!-- Vendor -->
@@ -155,6 +143,5 @@
 
 		<!-- Theme Initialization Files -->
 		<script src="js/theme.init.js"></script>
-
 	</body>
 </html>

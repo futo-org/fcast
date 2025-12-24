@@ -53,11 +53,9 @@ html, body, .body {
 		font-size: 32px !important;
 }
 
-.custom-call-to-action {
-		margin-left: 50px;
-		margin-right: 50px;
+/* .custom-call-to-action {
 		border-radius: 70px;
-}
+} */
 
 .custom-feature-box-1 .feature-box-icon {
 		width: 4.5em;
@@ -298,32 +296,172 @@ html, body, .body {
 		}
 }
 
-#title-container {
-    display: flex;
-    /* justify-content: center; */
-    align-items: center;
+/* Custom styling */
+p {
+	/* neutral.300 */
+	color: #bdbdc5;
 }
 
-#title-text {
+.main a {
+	color: #019BE7;
+}
+
+.main a:hover {
+	color: #019BE7;
+}
+
+.dark-background {
+	background-color: #121212;
+}
+
+.nav-bar {
+	/* base.dark */
+    background-color: #181617f0 !important;
+    backdrop-filter: blur(10px);
+	border-bottom: 1px solid rgba(234, 234, 234, 0.5) !important;
+	box-shadow: 0 0 3px rgba(234, 234, 234, 0.5);
+}
+
+@media (max-width: 991px) {
+    #header .header-nav-main:before {
+		background-color: #181617f0;
+	}
+}
+
+@media (max-width: 991px) {
+    #header .header-nav-main:not(.header-nav-main-mobile-dark) nav > ul > li > a.active {
+        background: unset !important;
+    }
+}
+
+@media (max-width: 991px) {
+    #header .header-nav-main nav > ul > li > a.active {
+        color: #bdbdc5 !important;
+    }
+}
+
+@media (max-width: 991px) {
+    #header .header-nav-main nav > ul li {
+        border-bottom: unset;
+    }
+}
+
+@media ((min-width: 992px) and (max-width: 1200px))  {
+	.nav-link-docs {
+		display: none !important;
+	}
+}
+
+@media ((max-width: 992px) or (min-width: 1200px))  {
+	.nav-link-docs-short {
+		display: none !important;
+	}
+}
+
+.header-logo-container {
+	display: flex;
+}
+
+.header-logo-container:hover {
+	text-decoration: none !important;
+}
+
+#header .header-btn-collapse-nav {
+    background: linear-gradient(90.92deg, #2D7AF8 0.79%, #0757D9 104.49%) !important;
+}
+
+.text-header {
+    background-image: linear-gradient(180deg, #FFFFFF 5.9%, #D3D3D3 100%);
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+	word-spacing: 0.12em;
+	line-height: 48px;
+}
+
+.text-subheading {
+	/* neutral.100 */
+	color: #e3e4ec !important;
+}
+
+.text-color {
+	/* neutral.300 */
+	color: #bdbdc5 !important;
+}
+
+.text-color-white {
+	color: white !important;
+}
+
+.primary-button-gradient {
+	background: linear-gradient(90.92deg, #2D7AF8 0.79%, #0757D9 104.49%);
+}
+
+.primary-button-gradient:hover {
+	background: linear-gradient(90.92deg, #296edf 0.79%, #064ec3 104.49%);
+	/* background: linear-gradient(138.43deg, #26D1FF 3.91%, #0A62F5 52.62%, #1E05FF 93.17%); */
+}
+
+.bg-gradient-dark, .btn-light {
+	background-color: #1b1d25 !important;
+	background-image: linear-gradient(to right, #1b1d25 0%, #2a2e38 100%) !important;
+	filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#1b1d25', endColorstr='#2a2e38', GradientType=1);
+}
+
+.btn-light:hover {
+	background-color: #1e2029 !important;
+	background-image: linear-gradient(to right, #1e2029 0%, #31333e 100%) !important;
+	filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#1e2029', endColorstr='#31333e', GradientType=1);
+}
+
+.btn-light {
+	border-color: rgba(234, 234, 234, 0.5) !important;
+}
+
+.custom-call-to-action {
+	border-radius: 12px;
+	padding: 32px;
+}
+
+#header-logo-text {
 	font-family: Outfit;
-	font-size: 100px;
+	font-size: 40px;
 	font-weight: 800;
-	line-height: 110px;
+	line-height: 40px;
 	text-align: center;
 	text-underline-position: from-font;
 	text-decoration-skip-ink: none;
+	margin: auto 12px;
 
-	background: linear-gradient(180deg, #5B5B5B 5.9%, #292929 100%);
+	/* background: linear-gradient(180deg, #5B5B5B 5.9%, #292929 100%); */
+	background: linear-gradient(180deg, #FFFFFF 5.9%, #D3D3D3 100%);
 	background-clip: text;
 	-webkit-text-fill-color: transparent;
 	user-select: none;
 }
 
-#title-logo {
-    width: 84px;
-    height: 84px;
+#mainNav > li {
+	/* background-color: red; */
+    height: unset !important;
+    margin: auto;
+	border-radius: 10px !important;
+}
 
-    background-image: url(../images/logo-dark.svg);
-    background-size: cover;
-    margin-right: 15px;
+#header .header-nav-main.header-nav-main-square nav > ul > li > a.nav-link-rounded {
+	border-radius: 10px !important;
+}
+
+#mainNav > li:hover {
+    height: unset !important;
+    margin: auto;
+	border-radius: 10px !important;
+}
+
+#mainNav > li > a {
+    height: unset !important;
+	min-height: 40px !important;
+}
+
+#mainNav > li > a:hover:not(#mainNavDownloadLink) {
+	color: #019BE7 !important;
+	background: #1b1d25 !important;
 }
