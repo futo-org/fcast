@@ -53,6 +53,8 @@ A "receiver", in this context, is a software implementation running on various p
 
 We welcome all contributions. Please read our CONTRIBUTING.md before submitting any pull requests.
 
+Join the [FCast channel](https://chat.futo.org/#narrow/channel/67-FCast) in our FUTO Chat Zulip server for general questions or project discussion.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE.md file for details.

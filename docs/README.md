@@ -1,6 +1,6 @@
 # FCast Documentation Site
 
-This site is built using the [Zensical](https://zensical.org/) static site generator.
+Documentation site https://docs.fcast.org is built using the [Zensical](https://zensical.org/) static site generator.
 
 
 # Getting Started
