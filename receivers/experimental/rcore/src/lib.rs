@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use common::Packet;
 use fcast_protocol::{
     SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage,
     v2::{PlayMessage, PlaybackUpdateMessage},
     v3::PlaybackState,
 };
-use gst::glib::base64_encode;
 use gst::prelude::*;
+use gst_play::ffi::gst_play_media_info_get_audio_streams;
 use log::{debug, error, warn};
 // use pipeline::Pipeline;
 use futures::StreamExt;
@@ -468,7 +469,7 @@ impl Application {
         })
     }
 
-    fn notify_updates(&mut self) -> Result<()> {
+    fn notify_updates(&mut self, force: bool) -> Result<()> {
         // let pipeline_playback_state = match self.pipeline.get_playback_state() {
         //     Ok(s) => s,
         //     Err(err) => {
@@ -568,7 +569,7 @@ impl Application {
         })?;
 
         if self.updates_tx.receiver_count() > 0
-            && self.last_sent_update.elapsed() >= SENDER_UPDATE_INTERVAL
+            && (self.last_sent_update.elapsed() >= SENDER_UPDATE_INTERVAL || force)
         {
             let update = PlaybackUpdateMessage {
                 generation_time: current_time_millis(),
@@ -576,7 +577,11 @@ impl Application {
                 time: position,
                 duration: duration,
                 // state: pipeline_playback_state.state as u8,
-                state: 1,
+                state: match playback_state {
+                    GuiPlaybackState::Idle | GuiPlaybackState::Loading => 0,
+                    GuiPlaybackState::Live | GuiPlaybackState::Playing => 1,
+                    GuiPlaybackState::Paused => 2,
+                },
                 speed: self.player.rate(),
             };
             debug!("Sending update ({update:?})");
@@ -598,15 +603,42 @@ impl Application {
                 })?;
             }
             Event::Pause => {
+                self.player.pause();
                 // self.pipeline.pause().context("failed to pause pipeline")?;
-                self.notify_updates()
-                    .context("failed to notify about updates")?;
+                // self.notify_updates()
+                //     .context("failed to notify about updates")?;
+            }
+            Event::Resume => {
+                self.player.play();
+                // self
+                // .pipeline
+                // .play_or_resume()
+                // .context("failed to play or resume pipeline")?;
             }
             Event::Play(play_message) => {
-                let Some(mut url) = play_message.url else {
-                    error!("Play message does not contain a URL");
-                    return Ok(false);
+                // let Some(mut url) = play_message.url else {
+                let mut url = if let Some(url) = play_message.url {
+                    url
+                } else {
+                    let Some(content) = play_message.content else {
+                        error!("Play message does not contain a URL or content");
+                        return Ok(false);
+                    };
+
+                    let content_type = match play_message.container.as_str() {
+                        "application/dash+xml" => "application/dash+xml",
+                        "application/vnd.apple.mpegurl" | "audio/mpegurl" => "application/x-hls",
+                        _ => {
+                            error!("Invalid content type {}", play_message.container);
+                            return Ok(false);
+                        }
+                    };
+
+                    let b64_content = base64::engine::general_purpose::STANDARD.encode(content);
+
+                    format!("data:{content_type};base64,{b64_content}")
                 };
+
                 if play_message.container == "application/x-whep" {
                     url = url.replace("http://", "fcastwhep://");
                 }
@@ -636,13 +668,6 @@ impl Application {
                 //         .context("failed to notify about updates")?;
                 // }
             }
-            Event::Resume => {
-                self.player.play();
-                // self
-                // .pipeline
-                // .play_or_resume()
-                // .context("failed to play or resume pipeline")?;
-            }
             Event::ResumeOrPause => {
                 match self.player_state {
                     gst_play::PlayState::Paused => self.player.play(),
@@ -663,11 +688,11 @@ impl Application {
                 // } {
                 //     error!("Failed to play or resume: {err}");
                 // }
-                self.notify_updates()
-                    .context("failed to notify about updates")?;
+                // self.notify_updates()
+                //     .context("failed to notify about updates")?;
             }
             Event::Stop => {
-                // self.pipeline.stop()?;
+                self.player.stop();
                 self.ui_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_playback_stopped();
                     ui.global::<Bridge>().set_app_state(AppState::Idle);
@@ -714,20 +739,20 @@ impl Application {
             Event::SetVolume(set_volume_message) => {
                 self.player.set_volume(set_volume_message.volume);
                 // self.pipeline.set_volume(set_volume_message.volume);
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<Bridge>()
-                        .set_volume(set_volume_message.volume as f32);
-                })?;
-                if self.updates_tx.receiver_count() > 0 {
-                    let update = VolumeUpdateMessage {
-                        generation_time: current_time_millis(),
-                        volume: set_volume_message.volume,
-                    };
-                    debug!("Sending update ({update:?})");
-                    self.updates_tx
-                        .send(Arc::new(Packet::from(update).encode()))?;
-                    self.last_sent_update = Instant::now();
-                }
+                // self.ui_weak.upgrade_in_event_loop(move |ui| {
+                //     ui.global::<Bridge>()
+                //         .set_volume(set_volume_message.volume as f32);
+                // })?;
+                // if self.updates_tx.receiver_count() > 0 {
+                //     let update = VolumeUpdateMessage {
+                //         generation_time: current_time_millis(),
+                //         volume: set_volume_message.volume,
+                //     };
+                //     debug!("Sending update ({update:?})");
+                //     self.updates_tx
+                //         .send(Arc::new(Packet::from(update).encode()))?;
+                //     self.last_sent_update = Instant::now();
+                // }
             }
             Event::Quit => return Ok(true),
             Event::PipelineEos => {
@@ -746,7 +771,7 @@ impl Application {
             }
             Event::PipelineStateChanged(state) => match state {
                 gst::State::Paused | gst::State::Playing => self
-                    .notify_updates()
+                    .notify_updates(true)
                     .context("failed to notify about updates")?,
                 _ => (),
             },
@@ -770,7 +795,7 @@ impl Application {
                                     ui.invoke_playback_started();
                                     ui.global::<Bridge>().set_app_state(AppState::Playing);
                                 })?;
-                                self.notify_updates()
+                                self.notify_updates(true)
                                     .context("Failed to notify about updates")?;
                             }
                             _ => (),
@@ -786,7 +811,22 @@ impl Application {
                         self.current_duration = Some(duration);
                     }
                     PlayerEvent::PositionChanged(position) => {}
-                    PlayerEvent::VolumeChanged(volume) => {}
+                    PlayerEvent::VolumeChanged(volume) => {
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>()
+                                .set_volume(volume as f32);
+                        })?;
+                        if self.updates_tx.receiver_count() > 0 {
+                            let update = VolumeUpdateMessage {
+                                generation_time: current_time_millis(),
+                                volume,
+                            };
+                            debug!("Sending update ({update:?})");
+                            self.updates_tx
+                                .send(Arc::new(Packet::from(update).encode()))?;
+                            self.last_sent_update = Instant::now();
+                        }
+                    }
                     PlayerEvent::Eos => {}
                 }
             }
@@ -822,9 +862,8 @@ impl Application {
                     }
                 }
                 _ = update_interval.tick() => {
-                    // if self.pipeline.is_playing() == Some(true) {
-                        self.notify_updates()?;
-                    // }
+                    // TODO: in what states can we omit updates?
+                    self.notify_updates(false)?;
                 }
                 session = dispatch_listener.accept() => {
                     let (stream, _) = session?;
@@ -889,21 +928,23 @@ pub fn run() -> Result<()> {
 
     let ips: Vec<Ipv4Addr> = get_all_available_addrs_ignore_v6_and_localhost()?;
 
-    // TODO: fix, base64? format?
+    use base64::Engine as _;
     let device_url = format!(
         "fcast://r/{}",
-        base64_encode(
-            format!(
-                r#"{{"name":"Test","addresses":[{}],"services":[{{"port":46899,"type":1}}]}}"#,
-                ips.iter()
-                    .map(|addr| format!("\"{}\"", addr))
-                    .collect::<Vec<String>>()
-                    .join(","),
+        base64::engine::general_purpose::URL_SAFE
+            .encode(
+                format!(
+                    r#"{{"name":"Test","addresses":[{}],"services":[{{"port":46899,"type":0}}]}}"#,
+                    ips.iter()
+                        .map(|addr| format!("\"{}\"", addr))
+                        .collect::<Vec<String>>()
+                        .join(","),
+                )
+                .as_bytes()
             )
-            .as_bytes()
-        )
-        .as_str(),
+            .as_str(),
     );
+    debug!("url: {device_url}");
 
     let qr_code = qrcode::QrCode::new(device_url)?;
     let qr_code_dims = qr_code.width() as u32;

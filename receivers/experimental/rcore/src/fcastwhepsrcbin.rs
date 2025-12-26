@@ -15,16 +15,9 @@ mod imp {
         pub uri: Option<String>,
     }
 
+    #[derive(Default)]
     pub struct FCastWhepSrcBin {
         state: Mutex<State>,
-    }
-
-    impl Default for FCastWhepSrcBin {
-        fn default() -> Self {
-            Self {
-                state: Default::default(),
-            }
-        }
     }
 
     #[glib::object_subclass]
@@ -35,11 +28,7 @@ mod imp {
         type Interfaces = (gst::URIHandler,);
     }
 
-    impl ObjectImpl for FCastWhepSrcBin {
-        fn constructed(&self) {
-            self.parent_constructed();
-        }
-    }
+    impl ObjectImpl for FCastWhepSrcBin {}
 
     impl GstObjectImpl for FCastWhepSrcBin {}
 

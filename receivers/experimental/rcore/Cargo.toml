@@ -29,6 +29,7 @@ gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
 gst-play = { package = "gstreamer-play", version = "0.24.2 "}
 serde_json.workspace = true
 getifaddrs = "0.6.0"
+base64 = "0.22.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"
