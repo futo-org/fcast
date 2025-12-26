@@ -15,6 +15,7 @@ import {
     FText,
     ListView,
     ScrollView,
+    Icons,
 } from "../../ui-components/std-widgets.slint";
 import { FocusBorder } from "../../ui-components/components.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
@@ -293,7 +294,7 @@ component DeviceListItem {
                 Image {
                     width: 36px;
                     height: 36px;
-                    source: @image-url("./tv.svg");
+                    source: Icons.tv;
                     vertical-alignment: center;
                 }
 
@@ -578,7 +579,7 @@ component ConnectView inherits Rectangle {
                                 horizontal-alignment: center;
                                 width: 8.8px;
                                 height: 5.1px;
-                                source: @image-url("down.svg");
+                                source: Icons.arrow-down;
                                 colorize: FCastPalette.neutral-500;
                             }
                         }
@@ -678,7 +679,7 @@ component ConnectView inherits Rectangle {
                                     alignment: center;
 
                                     Image {
-                                        source: @image-url("open-external.svg");
+                                        source: Icons.open-external;
                                         width: 9px;
                                         height: 9px;
                                     }
@@ -817,7 +818,7 @@ component ImageBackground {
     Image {
         width: img-width;
         height: img-height;
-        source: @image-url("background-img.png");
+        source: Icons.background;
     }
 
     Rectangle {
@@ -828,7 +829,7 @@ component ImageBackground {
 }
 
 component DisconnectButton inherits Button {
-    icon: @image-url("disconnect-icon.svg");
+    icon: Icons.disconnect;
     text: "Disconnect";
     text-color: FCastPalette.negative-600;
     background-default-drop-shadow-color: transparent;
@@ -895,7 +896,7 @@ component ReadyToCastView inherits Rectangle {
                 // TODO: check that url is valid/supported (i.e. we can detect mime type from extension)
                 i-line-edit-url := LineEdit {
                     placeholder-text: "Paste URL (http/https, .mp4, .m3u8)...";
-                    icon: @image-url("link.svg");
+                    icon: Icons.link;
                 }
 
                 Button {
@@ -921,7 +922,7 @@ component ReadyToCastView inherits Rectangle {
                 i-cast-media-item := SourceItem {
                     label: "Cast media file";
                     description: "Cast MP4, MKV, or MP3 files directly from your hard drive with zero compression.";
-                    icon: @image-url("folder-fcast.svg");
+                    icon: Icons.folder-fcast;
                     icon-bg-color: #2889E821;
                     enabled: false;
 
@@ -933,7 +934,7 @@ component ReadyToCastView inherits Rectangle {
                 i-mirroring-item := SourceItem {
                     label: "Mirror screen";
                     description: "Share your entire desktop or a specific window. Low latency for demos and presentations.";
-                    icon: @image-url("mirror-fcast.svg");
+                    icon: Icons.mirror;
                     icon-bg-color: #7C3AED29;
                     enabled: Bridge.is-mirroring-supported;
 
@@ -946,7 +947,7 @@ component ReadyToCastView inherits Rectangle {
                 i-test-pattern-item := SourceItem {
                     label: "Video test pattern";
                     description: "Validate display settings, network latency, and audio synchronization.";
-                    icon: @image-url("media-file-fcast.svg");
+                    icon: Icons.media-file;
                     icon-bg-color: #DB8C0E33;
                     enabled: Bridge.is-mirroring-supported;
 
@@ -1145,7 +1146,7 @@ component PlaybackSettingsMenuItem inherits Rectangle {
             i-playback-rate-arrow-icon := Image {
                 width: 4.67px;
                 height: 8px;
-                source: @image-url("arrow_right.svg");
+                source: Icons.arrow-right;
             }
         }
     }
@@ -1156,11 +1157,11 @@ component PlaybackControls inherits Rectangle {
 
     states [
         playing when Bridge.playback-state == UiPlaybackState.Playing: {
-            i-master-button.icon: @image-url("pause.svg");
+            i-master-button.icon: Icons.pause;
             i-master-button.enabled: true;
         }
         paused when Bridge.playback-state == UiPlaybackState.Paused: {
-            i-master-button.icon: @image-url("play.svg");
+            i-master-button.icon: Icons.play;
             i-master-button.enabled: true;
         }
     ]
@@ -1226,7 +1227,7 @@ component PlaybackControls inherits Rectangle {
             settings-btn := Button {
                 height: 40px;
                 width: 40px;
-                icon: @image-url("settings.svg");
+                icon: Icons.settings;
                 icon-size: 18px;
 
                 clicked => {
@@ -1297,7 +1298,7 @@ component PlaybackControls inherits Rectangle {
 
                         PlaybackSettingsMenuItem {
                             label: "Playback rate";
-                            icon: @image-url("playback_rate.svg");
+                            icon: Icons.playback-rate;
 
                             clicked => {
                                 menu-state = UiPlaybackSettingsMenuState.Rate;
@@ -1469,14 +1470,14 @@ component LocalMediaView inherits Rectangle {
                     Button {
                         height: 40px;
                         width: 40px;
-                        icon: @image-url("pause.svg");
+                        icon: Icons.pause;
                         icon-size: 15px;
                     }
 
                     Button {
                         height: 40px;
                         width: 40px;
-                        icon: @image-url("settings.svg");
+                        icon: Icons.settings;
                         icon-size: 18px;
                     }
                 }
@@ -1519,7 +1520,7 @@ component FCastPopupWindow inherits Rectangle {
             Button {
                 width: 36px;
                 height: 36px;
-                icon: @image-url("close.svg");
+                icon: Icons.close;
                 icon-size: 13.33px;
                 clicked => close();
             }
@@ -1622,7 +1623,7 @@ component LocalMediaPopup inherits FCastPopupWindow {
                         background: FCastPalette.neutral-1100;
 
                         Image {
-                            source: @image-url("upload.svg");
+                            source: Icons.upload;
                             colorize: FCastPalette.neutral-600;
                             width: 30.83px;
                             height: 35px;
@@ -1784,7 +1785,7 @@ component BackView inherits Rectangle {
                 spacing: 5px;
 
                 Image {
-                    source: @image-url("fcast-icon.png");
+                    source: Icons.fcast;
                     width: 48px;
                 }
 
@@ -1842,7 +1843,7 @@ component BackView inherits Rectangle {
                             Image {
                                 width: 12px;
                                 height: 12px;
-                                source: @image-url("dev-log.svg");
+                                source: Icons.dev-log;
                                 colorize: FCastPalette.neutral-600;
 
                                 states [
