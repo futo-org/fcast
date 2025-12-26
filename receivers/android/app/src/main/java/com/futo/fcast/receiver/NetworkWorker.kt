@@ -121,7 +121,6 @@ class NetworkWorker(private val _context: Context) {
             .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
             .build()
 
-        _connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
         val activeInterfaces = getActiveNetworkInterfaces()
 
         for (iface in activeInterfaces) {
@@ -132,6 +131,7 @@ class NetworkWorker(private val _context: Context) {
             }
         }
 
+        _connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
         Log.i(TAG, "Started $TAG")
     }
 
@@ -193,8 +193,7 @@ class NetworkWorker(private val _context: Context) {
                 else -> Pair(NetworkInterfaceType.Unknown, iface.displayName)
             }
 
-            val addresses = iface.inetAddresses.toList().distinctBy { it.hostAddress }
-            for (address in addresses) {
+            for (address in iface.inetAddresses) {
                 if (address.isLoopbackAddress || address.address.size != 4) {
                     continue
                 }
