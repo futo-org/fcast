@@ -1635,12 +1635,14 @@ dependencies = [
  "parking_lot",
  "slint",
  "slint-build",
+ "smallvec",
  "tokio",
  "tracing",
  "tracing-gstreamer",
  "tracing-panic",
  "tracing-subscriber",
  "uuid",
+ "webbrowser",
  "xcb",
 ]
 
@@ -4119,6 +4121,10 @@ dependencies = [
  "hyper-util",
  "libpulse-binding",
  "parking_lot",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "smol_str 0.3.4",
  "tokio",
  "tracing",
  "uuid",
@@ -6046,6 +6052,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smawk"
@@ -6565,7 +6574,9 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -7390,6 +7401,22 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webbrowser"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00f1243ef785213e3a32fa0396093424a3a6ea566f9948497e5a2309261a4c97"
+dependencies = [
+ "core-foundation 0.10.1",
+ "jni",
+ "log",
+ "ndk-context",
+ "objc2 0.6.3",
+ "objc2-foundation 0.3.2",
+ "url",
+ "web-sys",
 ]
 
 [[package]]

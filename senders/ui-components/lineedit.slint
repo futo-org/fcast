@@ -1,0 +1,136 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+import { FluentFontSettings, FluentPalette, FCastPalette } from "styling.slint";
+import { LineEditBase, LineEditClearIcon, LineEditPasswordIcon } from "lineedit-base.slint";
+
+export component LineEdit {
+    in property <bool> enabled <=> base.enabled;
+    in property <InputType> input-type;
+    in property <TextHorizontalAlignment> horizontal-alignment <=> base.horizontal-alignment;
+    in property <bool> read-only <=> base.read-only;
+    in property <length> font-size <=> base.font-size;
+    in property <string> placeholder-text <=> base.placeholder-text;
+    // in property <image> icon: @image-url("link.svg");
+    in property <image> icon;
+    out property <bool> has-focus <=> base.has-focus;
+    in-out property <string> text <=> base.text;
+
+    callback accepted <=> base.accepted;
+    callback edited <=> base.edited;
+    callback key-pressed <=> base.key-pressed;
+    callback key-released <=> base.key-released;
+    accessible-role: text-input;
+    accessible-enabled: root.enabled;
+    accessible-value <=> text;
+    accessible-placeholder-text: placeholder-text;
+    accessible-read-only: root.read-only;
+    accessible-action-set-value(v) => { text = v; edited(v); }
+
+    public function set-selection-offsets(start: int, end: int) {
+        base.set-selection-offsets(start, end);
+    }
+
+    public function select-all() {
+        base.select-all();
+    }
+
+    public function clear-selection() {
+        base.clear-selection();
+    }
+
+    public function cut() {
+        base.cut();
+    }
+
+    public function copy() {
+        base.copy();
+    }
+
+    public function paste() {
+        base.paste();
+    }
+
+    vertical-stretch: 0;
+    horizontal-stretch: 1;
+    min-width: max(160px, layout.min-width);
+    min-height: max(32px, layout.min-height);
+    forward-focus: base;
+
+    states [
+        disabled when !root.enabled : {
+            background.background: FluentPalette.control-disabled;
+            background.border-color: FluentPalette.border;
+            base.text-color: FluentPalette.text-disabled;
+            base.selection-foreground-color: FluentPalette.text-accent-foreground-disabled;
+            base.placeholder-color: FluentPalette.text-disabled;
+        }
+        focused when root.has-focus : {
+            background.background: FluentPalette.control-input-active;
+            background.border-color: FluentPalette.border;
+            // focus-border.background: FluentPalette.accent-background;
+            focus-border.background: FCastPalette.brand-600;
+            base.placeholder-color: FluentPalette.text-tertiary;
+        }
+    ]
+
+    background := Rectangle {
+        border-radius: 4px;
+        // background: FluentPalette.control-background;
+        background: #13151B;
+        border-width: 1px;
+        // border-color: FluentPalette.text-control-border;
+        border-color: FCastPalette.border-subtle;
+
+        layout := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+
+            base := LineEditBase {
+                input-type: root.input-type;
+                font-size: FluentFontSettings.body.font-size;
+                font-weight: FluentFontSettings.body.font-weight;
+                selection-background-color: FluentPalette.selection-background;
+                selection-foreground-color: FluentPalette.accent-foreground;
+                text-color: FluentPalette.foreground;
+                // placeholder-color: FluentPalette.text-secondary;
+                placeholder-color: FCastPalette.neutral-800;
+                margin: layout.padding-left + layout.padding-right;
+                horizontal-stretch: 1;
+
+                icon <=> icon;
+            }
+
+            if !root.text.is-empty && root.input-type != InputType.password && root.enabled && !root.read-only && root.has-focus: LineEditClearIcon {
+                width: 16px;
+                text: base.text;
+                source: @image-url("icons/_dismiss.svg");
+                colorize: base.text-color;
+                clear => {
+                    base.text = "";
+                    root.edited("");
+                    base.focus();
+                }
+            }
+
+            if root.input-type == InputType.password && !root.text.is-empty && root.has-focus: LineEditPasswordIcon {
+                width: self.source.width * 1px;
+                show-password-image: @image-url("icons/_eye_show.svg");
+                hide-password-image: @image-url("icons/_eye_hide.svg");
+                colorize: base.text-color;
+                show-password: base.input-type != InputType.password;
+                show-password-changed(show) => {
+                    base.input-type = show ? InputType.text : root.input-type;
+                    base.focus();
+                }
+            }
+        }
+
+        focus-border := Rectangle {
+            x: parent.border-radius;
+            y: parent.height - self.height;
+            width: parent.width - 2 * parent.border-radius;
+            height: 2px;
+        }
+    }
+}

@@ -25,5 +25,11 @@ anyhow.workspace = true
 tracing.workspace = true
 futures = "0.3"
 
+[target.'cfg(not(target_os = "android"))'.dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+smallvec.workspace = true
+smol_str.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = "2.30.1"

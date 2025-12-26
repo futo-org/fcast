@@ -2,11 +2,11 @@
 
 // TODO: incremental file listing
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
-use desktop_sender::{FetchEvent, file_server::FileServer};
+use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
@@ -32,9 +32,9 @@ use std::{fmt::Write, path::PathBuf};
 use tokio::{
     io::AsyncReadExt,
     runtime::Runtime,
-    sync::mpsc::{channel, Sender, UnboundedSender},
+    sync::mpsc::{Sender, UnboundedSender, channel},
 };
-use tracing::{debug, error, level_filters::LevelFilter, warn};
+use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
     Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
@@ -100,8 +100,7 @@ async fn list_directory(
         }
     }
 
-    event_tx
-        .send(Event::DirectoryListing { id, entries })?;
+    event_tx.send(Event::DirectoryListing { id, entries })?;
 
     Ok(())
 }
@@ -144,11 +143,10 @@ async fn process_files(
     }
 
     if !media_files.is_empty() {
-        event_tx
-            .send(Event::FilesListing {
-                id,
-                entries: media_files,
-            })?;
+        event_tx.send(Event::FilesListing {
+            id,
+            entries: media_files,
+        })?;
     }
 
     Ok(())
@@ -187,13 +185,16 @@ enum SessionSpecificState {
         video_source_fetcher_tx: Sender<FetchEvent>,
         our_source_url: Option<String>,
         video_sources: Vec<(usize, PreviewPipeline)>,
-        audio_sources: Vec<(usize, AudioSource)>,
     },
     LocalMedia {
         current_id: u32,
         file_server: FileServer,
         data: LocalMediaDataState,
         listing_canceler: Option<Canceler>,
+    },
+    YtDlp {
+        sources: Option<Vec<mcore::yt_dlp::YtDlpSource>>,
+        fetcher_quit_tx: Option<tokio::sync::oneshot::Sender<()>>,
     },
 }
 
@@ -331,9 +332,7 @@ impl Application {
     /// Must be called from a tokio runtime.
     pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
         let cast_ctx = CastContext::new()?;
-        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(
-            event_tx.clone(),
-        )));
+        cast_ctx.start_discovery(Arc::new(mcore::Discoverer::new(event_tx.clone())));
 
         Ok(Self {
             cast_ctx,
@@ -362,6 +361,29 @@ impl Application {
         });
     }
 
+    async fn end_session_no_disconnect(&mut self) -> Result<()> {
+        if let Some(session) = self.session_state.as_mut() {
+            session.device.stop_playback()?;
+
+            if let SessionSpecificState::Mirroring {
+                tx_sink,
+                video_source_fetcher_tx,
+                ..
+            } = &mut session.specific
+            {
+                if let Some(mut tx_sink) = tx_sink.take() {
+                    tx_sink.shutdown();
+                }
+
+                let _ = video_source_fetcher_tx.send(FetchEvent::Quit).await;
+            }
+
+            session.specific = SessionSpecificState::Idle;
+        }
+
+        Ok(())
+    }
+
     async fn end_session(&mut self, stop_playback: bool) -> Result<()> {
         if let Some(session) = self.session_state.take() {
             self.disconnect_device(session.device, stop_playback);
@@ -377,6 +399,14 @@ impl Application {
                     }
 
                     video_source_fetcher_tx.send(FetchEvent::Quit).await?;
+                }
+                SessionSpecificState::YtDlp {
+                    mut fetcher_quit_tx,
+                    ..
+                } => {
+                    if let Some(quit_tx) = fetcher_quit_tx.take() {
+                        let _ = quit_tx.send(());
+                    }
                 }
                 _ => (),
             }
@@ -486,6 +516,17 @@ impl Application {
             let duration = session.duration as f32;
             let speed = session.speed as f32;
 
+            fn sec_to_str(sec: u32) -> String {
+                let h = sec / 60 / 60;
+                let m = (sec / 60) % 60;
+                let s = sec % 60;
+
+                format!("{h:02}:{m:02}:{s:02}")
+            }
+
+            let time_str = sec_to_str(time as u32).to_shared_string();
+            let dur_str = sec_to_str(duration as u32).to_shared_string();
+
             self.ui_weak.upgrade_in_event_loop(move |ui| {
                 let bridge = ui.global::<Bridge>();
                 bridge.set_volume(volume);
@@ -493,6 +534,8 @@ impl Application {
                 bridge.set_playback_state(playback_state);
                 bridge.set_track_duration(duration);
                 bridge.set_playback_rate(speed);
+                bridge.set_playback_pos_str(time_str);
+                bridge.set_track_dur_str(dur_str);
             })?;
         }
 
@@ -535,29 +578,19 @@ impl Application {
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             let sources = bridge.get_video_sources();
-            for row in sources.iter() {
-                let Some(model) = row
-                    .as_any()
-                    .downcast_ref::<slint::VecModel<UiVideoSourceModel>>()
-                else {
-                    error!("Row is invalid type");
-                    return;
-                };
-
-                let mut a_idx = None;
-                for (idx, src) in model.iter().enumerate() {
-                    if src.uid == id {
-                        a_idx = Some(idx);
-                        break;
-                    }
+            let mut a_idx = None;
+            for (idx, src) in sources.iter().enumerate() {
+                if src.uid == id {
+                    a_idx = Some(idx);
+                    break;
                 }
+            }
 
-                if let Some(idx) = a_idx {
-                    if let Some(mut row) = model.row_data(idx) {
-                        row.preview = slint::Image::from_rgb8(slint_frame);
-                        model.set_row_data(idx, row);
-                        return;
-                    }
+            if let Some(idx) = a_idx {
+                if let Some(mut item) = sources.row_data(idx) {
+                    item.preview = slint::Image::from_rgb8(slint_frame);
+                    sources.set_row_data(idx, item);
+                    return;
                 }
             }
         });
@@ -565,14 +598,183 @@ impl Application {
         Ok(gst::FlowSuccess::Ok)
     }
 
-    async fn handle_event(&mut self, event: Event) -> Result<ShouldQuit> {
-        let span = tracing::span!(tracing::Level::DEBUG, "handle_event");
+    fn handle_yt_dlp_event(&mut self, event: mcore::YtDlpEvent) -> Result<()> {
+        let span = tracing::span!(tracing::Level::DEBUG, "yt_dlp");
         let _enter = span.enter();
 
+        fn get_title(src: &mcore::yt_dlp::YtDlpSource) -> String {
+            src.title.clone().unwrap_or(src.id.to_string())
+        }
+
+        if let Some(session) = &mut self.session_state {
+            match &mut session.specific {
+                SessionSpecificState::YtDlp { sources, .. } => match event {
+                    mcore::YtDlpEvent::SourceAvailable(new_source) => {
+                        if let Some(formats) = new_source.formats.as_ref() {
+                            if let Some(format) = formats.get(0) {
+                                if format.content_type().is_none() {
+                                    debug!(
+                                        ?format,
+                                        "Format does not have a supported content type"
+                                    );
+                                    return Ok(());
+                                }
+                            } else {
+                                debug!("Source has no formats");
+                                return Ok(());
+                            }
+                        } else {
+                            debug!("Source has no formats");
+                            return Ok(());
+                        }
+
+                        let source_item = UiYtDlpSource {
+                            title: get_title(&new_source).to_shared_string(),
+                        };
+
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            let bridge = ui.global::<Bridge>();
+                            let sources_rc = bridge.get_yt_dlp_sources();
+                            let sources = sources_rc
+                                .as_any()
+                                .downcast_ref::<slint::VecModel<UiYtDlpSource>>()
+                                .expect("The model is always a vec");
+                            sources.push(source_item);
+                            bridge.set_yt_dlp_state(UiYtDlpState::HasDataButFetching);
+                        })?;
+
+                        if let Some(sources) = sources.as_mut() {
+                            sources.push(*new_source);
+                        } else {
+                            *sources = Some(vec![*new_source]);
+                        }
+                    }
+                    mcore::YtDlpEvent::Cast(title) => {
+                        if let Some(sources) = sources.as_ref() {
+                            for src in sources {
+                                if title != get_title(src) {
+                                    continue;
+                                }
+
+                                let Some(formats) = src.formats.as_ref() else {
+                                    error!("Missing formats");
+                                    break;
+                                };
+
+                                let Some(format) = formats.get(0) else {
+                                    error!("No formats available");
+                                    break;
+                                };
+
+                                let Some(content_type) = format.content_type() else {
+                                    error!("No content type found for format");
+                                    break;
+                                };
+
+                                let url = format.src_url();
+                                let content_type = content_type.to_owned();
+                                session.device.load(
+                                    fcast_sender_sdk::device::LoadRequest::Url {
+                                        content_type,
+                                        url,
+                                        resume_position: None,
+                                        speed: None,
+                                        volume: None,
+                                        metadata: Some(fcast_sender_sdk::device::Metadata {
+                                            title: Some(title),
+                                            thumbnail_url: src
+                                                .thumbnails
+                                                .as_ref()
+                                                .map(|thumbs| {
+                                                    let mut chosen = None;
+                                                    for thumb in thumbs {
+                                                        if thumb.width.unwrap_or(0) >= 500
+                                                            || thumb.height.unwrap_or(0) >= 500
+                                                        {
+                                                            chosen = Some(thumb.url.clone());
+                                                            break;
+                                                        }
+                                                    }
+                                                    if chosen.is_some() {
+                                                        chosen
+                                                    } else {
+                                                        thumbs.last().map(|thumb| thumb.url.clone())
+                                                    }
+                                                })
+                                                .flatten(),
+                                        }),
+                                        request_headers: None,
+                                    },
+                                )?;
+
+                                break;
+                            }
+                        }
+                    }
+                    mcore::YtDlpEvent::Finished => {
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>()
+                                .set_yt_dlp_state(UiYtDlpState::HasData);
+                        })?;
+                    }
+                },
+                _ => error!("Invalid state"),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn connect_with_device_info(
+        &mut self,
+        device_info: fcast_sender_sdk::device::DeviceInfo,
+        device_name: &str,
+    ) -> Result<()> {
+        debug!(?device_info, "Trying to connect");
+        let device = self.cast_ctx.create_device_from_info(device_info.clone());
+        self.current_session_id += 1;
+        if let Err(err) = device.connect(
+            None,
+            Arc::new(mcore::DeviceHandler::new(
+                self.current_session_id,
+                self.event_tx.clone(),
+            )),
+            1000,
+        ) {
+            error!(?err);
+            self.ui_weak.upgrade_in_event_loop(|ui| {
+                ui.global::<Bridge>()
+                    .invoke_change_state(UiAppState::Disconnected);
+            })?;
+            return Ok(());
+        }
+        self.session_state = Some(SessionState {
+            device,
+            volume: 0.0,
+            time: 0.0,
+            duration: 0.0,
+            speed: 0.0,
+            playback_state: UiPlaybackState::Idle,
+            local_address: None,
+            specific: SessionSpecificState::Idle,
+            previous_seek: Instant::now(),
+            previous_volume_change: Instant::now(),
+        });
+        let device_name = slint::SharedString::from(device_name);
+        self.ui_weak.upgrade_in_event_loop(move |ui| {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_device_name(device_name);
+            bridge.invoke_change_state(UiAppState::Connecting);
+        })?;
+
+        Ok(())
+    }
+
+    async fn handle_event(&mut self, event: Event) -> Result<ShouldQuit> {
         match event {
             Event::StartCast {
                 video_uid,
-                audio_uid,
+                include_audio,
                 scale_width,
                 scale_height,
                 max_framerate,
@@ -582,7 +784,6 @@ impl Application {
                         SessionSpecificState::Mirroring {
                             tx_sink,
                             video_sources,
-                            audio_sources,
                             ..
                         } => {
                             debug!(?video_sources, "Video sources");
@@ -596,16 +797,14 @@ impl Application {
                                 None => None,
                             };
 
-                            debug!(?audio_sources, "Audio sources");
-
-                            let audio_sources = std::mem::take(audio_sources);
-                            let audio_src = match audio_uid {
-                                Some(uid) => audio_sources
-                                    .into_iter()
-                                    .find(|(id, _)| uid == *id)
-                                    .map(|(_, dev)| dev),
-                                None => None,
+                            #[cfg(target_os = "linux")]
+                            let audio_src = if include_audio {
+                                Some(AudioSource::PulseVirtualSink)
+                            } else {
+                                None
                             };
+                            #[cfg(not(target_os = "linux"))]
+                            let audio_src = None;
 
                             debug!(?video_src, ?audio_src, "Adding WHEP pipeline");
                             *tx_sink = Some(
@@ -632,7 +831,13 @@ impl Application {
                         .invoke_change_state(UiAppState::StartingCast);
                 })?;
             }
-            Event::EndSession => self.end_session(true).await?,
+            Event::EndSession { disconnect } => {
+                if disconnect {
+                    self.end_session(true).await?
+                } else {
+                    self.end_session_no_disconnect().await?
+                }
+            }
             Event::ConnectToDevice(device_name) => match self.devices.get(&device_name) {
                 Some(device_info) => {
                     if device_info.addresses.is_empty() || device_info.port == 0 {
@@ -640,41 +845,7 @@ impl Application {
                         return Ok(ShouldQuit::No);
                     }
 
-                    debug!(?device_info, "Trying to connect");
-                    let device = self.cast_ctx.create_device_from_info(device_info.clone());
-                    self.current_session_id += 1;
-                    if let Err(err) = device.connect(
-                        None,
-                        Arc::new(mcore::DeviceHandler::new(
-                            self.current_session_id,
-                            self.event_tx.clone(),
-                        )),
-                        1000,
-                    ) {
-                        error!(?err);
-                        self.ui_weak.upgrade_in_event_loop(|ui| {
-                            ui.global::<Bridge>()
-                                .invoke_change_state(UiAppState::Disconnected);
-                        })?;
-                        return Ok(ShouldQuit::No);
-                    }
-                    self.session_state = Some(SessionState {
-                        device,
-                        volume: 0.0,
-                        time: 0.0,
-                        duration: 0.0,
-                        speed: 0.0,
-                        playback_state: UiPlaybackState::Idle,
-                        local_address: None,
-                        specific: SessionSpecificState::Idle,
-                        previous_seek: Instant::now(),
-                        previous_volume_change: Instant::now(),
-                    });
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let bridge = ui.global::<Bridge>();
-                        bridge.set_device_name(slint::SharedString::from(device_name));
-                        bridge.invoke_change_state(UiAppState::Connecting);
-                    })?;
+                    self.connect_with_device_info(device_info.clone(), &device_name)?;
                 }
                 None => error!(device_name, "Device not found"),
             },
@@ -795,17 +966,23 @@ impl Application {
                             }
                         }
                     }
-                    device::DeviceConnectionState::Connected { local_addr, .. } => {
+                    device::DeviceConnectionState::Connected {
+                        local_addr,
+                        used_remote_addr,
+                    } => {
                         if let Some(session) = self.session_state.as_mut() {
                             session.local_address = Some(local_addr);
                             let is_mirroring_supported = session
                                 .device
                                 .supports_feature(DeviceFeature::WhepStreaming);
                             debug!(is_mirroring_supported, "Device connected");
+                            let remote_addr: std::net::IpAddr = (&used_remote_addr).into();
+                            let remote_addr_str = remote_addr.to_string().to_shared_string();
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 bridge.set_is_mirroring_supported(is_mirroring_supported);
                                 bridge.invoke_change_state(UiAppState::SelectingInputType);
+                                bridge.set_device_ip(remote_addr_str);
                             })?;
                         } else {
                             bail!("No session");
@@ -836,7 +1013,9 @@ impl Application {
                             ?new_source,
                             "The source on the receiver changed, disconnecting"
                         );
-                        self.end_session(false).await?;
+                        self.end_session(false)
+                            .await
+                            .context("Failed to end session")?;
                     }
                 }
                 mcore::DeviceEvent::PlaybackError(_) => (),
@@ -859,7 +1038,9 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     session.specific = SessionSpecificState::LocalMedia {
                         current_id: id,
-                        file_server: FileServer::new().await?,
+                        file_server: FileServer::new()
+                            .await
+                            .context("Failed to create file server")?,
                         data: LocalMediaDataState {
                             root: PathBuf::new(),
                             directories: HashMap::new(),
@@ -880,25 +1061,18 @@ impl Application {
                 let event_tx = self.event_tx.clone();
                 if let Some(session) = self.session_state.as_mut() {
                     let video_source_fetcher_tx = spawn_video_source_fetcher(event_tx).await;
-                    video_source_fetcher_tx.send(FetchEvent::Fetch).await?;
-
-                    #[cfg(target_os = "linux")]
-                    let audio_sources = vec![(0, AudioSource::PulseVirtualSink)];
+                    video_source_fetcher_tx
+                        .send(FetchEvent::Fetch)
+                        .await
+                        .context("Failed to send fetch event to video source fetcher")?;
 
                     session.specific = SessionSpecificState::Mirroring {
                         tx_sink: None,
                         video_source_fetcher_tx,
                         our_source_url: None,
                         video_sources: vec![],
-                        #[cfg(target_os = "linux")]
-                        audio_sources,
-                        #[cfg(not(target_os = "linux"))]
-                        audio_sources: vec![],
                     };
                 }
-
-                #[cfg(target_os = "linux")]
-                self.update_audio_sources_in_ui()?;
 
                 self.ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.global::<Bridge>()
@@ -1081,7 +1255,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to cast local media");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::Seek {
@@ -1101,7 +1277,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to seek");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::ChangePlaybackState(playback_state) => {
@@ -1118,7 +1296,9 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to change playback state");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
             }
             Event::ChangeVolume {
@@ -1141,52 +1321,68 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, "Failed to change volume");
-                    self.end_session(true).await?;
+                    self.end_session(true)
+                        .await
+                        .context("Failed to end session")?;
                 }
+            }
+            Event::CastTestPattern => {
+                if let Some(session) = self.session_state.as_mut() {
+                    let (video_source_fetcher_tx, _) = channel::<FetchEvent>(10);
+
+                    let preview = PreviewPipeline::new(
+                        "Test pattern".to_owned(),
+                        move |_| Ok(gst::FlowSuccess::Ok),
+                        mcore::VideoSource::TestSrc,
+                    )
+                    .context("Failed to create preview pipeline")?;
+
+                    let tx_sink = mcore::transmission::WhepSink::from_preview(
+                        self.event_tx.clone(),
+                        tokio::runtime::Handle::current(),
+                        Some(preview),
+                        None,
+                        720,
+                        480,
+                        30,
+                    )
+                    .await
+                    .context("Failed to create WHEP sink from preview pipeline")?;
+
+                    session.specific = SessionSpecificState::Mirroring {
+                        tx_sink: Some(tx_sink),
+                        video_source_fetcher_tx,
+                        our_source_url: None,
+                        video_sources: vec![],
+                    };
+                }
+            }
+            Event::GetSourcesFromUrl(url) => {
+                let event_tx = self.event_tx.clone();
+                let (quit_tx, quit_rx) = tokio::sync::oneshot::channel::<()>();
+                tokio::spawn(async move {
+                    if let Err(err) = mcore::yt_dlp::YtDlpSource::try_get(&url, &event_tx, quit_rx)
+                        .instrument(tracing::debug_span!("yt_dlp_try_get", url))
+                        .await
+                    {
+                        error!(?err, "Failed to get sources with yt-dlp");
+                    };
+                });
+                if let Some(session) = &mut self.session_state {
+                    session.specific = SessionSpecificState::YtDlp {
+                        sources: None,
+                        fetcher_quit_tx: Some(quit_tx),
+                    };
+                }
+            }
+            Event::YtDlp(event) => self.handle_yt_dlp_event(event)?,
+            Event::ConnectToDeviceDirect(device_info) => {
+                let device_name = device_info.name.clone();
+                self.connect_with_device_info(device_info, &device_name)?;
             }
         }
 
         Ok(ShouldQuit::No)
-    }
-
-    fn update_audio_sources_in_ui(&self) -> Result<()> {
-        if let Some(session) = &self.session_state {
-            match &session.specific {
-                SessionSpecificState::Mirroring { audio_sources, .. } => {
-                    let audio_sources = audio_sources.clone();
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let audio_devs =
-                            slint::VecModel::<slint::ModelRc<UiAudioSourceModel>>::from_iter(
-                                audio_sources.chunks(3).map(|row| {
-                                    slint::ModelRc::<UiAudioSourceModel>::new(slint::VecModel::<
-                                        UiAudioSourceModel,
-                                    >::from_iter(
-                                        row.iter().map(|dev| UiAudioSourceModel {
-                                            name: slint::SharedString::from(
-                                                dev.1.display_name().as_str(),
-                                            ),
-                                            uid: dev.0 as i32,
-                                        }),
-                                    ))
-                                }),
-                            );
-
-                        ui.global::<Bridge>()
-                            .set_audio_sources(Rc::new(audio_devs).into());
-                    })?;
-                }
-                _ => {
-                    bail!(
-                        "Attempt to update_audio_sources_in_ui in invalid state state={:?}",
-                        session.specific
-                    );
-                }
-            }
-        } else {
-            bail!("No active session for update_audio_sources_in_ui");
-        };
-
-        Ok(())
     }
 
     fn update_video_sources_in_ui(&mut self) -> Result<()> {
@@ -1200,20 +1396,13 @@ impl Application {
                         .collect::<Vec<(usize, String)>>();
 
                     self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let video_devs =
-                            slint::VecModel::<slint::ModelRc<UiVideoSourceModel>>::from_iter(
-                                video_sources.chunks(3).map(|row| {
-                                    slint::ModelRc::<UiVideoSourceModel>::new(slint::VecModel::<
-                                        UiVideoSourceModel,
-                                    >::from_iter(
-                                        row.iter().map(|dev| UiVideoSourceModel {
-                                            name: slint::SharedString::from(dev.1.as_str()),
-                                            uid: dev.0 as i32,
-                                            preview: slint::Image::default(),
-                                        }),
-                                    ))
-                                }),
-                            );
+                        let video_devs = slint::VecModel::<UiVideoSourceModel>::from_iter(
+                            video_sources.iter().map(|dev| UiVideoSourceModel {
+                                name: slint::SharedString::from(dev.1.as_str()),
+                                uid: dev.0 as i32,
+                                preview: slint::Image::default(),
+                            }),
+                        );
 
                         ui.global::<Bridge>()
                             .set_video_sources(Rc::new(video_devs).into());
@@ -1243,19 +1432,45 @@ impl Application {
         gst::init()?;
         gstrsrtp::plugin_register_static()?;
 
+        tokio::spawn({
+            // let ui_weak = self.ui_weak.clone();
+            async move {
+                let yt_dlp_available = match mcore::yt_dlp::is_yt_dlp_available().await {
+                    Ok(p) => p,
+                    Err(err) => {
+                        error!(?err, "Failed to check if yt-dlp is available");
+                        return;
+                    }
+                };
+
+                debug!(?yt_dlp_available, "yt-dlp status");
+
+                // TODO: include this when ready
+                // let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                //     ui.global::<Bridge>()
+                //         .set_is_yt_dlp_available(yt_dlp_available);
+                // });
+            }
+        });
+
         loop {
             let Some(event) = event_rx.recv().await else {
                 debug!("No more events");
                 break;
             };
 
-            match self.handle_event(event).await {
+            match self
+                .handle_event(event)
+                .instrument(tracing::debug_span!("handle_event"))
+                .await
+            {
                 Ok(res) => {
                     if res == ShouldQuit::Yes {
                         break;
                     }
                 }
                 Err(err) => {
+                    error!(?err, "Failed to handle event");
                     let _ = self.end_session(true).await;
                     return Err(err);
                 }
@@ -1445,9 +1660,7 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_connect_to_device({
         let event_tx = event_tx.clone();
         move |device_name| {
-            if let Err(err) =
-                event_tx.send(Event::ConnectToDevice(device_name.to_string()))
-            {
+            if let Err(err) = event_tx.send(Event::ConnectToDevice(device_name.to_string())) {
                 error!("on_connect_to_device: failed to send event: {err}");
             }
         }
@@ -1455,7 +1668,7 @@ fn main() -> Result<()> {
 
     ui.global::<Bridge>().on_start_cast({
         let event_tx = event_tx.clone();
-        move |video_uid, audio_uid, scale_width: i32, scale_height: i32, max_framerate: i32| {
+        move |video_uid, include_audio, scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
                 .send(Event::StartCast {
                     video_uid: if video_uid >= 0 {
@@ -1463,11 +1676,7 @@ fn main() -> Result<()> {
                     } else {
                         None
                     },
-                    audio_uid: if audio_uid >= 0 {
-                        Some(audio_uid as usize)
-                    } else {
-                        None
-                    },
+                    include_audio,
                     scale_width: scale_width.max(1) as u32,
                     scale_height: scale_height.max(1) as u32,
                     max_framerate: max_framerate.max(1) as u32,
@@ -1478,8 +1687,8 @@ fn main() -> Result<()> {
 
     ui.global::<Bridge>().on_stop_cast({
         let event_tx = event_tx.clone();
-        move || {
-            event_tx.send(Event::EndSession).unwrap();
+        move |disconnect: bool| {
+            event_tx.send(Event::EndSession { disconnect }).unwrap();
         }
     });
 
@@ -1493,12 +1702,8 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_select_input_type({
         let event_tx = event_tx.clone();
         move |input_type| match input_type {
-            UiInputType::LocalMedia => event_tx
-                .send(Event::StartLocalMediaSession)
-                .unwrap(),
-            UiInputType::Mirroring => event_tx
-                .send(Event::StartMirroringSession)
-                .unwrap(),
+            UiInputType::LocalMedia => event_tx.send(Event::StartLocalMediaSession).unwrap(),
+            UiInputType::Mirroring => event_tx.send(Event::StartMirroringSession).unwrap(),
         }
     });
 
@@ -1519,19 +1724,8 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_cast_local_media({
         let event_tx = event_tx.clone();
         move |file_id| {
-            event_tx
-                .send(Event::CastLocalMedia(file_id))
-                .unwrap();
+            event_tx.send(Event::CastLocalMedia(file_id)).unwrap();
         }
-    });
-
-    ui.global::<Bridge>().on_str_fmt_seconds(|seconds: f32| {
-        let total_seconds = seconds as u32;
-        let hours = total_seconds / 60 / 60;
-        let minutes = (total_seconds / 60) % 60;
-        let seconds = total_seconds % 60;
-
-        format!("{hours:02}:{minutes:02}:{seconds:02}").to_shared_string()
     });
 
     ui.global::<Bridge>().on_seek({
@@ -1575,46 +1769,22 @@ fn main() -> Result<()> {
     ui.global::<Bridge>().on_disconnect({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.send(Event::EndSession).unwrap();
+            event_tx
+                .send(Event::EndSession { disconnect: true })
+                .unwrap();
         }
     });
 
-    ui.global::<Bridge>()
-        .on_is_valid_ip_address(|address: slint::SharedString| {
-            address.as_str().parse::<std::net::IpAddr>().is_ok()
-        });
-
     ui.global::<Bridge>().on_connect_manually({
         let event_tx = event_tx.clone();
-        move |proto: UiCastProtocol,
-              name_shared: slint::SharedString,
-              port: i32,
-              address: slint::SharedString| {
-            let name = name_shared.to_string();
-            let port = port as u16;
-            let addresses = match address.as_str().parse::<std::net::IpAddr>() {
-                Ok(addr) => vec![fcast_sender_sdk::IpAddr::from(addr)],
-                Err(err) => {
-                    // NOTE: should be unreachable
-                    error!(?err, "Failed to parse address {address}");
-                    return;
-                }
+        move |url: slint::SharedString| {
+            let Some(dev_info) = device_info_parser::parse(&url) else {
+                // NOTE: should be unreachable because the url is being checked
+                error!(?url, "Invalid device info");
+                return;
             };
-
-            let device_info = match proto {
-                UiCastProtocol::FCast => {
-                    fcast_sender_sdk::device::DeviceInfo::fcast(name, addresses, port)
-                }
-                UiCastProtocol::GCast => {
-                    fcast_sender_sdk::device::DeviceInfo::chromecast(name, addresses, port)
-                }
-            };
-
             event_tx
-                .send(Event::DeviceAvailable(device_info))
-                .unwrap();
-            event_tx
-                .send(Event::ConnectToDevice(name_shared.to_string()))
+                .send(Event::ConnectToDeviceDirect(dev_info))
                 .unwrap();
         }
     });
@@ -1632,6 +1802,44 @@ fn main() -> Result<()> {
                 .join("\n")
                 .to_shared_string();
             ui.global::<Bridge>().set_log_string(log_string);
+        }
+    });
+
+    ui.global::<Bridge>().on_start_test_pattern_cast({
+        let event_tx = event_tx.clone();
+        move || {
+            event_tx.send(Event::CastTestPattern).unwrap();
+        }
+    });
+
+    ui.global::<Bridge>()
+        .on_is_device_info_valid(|info: slint::SharedString| -> bool {
+            device_info_parser::parse(info.as_str()).is_some()
+        });
+
+    ui.global::<Bridge>()
+        .on_open_url(|url: slint::SharedString| {
+            debug!(?url, "Trying to open URL");
+            if let Err(err) = webbrowser::open(&url) {
+                error!(?err, "Failed to open URL");
+            }
+        });
+
+    ui.global::<Bridge>().on_try_play_url({
+        let event_tx = event_tx.clone();
+        move |url: slint::SharedString| {
+            event_tx
+                .send(Event::GetSourcesFromUrl(url.to_string()))
+                .unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_cast_yt_dlp({
+        let event_tx = event_tx.clone();
+        move |title: slint::SharedString| {
+            event_tx
+                .send(Event::YtDlp(mcore::YtDlpEvent::Cast(title.to_string())))
+                .unwrap();
         }
     });
 

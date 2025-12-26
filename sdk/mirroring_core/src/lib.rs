@@ -6,6 +6,8 @@ use tracing::error;
 pub mod preview;
 pub mod transmission;
 pub mod whep_signaller;
+#[cfg(not(target_os = "android"))]
+pub mod yt_dlp;
 
 #[derive(Clone, Debug)]
 pub enum AudioSource {
@@ -35,8 +37,12 @@ use std::os::fd::OwnedFd;
 
 #[derive(Debug)]
 pub enum VideoSource {
+    TestSrc,
     #[cfg(target_os = "linux")]
-    PipeWire { node_id: u32, fd: OwnedFd },
+    PipeWire {
+        node_id: u32,
+        fd: OwnedFd,
+    },
     #[cfg(target_os = "linux")]
     XDisplay {
         id: u32,
@@ -47,9 +53,15 @@ pub enum VideoSource {
         name: String,
     },
     #[cfg(target_os = "macos")]
-    CgDisplay { id: i32, name: String },
+    CgDisplay {
+        id: i32,
+        name: String,
+    },
     #[cfg(target_os = "windows")]
-    D3d11Monitor { name: String, handle: u64 },
+    D3d11Monitor {
+        name: String,
+        handle: u64,
+    },
     #[cfg(target_os = "android")]
     Source(gst_app::AppSrc),
 }
@@ -57,6 +69,7 @@ pub enum VideoSource {
 impl VideoSource {
     pub fn display_name(&self) -> String {
         match self {
+            VideoSource::TestSrc => "Test source".to_owned(),
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { .. } => "PipeWire Video Source".to_owned(),
             #[cfg(target_os = "linux")]
@@ -83,7 +96,7 @@ pub enum SourceConfig {
     Audio(AudioSource),
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ShouldQuit {
     Yes,
     No,
@@ -129,10 +142,20 @@ pub struct MediaFileEntry {
     pub name: String,
 }
 
+#[cfg(not(target_os = "android"))]
+#[derive(Debug)]
+pub enum YtDlpEvent {
+    SourceAvailable(Box<yt_dlp::YtDlpSource>),
+    Cast(String),
+    Finished,
+}
+
 #[derive(Debug)]
 pub enum Event {
     // Common
-    EndSession,
+    EndSession {
+        disconnect: bool,
+    },
     ConnectToDevice(String),
     SignallerStarted {
         bound_port: u16,
@@ -154,7 +177,8 @@ pub enum Event {
     #[cfg(not(target_os = "android"))]
     StartCast {
         video_uid: Option<usize>,
-        audio_uid: Option<usize>,
+        // audio_uid: Option<usize>,
+        include_audio: bool,
         scale_width: u32,
         scale_height: u32,
         max_framerate: u32,
@@ -194,6 +218,19 @@ pub enum Event {
 
     #[cfg(target_os = "linux")]
     UnsupportedDisplaySystem,
+    #[cfg(not(target_os = "android"))]
+    CastTestPattern,
+    #[cfg(not(target_os = "android"))]
+    GetSourcesFromUrl(String),
+    // TODO: should also signal errors!
+    // #[cfg(not(target_os = "android"))]
+    // YtDlpSourcesAvailable(Vec<yt_dlp::YtDlpSource>),
+    // #[cfg(not(target_os = "android"))]
+    // YtDlpSourceAvailable(yt_dlp::YtDlpSource),
+    #[cfg(not(target_os = "android"))]
+    YtDlp(YtDlpEvent),
+    #[cfg(not(target_os = "android"))]
+    ConnectToDeviceDirect(fcast_sender_sdk::device::DeviceInfo),
 
     // Android
     // #[cfg(target_os = "android")]
@@ -220,14 +257,12 @@ pub struct Discoverer {
 
 impl Discoverer {
     pub fn new(event_tx: UnboundedSender<Event>) -> Self {
-        Self {
-            event_tx,
-        }
+        Self { event_tx }
     }
 
     fn send_event(&self, event: Event) {
         if let Err(err) = self.event_tx.send(event) {
-            error!("Failed to send event: {err}");
+            error!("Discoverer: Failed to send event: {err}");
         }
     }
 }
@@ -253,15 +288,12 @@ pub struct DeviceHandler {
 
 impl DeviceHandler {
     pub fn new(id: usize, event_tx: UnboundedSender<Event>) -> Self {
-        Self {
-            id,
-            event_tx,
-        }
+        Self { id, event_tx }
     }
 
     fn send_event(&self, event: DeviceEvent) {
         if let Err(err) = self.event_tx.send(Event::FromDevice { id: self.id, event }) {
-            error!("Failed to send event: {err}");
+            error!("DeviceHandler: Failed to send event: {err}");
         }
     }
 }
