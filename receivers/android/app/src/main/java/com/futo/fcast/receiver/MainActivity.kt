@@ -102,7 +102,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        renderIPsAndQRCode()
         instance = this
         NetworkService.activityCount++
 
