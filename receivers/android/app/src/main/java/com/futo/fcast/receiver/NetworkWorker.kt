@@ -193,7 +193,8 @@ class NetworkWorker(private val _context: Context) {
                 else -> Pair(NetworkInterfaceType.Unknown, iface.displayName)
             }
 
-            for (address in iface.inetAddresses) {
+            val addresses = iface.inetAddresses.toList().distinctBy { it.hostAddress }
+            for (address in addresses) {
                 if (address.isLoopbackAddress || address.address.size != 4) {
                     continue
                 }
