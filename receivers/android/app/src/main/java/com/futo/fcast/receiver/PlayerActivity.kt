@@ -609,7 +609,12 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun onMediaLoad(message: PlayMessage, playlistIndex: Int) {
         viewModel.playMessage = message
-        _exoPlayer.setPlaybackSpeed(message.speed?.toFloat() ?: 1.0f)
+        val speed = if (message.speed?.toFloat() != null && message.speed.toFloat() > 0.0) {
+            message.speed.toFloat()
+        } else {
+            1.0f
+        }
+        _exoPlayer.setPlaybackSpeed(speed)
 
         if (message.volume != null && message.volume >= 0 && message.volume <= 1) {
             _exoPlayer.volume = message.volume.toFloat()
