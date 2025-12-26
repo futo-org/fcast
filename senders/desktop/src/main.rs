@@ -797,11 +797,14 @@ impl Application {
                                 None => None,
                             };
 
+                            #[cfg(target_os = "linux")]
                             let audio_src = if include_audio {
                                 Some(AudioSource::PulseVirtualSink)
                             } else {
                                 None
                             };
+                            #[cfg(not(target_os = "linux"))]
+                            let audio_src = None;
 
                             debug!(?video_src, ?audio_src, "Adding WHEP pipeline");
                             *tx_sink = Some(
