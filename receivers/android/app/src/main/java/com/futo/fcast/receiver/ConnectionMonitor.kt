@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.net.SocketAddress
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class ConnectionMonitor(private val _scope: CoroutineScope) {
     init {
@@ -64,8 +65,8 @@ class ConnectionMonitor(private val _scope: CoroutineScope) {
         private const val TAG = "ConnectionMonitor"
 
         private const val CONNECTION_PING_TIMEOUT = 2500L
-        private val _heartbeatRetries = mutableMapOf<UUID, Int>()
-        private val _backendConnections = mutableMapOf<UUID, ListenerService>()
+        private val _heartbeatRetries = ConcurrentHashMap<UUID, Int>()
+        private val _backendConnections = ConcurrentHashMap<UUID, ListenerService>()
         private const val UI_CONNECT_UPDATE_TIMEOUT = 100L
         private const val UI_DISCONNECT_UPDATE_TIMEOUT =
             2000L // Senders may reconnect, but generally need more time
