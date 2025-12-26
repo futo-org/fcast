@@ -279,8 +279,12 @@ component DeviceListItem {
 
     i-touch-area := TouchArea {
         clicked => {
-            Bridge.device-name = dev-name;
-            Bridge.connect-to-device(dev-name);
+            if Bridge.app-state == UiAppState.Connecting {
+                Bridge.disconnect();
+            } else {
+                Bridge.device-name = dev-name;
+                Bridge.connect-to-device(dev-name);
+            }
         }
     }
 
@@ -307,7 +311,7 @@ component DeviceListItem {
 
                 Spacer { }
 
-                if Bridge.app-state == UiAppState.Connecting && Bridge.device-name == dev-name: VerticalLayout {
+                if Bridge.app-state == UiAppState.Connecting && !i-touch-area.has-hover && Bridge.device-name == dev-name: VerticalLayout {
                     alignment: center;
 
                     HorizontalBox {
@@ -322,7 +326,7 @@ component DeviceListItem {
                     }
                 }
 
-                if i-touch-area.has-hover && Bridge.app-state != UiAppState.Connecting: VerticalLayout {
+                if i-touch-area.has-hover: VerticalLayout {
                     alignment: center;
 
                     Rectangle {
@@ -340,6 +344,11 @@ component DeviceListItem {
                             alignment: center;
 
                             FText {
+                                states [
+                                    connecting when Bridge.app-state == UiAppState.Connecting: {
+                                        text: "Disconnect";
+                                    }
+                                ]
                                 text: "Connect";
                             }
                         }
