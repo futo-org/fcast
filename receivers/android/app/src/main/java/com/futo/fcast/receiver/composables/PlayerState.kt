@@ -34,6 +34,8 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 
+var lastPlaybackState = Player.STATE_IDLE
+
 @OptIn(UnstableApi::class)
 @Composable
 fun rememberPlayerState(player: Player): PlayerState {
@@ -58,7 +60,7 @@ fun rememberPlayerState(player: Player): PlayerState {
             PlayerActivity.instance?.mediaPlayHandler()
 //        } else if (it?.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) == true || player.playbackState == Player.STATE_ENDED) {
 //        } else if (it?.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) == true) {
-        } else if (player.playbackState == Player.STATE_ENDED) {
+        } else if (player.playbackState == Player.STATE_ENDED && player.playbackState != lastPlaybackState) {
             PlayerActivity.instance?.mediaEndHandler()
         }
 
@@ -82,6 +84,8 @@ fun rememberPlayerState(player: Player): PlayerState {
         if (thumbnailUrl != null) {
             mediaThumbnail = thumbnailUrl.toUri()
         }
+
+        lastPlaybackState = player.playbackState
     }
 
     val scope = rememberCoroutineScope()
