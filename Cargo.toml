@@ -16,7 +16,7 @@ resolver = "2"
 license = "MIT"
 
 [workspace.dependencies]
-tokio = { version = "1.46.1", features = [ "rt", "rt-multi-thread", "sync", "macros", "net", "time", "io-util", "fs" ] }
+tokio = { version = "1.46.1", features = [ "full" ] }
 serde = { version = "1.0.219", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.24.2" }
 gst-app = { package = "gstreamer-app", version = "0.24.2" }
@@ -35,6 +35,8 @@ slint-build = "1.14.1"
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.18.1", features = [ "v4" ] }
 bytes = "1.11"
+smallvec = { version = "1.15.1", features = ["serde"] }
+smol_str = { version = "0.3.4", features = ["serde"] }
 
 [profile.release]
 lto = true

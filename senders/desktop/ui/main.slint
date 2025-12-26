@@ -1,17 +1,31 @@
 import {
     VerticalBox,
     HorizontalBox,
+} from "std-widgets.slint";
+import {
     Button,
     ComboBox,
     Palette,
     Spinner,
     Switch,
-    ListView,
     TextEdit,
     Slider,
     LineEdit,
-} from "std-widgets.slint";
-import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
+    Palette,
+    FText,
+    ListView,
+    ScrollView,
+    Icons,
+} from "../../ui-components/std-widgets.slint";
+import { FocusBorder } from "../../ui-components/components.slint";
+import { FCastPalette } from "../../ui-components/styling.slint";
+import {
+    Utils,
+    VideoResolutionPicker,
+    FrameratePicker,
+} from "../../../sdk/mirroring_core/ui/common.slint";
+import "../../ui-components/fonts/Outfit-Regular.ttf";
+import { CheckBox } from "../../ui-components/checkbox.slint";
 
 export enum UiAppState {
     Disconnected,
@@ -22,6 +36,7 @@ export enum UiAppState {
     UnsupportedReceiver,
     StartingCast,
     Mirroring,
+    YtDlp,
 }
 
 export enum UiInputType {
@@ -69,26 +84,66 @@ export struct UiMediaFileEntry {
     type: UiMediaFileType,
 }
 
+export enum UiYtDlpState {
+    Fetching,
+    HasDataButFetching,
+    HasData,
+}
+
+enum UiPlaybackSettingsMenuState {
+    None,
+    Rate,
+}
+
+export struct UiYtDlpSource {
+    title: string,
+}
+
 export global Bridge {
     // in-out property <AppState> app-state: SelectingInputType;
     // in-out property <string> device-name: "FCast-localhost";
     // in property <string> current-directory: "Testing";
 
     in property <bool> is-audio-supported: false;
-    in property <bool> is-mirroring-supported: false;
-    in property <string> current-directory: "";
-    in property <[string]> devices: [];
-    in property <string> log-string;
+    // in property <bool> is-audio-supported: true;
 
+    in property <bool> is-mirroring-supported: false;
+    // in property <bool> is-mirroring-supported: true;
+
+    in property <string> current-directory: "";
+    in property <[string]> devices: [
+        // "Test0",
+        // "Test1",
+        // "Test2",
+        // "Test3",
+        // "Test4",
+    ];
+    in property <string> log-string;
+    in property <bool> is-yt-dlp-available: false;
+    // in property <bool> is-yt-dlp-available: true;
+
+    // in-out property <UiAppState> app-state: SelectingInputType;
+    // in-out property <UiAppState> app-state: YtDlp;
+    // in-out property <UiAppState> app-state: Mirroring;
     in-out property <UiAppState> app-state: Disconnected;
-    in-out property <string> device-name: "";
+    // in-out property <UiAppState> app-state: LocalMedia;
+    // in-out property <UiAppState> app-state: Connecting;
+    // in-out property <string> device-name: "";
+    in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
+
+    in-out property <string> device-ip: "192.168.1.154";
+
+    // in-out property <string> device-name: "Test1";
     in-out property <int> selected-video-src: -1;
     // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
-    in-out property <[[UiVideoSourceModel]]> video-sources: [
-        // [{ uid: 0, name: "Blob" }],
+    in-out property <[UiVideoSourceModel]> video-sources: [
+        // { uid: 0, preview: @image-url("video-source-place-holder.png"), name: "Blob 0" },
+        // { uid: 1, preview: @image-url("video-source-place-holder.png"), name: "Blob 1" },
+        // { uid: 2, preview: @image-url("video-source-place-holder.png"), name: "Blob 2" },
+        // { uid: 3, preview: @image-url("video-source-place-holder.png"), name: "Blob 3" },
+        // { uid: 4, preview: @image-url("video-source-place-holder.png"), name: "Blob 4" },
     ];
-    in-out property <[[UiAudioSourceModel]]> audio-sources: [];
     in-out property <[UiDirectoryEntry]> directories: [
         // { id: 0, name: "Test1" },
         // { id: 0, name: "Test1" },
@@ -98,37 +153,75 @@ export global Bridge {
         // { id: 0, name: "Test1" },
     ];
     in-out property <[UiMediaFileEntry]> files: [
-        // { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Video },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
+        {
+            id: 0,
+            name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            type: UiMediaFileType.Audio
+        },
+        { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Video },
+        { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Audio },
+        { id: 0, name: "Test1", type: UiMediaFileType.Image },
     ];
     in-out property <float> volume: 1.0;
     in-out property <float> playback-position: 0.0;
     in-out property <UiPlaybackState> playback-state: UiPlaybackState.Idle;
+    // in-out property <UiPlaybackState> playback-state: UiPlaybackState.Playing;
     in-out property <float> track-duration: 0.0;
+    in-out property <string> playback-pos-str: 0.0;
+    in-out property <string> track-dur-str: 0.0;
     in-out property <float> playback-rate: 1.0;
     in-out property <string> track-name: "";
     in-out property <UiMediaFileType> track-type;
+    // in-out property <bool> is-showing-mirroring-popup: true;
+    in-out property <UiYtDlpState> yt-dlp-state: Fetching;
+    // in-out property <UiYtDlpState> yt-dlp-state: Fetching;
+    // in-out property <UiYtDlpState> yt-dlp-state: HasDataButFetching;
+    in-out property <string> yt-dlp-url;
+    // in-out property <string> yt-dlp-url: "https://abc.def/ghi";
+    in-out property <[UiYtDlpSource]> yt-dlp-sources: [
+        // {
+        //     title: "Test title 1",
+        // },
+        // {
+        //     title: "Test title 2",
+        // },
+        // {
+        //     title: "Test title 3",
+        // },
+    ];
+    in-out property <string> yt-dlp-source;
+    // in-out property <string> yt-dlp-source: "Test title 2";
+    in-out property <bool> is-connecting-to-manually-inputted-device: false;
 
-    public function change-state(to: UiAppState) {
-        if to == UiAppState.Disconnected {
-            selected-video-src = -1;
-            selected-audio-src = -1;
+    public function clear-mirroring-state() {
+        selected-video-src = -1;
+        selected-audio-src = -1;
+        video-sources = [];
+        playback-state = UiPlaybackState.Idle;
+        playback-position = 0.0;
+        track-duration = 0.0;
+    }
+
+    public function clear-yt-dlp-state() {
+        yt-dlp-state = UiYtDlpState.Fetching;
+        yt-dlp-url = "";
+        yt-dlp-sources = [];
+        yt-dlp-source = "";
+    }
+
+    public function change-state(new-state: UiAppState) {
+        if new-state == UiAppState.Disconnected {
             device-name = "";
-            video-sources = [];
-            audio-sources = [];
-
-            playback-state = UiPlaybackState.Idle;
-            playback-position = 0.0;
-            track-duration = 0.0;
-
+            device-ip = "";
+            clear-mirroring-state();
+            clear-yt-dlp-state();
             directories = [];
             files = [];
+            is-connecting-to-manually-inputted-device = false;
         }
-        app-state = to;
+        app-state = new-state;
     }
 
     public pure function is-valid-port(port: float) -> bool {
@@ -137,8 +230,8 @@ export global Bridge {
 
     callback connect-to-device(string);
     callback select-input-type(input-type: UiInputType);
-    callback start-cast(video_uid: int, audio_uid: int, scale-width: int, scale-height: int, max-framerate: int);
-    callback stop-cast();
+    callback start-cast(video_uid: int, include-audio: bool, scale-width: int, scale-height: int, max-framerate: int);
+    callback stop-cast(disconnect: bool);
     callback reload-video-sources();
     callback reload-audio-sources();
     callback change-dir-parent();
@@ -153,678 +246,1708 @@ export global Bridge {
     callback change-playback-state(state: UiPlaybackState);
     callback change-volume(volume: float, force-complete: bool);
     callback disconnect();
-    callback connect-manually(proto: UiCastProtocol, name: string, port: int, address: string);
+    // callback connect-manually(proto: UiCastProtocol, name: string, port: int, address: string);
+    callback connect-manually(url: string);
     callback reload-log-string();
+    callback start-test-pattern-cast();
+    callback open-url(url: string);
+    callback try-play-url(url: string);
+    callback cast-yt-dlp(title: string);
 
-    pure callback str-fmt-seconds(seconds: float) -> string;
-    pure callback is-valid-ip-address(address: string) -> bool;
+    // pure callback is-valid-ip-address(address: string) -> bool;
+    pure callback is-device-info-valid(info: string) -> bool;
+    // pure function is-device-info-valid(info: string) -> bool {true}
 }
 
 component Spacer inherits Rectangle { }
 
-component ConnectView inherits Rectangle {
-    VerticalBox {
-        Text {
-            horizontal-alignment: center;
-            font-weight: 600;
-            text: "Connect to your receiver";
+component DeviceListItem {
+    in property <string> dev-name;
+
+    forward-focus: focus-scope;
+
+    accessible-role: list-item;
+
+    states [
+        hover when i-touch-area.has-hover: {
+            // i-background.background: FCastPalette.neutral-1000;
+            i-background.background: FCastPalette.brand-600.transparentize(92%);
+            i-background.border-width: 1px;
+            i-background.border-color: #1478DC33;
         }
+    ]
 
-        ListView {
-            for device in Bridge.devices: Rectangle {
-                states [
-                    hover when ta.has-hover: {
-                        background: whitesmoke;
+    i-touch-area := TouchArea {
+        clicked => {
+            if Bridge.app-state == UiAppState.Connecting {
+                Bridge.disconnect();
+            } else {
+                Bridge.device-name = dev-name;
+                Bridge.connect-to-device(dev-name);
+            }
+        }
+    }
+
+    i-background := Rectangle {
+        background: #13151B;
+        border-radius: 8px;
+
+        VerticalLayout {
+            HorizontalBox {
+
+                Image {
+                    width: 36px;
+                    height: 36px;
+                    source: Icons.tv;
+                    vertical-alignment: center;
+                }
+
+                FText {
+                    text: dev-name;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Spacer { }
+
+                if Bridge.app-state == UiAppState.Connecting && !i-touch-area.has-hover && Bridge.device-name == dev-name: VerticalLayout {
+                    alignment: center;
+
+                    HorizontalBox {
+                        Spinner {
+                            indeterminate: true;
+                        }
+
+                        FText {
+                            text: "Connecting";
+                            vertical-alignment: center;
+                        }
                     }
-                ]
+                }
 
-                ta := TouchArea {
-                    mouse-cursor: pointer;
+                if i-touch-area.has-hover: VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        background: FCastPalette.bg-brand-solid;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: @linear-gradient(180deg, #FFFFFF1A 0%, #FFFFFF03 100%);
+                        drop-shadow-color: #0000004D;
+
+                        i-connect-txt := HorizontalLayout {
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+
+                            FText {
+                                states [
+                                    connecting when Bridge.app-state == UiAppState.Connecting: {
+                                        text: "Disconnect";
+                                    }
+                                ]
+                                text: "Connect";
+                            }
+                        }
+                    }
+                }
+
+                if !i-touch-area.has-hover && Bridge.app-state != UiAppState.Connecting: VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        background: FCastPalette.positive-1200;
+                        width: i-label.preferred-width + 8px * 2;
+                        height: i-label.preferred-height;
+                        border-color: FCastPalette.positive-1100;
+                        border-radius: 4px;
+                        border-width: 1px;
+
+                        i-label := HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            padding-left: 6px;
+                            padding-right: 6px;
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Rectangle {
+                                    width: 4px;
+                                    height: 4px;
+                                    border-radius: self.width;
+                                    background: FCastPalette.status-connected;
+                                }
+                            }
+
+                            available-label := FText {
+                                vertical-alignment: center;
+                                text: "Ready";
+                                color: FCastPalette.status-connected;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    focus-scope := FocusScope {
+        x: 0;
+        width: 0;
+
+        key-pressed(event) => {
+            if (event.text == "\n") {
+                i-touch-area.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if (focus-scope.has-focus): FocusBorder {
+        border-radius: i-background.border-radius;
+    }
+}
+
+component LabelText inherits Text {
+    color: Palette.foreground;
+    font-weight: 500;
+    font-size: 20px;
+}
+
+component RegularText inherits Text {
+    color: Palette.foreground;
+    font-weight: 400;
+    font-size: 16px;
+}
+
+component SecondaryText inherits Text {
+    color: FCastPalette.neutral-600;
+    font-weight: 300;
+    font-size: 12px;
+}
+
+component Circle inherits Rectangle {
+    height: self.width;
+    border-width: 1.22px;
+    border-radius: self.height;
+    border-color: red;
+}
+
+component ConnectView inherits Rectangle {
+    Rectangle {
+        background: FCastPalette.neutral-1200;
+        // background: FCastPalette.background-color-secondary;
+
+        VerticalLayout {
+            VerticalLayout {
+                padding: 20px;
+
+                HorizontalLayout {
+                    VerticalLayout {
+                        LabelText {
+                            text: "Discovered receivers";
+                        }
+
+                        // HorizontalLayout {
+                        //     spacing: 8px;
+
+                            // Rectangle {
+                            //     width: 4px;
+                            //     height: 4px;
+                            //     y: parent.height / 2 - self.height / 2;
+                            //     border-radius: self.width;
+                            //     background: FCastPalette.status-connected;
+                            // }
+
+                            // SecondaryText {
+                            //     text: "Scanning local network (mDNS) for FCast-enabled devices...";
+                            //     vertical-alignment: center;
+                            //     wrap: word-wrap;
+                            // }
+                        // }
+                    }
+
+                    // Spacer { }
+
+                    // HorizontalLayout {
+                    //     spacing: 10px;
+
+                    //     // broken on femtovg
+                    //     // Spinner {
+                    //     //     indeterminate: true;
+                    //     // }
+
+                    //     FText {
+                    //         vertical-alignment: center;
+                    //         text: "Scanning...";
+                    //     }
+                    // }
+                }
+
+                if Bridge.devices.length == 0: HorizontalLayout {
+                    Spacer {}
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 10px;
+
+                        // Spacer {}
+
+                        Circle {
+                            width: 25%;
+                            border-color: FCastPalette.border-secondary.transparentize(94%);
+
+                            Circle {
+                                width: 75%;
+                                border-color: FCastPalette.border-secondary.transparentize(90%);
+
+                                Circle {
+                                    width: 70%;
+                                    border-color: FCastPalette.border-secondary.transparentize(85%);
+
+                                    Circle {
+                                        width: 60%;
+                                        border-color: FCastPalette.border-secondary.transparentize(80%);
+                                    }
+                                }
+                            }
+                        }
+
+
+                        LabelText {
+                            horizontal-alignment: center;
+                            text: "No receivers found";
+                        }
+                    }
+
+                    Spacer {}
+                }
+
+                if Bridge.devices.length > 0: ScrollView {
+                    VerticalLayout {
+                        padding-top: 20px;
+                        spacing: 8px;
+                        for device in Bridge.devices: DeviceListItem {
+                            dev-name: device;
+                        }
+
+                        Spacer { }
+                    }
+                }
+            }
+
+            property <bool> is-showing-manual-connect: false;
+            // property <bool> is-showing-manual-connect: true;
+
+            Rectangle {
+                height: 1px;
+                background: #FFFFFF1A;
+            }
+
+            Rectangle {
+                background: FCastPalette.opacity-light-1200;
+
+                TouchArea {
                     clicked => {
-                        // Bridge.state = State.Connecting;
-                        self.mouse-cursor = MouseCursor.default;
-                        Bridge.connect-to-device(device);
-                        // Bridge.connected-device = device;
+                        is-showing-manual-connect = !is-showing-manual-connect;
                     }
                 }
 
                 HorizontalBox {
-                    Text {
-                        text: device;
-                    }
-                }
-            }
-        }
+                    alignment: space-between;
+                    padding-top: 18px;
+                    padding-right: 16px;
+                    padding-bottom: 18px;
+                    padding-left: 16px;
 
-        property <bool> is-showing-manual-connect: false;
-
-        Text {
-            text: (is-showing-manual-connect ? "↓ " : "→ ") + " Connect manually";
-            TouchArea {
-                mouse-cursor: pointer;
-                clicked => {
-                    is-showing-manual-connect = !is-showing-manual-connect;
-                }
-            }
-        }
-
-        if is-showing-manual-connect: VerticalBox {
-            HorizontalBox {
-                Text {
-                    vertical-alignment: center;
-                    text: "Protocol:";
-                    width: 15%;
-                }
-
-                protocol-input := ComboBox {
-                    model: ["FCast", "Google cast"];
-                }
-            }
-
-            HorizontalBox {
-                Text {
-                    vertical-alignment: center;
-                    text: "Name:";
-                    width: 15%;
-                }
-
-                name-input := LineEdit {
-                    placeholder-text: "My Fcast Receiver";
-                }
-            }
-
-            HorizontalBox {
-                Text {
-                    vertical-alignment: center;
-                    text: "Port:";
-                    width: 15%;
-                }
-
-                port-input := LineEdit {
-                    input-type: number;
-                    text: "46899";
-                }
-            }
-
-            property <bool> port-is-valid: Bridge.is-valid-port(port-input.text.to-float());
-
-            if !port-input.text.is-empty && !port-is-valid: Text {
-                horizontal-alignment: center;
-                color: red;
-                text: "Invalid port (must be in the range 1-65535)";
-            }
-
-            HorizontalBox {
-                Text {
-                    vertical-alignment: center;
-                    text: "Address:";
-                    width: 15%;
-                }
-
-                address-input := LineEdit { }
-            }
-
-            property <bool> address-is-valid: Bridge.is-valid-ip-address(address-input.text);
-
-            if !address-input.text.is-empty && !address-is-valid: Text {
-                horizontal-alignment: center;
-                color: red;
-                text: "Invalid address";
-            }
-
-            Button {
-                enabled: !name-input.text.is-empty && port-is-valid && address-is-valid;
-                text: "Connect";
-                clicked => Bridge.connect-manually(
-                    protocol-input.current-value == "FCast" ? UiCastProtocol.FCast : UiCastProtocol.GCast,
-                    name-input.text,
-                    port-input.text.to-float(),
-                    address-input.text);
-            }
-        }
-    }
-}
-
-component ConnectingView inherits Rectangle {
-    width: vb.preferred-width;
-    height: vb.preferred-height;
-
-    vb := VerticalBox {
-        Spinner {
-            indeterminate: true;
-        }
-
-        Text {
-            text: "Connecting to " + Bridge.device-name;
-            horizontal-alignment: center;
-            font-weight: 600;
-        }
-
-        Button {
-            text: "Cancel";
-            clicked => Bridge.disconnect();
-        }
-    }
-}
-
-component UnsupportedReceiverView inherits Rectangle {
-    width: vb.preferred-width;
-    height: vb.preferred-height;
-
-    vb := VerticalBox {
-        Text {
-            text: Bridge.device-name + " is unsupported";
-            horizontal-alignment: center;
-            font-weight: 600;
-        }
-
-        Button {
-            text: "Ok";
-            clicked => Bridge.change-state(UiAppState.Disconnected);
-        }
-    }
-}
-
-component SelectingInputTypeView {
-    VerticalBox {
-        Text {
-            font-size: 14pt;
-            horizontal-alignment: center;
-            text: "What do you want to cast?";
-        }
-
-        Button {
-            text: "Local media";
-            clicked => Bridge.select-input-type(UiInputType.LocalMedia);
-        }
-
-        Button {
-            enabled: Bridge.is-mirroring-supported;
-            text: "Mirroring";
-            clicked => Bridge.select-input-type(UiInputType.Mirroring);
-        }
-
-        if !Bridge.is-mirroring-supported: Text {
-            horizontal-alignment: center;
-            text: Bridge.device-name + " does not support mirroring";
-        }
-
-        Button {
-            text: "Cancel";
-            clicked => Bridge.stop-cast();
-        }
-    }
-}
-
-component SelectMirroringSourceView inherits Rectangle {
-    property <int> video-resolution-idx: 2;
-    property <int> video-framerate-idx: 2;
-
-    VerticalBox {
-        alignment: center;
-
-        HorizontalBox {
-            alignment: space-between;
-            Text {
-                horizontal-alignment: center;
-                text: "Video";
-                font-weight: 600;
-            }
-
-            Button {
-                text: "Reload";
-                clicked => {
-                    Bridge.video-sources = [];
-                    Bridge.reload-video-sources();
-                }
-            }
-        }
-
-        // TODO: ScrollView
-
-        VerticalLayout {
-            for row in Bridge.video-sources: HorizontalBox {
-                // alignment: center;
-                for source in row: Rectangle {
-                    height: 100px;
-                    // height: 200px;
-                    background: grey;
-                    border-radius: 8px;
-
-                    border-width: source.uid == Bridge.selected-video-src ? 8px : 0px;
-                    border-color: source.uid == Bridge.selected-video-src ? lightgreen : white;
-
-                    states [
-                        hover when ta.has-hover: {
-                            background: grey.transparentize(0.1);
-                        }
-                    ]
-
-                    ta := TouchArea {
-                        mouse-cursor: self.has-hover ? pointer : default;
-
-                        clicked() => {
-                            if source.uid == Bridge.selected-video-src {
-                                Bridge.selected-video-src = -1;
-                            } else {
-                                Bridge.selected-video-src = source.uid;
-                            }
-                        }
+                    FText {
+                        text: "Unable to see the device you're looking for? Connect via IP";
+                        vertical-alignment: center;
+                        wrap: word-wrap;
                     }
 
-                    Image {
-                        width: 100%;
-                        height: 100%;
-                        // y: (parent.height - vl-video.height / 2) / 2;
-                        // source: @image-url("./video.svg");
-                        image-fit: contain;
-                        source: source.preview;
-                    }
-
-                    vl-video := VerticalLayout {
-                        Rectangle {}
+                    VerticalLayout {
+                        alignment: center;
 
                         Rectangle {
-                            background: whitesmoke.transparentize(0.1);
-                            height: 40px;
+                            width: 18.66px;
+                            height: 18.67px;
+                            border-radius: self.height;
+                            background: #FFFFFF1A;
 
-                            Text {
-                                text: source.name;
+                            Image {
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                width: 8.8px;
+                                height: 5.1px;
+                                source: Icons.arrow-down;
+                                colorize: FCastPalette.neutral-500;
                             }
                         }
                     }
                 }
             }
 
-            if Bridge.selected-video-src != -1: HorizontalBox {
-                alignment: center;
+            if is-showing-manual-connect: VerticalLayout {
+                padding-top: 18px;
+                padding-right: 16px;
+                padding-bottom: 18px;
+                padding-left: 16px;
 
-                Text {
-                    font-size: 12pt;
-                    vertical-alignment: center;
-                    text: "Max resolution";
+                Rectangle {
+                    height: 1px;
+                    background: FCastPalette.border-subtle;
                 }
 
-                VideoResolutionPicker {
-                    current-index <=> video-resolution-idx;
-                }
+                HorizontalLayout {
+                    padding-top: 18px;
+                    padding-right: 16px;
+                    padding-bottom: 18px;
+                    padding-left: 16px;
 
-                Text {
-                    font-size: 12pt;
-                    vertical-alignment: center;
-                    text: "Max framerate";
-                }
+                    i-left := VerticalLayout {
+                        padding-right: 12px;
+                        spacing: 6px;
 
-                FrameratePicker {
-                    current-index <=> video-framerate-idx;
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            i-dev-info-input := LineEdit {
+                                placeholder-text: "<fcast/gcast>://<ip>:<port>";
+                            }
+
+                            if !Bridge.is-connecting-to-manually-inputted-device: Button {
+                                enabled: Bridge.is-device-info-valid(i-dev-info-input.text);
+                                text: "Connect";
+
+                                clicked => {
+                                    Bridge.connect-manually(i-dev-info-input.text);
+                                    Bridge.is-connecting-to-manually-inputted-device = true;
+                                }
+                            }
+
+                            if Bridge.is-connecting-to-manually-inputted-device: Button {
+                                text: "Cancel";
+
+                                clicked => {
+                                    Bridge.disconnect();
+                                }
+                            }
+                        }
+
+                        SecondaryText {
+                            text: "Use this for devices on different subnets or VPNs. (port 46899).";
+                        }
+                    }
+
+                    Rectangle {
+                        width: 1px;
+                        height: Math.max(i-right.preferred-height, i-left.preferred-height);
+                        background: FCastPalette.border-subtle;
+                    }
+
+                    i-right := VerticalLayout {
+                        padding-left: 12px;
+
+                        FText {
+                            text: "Device not listed?";
+                        }
+
+                        SecondaryText {
+                            text: "FCast requires a Receiver App running on your target device before it appears here.";
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            TouchArea {
+                                mouse-cursor: pointer;
+
+                                clicked => {
+                                    Bridge.open-url("https://fcast.org/");
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 5.5px;
+
+                                SecondaryText {
+                                    vertical-alignment: center;
+                                    color: FCastPalette.brand-600;
+                                    text: "Get the receiver app";
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Image {
+                                        source: Icons.open-external;
+                                        width: 9px;
+                                        height: 9px;
+                                    }
+                                }
+
+                                Spacer { }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component LabelBox inherits Rectangle {
+    in property <string> label;
+
+    background: FCastPalette.neutral-1200;
+    border-width: 1px;
+    border-color: #202227;
+    border-radius: 4px;
+    height: i-vl.preferred-height;
+
+    i-vl := VerticalLayout {
+        padding: 4px;
+        padding-left: 6px;
+        padding-right: 6px;
+
+        FText {
+            text: label;
+            font-family: "Overfit Mono";
+            font-size: 12px;
+            font-weight: 400;
+            color: FCastPalette.text-secondary;
+            overflow: elide;
+        }
+    }
+}
+
+component SourceItem inherits Rectangle {
+    out property <bool> has-hover: i-touch-area.has-hover;
+    in property <string> label;
+    in property <string> description;
+    in property <image> icon;
+    in property <color> icon-bg-color;
+    in property <bool> enabled: true;
+
+    callback clicked;
+
+    background: FCastPalette.neutral-1100;
+    border-color: FCastPalette.neutral-1000;
+    border-width: 1px;
+    border-radius: 6px;
+    preferred-width: 0px;
+
+    states [
+        hover when root.enabled && i-touch-area.has-hover: {
+            border-color: FCastPalette.brand-600;
+        }
+        disabled when !root.enabled: {
+            i-icon-bg.background: FCastPalette.neutral-600.transparentize(80%);
+            i-icon.colorize: FCastPalette.neutral-600;
+            root.background: FCastPalette.neutral-800.transparentize(90%);
+            i-title.color: FCastPalette.neutral-600;
+        }
+    ]
+
+    VerticalBox {
+        padding-top: 20px;
+        padding-bottom: 20px;
+
+        HorizontalLayout {
+            alignment: center;
+            i-icon-bg := Rectangle {
+                background: icon-bg-color;
+                width: 64px;
+                height: 64px;
+                border-radius: self.height;
+
+                i-icon := Image {
+                    source: icon;
                 }
             }
         }
 
-        if Bridge.is-audio-supported: HorizontalBox {
-            alignment: space-between;
-            Text {
-                horizontal-alignment: center;
-                text: "Audio";
-                font-weight: 600;
+        i-title := RegularText {
+            horizontal-alignment: center;
+            text: label;
+        }
+
+        SecondaryText {
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            text: description;
+
+            states [
+                hover when i-touch-area.has-hover: {
+                    color: white;
+                }
+            ]
+        }
+    }
+
+    i-touch-area := TouchArea {
+        enabled: root.enabled;
+
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    i-focus-scope := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                i-touch-area.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if (root.enabled && i-focus-scope.has-focus): FocusBorder {
+        border-radius: root.border-radius;
+    }
+}
+
+component ImageBackground {
+    in property <length> img-width;
+    in property <length> img-height;
+
+    Image {
+        width: img-width;
+        height: img-height;
+        source: Icons.background;
+    }
+
+    Rectangle {
+        width: img-width;
+        height: img-height;
+        background: FCastPalette.background-color-primary.transparentize(60%);
+    }
+}
+
+component DisconnectButton inherits Button {
+    icon: Icons.disconnect;
+    text: "Disconnect";
+    text-color: FCastPalette.negative-600;
+    background-default-drop-shadow-color: transparent;
+    background-default-color: transparent;
+    border-color: FCastPalette.negative-600.transparentize(80%);
+
+    clicked => {
+        Bridge.disconnect();
+    }
+}
+
+component ReadyToCastView inherits Rectangle {
+    callback show-mirroring;
+    callback show-local-media;
+    callback show-yt-dlp-view;
+
+    ImageBackground {
+        img-width: root.width;
+        img-height: root.height;
+    }
+
+    Rectangle {
+        VerticalLayout {
+            spacing: 8px;
+
+            // VerticalBox {
+            padding-top: 40px;
+            // padding-left: 20px;
+            padding: 20px;
+
+            SecondaryText {
+                text: "CONNECTED TO";
+                font-family: "Overfit Mono"; // TODO: fix
+                font-size: 10px;
+            }
+
+            HorizontalLayout {
+                alignment: space-between;
+
+                LabelText {
+                    font-size: 22px;
+                    text: Bridge.device-name;
+                }
+
+                DisconnectButton { }
+            }
+
+            HorizontalLayout {
+                LabelBox {
+                    label: Bridge.device-ip;
+                }
+
+                Spacer { }
+            }
+
+            SecondaryText {
+                text: "Receiver is idle. Select media to start streaming.";
+                vertical-alignment: center;
+            }
+
+            if Bridge.is-yt-dlp-available: HorizontalLayout {
+                spacing: 8px;
+
+                // TODO: check that url is valid/supported (i.e. we can detect mime type from extension)
+                i-line-edit-url := LineEdit {
+                    placeholder-text: "Paste URL (http/https, .mp4, .m3u8)...";
+                    icon: Icons.link;
+                }
+
+                Button {
+                    width: self.preferred-width + 30px;
+                    text: "Cast";
+                    enabled: !i-line-edit-url.text.is-empty;
+                    background-default-color: FCastPalette.brand-600;
+
+                    clicked => {
+                        Bridge.clear-yt-dlp-state();
+                        show-yt-dlp-view();
+                        Bridge.yt-dlp-url = i-line-edit-url.text;
+                        Bridge.try-play-url(i-line-edit-url.text);
+                        i-line-edit-url.text = "";
+                    }
+                }
+            }
+
+            GridLayout {
+                padding-top: 20px;
+                spacing: 10px;
+
+                i-cast-media-item := SourceItem {
+                    label: "Cast media file";
+                    description: "Cast MP4, MKV, or MP3 files directly from your hard drive with zero compression.";
+                    icon: Icons.folder-fcast;
+                    icon-bg-color: #2889E821;
+                    enabled: false;
+
+                    clicked => {
+                        show-local-media();
+                    }
+                }
+
+                i-mirroring-item := SourceItem {
+                    label: "Mirror screen";
+                    description: "Share your entire desktop or a specific window. Low latency for demos and presentations.";
+                    icon: Icons.mirror;
+                    icon-bg-color: #7C3AED29;
+                    enabled: Bridge.is-mirroring-supported;
+
+                    clicked => {
+                        Bridge.select-input-type(UiInputType.Mirroring);
+                        show-mirroring();
+                    }
+                }
+
+                i-test-pattern-item := SourceItem {
+                    label: "Video test pattern";
+                    description: "Validate display settings, network latency, and audio synchronization.";
+                    icon: Icons.media-file;
+                    icon-bg-color: #DB8C0E33;
+                    enabled: Bridge.is-mirroring-supported;
+
+                    clicked => {
+                        Bridge.start-test-pattern-cast();
+                        Bridge.app-state = UiAppState.Mirroring;
+                    }
+                }
             }
 
             Spacer { }
         }
+    }
+}
 
-        if Bridge.is-audio-supported: VerticalBox {
-            for row in Bridge.audio-sources: HorizontalBox {
-                // alignment: center;
-                for source in row: Rectangle {
-                    height: 100px;
-                    // width: (parent.width / row.length - parent.padding).min(250px); //  250px;
-                    // width: ((parent.width - parent.padding) / row.length).min(250px); //  250px;
-                    background: grey;
-                    border-radius: 8px;
+component SoundBar inherits Rectangle {
+    in property <duration> offset;
+    in property <length> max-bar-height;
 
-                    border-width: source.uid == Bridge.selected-audio-src ? 8px : 0px;
-                    border-color: source.uid == Bridge.selected-audio-src ? lightgreen : white;
+    property <float> anim: 1 * mod(animation-tick() + offset, 1.2s) / 1.2s;
+
+    height: 5px + (max-bar-height - 5px) * sin(anim * 180deg);
+    border-radius: 2px;
+    background: FCastPalette.foreground;
+}
+
+component SoundAnimator inherits Rectangle {
+    property <length> spacing: 2px;
+    property <length> bar-width: 5px;
+    property <length> max-bar-height: 20px;
+
+    width: 3 * spacing + 3 * bar-width;
+    height: max-bar-height;
+
+    SoundBar {
+        offset: 0s;
+        width: bar-width;
+        y: root.height - self.height;
+        max-bar-height: max-bar-height;
+        x: 0;
+    }
+
+    SoundBar {
+        offset: 0.8s;
+        width: bar-width;
+        y: root.height - self.height;
+        max-bar-height: max-bar-height;
+        x: bar-width + spacing;
+    }
+
+    SoundBar {
+        offset: 0.3s;
+        width: bar-width;
+        y: root.height - self.height;
+        max-bar-height: max-bar-height;
+        x: 2 * (bar-width + spacing);
+    }
+}
+
+component YtDlpSourceItem inherits Rectangle {
+    in property <UiYtDlpSource> source;
+
+    callback cast-this;
+
+    border-radius: 6px;
+
+    states [
+        hover when i-touch-area.has-hover: {
+            root.background: FCastPalette.neutral-1100;
+        }
+    ]
+
+    i-touch-area := TouchArea {
+        clicked => {
+            if Bridge.yt-dlp-source == source.title {
+                Bridge.change-playback-state(UiPlaybackState.Idle);
+                Bridge.yt-dlp-source = "";
+            } else {
+                root.cast-this();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding: 10px;
+
+        FText {
+            vertical-alignment: center;
+            text: source.title;
+            overflow: elide;
+        }
+
+        Spacer { }
+
+        if !i-touch-area.has-hover && Bridge.playback-state == UiPlaybackState.Playing && Bridge.yt-dlp-source == source.title: SoundAnimator { }
+
+        if Bridge.yt-dlp-source != source.title && i-touch-area.has-hover: Rectangle {
+            background: FCastPalette.brand-600;
+            border-radius: 6px;
+            // visible: i-touch-area.has-hover;
+
+            VerticalLayout {
+                padding: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+
+                FText {
+                    text: "Cast";
+                }
+            }
+        }
+
+        if Bridge.yt-dlp-source == source.title && i-touch-area.has-hover: Rectangle {
+            background: FCastPalette.brand-600;
+            border-radius: 6px;
+            // visible: i-touch-area.has-hover;
+
+            VerticalLayout {
+                padding: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+
+                FText {
+                    text: "Stop";
+                }
+            }
+        }
+    }
+
+    focus-scope := FocusScope {
+        x: 0;
+        width: 0;
+
+        key-pressed(event) => {
+            if (event.text == "\n") {
+                i-touch-area.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if (focus-scope.has-focus): FocusBorder {
+        border-radius: root.border-radius;
+    }
+}
+
+component PlaybackSettingsMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+
+    callback clicked;
+
+    border-radius: 6px;
+
+    states [
+        hover when i-ta-playback-rate.has-hover: {
+            i-playback-rate-text.color: FCastPalette.foreground;
+            i-playback-rate-arrow-icon.colorize: FCastPalette.foreground;
+            background: FCastPalette.brand-600;
+        }
+    ]
+
+    i-ta-playback-rate := TouchArea {
+        clicked => root.clicked();
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 8px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Image {
+                width: 16px;
+                height: 16px;
+                // source: @image-url("playback_rate.svg");
+                source: icon;
+            }
+        }
+
+        i-playback-rate-text := FText {
+            // text: "Playback Rate";
+            text: label;
+            color: FCastPalette.neutral-500;
+        }
+
+        Spacer {}
+
+        VerticalLayout {
+            alignment: center;
+
+            i-playback-rate-arrow-icon := Image {
+                width: 4.67px;
+                height: 8px;
+                source: Icons.arrow-right;
+            }
+        }
+    }
+}
+
+component PlaybackControls inherits Rectangle {
+    background: FCastPalette.neutral-1200;
+
+    states [
+        playing when Bridge.playback-state == UiPlaybackState.Playing: {
+            i-master-button.icon: Icons.pause;
+            i-master-button.enabled: true;
+        }
+        paused when Bridge.playback-state == UiPlaybackState.Paused: {
+            i-master-button.icon: Icons.play;
+            i-master-button.enabled: true;
+        }
+    ]
+
+    property <UiPlaybackSettingsMenuState> menu-state: UiPlaybackSettingsMenuState.None;
+
+    VerticalLayout {
+        alignment: center;
+        padding-top: 20px;
+        padding-right: 24px;
+        padding-bottom: 20px;
+        padding-left: 24px;
+
+        HorizontalLayout {
+            spacing: 16px;
+
+            FText {
+                text: Bridge.playback-pos-str;
+                font-weight: 300;
+                vertical-alignment: center;
+            }
+
+            Slider {
+                hide-thumb: true;
+                value <=> Bridge.playback-position;
+                maximum: Bridge.track-duration;
+
+                changed(new-time) => {
+                    Bridge.seek(new-time, false);
+                }
+
+                released(new-time) => {
+                    Bridge.seek(new-time, true);
+                }
+            }
+
+            FText {
+                text: Bridge.track-dur-str;
+                font-weight: 300;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            padding-top: 12px;
+            alignment: space-between;
+
+            Spacer { }
+
+            i-master-button := Button {
+                height: 40px;
+                width: 40px;
+                icon-size: 15px;
+                enabled: false;
+
+                clicked => {
+                    Bridge.change-playback-state(
+                        Bridge.playback-state == UiPlaybackState.Playing ? UiPlaybackState.Paused : UiPlaybackState.Playing);
+                }
+            }
+
+            // TODO: should show e.g. playback rate
+            settings-btn := Button {
+                height: 40px;
+                width: 40px;
+                icon: Icons.settings;
+                icon-size: 18px;
+
+                clicked => {
+                    // i-settings-popup.x = self.x;
+                    // i-settings-popup.y = self.y;
+                    i-settings-popup.show();
+                }
+            }
+
+        }
+    }
+
+    i-settings-popup := PopupWindow {
+        width: settings-rect.preferred-width;
+        height: settings-rect.preferred-height;
+
+        x: settings-btn.x - self.width + settings-btn.width;
+        y: settings-btn.y - self.height - 10px;
+        close-policy: close-on-click-outside;
+
+        settings-rect := Rectangle {
+            background: @linear-gradient(180deg, #202022 0%, #0F0F10 100%);
+            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
+            border-width: 1px;
+            border-radius: 6px;
+            forward-focus: inner-fs;
+
+            inner-fs := FocusScope {
+                VerticalLayout {
+                    padding: 10px;
+                    padding-top: 15px;
+
+                    // property <UiPlaybackSettingsMenuState> menu-state: UiPlaybackSettingsMenuState.None;
 
                     states [
-                        hover when ta-aud.has-hover: {
-                            background: grey.transparentize(0.1);
+                        none when menu-state == UiPlaybackSettingsMenuState.None: {
+                            i-settings-label.text: "Playback settings";
+                        }
+                        rate when menu-state == UiPlaybackSettingsMenuState.Rate: {
+                            i-settings-label.text: "Playback rate";
                         }
                     ]
 
-                    ta-aud := TouchArea {
-                        mouse-cursor: pointer;
+                    HorizontalLayout {
+                        spacing: 10px;
 
-                        clicked() => {
-                            if source.uid == Bridge.selected-audio-src {
-                                Bridge.selected-audio-src = -1;
-                            } else {
-                                Bridge.selected-audio-src = source.uid;
+                        if menu-state == UiPlaybackSettingsMenuState.Rate: Rectangle {
+                            TouchArea {
+                                clicked => {
+                                    menu-state = UiPlaybackSettingsMenuState.None;
+                                    i-settings-popup.show();
+                                }
                             }
+
+                            FText {
+                                text: "<";
+                            }
+                        }
+
+                        i-settings-label := LabelText {
+                            font-size: 16px;
                         }
                     }
 
-                    Image {
-                        y: (parent.height - vl-audio.height / 2) / 2;
-                        source: @image-url("./audio.svg");
-                    }
+                    if menu-state == UiPlaybackSettingsMenuState.None: VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
 
-                    vl-audio := VerticalLayout {
-                        Rectangle { }
+                        PlaybackSettingsMenuItem {
+                            label: "Playback rate";
+                            icon: Icons.playback-rate;
+
+                            clicked => {
+                                menu-state = UiPlaybackSettingsMenuState.Rate;
+                                i-settings-popup.show();
+                            }
+                        }
 
                         Rectangle {
-                            background: whitesmoke.transparentize(0.1);
-                            height: 40px;
+                            height: 1px;
+                            background: #FFFFFF0A;
+                        }
+                    }
 
-                            Text {
-                                overflow: TextOverflow.clip;
-                                text: source.name;
+                    if menu-state == UiPlaybackSettingsMenuState.Rate: VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
+
+                        property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
+
+                        for rate in rates: HorizontalLayout {
+                            FText {
+                                text: rate;
                             }
                         }
                     }
                 }
             }
         }
-
-        Button {
-            enabled: Bridge.selected-audio-src != -1 || Bridge.selected-video-src != -1;
-            text: "Start";
-            clicked => {
-                let scale = Utils.str-to-scale(video-resolution-idx);
-                Bridge.start-cast(
-                    Bridge.selected-video-src,
-                    Bridge.selected-audio-src,
-                    scale.width,
-                    scale.height,
-                    Utils.video-framerates[video-framerate-idx].to-float(),
-                );
-            }
-        }
-
-        Button {
-            text: "Cancel";
-            clicked => Bridge.stop-cast();
-        }
     }
 }
 
-component StartingCastView {
-    VerticalBox {
-        Spinner {
-            indeterminate: true;
+component YtDlpView inherits Rectangle {
+    ImageBackground {
+        img-width: root.width;
+        img-height: root.height;
+    }
+
+    VerticalLayout {
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                LabelBox {
+                    label: Bridge.yt-dlp-url;
+                }
+
+                Spacer { }
+
+                DisconnectButton { }
+            }
+
+            if Bridge.yt-dlp-state == UiYtDlpState.HasData && Bridge.yt-dlp-sources.length == 0: FText {
+                text: "No supported sources found in provided URL";
+                horizontal-alignment: center;
+            }
+
+            if Bridge.yt-dlp-state == UiYtDlpState.HasData || Bridge.yt-dlp-state == UiYtDlpState.HasDataButFetching: ListView {
+                for source in Bridge.yt-dlp-sources: YtDlpSourceItem {
+                    source: source;
+
+                    cast-this => {
+                        Bridge.cast-yt-dlp(source.title);
+                        Bridge.yt-dlp-source = source.title;
+                    }
+                }
+            }
+
+            if Bridge.yt-dlp-state == UiYtDlpState.Fetching || Bridge.yt-dlp-state == UiYtDlpState.HasDataButFetching: HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+
+                Spinner {
+                    indeterminate: true;
+                }
+
+                FText {
+                    vertical-alignment: center;
+                    text: "Fetching...";
+                }
+            }
         }
 
-        Text {
-            text: "Starting";
-            horizontal-alignment: center;
-            font-weight: 600;
+        if Bridge.playback-state == UiPlaybackState.Playing || Bridge.playback-state == UiPlaybackState.Paused: Rectangle {
+            background: FCastPalette.border-subtle;
+            height: 1px;
         }
 
-        Button {
-            text: "Cancel";
-            clicked => Bridge.stop-cast();
-        }
+        if Bridge.playback-state == UiPlaybackState.Playing || Bridge.playback-state == UiPlaybackState.Paused: PlaybackControls { }
     }
 }
 
 component MirroringView inherits Rectangle {
-    height: vb.preferred-height;
+    ImageBackground {
+        img-width: root.width;
+        img-height: root.height;
+    }
 
-    vb := VerticalBox {
-        Text {
-            horizontal-alignment: center;
-            text: "Casting to " + Bridge.device-name;
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+
+        LabelText {
+            text: "Mirroring";
         }
 
         Button {
-            text: "Stop casting";
-            clicked => Bridge.stop-cast();
+            text: "Stop";
+
+            clicked => {
+                Bridge.stop-cast(false);
+                Bridge.clear-mirroring-state();
+                Bridge.app-state = UiAppState.SelectingInputType;
+            }
         }
     }
 }
 
 component LocalMediaView inherits Rectangle {
-    property <float> dir-list-width-percent: 0.25;
+    ImageBackground {
+        img-width: root.width;
+        img-height: root.height;
+    }
 
-    dir-list := Rectangle {
-        x: 0;
-        width: root.width * clamp(dir-list-width-percent, 0.0, 0.9);
-        height: 100%;
+    VerticalLayout {
+        Spacer { }
 
-        VerticalLayout {
-            Rectangle {
-                clip: true;
-                HorizontalBox {
-                    Button {
-                        icon: @image-url("./folder-open.svg");
-                        colorize-icon: true;
-                        clicked => {
-                            Bridge.files = [];
-                            Bridge.change-dir-parent();
-                        }
-                    }
+        Rectangle {
+            background: FCastPalette.border-subtle;
+            height: 1px;
+        }
 
-                    Text {
-                        font-weight: 600;
-                        font-size: 14pt;
+        Rectangle {
+            background: FCastPalette.neutral-1200;
+
+            VerticalLayout {
+                alignment: center;
+                padding-top: 20px;
+                padding-right: 24px;
+                padding-bottom: 20px;
+                padding-left: 24px;
+
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    FText {
+                        text: "00:53:12";
+                        font-weight: 300;
                         vertical-alignment: center;
-                        text: Bridge.current-directory;
                     }
+
+                    Slider {
+                        hide-thumb: true;
+                    }
+
+                    FText {
+                        text: "01:54:00";
+                        font-weight: 300;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-top: 12px;
+                    alignment: space-between;
 
                     Spacer { }
+
+                    Button {
+                        height: 40px;
+                        width: 40px;
+                        icon: Icons.pause;
+                        icon-size: 15px;
+                    }
+
+                    Button {
+                        height: 40px;
+                        width: 40px;
+                        icon: Icons.settings;
+                        icon-size: 18px;
+                    }
                 }
             }
+        }
+    }
+}
 
-            ListView {
-                for dir in Bridge.directories: Rectangle {
-                    height: 35px;
+component FCastPopupWindow inherits Rectangle {
+    in property <string> title;
 
-                    states [
-                        hover when dir-ta.has-hover: {
-                            background: lightgrey;
+    callback close;
+
+    background: FCastPalette.neutral-1200;
+    border-color: FCastPalette.border-subtle;
+    border-width: 1px;
+    border-radius: 6px;
+
+    FocusScope {
+        capture-key-pressed(key) => {
+            if key.text == Key.Escape {
+                close();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding: 24px;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            LabelText {
+                text: title;
+            }
+
+            Button {
+                width: 36px;
+                height: 36px;
+                icon: Icons.close;
+                icon-size: 13.33px;
+                clicked => close();
+            }
+        }
+
+        @children
+    }
+}
+
+component VideoSourceItem inherits Rectangle {
+    in property <int> id;
+    in property <image> preview;
+    in property <string> name;
+
+    border-width: 1px;
+    border-color: Bridge.selected-video-src == id ? FCastPalette.brand-600 : FCastPalette.border-subtle;
+    border-radius: 6px;
+    background: FCastPalette.neutral-1200;
+
+    states [
+        hover when i-touch-area.has-hover: {
+            background: FCastPalette.neutral-1100;
+        }
+    ]
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 10px;
+
+        Rectangle {
+            border-radius: 6px;
+            clip: true;
+
+            Image {
+                width: 100%;
+                height: 100%;
+                image-fit: contain;
+                source: preview;
+            }
+        }
+
+        LabelText {
+            text: name;
+            font-size: 14px;
+        }
+    }
+
+    i-touch-area := TouchArea {
+        clicked => {
+            if Bridge.selected-video-src == id {
+                Bridge.selected-video-src = -1;
+            } else {
+                Bridge.selected-video-src = id;
+            }
+        }
+    }
+
+    i-focus-scope := FocusScope {
+        x: 0;
+        width: 0; // Do not react on clicks
+
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                i-touch-area.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if (i-focus-scope.has-focus): FocusBorder {
+        border-radius: 6px;
+    }
+}
+
+component LocalMediaPopup inherits FCastPopupWindow {
+    title: "Local media";
+
+    VerticalLayout {
+        padding-top: 20px;
+
+        Rectangle {
+            border-width: 1px;
+            border-color: FCastPalette.opacity-light-1000;
+            border-radius: 6px;
+            clip: true;
+
+            HorizontalLayout {
+                alignment: center;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+
+                    Rectangle {
+                        width: 70px;
+                        height: 70px;
+                        x: parent.width / 2 - self.width / 2;
+                        border-radius: self.height;
+                        background: FCastPalette.neutral-1100;
+
+                        Image {
+                            source: Icons.upload;
+                            colorize: FCastPalette.neutral-600;
+                            width: 30.83px;
+                            height: 35px;
                         }
-                    ]
+                    }
 
-                    dir-ta := TouchArea {
-                        mouse-cursor: pointer;
+                    LabelText {
+                        horizontal-alignment: center;
+                        text: "~Drag & drop video files~";
+                    }
+
+                    SecondaryText {
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        text: "or browse files on your computer";
+                    }
+                }
+            }
+        }
+    }
+}
+
+component MirroringPopup inherits FCastPopupWindow {
+    title: "Mirror screen";
+
+    property <length> spacing: 20px;
+    property <int> n-columns: compute-columns(i-vl.width);
+
+    callback hide;
+
+    pure function compute-columns(width: length) -> int {
+        if width > 1300px {
+            4
+        } else if width > 800px {
+            3
+        } else if width > 500px {
+            2
+        } else {
+            1
+        }
+    }
+
+    pure function compute-width(idx: int, root-width: length) -> length {
+        (root-width - spacing) / n-columns
+    }
+
+    pure function compute-x(idx: int, width: length) -> length {
+        let col = Math.mod(idx, n-columns);
+        let offset = col == 0 ? 0px : spacing * col;
+        offset + col * width;
+    }
+
+    pure function compute-y(idx: int, root-width: length) -> length {
+        let row = Math.floor(idx / n-columns);
+        let height = 250px;
+        let offset = row == 0 ? 0px : spacing * row;
+        offset + row * height
+    }
+
+    property <int> y-items: Math.ceil(Bridge.video-sources.length / n-columns);
+    property <int> video-resolution-idx: 2;
+    property <int> video-framerate-idx: 2;
+
+    i-vl := VerticalLayout {
+        padding-top: 24px;
+
+        ScrollView {
+            viewport-height: (250px + spacing) * y-items;
+
+            for src[idx] in Bridge.video-sources: VideoSourceItem {
+                x: compute-x(idx, compute-width(idx, parent.visible-width - spacing * (n-columns - 1)));
+                width: compute-width(idx, parent.visible-width - spacing);
+                y: compute-y(idx, parent.height);
+                height: 250px;
+                id: src.uid;
+                preview: src.preview;
+                name: src.name;
+            }
+        }
+
+        if Bridge.selected-video-src != -1: HorizontalLayout {
+            spacing: 8px;
+
+            FText {
+                vertical-alignment: center;
+                text: "Resolution";
+            }
+
+            VideoResolutionPicker {
+                current-index <=> video-resolution-idx;
+            }
+
+            FText {
+                vertical-alignment: center;
+                text: "Framerate";
+            }
+
+            FrameratePicker {
+                current-index <=> video-framerate-idx;
+            }
+        }
+
+        property <bool> include-audio: false;
+
+        if Bridge.is-audio-supported: CheckBox {
+            checked <=> include-audio;
+            text: "Share system audio";
+        }
+
+        if Bridge.is-audio-supported: SecondaryText {
+            text: "Captures desktop output sounds";
+        }
+
+        HorizontalLayout {
+            Spacer { }
+
+            Button {
+                enabled: include-audio || Bridge.selected-video-src != -1;
+                text: "Start Casting";
+                background-default-color: FCastPalette.brand-600;
+
+                clicked => {
+                    let scale = Utils.str-to-scale(video-resolution-idx);
+                    Bridge.start-cast(
+                        Bridge.selected-video-src,
+                        include-audio,
+                        scale.width,
+                        scale.height,
+                        Utils.video-framerates[video-framerate-idx].to-float(),
+                    );
+                    Bridge.app-state = UiAppState.Mirroring;
+                    root.hide();
+                }
+            }
+        }
+    }
+}
+
+component BackView inherits Rectangle {
+    // property <bool> is-showing-mirroring-popup: true;
+    property <bool> is-showing-mirroring-popup: false;
+    // property <bool> is-showing-log-popup: true;
+    property <bool> is-showing-log-popup: false;
+    // property <bool> is-showing-local-media-popup: true;
+    property <bool> is-showing-local-media-popup: false;
+
+    HorizontalLayout {
+        Rectangle {
+            width: root.width > 700px ? 266px : 0px;
+            // background: FCastPalette.background-color-primary;
+            background: FCastPalette.neutral-1100;
+            border-width: 1px;
+            border-color: FCastPalette.border-subtle;
+
+            animate width { duration: 50ms; }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 5px;
+
+                Image {
+                    source: Icons.fcast;
+                    width: 48px;
+                }
+
+                HorizontalLayout {
+                    padding-top: 20px;
+
+                    FText {
+                        text: "FCast Sender";
+                        font-size: 20px;
+                        font-weight: 900;
+                        // height: 42px;
+                        // vertical-alignment: bottom;
+                        vertical-alignment: center;
+                    }
+
+                    Spacer {}
+
+                    LabelBox {
+                        label: "BETA";
+                    }
+                }
+
+                FText {
+                    text: "Scanning local network (mDNS) for FCast-enabled devices...";
+                    // text: "Make sure the FCast Receiver app is open and the device is connected to Wi-Fi or your home network. Once connected, the FCast Sender app will find it automatically.";
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: grey;
+                }
+
+                Spacer { }
+
+                Rectangle {
+                    background: FCastPalette.neutral-1100;
+                    height: 1px;
+                }
+
+                Rectangle {
+                    i-dev-log-ta := TouchArea {
                         clicked => {
-                            Bridge.files = [];
-                            Bridge.change-dir-child(dir.id);
+                            Bridge.reload-log-string();
+                            is-showing-log-popup = true;
                         }
                     }
 
                     HorizontalLayout {
-                        padding-left: 5px;
+                        padding-top: 15px;
+                        padding-bottom: 15px;
+
                         spacing: 10px;
 
-                        Image {
-                            source: @image-url("./folder.svg");
-                            colorize: Palette.foreground;
-                            width: 25px;
-                        }
+                        VerticalLayout {
+                            alignment: center;
 
-                        Text {
-                            font-size: 12pt;
-                            vertical-alignment: center;
-                            text: dir.name;
-                        }
-                    }
-                }
-            }
-        }
-    }
+                            Image {
+                                width: 12px;
+                                height: 12px;
+                                source: Icons.dev-log;
+                                colorize: FCastPalette.neutral-600;
 
-    resizer := Rectangle {
-        x: dir-list.width;
-        background: grey;
-        width: 5px;
-        height: 100%;
-
-        states [
-            hover when ta.has-hover: {
-                background: lightskyblue;
-            }
-        ]
-
-        animate background { duration: 50ms; }
-
-        ta := TouchArea {
-            mouse-cursor: ew-resize;
-            moved => {
-                if self.pressed {
-                    let new-width = dir-list.width + (self.mouse-x - self.pressed-x);
-                    dir-list-width-percent = new-width / root.width;
-                }
-            }
-        }
-    }
-
-    Rectangle {
-        x: resizer.x + resizer.width;
-        height: 100%;
-        width: root.width - resizer.width - dir-list.width;
-
-        VerticalLayout {
-            Rectangle {
-                height: 50px;
-                clip: true;
-
-                HorizontalBox {
-                    alignment: LayoutAlignment.center;
-
-                    Text {
-                        font-size: 14pt;
-                        vertical-alignment: center;
-                        text: "Connected to " + Bridge.device-name;
-                    }
-
-                    Button {
-                        text: "Disconnect";
-                        clicked => Bridge.disconnect();
-                    }
-                }
-            }
-
-            ListView {
-                for file in Bridge.files: HorizontalBox {
-                    spacing: 10px;
-
-                    Image {
-                        height: 25px;
-                        width: 25px;
-                        colorize: Palette.foreground;
-
-                        states [
-                            audio when file.type == UiMediaFileType.Audio: {
-                                source: @image-url("./audio.svg");
+                                states [
+                                    hover when i-dev-log-ta.has-hover: {
+                                        colorize: FCastPalette.brand-600;
+                                    }
+                                ]
                             }
-                            video when file.type == UiMediaFileType.Video: {
-                                source: @image-url("./video.svg");
-                            }
-                            img when file.type == UiMediaFileType.Image: {
-                                source: @image-url("./image.svg");
-                            }
-                        ]
-                    }
-
-                    Text {
-                        vertical-alignment: center;
-                        overflow: elide;
-                        text: file.name;
-                    }
-
-                    Spacer { }
-
-                    Button {
-                        clicked => {
-                            Bridge.cast-local-media(file.id);
-                            Bridge.track-name = file.name;
-                            Bridge.track-type = file.type;
-                        }
-                        text: "Cast";
-                    }
-                }
-            }
-
-            if Bridge.playback-state != UiPlaybackState.Idle && Bridge.track-type != UiMediaFileType.Image: Rectangle {
-                background: lightgrey.transparentize(0.5);
-
-                VerticalLayout {
-                    HorizontalBox {
-                        Text {
-                            vertical-alignment: center;
-                            text: Bridge.str-fmt-seconds(Bridge.playback-position);
                         }
 
-                        Slider {
-                            minimum: 0.0;
-                            step: 5.0;
-                            value <=> Bridge.playback-position;
-                            maximum: Bridge.track-duration;
-                            changed(new-position) => Bridge.seek(new-position, false);
-                            released() => Bridge.seek(Bridge.playback-position, true);
-                        }
-
-                        Text {
-                            vertical-alignment: center;
-                            text: Bridge.str-fmt-seconds(Bridge.track-duration);
-                        }
-                    }
-
-                    HorizontalBox {
-                        Button {
-                            colorize-icon: true;
-                            icon: @image-url("./stop.svg");
-                            clicked => Bridge.change-playback-state(UiPlaybackState.Idle);
-                        }
-
-                        if Bridge.playback-state == UiPlaybackState.Buffering: Spinner {
-                            indeterminate: true;
-                        }
-                        if Bridge.playback-state == UiPlaybackState.Playing: Button {
-                            colorize-icon: true;
-                            icon: @image-url("./pause.svg");
-                            clicked => Bridge.change-playback-state(UiPlaybackState.Paused);
-                        }
-                        if Bridge.playback-state == UiPlaybackState.Paused: Button {
-                            colorize-icon: true;
-                            icon: @image-url("./play.svg");
-                            clicked => Bridge.change-playback-state(UiPlaybackState.Playing);
-                        }
-
-                        Text {
-                            font-size: 14pt;
-                            vertical-alignment: center;
-                            text: Bridge.track-name;
-                            overflow: elide;
-                            max-width: parent.width * 60%;
-                        }
-
-                        Image {
-                            width: 25px;
-                            colorize: black;
+                        FText {
+                            font-weight: 500;
+                            font-size: 14px;
+                            color: FCastPalette.neutral-600;
+                            text: "Developer log";
 
                             states [
-                                muted when Bridge.volume == 0.0: {
-                                    source: @image-url("./volume-muted.svg");
-                                }
-                                low when Bridge.volume <= 0.5: {
-                                    source: @image-url("./volume-low.svg");
-                                }
-                                high when Bridge.volume > 0.5: {
-                                    source: @image-url("./volume-high.svg");
+                                hover when i-dev-log-ta.has-hover: {
+                                    color: FCastPalette.brand-600;
                                 }
                             ]
                         }
-
-                        vol-slider := Slider {
-                            value <=> Bridge.volume;
-                            minimum: 0.0;
-                            maximum: 1.0;
-                            changed(new-volume) => Bridge.change-volume(new-volume, false);
-                            released() => Bridge.change-volume(Bridge.volume, true);
-                        }
                     }
                 }
+            }
+        }
+
+        if Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting: ConnectView { }
+
+        if Bridge.app-state == UiAppState.SelectingInputType: ReadyToCastView {
+            show-mirroring => {
+                is-showing-mirroring-popup = true;
+            }
+
+            show-local-media => {
+                is-showing-local-media-popup = true;
+            }
+
+            show-yt-dlp-view => {
+                Bridge.app-state = UiAppState.YtDlp;
+            }
+        }
+
+        if Bridge.app-state == UiAppState.YtDlp: YtDlpView { }
+
+        if Bridge.app-state == UiAppState.StartingCast || Bridge.app-state == UiAppState.Mirroring: MirroringView { }
+
+        if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
+    }
+
+    if is-showing-local-media-popup || is-showing-mirroring-popup || is-showing-log-popup: Rectangle {
+        background: #0000009C;
+        TouchArea { }
+    }
+
+    if is-showing-local-media-popup: LocalMediaPopup {
+        width: root.width * 75%;
+        height: root.height * 85%;
+
+        close => {
+            is-showing-local-media-popup = false;
+        }
+    }
+
+    if is-showing-mirroring-popup: MirroringPopup {
+        width: root.width * 75%;
+        height: root.height * 85%;
+
+        hide => {
+            is-showing-mirroring-popup = false;
+        }
+
+        close => {
+            is-showing-mirroring-popup = false;
+            Bridge.stop-cast(false);
+            Bridge.clear-mirroring-state();
+            Bridge.app-state = UiAppState.SelectingInputType;
+        }
+    }
+
+    if is-showing-log-popup: FCastPopupWindow {
+        width: root.width * 95%;
+        height: root.height * 95%;
+        title: "Developer Log";
+
+        close => {
+            is-showing-log-popup = false;
+        }
+
+        VerticalLayout {
+            padding-top: 24px;
+
+            TextEdit {
+                text: Bridge.log-string;
+                read-only: true;
             }
         }
     }
@@ -836,72 +1959,13 @@ export component MainWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 500px;
 
-    property <bool> is-showing-log-view: false;
+    default-font-family: "Outfit";
+    default-font-size: 15px;
+    default-font-weight: 400;
 
-    FocusScope {
-        capture-key-pressed(key) => {
-            if key.modifiers.control && key.modifiers.shift && (key.text == "L" || key.text == "l") {
-                Bridge.reload-log-string();
-                is-showing-log-view = !is-showing-log-view;
-                accept
-            } else {
-                reject
-            }
-        }
-    }
+    background: FCastPalette.background-color-primary;
 
-    if Bridge.app-state == UiAppState.Disconnected: ConnectView {
-        width: root.width.min(500px);
-        height: root.height.min(500px);
-    }
-
-    if Bridge.app-state == UiAppState.Connecting: ConnectingView { }
-
-    if Bridge.app-state == UiAppState.UnsupportedReceiver: UnsupportedReceiverView { }
-
-    if Bridge.app-state == UiAppState.SelectingInputType: SelectingInputTypeView { }
-
-    if Bridge.app-state == UiAppState.SelectingMirroringSource: SelectMirroringSourceView {
-        width: root.width.min(900px);
-    }
-
-    if Bridge.app-state == UiAppState.StartingCast: StartingCastView { }
-
-    if Bridge.app-state == UiAppState.Mirroring: MirroringView {
-        width: root.width.min(900px);
-    }
-
-    if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
-
-    if is-showing-log-view: Rectangle {
-        background: parent.background.transparentize(0.0);
-        width: 100%;
-        height: 100%;
-
-        VerticalBox {
-            HorizontalBox {
-                alignment: space-between;
-
-                Text {
-                    font-weight: 600;
-                    font-size: 18px;
-                    text: "Application log";
-                }
-
-                Button {
-                    text: "Close";
-                    clicked => {
-                        is-showing-log-view = false;
-                    }
-                }
-            }
-
-            TextEdit {
-                text: Bridge.log-string;
-                read-only: true;
-            }
-        }
-    }
+    BackView { }
 }
 
 export component CrashWindow inherits Window {
@@ -910,10 +1974,16 @@ export component CrashWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 500px;
 
+    default-font-family: "Outfit";
+    default-font-size: 15px;
+    default-font-weight: 400;
+
+    background: FCastPalette.background-color-primary;
+
     in property <string> log: "";
 
     VerticalBox {
-        Text {
+        FText {
             font-weight: 600;
             font-size: 18px;
             horizontal-alignment: center;
@@ -922,7 +1992,7 @@ export component CrashWindow inherits Window {
             text: "FCast Sender encountered an error!";
         }
 
-        Text {
+        FText {
             font-size: 18px;
             horizontal-alignment: center;
             vertical-alignment: center;

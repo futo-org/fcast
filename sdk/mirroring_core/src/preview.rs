@@ -13,6 +13,7 @@ fn scale_res_to_fit(width: u32, height: u32, max_width: u32, max_height: u32) ->
 
 fn make_capture_src(src: VideoSource) -> Result<(gst::Element, Option<ExtraVideoContext>)> {
     Ok(match src {
+        VideoSource::TestSrc => (gst::ElementFactory::make("videotestsrc").build()?, None),
         #[cfg(target_os = "linux")]
         VideoSource::PipeWire { node_id, fd } => {
             use std::os::fd::AsRawFd;
@@ -259,7 +260,7 @@ impl PreviewPipeline {
                 .build(),
         );
 
-        let (_extra_video, elems) = add_video_src(&pipeline, appsink.upcast(), src, 200, 200, 5)?;
+        let (_extra_video, elems) = add_video_src(&pipeline, appsink.upcast(), src, 300, 400, 5)?;
 
         pipeline.call_async(|pipeline| {
             pipeline.set_state(gst::State::Playing).unwrap();

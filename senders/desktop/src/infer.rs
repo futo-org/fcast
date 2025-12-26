@@ -147,10 +147,7 @@ fn is_isobmff(len: usize, buf: InferenceBuffer) -> bool {
 }
 
 /// GetFtyp returns the major brand, minor version and compatible brands of the ISO-BMFF data
-fn get_ftyp(
-    _len: usize,
-    buf: &[u8; 64],
-) -> Option<(&[u8], &[u8], impl Iterator<Item = &[u8]>)> {
+fn get_ftyp(_len: usize, buf: &[u8; 64]) -> Option<(&[u8], &[u8], impl Iterator<Item = &[u8]>)> {
     if buf.len() < 16 {
         return None;
     }

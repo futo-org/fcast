@@ -67,6 +67,9 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
     "gstdtls",
     "gstwebrtc",
     "gstsrtp",
+
+    // TODO:
+    // "gstvideotestsrc",
 ];
 
 #[cfg(target_os = "windows")]
