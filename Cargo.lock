@@ -389,7 +389,20 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d4744ed2eef2645831b441d8f5459689ade2ab27c854488fbab1fbe94fce1a7"
 dependencies = [
- "askama_derive",
+ "askama_derive 0.13.1",
+ "itoa",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "askama"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f75363874b771be265f4ffe307ca705ef6f3baa19011c149da8674a87f1b75c4"
+dependencies = [
+ "askama_derive 0.14.0",
  "itoa",
  "percent-encoding",
  "serde",
@@ -402,7 +415,24 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d661e0f57be36a5c14c48f78d09011e67e0cb618f269cca9f2fd8d15b68c46ac"
 dependencies = [
- "askama_parser",
+ "askama_parser 0.13.0",
+ "basic-toml",
+ "memchr",
+ "proc-macro2",
+ "quote",
+ "rustc-hash 2.1.1",
+ "serde",
+ "serde_derive",
+ "syn",
+]
+
+[[package]]
+name = "askama_derive"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "129397200fe83088e8a68407a8e2b1f826cf0086b21ccdb866a722c8bcd3a94f"
+dependencies = [
+ "askama_parser 0.14.0",
  "basic-toml",
  "memchr",
  "proc-macro2",
@@ -418,6 +448,18 @@ name = "askama_parser"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf315ce6524c857bb129ff794935cf6d42c82a6cff60526fe2a63593de4d0d4f"
+dependencies = [
+ "memchr",
+ "serde",
+ "serde_derive",
+ "winnow",
+]
+
+[[package]]
+name = "askama_parser"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6ab5630b3d5eaf232620167977f95eb51f3432fc76852328774afbd242d4358"
 dependencies = [
  "memchr",
  "serde",
@@ -904,9 +946,9 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "bytes"
-version = "1.10.1"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
+checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
 
 [[package]]
 name = "calloop"
@@ -1557,25 +1599,28 @@ dependencies = [
  "fcast-protocol",
  "fcast-sender-sdk",
  "flume",
+ "futures",
  "gst-plugin-rtp",
  "gstreamer",
+ "gstreamer-app",
+ "gstreamer-video",
  "http-body-util",
  "http-range",
  "hyper",
  "hyper-util",
  "mcore",
- "mdns-sd 0.13.11",
  "objc2-core-graphics",
  "parking_lot",
  "slint",
  "slint-build",
+ "smallvec",
  "tokio",
  "tracing",
  "tracing-gstreamer",
  "tracing-panic",
  "tracing-subscriber",
  "uuid",
- "x11",
+ "webbrowser",
  "xcb",
 ]
 
@@ -1925,7 +1970,7 @@ dependencies = [
  "libc",
  "log",
  "log-panics",
- "mdns-sd 0.14.1",
+ "mdns-sd",
  "prost",
  "prost-build",
  "rustls-pki-types",
@@ -3647,16 +3692,6 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "if-addrs"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf39cc0423ee66021dc5eccface85580e4a001e0c5288bae8bea7ecb69225e90"
@@ -4215,6 +4250,10 @@ dependencies = [
  "hyper-util",
  "libpulse-binding",
  "parking_lot",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "smol_str 0.3.4",
  "tokio",
  "tracing",
  "uuid",
@@ -4222,31 +4261,17 @@ dependencies = [
 
 [[package]]
 name = "mdns-sd"
-version = "0.13.11"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328f4e1041f7cfeb3affccb814ddbe2f004856a2ce769c8bf22080d74c5204c6"
+checksum = "f43e377ae111ceb4630fc8239cf7af8c894193f02bb23976177a475007977417"
 dependencies = [
  "fastrand",
  "flume",
- "if-addrs 0.13.4",
- "log",
- "mio",
- "socket2 0.5.10",
-]
-
-[[package]]
-name = "mdns-sd"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e0a59b04e17a195b0674198b3182931801c4759d00f36acad51b5a97210a692"
-dependencies = [
- "fastrand",
- "flume",
- "if-addrs 0.14.0",
+ "if-addrs",
  "log",
  "mio",
  "socket-pktinfo",
- "socket2 0.6.1",
+ "socket2",
 ]
 
 [[package]]
@@ -5568,7 +5593,7 @@ dependencies = [
  "gstreamer-play",
  "gstreamer-video",
  "log",
- "mdns-sd 0.14.1",
+ "mdns-sd",
  "objc2-app-kit 0.3.2",
  "qrcode",
  "serde_json",
@@ -6257,6 +6282,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smawk"
@@ -6353,18 +6381,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "927136cc2ae6a1b0e66ac6b1210902b75c3f726db004a73bc18686dcd0dcd22f"
 dependencies = [
  "libc",
- "socket2 0.6.1",
+ "socket2",
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6806,8 +6824,10 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
- "socket2 0.6.1",
+ "signal-hook-registry",
+ "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -7192,7 +7212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b39ef1acbe1467d5d210f274fae344cb6f8766339330cb4c9688752899bf6b"
 dependencies = [
  "anyhow",
- "askama",
+ "askama 0.13.1",
  "camino",
  "cargo_metadata",
  "fs-err",
@@ -7665,6 +7685,22 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webbrowser"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00f1243ef785213e3a32fa0396093424a3a6ea566f9948497e5a2309261a4c97"
+dependencies = [
+ "core-foundation 0.10.1",
+ "jni",
+ "log",
+ "ndk-context",
+ "objc2 0.6.3",
+ "objc2-foundation 0.3.2",
+ "url",
+ "web-sys",
 ]
 
 [[package]]
@@ -8511,8 +8547,11 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "askama 0.14.0",
  "camino",
  "clap",
+ "ctrlc",
+ "mdns-sd",
  "serde",
  "serde_json",
  "uniffi_bindgen",

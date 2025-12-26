@@ -350,7 +350,7 @@ component PlaybackControl {
                     // if pb-state == GuiPlaybackState.Playing: pause-btn := IconButton {
                     if Bridge.playback-state == GuiPlaybackState.Playing: pause-btn := IconButton {
                         // icon: @image-url("../../assets/icons/video_pause.svg");
-                        icon: @image-url("../../../../senders/desktop/ui/pause.svg");
+                        icon: @image-url("../../../../senders/ui-components/icons/pause.svg");
                         clicked => {
                             Bridge.resume-or-pause();
                         }
@@ -358,7 +358,7 @@ component PlaybackControl {
                     // if pb-state == GuiPlaybackState.Paused: IconButton {
                     if Bridge.playback-state == GuiPlaybackState.Paused: IconButton {
                         // icon: @image-url("../../assets/icons/video_play.svg");
-                        icon: @image-url("../../../../senders/desktop/ui/play.svg");
+                        icon: @image-url("../../../../senders/ui-components/icons/play.svg");
                         clicked => {
                             Bridge.resume-or-pause();
                         }
@@ -372,7 +372,8 @@ component PlaybackControl {
                     }
 
                     volume-btn := IconButton {
-                        icon: @image-url("../../../../senders/desktop/ui/volume-high.svg");
+                        // icon: @image-url("../../../../senders/desktop/ui/volume-high.svg");
+                        icon: @image-url("../../../../senders/ui-components/icons/volume-high.svg");
                         // icon: volume-slider.value > 0 ? @image-url("../../assets/icons/volume.svg") : @image-url("../../assets/icons/volume-muted.svg");
                         clicked => {
                             if volume-slider.value > 0 {
