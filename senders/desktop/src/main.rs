@@ -1097,7 +1097,8 @@ impl Application {
                             let remote_addr_str = remote_addr.to_string().to_shared_string();
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
-                                bridge.set_is_mirroring_supported(is_mirroring_supported);
+                                // bridge.set_is_mirroring_supported(is_mirroring_supported);
+                                bridge.set_is_mirroring_supported(true);
                                 bridge.invoke_change_state(UiAppState::SelectingInputType);
                                 bridge.set_device_ip(remote_addr_str);
                             })?;

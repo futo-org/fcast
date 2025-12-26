@@ -48,7 +48,7 @@ impl Pipeline {
             if let Some(factory) = elem.factory()
                 && factory.name() == "rtspsrc"
             {
-                elem.set_property("latency", 1u32);
+                elem.set_property("latency", 25u32);
             }
 
             if let Some(factory) = elem.factory()
