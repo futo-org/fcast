@@ -108,6 +108,8 @@ class MainActivity : AppCompatActivity() {
         checkAndRequestPermissions()
         if (savedInstanceState == null && NetworkService.instance == null) {
             restartService()
+        } else {
+            renderIPsAndQRCode()
         }
 
         requestSystemAlertWindowPermission()
