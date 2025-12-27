@@ -7,7 +7,6 @@ use fcast_protocol::{
     v3::PlaybackState,
 };
 use gst::prelude::*;
-use gst_play::ffi::gst_play_media_info_get_audio_streams;
 use log::{debug, error, warn};
 // use pipeline::Pipeline;
 use futures::StreamExt;
@@ -255,6 +254,7 @@ pub mod common {
 
 #[derive(Debug)]
 enum PlayerEvent {
+    UriLoaded,
     StateChanged(gst_play::PlayState),
     MediaInfoUpdated(gst_play::PlayMediaInfo),
     DurationChanged(gst::ClockTime),
@@ -304,6 +304,13 @@ fn current_time_millis() -> u64 {
         .as_millis() as u64
 }
 
+#[derive(Debug)]
+enum OnUriLoadedCommand {
+    Seek(f64),
+    Rate(f64),
+    Volume(f64),
+}
+
 struct Application {
     // pipeline: Pipeline,
     event_tx: Sender<Event>,
@@ -316,6 +323,7 @@ struct Application {
     player_state: gst_play::PlayState,
     current_media: Option<gst_play::PlayMediaInfo>,
     current_duration: Option<gst::ClockTime>,
+    on_playing_command_queue: smallvec::SmallVec<[OnUriLoadedCommand; 6]>,
 }
 
 fn get_all_available_addrs_ignore_v6_and_localhost() -> Result<Vec<Ipv4Addr>> {
@@ -371,9 +379,10 @@ impl Application {
                     match play_message {
                         gst_play::PlayMessage::UriLoaded(loaded) => {
                             debug!("URI loaded uri={}", loaded.uri());
-                            if let Some(player) = player_weak.upgrade() {
-                                player.play();
-                            }
+                            let _ = event_tx.send(Event::Player(PlayerEvent::UriLoaded)).await;
+                            // if let Some(player) = player_weak.upgrade() {
+                            //     player.play();
+                            // }
                         }
                         gst_play::PlayMessage::PositionUpdated(update) => {
                             if let Some(position) = update.position() {
@@ -466,6 +475,7 @@ impl Application {
             player_state: gst_play::PlayState::Stopped,
             current_media: None,
             current_duration: None,
+            on_playing_command_queue: smallvec::SmallVec::new(),
         })
     }
 
@@ -479,7 +489,6 @@ impl Application {
         // };
 
         let Some(info) = self.current_media.as_ref() else {
-            error!("No current media");
             return Ok(());
         };
 
@@ -643,7 +652,17 @@ impl Application {
                     url = url.replace("http://", "fcastwhep://");
                 }
 
+                self.on_playing_command_queue.clear();
+
                 self.player.set_uri(Some(&url));
+                if let Some(rate) = play_message.speed {
+                    self.on_playing_command_queue.push(OnUriLoadedCommand::Rate(rate));
+                    // self.player.set_rate(rate);
+                }
+                if let Some(time) = play_message.time {
+                    self.on_playing_command_queue.push(OnUriLoadedCommand::Seek(time));
+                    // self.player.seek(gst::ClockTime::from_seconds_f64(time));
+                }
 
                 // if let Err(err) = self.pipeline.set_playback_uri(&url) {
                 //     use pipeline::SetPlaybackUriError;
@@ -785,6 +804,27 @@ impl Application {
                 // ################
 
                 match event {
+                    PlayerEvent::UriLoaded => {
+                        self.player.pause();
+
+                        debug!("Commands: {:?}", self.on_playing_command_queue);
+                        // while let Some(command) = self.on_playing_command_queue.pop() {
+                        for command in self.on_playing_command_queue.iter() {
+                            match command {
+                                OnUriLoadedCommand::Seek(time) => {
+                                    self.player.seek(gst::ClockTime::from_seconds_f64(*time));
+                                }
+                                OnUriLoadedCommand::Rate(rate) => {
+                                    self.player.set_rate(*rate);
+                                }
+                                OnUriLoadedCommand::Volume(volume) => {
+                                    self.player.set_volume(*volume);
+                                }
+                            }
+                        }
+
+                        self.player.play();
+                    }
                     PlayerEvent::StateChanged(state) => {
                         self.player_state = state;
                         match state {
@@ -797,6 +837,13 @@ impl Application {
                                 })?;
                                 self.notify_updates(true)
                                     .context("Failed to notify about updates")?;
+
+                                // if state == gst_play::PlayState::Playing {
+                                //     while let Some(command) = self.on_playing_command_queue.pop() {
+                                //         match command {
+                                //         }
+                                //     }
+                                // }
                             }
                             _ => (),
                         }
@@ -810,11 +857,10 @@ impl Application {
                     PlayerEvent::DurationChanged(duration) => {
                         self.current_duration = Some(duration);
                     }
-                    PlayerEvent::PositionChanged(position) => {}
+                    PlayerEvent::PositionChanged(_position) => {}
                     PlayerEvent::VolumeChanged(volume) => {
                         self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>()
-                                .set_volume(volume as f32);
+                            ui.global::<Bridge>().set_volume(volume as f32);
                         })?;
                         if self.updates_tx.receiver_count() > 0 {
                             let update = VolumeUpdateMessage {
