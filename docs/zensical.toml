@@ -59,6 +59,13 @@ nav = [
   ]},
   {"SDK" = [
     "sdk/index.md",
+    {"Tutorials" = [
+      "sdk/tutorials/index.md",
+      "sdk/tutorials/rust.md",
+      "sdk/tutorials/android.md",
+      "sdk/tutorials/ios.md",
+      "sdk/tutorials/flutter.md",
+    ]},
   ]},
   {"Protocol" = [
     "protocol/index.md",
