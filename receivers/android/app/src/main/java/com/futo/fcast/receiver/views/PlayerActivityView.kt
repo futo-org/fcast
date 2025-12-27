@@ -12,7 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -107,40 +107,38 @@ fun PlayerActivity(viewModel: PlayerActivityViewModel) {
                                 // this.setShowBuffering(SHOW_BUFFERING_ALWAYS)
                                 // exoPlayer.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
                             }
-                        },
-                        update = { view ->
+                        }, update = { view ->
                             // view.player = viewModel.exoPlayer
                             view.player = source.exoPlayer
                             view.useController = false
                             view.subtitleView?.visibility = View.GONE
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(16f / 9f)
+                        }, modifier = Modifier
+                            .fillMaxHeight()
                             .constrainAs(playerRef) {
                                 top.linkTo(parent.top)
                                 bottom.linkTo(parent.bottom)
                                 start.linkTo(parent.start)
                                 end.linkTo(parent.end)
                             }
-
                     )
 
-                    AndroidView(factory = {
-                        SubtitleView(context).apply {
-                            this.setCues(playerState.cues)
-                        }
-                    }, update = { view ->
-                        view.setCues(playerState.cues)
-                    }, modifier = Modifier
-                        .offset(0.dp, (-20).dp)
-                        .constrainAs(subtitlesRef) {
-                        if (viewModel.showControls) {
-                            bottom.linkTo(controlsRef.top, margin = (-120).dp)
-                        } else {
-                            bottom.linkTo(parent.bottom, margin = 10.dp)
-                        }
-                    })
+                    AndroidView(
+                        factory = {
+                            SubtitleView(context).apply {
+                                this.setCues(playerState.cues)
+                            }
+                        }, update = { view ->
+                            view.setCues(playerState.cues)
+                        }, modifier = Modifier
+                            .offset(0.dp, (-20).dp)
+                            .constrainAs(subtitlesRef) {
+                                if (viewModel.showControls) {
+                                    bottom.linkTo(controlsRef.top, margin = (-120).dp)
+                                } else {
+                                    bottom.linkTo(parent.bottom, margin = 10.dp)
+                                }
+                            }
+                    )
                 }
 
                 is PlayerSource.Whep -> {
