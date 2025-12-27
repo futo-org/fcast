@@ -423,11 +423,16 @@ impl Application {
     fn update_receivers_in_ui(&mut self) -> Result<()> {
         let receivers = self
             .devices
-            .keys()
-            .map(slint::SharedString::from)
-            .collect::<Vec<slint::SharedString>>();
+            .iter()
+            .map(|(name, info)| {
+                UiDevice {
+                    name: name.to_shared_string(),
+                    fcast: info.protocol == fcast_sender_sdk::device::ProtocolType::FCast,
+                }
+            })
+            .collect::<Vec<UiDevice>>();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let model = Rc::new(slint::VecModel::<slint::SharedString>::from_iter(
+            let model = Rc::new(slint::VecModel::<UiDevice>::from_iter(
                 receivers.into_iter(),
             ));
             ui.global::<Bridge>().set_devices(model.into());

@@ -99,6 +99,11 @@ export struct UiYtDlpSource {
     title: string,
 }
 
+export struct UiDevice {
+    name: string,
+    fcast: bool,
+}
+
 export global Bridge {
     // in-out property <AppState> app-state: SelectingInputType;
     // in-out property <string> device-name: "FCast-localhost";
@@ -111,12 +116,13 @@ export global Bridge {
     // in property <bool> is-mirroring-supported: true;
 
     in property <string> current-directory: "";
-    in property <[string]> devices: [
-        // "Test0",
-        // "Test1",
-        // "Test2",
-        // "Test3",
-        // "Test4",
+    // in property <[string]> devices: [
+    in property <[UiDevice]> devices: [
+        { name: "Test0", fcast: false },
+        { name: "Test1", fcast: true },
+        { name: "Test2", fcast: false },
+        { name: "Test3", fcast: true },
+        { name: "Test4", fcast: false },
     ];
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
@@ -263,6 +269,7 @@ component Spacer inherits Rectangle { }
 
 component DeviceListItem {
     in property <string> dev-name;
+    in property <bool> fcast;
 
     forward-focus: focus-scope;
 
@@ -309,6 +316,17 @@ component DeviceListItem {
                     overflow: elide;
                 }
 
+                VerticalLayout {
+                    alignment: center;
+
+                    Image {
+                        width: 20px;
+                        height: 20px;
+                        source: fcast ? Icons.fcast-small : Icons.gcast-small;
+                        vertical-alignment: center;
+                    }
+                }
+
                 Spacer { }
 
                 if Bridge.app-state == UiAppState.Connecting && !i-touch-area.has-hover && Bridge.device-name == dev-name: VerticalLayout {
@@ -350,46 +368,6 @@ component DeviceListItem {
                                     }
                                 ]
                                 text: "Connect";
-                            }
-                        }
-                    }
-                }
-
-                if !i-touch-area.has-hover && Bridge.app-state != UiAppState.Connecting: VerticalLayout {
-                    alignment: center;
-
-                    Rectangle {
-                        background: FCastPalette.positive-1200;
-                        width: i-label.preferred-width + 8px * 2;
-                        height: i-label.preferred-height;
-                        border-color: FCastPalette.positive-1100;
-                        border-radius: 4px;
-                        border-width: 1px;
-
-                        i-label := HorizontalLayout {
-                            alignment: center;
-                            spacing: 6px;
-
-                            padding-top: 4px;
-                            padding-bottom: 4px;
-                            padding-left: 6px;
-                            padding-right: 6px;
-
-                            VerticalLayout {
-                                alignment: center;
-
-                                Rectangle {
-                                    width: 4px;
-                                    height: 4px;
-                                    border-radius: self.width;
-                                    background: FCastPalette.status-connected;
-                                }
-                            }
-
-                            available-label := FText {
-                                vertical-alignment: center;
-                                text: "Ready";
-                                color: FCastPalette.status-connected;
                             }
                         }
                     }
@@ -536,7 +514,8 @@ component ConnectView inherits Rectangle {
                         padding-top: 20px;
                         spacing: 8px;
                         for device in Bridge.devices: DeviceListItem {
-                            dev-name: device;
+                            dev-name: device.name;
+                            fcast: device.fcast;
                         }
 
                         Spacer { }
