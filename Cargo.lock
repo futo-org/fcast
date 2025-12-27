@@ -5600,6 +5600,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "smallvec",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
