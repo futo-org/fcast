@@ -14,12 +14,12 @@ cargo build
 
 Example usage of the fcast client.
 
-```
+```console
 # Play a mp4 video URL (1.0 playbackspeed explicit)
 ./fcast -H 127.0.0.1 play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
 
-# Play a local mp4
-./fcast -H 192.168.1.62 play --mime-type video/mp4 -f /home/koen/Downloads/BigBuckBunny.mp4
+# Play a local mp4 (--file-server-port is optional)
+./fcast -H 127.0.0.1 play --mime-type video/mp4 -f /home/koen/Downloads/BigBuckBunny.mp4 --file-server-port 8000
 
 # Play a DASH URL
 ./fcast -H 127.0.0.1 play --mime-type application/dash+xml --url https://dash.akamaized.net/digitalprimates/fraunhofer/480p_video/heaac_2_0_with_video/Sintel/sintel_480p_heaac2_0.mpd

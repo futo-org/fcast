@@ -56,8 +56,8 @@ use crate::file_server;
 #[cfg(feature = "http-file-server")]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
-    pub fn start_file_server(&self) -> file_server::FileServer {
-        let server = file_server::FileServer::new(self.runtime.handle().clone());
+    pub fn start_file_server(&self, v4_port: Option<u16>) -> file_server::FileServer {
+        let server = file_server::FileServer::new(self.runtime.handle().clone(), v4_port);
         server.start();
         server
     }

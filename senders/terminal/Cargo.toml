@@ -9,4 +9,4 @@ publish = false
 clap.workspace = true
 env_logger.workspace = true
 ctrlc = "3.1.9"
-fcast-sender-sdk.path = "../../sdk/sender/fcast-sender-sdk"
+fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = ["fcast", "http-file-server"] }

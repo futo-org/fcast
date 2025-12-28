@@ -40,6 +40,9 @@ enum Command {
         /// The desired volume
         #[arg(long, short)]
         volume: Option<f64>,
+        /// The port that the file server should bind to
+        #[arg(long)]
+        file_server_port: Option<u16>,
     },
     /// Seek to a timestamp
     Seek {
@@ -165,7 +168,8 @@ fn main() {
     let app = TerminalSender::parse();
 
     let context = CastContext::new().unwrap();
-    let file_server = context.start_file_server();
+    #[allow(unused)]
+    let file_server;
 
     let device_info = fcast_sender_sdk::device::DeviceInfo::fcast(
         "FCast Receiver".to_owned(),
@@ -223,6 +227,7 @@ fn main() {
             speed,
             header,
             volume,
+            file_server_port,
         } => {
             fn default_mime_type() -> String {
                 println!("No mime type provided via the `--mime_type` argument. Using default (application/octet-stream)");
@@ -264,7 +269,17 @@ fn main() {
             if file.is_some() || url.is_some() {
                 let url = if let Some(file_path) = file {
                     let file = File::open(file_path).unwrap();
-                    let entry = file_server.serve_rs_file(file).unwrap();
+                    let server = context.start_file_server(file_server_port);
+                    let mut retries = 0;
+                    while !server.is_running() {
+                        if retries >= 10 {
+                            panic!("Failed to serve file");
+                        }
+                        retries += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    let entry = server.serve_rs_file(file).unwrap();
+                    file_server = server;
                     let url = format!(
                         "http://{}:{}/{}",
                         fcast_sender_sdk::url_format_ip_addr(&local_addr),
@@ -347,4 +362,6 @@ fn main() {
     println!("Disconnecting...");
 
     let _ = rx.recv().unwrap();
+    // Suppress compiler warning
+    let _ = file_server;
 }

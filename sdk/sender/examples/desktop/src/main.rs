@@ -172,7 +172,7 @@ impl App {
         let discovery_event_handler = DiscoveryEventHandler::new(event_tx.clone());
         cast_context.start_discovery(Arc::new(discovery_event_handler));
 
-        let file_server = cast_context.start_file_server();
+        let file_server = cast_context.start_file_server(None);
 
         Ok(Self {
             ui_weak,

@@ -74,14 +74,16 @@ pub struct FileServer {
     rt_handle: Handle,
     listen_port: Arc<AtomicU16>,
     files: FileMapLock,
+    v4_port: Option<u16>,
 }
 
 impl FileServer {
-    pub(crate) fn new(rt_handle: Handle) -> Self {
+    pub(crate) fn new(rt_handle: Handle, v4_port: Option<u16>) -> Self {
         Self {
             rt_handle,
             listen_port: Arc::new(AtomicU16::new(0)),
             files: Arc::new(Mutex::new(HashMap::new())),
+            v4_port,
         }
     }
 
@@ -262,8 +264,19 @@ impl FileServer {
         Ok(())
     }
 
-    async fn serve(listen_port: Arc<AtomicU16>, files: FileMapLock) -> anyhow::Result<()> {
-        let listener = tokio::net::TcpListener::bind("[::]:0").await?;
+    async fn serve(
+        listen_port: Arc<AtomicU16>,
+        files: FileMapLock,
+        v4_port: Option<u16>,
+    ) -> anyhow::Result<()> {
+        let listener =
+            tokio::net::TcpListener::bind(std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                std::net::Ipv6Addr::UNSPECIFIED,
+                v4_port.unwrap_or(0),
+                0,
+                0,
+            )))
+            .await.unwrap();
         let bound_port = listener.local_addr()?.port();
         listen_port.store(bound_port, Ordering::Relaxed);
 
@@ -283,7 +296,8 @@ impl FileServer {
     pub(crate) fn start(&self) {
         let listen_port = Arc::clone(&self.listen_port);
         let files = Arc::clone(&self.files);
-        self.rt_handle.spawn(Self::serve(listen_port, files));
+        self.rt_handle
+            .spawn(Self::serve(listen_port, files, self.v4_port));
     }
 }
 
@@ -311,6 +325,11 @@ impl FileServer {
 }
 
 impl FileServer {
+    pub fn is_running(&self) -> bool {
+        let port = self.listen_port.load(Ordering::Relaxed);
+        port != 0
+    }
+
     pub fn serve_rs_file(&self, file: File) -> Result<FileStoreEntry, FileServerError> {
         let port = self.listen_port.load(Ordering::Relaxed);
         if port == 0 {
