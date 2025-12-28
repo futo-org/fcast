@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::Event;
 use crate::common::{Packet, read_packet, write_packet};
 use anyhow::Result;
-use fcast_protocol::VersionMessage;
+use fcast_protocol::{Opcode, VersionMessage};
 use futures::stream::unfold;
 use tokio::sync::mpsc::Sender;
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::broadcast::Receiver};
@@ -11,6 +11,126 @@ use tokio_stream::StreamExt;
 use tracing::{debug, error, trace, warn};
 
 pub type SessionId = u64;
+
+#[derive(Debug)]
+enum DriverEvent<'a> {
+    Tick,
+    Packet { opcode: Opcode, body: &'a str },
+}
+
+#[derive(Debug)]
+enum Action {
+    None,
+    Ping,
+    Pong,
+    EndSession,
+}
+
+#[derive(Debug)]
+enum SessionVersion {
+    // V1,
+    V2,
+    V3,
+}
+
+#[derive(Debug)]
+enum StateVariant {
+    WaitingForVersion,
+    Active { version: SessionVersion },
+}
+
+#[derive(Debug)]
+struct State {
+    time: u32,
+    last_packet_received: u32,
+    waiting_for_pong: bool,
+    variant: StateVariant,
+}
+
+impl State {
+    pub fn new() -> Self {
+        Self {
+            time: 0,
+            last_packet_received: 0,
+            waiting_for_pong: false,
+            variant: StateVariant::WaitingForVersion,
+        }
+    }
+
+    // Play	1	Client message to play a video, body is PlayMessage
+    // Pause	2	Client message to pause a video, no body
+    // Resume	3	Client message to resume a video, no body
+    // Stop	4	Client message to stop a video, no body
+    // Seek	5	Client message to seek, body is SeekMessage
+    // PlaybackUpdate	6	Receiver message to notify an updated playback state, body is PlaybackUpdateMessage
+    // VolumeUpdate	7	Receiver message to notify when the volume has changed, body is VolumeUpdateMessage
+    // SetVolume	8	Client message to change volume, body is SetVolumeMessage
+    fn handle_packet_uninit(&mut self, opcode: Opcode, body: &str) -> Result<Action> {
+        Ok(match opcode {
+            Opcode::None => Action::None,
+            Opcode::Play => todo!(),
+            Opcode::Pause => todo!(),
+            Opcode::Resume => todo!(),
+            Opcode::Stop => todo!(),
+            Opcode::Seek => todo!(),
+            Opcode::PlaybackUpdate => todo!(),
+            Opcode::VolumeUpdate => todo!(),
+            Opcode::SetVolume => todo!(),
+            Opcode::PlaybackError => todo!(),
+            Opcode::SetSpeed => todo!(),
+            Opcode::Version => todo!(),
+            Opcode::Ping => Action::Pong,
+            Opcode::Pong => todo!(),
+            Opcode::Initial => todo!(),
+            Opcode::PlayUpdate => todo!(),
+            Opcode::SetPlaylistItem => todo!(),
+            Opcode::SubscribeEvent => todo!(),
+            Opcode::UnsubscribeEvent => todo!(),
+            Opcode::Event => todo!(),
+        })
+    }
+
+    fn handle_packet_v2(&mut self, opcode: Opcode, body: &str) -> Result<Action> {
+        todo!();
+    }
+
+    fn handle_packet_v3(&mut self, opcode: Opcode, body: &str) -> Result<Action> {
+        todo!();
+    }
+
+    pub fn advance(&mut self, event: DriverEvent) -> Result<Action> {
+        Ok(match event {
+            DriverEvent::Tick => {
+                self.time += 1;
+                let diff = self.time - self.last_packet_received;
+                if diff > 3 {
+                    if self.waiting_for_pong && diff >= 6 {
+                        Action::EndSession
+                    } else {
+                        self.waiting_for_pong = true;
+                        Action::Ping
+                    }
+                } else {
+                    Action::None
+                }
+            }
+            DriverEvent::Packet { opcode, body } => {
+                self.last_packet_received = self.time;
+                self.waiting_for_pong = false;
+
+                match &self.variant {
+                    StateVariant::WaitingForVersion => return self.handle_packet_uninit(opcode, body),
+                    StateVariant::Active { version } => {
+                        match version {
+                            SessionVersion::V2 => return self.handle_packet_v2(opcode, body),
+                            SessionVersion::V3 => return self.handle_packet_v3(opcode, body),
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
 
 pub struct Session {
     stream: TcpStream,
@@ -108,4 +228,17 @@ impl Session {
 
         Ok(())
     }
+}
+
+pub struct SessionDriver {}
+
+impl SessionDriver {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }
