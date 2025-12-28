@@ -3,7 +3,9 @@
 //! Implementation of the data models documented [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-3).
 
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
+pub mod v1;
 pub mod v2;
 pub mod v3;
 
@@ -88,6 +90,14 @@ impl TryFrom<u8> for Opcode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum PlaybackState {
+    Idle = 0,
+    Playing = 1,
+    Paused = 2,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PlaybackErrorMessage {
@@ -102,14 +112,6 @@ pub struct VersionMessage {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SetSpeedMessage {
     pub speed: f64,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct VolumeUpdateMessage {
-    #[serde(rename = "generationTime")]
-    pub generation_time: u64,
-    pub volume: f64, //(0-1)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

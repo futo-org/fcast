@@ -168,21 +168,13 @@ pub struct PlaylistContent {
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
-#[repr(u8)]
-pub enum PlaybackState {
-    Idle = 0,
-    Playing = 1,
-    Paused = 2,
-}
-
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PlaybackUpdateMessage {
     // The time the packet was generated (unix time milliseconds)
     #[serde(rename = "generationTime")]
     pub generation_time: u64,
     // The playback state
-    pub state: PlaybackState,
+    pub state: crate::PlaybackState,
     // The current time playing in seconds
     pub time: Option<f64>,
     // The duration in seconds
@@ -480,6 +472,8 @@ pub struct EventMessage {
     pub generation_time: u64,
     pub event: EventObject,
 }
+
+pub use crate::v2::VolumeUpdateMessage;
 
 #[cfg(test)]
 mod tests {
