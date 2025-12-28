@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 tokio.workspace = true
-log.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
 # common.path = "../common"
@@ -31,6 +30,10 @@ serde_json.workspace = true
 getifaddrs = "0.6.0"
 base64 = "0.22.1"
 smallvec.workspace = true
+tracing-gstreamer.workspace = true
+tracing-panic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"

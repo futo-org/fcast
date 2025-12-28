@@ -4,8 +4,8 @@ use gst::prelude::*;
 
 use anyhow::{Result, anyhow, bail};
 
-use log::{debug, error};
 use tokio::sync::mpsc::Sender;
+use tracing::{debug, error};
 
 use crate::log_if_err;
 

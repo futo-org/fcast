@@ -6,7 +6,7 @@ use std::{
 
 use gst::prelude::*;
 use gst_gl::prelude::*;
-use log::error;
+use tracing::error;
 
 // Taken partially from the slint gstreamer example at: https://github.com/slint-ui/slint/blob/2edd97bf8b8dc4dc26b578df6b15ea3297447444/examples/gstreamer-player/egl_integration.rs
 pub struct SlintOpenGLSink {

@@ -7,13 +7,15 @@ use fcast_protocol::{
     v3::PlaybackState,
 };
 use gst::prelude::*;
-use log::{debug, error, warn};
+use tracing::level_filters::LevelFilter;
+use tracing::{debug, error};
 // use pipeline::Pipeline;
 use futures::StreamExt;
 use session::{Session, SessionId};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{broadcast, oneshot};
+use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -40,14 +42,6 @@ pub mod common {
     pub fn runtime() -> &'static Runtime {
         static RUNTIME: OnceLock<Runtime> = OnceLock::new();
         RUNTIME.get_or_init(|| Runtime::new().unwrap())
-    }
-
-    pub fn default_log_level() -> log::LevelFilter {
-        if cfg!(debug_assertions) {
-            log::LevelFilter::Debug
-        } else {
-            log::LevelFilter::Info
-        }
     }
 
     use anyhow::{Context, bail};
@@ -656,11 +650,13 @@ impl Application {
 
                 self.player.set_uri(Some(&url));
                 if let Some(rate) = play_message.speed {
-                    self.on_playing_command_queue.push(OnUriLoadedCommand::Rate(rate));
+                    self.on_playing_command_queue
+                        .push(OnUriLoadedCommand::Rate(rate));
                     // self.player.set_rate(rate);
                 }
                 if let Some(time) = play_message.time {
-                    self.on_playing_command_queue.push(OnUriLoadedCommand::Seek(time));
+                    self.on_playing_command_queue
+                        .push(OnUriLoadedCommand::Seek(time));
                     // self.player.seek(gst::ClockTime::from_seconds_f64(time));
                 }
 
@@ -964,10 +960,39 @@ struct CliArgs {
     // no_background: bool,
 }
 
+fn log_level() -> LevelFilter {
+    match std::env::var("FCAST_LOG") {
+        Ok(level) => match level.to_ascii_lowercase().as_str() {
+            "error" => LevelFilter::ERROR,
+            "warn" => LevelFilter::WARN,
+            "info" => LevelFilter::INFO,
+            "debug" => LevelFilter::DEBUG,
+            "trace" => LevelFilter::TRACE,
+            _ => LevelFilter::OFF,
+        },
+        #[cfg(debug_assertions)]
+        Err(_) => LevelFilter::DEBUG,
+        #[cfg(not(debug_assertions))]
+        Err(_) => LevelFilter::OFF,
+    }
+}
+
 /// Run the main app.
 ///
 /// Slint and friends are assumed to be initialized by the platform specific target.
 pub fn run() -> Result<()> {
+    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(log_level());
+    let prev_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        tracing_panic::panic_hook(panic_info);
+        prev_panic_hook(panic_info);
+    }));
+    tracing_gstreamer::integrate_events();
+    gst::log::remove_default_log_function();
+    gst::log::set_default_threshold(gst::DebugLevel::Warning);
+
+    tracing_subscriber::registry().with(fmt_layer).init();
+
     gst::init()?;
 
     fcastwhepsrcbin::plugin_init()?;

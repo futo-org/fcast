@@ -5,10 +5,10 @@ use crate::common::{Packet, read_packet, write_packet};
 use anyhow::Result;
 use fcast_protocol::VersionMessage;
 use futures::stream::unfold;
-use log::{debug, error, trace, warn};
 use tokio::sync::mpsc::Sender;
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::broadcast::Receiver};
 use tokio_stream::StreamExt;
+use tracing::{debug, error, trace, warn};
 
 pub type SessionId = u64;
 

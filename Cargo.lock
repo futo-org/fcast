@@ -5593,7 +5593,6 @@ dependencies = [
  "gstreamer-gl-x11",
  "gstreamer-play",
  "gstreamer-video",
- "log",
  "mdns-sd",
  "objc2-app-kit 0.3.2",
  "qrcode",
@@ -5604,6 +5603,10 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
+ "tracing",
+ "tracing-gstreamer",
+ "tracing-panic",
+ "tracing-subscriber",
  "url",
 ]
 
@@ -5635,7 +5638,6 @@ name = "receiver-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "env_logger",
  "rcore",
 ]
 

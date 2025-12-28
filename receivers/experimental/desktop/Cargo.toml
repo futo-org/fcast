@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 rcore = { path = "../rcore", features = ["desktop"] }
-env_logger.workspace = true
+# env_logger.workspace = true
 anyhow.workspace = true
