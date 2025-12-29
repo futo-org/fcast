@@ -10,8 +10,8 @@ use fcast_protocol::v3::{
     ReceiverCapabilities, SetPlaylistItemMessage,
 };
 use fcast_protocol::{
-    v2, Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage,
-    VersionMessage, VolumeUpdateMessage,
+    v2, Opcode, PlaybackErrorMessage, PlaybackState as FCastPlaybackState, SeekMessage,
+    SetSpeedMessage, SetVolumeMessage, VersionMessage,
 };
 use futures::StreamExt;
 use log::{debug, error};
@@ -424,9 +424,9 @@ impl InnerDevice {
                                     changed!(
                                         playback_state,
                                         match update.state {
-                                            1 => PlaybackState::Playing,
-                                            2 => PlaybackState::Paused,
-                                            _ => PlaybackState::Idle,
+                                            FCastPlaybackState::Idle => PlaybackState::Idle,
+                                            FCastPlaybackState::Playing => PlaybackState::Playing,
+                                            FCastPlaybackState::Paused => PlaybackState::Paused,
                                         },
                                         playback_state_changed
                                     );
@@ -448,9 +448,9 @@ impl InnerDevice {
                                     changed!(
                                         playback_state,
                                         match update.state {
-                                            v3::PlaybackState::Playing => PlaybackState::Playing,
-                                            v3::PlaybackState::Paused => PlaybackState::Paused,
-                                            v3::PlaybackState::Idle => PlaybackState::Idle,
+                                            FCastPlaybackState::Playing => PlaybackState::Playing,
+                                            FCastPlaybackState::Paused => PlaybackState::Paused,
+                                            FCastPlaybackState::Idle => PlaybackState::Idle,
                                         },
                                         playback_state_changed
                                     );
@@ -464,7 +464,7 @@ impl InnerDevice {
                                 error!("Received volume update message with no body");
                                 continue;
                             };
-                            let Ok(update) = serde_json::from_str::<VolumeUpdateMessage>(&body) else {
+                            let Ok(update) = serde_json::from_str::<v2::VolumeUpdateMessage>(&body) else {
                                 error!("Received volume update message with malformed body: {body}");
                                 continue;
                             };
