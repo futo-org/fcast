@@ -7,11 +7,13 @@ use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
 use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
+use directories::UserDirs;
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
 };
 use gst_video::prelude::*;
+use mcore::RootDirType;
 #[cfg(target_os = "windows")]
 use mcore::VideoSource;
 use mcore::{
@@ -218,6 +220,7 @@ struct Application {
     devices: HashMap<String, DeviceInfo>,
     current_session_id: usize,
     current_local_media_id: u32,
+    user_dirs: Option<UserDirs>,
     session_state: Option<SessionState>,
 }
 
@@ -342,6 +345,7 @@ impl Application {
             current_session_id: 0,
             current_local_media_id: 0,
             session_state: None,
+            user_dirs: UserDirs::new(),
         })
     }
 
@@ -424,11 +428,9 @@ impl Application {
         let receivers = self
             .devices
             .iter()
-            .map(|(name, info)| {
-                UiDevice {
-                    name: name.to_shared_string(),
-                    fcast: info.protocol == fcast_sender_sdk::device::ProtocolType::FCast,
-                }
+            .map(|(name, info)| UiDevice {
+                name: name.to_shared_string(),
+                fcast: info.protocol == fcast_sender_sdk::device::ProtocolType::FCast,
             })
             .collect::<Vec<UiDevice>>();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
@@ -450,13 +452,30 @@ impl Application {
     fn start_directory_listing(&mut self, path: Option<PathBuf>) {
         let path = match path {
             Some(path) => path,
-            None => match std::env::home_dir() {
-                Some(home_dir) => home_dir,
-                None => {
-                    error!("Could not get home directory");
-                    return;
+            None => {
+                if let Some(video_dir) = self
+                    .user_dirs
+                    .as_ref()
+                    .map(|dirs| dirs.video_dir())
+                    .flatten()
+                {
+                    video_dir.to_owned()
+                } else {
+                    match std::env::home_dir() {
+                        Some(home_dir) => home_dir,
+                        None => {
+                            error!("Could not get home directory");
+                            return;
+                        }
+                    }
                 }
-            },
+            } // None => match std::env::home_dir() {
+              //     Some(home_dir) => home_dir,
+              //     None => {
+              //         error!("Could not get home directory");
+              //         return;
+              //     }
+              // },
         };
 
         self.current_local_media_id += 1;
@@ -1385,6 +1404,30 @@ impl Application {
                 let device_name = device_info.name.clone();
                 self.connect_with_device_info(device_info, &device_name)?;
             }
+            Event::ChangeRootDir(new_root_dir) => {
+                if let Some(user_dirs) = self.user_dirs.as_ref() {
+                    let path = match new_root_dir {
+                        RootDirType::Pictures => user_dirs.picture_dir(),
+                        RootDirType::Videos => user_dirs.video_dir(),
+                        RootDirType::Music => user_dirs.audio_dir(),
+                    };
+
+                    if let Some(path) = path {
+                        if let Some(session) = self.session_state.as_mut() {
+                            match &mut session.specific {
+                                SessionSpecificState::LocalMedia { .. } => {
+                                    self.start_directory_listing(Some(path.to_owned()));
+                                }
+                                _ => (),
+                            }
+                        }
+                    } else {
+                        error!(?new_root_dir, "No directory found");
+                    }
+                } else {
+                    error!("Missing user dirs");
+                }
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -1844,6 +1887,19 @@ fn main() -> Result<()> {
         move |title: slint::SharedString| {
             event_tx
                 .send(Event::YtDlp(mcore::YtDlpEvent::Cast(title.to_string())))
+                .unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_change_root_dir({
+        let event_tx = event_tx.clone();
+        move |dir_type: UiRootDirType| {
+            event_tx
+                .send(Event::ChangeRootDir(match dir_type {
+                    UiRootDirType::Pictures => RootDirType::Pictures,
+                    UiRootDirType::Videos => RootDirType::Videos,
+                    UiRootDirType::Music => RootDirType::Music,
+                }))
                 .unwrap();
         }
     });

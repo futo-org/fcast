@@ -150,6 +150,14 @@ pub enum YtDlpEvent {
     Finished,
 }
 
+#[cfg(not(target_os = "android"))]
+#[derive(Debug)]
+pub enum RootDirType {
+    Pictures,
+    Videos,
+    Music,
+}
+
 #[derive(Debug)]
 pub enum Event {
     // Common
@@ -231,6 +239,8 @@ pub enum Event {
     YtDlp(YtDlpEvent),
     #[cfg(not(target_os = "android"))]
     ConnectToDeviceDirect(fcast_sender_sdk::device::DeviceInfo),
+    #[cfg(not(target_os = "android"))]
+    ChangeRootDir(RootDirType),
 
     // Android
     // #[cfg(target_os = "android")]

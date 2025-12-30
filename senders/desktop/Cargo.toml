@@ -32,6 +32,7 @@ http-range = "0.1.5"
 gst-plugin-rtp = { version = "0.14.3", features = [ "static" ] }
 webbrowser = "1.0.6"
 smallvec.workspace = true
+directories = "6.0.0"
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"
