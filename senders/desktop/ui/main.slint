@@ -1,4 +1,4 @@
-// TODO: split this big file into multiple files
+// TODO: split this big file into multiple ones
 
 import {
     VerticalBox,
@@ -92,11 +92,6 @@ export enum UiYtDlpState {
     HasData,
 }
 
-// enum UiPlaybackSettingsMenuState {
-//     None,
-//     Rate,
-// }
-
 export struct UiYtDlpSource {
     title: string,
 }
@@ -142,13 +137,10 @@ export global Bridge {
     in-out property <UiAppState> app-state: Disconnected;
     // in-out property <UiAppState> app-state: LocalMedia;
     // in-out property <UiAppState> app-state: Connecting;
-    // in-out property <string> device-name: "";
+    in-out property <string> device-name: "";
     // in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
-    in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
-
-    in-out property <string> device-ip: "192.168.1.154";
-
-    // in-out property <string> device-name: "Test1";
+    in-out property <string> device-ip: "";
+    // in-out property <string> device-ip: "192.168.1.154";
     in-out property <int> selected-video-src: -1;
     // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
@@ -951,7 +943,7 @@ component SoundBar inherits Rectangle {
 
     property <float> anim: 1 * mod(animation-tick() + offset, 1.2s) / 1.2s;
 
-    height: 5px + (max-bar-height - 5px) * sin(anim * 180deg);
+    height: 5px + (max-bar-height - 5px) * sin(anim * 180deg) * (Bridge.playback-state == UiPlaybackState.Playing ? 1 : 0);
     border-radius: 2px;
     background: FCastPalette.foreground;
 }
@@ -1621,7 +1613,7 @@ component FileEntry inherits Rectangle {
             }
         }
 
-        if Bridge.track-name == entry.name: VerticalLayout {
+        if ta.has-hover && Bridge.track-name == entry.name: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1629,6 +1621,12 @@ component FileEntry inherits Rectangle {
                 width: 14px;
                 // colorize: FCastPalette.foreground.transparentize(50%);
             }
+        }
+
+        if !ta.has-hover && Bridge.track-name == entry.name: VerticalLayout {
+            alignment: center;
+
+            SoundAnimator {}
         }
     }
 
@@ -1674,6 +1672,7 @@ component LocalMediaView inherits Rectangle {
                 clicked => {
                     Bridge.stop-cast(false);
                     Bridge.app-state = UiAppState.SelectingInputType;
+                    Bridge.clear-local-media-state();
                 }
             }
 

@@ -774,10 +774,10 @@ impl Application {
         }
         self.session_state = Some(SessionState {
             device,
-            volume: 0.0,
+            volume: 1.0,
             time: 0.0,
             duration: 0.0,
-            speed: 0.0,
+            speed: 1.0,
             playback_state: UiPlaybackState::Idle,
             local_address: None,
             specific: SessionSpecificState::Idle,
@@ -1262,7 +1262,7 @@ impl Application {
                                     url,
                                     resume_position: None,
                                     speed: None,
-                                    volume: None,
+                                    volume: Some(session.volume),
                                     metadata: None,
                                     request_headers: None,
                                 })
