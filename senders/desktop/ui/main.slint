@@ -129,6 +129,8 @@ export global Bridge {
     ];
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
+    // in property <string> settings-file-path: "/some/fake/path.toml";
+    in property <string> settings-file-path;
     // in property <bool> is-yt-dlp-available: true;
 
     // in-out property <UiAppState> app-state: SelectingInputType;
@@ -181,7 +183,8 @@ export global Bridge {
     in-out property <string> playback-pos-str: 0.0;
     in-out property <string> track-dur-str: 0.0;
     in-out property <float> playback-rate: 1.0;
-    in-out property <string> track-name: "Test2";
+    // in-out property <string> track-name: "Test2";
+    in-out property <string> track-name;
     in-out property <UiMediaFileType> track-type;
     // in-out property <bool> is-showing-mirroring-popup: true;
     in-out property <UiYtDlpState> yt-dlp-state: Fetching;
@@ -203,6 +206,7 @@ export global Bridge {
     in-out property <string> yt-dlp-source;
     // in-out property <string> yt-dlp-source: "Test title 2";
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
+    in-out property <string> file-server-port: 46089;
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -272,6 +276,7 @@ export global Bridge {
     callback cast-yt-dlp(title: string);
     callback change-root-dir(new-root: UiRootDirType);
     callback change-playback-rate(rate: float);
+    callback update-settings();
 
     // pure callback is-valid-ip-address(address: string) -> bool;
     pure callback is-device-info-valid(info: string) -> bool;
@@ -685,13 +690,13 @@ component LabelBox inherits Rectangle {
         padding-left: 6px;
         padding-right: 6px;
 
-        FText {
+        TextInput {
             text: label;
             font-family: "Overfit Mono";
             font-size: 12px;
             font-weight: 400;
             color: FCastPalette.text-secondary;
-            overflow: elide;
+            read-only: true;
         }
     }
 }
@@ -2034,11 +2039,75 @@ component MirroringPopup inherits FCastPopupWindow {
     }
 }
 
+component SideBarEntry inherits Rectangle {
+    in property <image> icon <=> i-icon.source;
+    in property <string> text <=> i-text.text;
+
+    callback clicked;
+
+    i-ta := TouchArea {
+        clicked => clicked();
+    }
+
+    HorizontalLayout {
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+
+            i-icon := Image {
+                width: 12px;
+                height: 12px;
+                colorize: FCastPalette.neutral-600;
+
+                states [
+                    hover when i-ta.has-hover: {
+                        colorize: FCastPalette.brand-600;
+                    }
+                ]
+            }
+        }
+
+        i-text := FText {
+            font-weight: 500;
+            font-size: 14px;
+            color: FCastPalette.neutral-600;
+
+            states [
+                hover when i-ta.has-hover: {
+                    color: FCastPalette.brand-600;
+                }
+            ]
+        }
+    }
+}
+
+component SettingsEntry inherits Rectangle {
+    in property <string> name;
+
+    HorizontalLayout {
+        spacing: 10px;
+
+        FText {
+            text: name;
+            vertical-alignment: center;
+        }
+
+        Spacer {}
+
+        @children
+    }
+}
+
 component BackView inherits Rectangle {
     // property <bool> is-showing-mirroring-popup: true;
     property <bool> is-showing-mirroring-popup: false;
     // property <bool> is-showing-log-popup: true;
     property <bool> is-showing-log-popup: false;
+    // property <bool> is-showing-settings-popup: true;
+    property <bool> is-showing-settings-popup: false;
 
     HorizontalLayout {
         Rectangle {
@@ -2085,48 +2154,22 @@ component BackView inherits Rectangle {
                     height: 1px;
                 }
 
-                Rectangle {
-                    i-dev-log-ta := TouchArea {
-                        clicked => {
-                            Bridge.reload-log-string();
-                            is-showing-log-popup = true;
-                        }
+                SideBarEntry {
+                    icon: Icons.settings;
+                    text: "Settings";
+
+                    clicked => {
+                        is-showing-settings-popup = true;
                     }
+                }
 
-                    HorizontalLayout {
-                        padding-top: 15px;
-                        padding-bottom: 15px;
-                        spacing: 10px;
+                SideBarEntry {
+                    icon: Icons.dev-log;
+                    text: "Developer log";
 
-                        VerticalLayout {
-                            alignment: center;
-
-                            Image {
-                                width: 12px;
-                                height: 12px;
-                                source: Icons.dev-log;
-                                colorize: FCastPalette.neutral-600;
-
-                                states [
-                                    hover when i-dev-log-ta.has-hover: {
-                                        colorize: FCastPalette.brand-600;
-                                    }
-                                ]
-                            }
-                        }
-
-                        FText {
-                            font-weight: 500;
-                            font-size: 14px;
-                            color: FCastPalette.neutral-600;
-                            text: "Developer log";
-
-                            states [
-                                hover when i-dev-log-ta.has-hover: {
-                                    color: FCastPalette.brand-600;
-                                }
-                            ]
-                        }
+                    clicked => {
+                        Bridge.reload-log-string();
+                        is-showing-log-popup = true;
                     }
                 }
             }
@@ -2155,8 +2198,7 @@ component BackView inherits Rectangle {
         if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
     }
 
-    // if is-showing-local-media-popup || is-showing-mirroring-popup || is-showing-log-popup: Rectangle {
-    if is-showing-mirroring-popup || is-showing-log-popup: Rectangle {
+    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-log-popup: Rectangle {
         background: #0000009C;
         TouchArea { }
     }
@@ -2174,6 +2216,56 @@ component BackView inherits Rectangle {
             Bridge.stop-cast(false);
             Bridge.clear-mirroring-state();
             Bridge.app-state = UiAppState.SelectingInputType;
+        }
+    }
+
+    if is-showing-settings-popup: FCastPopupWindow {
+        width: root.width * 75%;
+        height: root.height * 85%;
+        title: "Settings";
+
+        close => {
+            Bridge.update-settings();
+            is-showing-settings-popup = false;
+        }
+
+        VerticalLayout {
+            padding-top: 24px;
+
+            HorizontalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "The settings file is located at";
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                LabelBox {
+                    label: Bridge.settings-file-path;
+                }
+
+                Spacer {}
+            }
+
+            SettingsEntry {
+                height: 36px;
+
+                name: "File server port";
+
+                if file-server-port-input.text.to-float() < 1024 || file-server-port-input.text.to-float() > 65535: FText {
+                    text: "Invalid port number (must be 1024-65535)";
+                    vertical-alignment: center;
+                    color: FCastPalette.negative-600;
+                    overflow: elide;
+                }
+
+                file-server-port-input := LineEdit {
+                    width: 100px;
+                    text <=> Bridge.file-server-port;
+                    input-type: number;
+                }
+            }
         }
     }
 

@@ -243,6 +243,10 @@ pub enum Event {
     ChangeRootDir(RootDirType),
     #[cfg(not(target_os = "android"))]
     SetPlaybackRate(f64),
+    #[cfg(not(target_os = "android"))]
+    UpdateSettings {
+        port: u16,
+    },
 
     // Android
     // #[cfg(target_os = "android")]
