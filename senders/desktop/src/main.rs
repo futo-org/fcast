@@ -1428,6 +1428,11 @@ impl Application {
                     error!("Missing user dirs");
                 }
             }
+            Event::SetPlaybackRate(new_rate) => {
+                if let Some(session) = self.session_state.as_mut() {
+                    let _ = session.device.change_speed(new_rate);
+                }
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -1901,6 +1906,13 @@ fn main() -> Result<()> {
                     UiRootDirType::Music => RootDirType::Music,
                 }))
                 .unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_change_playback_rate({
+        let event_tx = event_tx.clone();
+        move |rate: f32| {
+            event_tx.send(Event::SetPlaybackRate(rate as f64)).unwrap();
         }
     });
 

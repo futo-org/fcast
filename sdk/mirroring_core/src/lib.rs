@@ -241,6 +241,8 @@ pub enum Event {
     ConnectToDeviceDirect(fcast_sender_sdk::device::DeviceInfo),
     #[cfg(not(target_os = "android"))]
     ChangeRootDir(RootDirType),
+    #[cfg(not(target_os = "android"))]
+    SetPlaybackRate(f64),
 
     // Android
     // #[cfg(target_os = "android")]
