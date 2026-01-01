@@ -46,12 +46,14 @@ export component Slider {
         }
         pressed when base.handle-pressed || base.has-focus : {
             thumb-inner.width: 10px;
-            thumb-inner.background: FluentPalette.tertiary-accent-background;
+            // thumb-inner.background: FluentPalette.tertiary-accent-background;
+            thumb-inner.background: FCastPalette.brand-600;
             thumb.border-color: FluentPalette.border;
         }
         hover when base.has-hover : {
             thumb-inner.width: 14px;
-            thumb-inner.background: FluentPalette.secondary-accent-background;
+            // thumb-inner.background: FluentPalette.secondary-accent-background;
+            thumb-inner.background: FCastPalette.brand-600;
         }
     ]
 
@@ -98,7 +100,8 @@ export component Slider {
             width: 12px;
             height: self.width;
             border-radius: self.width / 2;
-            background: FluentPalette.accent-background;
+            // background: FluentPalette.accent-background;
+            background: FCastPalette.brand-600;
 
             animate background, width { duration: 150ms; }
         }

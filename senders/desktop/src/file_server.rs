@@ -171,6 +171,7 @@ async fn handle_request(
     let (file, content_type) = {
         let entry = {
             let files = files.read();
+            debug!(?files);
             let Some(entry) = files.get(&uuid) else {
                 error!(?uuid, "File not found");
                 return not_found();
@@ -245,11 +246,19 @@ async fn run_server(
     files: Arc<RwLock<HashMap<Uuid, FileEntry>>>,
     bound_port_tx: Sender<BoundPortPair>,
     mut quit_rx: Receiver<()>,
+    requested_port: u16,
 ) -> Result<()> {
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)).await?;
+    let listener = TcpListener::bind(SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        requested_port,
+    ))
+    .await?;
     #[cfg(target_os = "windows")]
-    let ipv4_listener =
-        TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).await?;
+    let ipv4_listener = TcpListener::bind(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        requested_port + 1,
+    ))
+    .await?;
 
     let bound_port = listener.local_addr()?.port();
     #[allow(unused_mut)]
@@ -333,7 +342,7 @@ pub struct FileServer {
 }
 
 impl FileServer {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(port: u16) -> Result<Self> {
         let files = Arc::new(RwLock::new(HashMap::new()));
 
         let (quit_tx, quit_rx) = channel();
@@ -342,7 +351,7 @@ impl FileServer {
         tokio::spawn({
             let files = Arc::clone(&files);
             async move {
-                if let Err(err) = run_server(files, bound_port_tx, quit_rx).await {
+                if let Err(err) = run_server(files, bound_port_tx, quit_rx, port).await {
                     error!(?err);
                 }
             }
