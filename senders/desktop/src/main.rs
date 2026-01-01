@@ -7,16 +7,19 @@ use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
 use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
+use directories::{BaseDirs, UserDirs};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo},
 };
 use gst_video::prelude::*;
+use mcore::RootDirType;
 #[cfg(target_os = "windows")]
 use mcore::VideoSource;
 use mcore::{
     AudioSource, Event, FileSystemEntry, MediaFileEntry, ShouldQuit, transmission::WhepSink,
 };
+use serde::{Deserialize, Serialize};
 use slint::Model;
 use slint::ToSharedString;
 use std::{
@@ -30,7 +33,7 @@ use std::{
 };
 use std::{fmt::Write, path::PathBuf};
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     runtime::Runtime,
     sync::mpsc::{Sender, UnboundedSender, channel},
 };
@@ -44,6 +47,7 @@ use desktop_sender::slint_generated::*;
 const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
 const MIN_TIME_BETWEEN_VOLUME_CHANGES: Duration = Duration::from_millis(75);
+const DEFAULT_FILE_SERVER_PORT: u16 = 46089;
 
 pub type ProducerId = String;
 
@@ -132,10 +136,10 @@ async fn process_files(
             continue;
         };
 
-        if let Some(infered) = desktop_sender::infer::infer_type(bytes_read, &buf) {
+        if let Some(inferred) = desktop_sender::infer::infer_type(bytes_read, &buf) {
             media_files.push(MediaFileEntry {
                 name,
-                mime_type: infered.mime_type,
+                mime_type: inferred.mime_type,
             });
         }
 
@@ -198,6 +202,25 @@ enum SessionSpecificState {
     },
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename = "file_server")]
+struct FileServerSettings {
+    pub port: u16,
+}
+
+impl Default for FileServerSettings {
+    fn default() -> Self {
+        Self {
+            port: DEFAULT_FILE_SERVER_PORT,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Settings {
+    file_server: FileServerSettings,
+}
+
 struct SessionState {
     pub device: Arc<dyn device::CastingDevice>,
     pub local_address: Option<fcast_sender_sdk::IpAddr>,
@@ -218,7 +241,10 @@ struct Application {
     devices: HashMap<String, DeviceInfo>,
     current_session_id: usize,
     current_local_media_id: u32,
+    user_dirs: Option<UserDirs>,
+    base_dirs: Option<BaseDirs>,
     session_state: Option<SessionState>,
+    settings: Settings,
 }
 
 async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<FetchEvent> {
@@ -342,6 +368,9 @@ impl Application {
             current_session_id: 0,
             current_local_media_id: 0,
             session_state: None,
+            user_dirs: UserDirs::new(),
+            settings: Settings::default(),
+            base_dirs: BaseDirs::new(),
         })
     }
 
@@ -423,11 +452,14 @@ impl Application {
     fn update_receivers_in_ui(&mut self) -> Result<()> {
         let receivers = self
             .devices
-            .keys()
-            .map(slint::SharedString::from)
-            .collect::<Vec<slint::SharedString>>();
+            .iter()
+            .map(|(name, info)| UiDevice {
+                name: name.to_shared_string(),
+                fcast: info.protocol == fcast_sender_sdk::device::ProtocolType::FCast,
+            })
+            .collect::<Vec<UiDevice>>();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let model = Rc::new(slint::VecModel::<slint::SharedString>::from_iter(
+            let model = Rc::new(slint::VecModel::<UiDevice>::from_iter(
                 receivers.into_iter(),
             ));
             ui.global::<Bridge>().set_devices(model.into());
@@ -445,13 +477,30 @@ impl Application {
     fn start_directory_listing(&mut self, path: Option<PathBuf>) {
         let path = match path {
             Some(path) => path,
-            None => match std::env::home_dir() {
-                Some(home_dir) => home_dir,
-                None => {
-                    error!("Could not get home directory");
-                    return;
+            None => {
+                if let Some(video_dir) = self
+                    .user_dirs
+                    .as_ref()
+                    .map(|dirs| dirs.video_dir())
+                    .flatten()
+                {
+                    video_dir.to_owned()
+                } else {
+                    match std::env::home_dir() {
+                        Some(home_dir) => home_dir,
+                        None => {
+                            error!("Could not get home directory");
+                            return;
+                        }
+                    }
                 }
-            },
+            } // None => match std::env::home_dir() {
+              //     Some(home_dir) => home_dir,
+              //     None => {
+              //         error!("Could not get home directory");
+              //         return;
+              //     }
+              // },
         };
 
         self.current_local_media_id += 1;
@@ -570,7 +619,7 @@ impl Application {
                 slint_pixel_buffer
             }
             _ => {
-                error!(format = ?frame.format(), "Recieved buffer with invalid format");
+                error!(format = ?frame.format(), "Received buffer with invalid format");
                 return Err(gst::FlowError::NotSupported);
             }
         };
@@ -750,10 +799,10 @@ impl Application {
         }
         self.session_state = Some(SessionState {
             device,
-            volume: 0.0,
+            volume: 1.0,
             time: 0.0,
             duration: 0.0,
-            speed: 0.0,
+            speed: 1.0,
             playback_state: UiPlaybackState::Idle,
             local_address: None,
             specific: SessionSpecificState::Idle,
@@ -1038,7 +1087,7 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     session.specific = SessionSpecificState::LocalMedia {
                         current_id: id,
-                        file_server: FileServer::new()
+                        file_server: FileServer::new(self.settings.file_server.port)
                             .await
                             .context("Failed to create file server")?,
                         data: LocalMediaDataState {
@@ -1120,7 +1169,7 @@ impl Application {
                                     name: name.to_shared_string(),
                                 })
                                 .collect::<Vec<UiDirectoryEntry>>();
-                            directories.sort_by(|a, b| a.name.cmp(&b.name));
+                            directories.sort_unstable_by(|a, b| a.name.cmp(&b.name));
                             self.ui_weak.upgrade_in_event_loop(|ui| {
                                 let global = ui.global::<Bridge>();
                                 global.set_current_directory(root);
@@ -1238,7 +1287,7 @@ impl Application {
                                     url,
                                     resume_position: None,
                                     speed: None,
-                                    volume: None,
+                                    volume: Some(session.volume),
                                     metadata: None,
                                     request_headers: None,
                                 })
@@ -1380,6 +1429,44 @@ impl Application {
                 let device_name = device_info.name.clone();
                 self.connect_with_device_info(device_info, &device_name)?;
             }
+            Event::ChangeRootDir(new_root_dir) => {
+                if let Some(user_dirs) = self.user_dirs.as_ref() {
+                    let path = match new_root_dir {
+                        RootDirType::Pictures => user_dirs.picture_dir(),
+                        RootDirType::Videos => user_dirs.video_dir(),
+                        RootDirType::Music => user_dirs.audio_dir(),
+                    };
+
+                    if let Some(path) = path {
+                        if let Some(session) = self.session_state.as_mut() {
+                            match &mut session.specific {
+                                SessionSpecificState::LocalMedia { .. } => {
+                                    self.start_directory_listing(Some(path.to_owned()));
+                                }
+                                _ => (),
+                            }
+                        }
+                    } else {
+                        error!(?new_root_dir, "No directory found");
+                    }
+                } else {
+                    error!("Missing user dirs");
+                }
+            }
+            Event::SetPlaybackRate(new_rate) => {
+                if let Some(session) = self.session_state.as_mut() {
+                    let _ = session.device.change_speed(new_rate);
+                }
+            }
+            Event::UpdateSettings { port } => {
+                let has_changes = port != self.settings.file_server.port;
+                self.settings.file_server.port = port;
+                if has_changes {
+                    self.write_settings_file()
+                        .instrument(tracing::debug_span!("write_settings_file"))
+                        .await;
+                }
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -1389,7 +1476,7 @@ impl Application {
         if let Some(session) = self.session_state.as_mut() {
             match &mut session.specific {
                 SessionSpecificState::Mirroring { video_sources, .. } => {
-                    video_sources.sort_by(|a, b| a.1.display_name.cmp(&b.1.display_name));
+                    video_sources.sort_unstable_by(|a, b| a.1.display_name.cmp(&b.1.display_name));
                     let video_sources = video_sources
                         .iter()
                         .map(|(uid, s)| (*uid, s.display_name.clone()))
@@ -1422,6 +1509,142 @@ impl Application {
         Ok(())
     }
 
+    fn get_settings_file_path(&self) -> Option<PathBuf> {
+        if let Some(dirs) = self.base_dirs.as_ref() {
+            let mut config_dir = dirs.config_dir().to_owned();
+            config_dir.extend(["fcast-sender", "config.toml"]);
+            Some(config_dir)
+        } else {
+            None
+        }
+    }
+
+    async fn write_settings_file(&mut self) {
+        let Some(settings_path) = self.get_settings_file_path() else {
+            error!("No settings file path available");
+            return;
+        };
+
+        let mut file = match tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(settings_path)
+            .await
+        {
+            Ok(f) => f,
+            Err(err) => {
+                error!(?err, "Failed to open settings file");
+                return;
+            }
+        };
+
+        let mut settings_str = String::new();
+        if let Err(err) = file.read_to_string(&mut settings_str).await {
+            error!(?err, "Failed read settings");
+            return;
+        }
+
+        let mut settings_doc = match settings_str.parse::<toml_edit::DocumentMut>() {
+            Ok(doc) => doc,
+            Err(err) => {
+                error!(?err, "Failed to parse settings");
+                return;
+            }
+        };
+
+        settings_doc["file_server"]["port"] =
+            toml_edit::value(self.settings.file_server.port as i64);
+
+        debug!(?settings_doc, "New settings");
+
+        if let Err(err) = file.rewind().await {
+            error!(?err, "Failed to rewind settings file");
+            return;
+        }
+
+        if let Err(err) = file.set_len(0).await {
+            error!(?err, "Failed to truncate settings file");
+            return;
+        }
+
+        let settings_str = settings_doc.to_string();
+        if let Err(err) = file.write_all(settings_str.as_bytes()).await {
+            error!(?err, "Failed to write new settings");
+        }
+    }
+
+    async fn write_default_settings_file(&mut self, path: PathBuf) {
+        // From https://docs.rs/toml_edit/0.24.0+spec-1.1.0/toml_edit/ser/fn.to_string.html:
+        // Serialization can fail if T’s implementation of Serialize decides to fail, if T contains a map
+        // with non-string keys, or if T attempts to serialize an unsupported datatype such as an enum, tuple,
+        // or tuple struct.
+        let settings_str =
+            toml_edit::ser::to_string(&self.settings).expect("failed to serialize settings");
+
+        if let Err(err) = tokio::fs::create_dir_all({
+            let mut path_no_file = path.clone();
+            path_no_file.pop();
+            path_no_file
+        })
+        .await
+        {
+            error!(?err, "Failed to create the path");
+            return;
+        }
+
+        let mut file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .await
+        {
+            Ok(f) => f,
+            Err(err) => {
+                error!(?err, "Failed to open config file");
+                return;
+            }
+        };
+
+        if let Err(err) = file.write_all(settings_str.as_bytes()).await {
+            error!(?err, "Failed to write settings");
+        }
+
+        debug!("Successfully wrote default settings file");
+    }
+
+    async fn load_settings(&mut self) -> Result<()> {
+        let mut settings_path_str = "unknwon".to_owned();
+        if let Some(settings_path) = self.get_settings_file_path() {
+            settings_path_str = settings_path.display().to_string();
+            if let Ok(mut cfg_file) = tokio::fs::File::open(&settings_path).await {
+                let mut config_str = String::new();
+                if cfg_file.read_to_string(&mut config_str).await.is_ok() {
+                    match toml_edit::de::from_str::<Settings>(&config_str) {
+                        Ok(settings) => self.settings = settings,
+                        Err(err) => error!(?err, "Failed to parse config as toml"),
+                    }
+                }
+            } else {
+                debug!(?settings_path, "Config file does not already exist");
+                self.write_default_settings_file(settings_path)
+                    .instrument(tracing::debug_span!("write_default_settings_file"))
+                    .await;
+            }
+        }
+
+        debug!(?self.settings, "Using settings");
+
+        let file_server_port = self.settings.file_server.port;
+        self.ui_weak.upgrade_in_event_loop(move |ui| {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_file_server_port(file_server_port.to_shared_string());
+            bridge.set_settings_file_path(settings_path_str.to_shared_string());
+        })?;
+
+        Ok(())
+    }
+
     pub async fn run_event_loop(
         mut self,
         mut event_rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
@@ -1431,6 +1654,10 @@ impl Application {
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
         gst::init()?;
         gstrsrtp::plugin_register_static()?;
+
+        self.load_settings()
+            .instrument(tracing::debug_span!("load_settings"))
+            .await?;
 
         tokio::spawn({
             // let ui_weak = self.ui_weak.clone();
@@ -1840,6 +2067,42 @@ fn main() -> Result<()> {
             event_tx
                 .send(Event::YtDlp(mcore::YtDlpEvent::Cast(title.to_string())))
                 .unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_change_root_dir({
+        let event_tx = event_tx.clone();
+        move |dir_type: UiRootDirType| {
+            event_tx
+                .send(Event::ChangeRootDir(match dir_type {
+                    UiRootDirType::Pictures => RootDirType::Pictures,
+                    UiRootDirType::Videos => RootDirType::Videos,
+                    UiRootDirType::Music => RootDirType::Music,
+                }))
+                .unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_change_playback_rate({
+        let event_tx = event_tx.clone();
+        move |rate: f32| {
+            event_tx.send(Event::SetPlaybackRate(rate as f64)).unwrap();
+        }
+    });
+
+    ui.global::<Bridge>().on_update_settings({
+        let ui_weak = ui.as_weak();
+        let event_tx = event_tx.clone();
+        move || {
+            let ui = ui_weak
+                .upgrade()
+                .expect("Callback handlers are always called from the ui thread");
+            let port = ui.global::<Bridge>().get_file_server_port();
+            let Ok(port) = port.parse::<u16>() else {
+                error!(?port, "Invalid port");
+                return;
+            };
+            event_tx.send(Event::UpdateSettings { port }).unwrap();
         }
     });
 

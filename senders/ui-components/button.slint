@@ -12,6 +12,7 @@ export component Button {
     in property <bool> enabled <=> i-touch-area.enabled;
     in property <bool> checkable;
     in property <bool> colorize-icon;
+    in property <angle> icon-rotation: 0deg;
 
     in property <color> background-default-color: FCastPalette.button-default-background;
     in property <color> background-default-drop-shadow-color: FCastPalette.button-default-drop-shadow-color;
@@ -103,6 +104,9 @@ export component Button {
         drop-shadow-color: background-default-drop-shadow-color;
 
         animate border-color { duration: 150ms; }
+
+        animate background { duration: 100ms; }
+
         // animate background, border-color { duration: 150ms; }
         i-border := Rectangle {
             border-radius: parent.border-radius;
@@ -128,6 +132,7 @@ export component Button {
                 width: root.icon-size;
                 min-height: root.icon-size;
                 colorize: root.colorize-icon ? root.text-color : transparent;
+                transform-rotation: icon-rotation;
             }
 
             if (root.text != ""): Text {

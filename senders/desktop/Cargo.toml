@@ -7,31 +7,34 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
-mcore.path = "../../sdk/mirroring_core/"
-flume = "0.11.1"
-tracing-gstreamer = "0.9.0"
-tracing-panic = "0.1.2"
 slint.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 gst.workspace = true
 gst-app.workspace = true
 gst-video.workspace = true
-futures = "0.3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 parking_lot.workspace = true
 uuid.workspace = true
 bytes.workspace = true
+smallvec.workspace = true
+serde.workspace = true
+flume = "0.11.1"
+tracing-gstreamer = "0.9.0"
+tracing-panic = "0.1.2"
+futures = "0.3"
 hyper = "1.7.0"
 hyper-util = { version = "0.1.17", features = [ "server-auto", "tokio" ] }
 http-body-util = "0.1.3"
 http-range = "0.1.5"
 gst-plugin-rtp = { version = "0.14.3", features = [ "static" ] }
 webbrowser = "1.0.6"
-smallvec.workspace = true
+directories = "6.0.0"
+toml_edit = { version = "0.24", features = ["serde"] }
+fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
+mcore.path = "../../sdk/mirroring_core/"
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"
