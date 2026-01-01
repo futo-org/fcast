@@ -3,12 +3,9 @@
 use gst::glib::{self, types::StaticType};
 
 mod imp {
-    use std::sync::LazyLock;
-    use std::sync::Mutex;
+    use std::sync::{LazyLock, Mutex};
 
-    use gst::glib;
-    use gst::prelude::*;
-    use gst::subclass::prelude::*;
+    use gst::{glib, prelude::*, subclass::prelude::*};
 
     #[derive(Default)]
     struct State {

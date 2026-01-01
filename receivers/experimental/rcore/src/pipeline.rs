@@ -1,4 +1,4 @@
-use fcast_protocol::v3::PlaybackState;
+use fcast_protocol::PlaybackState;
 use futures::StreamExt;
 use gst::prelude::*;
 

@@ -2,26 +2,33 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use common::Packet;
 use fcast_protocol::{
-    SeekMessage, SetSpeedMessage, SetVolumeMessage, VolumeUpdateMessage,
-    v2::{PlayMessage, PlaybackUpdateMessage},
-    v3::PlaybackState,
+    PlaybackState, SeekMessage, SetSpeedMessage, SetVolumeMessage,
+    v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
 };
 use gst::prelude::*;
-use tracing::level_filters::LevelFilter;
-use tracing::{debug, error};
+use tracing::{Instrument, debug, error, level_filters::LevelFilter};
 // use pipeline::Pipeline;
 use futures::StreamExt;
-use session::{Session, SessionId};
-use tokio::net::TcpListener;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::{broadcast, oneshot};
+use session::{SessionDriver, SessionId};
+use tokio::{
+    net::TcpListener,
+    sync::{
+        broadcast,
+        mpsc::{self, Receiver, Sender},
+        oneshot,
+    },
+};
 use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub use slint;
+
+use crate::session::Operation;
 
 pub mod fcastwhepsrcbin;
 pub mod pipeline;
@@ -30,10 +37,10 @@ pub mod video;
 
 pub mod common {
     use std::sync::OnceLock;
-    use tokio::runtime::Runtime;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::tcp::{ReadHalf, WriteHalf},
+        runtime::Runtime,
     };
 
     pub const HEADER_BUFFER_SIZE: usize = 5;
@@ -48,8 +55,8 @@ pub mod common {
 
     use fcast_protocol::{
         Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage,
-        VersionMessage, VolumeUpdateMessage,
-        v2::{PlayMessage, PlaybackUpdateMessage},
+        VersionMessage,
+        v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
     };
 
     #[derive(Debug, PartialEq)]
@@ -275,6 +282,10 @@ pub enum Event {
     PipelineStateChanged(gst::State),
     ToggleDebug,
     Player(PlayerEvent),
+    Op {
+        session_id: SessionId,
+        op: Operation,
+    },
 }
 
 #[macro_export]
@@ -339,6 +350,7 @@ fn get_all_available_addrs_ignore_v6_and_localhost() -> Result<Vec<Ipv4Addr>> {
 impl Application {
     pub async fn new(
         appsink: gst::Element,
+        // TODO: should be a unbounded channel
         event_tx: Sender<Event>,
         ui_weak: slint::Weak<MainWindow>,
     ) -> Result<Self> {
@@ -581,9 +593,9 @@ impl Application {
                 duration: duration,
                 // state: pipeline_playback_state.state as u8,
                 state: match playback_state {
-                    GuiPlaybackState::Idle | GuiPlaybackState::Loading => 0,
-                    GuiPlaybackState::Live | GuiPlaybackState::Playing => 1,
-                    GuiPlaybackState::Paused => 2,
+                    GuiPlaybackState::Idle | GuiPlaybackState::Loading => PlaybackState::Idle,
+                    GuiPlaybackState::Live | GuiPlaybackState::Playing => PlaybackState::Playing,
+                    GuiPlaybackState::Paused => PlaybackState::Paused,
                 },
                 speed: self.player.rate(),
             };
@@ -872,6 +884,7 @@ impl Application {
                     PlayerEvent::Eos => {}
                 }
             }
+            Event::Op { session_id: id, op } => todo!(),
         }
 
         Ok(false)
@@ -918,7 +931,10 @@ impl Application {
                         let updates_rx = self.updates_tx.subscribe();
                         async move {
                             if let Err(err) =
-                                Session::new(stream, id).run(updates_rx, &event_tx).await
+                                SessionDriver::new(stream, id)
+                                .run(updates_rx, &event_tx)
+                                .instrument(tracing::debug_span!("session", id))
+                                .await
                             {
                                 error!("Session exited with error: {err}");
                             }

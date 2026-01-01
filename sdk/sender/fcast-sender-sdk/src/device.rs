@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    net::{Ipv6Addr, SocketAddr, SocketAddrV6},
+    sync::Arc,
+};
 
 use crate::IpAddr;
 
@@ -118,10 +120,11 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
 
     let connection_info = url.path_segments()?.next()?;
 
-    use base64::alphabet::URL_SAFE;
-    use base64::engine::general_purpose::GeneralPurpose;
-    use base64::engine::{DecodePaddingMode, GeneralPurposeConfig};
-    use base64::Engine as _;
+    use base64::{
+        alphabet::URL_SAFE,
+        engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
+        Engine as _,
+    };
     let b64_engine = GeneralPurpose::new(
         &URL_SAFE,
         GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),

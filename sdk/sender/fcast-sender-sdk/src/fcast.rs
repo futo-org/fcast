@@ -1,31 +1,41 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 
 use anyhow::{anyhow, bail, Context};
-use fcast_protocol::v3::{
-    self, AVCapabilities, InitialReceiverMessage, LivestreamCapabilities, MetadataObject,
-    ReceiverCapabilities, SetPlaylistItemMessage,
-};
 use fcast_protocol::{
-    v2, Opcode, PlaybackErrorMessage, PlaybackState as FCastPlaybackState, SeekMessage,
+    v2,
+    v3::{
+        self, AVCapabilities, InitialReceiverMessage, LivestreamCapabilities, MetadataObject,
+        ReceiverCapabilities, SetPlaylistItemMessage,
+    },
+    Opcode, PlaybackErrorMessage, PlaybackState as FCastPlaybackState, SeekMessage,
     SetSpeedMessage, SetVolumeMessage, VersionMessage,
 };
 use futures::StreamExt;
 use log::{debug, error};
 use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::runtime::Handle;
-use tokio::sync::mpsc::{Receiver, Sender};
-
-use crate::device::{
-    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-    DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent,
-    MediaItem, MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    runtime::Handle,
+    sync::mpsc::{Receiver, Sender},
 };
-use crate::{utils, IpAddr};
+
+use crate::{
+    device::{
+        ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
+        DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName,
+        LoadRequest, MediaEvent, MediaItem, MediaItemEventType, Metadata, PlaybackState,
+        PlaylistItem, ProtocolType, Source,
+    },
+    utils, IpAddr,
+};
 
 const DEFAULT_SESSION_VERSION: u64 = 2;
 const EVENT_SUB_MIN_PROTO_VERSION: u64 = 3;
