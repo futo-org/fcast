@@ -56,9 +56,7 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-    // implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-minimal:0.3.1") {
-    // implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-full:0.3.1") {
-    implementation("org.fcast:sender-sdk-full:0.3.0") {
+    implementation("org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-minimal:0.4.0") {
         exclude(group = "net.java.dev.jna")
     }
     implementation("net.java.dev.jna:jna:5.13.0@aar")
