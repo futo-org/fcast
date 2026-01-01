@@ -352,7 +352,7 @@ fn main() {
 
 [FCast Sender SDK]: https://crates.io/crates/fcast-sender-sdk
 [CastContext]: https://docs.rs/fcast-sender-sdk/0.1.2/fcast_sender_sdk/context/struct.CastContext.html
-[Automatic Discovery]: http://localhost:8000/receiver/#automatic-discovery-mdns
+[Automatic Discovery]: ../../receiver/#automatic-discovery-mdns
 [start_discovery()]: https://docs.rs/fcast-sender-sdk/0.1.2/fcast_sender_sdk/context/struct.CastContext.html#method.start_discovery
 [CastingDevice]: https://docs.rs/fcast-sender-sdk/0.1.2/fcast_sender_sdk/device/trait.CastingDevice.html
 [Big Buck Bunny]: https://en.wikipedia.org/wiki/Big_Buck_Bunny

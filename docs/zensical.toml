@@ -65,6 +65,7 @@ nav = [
       "sdk/tutorials/android.md",
       "sdk/tutorials/ios.md",
       "sdk/tutorials/flutter.md",
+      "sdk/tutorials/csharp.md",
     ]},
   ]},
   {"Protocol" = [
