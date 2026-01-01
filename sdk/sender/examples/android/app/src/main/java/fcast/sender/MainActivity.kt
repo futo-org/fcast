@@ -1,58 +1,75 @@
 package fcast.sender
 
-import android.icu.text.DecimalFormat
+import android.content.Context
+import android.os.Build
 import android.os.Bundle
-import android.view.KeyEvent
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableDoubleStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import fcast.sender.ui.theme.FCastSenderTheme
-import org.fcast.sender_sdk.DeviceConnectionState
-import org.fcast.sender_sdk.CastingDevice
-import org.fcast.sender_sdk.DeviceEventHandler
-import org.fcast.sender_sdk.GenericKeyEvent
-import org.fcast.sender_sdk.GenericMediaEvent
-import org.fcast.sender_sdk.PlaybackState
-import org.fcast.sender_sdk.Source
-import org.fcast.sender_sdk.initLogger
-import org.fcast.sender_sdk.IpAddr
-import org.fcast.sender_sdk.urlFormatIpAddr
-import org.fcast.sender_sdk.deviceInfoFromUrl
-import org.fcast.sender_sdk.NsdDeviceDiscoverer
-import org.fcast.sender_sdk.CastContext
+import androidx.lifecycle.lifecycleScope
+import coil3.compose.AsyncImage
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import org.fcast.sender_sdk.DeviceInfo
-import org.fcast.sender_sdk.DeviceDiscovererEventHandler
-import org.fcast.sender_sdk.LoadRequest
-import org.fcast.sender_sdk.LogLevelFilter
+import com.prof18.rssparser.RssParser
+import com.prof18.rssparser.model.RssChannel
+import com.prof18.rssparser.model.RssItem
+import fcast.sender.ui.theme.FCastSenderTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.fcast.sender_sdk.*
+import org.fcast.sender_sdk.CastContext as RustCastContext
 
-data class CastingState(
+class DiscoveryEventHandler(
+    private val devices: MutableState<List<DeviceInfo>>,
+) : DeviceDiscovererEventHandler {
+    override fun deviceAvailable(deviceInfo: DeviceInfo) {
+        val dev = devices.value.find { it.name == deviceInfo.name }
+        if (dev != null) {
+            dev.addresses = deviceInfo.addresses
+            dev.port = deviceInfo.port
+        } else {
+            devices.value += deviceInfo
+        }
+    }
+
+    override fun deviceChanged(deviceInfo: DeviceInfo) {
+        devices.value.find { it.name == deviceInfo.name }?.let {
+            it.addresses = deviceInfo.addresses
+            it.port = deviceInfo.port
+        }
+    }
+
+    override fun deviceRemoved(deviceName: String) {
+        devices.value.filter { it.name != deviceName }.let {
+            devices.value = it
+        }
+    }
+}
+
+enum class ConnectionState {
+    Connecting, Connected, Reconnecting, Disconnected
+}
+
+data class State(
+    var connectionState: MutableState<ConnectionState> = mutableStateOf(ConnectionState.Connecting),
     var volume: MutableState<Double> = mutableDoubleStateOf(1.0),
     var playbackState: MutableState<PlaybackState> = mutableStateOf(PlaybackState.IDLE),
     var time: MutableState<Double> = mutableDoubleStateOf(0.0),
@@ -62,6 +79,7 @@ data class CastingState(
     var localAddress: IpAddr? = null,
 ) {
     fun reset() {
+        connectionState.value = ConnectionState.Connecting
         volume.value = 1.0
         playbackState.value = PlaybackState.IDLE
         time.value = 0.0
@@ -72,420 +90,552 @@ data class CastingState(
     }
 }
 
-class EventHandler : DeviceEventHandler {
-    var castingState = CastingState()
+class KtCastContext() {
+    class EventHandler(
+        val ctx: KtCastContext, var generation: Int
+    ) : DeviceEventHandler {
+        override fun connectionStateChanged(state: DeviceConnectionState) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Connection state changed: $state")
+            when (state) {
+                is DeviceConnectionState.Connected -> {
+                    ctx.state.localAddress = state.localAddr
+                    ctx.state.connectionState.value = ConnectionState.Connected
+                    ctx.onConnected?.invoke()
+                }
 
-    override fun connectionStateChanged(state: DeviceConnectionState) {
-        println("Connection state changed: $state")
-        when (state) {
-            is DeviceConnectionState.Connected -> {
-                castingState.localAddress = state.localAddr
-            }
+                DeviceConnectionState.Connecting -> ctx.state.connectionState.value =
+                    ConnectionState.Connecting
 
-            else -> {}
-        }
-    }
+                DeviceConnectionState.Reconnecting -> ctx.state.connectionState.value =
+                    ConnectionState.Reconnecting
 
-    override fun volumeChanged(volume: Double) {
-        println("Volume changed: $volume")
-        castingState.volume.value = volume
-    }
-
-    override fun timeChanged(time: Double) {
-        println("Time changed: $time")
-        castingState.time.value = time
-    }
-
-    override fun playbackStateChanged(state: PlaybackState) {
-        println("Playback state changed: $state")
-        castingState.playbackState.value = state
-    }
-
-    override fun durationChanged(duration: Double) {
-        println("Duration changed: $duration")
-        castingState.duration.value = duration
-    }
-
-    override fun speedChanged(speed: Double) {
-        println("Speed changed: $speed")
-        castingState.speed.value = speed
-    }
-
-    override fun sourceChanged(source: Source) {
-        println("Source changed: $source")
-        when (source) {
-            is Source.Url -> {
-                castingState.contentType.value = source.contentType
-            }
-
-            else -> {
-                castingState.contentType.value = ""
-            }
-        }
-    }
-
-    override fun keyEvent(event: GenericKeyEvent) {
-        // Unreachable
-    }
-
-    override fun mediaEvent(event: GenericMediaEvent) {
-        // Unreachable
-    }
-
-    override fun playbackError(message: String) {
-        println("Playback error: $message")
-    }
-}
-
-class DiscoveryEventHandler(
-    private val devices: MutableState<List<CastingDevice>>,
-    private val ctx: CastContext
-) : DeviceDiscovererEventHandler {
-    override fun deviceAvailable(deviceInfo: DeviceInfo) {
-        devices.value += ctx.createDeviceFromInfo(deviceInfo)
-    }
-
-    override fun deviceChanged(deviceInfo: DeviceInfo) {
-        devices.value.find { it.name() == deviceInfo.name }?.let {
-            it.setAddresses(deviceInfo.addresses)
-            it.setPort(deviceInfo.port)
-        }
-    }
-
-    override fun deviceRemoved(deviceName: String) {
-        devices.value.filter { it.name() != deviceName }.let {
-            devices.value = it
-        }
-    }
-}
-
-class MainActivity : ComponentActivity() {
-    private val eventHandler = EventHandler()
-    private val castContext = CastContext()
-    private val fileServer = castContext.startFileServer()
-    private var activeCastingDevice: MutableState<CastingDevice?> = mutableStateOf(null)
-    private val devices: MutableState<List<CastingDevice>> = mutableStateOf(listOf())
-    private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
-        result.contents?.let {
-            deviceInfoFromUrl(it)?.let { deviceInfo ->
-                val device = castContext.createDeviceFromInfo(deviceInfo)
-                try {
-                    device.connect(null, eventHandler, 1000.toULong())
-                    activeCastingDevice.value = device
-                } catch (e: Exception) {
-                    println("Failed to start device: {e}")
+                DeviceConnectionState.Disconnected -> {
+                    ctx.state.connectionState.value = ConnectionState.Disconnected
+                    ctx.onDisconnected?.invoke()
                 }
             }
         }
-    }
-    private val selectMediaIntent = registerForActivityResult(ActivityResultContracts.GetContent())
-    { maybeUri ->
-        try {
-            val uri = maybeUri!!
-            val type = this.contentResolver.getType(uri)!!
-            val parcelFd = this.contentResolver.openFileDescriptor(uri, "r")
-            val fd = parcelFd?.detachFd() ?: throw Exception("asdf")
-            activeCastingDevice.value?.let { device ->
-                val entry = fileServer.serveFile(fd)
-                val url =
-                    "http://${urlFormatIpAddr(eventHandler.castingState.localAddress!!)}:${entry.port}/${entry.location}"
-                device.load(LoadRequest.Url(type, url))
+
+        override fun volumeChanged(volume: Double) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Volume changed: $volume")
+            ctx.state.volume.value = volume
+        }
+
+        override fun timeChanged(time: Double) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Time changed: $time")
+            ctx.state.time.value = time
+        }
+
+        override fun playbackStateChanged(state: PlaybackState) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Playback state changed: $state")
+            ctx.state.playbackState.value = state
+        }
+
+        override fun durationChanged(duration: Double) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Duration changed: $duration")
+            ctx.state.duration.value = duration
+        }
+
+        override fun speedChanged(speed: Double) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Speed changed: $speed")
+            ctx.state.speed.value = speed
+        }
+
+        override fun sourceChanged(source: Source) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Source changed: $source")
+            when (source) {
+                is Source.Url -> {
+                    ctx.state.contentType.value = source.contentType
+                }
+
+                else -> {
+                    ctx.state.contentType.value = ""
+                }
             }
-        } catch (e: Exception) {
-            println("Failed to read $maybeUri: $e")
+        }
+
+        override fun keyEvent(event: KeyEvent) {}
+
+        override fun mediaEvent(event: MediaEvent) {}
+
+        override fun playbackError(message: String) {
+            if (generation != ctx.currentGeneration) return
+            Log.v(TAG, "Playback error: $message")
         }
     }
-    private lateinit var deviceDiscoverer: NsdDeviceDiscoverer
+
+    val context = RustCastContext()
+    lateinit var deviceDiscoverer: NsdDeviceDiscoverer
+    var activeDevice: MutableState<CastingDevice?> = mutableStateOf(null)
+    val devices: MutableState<List<DeviceInfo>> = mutableStateOf(listOf())
+    val state = State()
+    var onQRRequested: (() -> Unit)? = null
+    var onConnected: (() -> Unit)? = null
+    var onDisconnected: (() -> Unit)? = null
+    private val minMillisBetweenVolumeChanges = 250
+    private var lastVolumeChange: Long = System.currentTimeMillis()
+    private var currentGeneration: Int = 0
 
     init {
         initLogger(LogLevelFilter.DEBUG)
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> {
-                eventHandler.castingState.volume.value =
-                    (eventHandler.castingState.volume.value + 0.1).coerceAtMost(1.0)
-                activeCastingDevice.value?.changeVolume(eventHandler.castingState.volume.value)
-            }
-
-            KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                eventHandler.castingState.volume.value =
-                    (eventHandler.castingState.volume.value - 0.1).coerceAtLeast(0.0)
-                activeCastingDevice.value?.changeVolume(eventHandler.castingState.volume.value)
-            }
-
-            else -> return super.onKeyDown(keyCode, event)
-        }
-        return true
+    fun startDiscovery(ctx: Context) {
+        deviceDiscoverer = NsdDeviceDiscoverer(ctx, DiscoveryEventHandler(devices))
     }
 
+    fun connect(deviceInfo: DeviceInfo) {
+        val device = context.createDeviceFromInfo(deviceInfo)
+        currentGeneration += 1
+        val prevDev = activeDevice.value
+        activeDevice.value = null
+        if (prevDev != null) {
+            try {
+                prevDev.disconnect()
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to disconnect active device: $e")
+            }
+        }
+        state.reset()
+        try {
+            device.connect(
+                ApplicationInfo(
+                    name = "FCast SDK example android",
+                    version = "1",
+                    displayName = "${Build.MANUFACTURER} ${Build.MODEL}",
+                ),
+                eventHandler = EventHandler(this, currentGeneration),
+                reconnectIntervalMillis = 1000.toULong(),
+            )
+            activeDevice.value = device
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to connect to device: $e")
+        }
+    }
+
+    fun setVolume(volume: Double, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastVolumeChange < minMillisBetweenVolumeChanges) {
+            return
+        }
+        try {
+            activeDevice.value?.changeVolume(volume)
+            lastVolumeChange = now
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to set volume to $volume: $e")
+        }
+    }
+
+    fun disconnect() {
+        try {
+            activeDevice.value?.disconnect()
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to disconnect: $e")
+        }
+        activeDevice.value = null
+    }
+
+    fun qrScanComplete(result: String) {
+        deviceInfoFromUrl(result)?.let { deviceInfo ->
+            connect(deviceInfo)
+        }
+    }
+
+    companion object {
+        const val TAG = "KtCastContext"
+    }
+}
+
+class MainActivity : ComponentActivity() {
+    private val castContext = KtCastContext()
+    private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
+        result.contents?.let {
+            castContext.qrScanComplete(it)
+        }
+    }
+    private val rssParser = RssParser()
+    private var rssChannel: MutableState<RssChannel?> = mutableStateOf(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        deviceDiscoverer = NsdDeviceDiscoverer(this, DiscoveryEventHandler(devices, castContext))
+        castContext.startDiscovery(this)
+        castContext.onQRRequested = {
+            barcodeLauncher.launch(ScanOptions().setOrientationLocked(false))
+        }
+        castContext.onConnected = {
+            Log.i(TAG, "Connected")
+        }
+        castContext.onDisconnected = {
+            Log.i(TAG, "Disconnected")
+        }
         enableEdgeToEdge()
         setContent {
             FCastSenderTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                Scaffold(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .systemBarsPadding()
+                ) { innerPadding ->
                     View(
-                        Modifier.padding(innerPadding),
-                        eventHandler.castingState,
-                        activeCastingDevice,
-                        devices,
-                        connectDevice = { device ->
-                            try {
-                                device.connect(null, eventHandler, 1000.toULong())
-                                activeCastingDevice.value = device
-                            } catch (e: Exception) {
-                                println("Failed to connect to device: $e")
-                            }
-                        },
-                        disconnectActiveDevice = {
-                            try {
-                                activeCastingDevice.value?.disconnect()
-                            } catch (e: Exception) {
-                                println("Failed to stop device: $e")
-                            }
-                            activeCastingDevice.value = null
-                            eventHandler.castingState.reset()
-                        },
-                        launchQrScanner = {
-                            barcodeLauncher.launch(ScanOptions().setOrientationLocked(false))
-                        },
-                        selectMedia = {
-                            // selectMediaIntent.launch("image/*,video/*,audio/*") // Doesn't show quick select for video and audio, only the first type in the list...
-                            selectMediaIntent.launch("*/*")
+                        Modifier.padding(innerPadding), castContext, rssChannel
+                    ) { url ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val channel = rssParser.getRssChannel(url)
+                            rssChannel.value = channel
                         }
-                    )
+                    }
                 }
             }
         }
     }
-}
 
-@Composable
-fun CastDialog(
-    onDismissRequest: () -> Unit,
-    connectDevice: (CastingDevice) -> Unit,
-    devices: MutableState<List<CastingDevice>>,
-    launchQrScanner: () -> Unit
-) {
-    Dialog(onDismissRequest = { onDismissRequest() }) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            shape = RoundedCornerShape(8.dp),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Discovered Devices")
-                TextButton(onClick = onDismissRequest) {
-                    Text("Close")
-                }
-            }
-            Column {
-                devices.value.forEach { device ->
-                    TextButton(onClick = { connectDevice(device) }) {
-                        Text(text = device.name())
-                    }
-                }
-                Button(onClick = launchQrScanner) {
-                    Text(text = "Scan QR code")
-                }
-            }
-        }
+    companion object {
+        const val TAG = "MainActivity"
     }
 }
 
 @Composable
-fun DeviceDialog(
-    onDismissRequest: () -> Unit,
-    disconnectActiveDevice: () -> Unit,
-    device: CastingDevice,
-    state: CastingState
+fun FeedItem(
+    currentlyPlaying: MutableState<String?>,
+    castContext: KtCastContext,
+    fallbackImage: String?,
+    item: RssItem
 ) {
-    Dialog(onDismissRequest = { onDismissRequest() }) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            shape = RoundedCornerShape(8.dp),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Connected to")
-                TextButton(onClick = onDismissRequest) {
-                    Text("Close")
-                }
-            }
-            Column {
-                Text(text = device.name())
-                Text("Volume")
-                Slider(
-                    value = state.volume.value.toFloat(),
-                    onValueChange = {
-                        state.volume.value = it.toDouble()
-                    },
-                    onValueChangeFinished = {
-                        try {
-                            device.changeVolume(state.volume.value)
-                        } catch (e: Exception) {
-                            println("Failed to change volume: $e")
-                        }
-                    }
-                )
-                Text("Playback speed: ${DecimalFormat("#.##").format(state.speed.value)}x")
-                Slider(
-                    value = state.speed.value.toFloat(),
-                    valueRange = 0.5f..2.0f,
-                    onValueChange = {
-                        state.speed.value = it.toDouble()
-                    },
-                    onValueChangeFinished = {
-                        try {
-                            device.changeSpeed(state.speed.value)
-                        } catch (e: Exception) {
-                            println("Failed to change playback speed: $e")
-                        }
-                    }
-                )
-                Button(onClick = { disconnectActiveDevice() }) {
-                    Text("Disconnect")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun View(
-    modifier: Modifier,
-    state: CastingState,
-    activeDevice: MutableState<CastingDevice?>,
-    devices: MutableState<List<CastingDevice>>,
-    connectDevice: (CastingDevice) -> Unit,
-    disconnectActiveDevice: () -> Unit,
-    launchQrScanner: () -> Unit,
-    selectMedia: () -> Unit,
-) {
-    val openCastDialog = remember { mutableStateOf(false) }
-
-    Column(
-        modifier = modifier
+    val thisId = item.rawEnclosure?.url
+    val thisIsPlaying = currentlyPlaying.value == thisId
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
             .fillMaxWidth()
-            .fillMaxHeight(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .height(45.dp)
+            .border(
+                BorderStroke(
+                    width = 3.dp, color = if (thisIsPlaying) MaterialTheme.colorScheme.secondary
+                    else MaterialTheme.colorScheme.background
+                )
+            )
     ) {
-        Button(onClick = {
-            openCastDialog.value = true
-        }) {
-            Text("Devices")
+        val itunes = item.itunesItemData
+        if (itunes != null && itunes.image != null) {
+            AsyncImage(model = itunes.image, contentDescription = null)
+        } else if (fallbackImage != null) {
+            AsyncImage(model = fallbackImage, contentDescription = null)
         }
-        when (val castingDevice = activeDevice.value) {
-            null -> {}
-            else -> {
-                Button(onClick = {
-                    try {
-                        castingDevice.load(LoadRequest.Video(
-                            "video/mp4",
-                            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                        ))
-                    } catch (e: Exception) {
-                        println("Failed to load video: $e")
+        Text(
+            item.title ?: "n/a",
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+
+        val isConnected =
+            castContext.state.connectionState.value == ConnectionState.Connected
+        var playIconTint = MaterialTheme.colorScheme.onBackground
+        if (!isConnected) {
+            playIconTint = playIconTint.copy(alpha = 0.5f)
+        }
+
+        val raw = item.rawEnclosure ?: return@Row
+        val type = raw.type
+        val url = raw.url
+        if (type == null || url == null) {
+            return@Row
+        }
+        val pbState = castContext.state.playbackState.value
+
+        if (thisIsPlaying && (pbState == PlaybackState.BUFFERING || pbState == PlaybackState.IDLE)) {
+            CircularProgressIndicator()
+            return@Row
+        }
+
+        IconButton(
+            enabled = isConnected, onClick = {
+                try {
+                    if (currentlyPlaying.value != thisId) {
+                        castContext.activeDevice.value?.load(
+                            LoadRequest.Url(
+                                contentType = type,
+                                url = url,
+                                volume = castContext.state.volume.value,
+                                metadata = Metadata(
+                                    title = item.title,
+                                    thumbnailUrl = item.itunesItemData?.image,
+                                ),
+                                resumePosition = null,
+                                speed = null,
+                                requestHeaders = null,
+                            )
+                        )
+                        currentlyPlaying.value = thisId
+                    } else if (castContext.state.playbackState.value == PlaybackState.PLAYING) {
+                        castContext.activeDevice.value?.pausePlayback()
+                    } else if (castContext.state.playbackState.value == PlaybackState.PAUSED) {
+                        castContext.activeDevice.value?.resumePlayback()
                     }
-                }) {
-                    Text("Cast demo")
+                } catch (_: Throwable) {
                 }
-                Button(onClick = selectMedia) {
-                    Text("Cast local file")
+            }) {
+            Icon(
+                imageVector = if (thisIsPlaying && pbState == PlaybackState.PLAYING) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (thisIsPlaying && pbState == PlaybackState.PLAYING) "Pause" else "Play",
+                tint = playIconTint,
+                modifier = Modifier.size(32.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun SimpleDialog(
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Dialog(onDismissRequest) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = CutCornerShape(0.0F),
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+@Composable
+fun DismissableDialog(
+    label: String,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Dialog(onDismissRequest) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = CutCornerShape(0.0F),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label)
+                TextButton(onClick = onDismissRequest) {
+                    Text("Dismiss")
                 }
-                if (state.playbackState.value == PlaybackState.PLAYING
-                    || state.playbackState.value == PlaybackState.PAUSED
-                ) {
-                    Button(onClick = {
-                        castingDevice.stopPlayback()
-                    }) {
-                        Text("Stop casting")
-                    }
-                    if (state.contentType.value.startsWith("video/")) {
-                        Text("Scrubber")
-                        Slider(
-                            value = state.time.value.toFloat(),
-                            onValueChange = {
-                                state.time.value = it.toDouble()
-                            },
-                            onValueChangeFinished = {
-                                try {
-                                    castingDevice.seek(state.time.value)
-                                } catch (e: Exception) {
-                                    println("Failed to seek: $e")
+            }
+
+            Column(content = content)
+        }
+    }
+}
+
+@Composable
+fun CastView(castContext: KtCastContext, onDismissRequest: () -> Unit) {
+    if (castContext.activeDevice.value == null) {
+        DismissableDialog("Cast to", onDismissRequest) {
+            Column {
+                castContext.devices.value.forEach { deviceInfo ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .padding(start = 4.dp, end = 4.dp)
+                            .height(40.dp)
+                            .fillMaxWidth().let {
+                                if (!(deviceInfo.addresses.isEmpty() || deviceInfo.port == 0.toUShort())) {
+                                    it.clickable {
+                                        castContext.connect(deviceInfo)
+                                    }
+                                } else {
+                                    it
                                 }
                             },
-                            valueRange = 0.0f..state.duration.value.toFloat()
+                    ) {
+                        var fgColor = LocalContentColor.current
+                        if (deviceInfo.addresses.isEmpty() || deviceInfo.port == 0.toUShort()) {
+                            fgColor = fgColor.copy(alpha = 0.5f)
+                        }
+                        when (deviceInfo.protocol) {
+                            ProtocolType.F_CAST -> Icon(
+                                painter = painterResource(R.drawable.ic_fc),
+                                tint = fgColor,
+                                contentDescription = "FCast",
+                                modifier = Modifier.size(24.dp)
+                            )
+
+                            ProtocolType.CHROMECAST -> Icon(
+                                painter = painterResource(R.drawable.ic_chromecast),
+                                tint = fgColor,
+                                contentDescription = "Chromecast",
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Text(
+                            text = deviceInfo.name,
+                            modifier = Modifier.padding(start = 4.dp),
+                            fgColor
                         )
                     }
                 }
-                if (state.playbackState.value == PlaybackState.PLAYING && state.contentType.value.startsWith(
-                        "video/"
-                    )
-                ) {
-                    Button(onClick = {
-                        try {
-                            castingDevice.pausePlayback()
-                        } catch (e: Exception) {
-                            println("Failed to pause playback: $e")
-                        }
+
+                if (castContext.onQRRequested != null) {
+                    TextButton(onClick = {
+                        castContext.onQRRequested?.invoke()
                     }) {
-                        Text("Pause")
+                        Text("Scan QR")
                     }
-                } else if (state.playbackState.value == PlaybackState.PAUSED && state.contentType.value.startsWith(
-                        "video/"
-                    )
+                }
+            }
+        }
+    } else {
+        when (castContext.state.connectionState.value) {
+            ConnectionState.Connecting -> {
+                SimpleDialog(onDismissRequest) {
+                    Text("Connecting to ${castContext.activeDevice.value?.name()}")
+                }
+            }
+
+            ConnectionState.Connected -> {
+                DismissableDialog(
+                    castContext.activeDevice.value?.name() ?: "n/a",
+                    onDismissRequest
                 ) {
-                    Button(onClick = {
-                        try {
-                            castingDevice.resumePlayback()
-                        } catch (e: Exception) {
-                            println("Failed to resume playback: $e")
+                    Text("Volume")
+                    Slider(
+                        value = castContext.state.volume.value.toFloat(),
+                        valueRange = 0f..1f,
+                        onValueChange = {
+                            castContext.state.volume.value = it.toDouble()
+                            castContext.setVolume(castContext.state.volume.value)
+                        },
+                        onValueChangeFinished = {
+                            castContext.setVolume(castContext.state.volume.value, force = true)
                         }
+                    )
+
+                    TextButton(onClick = {
+                        castContext.disconnect()
                     }) {
-                        Text("Play")
+                        Text("Disconnect")
                     }
-                } else if (state.playbackState.value == PlaybackState.BUFFERING) {
-                    CircularProgressIndicator()
+                }
+            }
+
+            ConnectionState.Reconnecting -> {
+                SimpleDialog(onDismissRequest) {
+                    Text("Reconnecting to ${castContext.activeDevice.value?.name()}")
+                }
+            }
+
+            ConnectionState.Disconnected -> {
+                SimpleDialog(onDismissRequest) {
+                    Text("The device is disconnected so you should not see this.")
                 }
             }
         }
     }
-    when {
-        openCastDialog.value -> {
-            when (val castingDevice = activeDevice.value) {
-                null -> {
-                    CastDialog(
-                        onDismissRequest = { openCastDialog.value = false },
-                        connectDevice,
-                        devices,
-                        launchQrScanner
-                    )
-                }
+}
 
-                else -> {
-                    DeviceDialog(
-                        onDismissRequest = { openCastDialog.value = false },
-                        disconnectActiveDevice,
-                        castingDevice,
-                        state
-                    )
+@Composable
+fun CastButton(castContext: KtCastContext) {
+    val showingDialog = remember { mutableStateOf(false) }
+
+    IconButton(onClick = {
+        showingDialog.value = true
+    }) {
+        Icon(
+            painter = painterResource(R.drawable.ic_cast),
+            contentDescription = "Cast",
+            Modifier.size(34.dp)
+        )
+    }
+    if (showingDialog.value) {
+        CastView(castContext) {
+            showingDialog.value = false
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun View(
+    modifier: Modifier,
+    castContext: KtCastContext,
+    rssChannel: MutableState<RssChannel?>,
+    loadFeed: (String) -> Unit,
+) {
+    val currentlyPlaying: MutableState<String?> = remember { mutableStateOf(null) }
+    var rssUrl by remember { mutableStateOf("https://odysee.com/$/rss/@FUTO:e") }
+    val channel = rssChannel.value
+    if (channel != null) {
+        Scaffold(modifier, topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.primary,
+                ), title = {
+                    Text(channel.title ?: "n/a")
+                }, actions = {
+                    CastButton(castContext)
+                    IconButton(onClick = {
+                        rssChannel.value = null
+                        currentlyPlaying.value = null
+                    }) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
+                    }
+                })
+        }, bottomBar = {
+            if (castContext.activeDevice.value != null) {
+                val pbState = castContext.state.playbackState.value
+                BottomAppBar {
+                    val currentTime = castContext.state.time.value.toFloat()
+                    val duration = castContext.state.duration.value.toFloat()
+                    Slider(
+                        enabled = pbState == PlaybackState.PLAYING || pbState == PlaybackState.PAUSED,
+                        value = currentTime,
+                        valueRange = 0f..duration,
+                        onValueChange = {
+                            castContext.state.time.value = it.toDouble()
+                        },
+                        onValueChangeFinished = {
+                            try {
+                                castContext.activeDevice.value?.seek(castContext.state.time.value)
+                            } catch (e: Throwable) {
+                                println("Failed to seek: $e")
+                            }
+                        })
+                }
+            }
+        }) { innerPadding ->
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                items(channel.items) {
+                    FeedItem(currentlyPlaying, castContext, channel.image?.url, it)
+                }
+            }
+        }
+    } else {
+        Scaffold(modifier) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                TextField(value = rssUrl, onValueChange = {
+                    rssUrl = it
+                }, label = { Text("RSS feed") })
+                Button(onClick = { loadFeed(rssUrl) }) {
+                    Text("Load")
                 }
             }
         }
