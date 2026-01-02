@@ -36,6 +36,7 @@ mod imp {
     const CONTENT_TRICKLE_ICE: &str = "application/trickle-ice-sdpfrag";
 
     struct Settings {
+        server_port: u16,
         timeout: u32,
         shutdown_signal: Option<tokio::sync::oneshot::Sender<()>>,
         server_handle: Option<tokio::task::JoinHandle<()>>,
@@ -46,6 +47,7 @@ mod imp {
     impl Default for Settings {
         fn default() -> Self {
             Self {
+                server_port: 0,
                 timeout: DEFAULT_TIMEOUT_SECONDS,
                 shutdown_signal: None,
                 server_handle: None,
@@ -348,11 +350,13 @@ mod imp {
             let obj_weak = self.obj().downgrade();
             let self_weak = self.downgrade();
             let settings = self.settings.lock();
+            let server_port = settings.server_port;
             let jh = settings.rt_handle.spawn(
                 async move {
                 let listener =
                         // TODO: Ipv6Addr::UNSPECIFIED
-                    TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
+                    // TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
+                    TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), server_port))
                         .await
                         .unwrap();
 
@@ -477,6 +481,12 @@ mod imp {
                         .default_value(false)
                         .read_only()
                         .build(),
+                    glib::ParamSpecUInt::builder("server-port")
+                        .nick("Server port")
+                        .blurb("The port to serve the HTTP server on")
+                        .default_value(0)
+                        .mutable_ready()
+                        .build(),
                 ]
             });
             PROPERTIES.as_ref()
@@ -485,6 +495,20 @@ mod imp {
         fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
             match pspec.name() {
                 "manual-sdp-munging" => false.to_value(),
+                "server-port" => {
+                    (self.settings.lock().server_port as u32).to_value()
+                }
+                _ => unimplemented!(),
+            }
+        }
+
+        fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            match pspec.name() {
+                "server-port" => {
+                    let mut settings = self.settings.lock();
+                    let port: u32 = value.get().expect("type checked upstream");
+                    settings.server_port = port as u16;
+                }
                 _ => unimplemented!(),
             }
         }

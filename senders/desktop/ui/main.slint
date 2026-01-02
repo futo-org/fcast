@@ -207,6 +207,7 @@ export global Bridge {
     // in-out property <string> yt-dlp-source: "Test title 2";
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 46089;
+    in-out property <string> mirroring-server-port: 0;
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -2248,6 +2249,8 @@ component BackView inherits Rectangle {
                 Spacer {}
             }
 
+            // TODO: Deduplicate settings entry related boilerplate etc.
+
             SettingsEntry {
                 height: 36px;
 
@@ -2263,6 +2266,25 @@ component BackView inherits Rectangle {
                 file-server-port-input := LineEdit {
                     width: 100px;
                     text <=> Bridge.file-server-port;
+                    input-type: number;
+                }
+            }
+
+            SettingsEntry {
+                height: 36px;
+
+                name: "Mirroring server port";
+
+                if mirroring-server-port-input.text.to-float() < 1024 || mirroring-server-port-input.text.to-float() > 65535: FText {
+                    text: "Invalid port number (must be 1024-65535)";
+                    vertical-alignment: center;
+                    color: FCastPalette.negative-600;
+                    overflow: elide;
+                }
+
+                mirroring-server-port-input := LineEdit {
+                    width: 100px;
+                    text <=> Bridge.mirroring-server-port;
                     input-type: number;
                 }
             }

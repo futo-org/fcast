@@ -13,17 +13,18 @@ use fcast_sender_sdk::{
     device::{self, DeviceFeature, DeviceInfo},
 };
 use gst_video::prelude::*;
-use mcore::RootDirType;
 #[cfg(target_os = "windows")]
 use mcore::VideoSource;
 use mcore::{
-    AudioSource, Event, FileSystemEntry, MediaFileEntry, ShouldQuit, transmission::WhepSink,
+    AudioSource, Event, FileSystemEntry, MediaFileEntry, RootDirType, ShouldQuit,
+    transmission::WhepSink,
 };
 use serde::{Deserialize, Serialize};
-use slint::Model;
-use slint::ToSharedString;
+use slint::{Model, ToSharedString};
 use std::{
     collections::HashMap,
+    fmt::Write,
+    path::PathBuf,
     rc::Rc,
     sync::{
         Arc,
@@ -31,7 +32,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use std::{fmt::Write, path::PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     runtime::Runtime,
@@ -48,6 +48,7 @@ const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
 const MIN_TIME_BETWEEN_VOLUME_CHANGES: Duration = Duration::from_millis(75);
 const DEFAULT_FILE_SERVER_PORT: u16 = 46089;
+const DEFAULT_MIRRORING_SERVER_PORT: u16 = 46079;
 
 pub type ProducerId = String;
 
@@ -202,23 +203,89 @@ enum SessionSpecificState {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename = "file_server")]
 struct FileServerSettings {
-    pub port: u16,
+    pub port: Option<u16>,
 }
 
 impl Default for FileServerSettings {
     fn default() -> Self {
         Self {
-            port: DEFAULT_FILE_SERVER_PORT,
+            port: Some(DEFAULT_FILE_SERVER_PORT),
         }
+    }
+}
+
+impl FileServerSettings {
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(DEFAULT_FILE_SERVER_PORT)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename = "mirroring")]
+struct MirroringSettings {
+    pub server_port: Option<u16>,
+    // TODO:
+    // pub video_codecs: Option<Vec<VideoCodec>>,
+    // pub audio_codecs: Option<Vec<VideoCodec>>,
+}
+
+impl Default for MirroringSettings {
+    fn default() -> Self {
+        Self {
+            server_port: Some(DEFAULT_MIRRORING_SERVER_PORT),
+        }
+    }
+}
+
+impl MirroringSettings {
+    pub fn server_port(&self) -> u16 {
+        self.server_port.unwrap_or(DEFAULT_MIRRORING_SERVER_PORT)
     }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct Settings {
-    file_server: FileServerSettings,
+    file_server: Option<FileServerSettings>,
+    mirroring: Option<MirroringSettings>,
+}
+
+impl Settings {
+    fn file_server(&self) -> FileServerSettings {
+        self.file_server
+            .clone()
+            .unwrap_or(FileServerSettings::default())
+    }
+
+    fn set_file_server_port(&mut self, port: u16) {
+        match self.file_server.as_mut() {
+            Some(file_server) => file_server.port = Some(port),
+            None => {
+                let mut file_server = FileServerSettings::default();
+                file_server.port = Some(port);
+                self.file_server = Some(file_server);
+            }
+        }
+    }
+
+    fn mirroring(&self) -> MirroringSettings {
+        self.mirroring
+            .clone()
+            .unwrap_or(MirroringSettings::default())
+    }
+
+    fn set_mirroring_server_port(&mut self, port: u16) {
+        match self.mirroring.as_mut() {
+            Some(mirroring) => mirroring.server_port = Some(port),
+            None => {
+                let mut mirroring = MirroringSettings::default();
+                mirroring.server_port = Some(port);
+                self.mirroring = Some(mirroring);
+            }
+        }
+    }
 }
 
 struct SessionState {
@@ -865,6 +932,7 @@ impl Application {
                                     scale_width,
                                     scale_height,
                                     max_framerate,
+                                    self.settings.mirroring().server_port(),
                                 )
                                 .await?,
                             );
@@ -1087,7 +1155,7 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     session.specific = SessionSpecificState::LocalMedia {
                         current_id: id,
-                        file_server: FileServer::new(self.settings.file_server.port)
+                        file_server: FileServer::new(self.settings.file_server().port())
                             .await
                             .context("Failed to create file server")?,
                         data: LocalMediaDataState {
@@ -1394,6 +1462,7 @@ impl Application {
                         720,
                         480,
                         30,
+                        self.settings.mirroring().server_port(),
                     )
                     .await
                     .context("Failed to create WHEP sink from preview pipeline")?;
@@ -1458,9 +1527,15 @@ impl Application {
                     let _ = session.device.change_speed(new_rate);
                 }
             }
-            Event::UpdateSettings { port } => {
-                let has_changes = port != self.settings.file_server.port;
-                self.settings.file_server.port = port;
+            Event::UpdateSettings {
+                file_server_port,
+                mirroring_server_port,
+            } => {
+                let has_changes = file_server_port != self.settings.file_server().port()
+                    || mirroring_server_port != self.settings.mirroring().server_port();
+                self.settings.set_file_server_port(file_server_port);
+                self.settings.set_mirroring_server_port(mirroring_server_port);
+                // self.settings.file_server.port = port;
                 if has_changes {
                     self.write_settings_file()
                         .instrument(tracing::debug_span!("write_settings_file"))
@@ -1553,7 +1628,9 @@ impl Application {
         };
 
         settings_doc["file_server"]["port"] =
-            toml_edit::value(self.settings.file_server.port as i64);
+            toml_edit::value(self.settings.file_server().port() as i64);
+        settings_doc["mirroring"]["server_port"] =
+            toml_edit::value(self.settings.mirroring().server_port() as i64);
 
         debug!(?settings_doc, "New settings");
 
@@ -1635,10 +1712,12 @@ impl Application {
 
         debug!(?self.settings, "Using settings");
 
-        let file_server_port = self.settings.file_server.port;
+        let file_server_port = self.settings.file_server().port();
+        let mirroring_server_port = self.settings.mirroring().server_port();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_file_server_port(file_server_port.to_shared_string());
+            bridge.set_mirroring_server_port(mirroring_server_port.to_shared_string());
             bridge.set_settings_file_path(settings_path_str.to_shared_string());
         })?;
 
@@ -2097,12 +2176,22 @@ fn main() -> Result<()> {
             let ui = ui_weak
                 .upgrade()
                 .expect("Callback handlers are always called from the ui thread");
-            let port = ui.global::<Bridge>().get_file_server_port();
-            let Ok(port) = port.parse::<u16>() else {
-                error!(?port, "Invalid port");
+            let file_server_port = ui.global::<Bridge>().get_file_server_port();
+            let Ok(file_server_port) = file_server_port.parse::<u16>() else {
+                error!(?file_server_port, "Invalid port");
                 return;
             };
-            event_tx.send(Event::UpdateSettings { port }).unwrap();
+            let mirroring_server_port = ui.global::<Bridge>().get_mirroring_server_port();
+            let Ok(mirroring_server_port) = mirroring_server_port.parse::<u16>() else {
+                error!(?mirroring_server_port, "Invalid port");
+                return;
+            };
+            event_tx
+                .send(Event::UpdateSettings {
+                    file_server_port,
+                    mirroring_server_port,
+                })
+                .unwrap();
         }
     });
 

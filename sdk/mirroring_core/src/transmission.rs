@@ -341,6 +341,7 @@ fn add_bus_handler(
 }
 
 fn create_webrtcsink(
+    server_port: u16,
     rt_handle: tokio::runtime::Handle,
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
 ) -> anyhow::Result<gst_rs_webrtc::webrtcsink::BaseWebRTCSink> {
@@ -370,6 +371,7 @@ fn create_webrtcsink(
             None
         },
     );
+    signaller.set_property("server-port", server_port as u32);
     let sink = gst_rs_webrtc::webrtcsink::BaseWebRTCSink::with_signaller(
         gst_rs_webrtc::signaller::Signallable::from(signaller),
     );
@@ -506,8 +508,9 @@ impl WhepSink {
         max_width: u32,
         max_height: u32,
         max_framerate: u32,
+        server_port: u16,
     ) -> anyhow::Result<Self> {
-        let sink = create_webrtcsink(rt_handle.clone(), event_tx.clone())?;
+        let sink = create_webrtcsink(server_port, rt_handle.clone(), event_tx.clone())?;
         if let Some(mut preview_pipeline) = preview_pipeline {
             let elems = &mut preview_pipeline.elems;
 

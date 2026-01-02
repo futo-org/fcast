@@ -245,7 +245,8 @@ pub enum Event {
     SetPlaybackRate(f64),
     #[cfg(not(target_os = "android"))]
     UpdateSettings {
-        port: u16,
+        file_server_port: u16,
+        mirroring_server_port: u16,
     },
 
     // Android
