@@ -31,10 +31,9 @@ fn main() {
 }
 ```
 
-#### Discovery
+#### Receiver discovery
 
-The next step will be to find and connect to a receiver device. The receiver documentation introduces [Automatic Discovery] which is what we'll use. To do this we need to use the
-[start_discovery()] helper function provided by the cast context. It expects a type which implements a callback trait:
+The next step will be to find and connect to a receiver device. The receiver documentation introduces [Automatic Discovery] which is what we'll use. To do this we need to use the [start_discovery()] helper function provided by the cast context. It expects a type which implements a callback trait:
 
 ```rust
 ...
@@ -227,8 +226,7 @@ fn main() {
 }
 ```
 
-If we run the program now we see that [Big Buck Bunny] is started playing on the receiver and our program is
-receiving updates of the playback state!
+If we run the program now we see that [Big Buck Bunny] is started playing on the receiver and our program is receiving updates of the playback state!
 
 ```console
 Device info: DeviceInfo { name: "MyFCast", protocol: FCast, addresses: [V4 { o1: 192, o2: 168, o3: 50, o4: 173 }], port: 46899 }
