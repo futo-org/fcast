@@ -47,8 +47,8 @@ use desktop_sender::slint_generated::*;
 const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
 const MIN_TIME_BETWEEN_VOLUME_CHANGES: Duration = Duration::from_millis(75);
-const DEFAULT_FILE_SERVER_PORT: u16 = 46089;
-const DEFAULT_MIRRORING_SERVER_PORT: u16 = 46079;
+const DEFAULT_FILE_SERVER_PORT: u16 = 0;
+const DEFAULT_MIRRORING_SERVER_PORT: u16 = 0;
 
 pub type ProducerId = String;
 

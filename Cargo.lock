@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-sender"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -8326,6 +8326,7 @@ dependencies = [
  "mdns-sd",
  "serde",
  "serde_json",
+ "toml_edit 0.24.0+spec-1.1.0",
  "uniffi_bindgen",
  "walkdir",
  "winreg",

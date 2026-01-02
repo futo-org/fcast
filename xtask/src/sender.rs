@@ -54,7 +54,7 @@ const GSTREAMER_WIN_DEPENDENCY_LIBS: [&'static str; 15] = [
 ];
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
+const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 13] = [
     "gstcoreelements",
     "gstnice",
     "gstapp",
@@ -67,9 +67,7 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 12] = [
     "gstdtls",
     "gstwebrtc",
     "gstsrtp",
-
-    // TODO:
-    // "gstvideotestsrc",
+    "gstvideotestsrc",
 ];
 
 #[cfg(target_os = "windows")]
@@ -150,6 +148,13 @@ pub enum SenderCommand {
 pub struct SenderArgs {
     #[clap(subcommand)]
     pub cmd: SenderCommand,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn get_sender_version() -> String {
+    let sender_toml = std::fs::read_to_string("senders/desktop/Cargo.toml").unwrap();
+    let doc = sender_toml.parse::<toml_edit::DocumentMut>().unwrap();
+    doc["package"]["version"].as_str().unwrap().to_string()
 }
 
 /// `b` must not start with `/`
@@ -823,8 +828,9 @@ impl SenderArgs {
 
                 println!("############### Writing resources ###############");
 
+                let sender_version = get_sender_version();
                 let info_plist = InfoPlistTemplate {
-                    version: "0.1.0".to_owned(),
+                    version: sender_version.clone(),
                 }
                 .render()?;
                 sh.create_dir(app_top_level.join("Contents").join("Resources"))?;
@@ -844,7 +850,9 @@ impl SenderArgs {
                     path_to_dmg_dir.join("Applications"),
                 )?;
 
-                let path_to_dmg = root_path.join("target").join("fcast-sender.dmg");
+                let path_to_dmg = root_path
+                    .join("target")
+                    .join(format!("fcast-sender-{sender_version}.dmg"));
                 sh.remove_path(&path_to_dmg)?;
 
                 println!("############### Creating dmg ###############");

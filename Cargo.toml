@@ -37,6 +37,7 @@ uuid = { version = "1.18.1", features = [ "v4" ] }
 bytes = "1.11"
 smallvec = { version = "1.15.1", features = ["serde"] }
 smol_str = { version = "0.3.4", features = ["serde"] }
+toml_edit = { version = "0.24", features = ["serde"] }
 
 [profile.release]
 lto = true

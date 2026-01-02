@@ -14,6 +14,7 @@ camino = { version = "1.1.10", features = [ "serde1" ] }
 uniffi_bindgen = "0.29.4"
 mdns-sd.workspace = true
 ctrlc = "3.5"
+toml_edit.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55.0"
