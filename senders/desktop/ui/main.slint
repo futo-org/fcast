@@ -2102,7 +2102,17 @@ component SettingsEntry inherits Rectangle {
     }
 }
 
-component BackView inherits Rectangle {
+export component MainWindow inherits Window {
+    title: "FCast Sender";
+
+    preferred-width: 800px;
+    preferred-height: 500px;
+
+    default-font-family: "Outfit";
+    default-font-size: 15px;
+    default-font-weight: 400;
+
+    background: FCastPalette.background-color-primary;
     // property <bool> is-showing-mirroring-popup: true;
     property <bool> is-showing-mirroring-popup: false;
     // property <bool> is-showing-log-popup: true;
@@ -2112,13 +2122,14 @@ component BackView inherits Rectangle {
 
     HorizontalLayout {
         Rectangle {
-            width: root.width > 700px ? 266px : 0px;
-            // background: FCastPalette.background-color-primary;
+            preferred-width: 230px;
+            // TODO: animate hiding and showing of this drawer
+            // preferred-width: root.width > 700px ? 266px : 0px;
             background: FCastPalette.neutral-1100;
             border-width: 1px;
             border-color: FCastPalette.border-subtle;
 
-            animate width { duration: 50ms; }
+            // animate width { duration: 50ms; }
 
             VerticalLayout {
                 padding: 20px;
@@ -2131,20 +2142,23 @@ component BackView inherits Rectangle {
 
                 HorizontalLayout {
                     padding-top: 20px;
+                    spacing: 5px;
 
                     FText {
                         text: "FCast Sender";
                         font-size: 20px;
                         font-weight: 900;
-                        // height: 42px;
-                        // vertical-alignment: bottom;
                         vertical-alignment: center;
                     }
 
                     Spacer { }
 
-                    LabelBox {
-                        label: "BETA";
+                    VerticalLayout {
+                        alignment: center;
+
+                        LabelBox {
+                            label: "BETA";
+                        }
                     }
                 }
 
@@ -2309,21 +2323,6 @@ component BackView inherits Rectangle {
             }
         }
     }
-}
-
-export component MainWindow inherits Window {
-    title: "FCast Sender";
-
-    preferred-width: 800px;
-    preferred-height: 500px;
-
-    default-font-family: "Outfit";
-    default-font-size: 15px;
-    default-font-weight: 400;
-
-    background: FCastPalette.background-color-primary;
-
-    BackView { }
 }
 
 export component CrashWindow inherits Window {
