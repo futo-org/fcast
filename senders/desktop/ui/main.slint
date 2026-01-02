@@ -1924,8 +1924,9 @@ component VideoSourceItem inherits Rectangle {
     }
 }
 
-component MirroringPopup inherits FCastPopupWindow {
-    title: "Mirror screen";
+// component MirroringPopup inherits FCastPopupWindow {
+component MirroringPopup {
+    // title: "Mirror screen";
 
     property <length> spacing: 20px;
     property <int> n-columns: compute-columns(i-vl.width);
@@ -2120,9 +2121,14 @@ export component MainWindow inherits Window {
     // property <bool> is-showing-settings-popup: true;
     property <bool> is-showing-settings-popup: false;
 
+    Rectangle {
+        width: 100%;
+        height: 100%;
+
     HorizontalLayout {
+        // if false: Rectangle {
         Rectangle {
-            preferred-width: 230px;
+            width: 230px;
             // TODO: animate hiding and showing of this drawer
             // preferred-width: root.width > 700px ? 266px : 0px;
             background: FCastPalette.neutral-1100;
@@ -2151,15 +2157,20 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
 
-                    Spacer { }
+                    // Spacer { }
 
-                    VerticalLayout {
-                        alignment: center;
+                    // LabelBox {
+                    //     label: "BETA";
+                    // }
 
-                        LabelBox {
-                            label: "BETA";
+                    // VerticalLayout {
+                        // alignment: center;
+
+                        SecondaryText {
+                            vertical-alignment: center;
+                            text: "BETA";
                         }
-                    }
+                    // }
                 }
 
                 Spacer { }
@@ -2218,19 +2229,25 @@ export component MainWindow inherits Window {
         TouchArea { }
     }
 
-    if is-showing-mirroring-popup: MirroringPopup {
+    // if is-showing-mirroring-popup: MirroringPopup {
+    if is-showing-mirroring-popup: FCastPopupWindow {
+        title: "Mirror screen";
         width: root.width * 75%;
         height: root.height * 85%;
-
-        hide => {
-            is-showing-mirroring-popup = false;
-        }
 
         close => {
             is-showing-mirroring-popup = false;
             Bridge.stop-cast(false);
             Bridge.clear-mirroring-state();
             Bridge.app-state = UiAppState.SelectingInputType;
+        }
+
+        MirroringPopup {
+            width: root.width * 75%;
+
+            hide => {
+                is-showing-mirroring-popup = false;
+            }
         }
     }
 
@@ -2322,6 +2339,8 @@ export component MainWindow inherits Window {
                 read-only: true;
             }
         }
+    }
+
     }
 }
 

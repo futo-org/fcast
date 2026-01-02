@@ -1738,6 +1738,13 @@ impl Application {
             .instrument(tracing::debug_span!("load_settings"))
             .await?;
 
+        self.event_tx.send(Event::DeviceAvailable(DeviceInfo {
+            name: "Nothing".to_owned(),
+            protocol: fcast_sender_sdk::device::ProtocolType::FCast,
+            addresses: vec![fcast_sender_sdk::IpAddr::v4(192, 168, 122, 1)],
+            port: 46899,
+        })).unwrap();
+
         tokio::spawn({
             // let ui_weak = self.ui_weak.clone();
             async move {
