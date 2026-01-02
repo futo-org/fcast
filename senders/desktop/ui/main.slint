@@ -2122,7 +2122,7 @@ export component MainWindow inherits Window {
 
     HorizontalLayout {
         Rectangle {
-            preferred-width: 230px;
+            width: 230px;
             // TODO: animate hiding and showing of this drawer
             // preferred-width: root.width > 700px ? 266px : 0px;
             background: FCastPalette.neutral-1100;
@@ -2151,14 +2151,9 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
 
-                    Spacer { }
-
-                    VerticalLayout {
-                        alignment: center;
-
-                        LabelBox {
-                            label: "BETA";
-                        }
+                    SecondaryText {
+                        vertical-alignment: center;
+                        text: "BETA";
                     }
                 }
 
@@ -2208,6 +2203,8 @@ export component MainWindow inherits Window {
 
         if Bridge.app-state == UiAppState.YtDlp: YtDlpView { }
 
+        if Bridge.app-state == UiAppState.SelectingMirroringSource: Rectangle { }
+
         if Bridge.app-state == UiAppState.StartingCast || Bridge.app-state == UiAppState.Mirroring: MirroringView { }
 
         if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
@@ -2222,15 +2219,15 @@ export component MainWindow inherits Window {
         width: root.width * 75%;
         height: root.height * 85%;
 
-        hide => {
-            is-showing-mirroring-popup = false;
-        }
-
         close => {
             is-showing-mirroring-popup = false;
             Bridge.stop-cast(false);
             Bridge.clear-mirroring-state();
             Bridge.app-state = UiAppState.SelectingInputType;
+        }
+
+        hide => {
+            is-showing-mirroring-popup = false;
         }
     }
 
