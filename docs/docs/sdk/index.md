@@ -1,7 +1,9 @@
 
 # FCast SDK
 
-The FCast SDK can be used to easily add casting capabilities to applications. Package libraries are available to download for the following languages below, or the SDK can be built from source from https://github.com/futo-org/fcast/tree/master/sdk/sender.
+The FCast SDK can be used to easily add casting capabilities to applications.
+The SDK implements our own FCast protocol but also parts of [Google Cast] (i.e., the Default Media Receiver).
+Package libraries are available to download for the following languages below, or the SDK can be built from source from https://github.com/futo-org/fcast/tree/master/sdk/sender.
 
 ## Packages
 
@@ -16,5 +18,6 @@ The FCast SDK can be used to easily add casting capabilities to applications. Pa
 * C#: https://www.nuget.org/packages/FCastSenderSDKDotnet
     * Used in: [Grayjay Desktop]
 
+[Google Cast]: https://en.wikipedia.org/wiki/Google_Cast
 [Grayjay Android]: https://gitlab.futo.org/videostreaming/grayjay
 [Grayjay Desktop]: https://gitlab.futo.org/videostreaming/Grayjay.Desktop
