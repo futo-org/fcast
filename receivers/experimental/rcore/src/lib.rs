@@ -57,6 +57,7 @@ pub mod common {
         Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage,
         VersionMessage,
         v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
+        v3::InitialReceiverMessage,
     };
 
     #[derive(Debug, PartialEq)]
@@ -108,6 +109,7 @@ pub mod common {
         Version(VersionMessage),
         Ping,
         Pong,
+        Initial(InitialReceiverMessage),
     }
 
     impl From<&Packet> for Opcode {
@@ -127,6 +129,7 @@ pub mod common {
                 Packet::Version(_) => Opcode::Version,
                 Packet::Ping => Opcode::Ping,
                 Packet::Pong => Opcode::Pong,
+                Packet::Initial(_) => Opcode::Initial,
             }
         }
     }
@@ -184,37 +187,33 @@ pub mod common {
             })
         }
 
-        pub fn encode(&self) -> Vec<u8> {
+        pub fn encode(&self) -> anyhow::Result<Vec<u8>> {
             let body = match self {
-                Packet::Play(play_message) => {
-                    serde_json::to_string(&play_message).unwrap().into_bytes()
+                Packet::Play(play_msg) => {
+                    serde_json::to_string(&play_msg)?.into_bytes()
                 }
-                Packet::Seek(seek_message) => {
-                    serde_json::to_string(&seek_message).unwrap().into_bytes()
+                Packet::Seek(seek_msg) => {
+                    serde_json::to_string(&seek_msg)?.into_bytes()
                 }
-                Packet::PlaybackUpdate(playback_update_message) => {
-                    serde_json::to_string(&playback_update_message)
-                        .unwrap()
+                Packet::PlaybackUpdate(playback_update_msg) => {
+                    serde_json::to_string(&playback_update_msg)?
                         .into_bytes()
                 }
-                Packet::VolumeUpdate(volume_update_message) => {
-                    serde_json::to_string(&volume_update_message)
-                        .unwrap()
+                Packet::VolumeUpdate(volume_update_msg) => {
+                    serde_json::to_string(&volume_update_msg)?
                         .into_bytes()
                 }
-                Packet::SetVolume(set_volume_message) => serde_json::to_string(&set_volume_message)
-                    .unwrap()
+                Packet::SetVolume(set_volume_msg) => serde_json::to_string(&set_volume_msg)?
                     .into_bytes(),
-                Packet::PlaybackError(playback_error_message) => {
-                    serde_json::to_string(&playback_error_message)
-                        .unwrap()
+                Packet::PlaybackError(playback_error_msg) => {
+                    serde_json::to_string(&playback_error_msg)?
                         .into_bytes()
                 }
-                Packet::SetSpeed(set_speed_message) => serde_json::to_string(&set_speed_message)
-                    .unwrap()
+                Packet::SetSpeed(set_speed_msg) => serde_json::to_string(&set_speed_msg)?
                     .into_bytes(),
-                Packet::Version(version_message) => serde_json::to_string(&version_message)
-                    .unwrap()
+                Packet::Version(version_msg) => serde_json::to_string(&version_msg)?
+                    .into_bytes(),
+                Packet::Initial(initial_msg) => serde_json::to_string(&initial_msg)?
                     .into_bytes(),
                 _ => Vec::new(),
             };
@@ -223,7 +222,7 @@ pub mod common {
             let header = Header::new(self.into(), body.len() as u32).encode();
             let mut pack = header.to_vec();
             pack.extend_from_slice(&body);
-            pack
+            Ok(pack)
         }
     }
 
@@ -247,7 +246,7 @@ pub mod common {
     }
 
     pub async fn write_packet(stream: &mut WriteHalf<'_>, packet: Packet) -> anyhow::Result<()> {
-        let bytes = packet.encode();
+        let bytes = packet.encode()?;
         stream.write_all(&bytes).await?;
         Ok(())
     }
@@ -601,7 +600,7 @@ impl Application {
             };
             debug!("Sending update ({update:?})");
             self.updates_tx
-                .send(Arc::new(Packet::from(update).encode()))?;
+                .send(Arc::new(Packet::from(update).encode()?))?;
             self.last_sent_update = Instant::now();
         }
 
@@ -813,23 +812,23 @@ impl Application {
 
                 match event {
                     PlayerEvent::UriLoaded => {
-                        self.player.pause();
+                        // self.player.pause();
 
                         debug!("Commands: {:?}", self.on_playing_command_queue);
-                        // while let Some(command) = self.on_playing_command_queue.pop() {
-                        for command in self.on_playing_command_queue.iter() {
-                            match command {
-                                OnUriLoadedCommand::Seek(time) => {
-                                    self.player.seek(gst::ClockTime::from_seconds_f64(*time));
-                                }
-                                OnUriLoadedCommand::Rate(rate) => {
-                                    self.player.set_rate(*rate);
-                                }
-                                OnUriLoadedCommand::Volume(volume) => {
-                                    self.player.set_volume(*volume);
-                                }
-                            }
-                        }
+                        // TODO: ignore just for testing webrtc streaming
+                        // for command in self.on_playing_command_queue.iter() {
+                        //     match command {
+                        //         OnUriLoadedCommand::Seek(time) => {
+                        //             self.player.seek(gst::ClockTime::from_seconds_f64(*time));
+                        //         }
+                        //         OnUriLoadedCommand::Rate(rate) => {
+                        //             self.player.set_rate(*rate);
+                        //         }
+                        //         OnUriLoadedCommand::Volume(volume) => {
+                        //             self.player.set_volume(*volume);
+                        //         }
+                        //     }
+                        // }
 
                         self.player.play();
                     }
@@ -877,14 +876,106 @@ impl Application {
                             };
                             debug!("Sending update ({update:?})");
                             self.updates_tx
-                                .send(Arc::new(Packet::from(update).encode()))?;
+                                .send(Arc::new(Packet::from(update).encode()?))?;
                             self.last_sent_update = Instant::now();
                         }
                     }
                     PlayerEvent::Eos => {}
                 }
             }
-            Event::Op { session_id: id, op } => todo!(),
+            Event::Op { session_id: id, op } => {
+                debug!(id, ?op, "Operation from sender");
+                match op {
+                    Operation::Pause => {
+                        self.player.pause();
+                    }
+                    Operation::Resume => {
+                        self.player.play();
+                    }
+                    Operation::Stop => {
+                        self.player.stop();
+                        self.ui_weak.upgrade_in_event_loop(|ui| {
+                            ui.invoke_playback_stopped();
+                            ui.global::<Bridge>().set_app_state(AppState::Idle);
+                        })?;
+                    }
+                    Operation::Play(play_message) => {
+                        let mut url = if let Some(url) = play_message.url {
+                            url
+                        } else {
+                            let Some(content) = play_message.content else {
+                                error!("Play message does not contain a URL or content");
+                                return Ok(false);
+                            };
+
+                            let content_type = match play_message.container.as_str() {
+                                "application/dash+xml" => "application/dash+xml",
+                                "application/vnd.apple.mpegurl" | "audio/mpegurl" => "application/x-hls",
+                                _ => {
+                                    error!("Invalid content type {}", play_message.container);
+                                    return Ok(false);
+                                }
+                            };
+
+                            let b64_content = base64::engine::general_purpose::STANDARD.encode(content);
+
+                            format!("data:{content_type};base64,{b64_content}")
+                        };
+
+                        if play_message.container == "application/x-whep" {
+                            url = url.replace("http://", "fcastwhep://");
+                        }
+
+                        self.on_playing_command_queue.clear();
+
+                        self.player.set_uri(Some(&url));
+                        if let Some(rate) = play_message.speed {
+                            self.on_playing_command_queue
+                                .push(OnUriLoadedCommand::Rate(rate));
+                            // self.player.set_rate(rate);
+                        }
+                        if let Some(time) = play_message.time {
+                            self.on_playing_command_queue
+                                .push(OnUriLoadedCommand::Seek(time));
+                            // self.player.seek(gst::ClockTime::from_seconds_f64(time));
+                        }
+
+                        // if let Err(err) = self.pipeline.set_playback_uri(&url) {
+                        //     use pipeline::SetPlaybackUriError;
+                        //     match err {
+                        //         SetPlaybackUriError::PipelineStateChange(state_change_error) => {
+                        //             return Err(state_change_error.into());
+                        //         }
+                        //         _ => {
+                        //             error!("Failed to set playback URI: {err}");
+                        //             return Ok(false);
+                        //         }
+                        //     }
+                        // }
+                        // if let Err(err) = self.pipeline.play_or_resume() {
+                        //     error!("Failed to play_or_resume pipeline: {err}");
+                        // } else {
+                        //     self.ui_weak.upgrade_in_event_loop(|ui| {
+                        //         ui.invoke_playback_started();
+                        //         ui.global::<Bridge>().set_app_state(AppState::Playing);
+                        //     })?;
+                        //     self.notify_updates()
+                        //         .context("failed to notify about updates")?;
+                        // }
+                    }
+                    Operation::Seek(seek_message) => {
+                        self.player
+                            .seek(gst::ClockTime::from_seconds_f64(seek_message.time));
+                    }
+                    Operation::SetSpeed(set_speed_message) => {
+                        self.player.set_rate(set_speed_message.speed);
+                    }
+                    Operation::SetPlaylistItem(_set_playlist_item_message) => (),
+                    Operation::SetVolume(set_volume_msg) => {
+                        self.player.set_volume(set_volume_msg.volume);
+                    }
+                }
+            }
         }
 
         Ok(false)
@@ -954,7 +1045,7 @@ impl Application {
             }
         }
 
-        // self.pipeline.stop()?;
+        self.player.stop();
 
         debug!("Quitting");
 

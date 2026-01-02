@@ -2,10 +2,12 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     Event,
-    common::{HEADER_BUFFER_SIZE, Header, Packet, read_packet, write_packet},
+    common::{HEADER_BUFFER_SIZE, Header, Packet, write_packet},
 };
 use bitflags::bitflags;
-use fcast_protocol::{Opcode, SeekMessage, SetSpeedMessage, VersionMessage, v3};
+use fcast_protocol::{
+    Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, v3::{self, ReceiverCapabilities}
+};
 use futures::stream::unfold;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -52,6 +54,7 @@ pub enum Operation {
     Seek(SeekMessage),
     SetSpeed(SetSpeedMessage),
     SetPlaylistItem(v3::SetPlaylistItemMessage),
+    SetVolume(SetVolumeMessage),
 }
 
 #[derive(Debug, PartialEq)]
@@ -61,9 +64,10 @@ enum Action {
     Pong,
     EndSession,
     Op(Operation),
+    SendInitial,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum SessionVersion {
     V1,
     V2,
@@ -193,8 +197,11 @@ impl State {
                     _ => return Err(StateError::IllegalVersion(msg.version)),
                 };
                 self.variant = StateVariant::Active { version };
-                // TODO: send InitialReceiverMessage on v3
-                Action::None
+                if version == SessionVersion::V3 {
+                    Action::SendInitial
+                } else {
+                    Action::None
+                }
             }
             // TODO: technically v2 doesn't need to accept VersionMessage before starting the session
             _ => return Err(StateError::IllegalOpcode(opcode)),
@@ -221,7 +228,10 @@ impl State {
                 let msg = option_err_json!(SeekMessage, option_err_body!(body));
                 Action::Op(Operation::Seek(msg))
             }
-            Opcode::SetVolume => todo!(),
+            Opcode::SetVolume => {
+                let msg = option_err_json!(SetVolumeMessage, option_err_body!(body));
+                Action::Op(Operation::SetVolume(msg))
+            }
             // Ignore
             Opcode::PlaybackUpdate
             | Opcode::VolumeUpdate
@@ -369,107 +379,6 @@ impl State {
     }
 }
 
-// pub struct Session {
-//     stream: TcpStream,
-//     id: SessionId,
-// }
-
-// impl Session {
-//     pub fn new(stream: TcpStream, id: SessionId) -> Self {
-//         todo!()
-//         // Self { stream, id }
-//     }
-
-//     pub async fn run(
-//         mut self,
-//         updates_rx: Receiver<Arc<Vec<u8>>>,
-//         event_tx: &Sender<Event>,
-//     ) -> anyhow::Result<()> {
-// debug!("id={} Session was started", self.id);
-
-// let (tcp_stream_rx, mut tcp_stream_tx) = self.stream.split();
-
-// let packets_stream = unfold(tcp_stream_rx, |mut tcp_stream| async move {
-//     match read_packet(&mut tcp_stream).await {
-//         Ok(p) => Some((p, tcp_stream)),
-//         Err(err) => {
-//             error!("Failed to receive packet: {err}");
-//             None
-//         }
-//     }
-// });
-
-// let updates_stream = unfold(
-//     updates_rx,
-//     |mut updates_rx: Receiver<Arc<Vec<u8>>>| async move {
-//         updates_rx
-//             .recv()
-//             .await
-//             .ok()
-//             .map(|update| (update, updates_rx))
-//     },
-// );
-
-// tokio::pin!(packets_stream);
-// tokio::pin!(updates_stream);
-
-// write_packet(
-//     &mut tcp_stream_tx,
-//     Packet::Version(VersionMessage { version: 2 }),
-// )
-// .await?;
-
-// loop {
-//     tokio::select! {
-//         r = packets_stream.next() => {
-//             let Some(packet) = r else {
-//                 break;
-//             };
-
-//             trace!("id={} Got packet: {packet:?}", self.id);
-
-//             match packet {
-//                 Packet::None => (),
-//                 Packet::Play(play_message) => {
-//                     event_tx.send(Event::Play(play_message)).await?
-//                 }
-//                 Packet::Pause => event_tx.send(Event::Pause).await?,
-//                 Packet::Resume => event_tx.send(Event::Resume).await?,
-//                 Packet::Stop => event_tx.send(Event::Stop).await?,
-//                 Packet::Seek(seek_message) => {
-//                     event_tx.send(Event::Seek(seek_message)).await?
-//                 }
-//                 Packet::SetVolume(set_volume_message) => {
-//                     event_tx.send(Event::SetVolume(set_volume_message)).await?;
-//                 }
-//                 Packet::SetSpeed(set_speed_message) => {
-//                     event_tx.send(Event::SetSpeed(set_speed_message)).await?;
-//                 }
-//                 Packet::Ping => write_packet(&mut tcp_stream_tx, Packet::Pong).await?,
-//                 Packet::Pong => trace!("id={} Got pong from sender", self.id),
-//                 _ => warn!(
-//                     "id={} Invalid packet from sender packet={packet:?}",
-//                     self.id
-//                 ),
-//             }
-//         }
-//         r = updates_stream.next() => {
-//             let Some(update) = r else {
-//                 break;
-//             };
-
-//             tcp_stream_tx.write_all(&update).await?;
-//             trace!("id={} Sent update", self.id);
-//         }
-//         _ = tick_interval.tick() => {
-//         }
-//     }
-// }
-
-//         Ok(())
-//     }
-// }
-
 pub struct SessionDriver {
     stream: TcpStream,
     id: SessionId,
@@ -505,6 +414,25 @@ impl SessionDriver {
                             op: operation,
                         })
                         .await?;
+                }
+                Action::SendInitial => {
+                    write_packet(
+                        tcp_stream_tx,
+                        Packet::Initial(v3::InitialReceiverMessage {
+                            display_name: None,
+                            app_name: Some("FCast Receiver Desktop".to_owned()),
+                            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                            play_data: None,
+                            experimental_capabilities: Some(ReceiverCapabilities {
+                                av: Some(v3::AVCapabilities {
+                                    livestream: Some(v3::LivestreamCapabilities {
+                                        whep: Some(true),
+                                    }),
+                                }),
+                            }),
+                        }),
+                    )
+                    .await?
                 }
             },
             Err(err) => {
@@ -592,31 +520,6 @@ impl SessionDriver {
                     if Self::handle_state_result(self.id, &mut tcp_stream_tx, &event_tx, res).await? {
                         break;
                     }
-
-                    // match packet {
-                    //     Packet::None => (),
-                    //     Packet::Play(play_message) => {
-                    //         event_tx.send(Event::Play(play_message)).await?
-                    //     }
-                    //     Packet::Pause => event_tx.send(Event::Pause).await?,
-                    //     Packet::Resume => event_tx.send(Event::Resume).await?,
-                    //     Packet::Stop => event_tx.send(Event::Stop).await?,
-                    //     Packet::Seek(seek_message) => {
-                    //         event_tx.send(Event::Seek(seek_message)).await?
-                    //     }
-                    //     Packet::SetVolume(set_volume_message) => {
-                    //         event_tx.send(Event::SetVolume(set_volume_message)).await?;
-                    //     }
-                    //     Packet::SetSpeed(set_speed_message) => {
-                    //         event_tx.send(Event::SetSpeed(set_speed_message)).await?;
-                    //     }
-                    //     Packet::Ping => write_packet(&mut tcp_stream_tx, Packet::Pong).await?,
-                    //     Packet::Pong => debug!("Got pong from sender"),
-                    //     _ => warn!(
-                    //         "id={} Invalid packet from sender packet={packet:?}",
-                    //         self.id
-                    //     ),
-                    // }
                 }
                 r = updates_stream.next() => {
                     let Some(update) = r else {
