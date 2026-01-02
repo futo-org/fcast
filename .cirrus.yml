@@ -51,4 +51,4 @@ desktop_sender_task:
     - export DYLD_LIBRARY_PATH=/Library/Frameworks/GStreamer.framework/Libraries:$DYLD_LIBRARY_PATH
     - cargo xtask sender build-macos-installer
   binary_artifacts:
-    path: target/fcast-sender.dmg
+    path: target/fcast-sender-*.dmg

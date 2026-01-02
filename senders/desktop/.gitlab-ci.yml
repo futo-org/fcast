@@ -12,5 +12,5 @@ buildMacosArm64:
     when: on_success
     access: all
     paths:
-      - buildSenderMacosArm64/binary/target/fcast-sender.dmg
+      - buildSenderMacosArm64/binary/target/fcast-sender-*.dmg
   when: manual
