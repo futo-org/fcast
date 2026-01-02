@@ -24,8 +24,6 @@ use tokio::{
 use tracing::{debug, error};
 use uuid::Uuid;
 
-const MAX_PARTIAL_CONTENT_SIZE: u64 = 10 * 1024 * 1024;
-
 #[derive(PartialEq, Eq)]
 enum FileSeekState {
     NeedSeek,
@@ -200,8 +198,6 @@ async fn handle_request(
             };
 
             if let Some(range) = ranges.get_mut(0) {
-                range.length = range.length.min(MAX_PARTIAL_CONTENT_SIZE);
-
                 let bytes_range_str = format!(
                     "bytes {}-{}/{file_len}",
                     range.start,
