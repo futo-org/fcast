@@ -60,6 +60,8 @@ impl Pipeline {
             None
         });
 
+        // playbin.set_property("buffer-size", 10i32 * 1024 * 1024);
+
         pipeline.add(&playbin)?;
 
         tokio::spawn({
