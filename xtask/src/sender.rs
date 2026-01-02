@@ -78,7 +78,7 @@ const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = ["gstapplemedia"];
 
 #[cfg(target_os = "windows")]
 #[derive(askama::Template)]
-#[template(path = "Product.wxs.askama")]
+#[template(path = "Product.wxs.askama", escape = "none")]
 struct ProductTemplate {
     version: String,
     dll_components: String,
@@ -589,8 +589,9 @@ impl SenderArgs {
                     }
                 }
 
+                let sender_version = get_sender_version();
                 let product_wxs = ProductTemplate {
-                    version: "0.1.0".to_owned(),
+                    version: sender_version.clone(),
                     dll_components,
                 }
                 .render()?;
@@ -603,8 +604,9 @@ impl SenderArgs {
                 println!("############### Building installer ###############");
 
                 {
+                    let output = format!("FCastSender-{sender_version}-win64-installer.msi");
                     let _win_build_p = sh.push_dir(&build_dir_root);
-                    cmd!(sh, "wix build .\\FCastSenderInstaller.wxs").run()?;
+                    cmd!(sh, "wix build -out {output} .\\FCastSenderInstaller.wxs").run()?;
                 }
             }
             #[cfg(target_os = "macos")]
