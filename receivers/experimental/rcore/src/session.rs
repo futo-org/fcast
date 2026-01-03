@@ -19,7 +19,7 @@ use tokio::{
     sync::{broadcast::Receiver, mpsc::Sender},
 };
 use tokio_stream::StreamExt;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 
 pub type SessionId = u64;
 
@@ -348,8 +348,8 @@ impl State {
             DriverEvent::Tick => {
                 self.time += 1;
                 let diff = self.time - self.last_packet_received;
-                if diff > TICKS_BEFORE_PING {
-                    if self.waiting_for_pong && diff > TICKS_BEFORE_PING * 2 {
+                if diff >= TICKS_BEFORE_PING {
+                    if self.waiting_for_pong && diff >= TICKS_BEFORE_PING * 2 {
                         Action::EndSession
                     } else if !self.waiting_for_pong {
                         self.waiting_for_pong = true;
@@ -405,7 +405,10 @@ impl SessionDriver {
         match res {
             Ok(action) => match action {
                 Action::None => (),
-                Action::Ping => write_packet(tcp_stream_tx, Packet::Ping).await?,
+                Action::Ping => {
+                    write_packet(tcp_stream_tx, Packet::Ping).await?;
+                    debug!("Sent ping");
+                }
                 Action::Pong => write_packet(tcp_stream_tx, Packet::Pong).await?,
                 Action::EndSession => return Ok(true),
                 Action::Op(operation) => {
@@ -557,7 +560,7 @@ mod tests {
     fn timeout() {
         let mut state = State::new();
         let mut events = Vec::new();
-        for _ in 0..TICKS_BEFORE_PING {
+        for _ in 0..TICKS_BEFORE_PING - 1 {
             events.push((DriverEvent::Tick, Ok(Action::None)));
         }
         events.push((DriverEvent::Tick, Ok(Action::Ping)));
@@ -588,7 +591,7 @@ mod tests {
             (
                 Opcode::Version,
                 Some(v3_json.as_str()),
-                Action::None,
+                Action::SendInitial,
                 SessionVersion::V3,
             ),
         ];

@@ -12,7 +12,6 @@ use tracing::error;
 pub struct SlintOpenGLSink {
     appsink: gst_app::AppSink,
     glsink: gst::Element,
-    // compositor: gst::Element,
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     current_frame: Mutex<Option<gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>>>,
     gst_gl_context: Option<gst_gl::GLContext>,
@@ -31,18 +30,7 @@ fn is_on_wayland() -> Result<bool> {
 
 impl SlintOpenGLSink {
     pub fn new() -> Result<Self> {
-        // let capsfilter = gst::ElementFactory::make("capsfilter")
-        //     .property(
-        //         "caps",
-        //         &gst_video::VideoCapsBuilder::new()
-        //             .features([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY, gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION])
-        //             .format(gst_video::VideoFormat::Rgba)
-        //             .field("texture-target", "2D")
-        //             .width_range(1..i32::MAX)
-        //             .height_range(1..i32::MAX)
-        //             .build(),
-        //     )
-        //     .build()?;
+        // TODO: this works for most cases but not all (dvd?)
         let compositor = gst::ElementFactory::make("gloverlaycompositor").build()?;
         let appsink = gst_app::AppSink::builder()
             .caps(
@@ -59,26 +47,20 @@ impl SlintOpenGLSink {
             .build();
         let sink = gst::Bin::new();
 
-        // sink.add_many(&[&capsfilter, &compositor, appsink.upcast_ref()])?;
-        // gst::Element::link_many(&[&capsfilter, &compositor, appsink.upcast_ref()])?;
-
         sink.add_many(&[&compositor, appsink.upcast_ref()])?;
         gst::Element::link_many(&[&compositor, appsink.upcast_ref()])?;
 
         sink.add_pad(&gst::GhostPad::with_target(
             &compositor.static_pad("sink").unwrap(),
-            // &capsfilter.static_pad("sink").unwrap(),
         )?)?;
 
         let glsink = gst::ElementFactory::make("glsinkbin")
-            // .property("sink", &appsink)
             .property("sink", &sink)
             .build()?;
 
         Ok(Self {
             appsink,
             glsink,
-            // compositor,
             next_frame: Default::default(),
             current_frame: Default::default(),
             gst_gl_context: None,
@@ -250,6 +232,14 @@ impl SlintOpenGLSink {
             error!("Got invalid caps");
             return Err(gst::FlowError::NotNegotiated);
         };
+
+        // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/video/gtk4/src/sink/frame.rs?ref_type=heads
+        let overlays: Vec<()> = buffer
+            .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
+            .flat_map(|meta| {
+                vec![()]
+            })
+            .collect();
 
         let next_frame_ref = next_frame_ref.clone();
         *next_frame_ref.lock().unwrap() = Some((info, buffer));

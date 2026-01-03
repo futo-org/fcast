@@ -11,6 +11,7 @@ fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
 gethostname = "1.0.1"
 # slint = { workspace = true, features = ["unstable-wgpu-26", "renderer-femtovg-wgpu"] }
 # slint = { workspace = true, features = ["unstable-wgpu-26"] }
+# slint = { version = "1.14.1", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "std", "raw-window-handle-06" ] }
 slint = { version = "1.14.1", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "std" ] }
 anyhow.workspace = true
 # futures.workspace = true

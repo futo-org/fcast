@@ -7,7 +7,6 @@ use fcast_protocol::{
 };
 use gst::prelude::*;
 use tracing::{Instrument, debug, error, level_filters::LevelFilter};
-// use pipeline::Pipeline;
 use futures::StreamExt;
 use session::{SessionDriver, SessionId};
 use tokio::{
@@ -341,6 +340,8 @@ fn get_all_available_addrs_ignore_v6_and_localhost() -> Result<Vec<Ipv4Addr>> {
 
 impl Application {
     pub async fn new(
+        // win_handle_rx: std::sync::mpsc::Receiver<usize>,
+        // win_handle_rx: std::sync::mpsc::Receiver<(RawDisplayHandle, usize)>,
         appsink: gst::Element,
         // TODO: should be a unbounded channel
         event_tx: Sender<Event>,
@@ -348,7 +349,12 @@ impl Application {
     ) -> Result<Self> {
         // let pipeline = Pipeline::new(appsink, event_tx.clone()).await?;
 
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        debug!("Finished sleeping");
+
         let video_renderer = gst_play::PlayVideoOverlayVideoRenderer::with_sink(&appsink);
+        // let (handle, win) = win_handle_rx.recv().unwrap();
+        // let video_renderer = unsafe { gst_play::PlayVideoOverlayVideoRenderer::new(win) };
 
         let player =
             gst_play::Play::new(Some(video_renderer.upcast::<gst_play::PlayVideoRenderer>()));
@@ -1169,12 +1175,47 @@ pub fn run() -> Result<()> {
     let mut slint_sink = video::SlintOpenGLSink::new()?;
     let slint_appsink = slint_sink.video_sink();
 
+    // let imagesink = gst::ElementFactory::make("glimagesink").build()?;
+    // let video_overlay = imagesink.clone().dynamic_cast::<gst_video::VideoOverlay>().unwrap();
+    // let (win_handle_tx, win_handle_rx) = std::sync::mpsc::channel();
+
     let ui = MainWindow::new()?;
 
     ui.global::<Bridge>().set_qr_code(qr_code_image);
 
     #[cfg(debug_assertions)]
     ui.global::<Bridge>().set_is_debugging(true);
+
+    // let window_handle = ui.window().window_handle().window_handle().unwrap().as_raw();
+    // debug!(?window_handle, "Got window handle");
+
+    // use slint::winit_030::WinitWindowAccessor;
+    // let ui_weak = ui.as_weak();
+    // slint::spawn_local(async move {
+    //     let ui = ui_weak.upgrade().unwrap();
+    //     let win = ui.window().winit_window().await.unwrap();
+    //     debug!(?win, "Window handle");
+    //     // win.raw_window_handle();
+    //     let display_handle = win.display_handle().unwrap();
+    //     let raw_display_handle = display_handle.as_raw();
+    //     let win_handle = win.window_handle().unwrap();
+    //     let raw_handle = win_handle.as_raw();
+    //     debug!(?raw_handle, "Raw window handle");
+    //     match raw_handle {
+    //         slint::winit_030::winit::raw_window_handle::RawWindowHandle::Wayland(wayland_window_handle) => {
+    //             unsafe {
+    //                 // video_overlay.set_window_handle(wayland_window_handle.surface.read() as usize);
+    //                 win_handle_tx.send((raw_display_handle, wayland_window_handle.surface.read() as usize)).unwrap();
+    //             }
+    //         }
+    //         // slint::winit_030::winit::raw_window_handle::RawWindowHandle::Drm(drm_window_handle) => todo!(),
+    //         // slint::winit_030::winit::raw_window_handle::RawWindowHandle::Gbm(gbm_window_handle) => todo!(),
+    //         _ => todo!(),
+    //     }
+    // }).unwrap();
+    // common::runtime().spawn(async move {
+    //     let win = win.await;
+    // });
 
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
@@ -1224,6 +1265,8 @@ pub fn run() -> Result<()> {
         let event_tx = event_tx.clone();
         async move {
             Application::new(slint_appsink, event_tx, ui_weak)
+                // Application::new(imagesink, event_tx, ui_weak)
+                // Application::new(win_handle_rx, event_tx, ui_weak)
                 .await
                 .unwrap()
                 .run_event_loop(event_rx, fin_tx)
