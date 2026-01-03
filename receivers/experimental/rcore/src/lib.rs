@@ -257,12 +257,8 @@ enum PlayerEvent {
 
 #[derive(Debug)]
 pub enum Event {
-    Pause,
-    Play(PlayMessage),
-    Resume,
     Stop,
     SetSpeed(SetSpeedMessage),
-    Seek(SeekMessage),
     SetVolume(SetVolumeMessage),
     Quit,
     PipelineEos,
@@ -386,15 +382,12 @@ impl Application {
             None
         });
 
-        // TODO: subtitles are it's own video buffers (see https://github.com/GStreamer/gst-docs/blob/master/markdown/additional/design/subtitle-overlays.md)
-        //       which needs to be rendered separately
         // TODO: gifs should not be played by gstreamer (crashes)
         // TODO: images should not be played by gstreamer (overkill)
-        // TODO: glimagesink can supposedly render into our window (https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-base/ext/gl/gstglimagesink.c#L30)
 
         tokio::spawn({
             let player_bus = player.message_bus();
-            let player_weak = player.downgrade();
+            // let player_weak = player.downgrade();
             let event_tx = event_tx.clone();
 
             async move {
@@ -463,6 +456,7 @@ impl Application {
         let (updates_tx, _) = broadcast::channel(10);
 
         // TODO: IPv6?
+        // TODO: update addresses when they change on the device
         let mdns = {
             let daemon = mdns_sd::ServiceDaemon::new()?;
 
@@ -476,7 +470,7 @@ impl Application {
             }
 
             let name = format!(
-                "OpenMirroring-{}",
+                "FCast-{}",
                 gethostname::gethostname().to_string_lossy()
             );
 
@@ -642,85 +636,8 @@ impl Application {
                     ui.global::<Bridge>().invoke_device_disconnected();
                 })?;
             }
-            Event::Pause => {
-                self.player.pause();
-                // self.pipeline.pause().context("failed to pause pipeline")?;
-                // self.notify_updates()
-                //     .context("failed to notify about updates")?;
-            }
-            Event::Resume => {
-                self.player.play();
-                // self
-                // .pipeline
-                // .play_or_resume()
-                // .context("failed to play or resume pipeline")?;
-            }
-            Event::Play(play_message) => {
-                // let Some(mut url) = play_message.url else {
-                let mut url = if let Some(url) = play_message.url {
-                    url
-                } else {
-                    let Some(content) = play_message.content else {
-                        error!("Play message does not contain a URL or content");
-                        return Ok(false);
-                    };
-
-                    let content_type = match play_message.container.as_str() {
-                        "application/dash+xml" => "application/dash+xml",
-                        "application/vnd.apple.mpegurl" | "audio/mpegurl" => "application/x-hls",
-                        _ => {
-                            error!("Invalid content type {}", play_message.container);
-                            return Ok(false);
-                        }
-                    };
-
-                    let b64_content = base64::engine::general_purpose::STANDARD.encode(content);
-
-                    format!("data:{content_type};base64,{b64_content}")
-                };
-
-                if play_message.container == "application/x-whep" {
-                    url = url.replace("http://", "fcastwhep://");
-                }
-
-                self.on_playing_command_queue.clear();
-
-                self.player.set_uri(Some(&url));
-                if let Some(rate) = play_message.speed {
-                    self.on_playing_command_queue
-                        .push(OnUriLoadedCommand::Rate(rate));
-                    // self.player.set_rate(rate);
-                }
-                if let Some(time) = play_message.time {
-                    self.on_playing_command_queue
-                        .push(OnUriLoadedCommand::Seek(time));
-                    // self.player.seek(gst::ClockTime::from_seconds_f64(time));
-                }
-
-                // if let Err(err) = self.pipeline.set_playback_uri(&url) {
-                //     use pipeline::SetPlaybackUriError;
-                //     match err {
-                //         SetPlaybackUriError::PipelineStateChange(state_change_error) => {
-                //             return Err(state_change_error.into());
-                //         }
-                //         _ => {
-                //             error!("Failed to set playback URI: {err}");
-                //             return Ok(false);
-                //         }
-                //     }
-                // }
-                // if let Err(err) = self.pipeline.play_or_resume() {
-                //     error!("Failed to play_or_resume pipeline: {err}");
-                // } else {
-                //     self.ui_weak.upgrade_in_event_loop(|ui| {
-                //         ui.invoke_playback_started();
-                //         ui.global::<Bridge>().set_app_state(AppState::Playing);
-                //     })?;
-                //     self.notify_updates()
-                //         .context("failed to notify about updates")?;
-                // }
-            }
             Event::ResumeOrPause => {
+                // unreachable!("Legacy");
                 match self.player_state {
                     gst_play::PlayState::Paused => self.player.play(),
                     gst_play::PlayState::Playing => self.player.pause(),
@@ -751,20 +668,12 @@ impl Application {
                 })?;
             }
             Event::SetSpeed(set_speed_message) => {
+                // unreachable!("Legacy");
                 self.player.set_rate(set_speed_message.speed);
                 // self
                 // .pipeline
                 // .set_speed(set_speed_message.speed)
                 // .context("failed to set speed")?;
-            }
-            Event::Seek(seek_message) => {
-                self.player
-                    .seek(gst::ClockTime::from_seconds_f64(seek_message.time));
-                // if let Err(err) = self.pipeline.seek(seek_message.time) {
-                //     error!("Seek error: {err}");
-                //     return Ok(false);
-                // }
-                // self.notify_updates()?;
             }
             Event::SeekPercent(percent) => {
                 debug!("SeekPercent({percent})");
@@ -842,19 +751,19 @@ impl Application {
 
                         debug!("Commands: {:?}", self.on_playing_command_queue);
                         // TODO: ignore just for testing webrtc streaming
-                        // for command in self.on_playing_command_queue.iter() {
-                        //     match command {
-                        //         OnUriLoadedCommand::Seek(time) => {
-                        //             self.player.seek(gst::ClockTime::from_seconds_f64(*time));
-                        //         }
-                        //         OnUriLoadedCommand::Rate(rate) => {
-                        //             self.player.set_rate(*rate);
-                        //         }
-                        //         OnUriLoadedCommand::Volume(volume) => {
-                        //             self.player.set_volume(*volume);
-                        //         }
-                        //     }
-                        // }
+                        for command in self.on_playing_command_queue.iter() {
+                            match command {
+                                OnUriLoadedCommand::Seek(time) => {
+                                    self.player.seek(gst::ClockTime::from_seconds_f64(*time));
+                                }
+                                OnUriLoadedCommand::Rate(rate) => {
+                                    self.player.set_rate(*rate);
+                                }
+                                OnUriLoadedCommand::Volume(volume) => {
+                                    self.player.set_volume(*volume);
+                                }
+                            }
+                        }
 
                         self.player.play();
                     }
@@ -951,8 +860,10 @@ impl Application {
                             format!("data:{content_type};base64,{b64_content}")
                         };
 
+                        let mut is_for_sure_live = false;
                         if play_message.container == "application/x-whep" {
                             url = url.replace("http://", "fcastwhep://");
+                            is_for_sure_live = true;
                         }
 
                         self.on_playing_command_queue.clear();
@@ -963,7 +874,7 @@ impl Application {
                                 .push(OnUriLoadedCommand::Rate(rate));
                             // self.player.set_rate(rate);
                         }
-                        if let Some(time) = play_message.time {
+                        if !is_for_sure_live && let Some(time) = play_message.time {
                             self.on_playing_command_queue
                                 .push(OnUriLoadedCommand::Seek(time));
                             // self.player.seek(gst::ClockTime::from_seconds_f64(time));
