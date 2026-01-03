@@ -6,7 +6,8 @@ use crate::{
 };
 use bitflags::bitflags;
 use fcast_protocol::{
-    Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, v3::{self, ReceiverCapabilities}
+    Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
+    v3::{self, ReceiverCapabilities},
 };
 use futures::stream::unfold;
 use tokio::{

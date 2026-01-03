@@ -31,7 +31,7 @@ pub use slint;
 use crate::session::Operation;
 
 pub mod fcastwhepsrcbin;
-pub mod pipeline;
+// pub mod pipeline;
 pub mod session;
 pub mod video;
 
@@ -189,32 +189,25 @@ pub mod common {
 
         pub fn encode(&self) -> anyhow::Result<Vec<u8>> {
             let body = match self {
-                Packet::Play(play_msg) => {
-                    serde_json::to_string(&play_msg)?.into_bytes()
-                }
-                Packet::Seek(seek_msg) => {
-                    serde_json::to_string(&seek_msg)?.into_bytes()
-                }
+                Packet::Play(play_msg) => serde_json::to_string(&play_msg)?.into_bytes(),
+                Packet::Seek(seek_msg) => serde_json::to_string(&seek_msg)?.into_bytes(),
                 Packet::PlaybackUpdate(playback_update_msg) => {
-                    serde_json::to_string(&playback_update_msg)?
-                        .into_bytes()
+                    serde_json::to_string(&playback_update_msg)?.into_bytes()
                 }
                 Packet::VolumeUpdate(volume_update_msg) => {
-                    serde_json::to_string(&volume_update_msg)?
-                        .into_bytes()
+                    serde_json::to_string(&volume_update_msg)?.into_bytes()
                 }
-                Packet::SetVolume(set_volume_msg) => serde_json::to_string(&set_volume_msg)?
-                    .into_bytes(),
+                Packet::SetVolume(set_volume_msg) => {
+                    serde_json::to_string(&set_volume_msg)?.into_bytes()
+                }
                 Packet::PlaybackError(playback_error_msg) => {
-                    serde_json::to_string(&playback_error_msg)?
-                        .into_bytes()
+                    serde_json::to_string(&playback_error_msg)?.into_bytes()
                 }
-                Packet::SetSpeed(set_speed_msg) => serde_json::to_string(&set_speed_msg)?
-                    .into_bytes(),
-                Packet::Version(version_msg) => serde_json::to_string(&version_msg)?
-                    .into_bytes(),
-                Packet::Initial(initial_msg) => serde_json::to_string(&initial_msg)?
-                    .into_bytes(),
+                Packet::SetSpeed(set_speed_msg) => {
+                    serde_json::to_string(&set_speed_msg)?.into_bytes()
+                }
+                Packet::Version(version_msg) => serde_json::to_string(&version_msg)?.into_bytes(),
+                Packet::Initial(initial_msg) => serde_json::to_string(&initial_msg)?.into_bytes(),
                 _ => Vec::new(),
             };
 
@@ -365,6 +358,33 @@ impl Application {
         player
             .set_config(player_config)
             .context("Failed to set gst player config")?;
+
+        let player_playbin = player.pipeline();
+        player_playbin.connect("element-setup", false, |vals| {
+            let Ok(elem) = vals[1].get::<gst::Element>() else {
+                return None;
+            };
+
+            if let Some(factory) = elem.factory()
+                && factory.name() == "rtspsrc"
+            {
+                elem.set_property("latency", 25u32);
+            }
+
+            if let Some(factory) = elem.factory()
+                && factory.name() == "webrtcbin"
+            {
+                elem.set_property("latency", 1u32);
+            }
+
+            None
+        });
+
+        // TODO: subtitles are it's own video buffers (see https://github.com/GStreamer/gst-docs/blob/master/markdown/additional/design/subtitle-overlays.md)
+        //       which needs to be rendered separately
+        // TODO: gifs should not be played by gstreamer (crashes)
+        // TODO: images should not be played by gstreamer (overkill)
+        // TODO: glimagesink can supposedly render into our window (https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-base/ext/gl/gstglimagesink.c#L30)
 
         tokio::spawn({
             let player_bus = player.message_bus();
@@ -910,14 +930,17 @@ impl Application {
 
                             let content_type = match play_message.container.as_str() {
                                 "application/dash+xml" => "application/dash+xml",
-                                "application/vnd.apple.mpegurl" | "audio/mpegurl" => "application/x-hls",
+                                "application/vnd.apple.mpegurl" | "audio/mpegurl" => {
+                                    "application/x-hls"
+                                }
                                 _ => {
                                     error!("Invalid content type {}", play_message.container);
                                     return Ok(false);
                                 }
                             };
 
-                            let b64_content = base64::engine::general_purpose::STANDARD.encode(content);
+                            let b64_content =
+                                base64::engine::general_purpose::STANDARD.encode(content);
 
                             format!("data:{content_type};base64,{b64_content}")
                         };
