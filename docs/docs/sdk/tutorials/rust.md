@@ -6,7 +6,7 @@ This tutorial will show you basic usage of the [FCast sender SDK] from rust.
 
 First we need to create a new project:
 
-```console
+```
 cargo new --bin fcast-tutorial
 ```
 

@@ -100,8 +100,7 @@ DiscoveryEventHandler Device changed: DeviceInfo(name=MyFCast, protocol=F_CAST, 
 
 #### Connecting
 
-Now that we have a device we can initiate a connection which requires some boilerplate. Similar to the discoverer we need to create a
-type that implements a callback interface:
+Now that we have a device we can initiate a connection which requires some boilerplate. Similar to the discoverer we need to create a type that implements a callback interface:
 
 ```kotlin
 import org.fcast.sender_sdk.DeviceConnectionState
@@ -386,3 +385,4 @@ fun GreetingPreview() {
 
 [JNA]: https://github.com/java-native-access/jna
 [Automatic Discovery]: ../../receiver/#automatic-discovery-mdns
+[Big Buck Bunny]: https://en.wikipedia.org/wiki/Big_Buck_Bunny
