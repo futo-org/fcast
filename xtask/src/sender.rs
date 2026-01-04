@@ -135,13 +135,25 @@ pub struct AndroidSenderArgs {
     pub gstreamer_root_override: Option<String>,
 }
 
+#[derive(Args)]
+pub struct BuildMacosInstallerArgs {
+    #[clap(long, default_value = "false")]
+    pub sign: bool,
+    #[clap(long)]
+    pub p12_file: Option<String>,
+    #[clap(long)]
+    pub p12_password_file: Option<String>,
+    #[clap(long)]
+    pub api_key_file: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub enum SenderCommand {
     Android(AndroidSenderArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller,
     #[cfg(target_os = "macos")]
-    BuildMacosInstaller,
+    BuildMacosInstaller(BuildMacosInstallerArgs),
 }
 
 #[derive(Args)]
@@ -610,7 +622,12 @@ impl SenderArgs {
                 }
             }
             #[cfg(target_os = "macos")]
-            SenderCommand::BuildMacosInstaller => {
+            SenderCommand::BuildMacosInstaller(BuildMacosInstallerArgs {
+                sign,
+                p12_file,
+                p12_password_file,
+                api_key_file,
+            }) => {
                 fn plugins() -> Vec<String> {
                     GSTREAMER_PLUGIN_LIBS_COMMON
                         .iter()
@@ -857,9 +874,24 @@ impl SenderArgs {
                     .join(format!("fcast-sender-{sender_version}.dmg"));
                 sh.remove_path(&path_to_dmg)?;
 
+                if sign {
+                    println!("############### Signing ###############");
+                    let p12_file = p12_file.unwrap();
+                    let p12_password_file = p12_password_file.unwrap();
+                    cmd!(sh, "rcodesign sign --p12-file {p12_file} --p12-password-file {p12_password_file} --code-signature-flags runtime {app_top_level}/Contents/MacOS/fcast-sender").run()?;
+                    cmd!(sh, "rcodesign sign --p12-file {p12_file} --p12-password-file {p12_password_file} {app_top_level}").run()?;
+                }
+
+
                 println!("############### Creating dmg ###############");
 
                 cmd!(sh, "hdiutil create -volname FCastSender -megabytes 250 {path_to_dmg} -srcfolder {path_to_dmg_dir}").run()?;
+
+                if sign {
+                    println!("############### Notarizing ###############");
+                    let api_key_file = api_key_file.unwrap();
+                    cmd!(sh, "rcodesign notary-submit --api-key-file {api_key_file} --wait {path_to_dmg}").run()?;
+                }
             }
         }
 

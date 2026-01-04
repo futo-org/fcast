@@ -42,6 +42,10 @@ desktop_sender_task:
     - rustup-init -y
     - rustup target add aarch64-apple-darwin
     - source $HOME/.cargo/env
+
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+
+    # Download and install gstreamer
     - wget -q "https://gstreamer.freedesktop.org/data/pkg/osx/1.26.8/gstreamer-1.0-1.26.8-universal.pkg" -O /tmp/gst-1.0-1.26.8-universal.pkg
     - wget -q "https://gstreamer.freedesktop.org/data/pkg/osx/1.26.8/gstreamer-1.0-devel-1.26.8-universal.pkg" -O /tmp/gst-1.0-devel-1.26.8-universal.pkg
     - sudo installer -pkg /tmp/gst-1.0-1.26.8-universal.pkg -target /
@@ -49,6 +53,8 @@ desktop_sender_task:
     - export PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig
     - export PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/bin:$PATH
     - export DYLD_LIBRARY_PATH=/Library/Frameworks/GStreamer.framework/Libraries:$DYLD_LIBRARY_PATH
-    - cargo xtask sender build-macos-installer
+
+    - cargo install --git https://github.com/indygreg/apple-platform-rs --branch main --bin rcodesign apple-codesign
+    - cargo xtask sender build-macos-installer --sign --p12-file=./.secure_files/Certificates.p12 --p12-password-file=./.secure_files/p12_certs_password --api-key-file=./.secure_files/notary_key.json
   binary_artifacts:
     path: target/fcast-sender-*.dmg
