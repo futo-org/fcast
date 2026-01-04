@@ -33,7 +33,6 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = [ "log
 prost = { version = "0.14.1", optional = true }
 
 # FCast
-url = { version = "2.5.4", optional = true }
 fcast-protocol = { path = "../../common/fcast-protocol", version = "0.1.2", optional = true }
 base64 = { version = "0.22.1", optional = true }
 
@@ -51,7 +50,7 @@ prost-build = { version = "0.14.1", optional = true }
 
 [features]
 default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
-fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64", "dep:url"]
+fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64"]
 chromecast = ["dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:prost", "dep:prost-build"]
 http-file-server = ["dep:uuid", "dep:libc", "dep:http-range"]
 uniffi = ["dep:uniffi"]

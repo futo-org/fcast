@@ -1994,7 +1994,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "uniffi",
- "url",
  "uuid",
 ]
 

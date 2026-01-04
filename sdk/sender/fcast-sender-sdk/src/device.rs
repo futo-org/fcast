@@ -98,25 +98,7 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
         services: Vec<FCastService>,
     }
 
-    let url = match url::Url::parse(&url) {
-        Ok(uri) => uri,
-        Err(err) => {
-            log::error!("Invalid URL: {err}");
-            return None;
-        }
-    };
-
-    if url.scheme() != "fcast" {
-        log::error!("Expected URL scheme to be fcast, was {}", url.scheme());
-        return None;
-    }
-
-    if url.host_str() != Some("r") {
-        log::error!("Expected URL type to be r");
-        return None;
-    }
-
-    let connection_info = url.path_segments()?.next()?;
+    let connection_info = url.strip_prefix("fcast://r/")?;
 
     use base64::alphabet::URL_SAFE;
     use base64::engine::general_purpose::GeneralPurpose;
