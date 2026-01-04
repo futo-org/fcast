@@ -32,5 +32,9 @@
     <string>
         We need to record your screen to mirror it to an external receiver
     </string>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
 </dict>
 </plist>
