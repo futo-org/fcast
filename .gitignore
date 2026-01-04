@@ -8,7 +8,6 @@
 .secure_files/
 
 /target
-/flake*
 /ios-bindings
 /ios-build
 /.idea
