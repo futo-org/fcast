@@ -1534,7 +1534,8 @@ impl Application {
                 let has_changes = file_server_port != self.settings.file_server().port()
                     || mirroring_server_port != self.settings.mirroring().server_port();
                 self.settings.set_file_server_port(file_server_port);
-                self.settings.set_mirroring_server_port(mirroring_server_port);
+                self.settings
+                    .set_mirroring_server_port(mirroring_server_port);
                 // self.settings.file_server.port = port;
                 if has_changes {
                     self.write_settings_file()
@@ -1963,7 +1964,8 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_connect_to_device({
+    let bridge = ui.global::<Bridge>();
+    bridge.on_connect_to_device({
         let event_tx = event_tx.clone();
         move |device_name| {
             if let Err(err) = event_tx.send(Event::ConnectToDevice(device_name.to_string())) {
@@ -1972,7 +1974,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_start_cast({
+    bridge.on_start_cast({
         let event_tx = event_tx.clone();
         move |video_uid, include_audio, scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
@@ -1991,21 +1993,21 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_stop_cast({
+    bridge.on_stop_cast({
         let event_tx = event_tx.clone();
         move |disconnect: bool| {
             event_tx.send(Event::EndSession { disconnect }).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_reload_video_sources({
+    bridge.on_reload_video_sources({
         let event_tx = event_tx.clone();
         move || {
             event_tx.send(Event::ReloadVideoSources).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_select_input_type({
+    bridge.on_select_input_type({
         let event_tx = event_tx.clone();
         move |input_type| match input_type {
             UiInputType::LocalMedia => event_tx.send(Event::StartLocalMediaSession).unwrap(),
@@ -2013,28 +2015,28 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_change_dir_child({
+    bridge.on_change_dir_child({
         let event_tx = event_tx.clone();
         move |dir_id| {
             event_tx.send(Event::ChangeDir(dir_id)).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_change_dir_parent({
+    bridge.on_change_dir_parent({
         let event_tx = event_tx.clone();
         move || {
             event_tx.send(Event::ChangeDirParent).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_cast_local_media({
+    bridge.on_cast_local_media({
         let event_tx = event_tx.clone();
         move |file_id| {
             event_tx.send(Event::CastLocalMedia(file_id)).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_seek({
+    bridge.on_seek({
         let event_tx = event_tx.clone();
         move |seconds: f32, force_complete: bool| {
             event_tx
@@ -2046,7 +2048,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_change_playback_state({
+    bridge.on_change_playback_state({
         let event_tx = event_tx.clone();
         move |state: UiPlaybackState| {
             event_tx
@@ -2060,7 +2062,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_change_volume({
+    bridge.on_change_volume({
         let event_tx = event_tx.clone();
         move |volume: f32, force_complete: bool| {
             event_tx
@@ -2072,7 +2074,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_disconnect({
+    bridge.on_disconnect({
         let event_tx = event_tx.clone();
         move || {
             event_tx
@@ -2081,7 +2083,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_connect_manually({
+    bridge.on_connect_manually({
         let event_tx = event_tx.clone();
         move |url: slint::SharedString| {
             let Some(dev_info) = device_info_parser::parse(&url) else {
@@ -2095,7 +2097,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_reload_log_string({
+    bridge.on_reload_log_string({
         let ui_weak = ui.as_weak();
         let tracing_events = Arc::clone(&tracing_events);
         move || {
@@ -2111,27 +2113,25 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_start_test_pattern_cast({
+    bridge.on_start_test_pattern_cast({
         let event_tx = event_tx.clone();
         move || {
             event_tx.send(Event::CastTestPattern).unwrap();
         }
     });
 
-    ui.global::<Bridge>()
-        .on_is_device_info_valid(|info: slint::SharedString| -> bool {
-            device_info_parser::parse(info.as_str()).is_some()
-        });
+    bridge.on_is_device_info_valid(|info: slint::SharedString| -> bool {
+        device_info_parser::parse(info.as_str()).is_some()
+    });
 
-    ui.global::<Bridge>()
-        .on_open_url(|url: slint::SharedString| {
-            debug!(?url, "Trying to open URL");
-            if let Err(err) = webbrowser::open(&url) {
-                error!(?err, "Failed to open URL");
-            }
-        });
+    bridge.on_open_url(|url: slint::SharedString| {
+        debug!(?url, "Trying to open URL");
+        if let Err(err) = webbrowser::open(&url) {
+            error!(?err, "Failed to open URL");
+        }
+    });
 
-    ui.global::<Bridge>().on_try_play_url({
+    bridge.on_try_play_url({
         let event_tx = event_tx.clone();
         move |url: slint::SharedString| {
             event_tx
@@ -2140,7 +2140,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_cast_yt_dlp({
+    bridge.on_cast_yt_dlp({
         let event_tx = event_tx.clone();
         move |title: slint::SharedString| {
             event_tx
@@ -2149,7 +2149,7 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_change_root_dir({
+    bridge.on_change_root_dir({
         let event_tx = event_tx.clone();
         move |dir_type: UiRootDirType| {
             event_tx
@@ -2162,26 +2162,27 @@ fn main() -> Result<()> {
         }
     });
 
-    ui.global::<Bridge>().on_change_playback_rate({
+    bridge.on_change_playback_rate({
         let event_tx = event_tx.clone();
         move |rate: f32| {
             event_tx.send(Event::SetPlaybackRate(rate as f64)).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_update_settings({
+    bridge.on_update_settings({
         let ui_weak = ui.as_weak();
         let event_tx = event_tx.clone();
         move || {
             let ui = ui_weak
                 .upgrade()
                 .expect("Callback handlers are always called from the ui thread");
-            let file_server_port = ui.global::<Bridge>().get_file_server_port();
+            let bridge = ui.global::<Bridge>();
+            let file_server_port = bridge.get_file_server_port();
             let Ok(file_server_port) = file_server_port.parse::<u16>() else {
                 error!(?file_server_port, "Invalid port");
                 return;
             };
-            let mirroring_server_port = ui.global::<Bridge>().get_mirroring_server_port();
+            let mirroring_server_port = bridge.get_mirroring_server_port();
             let Ok(mirroring_server_port) = mirroring_server_port.parse::<u16>() else {
                 error!(?mirroring_server_port, "Invalid port");
                 return;
@@ -2196,12 +2197,12 @@ fn main() -> Result<()> {
     });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    ui.global::<Bridge>().set_is_audio_supported(false);
+    bridge.set_is_audio_supported(false);
 
     #[cfg(target_os = "linux")]
-    ui.global::<Bridge>().set_is_audio_supported(true);
+    bridge.set_is_audio_supported(true);
 
-    ui.global::<Bridge>().set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
+    bridge.set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
 
     let init_finished_in = init_start.elapsed();
     debug!(?init_finished_in, "Initialization finished");
