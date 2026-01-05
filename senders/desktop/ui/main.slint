@@ -111,6 +111,7 @@ export global Bridge {
     // in-out property <AppState> app-state: SelectingInputType;
     // in-out property <string> device-name: "FCast-localhost";
     // in property <string> current-directory: "Testing";
+    in property <string> app-version;
 
     in property <bool> is-audio-supported: false;
     // in property <bool> is-audio-supported: true;
@@ -437,6 +438,42 @@ component Circle inherits Rectangle {
     border-color: red;
 }
 
+component HyperLink inherits Rectangle {
+    in property <string> url;
+    in property <string> text;
+
+    TouchArea {
+        mouse-cursor: pointer;
+
+        clicked => {
+            Bridge.open-url(url);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 5.5px;
+
+        SecondaryText {
+            vertical-alignment: center;
+            color: FCastPalette.brand-600;
+            text: text;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            Image {
+                source: Icons.open-external;
+                width: 9px;
+                height: 9px;
+            }
+        }
+
+        Spacer { }
+    }
+}
+
+
 component ConnectView inherits Rectangle {
     Rectangle {
         background: FCastPalette.neutral-1200;
@@ -639,36 +676,9 @@ component ConnectView inherits Rectangle {
                             wrap: word-wrap;
                         }
 
-                        Rectangle {
-                            TouchArea {
-                                mouse-cursor: pointer;
-
-                                clicked => {
-                                    Bridge.open-url("https://fcast.org/");
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 5.5px;
-
-                                SecondaryText {
-                                    vertical-alignment: center;
-                                    color: FCastPalette.brand-600;
-                                    text: "Get the receiver app";
-                                }
-
-                                VerticalLayout {
-                                    alignment: center;
-
-                                    Image {
-                                        source: Icons.open-external;
-                                        width: 9px;
-                                        height: 9px;
-                                    }
-                                }
-
-                                Spacer { }
-                            }
+                        HyperLink {
+                            url: "https://fcast.org/";
+                            text: "Get the receiver app";
                         }
                     }
                 }
@@ -2119,6 +2129,8 @@ export component MainWindow inherits Window {
     property <bool> is-showing-log-popup: false;
     // property <bool> is-showing-settings-popup: true;
     property <bool> is-showing-settings-popup: false;
+    // property <bool> is-showing-about-popup: true;
+    property <bool> is-showing-about-popup: false;
 
     HorizontalLayout {
         Rectangle {
@@ -2174,6 +2186,15 @@ export component MainWindow inherits Window {
                 }
 
                 SideBarEntry {
+                    icon: Icons.info;
+                    text: "About";
+
+                    clicked => {
+                        is-showing-about-popup = true;
+                    }
+                }
+
+                SideBarEntry {
                     icon: Icons.dev-log;
                     text: "Developer log";
 
@@ -2210,7 +2231,7 @@ export component MainWindow inherits Window {
         if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
     }
 
-    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-log-popup: Rectangle {
+    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-about-popup || is-showing-log-popup: Rectangle {
         background: #0000009C;
         TouchArea { }
     }
@@ -2298,6 +2319,69 @@ export component MainWindow inherits Window {
                     text <=> Bridge.mirroring-server-port;
                     input-type: number;
                 }
+            }
+        }
+    }
+
+    if is-showing-about-popup: FCastPopupWindow {
+        width: root.width * 50%;
+        height: root.height * 75%;
+        title: "About";
+
+        close => {
+            is-showing-about-popup = false;
+        }
+
+        VerticalLayout {
+            spacing: 10px;
+
+            FText {
+                text: "FCast Sender v" + Bridge.app-version;
+                horizontal-alignment: center;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+
+                HyperLink {
+                    url: "https://fcast.org";
+                    text: self.url;
+                }
+            }
+
+            FText {
+                text: "Please report any issues to";
+                horizontal-alignment: center;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+
+                HyperLink {
+                    url: "https://github.com/futo-org/fcast/issues";
+                    text: "our issue tracker";
+                }
+            }
+
+            Spacer {}
+
+            SecondaryText {
+                text: "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.";
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                max-width: 400px;
+            }
+
+            SecondaryText {
+                text: "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.";
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                max-width: 400px;
+            }
+
+            SecondaryText {
+                horizontal-alignment: center;
+                text: "Copyright © 2026 FUTO";
             }
         }
     }

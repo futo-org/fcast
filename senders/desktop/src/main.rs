@@ -2201,6 +2201,8 @@ fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     ui.global::<Bridge>().set_is_audio_supported(true);
 
+    ui.global::<Bridge>().set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
+
     let init_finished_in = init_start.elapsed();
     debug!(?init_finished_in, "Initialization finished");
 
