@@ -209,6 +209,7 @@ export global Bridge {
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
+    in-out property <string> mirroring-source-name;
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -217,6 +218,7 @@ export global Bridge {
         playback-state = UiPlaybackState.Idle;
         playback-position = 0.0;
         track-duration = 0.0;
+        mirroring-source-name = "";
     }
 
     public function clear-yt-dlp-state() {
@@ -947,6 +949,7 @@ component ReadyToCastView inherits Rectangle {
 
                     clicked => {
                         Bridge.start-test-pattern-cast();
+                        Bridge.mirroring-source-name = "VideoTestSource";
                         Bridge.app-state = UiAppState.Mirroring;
                     }
                 }
@@ -1474,21 +1477,44 @@ component MirroringView inherits Rectangle {
         img-height: root.height;
     }
 
-    VerticalLayout {
-        padding: 20px;
-        spacing: 10px;
+    HorizontalLayout {
+        alignment: center;
 
-        LabelText {
-            text: "Mirroring";
-        }
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            alignment: center;
 
-        Button {
-            text: "Stop";
+            HorizontalLayout {
+                spacing: 5px;
 
-            clicked => {
-                Bridge.stop-cast(false);
-                Bridge.clear-mirroring-state();
-                Bridge.app-state = UiAppState.SelectingInputType;
+                LabelText {
+                    text: "Mirroring";
+                }
+
+                SecondaryText {
+                    text: Bridge.mirroring-source-name;
+                    font-size: 20px;
+                }
+
+                LabelText {
+                    text: "to";
+                }
+
+                SecondaryText {
+                    text: Bridge.device-name;
+                    font-size: 20px;
+                }
+            }
+
+            Button {
+                text: "Stop";
+
+                clicked => {
+                    Bridge.stop-cast(false);
+                    Bridge.clear-mirroring-state();
+                    Bridge.app-state = UiAppState.SelectingInputType;
+                }
             }
         }
     }
@@ -2043,6 +2069,7 @@ component MirroringPopup inherits FCastPopupWindow {
                         Utils.video-framerates[video-framerate-idx].to-float(),
                     );
                     Bridge.app-state = UiAppState.Mirroring;
+                    Bridge.mirroring-source-name = Bridge.video-sources[Bridge.selected-video-src].name;
                     root.hide();
                 }
             }
