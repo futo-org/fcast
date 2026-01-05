@@ -495,9 +495,7 @@ mod imp {
         fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
             match pspec.name() {
                 "manual-sdp-munging" => false.to_value(),
-                "server-port" => {
-                    (self.settings.lock().server_port as u32).to_value()
-                }
+                "server-port" => (self.settings.lock().server_port as u32).to_value(),
                 _ => unimplemented!(),
             }
         }

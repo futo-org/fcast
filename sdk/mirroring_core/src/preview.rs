@@ -232,15 +232,12 @@ pub struct PreviewPipeline {
 }
 
 impl PreviewPipeline {
-    pub fn new(
-        display_name: String,
-        on_new_sample: impl FnMut(
-            &gst_app::AppSink,
-        ) -> std::result::Result<gst::FlowSuccess, gst::FlowError>
-        + Send
-        + 'static,
-        src: VideoSource,
-    ) -> Result<Self> {
+    pub fn new<F>(display_name: String, on_new_sample: F, src: VideoSource) -> Result<Self>
+    where
+        F: FnMut(&gst_app::AppSink) -> std::result::Result<gst::FlowSuccess, gst::FlowError>
+            + Send
+            + 'static,
+    {
         let pipeline = gst::Pipeline::new();
 
         let appsink = gst_app::AppSink::builder()
