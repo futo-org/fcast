@@ -2435,10 +2435,24 @@ export component MainWindow inherits Window {
 
         VerticalLayout {
             padding-top: 24px;
+            spacing: 10px;
 
-            TextEdit {
+            Button {
+                text: "Copy to clipboard";
+                icon: Icons.clipboard;
+                colorize-icon: true;
+
+                clicked => {
+                    log-te.select-all();
+                    log-te.copy();
+                    log-te.clear-selection();
+                }
+            }
+
+            log-te := TextEdit {
                 text: Bridge.log-string;
                 read-only: true;
+                enabled: false;
             }
         }
     }
@@ -2487,9 +2501,22 @@ export component CrashWindow inherits Window {
             }
         }
 
-        TextEdit {
+        Button {
+            text: "Copy to clipboard";
+            icon: Icons.clipboard;
+            colorize-icon: true;
+
+            clicked => {
+                log-te.select-all();
+                log-te.copy();
+                log-te.clear-selection();
+            }
+        }
+
+        log-te:= TextEdit {
             text: log;
             read-only: true;
+            enabled: false;
         }
     }
 }

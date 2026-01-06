@@ -40,6 +40,6 @@ smol_str = { version = "0.3.4", features = ["serde"] }
 toml_edit = { version = "0.24", features = ["serde"] }
 
 [profile.release]
-lto = true
+lto = "thin"
 codegen-units = 1
 strip = true
