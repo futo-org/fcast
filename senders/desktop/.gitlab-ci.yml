@@ -169,7 +169,7 @@ builSenderFordWinX64:
     when: on_success
     access: all
     paths:
-      - *.msi
+      - ./*.msi
 
 cleanup_vm:
   stage: senders
