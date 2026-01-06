@@ -1273,21 +1273,35 @@ component PlaybackControls inherits Rectangle {
         HorizontalLayout {
             padding-top: 12px;
 
-            Slider {
-                value <=> Bridge.volume;
-                maximum: 1.0;
-                minimum: 0.0;
-                step: 0.01;
-                width: 200px;
-                track-color: FCastPalette.brand-600;
-                rail-color: FCastPalette.neutral-1000;
+            HorizontalLayout {
+                spacing: 2px;
 
-                changed(new-volume) => {
-                    Bridge.change-volume(new-volume, false)
+                VerticalLayout {
+                    alignment: center;
+
+                    Image {
+                        source: Icons.volume-high;
+                        width: 16px;
+                        height: 16px;
+                    }
                 }
 
-                released(new-volume) => {
-                    Bridge.change-volume(new-volume, true);
+                Slider {
+                    value <=> Bridge.volume;
+                    maximum: 1.0;
+                    minimum: 0.0;
+                    step: 0.01;
+                    width: 200px;
+                    track-color: FCastPalette.brand-600;
+                    rail-color: FCastPalette.neutral-1000;
+
+                    changed(new-volume) => {
+                        Bridge.change-volume(new-volume, false)
+                    }
+
+                    released(new-volume) => {
+                        Bridge.change-volume(new-volume, true);
+                    }
                 }
             }
 
