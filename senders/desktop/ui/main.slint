@@ -2395,6 +2395,12 @@ export component MainWindow inherits Window {
                     overflow: elide;
                 }
 
+                if file-server-port-input.text.to-float() == 0: FText {
+                    text: "Automatic";
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
                 file-server-port-input := LineEdit {
                     width: 100px;
                     text <=> Bridge.file-server-port;
@@ -2411,6 +2417,12 @@ export component MainWindow inherits Window {
                     text: "Invalid port number (must be 1024-65535)";
                     vertical-alignment: center;
                     color: FCastPalette.negative-600;
+                    overflow: elide;
+                }
+
+                if mirroring-server-port-input.text.to-float() == 0: FText {
+                    text: "Automatic";
+                    vertical-alignment: center;
                     overflow: elide;
                 }
 
