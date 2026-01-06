@@ -108,110 +108,41 @@ export enum UiRootDirType {
 }
 
 export global Bridge {
-    // in-out property <AppState> app-state: SelectingInputType;
-    // in-out property <string> device-name: "FCast-localhost";
-    // in property <string> current-directory: "Testing";
     in property <string> app-version;
-
     in property <bool> is-audio-supported: false;
-    // in property <bool> is-audio-supported: true;
-
     in property <bool> is-mirroring-supported: false;
-    // in property <bool> is-mirroring-supported: true;
-
     in property <string> current-directory: "";
-    // in property <[string]> devices: [
-    in property <[UiDevice]> devices: [
-        // { name: "Test0", fcast: false },
-        // { name: "Test1", fcast: true },
-        // { name: "Test2", fcast: false },
-        // { name: "Test3", fcast: true },
-        // { name: "Test4", fcast: false },
-    ];
+    in property <[UiDevice]> devices: [];
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
-    // in property <string> settings-file-path: "/some/fake/path.toml";
     in property <string> settings-file-path;
-    // in property <bool> is-yt-dlp-available: true;
 
-    // in-out property <UiAppState> app-state: SelectingInputType;
-    // in-out property <UiAppState> app-state: YtDlp;
-    // in-out property <UiAppState> app-state: Mirroring;
     in-out property <UiAppState> app-state: Disconnected;
-    // in-out property <UiAppState> app-state: LocalMedia;
-    // in-out property <UiAppState> app-state: Connecting;
     in-out property <string> device-name: "";
-    // in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
     in-out property <string> device-ip: "";
-    // in-out property <string> device-ip: "192.168.1.154";
     in-out property <int> selected-video-src: -1;
-    // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
-    in-out property <[UiVideoSourceModel]> video-sources: [
-        // { uid: 0, preview: @image-url("video-source-place-holder.png"), name: "Blob 0" },
-        // { uid: 1, preview: @image-url("video-source-place-holder.png"), name: "Blob 1" },
-        // { uid: 2, preview: @image-url("video-source-place-holder.png"), name: "Blob 2" },
-        // { uid: 3, preview: @image-url("video-source-place-holder.png"), name: "Blob 3" },
-        // { uid: 4, preview: @image-url("video-source-place-holder.png"), name: "Blob 4" },
-    ];
-    in-out property <[UiDirectoryEntry]> directories: [
-        // { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-    ];
-    in-out property <[UiMediaFileEntry]> files: [
-        // {
-        //     id: 0,
-        //     name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        //     type: UiMediaFileType.Audio
-        // },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Video },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
-        // { id: 0, name: "Test2", type: UiMediaFileType.Image },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
-    ];
+    in-out property <[UiVideoSourceModel]> video-sources: [];
+    in-out property <[UiDirectoryEntry]> directories: [];
+    in-out property <[UiMediaFileEntry]> files: [];
     in-out property <float> volume: 1.0;
     in-out property <float> playback-position: 0.0;
     in-out property <UiPlaybackState> playback-state: UiPlaybackState.Idle;
-    // in-out property <UiPlaybackState> playback-state: UiPlaybackState.Playing;
     in-out property <float> track-duration: 0.0;
     in-out property <string> playback-pos-str: 0.0;
     in-out property <string> track-dur-str: 0.0;
     in-out property <float> playback-rate: 1.0;
-    // in-out property <string> track-name: "Test2";
     in-out property <string> track-name;
     in-out property <UiMediaFileType> track-type;
-    // in-out property <bool> is-showing-mirroring-popup: true;
     in-out property <UiYtDlpState> yt-dlp-state: Fetching;
-    // in-out property <UiYtDlpState> yt-dlp-state: Fetching;
-    // in-out property <UiYtDlpState> yt-dlp-state: HasDataButFetching;
     in-out property <string> yt-dlp-url;
-    // in-out property <string> yt-dlp-url: "https://abc.def/ghi";
-    in-out property <[UiYtDlpSource]> yt-dlp-sources: [
-        // {
-        //     title: "Test title 1",
-        // },
-        // {
-        //     title: "Test title 2",
-        // },
-        // {
-        //     title: "Test title 3",
-        // },
-    ];
+    in-out property <[UiYtDlpSource]> yt-dlp-sources: [];
     in-out property <string> yt-dlp-source;
-    // in-out property <string> yt-dlp-source: "Test title 2";
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
     in-out property <string> mirroring-source-name;
     in-out property <bool> is-reconnecting: false;
-    // in-out property <bool> is-reconnecting: true;
     in-out property <UiMediaFileType> current-media-type;
 
     public function clear-mirroring-state() {
@@ -275,7 +206,6 @@ export global Bridge {
     callback change-playback-state(state: UiPlaybackState);
     callback change-volume(volume: float, force-complete: bool);
     callback disconnect();
-    // callback connect-manually(proto: UiCastProtocol, name: string, port: int, address: string);
     callback connect-manually(url: string);
     callback reload-log-string();
     callback start-test-pattern-cast();
@@ -286,9 +216,7 @@ export global Bridge {
     callback change-playback-rate(rate: float);
     callback update-settings();
 
-    // pure callback is-valid-ip-address(address: string) -> bool;
     pure callback is-device-info-valid(info: string) -> bool;
-    // pure function is-device-info-valid(info: string) -> bool {true}
 }
 
 component Spacer inherits Rectangle { }
