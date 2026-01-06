@@ -2028,6 +2028,7 @@ component MirroringPopup inherits FCastPopupWindow {
 
     i-vl := VerticalLayout {
         padding-top: 24px;
+        spacing: 10px;
 
         ScrollView {
             viewport-height: (250px + spacing) * y-items;
@@ -2041,6 +2042,11 @@ component MirroringPopup inherits FCastPopupWindow {
                 preview: src.preview;
                 name: src.name;
             }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: FCastPalette.border-subtle;
         }
 
         if Bridge.selected-video-src != -1: HorizontalLayout {
