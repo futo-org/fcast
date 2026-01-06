@@ -169,7 +169,6 @@ async fn handle_request(
     let (file, content_type) = {
         let entry = {
             let files = files.read();
-            debug!(?files);
             let Some(entry) = files.get(&uuid) else {
                 error!(?uuid, "File not found");
                 return not_found();

@@ -1127,6 +1127,24 @@ impl Application {
                 mcore::DeviceEvent::SourceChanged(new_source) => {
                     let is_our_url = {
                         if let Some(session) = self.session_state.as_mut() {
+                            if let Some(content_type) = new_source.content_type() {
+                                let content_type = if content_type.starts_with("image") {
+                                    Some(UiMediaFileType::Image)
+                                } else if content_type.starts_with("video") {
+                                    Some(UiMediaFileType::Video)
+                                } else if content_type.starts_with("audio") {
+                                    Some(UiMediaFileType::Audio)
+                                } else {
+                                    None
+                                };
+
+                                if let Some(content_type) = content_type {
+                                    self.ui_weak.upgrade_in_event_loop(move |ui| {
+                                        ui.global::<Bridge>().set_current_media_type(content_type);
+                                    })?;
+                                }
+                            }
+
                             match &mut session.specific {
                                 SessionSpecificState::Mirroring { our_source_url, .. } => {
                                     our_source_url.as_ref().map(|our| match &new_source {

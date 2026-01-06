@@ -212,6 +212,7 @@ export global Bridge {
     in-out property <string> mirroring-source-name;
     in-out property <bool> is-reconnecting: false;
     // in-out property <bool> is-reconnecting: true;
+    in-out property <UiMediaFileType> current-media-type;
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -243,6 +244,7 @@ export global Bridge {
             playback-state = UiPlaybackState.Idle;
             playback-position = 0.0;
             track-duration = 0.0;
+            current-media-type = UiMediaFileType.Image;
             clear-mirroring-state();
             clear-yt-dlp-state();
             clear-local-media-state();
@@ -1884,7 +1886,7 @@ component LocalMediaView inherits Rectangle {
             }
         }
 
-        if Bridge.playback-state == UiPlaybackState.Playing || Bridge.playback-state == UiPlaybackState.Paused: PlaybackControls {
+        if (Bridge.playback-state == UiPlaybackState.Playing || Bridge.playback-state == UiPlaybackState.Paused) && Bridge.current-media-type != UiMediaFileType.Image: PlaybackControls {
             background: transparent;
         }
     }
