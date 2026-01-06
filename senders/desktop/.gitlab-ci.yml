@@ -180,7 +180,8 @@ cleanup_vm:
     - job: provision_windows_vm
       artifacts: true
     - job: builSenderFordWinX64
-  when: always  # Run even if tests fail
+  # when: always  # Run even if tests fail
+  when: manual
   before_script:
     - *proxmox_auth
   script:
