@@ -210,6 +210,8 @@ export global Bridge {
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
     in-out property <string> mirroring-source-name;
+    in-out property <bool> is-reconnecting: false;
+    // in-out property <bool> is-reconnecting: true;
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -475,6 +477,42 @@ component HyperLink inherits Rectangle {
     }
 }
 
+component DisconnectButton inherits Button {
+    icon: Icons.disconnect;
+    text: "Disconnect";
+    text-color: FCastPalette.negative-600;
+    background-default-drop-shadow-color: transparent;
+    background-default-color: transparent;
+    border-color: FCastPalette.negative-600.transparentize(80%);
+
+    clicked => {
+        Bridge.disconnect();
+    }
+}
+
+component ReconnectingView inherits Rectangle {
+    background: FCastPalette.neutral-1200;
+
+    HorizontalLayout {
+        alignment: center;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+
+            FText {
+                text: "Reconnecting to " + Bridge.device-name;
+            }
+
+            DisconnectButton {
+                clicked => {
+                    Bridge.is-reconnecting = false;
+                    Bridge.disconnect();
+                }
+            }
+        }
+    }
+}
 
 component ConnectView inherits Rectangle {
     Rectangle {
@@ -819,19 +857,6 @@ component ImageBackground {
         width: img-width;
         height: img-height;
         background: #0C0D12D0;
-    }
-}
-
-component DisconnectButton inherits Button {
-    icon: Icons.disconnect;
-    text: "Disconnect";
-    text-color: FCastPalette.negative-600;
-    background-default-drop-shadow-color: transparent;
-    background-default-color: transparent;
-    border-color: FCastPalette.negative-600.transparentize(80%);
-
-    clicked => {
-        Bridge.disconnect();
     }
 }
 
@@ -2233,9 +2258,11 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting: ConnectView { }
+        if Bridge.is-reconnecting: ReconnectingView {}
 
-        if Bridge.app-state == UiAppState.SelectingInputType: ReadyToCastView {
+        if !Bridge.is-reconnecting && (Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting): ConnectView { }
+
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.SelectingInputType: ReadyToCastView {
             show-mirroring => {
                 is-showing-mirroring-popup = true;
             }
@@ -2249,13 +2276,13 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.app-state == UiAppState.YtDlp: YtDlpView { }
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.YtDlp: YtDlpView { }
 
-        if Bridge.app-state == UiAppState.SelectingMirroringSource: Rectangle { }
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.SelectingMirroringSource: Rectangle { }
 
-        if Bridge.app-state == UiAppState.StartingCast || Bridge.app-state == UiAppState.Mirroring: MirroringView { }
+        if !Bridge.is-reconnecting && (Bridge.app-state == UiAppState.StartingCast || Bridge.app-state == UiAppState.Mirroring): MirroringView { }
 
-        if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
     }
 
     function close-mirroring-popup() {

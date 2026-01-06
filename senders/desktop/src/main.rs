@@ -1069,7 +1069,7 @@ impl Application {
                     device::DeviceConnectionState::Disconnected => self.end_session(false).await?,
                     device::DeviceConnectionState::Connecting => (),
                     device::DeviceConnectionState::Reconnecting => {
-                        // TODO: I'm sure we can handle this more gracefully
+                        let mut change_to_default_state = false;
                         if let Some(session) = self.session_state.as_mut() {
                             match session.specific {
                                 SessionSpecificState::Mirroring {
@@ -1078,10 +1078,18 @@ impl Application {
                                     if let Some(mut tx_sink) = tx_sink.take() {
                                         tx_sink.shutdown();
                                     }
+                                    change_to_default_state = true;
                                 }
                                 _ => (),
                             }
                         }
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            let bridge = ui.global::<Bridge>();
+                            bridge.set_is_reconnecting(true);
+                            if change_to_default_state {
+                                bridge.set_app_state(UiAppState::SelectingInputType);
+                            }
+                        })?;
                     }
                     device::DeviceConnectionState::Connected {
                         local_addr,
@@ -1098,7 +1106,10 @@ impl Application {
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 bridge.set_is_mirroring_supported(is_mirroring_supported);
-                                bridge.invoke_change_state(UiAppState::SelectingInputType);
+                                if !bridge.get_is_reconnecting() {
+                                    bridge.invoke_change_state(UiAppState::SelectingInputType);
+                                }
+                                bridge.set_is_reconnecting(false);
                                 bridge.set_device_ip(remote_addr_str);
                             })?;
                         } else {
