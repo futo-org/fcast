@@ -44,6 +44,13 @@ use tracing_subscriber::{
 
 use desktop_sender::slint_generated::*;
 
+#[cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
 const MIN_TIME_BETWEEN_VOLUME_CHANGES: Duration = Duration::from_millis(75);
