@@ -2505,12 +2505,23 @@ export component CrashWindow inherits Window {
             text: "FCast Sender encountered an error!";
         }
 
-        FText {
-            font-size: 18px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            wrap: word-wrap;
-            text: "Please report your issue including the log below to: https://github.com/futo-org/fcast/issues";
+        HorizontalLayout {
+            alignment: center;
+
+            spacing: 5px;
+
+            FText {
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                text: "Please report your issue including the log below to:";
+            }
+
+            HyperLink {
+                text: "https://github.com/futo-org/fcast/issues";
+                url: "https://github.com/futo-org/fcast/issues";
+            }
         }
 
         TextEdit {

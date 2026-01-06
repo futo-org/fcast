@@ -2239,6 +2239,12 @@ fn main() -> Result<()> {
 
         crash_window.set_log(log_string);
 
+        crash_window.global::<Bridge>().on_open_url(|url| {
+            if let Err(err) = webbrowser::open(&url) {
+                error!(?err, "Failed to open URL");
+            }
+        });
+
         let _ = slint::run_event_loop();
         crash_window.run().unwrap();
     }
