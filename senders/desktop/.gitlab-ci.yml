@@ -29,7 +29,7 @@ variables:
 provision_windows_vm:
   stage: senders
   image: alpine:latest
-  when: never # TODO: does this work?
+  when: manual
   tags:
     - proxmoxshell
   before_script:
