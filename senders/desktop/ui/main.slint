@@ -2258,21 +2258,49 @@ export component MainWindow inherits Window {
         if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
     }
 
+    function close-mirroring-popup() {
+        is-showing-mirroring-popup = false;
+        Bridge.stop-cast(false);
+        Bridge.clear-mirroring-state();
+        Bridge.app-state = UiAppState.SelectingInputType;
+    }
+
+    function close-settings-popup() {
+        Bridge.update-settings();
+        is-showing-settings-popup = false;
+    }
+
+    function close-about-popup() {
+        is-showing-about-popup = false;
+    }
+
+    function close-log-popup() {
+        is-showing-log-popup = false;
+        Bridge.log-string = "";
+    }
+
     if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-about-popup || is-showing-log-popup: Rectangle {
         background: #0000009C;
-        TouchArea { }
+        TouchArea {
+            clicked => {
+                if is-showing-mirroring-popup {
+                    close-mirroring-popup();
+                } else if is-showing-settings-popup {
+                    close-settings-popup();
+                } else if is-showing-about-popup {
+                    close-about-popup();
+                } else if is-showing-log-popup {
+                    close-log-popup();
+                }
+            }
+        }
     }
 
     if is-showing-mirroring-popup: MirroringPopup {
         width: root.width * 75%;
         height: root.height * 85%;
 
-        close => {
-            is-showing-mirroring-popup = false;
-            Bridge.stop-cast(false);
-            Bridge.clear-mirroring-state();
-            Bridge.app-state = UiAppState.SelectingInputType;
-        }
+        close => close-mirroring-popup();
 
         hide => {
             is-showing-mirroring-popup = false;
@@ -2284,10 +2312,7 @@ export component MainWindow inherits Window {
         height: root.height * 85%;
         title: "Settings";
 
-        close => {
-            Bridge.update-settings();
-            is-showing-settings-popup = false;
-        }
+        close => close-settings-popup();
 
         VerticalLayout {
             padding-top: 24px;
@@ -2334,7 +2359,7 @@ export component MainWindow inherits Window {
 
                 name: "Mirroring server port";
 
-                if (file-server-port-input.text.to-float() > 0 && mirroring-server-port-input.text.to-float() < 1024) || mirroring-server-port-input.text.to-float() > 65535: FText {
+                if (mirroring-server-port-input.text.to-float() > 0 && mirroring-server-port-input.text.to-float() < 1024) || mirroring-server-port-input.text.to-float() > 65535: FText {
                     text: "Invalid port number (must be 1024-65535)";
                     vertical-alignment: center;
                     color: FCastPalette.negative-600;
@@ -2355,9 +2380,7 @@ export component MainWindow inherits Window {
         height: root.height * 75%;
         title: "About";
 
-        close => {
-            is-showing-about-popup = false;
-        }
+        close => close-about-popup();
 
         VerticalLayout {
             spacing: 10px;
@@ -2418,9 +2441,7 @@ export component MainWindow inherits Window {
         height: root.height * 95%;
         title: "Developer Log";
 
-        close => {
-            is-showing-log-popup = false;
-        }
+        close => close-log-popup();
 
         VerticalLayout {
             padding-top: 24px;
