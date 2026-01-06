@@ -179,7 +179,7 @@ cleanup_vm:
   needs:
     - job: provision_windows_vm
       artifacts: true
-    - job: run_commands
+    - job: builSenderFordWinX64
   when: always  # Run even if tests fail
   before_script:
     - *proxmox_auth
