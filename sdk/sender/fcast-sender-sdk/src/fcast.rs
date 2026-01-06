@@ -23,7 +23,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use crate::device::{
     ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
     DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent,
-    MediaItem, MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, ource,
+    MediaItem, MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
 };
 use crate::{utils, IpAddr};
 
