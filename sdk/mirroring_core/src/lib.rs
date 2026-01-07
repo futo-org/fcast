@@ -1,6 +1,7 @@
 use fcast_sender_sdk::device::{self, DeviceInfo};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use serde::Deserialize;
 
 #[cfg(not(target_os = "android"))]

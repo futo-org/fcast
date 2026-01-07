@@ -23,21 +23,18 @@
   libGL,
 }:
 
+let
+  localSrc = ../..;
+in
 rustPlatform.buildRustPackage rec {
   pname = "fcast-sender";
   version = "0.0.1";
   buildAndTestSubdir = "senders/desktop";
   doCheck = false;
 
-  src = fetchFromGitLab {
-    domain = "gitlab.futo.org";
-    owner = "videostreaming";
-    repo = "fcast";
-    rev = "b27a773a090a5c7ffb2770bfc53149367afd7ae3";
-    hash = "sha256-/Z5y+ZMpGlM5iT+HooTXa1C7LGIdMghVcgIUtvsiA3w=";
-  };
+  src = localSrc;
 
-  cargoHash = "sha256-Irtm/drpPDNQaqjwIyaD+RVBQIfloqMej3PUjq3gd5M=";
+  cargoHash = "sha256-TSDGqELiMw/jEwHuZZjIoKfkWlBu1Ij95HK34OaK2YA=";
 
   nativeBuildInputs = [
     pkg-config
@@ -89,4 +86,9 @@ rustPlatform.buildRustPackage rec {
         ]
       }
   '';
+
+  meta = {
+    license = lib.licenses.gpl3Only;
+    mainProgram = "fcast-sender";
+  };
 }

@@ -341,6 +341,7 @@ struct Application {
     base_dirs: Option<BaseDirs>,
     session_state: Option<SessionState>,
     settings: Settings,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     update: Option<mcore::Release>,
 }
 
@@ -468,6 +469,7 @@ impl Application {
             user_dirs: UserDirs::new(),
             settings: Settings::default(),
             base_dirs: BaseDirs::new(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             update: None,
         })
     }
@@ -2368,6 +2370,7 @@ fn main() -> Result<()> {
         }
     });
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     bridge.on_update_application({
         let event_tx = event_tx.clone();
         move || {
