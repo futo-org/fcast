@@ -5,6 +5,7 @@ deployWebsite:
   tags:
     - fcast-instance-runner
   before_script:
+    - export CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
     - cd website
     - npm install
   script:
