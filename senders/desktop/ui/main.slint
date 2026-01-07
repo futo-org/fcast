@@ -109,7 +109,11 @@ export enum UiRootDirType {
 
 export enum UiUpdaterState {
     Idle,
-    Running,
+    Downloading,
+    DownloadFailed,
+    Installing,
+    InstallFailed,
+    InstallSuccessful,
 }
 
 export global Bridge {
@@ -153,7 +157,8 @@ export global Bridge {
     in-out property <UiUpdaterState> updater-state: UiUpdaterState.Idle;
 
     in property <string> new-update-version;
-    in property <percent> update-download-progress: 0%;
+    in property <int> update-download-progress;
+    in property <string> updater-error-msg;
 
     // in-out property <bool> update-available: true;
     // in property <string> new-update-version: "0.0.2";
@@ -229,6 +234,7 @@ export global Bridge {
     callback change-playback-rate(rate: float);
     callback update-settings();
     callback update-application();
+    callback restart-application();
 
     pure callback is-device-info-valid(info: string) -> bool;
 }
@@ -2215,7 +2221,8 @@ export component MainWindow inherits Window {
 
                             clicked => {
                                 Bridge.update-application();
-                                // TODO: show popup
+                                Bridge.update-available = false;
+                                Bridge.updater-state = UiUpdaterState.Downloading;
                             }
                         }
                     }
@@ -2306,7 +2313,12 @@ export component MainWindow inherits Window {
         Bridge.log-string = "";
     }
 
-    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-about-popup || is-showing-log-popup: Rectangle {
+    function close-updater-popup() {
+        Bridge.updater-state = UiUpdaterState.Idle;
+        // TODO: stop the updater
+    }
+
+    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-about-popup || is-showing-log-popup || Bridge.updater-state != UiUpdaterState.Idle: Rectangle {
         background: #0000009C;
         TouchArea {
             clicked => {
@@ -2318,6 +2330,8 @@ export component MainWindow inherits Window {
                     close-about-popup();
                 } else if is-showing-log-popup {
                     close-log-popup();
+                } else if Bridge.updater-state != UiUpdaterState.Idle {
+                    close-updater-popup();
                 }
             }
         }
@@ -2503,6 +2517,94 @@ export component MainWindow inherits Window {
                 read-only: true;
                 enabled: false;
             }
+        }
+    }
+
+    if Bridge.updater-state != UiUpdaterState.Idle: FCastPopupWindow {
+        width: root.width * 75%;
+        height: root.height * 75%;
+        title: "Updater";
+
+        close => close-updater-popup();
+
+        VerticalLayout {
+            padding-top: 24px;
+            spacing: 10px;
+
+            if Bridge.updater-state == UiUpdaterState.Downloading: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Downloading update...";
+                    horizontal-alignment: center;
+                }
+
+                SecondaryText {
+                    text: Bridge.update-download-progress + "%";
+                    horizontal-alignment: center;
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.DownloadFailed: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Download failed";
+                    horizontal-alignment: center;
+                }
+
+                SecondaryText {
+                    text: Bridge.updater-error-msg;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.Installing: FText {
+                text: "Installing...";
+                horizontal-alignment: center;
+            }
+
+            if Bridge.updater-state == UiUpdaterState.InstallFailed: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Install failed";
+                    horizontal-alignment: center;
+                }
+
+                SecondaryText {
+                    text: Bridge.updater-error-msg;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.InstallSuccessful: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Succesfully updated";
+                    horizontal-alignment: center;
+                }
+
+                Button {
+                    text: "Relaunch now";
+
+                    clicked => Bridge.restart-application();
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.DownloadFailed || Bridge.updater-state == UiUpdaterState.InstallFailed: HorizontalLayout {
+                alignment: center;
+
+                HyperLink {
+                    text: "Download and install the update manually";
+                    url: "https://fcast.org";
+                }
+            }
+
+            Spacer {}
         }
     }
 }

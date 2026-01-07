@@ -44,10 +44,16 @@ use tracing_subscriber::{
 
 use desktop_sender::slint_generated::*;
 
-#[cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))]
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_arch = "aarch64", target_os = "linux")
+)))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))]
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_arch = "aarch64", target_os = "linux")
+)))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
@@ -162,6 +168,22 @@ async fn process_files(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn restart_application() -> ! {
+    use std::process::Command;
+
+    if let Ok(path) = desktop_sender::starting_binary::STARTING_BINARY.cloned() {
+        // NOTE: for updates; the new exe is expected to be called the same as the current one
+        if let Err(err) = Command::new(path).spawn() {
+            error!(?err, "failed to restart app");
+        }
+    } else {
+        error!("Executable path not found, app will not be restarted");
+    }
+
+    std::process::exit(0);
 }
 
 type DirectoryId = i32;
@@ -1598,38 +1620,81 @@ impl Application {
                     return Ok(ShouldQuit::No);
                 };
 
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                })?;
+                // self.ui_weak.upgrade_in_event_loop(|ui| {
+                // })?;
 
                 let ui_weak = self.ui_weak.clone();
                 tokio::spawn(async move {
-                    let _ = desktop_sender::updater::download_update(update, move |progress, total| {
-                        let progress_percent = if total == 0 {
-                            0.0
-                        } else {
-                            (progress as f64 / total as f64) as f32
-                        };
+                    let res = desktop_sender::updater::download_update(&update, {
+                        let ui_weak = ui_weak.clone();
+                        move |progress, total| {
+                            let progress_percent = if total == 0 {
+                                0.0
+                            } else {
+                                progress as f64 / total as f64
+                            } * 100.0;
 
-                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_update_download_progress(progress_percent);
-                        });
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.global::<Bridge>()
+                                    .set_update_download_progress(progress_percent as i32);
+                            });
+                        }
                     })
                     .await;
-                });
 
-                // if let Err(err) = desktop_sender::updater::install_update(
-                //     update,
-                //     Box::new(|closure| {
-                //         let _ = slint::invoke_from_event_loop(move || {
-                //             (closure)();
-                //         });
-                //     }),
-                // )
-                // .await
-                // {
-                //     error!(?err, "Failed to install update");
-                // }
+                    let update_file = match res {
+                        Ok(update) => update,
+                        Err(err) => {
+                            let error_msg = err.to_shared_string();
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                let bridge = ui.global::<Bridge>();
+                                bridge.set_updater_state(UiUpdaterState::DownloadFailed);
+                                bridge.set_updater_error_msg(error_msg);
+                            });
+                            return;
+                        }
+                    };
+
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>()
+                            .set_updater_state(UiUpdaterState::Installing);
+                    });
+
+                    if let Err(err) = desktop_sender::updater::install_update(
+                        update_file,
+                        Box::new(|closure| {
+                            slint::invoke_from_event_loop(move || {
+                                (closure)();
+                            }).is_err()
+                        }),
+                    )
+                    .await
+                    {
+                        error!(?err, "Failed to install update");
+                        let error_msg = err.to_shared_string();
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            let bridge = ui.global::<Bridge>();
+                            bridge.set_updater_state(UiUpdaterState::InstallFailed);
+                            bridge.set_updater_error_msg(error_msg);
+                        });
+                        return;
+                    }
+
+                    debug!(?update, "Successfully updated");
+
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>()
+                            .set_updater_state(UiUpdaterState::InstallSuccessful);
+                    });
+                });
             }
+            #[cfg(target_os = "macos")]
+            Event::RestartApplication => {
+                let _ = self.end_session(true);
+                restart_application();
+            }
+            #[cfg(not(target_os = "macos"))]
+            Event::RestartApplication => (),
         }
 
         Ok(ShouldQuit::No)
@@ -2307,6 +2372,13 @@ fn main() -> Result<()> {
         let event_tx = event_tx.clone();
         move || {
             event_tx.send(Event::UpdateApplication).unwrap();
+        }
+    });
+
+    bridge.on_restart_application({
+        let event_tx = event_tx.clone();
+        move || {
+            event_tx.send(Event::RestartApplication).unwrap();
         }
     });
 

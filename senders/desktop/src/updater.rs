@@ -12,7 +12,7 @@ const BASE_URL: &str = "http://127.0.0.1:8000";
 const OS_SPECIFIC_PATH: &str = "/macos-aarch64";
 
 type MainThreadClosure = Box<dyn FnOnce() + Send + Sync + 'static>;
-type RunOnMainThread = Box<dyn Fn(MainThreadClosure) -> () + Send + Sync + 'static>;
+type RunOnMainThread = Box<dyn Fn(MainThreadClosure) -> bool + Send + Sync + 'static>;
 
 fn str_to_version(s: &str) -> Option<u32> {
     let mut segments = s.split('.');
@@ -44,7 +44,7 @@ pub async fn check_for_update() -> Result<Option<Release>> {
     })
 }
 
-pub async fn download_update<F>(update: Release, on_progress_update: F) -> Result<Bytes>
+pub async fn download_update<F>(update: &Release, on_progress_update: F) -> Result<Bytes>
 where
     F: Fn(u64, u64) + 'static,
 {
@@ -68,9 +68,6 @@ pub async fn install_update(
     run_on_main_thread: RunOnMainThread,
 ) -> Result<()> {
     use flate2::read::GzDecoder;
-
-    // let url = BASE_URL.to_owned() + OS_SPECIFIC_PATH + "/" + &update.file;
-    // let installer_file = reqwest::get(url).await?.bytes().await?;
 
     let cursor = std::io::Cursor::new(installer_file);
     let mut extracted_files: Vec<PathBuf> = Vec::new();
@@ -105,14 +102,12 @@ pub async fn install_update(
         extracted_files.push(extraction_path);
     }
 
+    debug!("Extracted update");
+
     let extract_path = "/Applications/FCast Sender.app";
 
     // Try to move the current app to backup
-    let move_result = std::fs::rename(
-        // &self.extract_path,
-        extract_path,
-        tmp_backup_dir.path().join("current_app"),
-    );
+    let move_result = std::fs::rename(extract_path, tmp_backup_dir.path().join("current_app"));
     let need_authorization = if let Err(err) = move_result {
         if err.kind() == std::io::ErrorKind::PermissionDenied {
             true
@@ -125,18 +120,16 @@ pub async fn install_update(
     };
 
     if need_authorization {
-        debug!("app installation needs admin privileges");
+        debug!("App installation needs admin privileges");
         // Use AppleScript to perform moves with admin privileges
         let apple_script = format!(
             "do shell script \"rm -rf '{src}' && mv -f '{new}' '{src}'\" with administrator privileges",
-            // src = self.extract_path.display(),
             src = extract_path,
             new = tmp_extract_dir.path().display()
         );
 
         let (tx, rx) = std::sync::mpsc::channel();
-        // let res = (self.run_on_main_thread)(Box::new(move || {
-        let res = (run_on_main_thread)(Box::new(move || {
+        let did_fail = (run_on_main_thread)(Box::new(move || {
             let mut script =
                 osakit::Script::new_from_source(osakit::Language::AppleScript, &apple_script);
             script.compile().expect("invalid AppleScript");
@@ -145,21 +138,13 @@ pub async fn install_update(
         }));
         let result = rx.recv().unwrap();
 
-        // TODO: check if run_on_main_thread actually ran our closure.
-        // if res.is_err() || result.is_err() {
-        if result.is_err() {
+        if did_fail || result.is_err() {
             std::fs::remove_dir_all(tmp_extract_dir.path()).ok();
-            todo!();
-            // return Err(Error::Io(std::io::Error::new(
-            //     std::io::ErrorKind::PermissionDenied,
-            //     "Failed to move the new app into place",
-            // )));
+            anyhow::bail!("Failed to move the new app into place");
         }
     } else {
         // Remove existing directory if it exists
-        // if self.extract_path.exists() {
         if PathBuf::from(extract_path).exists() {
-            // std::fs::remove_dir_all(&self.extract_path)?;
             std::fs::remove_dir_all(extract_path)?;
         }
         // Move the new app to the target path
@@ -169,8 +154,6 @@ pub async fn install_update(
     let _ = std::process::Command::new("touch")
         .arg(extract_path)
         .status();
-
-    // info!("Succesfully updated to {}", update.version);
 
     Ok(())
 }

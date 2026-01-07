@@ -260,6 +260,7 @@ pub enum Event {
     UpdateAvailable(Release),
     #[cfg(target_os = "macos")]
     UpdateApplication,
+    RestartApplication,
 
     // Android
     // #[cfg(target_os = "android")]
