@@ -588,6 +588,8 @@ impl SenderArgs {
                     files_to_copy.push((src, dst.to_owned()));
                 }
 
+                files_to_copy.push(("senders/extra/fcast.ico".into(), "fcast.ico".to_owned()));
+
                 let mut dll_components = String::new();
 
                 for (src, dst) in files_to_copy {
