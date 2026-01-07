@@ -7,7 +7,7 @@ from botocore.client import Config
 from collections import namedtuple
 from functools import cmp_to_key
 
-CLOUDFLARE_CACHE_TOKEN = os.environ.get('CLOUDFLARE_CACHE_TOKEN')
+CLOUDFLARE_API_TOKEN = os.environ.get('CLOUDFLARE_API_TOKEN')
 ZONE_ID = os.environ.get('CLOUDFLARE_ZONE_ID')
 ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID')
 ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID')
@@ -61,7 +61,7 @@ class S3Client:
         purge_response = requests.post(
             f'https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/purge_cache',
             headers={
-                'Authorization': f'Bearer {CLOUDFLARE_CACHE_TOKEN}',
+                'Authorization': f'Bearer {CLOUDFLARE_API_TOKEN}',
                 'Content-Type': 'application/json',
             },
             json={

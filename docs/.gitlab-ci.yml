@@ -6,6 +6,7 @@ deployDocsSite:
     - fcast-instance-runner
   before_script:
     - export CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
+    - export CLOUDFLARE_ACCOUNT_ID=$R2_ACCOUNT_ID
     - cd docs
     - pip install zensical
     - npm install
