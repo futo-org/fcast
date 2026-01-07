@@ -1,0 +1,25 @@
+
+deployDocsSite:
+  stage: website
+  image: nikolaik/python-nodejs:python3.14-nodejs25-slim
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - cd docs
+    - uv add zensical
+    - npm install
+  script:
+    - echo "Building docs site..."
+    - uvx zensical build
+    - echo "Deploying docs site..."
+    - npm run deploy-site
+    - >
+      curl -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache"
+      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+      -H "Content-Type: application/json"
+      --data '{
+        "files": [
+          "http://docs.fcast.org/"
+        ]
+      }'
+  when: manual
