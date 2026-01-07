@@ -120,7 +120,7 @@ provision_windows_vm:
     reports:
       dotenv: provision.env
 
-builSenderFordWinX64:
+builSenderForWinX64:
   stage: senders
   image: alpine:latest
   tags:
@@ -146,13 +146,17 @@ builSenderFordWinX64:
         Set-ExecutionPolicy Bypass -Scope Process -Force
 
         winget install --id Git.Git -e --source winget
+        $env:PATH += ";C:\Program Files\Git\bin"
 
         git clone "https://gitlab.futo.org/marlhan/fcast-build-deps.git"
-        msiexec.exe /i fcast-build-deps/gstreamer-1.0-msvc-x86_64-1.26.10.msi /qn
-        msiexec.exe /i fcast-build-deps/gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi /qn
-        msiexec.exe /i fcast-build-deps/wix-cli-x64.msi /qn
+        cd fcast-build-deps
+        Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-msvc-x86_64-1.26.10.msi" /qn' -Wait
+        Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi" /qn' -Wait
+        Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
+        cd ..
 
-        $env:PATH += ";$PWD/fcast-build-deps/protoc-33.2/bin"
+        $env:PATH += ";$PWD\fcast-build-deps\protoc-33.2\bin"
+        $env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
 
         rustup install stable
 
@@ -179,7 +183,7 @@ cleanup_vm:
   needs:
     - job: provision_windows_vm
       artifacts: true
-    - job: builSenderFordWinX64
+    - job: builSenderForWinX64
   # when: always  # Run even if tests fail
   when: manual
   before_script:
