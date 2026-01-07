@@ -53,6 +53,11 @@ impl StartingBinary {
             .map_err(|e| Error::new(e.kind(), e.to_string()))
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn has_symlink(_: &Path) -> Option<&Path> {
+        None
+    }
+
     /// We only care about checking this on macOS currently, as it has the least symlink protections.
     #[cfg(target_os = "macos")]
     fn has_symlink(path: &Path) -> Option<&Path> {

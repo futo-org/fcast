@@ -159,7 +159,7 @@ pub enum RootDirType {
     Music,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Deserialize)]
 pub struct Release {
     pub version: String,
@@ -256,9 +256,9 @@ pub enum Event {
         file_server_port: u16,
         mirroring_server_port: u16,
     },
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     UpdateAvailable(Release),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     UpdateApplication,
     RestartApplication,
 

@@ -52,12 +52,16 @@ xcb = { version = "1.6.0", features = ["randr", "xlib_xcb"] }
 objc2-core-graphics = "0.3.2"
 core-foundation = "0.10.1"
 flate2 = "1.1.5"
-tempfile = "3.24.0"
 tar = "0.4.44"
 osakit = { version = "0.3", features = ["full"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enable-ansi-support = "0.3.1"
+windows-sys = { version = "0.60.0", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+] }
 
 [target.'cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))'.dependencies]
 tikv-jemallocator = "0.6"
@@ -66,3 +70,4 @@ tikv-jemallocator = "0.6"
 reqwest = { version = "0.13.1", features = [ "native-tls", "json" ] }
 bytes = "1"
 ctor = "0.2"
+tempfile = "3.24.0"

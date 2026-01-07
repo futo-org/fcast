@@ -10,6 +10,8 @@ use tracing::{debug, info};
 const BASE_URL: &str = "http://127.0.0.1:8000";
 #[cfg(target_os = "macos")]
 const OS_SPECIFIC_PATH: &str = "/macos-aarch64";
+#[cfg(target_os = "windows")]
+const OS_SPECIFIC_PATH: &str = "/win-x64";
 
 type MainThreadClosure = Box<dyn FnOnce() + Send + Sync + 'static>;
 type RunOnMainThread = Box<dyn Fn(MainThreadClosure) -> bool + Send + Sync + 'static>;
@@ -63,6 +65,7 @@ where
     Ok(content.into())
 }
 
+#[cfg(target_os = "macos")]
 pub async fn install_update(
     installer_file: Bytes,
     run_on_main_thread: RunOnMainThread,
@@ -156,4 +159,78 @@ pub async fn install_update(
         .status();
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub async fn install_update(
+    installer_file: Bytes,
+    run_on_main_thread: RunOnMainThread,
+) -> Result<()> {
+    use std::ffi::{OsStr, OsString};
+    use std::iter::once;
+    use windows_sys::{
+        w,
+        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOW},
+    };
+
+    fn write_to_temp(bytes: &Bytes) -> Result<(PathBuf, tempfile::TempPath)> {
+        use std::io::Write;
+        let mut temp_file = tempfile::Builder::new()
+            .prefix("fcast-sender-installer")
+            .suffix(".msi")
+            .tempfile()?;
+
+        temp_file.write_all(bytes)?;
+
+        let temp = temp_file.into_temp_path();
+        Ok((temp.to_path_buf(), temp))
+    }
+
+    fn encode_wide(string: impl AsRef<OsStr>) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+
+        string
+            .as_ref()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let (path, _temp) = write_to_temp(&installer_file)?;
+
+    debug!(installer_path = ?path);
+
+    let installer_args: Vec<&OsStr> = [OsStr::new("/i"), path.as_os_str()]
+        .into_iter()
+        .chain(once(OsStr::new("/passive")))
+        // .chain(install_mode.msiexec_args().iter().map(OsStr::new))
+        .chain(once(OsStr::new("/promptrestart")))
+        // .chain(self.installer_args())
+        .chain(once(OsStr::new("AUTOLAUNCHAPP=True")))
+        // .chain(once(msi_args.as_os_str()))
+        .collect();
+
+    let file = std::env::var("SYSTEMROOT").as_ref().map_or_else(
+        |_| OsString::from("msiexec.exe"),
+        |p| OsString::from(format!("{p}\\System32\\msiexec.exe")),
+    );
+    let file = encode_wide(file);
+
+    let parameters = installer_args.join(OsStr::new(" "));
+    let parameters = encode_wide(parameters);
+
+    debug!("Starting installer...");
+
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            w!("open"),
+            file.as_ptr(),
+            parameters.as_ptr(),
+            std::ptr::null(),
+            SW_SHOW,
+        )
+    };
+
+    std::process::exit(0);
 }

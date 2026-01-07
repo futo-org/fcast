@@ -170,12 +170,12 @@ async fn process_files(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn restart_application() -> ! {
     use std::process::Command;
 
     if let Ok(path) = desktop_sender::starting_binary::STARTING_BINARY.cloned() {
-        // NOTE: for updates; the new exe is expected to be called the same as the current one
+        // NOTE: for updates; the new exe is expected to be named the same as the current one
         if let Err(err) = Command::new(path).spawn() {
             error!(?err, "failed to restart app");
         }
@@ -1603,7 +1603,7 @@ impl Application {
                         .await;
                 }
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             Event::UpdateAvailable(release) => {
                 let version = release.version.to_shared_string();
                 self.ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1613,7 +1613,7 @@ impl Application {
                 })?;
                 self.update = Some(release);
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             Event::UpdateApplication => {
                 let Some(update) = self.update.take() else {
                     error!("User want's to update but no updates available");
@@ -1688,12 +1688,12 @@ impl Application {
                     });
                 });
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             Event::RestartApplication => {
                 let _ = self.end_session(true);
                 restart_application();
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             Event::RestartApplication => (),
         }
 
@@ -1912,7 +1912,7 @@ impl Application {
             }
         });
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         tokio::spawn({
             let event_tx = self.event_tx.clone();
             async move {
