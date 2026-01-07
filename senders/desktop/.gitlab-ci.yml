@@ -169,7 +169,7 @@ builSenderForWinX64:
       PS
 
     - |
-      sshpass -p "${PROXMOX_WIN_PASSWORD}" scp -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}:C:\Users\\${PROXMOX_WIN_USER}\fcast\target\win-build\*.msi" .
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" scp -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}:C:/Users/${PROXMOX_WIN_USER}/fcast/target/win-build/*.msi" .
   artifacts:
     untracked: false
     when: on_success
