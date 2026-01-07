@@ -157,6 +157,8 @@ builSenderForWinX64:
 
         $env:PATH += ";$PWD\fcast-build-deps\protoc-33.2\bin"
         $env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
+        $env:PATH += ";C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
+        $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
 
         rustup install stable
 

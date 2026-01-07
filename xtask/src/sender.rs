@@ -450,7 +450,7 @@ impl SenderArgs {
                                     .unwrap_or("");
                                 let installed_version = format!("{}.0", installed_version);
 
-                                if &installed_version != "17.0" {
+                                if &installed_version != "17.0" && &installed_version != "18.0" {
                                     continue;
                                 }
 
@@ -486,7 +486,7 @@ impl SenderArgs {
                         for entry in subdirectories.iter().rev() {
                             let redist_path = entry.path();
                             for redist_version in
-                                ["VC141", "VC142", "VC143", "VC150", "VC160"].iter()
+                                ["VC141", "VC142", "VC143", "VC145", "VC150", "VC160"].iter()
                             {
                                 let path1 =
                                     redist_path.join(format!("Microsoft.{}.CRT", redist_version));
