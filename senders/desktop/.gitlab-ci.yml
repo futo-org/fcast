@@ -141,32 +141,32 @@ builSenderForWinX64:
         sleep 10
       done
 
-    # - |
-    #   sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -Command - <<'PS'
-    #     Set-ExecutionPolicy Bypass -Scope Process -Force
+    - |
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -Command - <<'PS'
+        Set-ExecutionPolicy Bypass -Scope Process -Force
 
-    #     winget install --id Git.Git -e --source winget
-    #     $env:PATH += ";C:\Program Files\Git\bin"
+        winget install --id Git.Git -e --source winget
+        $env:PATH += ";C:\Program Files\Git\bin"
 
-    #     git clone "https://gitlab.futo.org/marlhan/fcast-build-deps.git"
-    #     cd fcast-build-deps
-    #     Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-msvc-x86_64-1.26.10.msi" /qn' -Wait
-    #     Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi" /qn' -Wait
-    #     Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
-    #     cd ..
+        git clone "https://gitlab.futo.org/marlhan/fcast-build-deps.git"
+        cd fcast-build-deps
+        Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-msvc-x86_64-1.26.10.msi" /qn' -Wait
+        Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi" /qn' -Wait
+        Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
+        cd ..
 
-    #     $env:PATH += ";$PWD\fcast-build-deps\protoc-33.2\bin"
-    #     $env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
-    #     $env:PATH += ";C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
-    #     $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+        $env:PATH += ";$PWD\fcast-build-deps\protoc-33.2\bin"
+        $env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
+        $env:PATH += ";C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
+        $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
 
-    #     rustup install stable
+        rustup install stable
 
-    #     git clone --depth=1 -b marcus/desktop-sender-beta "https://gitlab.futo.org/videostreaming/fcast.git"
-    #     cd fcast
+        git clone --depth=1 -b marcus/desktop-sender-beta "https://gitlab.futo.org/videostreaming/fcast.git"
+        cd fcast
 
-    #     cargo xtask sender build-windows-installer
-    #   PS
+        cargo xtask sender build-windows-installer
+      PS
 
     - |
       sshpass -p "${PROXMOX_WIN_PASSWORD}" scp -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}:C:\Users\\${PROXMOX_WIN_USER}\fcast\target\win-build\*.msi" .
