@@ -319,6 +319,7 @@ struct Application {
     base_dirs: Option<BaseDirs>,
     session_state: Option<SessionState>,
     settings: Settings,
+    update: Option<mcore::Release>,
 }
 
 async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<FetchEvent> {
@@ -445,6 +446,7 @@ impl Application {
             user_dirs: UserDirs::new(),
             settings: Settings::default(),
             base_dirs: BaseDirs::new(),
+            update: None,
         })
     }
 
@@ -1579,6 +1581,55 @@ impl Application {
                         .await;
                 }
             }
+            #[cfg(target_os = "macos")]
+            Event::UpdateAvailable(release) => {
+                let version = release.version.to_shared_string();
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_update_available(true);
+                    bridge.set_new_update_version(version);
+                })?;
+                self.update = Some(release);
+            }
+            #[cfg(target_os = "macos")]
+            Event::UpdateApplication => {
+                let Some(update) = self.update.take() else {
+                    error!("User want's to update but no updates available");
+                    return Ok(ShouldQuit::No);
+                };
+
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                })?;
+
+                let ui_weak = self.ui_weak.clone();
+                tokio::spawn(async move {
+                    let _ = desktop_sender::updater::download_update(update, move |progress, total| {
+                        let progress_percent = if total == 0 {
+                            0.0
+                        } else {
+                            (progress as f64 / total as f64) as f32
+                        };
+
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>().set_update_download_progress(progress_percent);
+                        });
+                    })
+                    .await;
+                });
+
+                // if let Err(err) = desktop_sender::updater::install_update(
+                //     update,
+                //     Box::new(|closure| {
+                //         let _ = slint::invoke_from_event_loop(move || {
+                //             (closure)();
+                //         });
+                //     }),
+                // )
+                // .await
+                // {
+                //     error!(?err, "Failed to install update");
+                // }
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -1793,6 +1844,26 @@ impl Application {
                 //     ui.global::<Bridge>()
                 //         .set_is_yt_dlp_available(yt_dlp_available);
                 // });
+            }
+        });
+
+        #[cfg(target_os = "macos")]
+        tokio::spawn({
+            let event_tx = self.event_tx.clone();
+            async move {
+                match desktop_sender::updater::check_for_update()
+                    .instrument(tracing::debug_span!("check_for_updates"))
+                    .await
+                {
+                    Ok(release) => {
+                        if let Some(release) = release {
+                            let _ = event_tx.send(Event::UpdateAvailable(release));
+                        }
+                    }
+                    Err(err) => {
+                        error!(?err, "Failed to check for update");
+                    }
+                }
             }
         });
 
@@ -2229,6 +2300,13 @@ fn main() -> Result<()> {
                     mirroring_server_port,
                 })
                 .unwrap();
+        }
+    });
+
+    bridge.on_update_application({
+        let event_tx = event_tx.clone();
+        move || {
+            event_tx.send(Event::UpdateApplication).unwrap();
         }
     });
 

@@ -107,6 +107,11 @@ export enum UiRootDirType {
     Music,
 }
 
+export enum UiUpdaterState {
+    Idle,
+    Running,
+}
+
 export global Bridge {
     in property <string> app-version;
     in property <bool> is-audio-supported: false;
@@ -144,6 +149,14 @@ export global Bridge {
     in-out property <string> mirroring-source-name;
     in-out property <bool> is-reconnecting: false;
     in-out property <UiMediaFileType> current-media-type;
+    in-out property <bool> update-available: false;
+    in-out property <UiUpdaterState> updater-state: UiUpdaterState.Idle;
+
+    in property <string> new-update-version;
+    in property <percent> update-download-progress: 0%;
+
+    // in-out property <bool> update-available: true;
+    // in property <string> new-update-version: "0.0.2";
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -215,6 +228,7 @@ export global Bridge {
     callback change-root-dir(new-root: UiRootDirType);
     callback change-playback-rate(rate: float);
     callback update-settings();
+    callback update-application();
 
     pure callback is-device-info-valid(info: string) -> bool;
 }
@@ -2169,6 +2183,41 @@ export component MainWindow inherits Window {
                     SecondaryText {
                         vertical-alignment: center;
                         text: "BETA";
+                    }
+                }
+
+                if Bridge.update-available: VerticalLayout {
+                    spacing: 5px;
+
+                    FText {
+                        text: "Version " + Bridge.new-update-version + " is available";
+                        wrap: word-wrap;
+                    }
+
+                    FText {
+                        text: "Do you want to upgrade to the latest version?";
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 5px;
+
+                        Button {
+                            text: "No";
+
+                            clicked => {
+                                Bridge.update-available = false;
+                            }
+                        }
+
+                        Button {
+                            text: "Yes";
+
+                            clicked => {
+                                Bridge.update-application();
+                                // TODO: show popup
+                            }
+                        }
                     }
                 }
 

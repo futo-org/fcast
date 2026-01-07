@@ -864,14 +864,15 @@ impl SenderArgs {
                     app_top_level.join("Contents").join("Info.plist"),
                     info_plist,
                 )?;
-                std::os::unix::fs::symlink(
-                    Utf8PathBuf::from("/Applications"),
-                    path_to_dmg_dir.join("Applications"),
-                )?;
+                let applications_link_path = path_to_dmg_dir.join("Applications");
+                // std::os::unix::fs::symlink(
+                //     Utf8PathBuf::from("/Applications"),
+                //     path_to_dmg_dir.join("Applications"),
+                // )?;
 
                 let path_to_dmg = root_path
                     .join("target")
-                    .join(format!("fcast-sender-{sender_version}.dmg"));
+                    .join(format!("fcast-sender-{sender_version}-macos-aarch64.dmg"));
                 sh.remove_path(&path_to_dmg)?;
 
                 if sign {
@@ -882,8 +883,16 @@ impl SenderArgs {
                     cmd!(sh, "rcodesign sign --p12-file {p12_file} --p12-password-file {p12_password_file} {app_top_level}").run()?;
                 }
 
+                println!("############### Creating tarball ###############");
+
+                cmd!(sh, "tar -czf target/fcast-sender-{sender_version}-macos-aarch64.tar.gz -C {path_to_dmg_dir} 'FCast Sender.app'").run()?;
 
                 println!("############### Creating dmg ###############");
+
+                std::os::unix::fs::symlink(
+                    Utf8PathBuf::from("/Applications"),
+                    applications_link_path,
+                )?;
 
                 cmd!(sh, "hdiutil create -volname FCastSender -megabytes 250 {path_to_dmg} -srcfolder {path_to_dmg_dir}").run()?;
 

@@ -1,6 +1,7 @@
 use fcast_sender_sdk::device::{self, DeviceInfo};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
+use serde::Deserialize;
 
 #[cfg(not(target_os = "android"))]
 pub mod preview;
@@ -158,6 +159,13 @@ pub enum RootDirType {
     Music,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Deserialize)]
+pub struct Release {
+    pub version: String,
+    pub file: String,
+}
+
 #[derive(Debug)]
 pub enum Event {
     // Common
@@ -248,6 +256,10 @@ pub enum Event {
         file_server_port: u16,
         mirroring_server_port: u16,
     },
+    #[cfg(target_os = "macos")]
+    UpdateAvailable(Release),
+    #[cfg(target_os = "macos")]
+    UpdateApplication,
 
     // Android
     // #[cfg(target_os = "android")]
