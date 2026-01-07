@@ -1,0 +1,24 @@
+
+deployWebsite:
+  stage: website
+  image: nikolaik/python-nodejs:python3.14-nodejs25-slim
+  tags:
+    - fcast-instance-runner
+  before_script:
+    - export CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
+    - export CLOUDFLARE_ACCOUNT_ID=$R2_ACCOUNT_ID
+    - cd website
+    - npm install
+  script:
+    - echo "Deploying website..."
+    - npm run deploy-site
+    - >
+      curl -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache"
+      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+      -H "Content-Type: application/json"
+      --data '{
+        "files": [
+          "http://fcast.org/"
+        ]
+      }'
+  when: manual
