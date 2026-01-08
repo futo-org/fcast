@@ -1,4 +1,4 @@
-buildMacosArm64:
+buildSenderForMacosArm64:
   stage: senders
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
@@ -13,4 +13,207 @@ buildMacosArm64:
     access: all
     paths:
       - buildSenderMacosArm64/binary/target/fcast-sender-*.dmg
+      - buildSenderMacosArm64/binary/target/fcast-sender-*.tar.gz
   when: manual
+
+variables:
+  PROXMOX_HOST: "127.0.0.1"
+  PROXMOX_NODE: "green"
+  TEMPLATE_VMID: "101"  # Source VM/template ID to clone
+  VM_NAME: "ci-runner-${CI_PIPELINE_ID}"
+  CLONE_TYPE: "1"  # 0 = linked, 1 = full
+
+.proxmox_auth: &proxmox_auth
+  # Build auth header for Proxmox API
+  - export PROXMOX_AUTH="PVEAPIToken=${PROXMOX_USER}!${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
+
+provision_windows_vm:
+  stage: senders
+  image: alpine:latest
+  when: manual
+  tags:
+    - proxmoxshell
+  before_script:
+    - *proxmox_auth
+  script:
+    # Get next available VMID
+    - |
+      export NEXT_VMID=$(curl -s -k \
+        -H "Authorization: ${PROXMOX_AUTH}" \
+        "https://${PROXMOX_HOST}:8006/api2/json/cluster/nextid" | jq -r '.data')
+      echo "VMID=${NEXT_VMID}" >> provision.env
+      echo "Using VMID: ${NEXT_VMID}"
+
+    # Clone and capture UPID
+    - |
+      CLONE_RESPONSE=$(curl -s -k -X POST \
+        -H "Authorization: ${PROXMOX_AUTH}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "newid=${NEXT_VMID}&name=${VM_NAME}&full=${CLONE_TYPE}" \
+        "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/qemu/${TEMPLATE_VMID}/clone")
+
+      UPID=$(echo "$CLONE_RESPONSE" | jq -r '.data')
+      echo "Clone task started: $UPID"
+
+    # Poll task status
+    - |
+      UPID_ENCODED=$(printf '%s' "$UPID" | jq -sRr @uri)
+      LATEST_TEMP=""
+
+      while true; do
+        TASK_STATUS=$(curl -s -k \
+          -H "Authorization: ${PROXMOX_AUTH}" \
+          "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/tasks/${UPID_ENCODED}/status")
+
+        STATUS=$(echo "$TASK_STATUS" | jq -r '.data.status')
+
+        if [ "$STATUS" = "stopped" ]; then
+          EXIT_STATUS=$(echo "$TASK_STATUS" | jq -r '.data.exitstatus')
+          if [ "$EXIT_STATUS" = "OK" ]; then
+            echo "Clone completed successfully!"
+            break
+          else
+            echo "Clone failed: $EXIT_STATUS"
+            exit 1
+          fi
+        fi
+
+        # Get progress from task log
+        TASK_LOG=$(curl -s -k \
+          -H "Authorization: ${PROXMOX_AUTH}" \
+          "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/tasks/${UPID_ENCODED}/log?limit=10000")
+
+        # Show the latest log line (clone progress appears here)
+        LATEST=$(echo "$TASK_LOG" | jq -r '.data | sort_by(.n) | last | .t // "waiting..."')
+        if [ "$LATEST_TEMP" != "$LATEST" ]; then
+           echo "Status: $STATUS | $LATEST"
+           LATEST_TEMP="$LATEST"
+        fi
+        sleep 5
+      done
+
+    # Start the VM
+    - |
+      curl -s -k -X POST \
+        -H "Authorization: ${PROXMOX_AUTH}" \
+        "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/qemu/${NEXT_VMID}/status/start"
+
+
+    # Wait for VM to get an IP (via QEMU guest agent)
+    - |
+      echo "Waiting for VM to boot and get IP..."
+      for i in $(seq 1 60); do
+        IP=$(curl -s -k \
+          -H "Authorization: ${PROXMOX_AUTH}" \
+          "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/qemu/${NEXT_VMID}/agent/network-get-interfaces" 2>/dev/null \
+          | jq -r '.data.result[]? | select(.name != "Loopback Pseudo-Interface 1") | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"' \
+          | head -1)
+        if [ -n "$IP" ] && [ "$IP" != "null" ]; then
+          echo "VM_IP=${IP}" >> provision.env
+          echo "VM is up at: ${IP}"
+          break
+        fi
+        echo "Waiting for Start and IP... (${i}/60)"
+        sleep 10
+      done
+
+  artifacts:
+    reports:
+      dotenv: provision.env
+
+builSenderForWinX64:
+  stage: senders
+  image: alpine:latest
+  tags:
+    - proxmoxshell
+  when: manual
+  needs:
+    - job: provision_windows_vm
+      artifacts: true
+  script:
+    # Wait for SSH to be ready
+    - |
+      for i in $(seq 1 30); do
+        if sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "${PROXMOX_WIN_USER}@${VM_IP}" "echo ready" 2>/dev/null; then
+          echo "SSH is ready!"
+          break
+        fi
+        echo "Waiting for SSH... ($i/30)"
+        sleep 10
+      done
+
+    - |
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -Command - <<'PS'
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+
+        winget install --id Git.Git -e --source winget
+        $env:PATH += ";C:\Program Files\Git\bin"
+
+        git clone "https://gitlab.futo.org/videostreaming/fcast-build-deps.git"
+        cd fcast-build-deps
+        Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-msvc-x86_64-1.26.10.msi" /qn' -Wait
+        Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi" /qn' -Wait
+        Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
+        cd ..
+
+        $env:PATH += ";$PWD\fcast-build-deps\protoc-33.2\bin"
+        $env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
+        $env:PATH += ";C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
+        $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+
+        rustup install stable
+
+        git clone --depth=1 -b marcus/desktop-sender-beta "https://gitlab.futo.org/videostreaming/fcast.git"
+        cd fcast
+
+        cargo xtask sender build-windows-installer
+      PS
+
+    - |
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" scp -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}:C:/Users/${PROXMOX_WIN_USER}/fcast/target/win-build/*.msi" .
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - ./*.msi
+
+cleanup_vm:
+  stage: senders
+  image: alpine:latest
+  tags:
+    - proxmoxshell
+  needs:
+    - job: provision_windows_vm
+      artifacts: true
+    - job: builSenderForWinX64
+  when: manual
+  before_script:
+    - *proxmox_auth
+  script:
+    # Stop the VM
+    - |
+      curl -s -k -X POST \
+        -H "Authorization: ${PROXMOX_AUTH}" \
+        "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/qemu/${VMID}/status/stop"
+
+    # Wait for VM to stop
+    - |
+      echo "Waiting for VM to stop..."
+      for i in $(seq 1 30); do
+        STATUS=$(curl -s -k \
+          -H "Authorization: ${PROXMOX_AUTH}" \
+          "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/qemu/${VMID}/status/current" | jq -r '.data.status')
+        if [ "$STATUS" = "stopped" ]; then
+          echo "VM stopped!"
+          break
+        fi
+        sleep 5
+      done
+
+    # Delete the VM
+    - |
+      curl -s -k -X DELETE \
+        -H "Authorization: ${PROXMOX_AUTH}" \
+        "https://${PROXMOX_HOST}:8006/api2/json/nodes/${PROXMOX_NODE}/qemu/${VMID}"
+      echo "VM ${VMID} deleted"

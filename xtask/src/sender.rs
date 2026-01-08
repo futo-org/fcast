@@ -462,7 +462,7 @@ impl SenderArgs {
                                     .unwrap_or("");
                                 let installed_version = format!("{}.0", installed_version);
 
-                                if &installed_version != "17.0" {
+                                if &installed_version != "17.0" && &installed_version != "18.0" {
                                     continue;
                                 }
 
@@ -498,7 +498,7 @@ impl SenderArgs {
                         for entry in subdirectories.iter().rev() {
                             let redist_path = entry.path();
                             for redist_version in
-                                ["VC141", "VC142", "VC143", "VC150", "VC160"].iter()
+                                ["VC141", "VC142", "VC143", "VC145", "VC150", "VC160"].iter()
                             {
                                 let path1 =
                                     redist_path.join(format!("Microsoft.{}.CRT", redist_version));
@@ -587,6 +587,8 @@ impl SenderArgs {
                 for (src, dst) in windows_crt_dlls {
                     files_to_copy.push((src, dst.to_owned()));
                 }
+
+                files_to_copy.push(("senders/extra/fcast.ico".into(), "fcast.ico".to_owned()));
 
                 let mut dll_components = String::new();
 
@@ -864,14 +866,15 @@ impl SenderArgs {
                     app_top_level.join("Contents").join("Info.plist"),
                     info_plist,
                 )?;
-                std::os::unix::fs::symlink(
-                    Utf8PathBuf::from("/Applications"),
-                    path_to_dmg_dir.join("Applications"),
-                )?;
+                let applications_link_path = path_to_dmg_dir.join("Applications");
+                // std::os::unix::fs::symlink(
+                //     Utf8PathBuf::from("/Applications"),
+                //     path_to_dmg_dir.join("Applications"),
+                // )?;
 
                 let path_to_dmg = root_path
                     .join("target")
-                    .join(format!("fcast-sender-{sender_version}.dmg"));
+                    .join(format!("fcast-sender-{sender_version}-macos-aarch64.dmg"));
                 sh.remove_path(&path_to_dmg)?;
 
                 if sign {
@@ -882,8 +885,16 @@ impl SenderArgs {
                     cmd!(sh, "rcodesign sign --p12-file {p12_file} --p12-password-file {p12_password_file} {app_top_level}").run()?;
                 }
 
+                println!("############### Creating tarball ###############");
+
+                cmd!(sh, "tar -czf target/fcast-sender-{sender_version}-macos-aarch64.tar.gz -C {path_to_dmg_dir} 'FCast Sender.app'").run()?;
 
                 println!("############### Creating dmg ###############");
+
+                std::os::unix::fs::symlink(
+                    Utf8PathBuf::from("/Applications"),
+                    applications_link_path,
+                )?;
 
                 cmd!(sh, "hdiutil create -volname FCastSender -megabytes 250 {path_to_dmg} -srcfolder {path_to_dmg_dir}").run()?;
 

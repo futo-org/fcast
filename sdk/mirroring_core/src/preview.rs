@@ -1,7 +1,7 @@
 use crate::{VideoSource, transmission::ExtraVideoContext};
 use anyhow::Result;
 use gst::prelude::*;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 fn scale_res_to_fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
     let aspect_ratio = (max_width as f32 / width as f32).min(max_height as f32 / height as f32);
@@ -22,9 +22,12 @@ fn make_capture_src(src: VideoSource) -> Result<(gst::Element, Option<ExtraVideo
                 .property("client-name", "FCast Sender Video Capture")
                 .property("fd", fd.as_raw_fd())
                 .property("path", node_id.to_string())
-                // https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/4797
-                .property("use-bufferpool", false)
                 .build()?;
+            if src.has_property("use-bufferpool") {
+                info!("`pipewiresrc` has property `use-bufferpool`, setting");
+                // https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/4797
+                src.set_property("use-bufferpool", false);
+            }
 
             let extra = Some(ExtraVideoContext::PipewireVideoSource { _fd: fd });
 
@@ -232,15 +235,12 @@ pub struct PreviewPipeline {
 }
 
 impl PreviewPipeline {
-    pub fn new(
-        display_name: String,
-        on_new_sample: impl FnMut(
-            &gst_app::AppSink,
-        ) -> std::result::Result<gst::FlowSuccess, gst::FlowError>
-        + Send
-        + 'static,
-        src: VideoSource,
-    ) -> Result<Self> {
+    pub fn new<F>(display_name: String, on_new_sample: F, src: VideoSource) -> Result<Self>
+    where
+        F: FnMut(&gst_app::AppSink) -> std::result::Result<gst::FlowSuccess, gst::FlowError>
+            + Send
+            + 'static,
+    {
         let pipeline = gst::Pipeline::new();
 
         let appsink = gst_app::AppSink::builder()

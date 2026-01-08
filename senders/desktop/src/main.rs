@@ -44,6 +44,19 @@ use tracing_subscriber::{
 
 use desktop_sender::slint_generated::*;
 
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_arch = "aarch64", target_os = "linux")
+)))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_arch = "aarch64", target_os = "linux")
+)))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
 const MIN_TIME_BETWEEN_VOLUME_CHANGES: Duration = Duration::from_millis(75);
@@ -155,6 +168,22 @@ async fn process_files(
     }
 
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn restart_application() -> ! {
+    use std::process::Command;
+
+    if let Ok(path) = desktop_sender::starting_binary::STARTING_BINARY.cloned() {
+        // NOTE: for updates; the new exe is expected to be named the same as the current one
+        if let Err(err) = Command::new(path).spawn() {
+            error!(?err, "failed to restart app");
+        }
+    } else {
+        error!("Executable path not found, app will not be restarted");
+    }
+
+    std::process::exit(0);
 }
 
 type DirectoryId = i32;
@@ -312,6 +341,8 @@ struct Application {
     base_dirs: Option<BaseDirs>,
     session_state: Option<SessionState>,
     settings: Settings,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    update: Option<mcore::Release>,
 }
 
 async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<FetchEvent> {
@@ -438,6 +469,8 @@ impl Application {
             user_dirs: UserDirs::new(),
             settings: Settings::default(),
             base_dirs: BaseDirs::new(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            update: None,
         })
     }
 
@@ -561,13 +594,7 @@ impl Application {
                         }
                     }
                 }
-            } // None => match std::env::home_dir() {
-              //     Some(home_dir) => home_dir,
-              //     None => {
-              //         error!("Could not get home directory");
-              //         return;
-              //     }
-              // },
+            }
         };
 
         self.current_local_media_id += 1;
@@ -1069,7 +1096,7 @@ impl Application {
                     device::DeviceConnectionState::Disconnected => self.end_session(false).await?,
                     device::DeviceConnectionState::Connecting => (),
                     device::DeviceConnectionState::Reconnecting => {
-                        // TODO: I'm sure we can handle this more gracefully
+                        let mut change_to_default_state = false;
                         if let Some(session) = self.session_state.as_mut() {
                             match session.specific {
                                 SessionSpecificState::Mirroring {
@@ -1078,10 +1105,18 @@ impl Application {
                                     if let Some(mut tx_sink) = tx_sink.take() {
                                         tx_sink.shutdown();
                                     }
+                                    change_to_default_state = true;
                                 }
                                 _ => (),
                             }
                         }
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            let bridge = ui.global::<Bridge>();
+                            bridge.set_is_reconnecting(true);
+                            if change_to_default_state {
+                                bridge.set_app_state(UiAppState::SelectingInputType);
+                            }
+                        })?;
                     }
                     device::DeviceConnectionState::Connected {
                         local_addr,
@@ -1098,7 +1133,10 @@ impl Application {
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 bridge.set_is_mirroring_supported(is_mirroring_supported);
-                                bridge.invoke_change_state(UiAppState::SelectingInputType);
+                                if !bridge.get_is_reconnecting() {
+                                    bridge.invoke_change_state(UiAppState::SelectingInputType);
+                                }
+                                bridge.set_is_reconnecting(false);
                                 bridge.set_device_ip(remote_addr_str);
                             })?;
                         } else {
@@ -1109,6 +1147,24 @@ impl Application {
                 mcore::DeviceEvent::SourceChanged(new_source) => {
                     let is_our_url = {
                         if let Some(session) = self.session_state.as_mut() {
+                            if let Some(content_type) = new_source.content_type() {
+                                let content_type = if content_type.starts_with("image") {
+                                    Some(UiMediaFileType::Image)
+                                } else if content_type.starts_with("video") {
+                                    Some(UiMediaFileType::Video)
+                                } else if content_type.starts_with("audio") {
+                                    Some(UiMediaFileType::Audio)
+                                } else {
+                                    None
+                                };
+
+                                if let Some(content_type) = content_type {
+                                    self.ui_weak.upgrade_in_event_loop(move |ui| {
+                                        ui.global::<Bridge>().set_current_media_type(content_type);
+                                    })?;
+                                }
+                            }
+
                             match &mut session.specific {
                                 SessionSpecificState::Mirroring { our_source_url, .. } => {
                                     our_source_url.as_ref().map(|our| match &new_source {
@@ -1228,6 +1284,41 @@ impl Application {
                                 }
                             }
 
+                            let new_shortcut_type = {
+                                if let Some(root) = data.root.to_str() {
+                                    fn get_first_match(
+                                        dirs: &UserDirs,
+                                        root: &str,
+                                    ) -> UiRootDirType {
+                                        let types = [
+                                            (dirs.video_dir(), UiRootDirType::Videos),
+                                            (dirs.audio_dir(), UiRootDirType::Music),
+                                            (dirs.picture_dir(), UiRootDirType::Pictures),
+                                        ];
+
+                                        for (path, dir_type) in types {
+                                            if let Some(path) = path {
+                                                if let Some(path) = path.to_str() {
+                                                    if root.starts_with(path) {
+                                                        return dir_type;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        UiRootDirType::Unknown
+                                    }
+
+                                    if let Some(dirs) = self.user_dirs.as_ref() {
+                                        get_first_match(&dirs, root)
+                                    } else {
+                                        UiRootDirType::Unknown
+                                    }
+                                } else {
+                                    UiRootDirType::Unknown
+                                }
+                            };
+
                             let root = data.root.to_string_lossy().to_shared_string();
                             let mut directories = data
                                 .directories
@@ -1238,12 +1329,13 @@ impl Application {
                                 })
                                 .collect::<Vec<UiDirectoryEntry>>();
                             directories.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-                            self.ui_weak.upgrade_in_event_loop(|ui| {
+                            self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let global = ui.global::<Bridge>();
                                 global.set_current_directory(root);
                                 global.set_directories(
                                     Rc::new(slint::VecModel::from(directories)).into(),
                                 );
+                                global.set_root_dir_type(new_shortcut_type);
                             })?;
 
                             let event_tx = self.event_tx.clone();
@@ -1543,6 +1635,99 @@ impl Application {
                         .await;
                 }
             }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Event::UpdateAvailable(release) => {
+                let version = release.version.to_shared_string();
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_update_available(true);
+                    bridge.set_new_update_version(version);
+                })?;
+                self.update = Some(release);
+            }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Event::UpdateApplication => {
+                let Some(update) = self.update.take() else {
+                    error!("User want's to update but no updates available");
+                    return Ok(ShouldQuit::No);
+                };
+
+                // self.ui_weak.upgrade_in_event_loop(|ui| {
+                // })?;
+
+                let ui_weak = self.ui_weak.clone();
+                tokio::spawn(async move {
+                    let res = desktop_sender::updater::download_update(&update, {
+                        let ui_weak = ui_weak.clone();
+                        move |progress, total| {
+                            let progress_percent = if total == 0 {
+                                0.0
+                            } else {
+                                progress as f64 / total as f64
+                            } * 100.0;
+
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.global::<Bridge>()
+                                    .set_update_download_progress(progress_percent as i32);
+                            });
+                        }
+                    })
+                    .await;
+
+                    let update_file = match res {
+                        Ok(update) => update,
+                        Err(err) => {
+                            let error_msg = err.to_shared_string();
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                let bridge = ui.global::<Bridge>();
+                                bridge.set_updater_state(UiUpdaterState::DownloadFailed);
+                                bridge.set_updater_error_msg(error_msg);
+                            });
+                            return;
+                        }
+                    };
+
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>()
+                            .set_updater_state(UiUpdaterState::Installing);
+                    });
+
+                    if let Err(err) = desktop_sender::updater::install_update(
+                        update_file,
+                        Box::new(|closure| {
+                            slint::invoke_from_event_loop(move || {
+                                (closure)();
+                            })
+                            .is_err()
+                        }),
+                    )
+                    .await
+                    {
+                        error!(?err, "Failed to install update");
+                        let error_msg = err.to_shared_string();
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            let bridge = ui.global::<Bridge>();
+                            bridge.set_updater_state(UiUpdaterState::InstallFailed);
+                            bridge.set_updater_error_msg(error_msg);
+                        });
+                        return;
+                    }
+
+                    debug!(?update, "Successfully updated");
+
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>()
+                            .set_updater_state(UiUpdaterState::InstallSuccessful);
+                    });
+                });
+            }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Event::RestartApplication => {
+                let _ = self.end_session(true);
+                restart_application();
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            Event::RestartApplication => (),
         }
 
         Ok(ShouldQuit::No)
@@ -1757,6 +1942,26 @@ impl Application {
                 //     ui.global::<Bridge>()
                 //         .set_is_yt_dlp_available(yt_dlp_available);
                 // });
+            }
+        });
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        tokio::spawn({
+            let event_tx = self.event_tx.clone();
+            async move {
+                match desktop_sender::updater::check_for_update()
+                    .instrument(tracing::debug_span!("check_for_updates"))
+                    .await
+                {
+                    Ok(release) => {
+                        if let Some(release) = release {
+                            let _ = event_tx.send(Event::UpdateAvailable(release));
+                        }
+                    }
+                    Err(err) => {
+                        error!(?err, "Failed to check for update");
+                    }
+                }
             }
         });
 
@@ -2157,6 +2362,7 @@ fn main() -> Result<()> {
                     UiRootDirType::Pictures => RootDirType::Pictures,
                     UiRootDirType::Videos => RootDirType::Videos,
                     UiRootDirType::Music => RootDirType::Music,
+                    _ => return, // Unreachable
                 }))
                 .unwrap();
         }
@@ -2197,6 +2403,21 @@ fn main() -> Result<()> {
     });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    bridge.on_update_application({
+        let event_tx = event_tx.clone();
+        move || {
+            event_tx.send(Event::UpdateApplication).unwrap();
+        }
+    });
+
+    bridge.on_restart_application({
+        let event_tx = event_tx.clone();
+        move || {
+            event_tx.send(Event::RestartApplication).unwrap();
+        }
+    });
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     bridge.set_is_audio_supported(false);
 
     #[cfg(target_os = "linux")]
@@ -2227,6 +2448,12 @@ fn main() -> Result<()> {
         debug!("Starting crash window");
 
         crash_window.set_log(log_string);
+
+        crash_window.global::<Bridge>().on_open_url(|url| {
+            if let Err(err) = webbrowser::open(&url) {
+                error!(?err, "Failed to open URL");
+            }
+        });
 
         let _ = slint::run_event_loop();
         crash_window.run().unwrap();

@@ -176,6 +176,15 @@ pub enum Source {
     },
 }
 
+impl Source {
+    pub fn content_type(&self) -> Option<&str> {
+        match self {
+            Source::Url { content_type, .. } => Some(content_type.as_str()),
+            _ => None,
+        }
+    }
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaylistItem {

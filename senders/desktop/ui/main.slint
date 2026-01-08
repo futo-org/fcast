@@ -102,113 +102,68 @@ export struct UiDevice {
 }
 
 export enum UiRootDirType {
+    Unknown,
     Pictures,
     Videos,
     Music,
 }
 
+export enum UiUpdaterState {
+    Idle,
+    Downloading,
+    DownloadFailed,
+    Installing,
+    InstallFailed,
+    InstallSuccessful,
+}
+
 export global Bridge {
-    // in-out property <AppState> app-state: SelectingInputType;
-    // in-out property <string> device-name: "FCast-localhost";
-    // in property <string> current-directory: "Testing";
     in property <string> app-version;
-
     in property <bool> is-audio-supported: false;
-    // in property <bool> is-audio-supported: true;
-
     in property <bool> is-mirroring-supported: false;
-    // in property <bool> is-mirroring-supported: true;
-
     in property <string> current-directory: "";
-    // in property <[string]> devices: [
-    in property <[UiDevice]> devices: [
-        // { name: "Test0", fcast: false },
-        // { name: "Test1", fcast: true },
-        // { name: "Test2", fcast: false },
-        // { name: "Test3", fcast: true },
-        // { name: "Test4", fcast: false },
-    ];
+    in property <[UiDevice]> devices: [];
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
-    // in property <string> settings-file-path: "/some/fake/path.toml";
     in property <string> settings-file-path;
-    // in property <bool> is-yt-dlp-available: true;
 
-    // in-out property <UiAppState> app-state: SelectingInputType;
-    // in-out property <UiAppState> app-state: YtDlp;
-    // in-out property <UiAppState> app-state: Mirroring;
     in-out property <UiAppState> app-state: Disconnected;
-    // in-out property <UiAppState> app-state: LocalMedia;
-    // in-out property <UiAppState> app-state: Connecting;
     in-out property <string> device-name: "";
-    // in-out property <string> device-name: "Sony-BRAVIA-KD50X85";
     in-out property <string> device-ip: "";
-    // in-out property <string> device-ip: "192.168.1.154";
     in-out property <int> selected-video-src: -1;
-    // in-out property <int> selected-video-src: 0;
     in-out property <int> selected-audio-src: -1;
-    in-out property <[UiVideoSourceModel]> video-sources: [
-        // { uid: 0, preview: @image-url("video-source-place-holder.png"), name: "Blob 0" },
-        // { uid: 1, preview: @image-url("video-source-place-holder.png"), name: "Blob 1" },
-        // { uid: 2, preview: @image-url("video-source-place-holder.png"), name: "Blob 2" },
-        // { uid: 3, preview: @image-url("video-source-place-holder.png"), name: "Blob 3" },
-        // { uid: 4, preview: @image-url("video-source-place-holder.png"), name: "Blob 4" },
-    ];
-    in-out property <[UiDirectoryEntry]> directories: [
-        // { id: 0, name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-        // { id: 0, name: "Test1" },
-    ];
-    in-out property <[UiMediaFileEntry]> files: [
-        // {
-        //     id: 0,
-        //     name: "Test1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        //     type: UiMediaFileType.Audio
-        // },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Video },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Audio },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
-        // { id: 0, name: "Test2", type: UiMediaFileType.Image },
-        // { id: 0, name: "Test1", type: UiMediaFileType.Image },
-    ];
+    in-out property <[UiVideoSourceModel]> video-sources: [];
+    in-out property <[UiDirectoryEntry]> directories: [];
+    in-out property <[UiMediaFileEntry]> files: [];
     in-out property <float> volume: 1.0;
     in-out property <float> playback-position: 0.0;
     in-out property <UiPlaybackState> playback-state: UiPlaybackState.Idle;
-    // in-out property <UiPlaybackState> playback-state: UiPlaybackState.Playing;
     in-out property <float> track-duration: 0.0;
     in-out property <string> playback-pos-str: 0.0;
     in-out property <string> track-dur-str: 0.0;
     in-out property <float> playback-rate: 1.0;
-    // in-out property <string> track-name: "Test2";
     in-out property <string> track-name;
     in-out property <UiMediaFileType> track-type;
-    // in-out property <bool> is-showing-mirroring-popup: true;
     in-out property <UiYtDlpState> yt-dlp-state: Fetching;
-    // in-out property <UiYtDlpState> yt-dlp-state: Fetching;
-    // in-out property <UiYtDlpState> yt-dlp-state: HasDataButFetching;
     in-out property <string> yt-dlp-url;
-    // in-out property <string> yt-dlp-url: "https://abc.def/ghi";
-    in-out property <[UiYtDlpSource]> yt-dlp-sources: [
-        // {
-        //     title: "Test title 1",
-        // },
-        // {
-        //     title: "Test title 2",
-        // },
-        // {
-        //     title: "Test title 3",
-        // },
-    ];
+    in-out property <[UiYtDlpSource]> yt-dlp-sources: [];
     in-out property <string> yt-dlp-source;
-    // in-out property <string> yt-dlp-source: "Test title 2";
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
+    in-out property <string> mirroring-source-name;
+    in-out property <bool> is-reconnecting: false;
+    in-out property <UiMediaFileType> current-media-type;
+    in-out property <bool> update-available: false;
+    in-out property <UiUpdaterState> updater-state: UiUpdaterState.Idle;
+
+    in property <string> new-update-version;
+    in property <int> update-download-progress;
+    in property <string> updater-error-msg;
+    in property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
+
+    // in-out property <bool> update-available: true;
+    // in property <string> new-update-version: "0.0.2";
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -217,6 +172,7 @@ export global Bridge {
         playback-state = UiPlaybackState.Idle;
         playback-position = 0.0;
         track-duration = 0.0;
+        mirroring-source-name = "";
     }
 
     public function clear-yt-dlp-state() {
@@ -239,6 +195,7 @@ export global Bridge {
             playback-state = UiPlaybackState.Idle;
             playback-position = 0.0;
             track-duration = 0.0;
+            current-media-type = UiMediaFileType.Image;
             clear-mirroring-state();
             clear-yt-dlp-state();
             clear-local-media-state();
@@ -269,7 +226,6 @@ export global Bridge {
     callback change-playback-state(state: UiPlaybackState);
     callback change-volume(volume: float, force-complete: bool);
     callback disconnect();
-    // callback connect-manually(proto: UiCastProtocol, name: string, port: int, address: string);
     callback connect-manually(url: string);
     callback reload-log-string();
     callback start-test-pattern-cast();
@@ -279,10 +235,10 @@ export global Bridge {
     callback change-root-dir(new-root: UiRootDirType);
     callback change-playback-rate(rate: float);
     callback update-settings();
+    callback update-application();
+    callback restart-application();
 
-    // pure callback is-valid-ip-address(address: string) -> bool;
     pure callback is-device-info-valid(info: string) -> bool;
-    // pure function is-device-info-valid(info: string) -> bool {true}
 }
 
 component Spacer inherits Rectangle { }
@@ -473,6 +429,42 @@ component HyperLink inherits Rectangle {
     }
 }
 
+component DisconnectButton inherits Button {
+    icon: Icons.disconnect;
+    text: "Disconnect";
+    text-color: FCastPalette.negative-600;
+    background-default-drop-shadow-color: transparent;
+    background-default-color: transparent;
+    border-color: FCastPalette.negative-600.transparentize(80%);
+
+    clicked => {
+        Bridge.disconnect();
+    }
+}
+
+component ReconnectingView inherits Rectangle {
+    background: FCastPalette.neutral-1200;
+
+    HorizontalLayout {
+        alignment: center;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+
+            FText {
+                text: "Reconnecting to " + Bridge.device-name;
+            }
+
+            DisconnectButton {
+                clicked => {
+                    Bridge.is-reconnecting = false;
+                    Bridge.disconnect();
+                }
+            }
+        }
+    }
+}
 
 component ConnectView inherits Rectangle {
     Rectangle {
@@ -820,19 +812,6 @@ component ImageBackground {
     }
 }
 
-component DisconnectButton inherits Button {
-    icon: Icons.disconnect;
-    text: "Disconnect";
-    text-color: FCastPalette.negative-600;
-    background-default-drop-shadow-color: transparent;
-    background-default-color: transparent;
-    border-color: FCastPalette.negative-600.transparentize(80%);
-
-    clicked => {
-        Bridge.disconnect();
-    }
-}
-
 component ReadyToCastView inherits Rectangle {
     callback show-mirroring;
     // callback show-local-media;
@@ -947,6 +926,7 @@ component ReadyToCastView inherits Rectangle {
 
                     clicked => {
                         Bridge.start-test-pattern-cast();
+                        Bridge.mirroring-source-name = "VideoTestSource";
                         Bridge.app-state = UiAppState.Mirroring;
                     }
                 }
@@ -954,50 +934,6 @@ component ReadyToCastView inherits Rectangle {
 
             Spacer { }
         }
-    }
-}
-
-component SoundBar inherits Rectangle {
-    in property <duration> offset;
-    in property <length> max-bar-height;
-
-    property <float> anim: 1 * mod(animation-tick() + offset, 1.2s) / 1.2s;
-
-    height: 5px + (max-bar-height - 5px) * sin(anim * 180deg) * (Bridge.playback-state == UiPlaybackState.Playing ? 1 : 0);
-    border-radius: 2px;
-    background: FCastPalette.foreground;
-}
-
-component SoundAnimator inherits Rectangle {
-    property <length> spacing: 2px;
-    property <length> bar-width: 5px;
-    property <length> max-bar-height: 20px;
-
-    width: 3 * spacing + 3 * bar-width;
-    height: max-bar-height;
-
-    SoundBar {
-        offset: 0s;
-        width: bar-width;
-        y: root.height - self.height;
-        max-bar-height: max-bar-height;
-        x: 0;
-    }
-
-    SoundBar {
-        offset: 0.8s;
-        width: bar-width;
-        y: root.height - self.height;
-        max-bar-height: max-bar-height;
-        x: bar-width + spacing;
-    }
-
-    SoundBar {
-        offset: 0.3s;
-        width: bar-width;
-        y: root.height - self.height;
-        max-bar-height: max-bar-height;
-        x: 2 * (bar-width + spacing);
     }
 }
 
@@ -1036,8 +972,6 @@ component YtDlpSourceItem inherits Rectangle {
 
         Spacer { }
 
-        if !i-touch-area.has-hover && Bridge.playback-state == UiPlaybackState.Playing && Bridge.yt-dlp-source == source.title: SoundAnimator { }
-
         if Bridge.yt-dlp-source != source.title && i-touch-area.has-hover: Rectangle {
             background: FCastPalette.brand-600;
             border-radius: 6px;
@@ -1054,7 +988,7 @@ component YtDlpSourceItem inherits Rectangle {
             }
         }
 
-        if Bridge.yt-dlp-source == source.title && i-touch-area.has-hover: Rectangle {
+        if Bridge.yt-dlp-source == source.title: Rectangle {
             background: FCastPalette.brand-600;
             border-radius: 6px;
             // visible: i-touch-area.has-hover;
@@ -1225,6 +1159,7 @@ component PlaybackControls inherits Rectangle {
                 hide-thumb: true;
                 value <=> Bridge.playback-position;
                 maximum: Bridge.track-duration;
+                thumb-color: FCastPalette.foreground;
 
                 changed(new-time) => {
                     Bridge.seek(new-time, false);
@@ -1245,21 +1180,35 @@ component PlaybackControls inherits Rectangle {
         HorizontalLayout {
             padding-top: 12px;
 
-            Slider {
-                value <=> Bridge.volume;
-                maximum: 1.0;
-                minimum: 0.0;
-                step: 0.01;
-                width: 200px;
-                track-color: FCastPalette.brand-600;
-                rail-color: FCastPalette.neutral-1000;
+            HorizontalLayout {
+                spacing: 2px;
 
-                changed(new-volume) => {
-                    Bridge.change-volume(new-volume, false)
+                VerticalLayout {
+                    alignment: center;
+
+                    Image {
+                        source: Icons.volume-high;
+                        width: 16px;
+                        height: 16px;
+                    }
                 }
 
-                released(new-volume) => {
-                    Bridge.change-volume(new-volume, true);
+                Slider {
+                    value <=> Bridge.volume;
+                    maximum: 1.0;
+                    minimum: 0.0;
+                    step: 0.01;
+                    width: 200px;
+                    track-color: FCastPalette.brand-600;
+                    rail-color: FCastPalette.neutral-1000;
+
+                    changed(new-volume) => {
+                        Bridge.change-volume(new-volume, false)
+                    }
+
+                    released(new-volume) => {
+                        Bridge.change-volume(new-volume, true);
+                    }
                 }
             }
 
@@ -1474,21 +1423,44 @@ component MirroringView inherits Rectangle {
         img-height: root.height;
     }
 
-    VerticalLayout {
-        padding: 20px;
-        spacing: 10px;
+    HorizontalLayout {
+        alignment: center;
 
-        LabelText {
-            text: "Mirroring";
-        }
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            alignment: center;
 
-        Button {
-            text: "Stop";
+            HorizontalLayout {
+                spacing: 5px;
 
-            clicked => {
-                Bridge.stop-cast(false);
-                Bridge.clear-mirroring-state();
-                Bridge.app-state = UiAppState.SelectingInputType;
+                LabelText {
+                    text: "Mirroring";
+                }
+
+                SecondaryText {
+                    text: Bridge.mirroring-source-name;
+                    font-size: 20px;
+                }
+
+                LabelText {
+                    text: "to";
+                }
+
+                SecondaryText {
+                    text: Bridge.device-name;
+                    font-size: 20px;
+                }
+            }
+
+            Button {
+                text: "Stop";
+
+                clicked => {
+                    Bridge.stop-cast(false);
+                    Bridge.clear-mirroring-state();
+                    Bridge.app-state = UiAppState.SelectingInputType;
+                }
             }
         }
     }
@@ -1681,7 +1653,7 @@ component FileEntry inherits Rectangle {
             }
         }
 
-        if ta.has-hover && Bridge.track-name == entry.name: VerticalLayout {
+        if Bridge.track-name == entry.name: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1689,12 +1661,6 @@ component FileEntry inherits Rectangle {
                 width: 14px;
                 // colorize: FCastPalette.foreground.transparentize(50%);
             }
-        }
-
-        if !ta.has-hover && Bridge.track-name == entry.name: VerticalLayout {
-            alignment: center;
-
-            SoundAnimator {}
         }
     }
 
@@ -1717,8 +1683,6 @@ component FileEntry inherits Rectangle {
 }
 
 component LocalMediaView inherits Rectangle {
-    property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
-
     ImageBackground {
         img-width: root.width;
         img-height: root.height;
@@ -1746,13 +1710,13 @@ component LocalMediaView inherits Rectangle {
 
             for type in [UiRootDirType.Pictures, UiRootDirType.Videos, UiRootDirType.Music]: DirButton {
                 type: type;
-                currently-selected: root-dir-type;
+                currently-selected: Bridge.root-dir-type;
 
                 clicked => {
                     Bridge.change-root-dir(type);
                     Bridge.directories = [];
                     Bridge.files = [];
-                    root-dir-type = type;
+                    Bridge.root-dir-type = type;
                 }
             }
         }
@@ -1818,7 +1782,7 @@ component LocalMediaView inherits Rectangle {
             }
         }
 
-        if Bridge.playback-state == UiPlaybackState.Playing || Bridge.playback-state == UiPlaybackState.Paused: PlaybackControls {
+        if (Bridge.playback-state == UiPlaybackState.Playing || Bridge.playback-state == UiPlaybackState.Paused) && Bridge.current-media-type != UiMediaFileType.Image: PlaybackControls {
             background: transparent;
         }
     }
@@ -1977,6 +1941,7 @@ component MirroringPopup inherits FCastPopupWindow {
 
     i-vl := VerticalLayout {
         padding-top: 24px;
+        spacing: 10px;
 
         ScrollView {
             viewport-height: (250px + spacing) * y-items;
@@ -1990,6 +1955,11 @@ component MirroringPopup inherits FCastPopupWindow {
                 preview: src.preview;
                 name: src.name;
             }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: FCastPalette.border-subtle;
         }
 
         if Bridge.selected-video-src != -1: HorizontalLayout {
@@ -2043,6 +2013,7 @@ component MirroringPopup inherits FCastPopupWindow {
                         Utils.video-framerates[video-framerate-idx].to-float(),
                     );
                     Bridge.app-state = UiAppState.Mirroring;
+                    Bridge.mirroring-source-name = Bridge.video-sources[Bridge.selected-video-src].name;
                     root.hide();
                 }
             }
@@ -2114,6 +2085,7 @@ component SettingsEntry inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "FCast Sender";
+    icon: @image-url("../../extra/fcast.png");
 
     preferred-width: 800px;
     preferred-height: 500px;
@@ -2169,6 +2141,42 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                if Bridge.update-available: VerticalLayout {
+                    spacing: 5px;
+
+                    FText {
+                        text: "Version " + Bridge.new-update-version + " is available";
+                        wrap: word-wrap;
+                    }
+
+                    FText {
+                        text: "Do you want to upgrade to the latest version?";
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 5px;
+
+                        Button {
+                            text: "No";
+
+                            clicked => {
+                                Bridge.update-available = false;
+                            }
+                        }
+
+                        Button {
+                            text: "Yes";
+
+                            clicked => {
+                                Bridge.update-application();
+                                Bridge.update-available = false;
+                                Bridge.updater-state = UiUpdaterState.Downloading;
+                            }
+                        }
+                    }
+                }
+
                 Spacer { }
 
                 Rectangle {
@@ -2206,9 +2214,11 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting: ConnectView { }
+        if Bridge.is-reconnecting: ReconnectingView {}
 
-        if Bridge.app-state == UiAppState.SelectingInputType: ReadyToCastView {
+        if !Bridge.is-reconnecting && (Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting): ConnectView { }
+
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.SelectingInputType: ReadyToCastView {
             show-mirroring => {
                 is-showing-mirroring-popup = true;
             }
@@ -2222,30 +2232,65 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.app-state == UiAppState.YtDlp: YtDlpView { }
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.YtDlp: YtDlpView { }
 
-        if Bridge.app-state == UiAppState.SelectingMirroringSource: Rectangle { }
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.SelectingMirroringSource: Rectangle { }
 
-        if Bridge.app-state == UiAppState.StartingCast || Bridge.app-state == UiAppState.Mirroring: MirroringView { }
+        if !Bridge.is-reconnecting && (Bridge.app-state == UiAppState.StartingCast || Bridge.app-state == UiAppState.Mirroring): MirroringView { }
 
-        if Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
+        if !Bridge.is-reconnecting && Bridge.app-state == UiAppState.LocalMedia: LocalMediaView { }
     }
 
-    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-about-popup || is-showing-log-popup: Rectangle {
+    function close-mirroring-popup() {
+        is-showing-mirroring-popup = false;
+        Bridge.stop-cast(false);
+        Bridge.clear-mirroring-state();
+        Bridge.app-state = UiAppState.SelectingInputType;
+    }
+
+    function close-settings-popup() {
+        Bridge.update-settings();
+        is-showing-settings-popup = false;
+    }
+
+    function close-about-popup() {
+        is-showing-about-popup = false;
+    }
+
+    function close-log-popup() {
+        is-showing-log-popup = false;
+        Bridge.log-string = "";
+    }
+
+    function close-updater-popup() {
+        Bridge.updater-state = UiUpdaterState.Idle;
+        // TODO: stop the updater
+    }
+
+    if is-showing-mirroring-popup || is-showing-settings-popup || is-showing-about-popup || is-showing-log-popup || Bridge.updater-state != UiUpdaterState.Idle: Rectangle {
         background: #0000009C;
-        TouchArea { }
+        TouchArea {
+            clicked => {
+                if is-showing-mirroring-popup {
+                    close-mirroring-popup();
+                } else if is-showing-settings-popup {
+                    close-settings-popup();
+                } else if is-showing-about-popup {
+                    close-about-popup();
+                } else if is-showing-log-popup {
+                    close-log-popup();
+                } else if Bridge.updater-state != UiUpdaterState.Idle {
+                    close-updater-popup();
+                }
+            }
+        }
     }
 
     if is-showing-mirroring-popup: MirroringPopup {
         width: root.width * 75%;
         height: root.height * 85%;
 
-        close => {
-            is-showing-mirroring-popup = false;
-            Bridge.stop-cast(false);
-            Bridge.clear-mirroring-state();
-            Bridge.app-state = UiAppState.SelectingInputType;
-        }
+        close => close-mirroring-popup();
 
         hide => {
             is-showing-mirroring-popup = false;
@@ -2257,10 +2302,7 @@ export component MainWindow inherits Window {
         height: root.height * 85%;
         title: "Settings";
 
-        close => {
-            Bridge.update-settings();
-            is-showing-settings-popup = false;
-        }
+        close => close-settings-popup();
 
         VerticalLayout {
             padding-top: 24px;
@@ -2295,6 +2337,12 @@ export component MainWindow inherits Window {
                     overflow: elide;
                 }
 
+                if file-server-port-input.text.to-float() == 0: FText {
+                    text: "Automatic";
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
                 file-server-port-input := LineEdit {
                     width: 100px;
                     text <=> Bridge.file-server-port;
@@ -2307,10 +2355,16 @@ export component MainWindow inherits Window {
 
                 name: "Mirroring server port";
 
-                if (file-server-port-input.text.to-float() > 0 && mirroring-server-port-input.text.to-float() < 1024) || mirroring-server-port-input.text.to-float() > 65535: FText {
+                if (mirroring-server-port-input.text.to-float() > 0 && mirroring-server-port-input.text.to-float() < 1024) || mirroring-server-port-input.text.to-float() > 65535: FText {
                     text: "Invalid port number (must be 1024-65535)";
                     vertical-alignment: center;
                     color: FCastPalette.negative-600;
+                    overflow: elide;
+                }
+
+                if mirroring-server-port-input.text.to-float() == 0: FText {
+                    text: "Automatic";
+                    vertical-alignment: center;
                     overflow: elide;
                 }
 
@@ -2328,9 +2382,7 @@ export component MainWindow inherits Window {
         height: root.height * 75%;
         title: "About";
 
-        close => {
-            is-showing-about-popup = false;
-        }
+        close => close-about-popup();
 
         VerticalLayout {
             spacing: 10px;
@@ -2391,17 +2443,117 @@ export component MainWindow inherits Window {
         height: root.height * 95%;
         title: "Developer Log";
 
-        close => {
-            is-showing-log-popup = false;
-        }
+        close => close-log-popup();
 
         VerticalLayout {
             padding-top: 24px;
+            spacing: 10px;
 
-            TextEdit {
+            Button {
+                text: "Copy to clipboard";
+                icon: Icons.clipboard;
+                colorize-icon: true;
+
+                clicked => {
+                    log-te.select-all();
+                    log-te.copy();
+                    log-te.clear-selection();
+                }
+            }
+
+            log-te := TextEdit {
                 text: Bridge.log-string;
                 read-only: true;
+                enabled: false;
             }
+        }
+    }
+
+    if Bridge.updater-state != UiUpdaterState.Idle: FCastPopupWindow {
+        width: root.width * 75%;
+        height: root.height * 75%;
+        title: "Updater";
+
+        close => close-updater-popup();
+
+        VerticalLayout {
+            padding-top: 24px;
+            spacing: 10px;
+
+            if Bridge.updater-state == UiUpdaterState.Downloading: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Downloading update...";
+                    horizontal-alignment: center;
+                }
+
+                SecondaryText {
+                    text: Bridge.update-download-progress + "%";
+                    horizontal-alignment: center;
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.DownloadFailed: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Download failed";
+                    horizontal-alignment: center;
+                }
+
+                SecondaryText {
+                    text: Bridge.updater-error-msg;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.Installing: FText {
+                text: "Installing...";
+                horizontal-alignment: center;
+            }
+
+            if Bridge.updater-state == UiUpdaterState.InstallFailed: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Install failed";
+                    horizontal-alignment: center;
+                }
+
+                SecondaryText {
+                    text: Bridge.updater-error-msg;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.InstallSuccessful: VerticalLayout {
+                spacing: 10px;
+
+                FText {
+                    text: "Succesfully updated";
+                    horizontal-alignment: center;
+                }
+
+                Button {
+                    text: "Relaunch now";
+
+                    clicked => Bridge.restart-application();
+                }
+            }
+
+            if Bridge.updater-state == UiUpdaterState.DownloadFailed || Bridge.updater-state == UiUpdaterState.InstallFailed: HorizontalLayout {
+                alignment: center;
+
+                HyperLink {
+                    text: "Download and install the update manually";
+                    url: "https://fcast.org";
+                }
+            }
+
+            Spacer {}
         }
     }
 }
@@ -2430,17 +2582,41 @@ export component CrashWindow inherits Window {
             text: "FCast Sender encountered an error!";
         }
 
-        FText {
-            font-size: 18px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            wrap: word-wrap;
-            text: "Please report your issue including the log below to: https://github.com/futo-org/fcast/issues";
+        HorizontalLayout {
+            alignment: center;
+
+            spacing: 5px;
+
+            FText {
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                text: "Please report your issue including the log below to:";
+            }
+
+            HyperLink {
+                text: "https://github.com/futo-org/fcast/issues";
+                url: "https://github.com/futo-org/fcast/issues";
+            }
         }
 
-        TextEdit {
+        Button {
+            text: "Copy to clipboard";
+            icon: Icons.clipboard;
+            colorize-icon: true;
+
+            clicked => {
+                log-te.select-all();
+                log-te.copy();
+                log-te.clear-selection();
+            }
+        }
+
+        log-te:= TextEdit {
             text: log;
             read-only: true;
+            enabled: false;
         }
     }
 }
