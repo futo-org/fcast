@@ -43,6 +43,7 @@ features = [ "fcast", "chromecast", "discovery" ]
 
 [build-dependencies]
 slint-build.workspace = true
+winresource = "0.1.28"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.11.0", default-features = false, features = ["async-std"] } # `tokio` breaks slint
