@@ -57,4 +57,4 @@ desktop_sender_task:
     - cargo install --git https://github.com/indygreg/apple-platform-rs --branch main --bin rcodesign apple-codesign
     - cargo xtask sender build-macos-installer --sign --p12-file=./.secure_files/Certificates.p12 --p12-password-file=./.secure_files/p12_certs_password --api-key-file=./.secure_files/notary_key.json
   binary_artifacts:
-    path: target/fcast-sender-*.dmg
+    path: target/fcast-sender-*.*

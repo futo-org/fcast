@@ -13,6 +13,7 @@ buildSenderForMacosArm64:
     access: all
     paths:
       - buildSenderMacosArm64/binary/target/fcast-sender-*.dmg
+      - buildSenderMacosArm64/binary/target/fcast-sender-*.tar.gz
   when: manual
 
 variables:
