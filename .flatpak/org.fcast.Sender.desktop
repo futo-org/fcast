@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+
+Name=FCast Sender
+Comment=Sender for playing multimedia content on FCast receivers
+Categories=AudioVideo;Audio;Video;Network;Utility;
+
+Icon=org.fcast.Sender
+Exec=fcast-sender
+Terminal=false

@@ -7,4 +7,10 @@ fn main() {
     if target_os == "macos" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/lib/");
     }
+
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("../extra/fcast.ico");
+        res.compile().unwrap();
+    }
 }

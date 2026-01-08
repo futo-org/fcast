@@ -169,7 +169,6 @@ async fn handle_request(
     let (file, content_type) = {
         let entry = {
             let files = files.read();
-            debug!(?files);
             let Some(entry) = files.get(&uuid) else {
                 error!(?uuid, "File not found");
                 return not_found();
@@ -252,7 +251,8 @@ async fn run_server(
     #[cfg(target_os = "windows")]
     let ipv4_listener = TcpListener::bind(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        requested_port + 1,
+        // if requested_port == 0 { 0 } else { requested_port + 1 },
+        requested_port,
     ))
     .await?;
 

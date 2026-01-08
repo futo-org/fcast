@@ -13,6 +13,7 @@ export component Slider {
     in property <color> rail-color: FCastPalette.opacity-light-1100;
     in property <color> track-color: FCastPalette.foreground;
     in property <bool> hide-thumb: false;
+    in property <color> thumb-color: FCastPalette.brand-600;
     out property <bool> has-focus: base.has-focus;
     in-out property <float> value <=> base.value;
 
@@ -46,14 +47,10 @@ export component Slider {
         }
         pressed when base.handle-pressed || base.has-focus : {
             thumb-inner.width: 10px;
-            // thumb-inner.background: FluentPalette.tertiary-accent-background;
-            thumb-inner.background: FCastPalette.brand-600;
             thumb.border-color: FluentPalette.border;
         }
         hover when base.has-hover : {
             thumb-inner.width: 14px;
-            // thumb-inner.background: FluentPalette.secondary-accent-background;
-            thumb-inner.background: FCastPalette.brand-600;
         }
     ]
 
@@ -62,7 +59,6 @@ export component Slider {
         y: base.vertical ? thumb.height / 2 : (parent.height - self.height) / 2;
         width: base.vertical ? 4px : parent.width - thumb.width;
         height: base.vertical ? parent.height - thumb.height : 4px;
-        // background: FluentPalette.border;
         background: rail-color;
         border-radius: 2px;
     }
@@ -72,7 +68,6 @@ export component Slider {
         y: base.vertical ? thumb.y + thumb.height / 2 : (parent.height - self.height) / 2;
         width: base.vertical ? rail.width : thumb.x;
         height: base.vertical ? parent.height - thumb.y - thumb.height : rail.height;
-        // background: FluentPalette.accent-background;
         background: track-color;
         border-radius: rail.border-radius;
     }
@@ -100,8 +95,7 @@ export component Slider {
             width: 12px;
             height: self.width;
             border-radius: self.width / 2;
-            // background: FluentPalette.accent-background;
-            background: FCastPalette.brand-600;
+            background: thumb-color;
 
             animate background, width { duration: 150ms; }
         }

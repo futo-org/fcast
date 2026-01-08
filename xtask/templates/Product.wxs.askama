@@ -6,6 +6,9 @@
              UpgradeCode="0ce1119d-5dcb-4189-bfe5-04379e088e81"
              Compressed="yes">
 
+        <Icon Id="fcast.exe" SourceFile="fcast.ico"/>
+        <Property Id="ARPPRODUCTICON" Value="fcast.exe" />
+
         <MediaTemplate EmbedCab="yes" />
 
         <StandardDirectory Id="ProgramFiles64Folder">
@@ -27,7 +30,8 @@
                               Name="FCast Sender"
                               Description="Launch FCast Sender"
                               Target="[INSTALLFOLDER]fcast-sender.exe"
-                              WorkingDirectory="INSTALLFOLDER"/>
+                              WorkingDirectory="INSTALLFOLDER"
+                              Icon="fcast.exe"/>
                     <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
                     <RegistryValue Root="HKCU"
                                    Key="Software\FUTO\FCastSender"
