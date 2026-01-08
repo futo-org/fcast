@@ -126,7 +126,7 @@ builSenderForWinX64:
   image: alpine:latest
   tags:
     - proxmoxshell
-  when: manual
+  # when: manual
   needs:
     - job: provision_windows_vm
       artifacts: true
@@ -187,8 +187,7 @@ cleanup_vm:
     - job: provision_windows_vm
       artifacts: true
     - job: builSenderForWinX64
-  # when: always  # Run even if tests fail
-  when: manual
+  when: always
   before_script:
     - *proxmox_auth
   script:
