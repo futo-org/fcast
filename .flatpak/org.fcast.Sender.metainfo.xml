@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.fcast.Sender</id>
+  <url type="bugtracker">https://github.com/futo-org/fcast/issues</url>
+  <url type="homepage">https://fcast.org/</url>
+  <name>FCast Sender</name>
+  <summary>Sender for playing multimedia content on FCast receivers</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <developer id="org.fcast">
+    <name>FUTO</name>
+  </developer>
+
+  <description>
+    <p>
+      Mirror your screen or system audio, videos, music or pictures to your external device running an FCast receiver.
+    </p>
+  </description>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <!-- TODO: add to this section when future versions are released -->
+  </releases>
+  <launchable type="desktop-id">org.fcast.Sender.desktop</launchable>
+  <screenshots>
+  </screenshots>
+</component>
