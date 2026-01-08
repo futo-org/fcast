@@ -26,19 +26,19 @@
   <launchable type="desktop-id">org.fcast.Sender.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/discovered-receivers.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Sender/discovered-receivers.png</image>
       <caption>Main window</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/connected.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Sender/connected.png</image>
       <caption>Connected to device</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/local-file.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Sender/local-file.png</image>
       <caption>Casting local file</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/mirror-screen.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Sender/mirror-screen.png</image>
       <caption>Selecting video source</caption>
     </screenshot>
   </screenshots>
