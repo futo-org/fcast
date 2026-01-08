@@ -30,7 +30,7 @@ variables:
 provision_windows_vm:
   stage: senders
   image: alpine:latest
-  when: manual
+  # when: manual
   tags:
     - proxmoxshell
   before_script:
@@ -126,7 +126,7 @@ builSenderForWinX64:
   image: alpine:latest
   tags:
     - proxmoxshell
-  # when: manual
+  when: manual
   needs:
     - job: provision_windows_vm
       artifacts: true
