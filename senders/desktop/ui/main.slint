@@ -937,50 +937,6 @@ component ReadyToCastView inherits Rectangle {
     }
 }
 
-component SoundBar inherits Rectangle {
-    in property <duration> offset;
-    in property <length> max-bar-height;
-
-    property <float> anim: 1 * mod(animation-tick() + offset, 1.2s) / 1.2s;
-
-    height: 5px + (max-bar-height - 5px) * sin(anim * 180deg) * (Bridge.playback-state == UiPlaybackState.Playing ? 1 : 0);
-    border-radius: 2px;
-    background: FCastPalette.foreground;
-}
-
-component SoundAnimator inherits Rectangle {
-    property <length> spacing: 2px;
-    property <length> bar-width: 5px;
-    property <length> max-bar-height: 20px;
-
-    width: 3 * spacing + 3 * bar-width;
-    height: max-bar-height;
-
-    SoundBar {
-        offset: 0s;
-        width: bar-width;
-        y: root.height - self.height;
-        max-bar-height: max-bar-height;
-        x: 0;
-    }
-
-    SoundBar {
-        offset: 0.8s;
-        width: bar-width;
-        y: root.height - self.height;
-        max-bar-height: max-bar-height;
-        x: bar-width + spacing;
-    }
-
-    SoundBar {
-        offset: 0.3s;
-        width: bar-width;
-        y: root.height - self.height;
-        max-bar-height: max-bar-height;
-        x: 2 * (bar-width + spacing);
-    }
-}
-
 component YtDlpSourceItem inherits Rectangle {
     in property <UiYtDlpSource> source;
 
@@ -1016,8 +972,6 @@ component YtDlpSourceItem inherits Rectangle {
 
         Spacer { }
 
-        if !i-touch-area.has-hover && Bridge.playback-state == UiPlaybackState.Playing && Bridge.yt-dlp-source == source.title: SoundAnimator { }
-
         if Bridge.yt-dlp-source != source.title && i-touch-area.has-hover: Rectangle {
             background: FCastPalette.brand-600;
             border-radius: 6px;
@@ -1034,7 +988,7 @@ component YtDlpSourceItem inherits Rectangle {
             }
         }
 
-        if Bridge.yt-dlp-source == source.title && i-touch-area.has-hover: Rectangle {
+        if Bridge.yt-dlp-source == source.title: Rectangle {
             background: FCastPalette.brand-600;
             border-radius: 6px;
             // visible: i-touch-area.has-hover;
@@ -1699,7 +1653,7 @@ component FileEntry inherits Rectangle {
             }
         }
 
-        if ta.has-hover && Bridge.track-name == entry.name: VerticalLayout {
+        if Bridge.track-name == entry.name: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1707,12 +1661,6 @@ component FileEntry inherits Rectangle {
                 width: 14px;
                 // colorize: FCastPalette.foreground.transparentize(50%);
             }
-        }
-
-        if !ta.has-hover && Bridge.track-name == entry.name: VerticalLayout {
-            alignment: center;
-
-            SoundAnimator {}
         }
     }
 
