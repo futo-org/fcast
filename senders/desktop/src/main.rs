@@ -594,13 +594,7 @@ impl Application {
                         }
                     }
                 }
-            } // None => match std::env::home_dir() {
-              //     Some(home_dir) => home_dir,
-              //     None => {
-              //         error!("Could not get home directory");
-              //         return;
-              //     }
-              // },
+            }
         };
 
         self.current_local_media_id += 1;
@@ -1290,6 +1284,41 @@ impl Application {
                                 }
                             }
 
+                            let new_shortcut_type = {
+                                if let Some(root) = data.root.to_str() {
+                                    fn get_first_match(
+                                        dirs: &UserDirs,
+                                        root: &str,
+                                    ) -> UiRootDirType {
+                                        let types = [
+                                            (dirs.video_dir(), UiRootDirType::Videos),
+                                            (dirs.audio_dir(), UiRootDirType::Music),
+                                            (dirs.picture_dir(), UiRootDirType::Pictures),
+                                        ];
+
+                                        for (path, dir_type) in types {
+                                            if let Some(path) = path {
+                                                if let Some(path) = path.to_str() {
+                                                    if root.starts_with(path) {
+                                                        return dir_type;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        UiRootDirType::Unknown
+                                    }
+
+                                    if let Some(dirs) = self.user_dirs.as_ref() {
+                                        get_first_match(&dirs, root)
+                                    } else {
+                                        UiRootDirType::Unknown
+                                    }
+                                } else {
+                                    UiRootDirType::Unknown
+                                }
+                            };
+
                             let root = data.root.to_string_lossy().to_shared_string();
                             let mut directories = data
                                 .directories
@@ -1300,12 +1329,13 @@ impl Application {
                                 })
                                 .collect::<Vec<UiDirectoryEntry>>();
                             directories.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-                            self.ui_weak.upgrade_in_event_loop(|ui| {
+                            self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let global = ui.global::<Bridge>();
                                 global.set_current_directory(root);
                                 global.set_directories(
                                     Rc::new(slint::VecModel::from(directories)).into(),
                                 );
+                                global.set_root_dir_type(new_shortcut_type);
                             })?;
 
                             let event_tx = self.event_tx.clone();
@@ -1667,7 +1697,8 @@ impl Application {
                         Box::new(|closure| {
                             slint::invoke_from_event_loop(move || {
                                 (closure)();
-                            }).is_err()
+                            })
+                            .is_err()
                         }),
                     )
                     .await
@@ -2331,6 +2362,7 @@ fn main() -> Result<()> {
                     UiRootDirType::Pictures => RootDirType::Pictures,
                     UiRootDirType::Videos => RootDirType::Videos,
                     UiRootDirType::Music => RootDirType::Music,
+                    _ => return, // Unreachable
                 }))
                 .unwrap();
         }

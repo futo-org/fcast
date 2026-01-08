@@ -102,6 +102,7 @@ export struct UiDevice {
 }
 
 export enum UiRootDirType {
+    Unknown,
     Pictures,
     Videos,
     Music,
@@ -159,6 +160,7 @@ export global Bridge {
     in property <string> new-update-version;
     in property <int> update-download-progress;
     in property <string> updater-error-msg;
+    in property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
 
     // in-out property <bool> update-available: true;
     // in property <string> new-update-version: "0.0.2";
@@ -1733,8 +1735,6 @@ component FileEntry inherits Rectangle {
 }
 
 component LocalMediaView inherits Rectangle {
-    property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
-
     ImageBackground {
         img-width: root.width;
         img-height: root.height;
@@ -1762,13 +1762,13 @@ component LocalMediaView inherits Rectangle {
 
             for type in [UiRootDirType.Pictures, UiRootDirType.Videos, UiRootDirType.Music]: DirButton {
                 type: type;
-                currently-selected: root-dir-type;
+                currently-selected: Bridge.root-dir-type;
 
                 clicked => {
                     Bridge.change-root-dir(type);
                     Bridge.directories = [];
                     Bridge.files = [];
-                    root-dir-type = type;
+                    Bridge.root-dir-type = type;
                 }
             }
         }

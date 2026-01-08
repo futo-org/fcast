@@ -166,11 +166,13 @@ pub async fn install_update(
     installer_file: Bytes,
     run_on_main_thread: RunOnMainThread,
 ) -> Result<()> {
-    use std::ffi::{OsStr, OsString};
-    use std::iter::once;
+    use std::{
+        ffi::{OsStr, OsString},
+        iter::once,
+    };
     use windows_sys::{
-        w,
         Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOW},
+        w,
     };
 
     fn write_to_temp(bytes: &Bytes) -> Result<(PathBuf, tempfile::TempPath)> {
