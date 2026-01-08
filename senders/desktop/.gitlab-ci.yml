@@ -149,10 +149,10 @@ builSenderForWinX64:
         winget install --id Git.Git -e --source winget
         $env:PATH += ";C:\Program Files\Git\bin"
 
-        winget install --id=NASM.NASM -e --accept-package-agreements
+        winget install --id=NASM.NASM -e --accept-package-agreements --accept-source-agreements
         $env:PATH += ";C:\Users\$Env:UserName\AppData\Local\bin\NASM"
 
-        winget install --id=Kitware.CMake -e --accept-package-agreements
+        winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         $env:PATH += ";C:\Program Files\CMake\bin"
 
         git clone "https://gitlab.futo.org/videostreaming/fcast-build-deps.git"
