@@ -24,5 +24,17 @@
   </releases>
   <launchable type="desktop-id">org.fcast.Sender.desktop</launchable>
   <screenshots>
+    <screenshot type="default">
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/discovered-receivers.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/connected.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/local-file.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/marcus/desktop-sender-beta/.flatpak/screenshots/org.fcast.Sender/mirror-screen.png</image>
+    </screenshot>
   </screenshots>
 </component>
