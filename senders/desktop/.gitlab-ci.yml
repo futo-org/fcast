@@ -3,6 +3,8 @@ buildSenderForMacosArm64:
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
     - macscript
+  variables:
+    GIT_STRATEGY: clone # https://gitlab.com/gitlab-org/gitlab-runner/-/issues/28945
   before_script:
     - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
   script:
