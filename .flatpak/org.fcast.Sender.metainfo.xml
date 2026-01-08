@@ -21,6 +21,9 @@
   <content_rating type="oars-1.1" />
   <releases>
     <!-- TODO: add to this section when future versions are released -->
+    <!-- <release version="0.0.1" date="2026-01-08"> -->
+    <!--   <url type="details">https://gitlab.futo.org/videostreaming/fcast/-/releases/sender-v0.0.1</url> -->
+    <!-- </release> -->
   </releases>
   <launchable type="desktop-id">org.fcast.Sender.desktop</launchable>
   <screenshots>
