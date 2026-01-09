@@ -7,7 +7,7 @@ use bytes::Bytes;
 use mcore::Release;
 use tracing::{debug, info};
 
-const BASE_URL: &str = "http://127.0.0.1:8000";
+const BASE_URL: &str = "http://dl.fcast.org/sender/desktop";
 #[cfg(target_os = "macos")]
 const OS_SPECIFIC_PATH: &str = "/macos-aarch64";
 #[cfg(target_os = "windows")]
@@ -205,11 +205,8 @@ pub async fn install_update(
     let installer_args: Vec<&OsStr> = [OsStr::new("/i"), path.as_os_str()]
         .into_iter()
         .chain(once(OsStr::new("/passive")))
-        // .chain(install_mode.msiexec_args().iter().map(OsStr::new))
         .chain(once(OsStr::new("/promptrestart")))
-        // .chain(self.installer_args())
         .chain(once(OsStr::new("AUTOLAUNCHAPP=True")))
-        // .chain(once(msi_args.as_os_str()))
         .collect();
 
     let file = std::env::var("SYSTEMROOT").as_ref().map_or_else(
