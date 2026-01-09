@@ -3,6 +3,7 @@
   <id>org.fcast.Receiver</id>
   <url type="bugtracker">https://github.com/futo-org/fcast/issues</url>
   <url type="homepage">https://fcast.org/</url>
+  <url type="vcs-browser">https://gitlab.futo.org/videostreaming/fcast</url>
   <name>FCast Receiver</name>
   <summary>Receiver for displaying multimedia content from FCast sender applications</summary>
 
