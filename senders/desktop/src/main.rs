@@ -1925,7 +1925,7 @@ impl Application {
             .await?;
 
         tokio::spawn({
-            // let ui_weak = self.ui_weak.clone();
+            let ui_weak = self.ui_weak.clone();
             async move {
                 let yt_dlp_available = match mcore::yt_dlp::is_yt_dlp_available().await {
                     Ok(p) => p,
@@ -1937,11 +1937,10 @@ impl Application {
 
                 debug!(?yt_dlp_available, "yt-dlp status");
 
-                // TODO: include this when ready
-                // let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                //     ui.global::<Bridge>()
-                //         .set_is_yt_dlp_available(yt_dlp_available);
-                // });
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.global::<Bridge>()
+                        .set_is_yt_dlp_available(yt_dlp_available);
+                });
             }
         });
 

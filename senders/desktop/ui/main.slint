@@ -125,9 +125,11 @@ export global Bridge {
     in property <[UiDevice]> devices: [];
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
+    // in property <bool> is-yt-dlp-available: true;
     in property <string> settings-file-path;
 
     in-out property <UiAppState> app-state: Disconnected;
+    // in-out property <UiAppState> app-state: SelectingInputType;
     in-out property <string> device-name: "";
     in-out property <string> device-ip: "";
     in-out property <int> selected-video-src: -1;
@@ -814,7 +816,6 @@ component ImageBackground {
 
 component ReadyToCastView inherits Rectangle {
     callback show-mirroring;
-    // callback show-local-media;
     callback show-yt-dlp-view;
 
     ImageBackground {
@@ -825,10 +826,7 @@ component ReadyToCastView inherits Rectangle {
     Rectangle {
         VerticalLayout {
             spacing: 8px;
-
-            // VerticalBox {
             padding-top: 40px;
-            // padding-left: 20px;
             padding: 20px;
 
             SecondaryText {
@@ -864,7 +862,6 @@ component ReadyToCastView inherits Rectangle {
             if Bridge.is-yt-dlp-available: HorizontalLayout {
                 spacing: 8px;
 
-                // TODO: check that url is valid/supported (i.e. we can detect mime type from extension)
                 i-line-edit-url := LineEdit {
                     placeholder-text: "Paste URL (http/https, .mp4, .m3u8)...";
                     icon: Icons.link;
@@ -895,12 +892,10 @@ component ReadyToCastView inherits Rectangle {
                     description: "Cast MP4, MKV, or MP3 files directly from your hard drive with zero compression.";
                     icon: Icons.folder-fcast;
                     icon-bg-color: #2889E821;
-                    // enabled: false;
 
                     clicked => {
                         Bridge.select-input-type(UiInputType.LocalMedia);
                         Bridge.app-state = UiAppState.LocalMedia;
-                        // show-local-media();
                     }
                 }
 
@@ -1055,13 +1050,11 @@ component PlaybackSettingsMenuItem inherits Rectangle {
             Image {
                 width: 16px;
                 height: 16px;
-                // source: @image-url("playback_rate.svg");
                 source: icon;
             }
         }
 
         i-playback-rate-text := FText {
-            // text: "Playback Rate";
             text: label;
             color: FCastPalette.neutral-500;
         }
@@ -1356,6 +1349,14 @@ component PlaybackControls inherits Rectangle {
     }
 }
 
+component RoundBackButton inherits Button {
+    icon: Icons.arrow-right;
+    colorize-icon: true;
+    icon-rotation: 180deg;
+    icon-size: 10px;
+    width: 36px;
+}
+
 component YtDlpView inherits Rectangle {
     ImageBackground {
         img-width: root.width;
@@ -1368,13 +1369,20 @@ component YtDlpView inherits Rectangle {
             spacing: 10px;
 
             HorizontalLayout {
+                RoundBackButton {
+                    clicked => {
+                        Bridge.app-state = UiAppState.SelectingInputType;
+                        Bridge.clear-yt-dlp-state();
+                    }
+                }
+
                 LabelBox {
                     label: Bridge.yt-dlp-url;
                 }
 
                 Spacer { }
 
-                DisconnectButton { }
+                // DisconnectButton { }
             }
 
             if Bridge.yt-dlp-state == UiYtDlpState.HasData && Bridge.yt-dlp-sources.length == 0: FText {
@@ -1649,7 +1657,6 @@ component FileEntry inherits Rectangle {
             Image {
                 source: Icons.play;
                 width: 14px;
-                // colorize: FCastPalette.foreground.transparentize(50%);
             }
         }
 
@@ -1659,7 +1666,6 @@ component FileEntry inherits Rectangle {
             Image {
                 source: Icons.stop;
                 width: 14px;
-                // colorize: FCastPalette.foreground.transparentize(50%);
             }
         }
     }
@@ -1694,12 +1700,13 @@ component LocalMediaView inherits Rectangle {
         HorizontalLayout {
             spacing: 10px;
 
-            Button {
-                icon: Icons.arrow-right;
-                colorize-icon: true;
-                icon-rotation: 180deg;
-                icon-size: 10px;
-                width: 36px;
+            // Button {
+            RoundBackButton {
+            //     icon: Icons.arrow-right;
+            //     colorize-icon: true;
+            //     icon-rotation: 180deg;
+            //     icon-size: 10px;
+            //     width: 36px;
 
                 clicked => {
                     Bridge.stop-cast(false);
@@ -2095,13 +2102,9 @@ export component MainWindow inherits Window {
     default-font-weight: 400;
 
     background: FCastPalette.background-color-primary;
-    // property <bool> is-showing-mirroring-popup: true;
     property <bool> is-showing-mirroring-popup: false;
-    // property <bool> is-showing-log-popup: true;
     property <bool> is-showing-log-popup: false;
-    // property <bool> is-showing-settings-popup: true;
     property <bool> is-showing-settings-popup: false;
-    // property <bool> is-showing-about-popup: true;
     property <bool> is-showing-about-popup: false;
 
     HorizontalLayout {
@@ -2222,10 +2225,6 @@ export component MainWindow inherits Window {
             show-mirroring => {
                 is-showing-mirroring-popup = true;
             }
-
-            // show-local-media => {
-            //     is-showing-local-media-popup = true;
-            // }
 
             show-yt-dlp-view => {
                 Bridge.app-state = UiAppState.YtDlp;
