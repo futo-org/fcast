@@ -169,7 +169,7 @@ builSenderForWinX64:
 
         rustup install stable
 
-        git clone --depth=1 -b marcus/desktop-sender-beta "https://gitlab.futo.org/videostreaming/fcast.git"
+        git clone --depth=1 -b master "https://gitlab.futo.org/videostreaming/fcast.git"
         cd fcast
 
         cargo xtask sender build-windows-installer
