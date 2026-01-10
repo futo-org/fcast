@@ -1358,7 +1358,9 @@ component RoundBackButton inherits Button {
 }
 
 component PlaybackFocusScope inherits FocusScope {
-    key-pressed(event) => {
+    width: 0; // Do not react on clicks
+
+    capture-key-pressed(event) => {
         if Bridge.playback-state == UiPlaybackState.Paused || Bridge.playback-state == UiPlaybackState.Playing {
             if event.text == Key.Space {
                 Bridge.change-playback-state(
@@ -1371,6 +1373,8 @@ component PlaybackFocusScope inherits FocusScope {
                 Bridge.seek(Math.max(Bridge.playback-position - 10.0, 0.0), true);
             } else if event.text == Key.RightArrow || event.text == "l" {
                 Bridge.seek(Math.min(Bridge.playback-position + 10.0, Bridge.track-duration), true);
+            } else {
+                return reject;
             }
 
             return accept;
@@ -1380,9 +1384,7 @@ component PlaybackFocusScope inherits FocusScope {
 }
 
 component YtDlpView inherits Rectangle {
-    forward-focus: pb-fs;
-
-    pb-fs := PlaybackFocusScope { }
+    PlaybackFocusScope { }
 
     ImageBackground {
         img-width: root.width;
@@ -1715,9 +1717,7 @@ component FileEntry inherits Rectangle {
 }
 
 component LocalMediaView inherits Rectangle {
-    forward-focus: pb-fs;
-
-    pb-fs := PlaybackFocusScope { }
+    PlaybackFocusScope { }
 
     ImageBackground {
         img-width: root.width;
