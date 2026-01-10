@@ -53,6 +53,7 @@ pub struct YtDlpSource {
     pub title: Option<String>,
     pub thumbnails: Option<SmallVec<[Thumbnail; 4]>>,
     pub formats: Option<Vec<Format>>,
+    pub duration: Option<f64>,
 }
 
 fn yt_dlp_command() -> tokio::process::Command {

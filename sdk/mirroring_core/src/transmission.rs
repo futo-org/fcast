@@ -274,7 +274,7 @@ fn add_audio_src(
                 pair: from_main_pair,
             });
 
-            return Ok(extra);
+            Ok(extra)
         }
         #[cfg(target_os = "android")]
         _ => todo!(),

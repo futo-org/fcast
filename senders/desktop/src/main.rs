@@ -13,6 +13,7 @@ use fcast_sender_sdk::{
     device::{self, DeviceFeature, DeviceInfo},
 };
 use gst_video::prelude::*;
+use image::ImageFormat;
 #[cfg(target_os = "windows")]
 use mcore::VideoSource;
 use mcore::{
@@ -35,7 +36,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     runtime::Runtime,
-    sync::mpsc::{Sender, UnboundedSender, channel},
+    sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel},
 };
 use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
@@ -211,6 +212,104 @@ struct LocalMediaDataState {
 
 use mcore::preview::PreviewPipeline;
 
+enum ThumbnailDownloaderCmd {
+    Download { id: i32, url: String },
+    Quit,
+}
+
+fn img_format_from_str(mime: &str) -> Option<ImageFormat> {
+    match mime {
+        "image/png" | "image/jpeg" | "image/webp" | "image/avif" => {
+            ImageFormat::from_mime_type(mime)
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+struct ThumbnailDownloader {
+    tx: UnboundedSender<ThumbnailDownloaderCmd>,
+}
+
+impl ThumbnailDownloader {
+    pub fn new<F>(on_downloaded: F) -> Self
+    where
+        F: FnMut(i32, image::RgbaImage) -> () + Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ThumbnailDownloaderCmd>();
+
+        tokio::spawn(async move {
+            Self::run_fetcher(on_downloaded, rx).await;
+        });
+
+        Self { tx }
+    }
+
+    async fn download_file(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> Result<(ImageFormat, bytes::Bytes)> {
+        let resp = client.get(url).send().await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let headers = resp.headers();
+            let Some(content_type) = headers.get(reqwest::header::CONTENT_TYPE) else {
+                bail!("Missing content type response header");
+            };
+
+            let Some(format) = img_format_from_str(content_type.to_str().unwrap_or("")) else {
+                bail!("Unsupported content type: {content_type:?}");
+            };
+
+            let body = resp.bytes().await?;
+            Ok((format, body))
+        } else {
+            bail!("Bad response status: {status}");
+        }
+    }
+
+    #[tracing::instrument(skip(on_downloaded, rx))]
+    async fn run_fetcher<F>(mut on_downloaded: F, mut rx: UnboundedReceiver<ThumbnailDownloaderCmd>)
+    where
+        F: FnMut(i32, image::RgbaImage) -> () + Send + 'static,
+    {
+        let client = reqwest::Client::new();
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                ThumbnailDownloaderCmd::Download { id, url } => {
+                    let (format, buf) = match Self::download_file(&client, &url).await {
+                        Ok((f, b)) => (f, b),
+                        Err(err) => {
+                            error!(?err, "Failed to download thumbnail file");
+                            continue;
+                        }
+                    };
+
+                    match image::load_from_memory_with_format(&buf, format) {
+                        Ok(image) => {
+                            let image = image.to_rgba8();
+                            on_downloaded(id, image);
+                        }
+                        Err(err) => error!(?err, "Failed to decode image"),
+                    }
+                }
+                ThumbnailDownloaderCmd::Quit => break,
+            }
+        }
+    }
+
+    pub fn queue_download(&self, id: i32, url: String) {
+        let _ = self.tx.send(ThumbnailDownloaderCmd::Download { id, url });
+    }
+}
+
+impl Drop for ThumbnailDownloader {
+    fn drop(&mut self) {
+        let _ = self.tx.send(ThumbnailDownloaderCmd::Quit);
+    }
+}
+
 #[derive(Debug)]
 enum SessionSpecificState {
     Idle,
@@ -229,6 +328,7 @@ enum SessionSpecificState {
     YtDlp {
         sources: Option<Vec<mcore::yt_dlp::YtDlpSource>>,
         fetcher_quit_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        thumbnail_downloader: ThumbnailDownloader,
     },
 }
 
@@ -733,7 +833,6 @@ impl Application {
                 if let Some(mut item) = sources.row_data(idx) {
                     item.preview = slint::Image::from_rgb8(slint_frame);
                     sources.set_row_data(idx, item);
-                    return;
                 }
             }
         });
@@ -749,9 +848,32 @@ impl Application {
             src.title.clone().unwrap_or(src.id.to_string())
         }
 
+        fn get_optimal_thumbnail(src: &mcore::yt_dlp::YtDlpSource) -> Option<String> {
+            src
+                .thumbnails
+                .as_ref()
+                .map(|thumbs| {
+                    let mut chosen = None;
+                    for thumb in thumbs {
+                        if thumb.width.unwrap_or(0) >= 500
+                            || thumb.height.unwrap_or(0) >= 500
+                        {
+                            chosen = Some(thumb.url.clone());
+                            break;
+                        }
+                    }
+                    if chosen.is_some() {
+                        chosen
+                    } else {
+                        thumbs.last().map(|thumb| thumb.url.clone())
+                    }
+                })
+                .flatten()
+        }
+
         if let Some(session) = &mut self.session_state {
             match &mut session.specific {
-                SessionSpecificState::YtDlp { sources, .. } => match event {
+                SessionSpecificState::YtDlp { sources, thumbnail_downloader, .. } => match event {
                     mcore::YtDlpEvent::SourceAvailable(new_source) => {
                         if let Some(formats) = new_source.formats.as_ref() {
                             if let Some(format) = formats.get(0) {
@@ -771,11 +893,23 @@ impl Application {
                             return Ok(());
                         }
 
-                        let source_item = UiYtDlpSource {
-                            title: get_title(&new_source).to_shared_string(),
+                        let id = match sources.as_ref() {
+                            Some(s) => s.len() as i32,
+                            None => 0,
                         };
 
+                        let title = get_title(&new_source).to_shared_string();
+
+                        if let Some(url) = get_optimal_thumbnail(&new_source) {
+                            thumbnail_downloader.queue_download(id, url);
+                        }
+
                         self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            let source_item = UiYtDlpSource {
+                                id,
+                                title,
+                                thumbnail: slint::Image::default(),
+                            };
                             let bridge = ui.global::<Bridge>();
                             let sources_rc = bridge.get_yt_dlp_sources();
                             let sources = sources_rc
@@ -825,26 +959,7 @@ impl Application {
                                         volume: None,
                                         metadata: Some(fcast_sender_sdk::device::Metadata {
                                             title: Some(title),
-                                            thumbnail_url: src
-                                                .thumbnails
-                                                .as_ref()
-                                                .map(|thumbs| {
-                                                    let mut chosen = None;
-                                                    for thumb in thumbs {
-                                                        if thumb.width.unwrap_or(0) >= 500
-                                                            || thumb.height.unwrap_or(0) >= 500
-                                                        {
-                                                            chosen = Some(thumb.url.clone());
-                                                            break;
-                                                        }
-                                                    }
-                                                    if chosen.is_some() {
-                                                        chosen
-                                                    } else {
-                                                        thumbs.last().map(|thumb| thumb.url.clone())
-                                                    }
-                                                })
-                                                .flatten(),
+                                            thumbnail_url: get_optimal_thumbnail(&src),
                                         }),
                                         request_headers: None,
                                     },
@@ -1579,9 +1694,30 @@ impl Application {
                     };
                 });
                 if let Some(session) = &mut self.session_state {
+                    let ui_weak = self.ui_weak.clone();
                     session.specific = SessionSpecificState::YtDlp {
                         sources: None,
                         fetcher_quit_tx: Some(quit_tx),
+                        thumbnail_downloader: ThumbnailDownloader::new(move |id, image| {
+                            let pixel_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                image.as_raw(),
+                                image.width(),
+                                image.height(),
+                            );
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                let bridge = ui.global::<Bridge>();
+                                let sources_rc = bridge.get_yt_dlp_sources();
+                                let sources = sources_rc
+                                    .as_any()
+                                    .downcast_ref::<slint::VecModel<UiYtDlpSource>>()
+                                    .expect("The model is always a vec");
+
+                                if let Some(mut src) = sources.row_data(id as usize) {
+                                    src.thumbnail = slint::Image::from_rgba8(pixel_buffer);
+                                    sources.set_row_data(id as usize, src);
+                                }
+                            });
+                        }),
                     };
                 }
             }
@@ -2144,6 +2280,14 @@ fn main() -> Result<()> {
         .with(fmt_layer)
         .with(vec_layer)
         .init();
+
+    #[cfg(target_os = "linux")]
+    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+        error!(
+            ?err,
+            "Failed to register ring as rustls default crypto provider"
+        );
+    }
 
     let runtime = Runtime::new()?;
 

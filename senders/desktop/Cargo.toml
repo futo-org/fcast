@@ -35,6 +35,7 @@ directories = "6.0.0"
 toml_edit.workspace = true
 fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
 mcore.path = "../../sdk/mirroring_core/"
+image = { version = "0.25", default-features = false, features = [ "png", "jpeg", "webp", "avif", "rayon" ] }
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"
@@ -48,6 +49,8 @@ winresource = "0.1.28"
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.11.0", default-features = false, features = ["async-std"] } # `tokio` breaks slint
 xcb = { version = "1.6.0", features = ["randr", "xlib_xcb"] }
+rustls = { version = "0.23.36", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider" ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = "0.3.2"
@@ -68,7 +71,6 @@ windows-sys = { version = "0.60.0", features = [
 tikv-jemallocator = "0.6"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-reqwest = { version = "0.13.1", features = [ "native-tls", "json" ] }
-bytes = "1"
+reqwest = { version = "0.13", features = [ "native-tls", "json" ] }
 ctor = "0.2"
 tempfile = "3.24.0"

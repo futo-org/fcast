@@ -93,7 +93,9 @@ export enum UiYtDlpState {
 }
 
 export struct UiYtDlpSource {
+    id: int,
     title: string,
+    thumbnail: image,
 }
 
 export struct UiDevice {
@@ -125,11 +127,13 @@ export global Bridge {
     in property <[UiDevice]> devices: [];
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
-    // in property <bool> is-yt-dlp-available: true;
     in property <string> settings-file-path;
+    in property <string> new-update-version;
+    in property <int> update-download-progress;
+    in property <string> updater-error-msg;
+    in property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
 
     in-out property <UiAppState> app-state: Disconnected;
-    // in-out property <UiAppState> app-state: SelectingInputType;
     in-out property <string> device-name: "";
     in-out property <string> device-ip: "";
     in-out property <int> selected-video-src: -1;
@@ -158,14 +162,6 @@ export global Bridge {
     in-out property <UiMediaFileType> current-media-type;
     in-out property <bool> update-available: false;
     in-out property <UiUpdaterState> updater-state: UiUpdaterState.Idle;
-
-    in property <string> new-update-version;
-    in property <int> update-download-progress;
-    in property <string> updater-error-msg;
-    in property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
-
-    // in-out property <bool> update-available: true;
-    // in property <string> new-update-version: "0.0.2";
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -940,12 +936,19 @@ component YtDlpSourceItem inherits Rectangle {
     border-radius: 6px;
 
     states [
-        hover when i-touch-area.has-hover: {
-            root.background: FCastPalette.neutral-1100;
+        playing when !ta.has-hover && Bridge.yt-dlp-source == source.title: {
+            background: FCastPalette.brand-600.transparentize(92%);
+        }
+        hover when ta.has-hover: {
+            background: FCastPalette.brand-600.transparentize(92%);
+            border-width: 1px;
+            border-color: #1478DC33;
         }
     ]
 
-    i-touch-area := TouchArea {
+    ta := TouchArea {
+        mouse-cursor: pointer;
+
         clicked => {
             if Bridge.yt-dlp-source == source.title {
                 Bridge.change-playback-state(UiPlaybackState.Idle);
@@ -958,6 +961,20 @@ component YtDlpSourceItem inherits Rectangle {
 
     HorizontalLayout {
         padding: 10px;
+        padding-right: 25px;
+
+        Rectangle {
+            height: 60px;
+            width: 120px;
+
+            Image {
+                height: 60px;
+                width: 120px;
+
+                source: source.thumbnail.width > 0 ? source.thumbnail : Icons.more;
+                image-fit: ImageFit.contain;
+            }
+        }
 
         FText {
             vertical-alignment: center;
@@ -967,35 +984,21 @@ component YtDlpSourceItem inherits Rectangle {
 
         Spacer { }
 
-        if Bridge.yt-dlp-source != source.title && i-touch-area.has-hover: Rectangle {
-            background: FCastPalette.brand-600;
-            border-radius: 6px;
-            // visible: i-touch-area.has-hover;
+        if Bridge.yt-dlp-source != source.title && ta.has-hover: VerticalLayout {
+            alignment: center;
 
-            VerticalLayout {
-                padding: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-
-                FText {
-                    text: "Cast";
-                }
+            Image {
+                source: Icons.play;
+                width: 20px;
             }
         }
 
-        if Bridge.yt-dlp-source == source.title: Rectangle {
-            background: FCastPalette.brand-600;
-            border-radius: 6px;
-            // visible: i-touch-area.has-hover;
+        if Bridge.yt-dlp-source == source.title: VerticalLayout {
+            alignment: center;
 
-            VerticalLayout {
-                padding: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-
-                FText {
-                    text: "Stop";
-                }
+            Image {
+                source: Icons.stop;
+                width: 20px;
             }
         }
     }
@@ -1005,8 +1008,8 @@ component YtDlpSourceItem inherits Rectangle {
         width: 0;
 
         key-pressed(event) => {
-            if (event.text == "\n") {
-                i-touch-area.clicked();
+            if (event.text == Key.Return) {
+                ta.clicked();
                 return accept;
             }
             return reject;
@@ -1144,8 +1147,9 @@ component PlaybackControls inherits Rectangle {
 
             FText {
                 text: Bridge.playback-pos-str;
-                font-weight: 300;
+                font-weight: 400;
                 vertical-alignment: center;
+                font-family: "Outfit Monospace";
             }
 
             Slider {
@@ -1165,8 +1169,9 @@ component PlaybackControls inherits Rectangle {
 
             FText {
                 text: Bridge.track-dur-str;
-                font-weight: 300;
+                font-weight: 400;
                 vertical-alignment: center;
+                font-family: "Outfit Monospace";
             }
         }
 
@@ -1355,6 +1360,7 @@ component RoundBackButton inherits Button {
     icon-rotation: 180deg;
     icon-size: 10px;
     width: 36px;
+    height: 36px;
 }
 
 component PlaybackFocusScope inherits FocusScope {
@@ -1397,6 +1403,8 @@ component YtDlpView inherits Rectangle {
             spacing: 10px;
 
             HorizontalLayout {
+                spacing: 10px;
+
                 RoundBackButton {
                     clicked => {
                         Bridge.app-state = UiAppState.SelectingInputType;
@@ -1404,13 +1412,12 @@ component YtDlpView inherits Rectangle {
                     }
                 }
 
-                LabelBox {
-                    label: Bridge.yt-dlp-url;
+                FText {
+                    text: Bridge.yt-dlp-url;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    font-size: 20px;
                 }
-
-                Spacer { }
-
-                // DisconnectButton { }
             }
 
             if Bridge.yt-dlp-state == UiYtDlpState.HasData && Bridge.yt-dlp-sources.length == 0: FText {
@@ -1433,6 +1440,8 @@ component YtDlpView inherits Rectangle {
                 alignment: center;
                 spacing: 10px;
 
+                Spacer { }
+
                 Spinner {
                     indeterminate: true;
                 }
@@ -1441,6 +1450,8 @@ component YtDlpView inherits Rectangle {
                     vertical-alignment: center;
                     text: "Fetching...";
                 }
+
+                Spacer { }
             }
         }
 
