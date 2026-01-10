@@ -1106,7 +1106,7 @@ component PlaybackRateItem inherits Rectangle {
             text: rate;
         }
 
-        Spacer {}
+        Spacer { }
 
         VerticalLayout {
             alignment: center;
@@ -1219,7 +1219,7 @@ component PlaybackControls inherits Rectangle {
                 }
             }
 
-            Spacer {}
+            Spacer { }
 
             Spacer {
                 width: 200px - 60px;
@@ -1357,7 +1357,33 @@ component RoundBackButton inherits Button {
     width: 36px;
 }
 
+component PlaybackFocusScope inherits FocusScope {
+    key-pressed(event) => {
+        if Bridge.playback-state == UiPlaybackState.Paused || Bridge.playback-state == UiPlaybackState.Playing {
+            if event.text == Key.Space {
+                Bridge.change-playback-state(
+                    Bridge.playback-state == UiPlaybackState.Playing ? UiPlaybackState.Paused : UiPlaybackState.Playing);
+            } else if event.text == Key.UpArrow || event.text == "k" {
+                Bridge.change-volume(Math.min(Bridge.volume + 0.05, 1.0), true);
+            } else if event.text == Key.DownArrow || event.text == "j" {
+                Bridge.change-volume(Math.max(Bridge.volume - 0.05, 0.0), true);
+            } else if event.text == Key.LeftArrow || event.text == "h" {
+                Bridge.seek(Math.max(Bridge.playback-position - 10.0, 0.0), true);
+            } else if event.text == Key.RightArrow || event.text == "l" {
+                Bridge.seek(Math.min(Bridge.playback-position + 10.0, Bridge.track-duration), true);
+            }
+
+            return accept;
+        }
+        return reject;
+    }
+}
+
 component YtDlpView inherits Rectangle {
+    forward-focus: pb-fs;
+
+    pb-fs := PlaybackFocusScope { }
+
     ImageBackground {
         img-width: root.width;
         img-height: root.height;
@@ -1689,6 +1715,10 @@ component FileEntry inherits Rectangle {
 }
 
 component LocalMediaView inherits Rectangle {
+    forward-focus: pb-fs;
+
+    pb-fs := PlaybackFocusScope { }
+
     ImageBackground {
         img-width: root.width;
         img-height: root.height;
@@ -2084,7 +2114,7 @@ component SettingsEntry inherits Rectangle {
             vertical-alignment: center;
         }
 
-        Spacer {}
+        Spacer { }
 
         @children
     }
@@ -2217,7 +2247,7 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.is-reconnecting: ReconnectingView {}
+        if Bridge.is-reconnecting: ReconnectingView { }
 
         if !Bridge.is-reconnecting && (Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting): ConnectView { }
 
@@ -2319,7 +2349,7 @@ export component MainWindow inherits Window {
                     label: Bridge.settings-file-path;
                 }
 
-                Spacer {}
+                Spacer { }
             }
 
             // TODO: Deduplicate settings entry related boilerplate etc.
@@ -2414,7 +2444,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Spacer {}
+            Spacer { }
 
             SecondaryText {
                 text: "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.";
@@ -2552,7 +2582,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Spacer {}
+            Spacer { }
         }
     }
 }
@@ -2612,7 +2642,7 @@ export component CrashWindow inherits Window {
             }
         }
 
-        log-te:= TextEdit {
+        log-te := TextEdit {
             text: log;
             read-only: true;
             enabled: false;
