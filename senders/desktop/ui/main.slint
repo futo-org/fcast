@@ -962,12 +962,21 @@ component YtDlpSourceItem inherits Rectangle {
     HorizontalLayout {
         padding: 10px;
         padding-right: 25px;
+        spacing: 10px;
 
         Rectangle {
             height: 60px;
             width: 120px;
 
-            Image {
+            states [
+                not-found when source.thumbnail.width == 0: {
+                    background: FCastPalette.neutral-600.transparentize(80%);
+                    border-radius: 6px;
+                    thumbnail.colorize: FCastPalette.foreground.transparentize(50%);
+                }
+            ]
+
+            thumbnail := Image {
                 height: 60px;
                 width: 120px;
 

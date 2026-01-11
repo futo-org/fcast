@@ -10,7 +10,7 @@ use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
 use directories::{BaseDirs, UserDirs};
 use fcast_sender_sdk::{
     context::CastContext,
-    device::{self, DeviceFeature, DeviceInfo},
+    device::{self, DeviceFeature, DeviceInfo, EventSubscription},
 };
 use gst_video::prelude::*;
 use image::ImageFormat;
@@ -849,15 +849,12 @@ impl Application {
         }
 
         fn get_optimal_thumbnail(src: &mcore::yt_dlp::YtDlpSource) -> Option<String> {
-            src
-                .thumbnails
+            src.thumbnails
                 .as_ref()
                 .map(|thumbs| {
                     let mut chosen = None;
                     for thumb in thumbs {
-                        if thumb.width.unwrap_or(0) >= 500
-                            || thumb.height.unwrap_or(0) >= 500
-                        {
+                        if thumb.width.unwrap_or(0) >= 500 || thumb.height.unwrap_or(0) >= 500 {
                             chosen = Some(thumb.url.clone());
                             break;
                         }
@@ -873,7 +870,11 @@ impl Application {
 
         if let Some(session) = &mut self.session_state {
             match &mut session.specific {
-                SessionSpecificState::YtDlp { sources, thumbnail_downloader, .. } => match event {
+                SessionSpecificState::YtDlp {
+                    sources,
+                    thumbnail_downloader,
+                    ..
+                } => match event {
                     mcore::YtDlpEvent::SourceAvailable(new_source) => {
                         if let Some(formats) = new_source.formats.as_ref() {
                             if let Some(format) = formats.get(0) {
@@ -1245,6 +1246,14 @@ impl Application {
                             debug!(is_mirroring_supported, "Device connected");
                             let remote_addr: std::net::IpAddr = (&used_remote_addr).into();
                             let remote_addr_str = remote_addr.to_string().to_shared_string();
+                            if session
+                                .device
+                                .supports_feature(DeviceFeature::MediaEventSubscription)
+                            {
+                                let _ = session
+                                    .device
+                                    .subscribe_event(EventSubscription::MediaItemEnd);
+                            }
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 bridge.set_is_mirroring_supported(is_mirroring_supported);
@@ -1307,6 +1316,12 @@ impl Application {
                     }
                 }
                 mcore::DeviceEvent::PlaybackError(_) => (),
+                mcore::DeviceEvent::Media(media_event) => match media_event.type_ {
+                    device::MediaItemEventType::End => {
+                        // TODO: look for next item to play if any
+                    }
+                    _ => (),
+                },
                 _ => self.update_device_state(event)?,
             },
             Event::FromDevice { id, .. } => {
@@ -1699,11 +1714,12 @@ impl Application {
                         sources: None,
                         fetcher_quit_tx: Some(quit_tx),
                         thumbnail_downloader: ThumbnailDownloader::new(move |id, image| {
-                            let pixel_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                image.as_raw(),
-                                image.width(),
-                                image.height(),
-                            );
+                            let pixel_buffer =
+                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                    image.as_raw(),
+                                    image.width(),
+                                    image.height(),
+                                );
                             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 let sources_rc = bridge.get_yt_dlp_sources();

@@ -128,6 +128,8 @@ pub enum DeviceEvent {
     // fn playback_error(&self, _message: String) {}
     #[cfg(not(target_os = "android"))]
     PlaybackError(String),
+    #[cfg(not(target_os = "android"))]
+    Media(device::MediaEvent)
 }
 
 #[cfg(not(target_os = "android"))]
@@ -364,6 +366,11 @@ impl device::DeviceEventHandler for DeviceHandler {
     }
 
     fn key_event(&self, _event: device::KeyEvent) {}
-    fn media_event(&self, _event: device::MediaEvent) {}
+
+    fn media_event(&self, _event: device::MediaEvent) {
+        #[cfg(not(target_os = "android"))]
+        self.send_event(DeviceEvent::Media(_event));
+    }
+
     fn playback_error(&self, _message: String) {}
 }
