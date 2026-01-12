@@ -977,7 +977,6 @@ component YtDlpSourceItem inherits Rectangle {
 
     HorizontalLayout {
         padding: 10px;
-        padding-right: 25px;
         spacing: 10px;
 
         Rectangle {
@@ -1451,12 +1450,16 @@ component YtDlpView inherits Rectangle {
             }
 
             if Bridge.yt-dlp-state == UiYtDlpState.HasData || Bridge.yt-dlp-state == UiYtDlpState.HasDataButFetching: ListView {
-                for source in Bridge.yt-dlp-sources: YtDlpSourceItem {
-                    source: source;
+                for source in Bridge.yt-dlp-sources: HorizontalLayout {
+                    padding-right: 10px;
 
-                    cast-this => {
-                        Bridge.cast-yt-dlp(source.id);
-                        Bridge.current-yt-dlp-id = source.id;
+                    YtDlpSourceItem {
+                        source: source;
+
+                        cast-this => {
+                            Bridge.cast-yt-dlp(source.id);
+                            Bridge.current-yt-dlp-id = source.id;
+                        }
                     }
                 }
             }
