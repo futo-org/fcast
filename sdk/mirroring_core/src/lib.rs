@@ -150,7 +150,7 @@ pub struct MediaFileEntry {
 #[derive(Debug)]
 pub enum YtDlpEvent {
     SourceAvailable(Box<yt_dlp::YtDlpSource>),
-    Cast(String),
+    Cast(i32),
     Finished,
 }
 

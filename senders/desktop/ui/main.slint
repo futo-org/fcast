@@ -148,12 +148,12 @@ export global Bridge {
     in-out property <string> playback-pos-str: 0.0;
     in-out property <string> track-dur-str: 0.0;
     in-out property <float> playback-rate: 1.0;
-    in-out property <string> track-name;
+    in-out property <int> current-local-media-id: -1;
     in-out property <UiMediaFileType> track-type;
     in-out property <UiYtDlpState> yt-dlp-state: Fetching;
     in-out property <string> yt-dlp-url;
     in-out property <[UiYtDlpSource]> yt-dlp-sources: [];
-    in-out property <string> yt-dlp-source;
+    in-out property <int> current-yt-dlp-id: -1;
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
@@ -177,7 +177,7 @@ export global Bridge {
         yt-dlp-state = UiYtDlpState.Fetching;
         yt-dlp-url = "";
         yt-dlp-sources = [];
-        yt-dlp-source = "";
+        current-yt-dlp-id = -1;
     }
 
     public function clear-local-media-state() {
@@ -189,7 +189,7 @@ export global Bridge {
         if new-state == UiAppState.Disconnected {
             device-name = "";
             device-ip = "";
-            track-name = "";
+            current-local-media-id = -1;
             playback-state = UiPlaybackState.Idle;
             playback-position = 0.0;
             track-duration = 0.0;
@@ -229,7 +229,7 @@ export global Bridge {
     callback start-test-pattern-cast();
     callback open-url(url: string);
     callback try-play-url(url: string);
-    callback cast-yt-dlp(title: string);
+    callback cast-yt-dlp(id: int);
     callback change-root-dir(new-root: UiRootDirType);
     callback change-playback-rate(rate: float);
     callback update-settings();
@@ -879,6 +879,22 @@ component ReadyToCastView inherits Rectangle {
                 }
             }
 
+            if !Bridge.is-yt-dlp-available: HorizontalLayout {
+                spacing: 5px;
+
+                FText {
+                    text: "yt-dlp was not found.";
+                    overflow: elide;
+                }
+
+                HyperLink {
+                    text: "Get it here.";
+                    url: "https://github.com/yt-dlp/yt-dlp/wiki/Installation";
+                }
+
+                Spacer { }
+            }
+
             GridLayout {
                 padding-top: 20px;
                 spacing: 10px;
@@ -936,7 +952,7 @@ component YtDlpSourceItem inherits Rectangle {
     border-radius: 6px;
 
     states [
-        playing when !ta.has-hover && Bridge.yt-dlp-source == source.title: {
+        playing when !ta.has-hover && Bridge.current-yt-dlp-id == source.id: {
             background: FCastPalette.brand-600.transparentize(92%);
         }
         hover when ta.has-hover: {
@@ -950,9 +966,9 @@ component YtDlpSourceItem inherits Rectangle {
         mouse-cursor: pointer;
 
         clicked => {
-            if Bridge.yt-dlp-source == source.title {
+            if Bridge.current-yt-dlp-id == source.id {
                 Bridge.change-playback-state(UiPlaybackState.Idle);
-                Bridge.yt-dlp-source = "";
+                Bridge.current-yt-dlp-id = -1;
             } else {
                 root.cast-this();
             }
@@ -993,7 +1009,7 @@ component YtDlpSourceItem inherits Rectangle {
 
         Spacer { }
 
-        if Bridge.yt-dlp-source != source.title && ta.has-hover: VerticalLayout {
+        if Bridge.current-yt-dlp-id != source.id && ta.has-hover: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1002,7 +1018,7 @@ component YtDlpSourceItem inherits Rectangle {
             }
         }
 
-        if Bridge.yt-dlp-source == source.title: VerticalLayout {
+        if Bridge.current-yt-dlp-id == source.id: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1439,8 +1455,8 @@ component YtDlpView inherits Rectangle {
                     source: source;
 
                     cast-this => {
-                        Bridge.cast-yt-dlp(source.title);
-                        Bridge.yt-dlp-source = source.title;
+                        Bridge.cast-yt-dlp(source.id);
+                        Bridge.current-yt-dlp-id = source.id;
                     }
                 }
             }
@@ -1630,6 +1646,7 @@ component DirEntry inherits DirEntrySkeleton {
     clicked => {
         Bridge.change-dir-child(entry.id);
         Bridge.files = [];
+        Bridge.current-local-media-id = -1;
     }
 }
 
@@ -1640,7 +1657,7 @@ component FileEntry inherits Rectangle {
     border-radius: 6px;
 
     states [
-        playing when !ta.has-hover && Bridge.track-name == entry.name: {
+        playing when !ta.has-hover && Bridge.current-local-media-id == entry.id: {
             background: FCastPalette.brand-600.transparentize(92%);
         }
         hover when ta.has-hover: {
@@ -1655,12 +1672,12 @@ component FileEntry inherits Rectangle {
         mouse-cursor: pointer;
 
         clicked => {
-            if Bridge.track-name == entry.name {
+            if Bridge.current-local-media-id == entry.id {
                 Bridge.change-playback-state(UiPlaybackState.Idle);
-                Bridge.track-name = "";
+                Bridge.current-local-media-id = -1;
             } else {
                 Bridge.cast-local-media(entry.id);
-                Bridge.track-name = entry.name;
+                Bridge.current-local-media-id = entry.id;
             }
         }
     }
@@ -1699,7 +1716,7 @@ component FileEntry inherits Rectangle {
 
         Spacer { }
 
-        if ta.has-hover && Bridge.track-name != entry.name: VerticalLayout {
+        if ta.has-hover && Bridge.current-local-media-id != entry.id: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1708,7 +1725,7 @@ component FileEntry inherits Rectangle {
             }
         }
 
-        if Bridge.track-name == entry.name: VerticalLayout {
+        if Bridge.current-local-media-id == entry.id: VerticalLayout {
             alignment: center;
 
             Image {
@@ -1774,6 +1791,7 @@ component LocalMediaView inherits Rectangle {
                     Bridge.directories = [];
                     Bridge.files = [];
                     Bridge.root-dir-type = type;
+                    Bridge.current-local-media-id = -1;
                 }
             }
         }
@@ -1793,6 +1811,7 @@ component LocalMediaView inherits Rectangle {
                     clicked => {
                         Bridge.change-dir-parent();
                         Bridge.files = [];
+                        Bridge.current-local-media-id = -1;
                     }
                 }
 
