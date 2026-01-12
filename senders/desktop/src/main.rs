@@ -225,6 +225,15 @@ fn img_format_from_str(mime: &str) -> Option<ImageFormat> {
     }
 }
 
+enum ThumbnailResult {
+    Cached {
+        entry_id: i32,
+    },
+    New {
+        image: image::RgbaImage,
+    },
+}
+
 #[derive(Debug)]
 struct ThumbnailDownloader {
     tx: UnboundedSender<ThumbnailDownloaderCmd>,
@@ -233,7 +242,7 @@ struct ThumbnailDownloader {
 impl ThumbnailDownloader {
     pub fn new<F>(on_downloaded: F) -> Self
     where
-        F: FnMut(i32, image::RgbaImage) -> () + Send + 'static,
+        F: FnMut(i32, ThumbnailResult) -> () + Send + 'static,
     {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ThumbnailDownloaderCmd>();
 
@@ -268,16 +277,22 @@ impl ThumbnailDownloader {
         }
     }
 
-    // TODO: cache based on url
     #[tracing::instrument(skip(on_downloaded, rx))]
     async fn run_fetcher<F>(mut on_downloaded: F, mut rx: UnboundedReceiver<ThumbnailDownloaderCmd>)
     where
-        F: FnMut(i32, image::RgbaImage) -> () + Send + 'static,
+        F: FnMut(i32, ThumbnailResult) -> () + Send + 'static,
     {
         let client = reqwest::Client::new();
+        let mut cache = HashMap::<String, i32>::new();
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 ThumbnailDownloaderCmd::Download { id, url } => {
+                    if let Some(other_id) = cache.get(&url) {
+                        debug!(url, "Using cached download");
+                        on_downloaded(id, ThumbnailResult::Cached { entry_id: *other_id });
+                        continue;
+                    }
+
                     let (format, buf) = match Self::download_file(&client, &url).await {
                         Ok((f, b)) => (f, b),
                         Err(err) => {
@@ -289,7 +304,8 @@ impl ThumbnailDownloader {
                     match image::load_from_memory_with_format(&buf, format) {
                         Ok(image) => {
                             let image = image.to_rgba8();
-                            on_downloaded(id, image);
+                            on_downloaded(id, ThumbnailResult::New { image });
+                            let _ = cache.insert(url, id);
                         }
                         Err(err) => error!(?err, "Failed to decode image"),
                     }
@@ -1813,13 +1829,7 @@ impl Application {
                     session.specific = SessionSpecificState::YtDlp {
                         sources: None,
                         fetcher_quit_tx: Some(quit_tx),
-                        thumbnail_downloader: ThumbnailDownloader::new(move |id, image| {
-                            let pixel_buffer =
-                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                    image.as_raw(),
-                                    image.width(),
-                                    image.height(),
-                                );
+                        thumbnail_downloader: ThumbnailDownloader::new(move |id, thumbnail| {
                             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 let sources_rc = bridge.get_yt_dlp_sources();
@@ -1828,8 +1838,25 @@ impl Application {
                                     .downcast_ref::<slint::VecModel<UiYtDlpSource>>()
                                     .expect("The model is always a vec");
 
+                                let image = match thumbnail {
+                                    ThumbnailResult::Cached { entry_id } => {
+                                        let Some(entry) = sources.row_data(entry_id as usize) else {
+                                            return;
+                                        };
+                                        entry.thumbnail.clone()
+                                    }
+                                    ThumbnailResult::New { image } => {
+                                        slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                            image.as_raw(),
+                                            image.width(),
+                                            image.height(),
+                                        ))
+                                    }
+                                };
+
+
                                 if let Some(mut src) = sources.row_data(id as usize) {
-                                    src.thumbnail = slint::Image::from_rgba8(pixel_buffer);
+                                    src.thumbnail = image;
                                     sources.set_row_data(id as usize, src);
                                 }
                             });
