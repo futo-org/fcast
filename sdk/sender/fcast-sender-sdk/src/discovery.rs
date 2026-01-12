@@ -1,13 +1,14 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::Context;
 use log::debug;
 use mdns_sd::{ScopedIp, ServiceEvent};
 use tokio_stream::StreamExt;
 
-use crate::device::DeviceInfo;
-use crate::{DeviceDiscovererEventHandler, IpAddr};
+use crate::{device::DeviceInfo, DeviceDiscovererEventHandler, IpAddr};
 
 #[cfg(feature = "chromecast")]
 pub const CHROMECAST_FRIENDLY_NAME_TXT: &str = "fn";

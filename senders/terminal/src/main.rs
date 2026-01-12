@@ -1,16 +1,23 @@
 use clap::{Parser, Subcommand};
-use fcast_sender_sdk::context::CastContext;
-use fcast_sender_sdk::device::{
-    DeviceConnectionState, DeviceEventHandler, EventSubscription, KeyEvent, KeyName, LoadRequest,
-    MediaEvent, PlaybackState, Source,
+use fcast_sender_sdk::{
+    context::CastContext,
+    device::{
+        DeviceConnectionState, DeviceEventHandler, EventSubscription, KeyEvent, KeyName,
+        LoadRequest, MediaEvent, PlaybackState, Source,
+    },
 };
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    net::IpAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{channel, Sender},
+        Arc,
+    },
+    time::Duration,
+};
 
 #[derive(Subcommand)]
 enum Command {

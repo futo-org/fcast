@@ -105,6 +105,8 @@ enum Action {
         path: &'static str,
         id: u32,
         mime: &'static str,
+        // headers: Option<HashMap<String, String>>,
+        headers: Option<&'static [(&'static str, &'static str)]>,
     },
     SleepMillis(u64),
     WriteSimpleThenWait(Opcode),
@@ -344,7 +346,7 @@ impl State {
     #[instrument(skip_all)]
     fn next_state(
         &mut self,
-        file_urls: &HashMap<u32, (String, &'static str)>,
+        file_urls: &HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)>,
     ) -> anyhow::Result<Option<Action>> {
         if !self.ready() {
             return Ok(Some(Action::WaitForPacket));
@@ -395,14 +397,14 @@ impl State {
                             return Ok(Some(Action::WriteSimple(Opcode::Stop)));
                         }
                         fast::Send::PlayV2 { file_id } => {
-                            let (url, mime) = file_urls.get(file_id).unwrap();
+                            let (url, mime, headers) = file_urls.get(file_id).unwrap();
                             let body = v2::PlayMessage {
                                 container: mime.to_string(),
                                 url: Some(url.clone()),
                                 content: None,
                                 time: None,
                                 speed: None,
-                                headers: None,
+                                headers: headers.clone(),
                             };
                             return Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
@@ -410,14 +412,14 @@ impl State {
                             }));
                         }
                         fast::Send::PlayV3 { file_id } => {
-                            let (url, mime) = file_urls.get(file_id).unwrap();
+                            let (url, mime, headers) = file_urls.get(file_id).unwrap();
                             let body = v3::PlayMessage {
                                 container: mime.to_string(),
                                 url: Some(url.clone()),
                                 content: None,
                                 time: None,
                                 speed: None,
-                                headers: None,
+                                headers: headers.clone(),
                                 volume: None,
                                 metadata: None,
                             };
@@ -449,14 +451,14 @@ impl State {
                             }));
                         }
                         fast::Send::PlayV3WithBody { file_id, time, volume, speed } => {
-                            let (url, mime) = file_urls.get(file_id).unwrap();
+                            let (url, mime, headers) = file_urls.get(file_id).unwrap();
                             let body = v3::PlayMessage {
                                 container: mime.to_string(),
                                 url: Some(url.clone()),
                                 content: None,
                                 time: *time,
                                 speed: *speed,
-                                headers: None,
+                                headers: headers.clone(),
                                 volume: *volume,
                                 metadata: None,
                             };
@@ -611,7 +613,7 @@ impl State {
                                 body: serde_json::to_vec(&body).unwrap(),
                             }));
                         }
-                    },
+                    }
                     Step::Receive(receive) => {
                         self.internal = match receive {
                             fast::Receive::Version => InternalState::WaitingForVersion,
@@ -625,11 +627,17 @@ impl State {
                         };
                         return Ok(Some(Action::WaitForPacket));
                     }
-                    Step::ServeFile { path, id, mime } => {
+                    Step::ServeFile {
+                        path,
+                        id,
+                        mime,
+                        headers,
+                    } => {
                         return Ok(Some(Action::ServeFile {
                             path,
                             id: *id,
                             mime,
+                            headers: *headers,
                         }));
                     }
                     Step::SleepMillis(ms) => {
@@ -689,7 +697,8 @@ async fn run_test(
     let mut stream = TcpStream::connect(receiver).await.unwrap();
     let local_addr = stream.local_addr().unwrap().ip();
     let mut state = State::new(test.steps);
-    let mut file_urls: HashMap<u32, (String, &'static str)> = HashMap::new();
+    let mut file_urls: HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)> =
+        HashMap::new();
     let (reader, mut writer) = stream.split();
     let (sleep_tx, mut sleep_rx) = unbounded_channel::<()>();
     let mut action_queue = VecDeque::new();
@@ -754,13 +763,30 @@ async fn run_test(
                     // tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 Action::End => break 'out,
-                Action::ServeFile { path, id, mime } => {
+                Action::ServeFile {
+                    path,
+                    id,
+                    mime,
+                    headers,
+                } => {
                     let mut file_path = sample_media_path.clone();
                     file_path.push(path);
                     ensure!(file_path.exists());
-                    let file_id = file_server.add_file(file_path, mime);
+                    let mut required_headers = None;
+                    let file_id = {
+                        if let Some(headers) = headers {
+                            let headers = HashMap::from_iter(
+                                headers.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+                            );
+                            required_headers = Some(headers.clone());
+                            file_server.add_file_with_headers(file_path, mime, headers)
+                        } else {
+                            file_server.add_file(file_path, mime)
+                        }
+                    };
+                    // let file_id = file_server.add_file(file_path, mime);
                     let url = file_server.get_url(&(local_addr.into()), &file_id);
-                    let _ = file_urls.insert(id, (url, mime));
+                    let _ = file_urls.insert(id, (url, mime, required_headers));
                 }
                 Action::SleepMillis(ms) => {
                     let sleep_tx = sleep_tx.clone();

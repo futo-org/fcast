@@ -12,7 +12,7 @@ anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 simply_colored = "0.1.4"
-file-server.path = "../sdk/file-server"
+file-server = { path = "../sdk/file-server", features = [ "headers" ] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 clap-verbosity-flag = { version = "3", default-features = false, features = [ "tracing" ] }

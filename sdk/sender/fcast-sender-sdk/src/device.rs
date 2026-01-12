@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    net::{Ipv6Addr, SocketAddr, SocketAddrV6},
+    sync::Arc,
+};
 
 use crate::IpAddr;
 
@@ -85,25 +87,13 @@ macro_rules! dev_info_constructor {
 #[cfg(feature = "fcast")]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
-    #[derive(serde::Deserialize)]
-    struct FCastService {
-        port: u16,
-        r#type: i32,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct FCastNetworkConfig {
-        name: String,
-        addresses: Vec<String>,
-        services: Vec<FCastService>,
-    }
-
     let connection_info = url.strip_prefix("fcast://r/")?;
 
-    use base64::alphabet::URL_SAFE;
-    use base64::engine::general_purpose::GeneralPurpose;
-    use base64::engine::{DecodePaddingMode, GeneralPurposeConfig};
-    use base64::Engine as _;
+    use base64::{
+        alphabet::URL_SAFE,
+        engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
+        Engine as _,
+    };
     let b64_engine = GeneralPurpose::new(
         &URL_SAFE,
         GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
@@ -115,7 +105,7 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
             return None;
         }
     };
-    let found_info: FCastNetworkConfig = match serde_json::from_slice(&json) {
+    let found_info: fcast_protocol::FCastNetworkConfig = match serde_json::from_slice(&json) {
         Ok(info) => info,
         Err(err) => {
             log::error!("Failed to decode network config json: {err}");

@@ -8,8 +8,14 @@ members = [
     "sdk/common/fcast-protocol",
     "sdk/mirroring_core",
     "senders/desktop",
-    "senders/android"
-, "fast", "sdk/file-server"]
+    "senders/android",
+    "fast",
+    "sdk/file-server",
+    "senders/android",
+    "receivers/experimental/rcore",
+    "receivers/experimental/desktop",
+    "receivers/experimental/android"
+]
 resolver = "2"
 
 [workspace.package]
@@ -29,6 +35,8 @@ mdns-sd = "0.17.1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
+tracing-gstreamer = "0.9.0"
+tracing-panic = "0.1.2"
 parking_lot = "0.12.5"
 slint = "1.14.1"
 slint-build = "1.14.1"
@@ -39,6 +47,7 @@ smallvec = { version = "1.15.1", features = ["serde"] }
 smol_str = { version = "0.3.4", features = ["serde"] }
 toml_edit = { version = "0.24", features = ["serde"] }
 futures = "0.3.31"
+lazy_static = "1.5"
 
 [profile.release]
 lto = "thin"

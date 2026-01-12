@@ -11,10 +11,10 @@ const ANDROID_SDK_PATH: &str = "thirdparty/android-sdk-commandlinetools";
 /// Always relative to project root
 pub const ANDROID_HOME_PATH: &str = "thirdparty/Android/Sdk";
 
-const GST_ANDROID_URL: &str = "https://gstreamer.freedesktop.org/data/pkg/android/1.26.8/gstreamer-1.0-android-universal-1.26.8.tar.xz";
-const GST_ANDROID_AR_PATH: &str = "thirdparty/gstreamer-1.0-android-universal-1.26.8.tar.xz";
+const GST_ANDROID_URL: &str = "https://gstreamer.freedesktop.org/data/pkg/android/1.26.10/gstreamer-1.0-android-universal-1.26.10.tar.xz";
+const GST_ANDROID_AR_PATH: &str = "thirdparty/gstreamer-1.0-android-universal-1.26.10.tar.xz";
 /// Always relative to project root
-pub const GST_ANDROID_PATH: &str = "thirdparty/gstreamer-1.0-android-universal-1.26.8";
+pub const GST_ANDROID_PATH: &str = "thirdparty/gstreamer-1.0-android-universal-1.26.10";
 
 const NDK_URL: &str = "https://dl.google.com/android/repository/android-ndk-r25c-linux.zip";
 /// Always relative to project root

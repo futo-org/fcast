@@ -1,18 +1,24 @@
-use std::collections::HashMap;
-use std::fs::File;
-use std::io;
-use std::marker::Unpin;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::str::FromStr;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io,
+    marker::Unpin,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    str::FromStr,
+    sync::{
+        atomic::{AtomicU16, Ordering},
+        Arc,
+    },
+};
 
 use anyhow::bail;
 use http::{find_first_cr_lf, find_first_double_cr_lf, parse_header_map, KnownHeaderNames};
 use log::{debug, error};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
-use tokio::runtime::Handle;
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
+    runtime::Handle,
+    sync::Mutex,
+};
 use uuid::Uuid;
 
 use crate::http;
@@ -276,7 +282,8 @@ impl FileServer {
                 0,
                 0,
             )))
-            .await.unwrap();
+            .await
+            .unwrap();
         let bound_port = listener.local_addr()?.port();
         listen_port.store(bound_port, Ordering::Relaxed);
 
