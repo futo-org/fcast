@@ -318,6 +318,8 @@ html, body, .body {
 
 .featured-box {
 	border: 1px solid var(--fcast-border);
+	margin-top: unset;
+	margin-bottom: unset;
 }
 
 p {
@@ -428,7 +430,6 @@ p {
 
 .custom-call-to-action {
 	border-radius: 12px;
-	padding: 32px;
 }
 
 #header-logo-text {
