@@ -237,6 +237,7 @@ export global Bridge {
     callback restart-application();
 
     pure callback is-device-info-valid(info: string) -> bool;
+    pure callback is-valid-url(url: string) -> bool;
 }
 
 component Spacer inherits Rectangle { }
@@ -622,23 +623,27 @@ component ConnectView inherits Rectangle {
 
                             i-dev-info-input := LineEdit {
                                 placeholder-text: "<fcast/gcast>://<ip>:<port>";
-                            }
 
-                            if !Bridge.is-connecting-to-manually-inputted-device: Button {
-                                enabled: Bridge.is-device-info-valid(i-dev-info-input.text);
-                                text: "Connect";
-
-                                clicked => {
-                                    Bridge.connect-manually(i-dev-info-input.text);
-                                    Bridge.is-connecting-to-manually-inputted-device = true;
+                                key-pressed(event) => {
+                                    if event.text == Key.Return {
+                                        connect-man-btn.clicked();
+                                        return accept;
+                                    }
+                                    reject
                                 }
                             }
 
-                            if Bridge.is-connecting-to-manually-inputted-device: Button {
-                                text: "Cancel";
+                            connect-man-btn := Button {
+                                enabled: Bridge.is-connecting-to-manually-inputted-device ? true : Bridge.is-device-info-valid(i-dev-info-input.text);
+                                text: Bridge.is-connecting-to-manually-inputted-device ? "Cancel" : "Connect";
 
                                 clicked => {
-                                    Bridge.disconnect();
+                                    if Bridge.is-connecting-to-manually-inputted-device {
+                                        Bridge.disconnect();
+                                    } else {
+                                        Bridge.connect-manually(i-dev-info-input.text);
+                                        Bridge.is-connecting-to-manually-inputted-device = true;
+                                    }
                                 }
                             }
                         }
@@ -861,12 +866,20 @@ component ReadyToCastView inherits Rectangle {
                 i-line-edit-url := LineEdit {
                     placeholder-text: "Paste URL (http/https, .mp4, .m3u8)...";
                     icon: Icons.link;
+
+                    key-pressed(event) => {
+                        if event.text == Key.Return {
+                            cast-url-btn.clicked();
+                            return accept;
+                        }
+                        reject
+                    }
                 }
 
-                Button {
+                cast-url-btn := Button {
                     width: self.preferred-width + 30px;
                     text: "Cast";
-                    enabled: !i-line-edit-url.text.is-empty;
+                    enabled: !i-line-edit-url.text.is-empty && Bridge.is-valid-url(i-line-edit-url.text);
                     background-default-color: FCastPalette.brand-600;
 
                     clicked => {

@@ -36,6 +36,7 @@ toml_edit.workspace = true
 fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
 mcore.path = "../../sdk/mirroring_core/"
 image = { version = "0.25", default-features = false, features = [ "png", "jpeg", "webp", "avif", "rayon" ] }
+url = "2"
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"

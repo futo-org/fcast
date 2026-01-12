@@ -2704,6 +2704,10 @@ fn main() -> Result<()> {
         }
     });
 
+    bridge.on_is_valid_url(|url| {
+        url::Url::parse(&url).is_ok()
+    });
+
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     bridge.set_is_audio_supported(false);
 
