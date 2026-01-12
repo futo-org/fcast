@@ -78,16 +78,12 @@
 												<ul class="nav nav-pills" id="mainNav">
 													<li><a href="#overview" class="nav-link active text-color nav-link-rounded" data-hash data-hash-offset="0" data-hash-offset-lg="70">Overview</a></li>
 													<li><a href="#what-is-fcast" class="nav-link active text-color nav-link-rounded" data-hash data-hash-offset="0" data-hash-offset-lg="70">What is FCast?</a></li>
-													<li><a href="#how-do-i-use" class="nav-link active text-color nav-link-rounded" data-hash data-hash-offset="0" data-hash-offset-lg="70">How do I use FCast?</a></li>
+													<li><a href="#how-do-i-use" class="nav-link active text-color nav-link-rounded" data-hash data-hash-offset="0" data-hash-offset-lg="70">Getting Started</a></li>
 													<li><a href="#key-features" class="nav-link active text-color nav-link-rounded" data-hash data-hash-offset="0" data-hash-offset-lg="70">Key Features</a></li>
 													<li>
-														<a href="https://docs.fcast.org" class="nav-link active text-color nav-link-rounded nav-link-docs" data-hash data-hash-offset="0" data-hash-offset-lg="70">
+														<a href="https://docs.fcast.org" class="nav-link active text-color nav-link-rounded" target="_blank" data-hash data-hash-offset="0" data-hash-offset-lg="70">
 															<span class="d-none d-sm-inline-block"><img width="18" height="18" src="images/box-arrow-up-right.svg" alt="" data-icon data-plugin-options="{'onlySVG': true, 'extraClass': 'svg-stroke-color-light me-2'}" /></span>
 															Documentation
-														</a>
-														<a href="https://docs.fcast.org" class="nav-link active text-color nav-link-rounded nav-link-docs-short" data-hash data-hash-offset="0" data-hash-offset-lg="70">
-															<span class="d-none d-sm-inline-block"><img width="18" height="18" src="images/box-arrow-up-right.svg" alt="" data-icon data-plugin-options="{'onlySVG': true, 'extraClass': 'svg-stroke-color-light me-2'}" /></span>
-															Docs
 														</a>
 													</li>
 													<li class="primary-button-gradient">
@@ -133,8 +129,8 @@
 						<div class="row p-3 p-md-0 mx-auto">
 							<div class="col-lg-8">
 								<div class="call-to-action-content mx-auto m-lg-0">
-									<h3 class="mb-1 font-weight-semi-bold">Receiver available on Android, Desktop, and other platforms.</h3>
-									<p class="mb-0 opacity-7">SDK packages can be found on the <a href="https://docs.fcast.org/sdk/">documentation site</a>.</p>
+									<h3 class="mb-1 font-weight-semi-bold">Get the FCast Receiver and Sender Apps</h3>
+									<p class="mb-0 opacity-7">Everything you need to start casting. Choose a receiver for your display and a sender for your media.</p>
 								</div>
 							</div>
 							<div class="col-lg-4 text-center text-lg-start">
@@ -177,26 +173,39 @@
 
 				<section id="how-do-i-use" class="py-3 py-lg-5">
 					<div class="container">
-
-						<div class="row align-items-center">
-							<div class="col-lg-6 text-center text-lg-start">
-
-								<div class="appear-animation" data-appear-animation="fadeInRightShorterPlus" data-appear-animation-delay="100">
-									<h2 class="text-color-dark font-weight-bold text-10 mb-4-5 text-header">Getting Started with FCast</h2>
-									<p class="text-3-5 mb-0 text-color">
-										<b>For users:</b> Begin by downloading a receiver to your desired platform. If you have a FCast sender application (such as <a href="https://grayjay.app">Grayjay</a>), then connect your sender device to the receiver by scanning the QR code. After connecting you can start casting media to the receiver.
-									</p>
-									<br/>
-									<p class="text-3-5 mb-0 text-color">
-										<b>For developers:</b> Check out the <a href="https://github.com/futo-org/fcast/tree/master/sdk/sender">FCast SDK</a> which you can use to integrate FCast into your application. Besides providing example starter projects for building sender applications, receiver implementations are also available which you use or build off of. The <a href="https://docs.fcast.org/">documentation site</a> provides additional information on getting started building applications with the SDK.
-									</p>
-								</div>
-							</div>
-							<div class="col-lg-6 text-center text-lg-start">
-								<img src="images/tv2.png" class="img-fluid mb-4 mb-lg-0" alt="" />
+						<div class="row mb-2 appear-animation" data-appear-animation="fadeInUpShorter" data-appear-animation-delay="100">
+							<div class="col-12 text-center">
+								<h2 class="font-weight-bold text-10 text-header">Getting Started with FCast</h2>
 							</div>
 						</div>
 
+						<div class="row g-5">
+							<div class="col-lg-6 appear-animation" data-appear-animation="fadeInUpShorter" data-appear-animation-delay="250" data-plugin-options="{'minWindowWidth': 0}">
+								<div class="featured-box p-4 bg-gradient-dark h-100 d-flex flex-column">
+									 <h4 class="text-5 font-weight-bold mb-3 text-subheading">The Sender App</h4>
+									<p class="text-3-5">The <strong>Sender</strong> is your remote control. Use the FCast Sender app (or an FCast supported sender app such as <a href="https://grayjay.app">Grayjay</a>) to connect to the receiver device via automatic discovery or by scanning the receiver's QR code. After connecting, you can start browsing and casting your media.</p>
+									<div class="text-center mt-auto d-flex align-items-center justify-content-center" style="min-height: 320px;">
+										<img src="images/sender_connected.png" class="img-fluid rounded shadow" alt="Sender UI" style="max-height: 270px; width: auto;">
+									</div>
+								</div>
+							</div>
+
+							<div class="col-lg-6 appear-animation" data-appear-animation="fadeInUpShorter" data-appear-animation-delay="500" data-plugin-options="{'minWindowWidth': 0}">
+								<div class="featured-box p-4 bg-gradient-dark h-100 d-flex flex-column">
+									<h4 class="text-5 font-weight-bold mb-3 text-subheading">The Receiver App</h4>
+									<p class="text-3-5">The <strong>Receiver</strong> is your device that displays your casted media. Install it on your TV, PC, or other device. Once launched, it displays a QR code and connection details for your sender device to connect. Once connected, cast media from your sender app to start the show.</p>
+									<div class="text-center mt-auto d-flex align-items-center justify-content-center" style="min-height: 320px;">
+										<img src="images/receiver_connected.png" class="img-fluid rounded shadow" alt="Receiver UI" style="max-height: 270px; width: auto;">
+									</div>
+								</div>
+							</div>
+
+							<div class="row mt-5">
+								<div class="col-12 text-center appear-animation" data-appear-animation="fadeInUpShorter" data-appear-animation-delay="100">
+									 <p class="text-3-5"><strong>Developers:</strong> Want to integrate FCast into your own apps? <a href="https://docs.fcast.org/sdk/">Check out the SDK Documentation</a>.</p>
+								</div>
+							</div>
+						</div>
 					</div>
 				</section>
 
@@ -209,27 +218,40 @@
 
 						<div class="row align-items-center">
 							<div class="col appear-animation" data-appear-animation="fadeInRightShorterPlus" data-appear-animation-delay="100">
-
-								<div class="text-center">
-									<h2 class="text-color-dark font-weight-bold text-10 mb-4-5 text-header">Key Features</h2>
-
-									<p class="font-weight-medium text-4-5 line-height-6 negative-ls-05"> Explore the distinctive features of FCast that make it a dynamic, user-friendly, and developer-centric platform for media streaming.</p>
-								</div>
+								<h2 class="text-center text-color-dark font-weight-bold text-10 mb-4-5 text-header">Key Features</h2>
 
 								<div class="row pt-3">
 									<div class="col-lg-6">
 										<div class="feature-box feature-box-style-6 custom-feature-box-1 reverse">
 											<div class="feature-box-info">
 												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Open-Source Protocol</h4>
-												<p class="mb-4 text-3-5 font-weight-medium">FCast offers a fully open-source protocol, enabling unrestricted innovation in the field of media streaming.</p>
+												<p class="mb-4 text-3-5 font-weight-medium">FCast allows unrestricted modification, enabling developers build their own unique streaming experiences.</p>
 											</div>
 										</div>
 									</div>
 									<div class="col-lg-6 text-start">
 										<div class="feature-box feature-box-style-6 custom-feature-box-1">
 											<div class="feature-box-info">
-												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Various Stream Type Support</h4>
-												<p class="mb-4 text-3-5 font-weight-medium">FCast supports a range of stream types like DASH, HLS, and mp4, accommodating diverse media content.</p>
+												 <h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Versatile Media Support</h4>
+												  <p class="mb-4 text-3-5 font-weight-medium">Stream DASH and HLS formats or cast local video, audio, and images directly to your receiver.</p>
+											</div>
+										</div>
+									</div>
+								</div>
+								<div class="row pt-3">
+									<div class="col-lg-6">
+										<div class="feature-box feature-box-style-6 custom-feature-box-1 reverse">
+											<div class="feature-box-info">
+												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Screen Mirroring</h4>
+												<p class="mb-4 text-3-5 font-weight-medium">Share your sender device's screen and audio in real-time.</p>
+											</div>
+										</div>
+									</div>
+									<div class="col-lg-6 text-start">
+										<div class="feature-box feature-box-style-6 custom-feature-box-1">
+											<div class="feature-box-info">
+												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Full Playback Control</h4>
+												<p class="mb-4 text-3-5 font-weight-medium">Sender retains full control over playback, capable of operations like pause, resume, seek, volume adjustment, and more.</p>
 											</div>
 										</div>
 									</div>
@@ -239,15 +261,15 @@
 										<div class="feature-box feature-box-style-6 custom-feature-box-1 reverse">
 											<div class="feature-box-info">
 												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Cross-Platform Compatibility</h4>
-												<p class="mb-4 text-3-5 font-weight-medium">FCast's core implementation runs seamlessly on Linux, Windows, MacOS (via Electron), and Android (native), ensuring a broad range of device support.</p>
+												<p class="mb-4 text-3-5 font-weight-medium">Native Android receiver support alongside desktop receiver/sender apps for Linux, Windows, and macOS.</p>
 											</div>
 										</div>
 									</div>
 									<div class="col-lg-6 text-start">
 										<div class="feature-box feature-box-style-6 custom-feature-box-1">
 											<div class="feature-box-info">
-												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Full Playback Control</h4>
-												<p class="mb-4 text-3-5 font-weight-medium">The sender retains full control over playback, capable of operations like pause, resume, seek, and volume adjustment, for a tailored user experience.</p>
+												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Google Cast Support</h4>
+												<p class="mb-4 text-3-5 font-weight-medium">FCast receiver not available for your device? Cast to any Google Cast enabled device using the default media receiver.</p>
 											</div>
 										</div>
 									</div>
@@ -256,8 +278,8 @@
 									<div class="col-lg-6">
 										<div class="feature-box feature-box-style-6 custom-feature-box-1 reverse">
 											<div class="feature-box-info">
-												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">mDNS for Discovery</h4>
-												<p class="mb-4 text-3-5 font-weight-medium">FCast uses mDNS to discover available receivers, simplifying the connection process.</p>
+												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Seamless Device Connection</h4>
+												<p class="mb-4 text-3-5 font-weight-medium">Connect via automatic discovery over mDNS, QR code scanning, or manual IP entry.</p>
 											</div>
 										</div>
 									</div>
@@ -266,24 +288,6 @@
 											<div class="feature-box-info">
 												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Real-Time Updates</h4>
 												<p class="mb-4 text-3-5 font-weight-medium">The receiver provides real-time updates about the playback status to the sender, ensuring synchronized communication.</p>
-											</div>
-										</div>
-									</div>
-								</div>
-								<div class="row pt-3">
-									<div class="col-lg-6">
-										<div class="feature-box feature-box-style-6 custom-feature-box-1 reverse">
-											<div class="feature-box-info">
-												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Community Contribution</h4>
-												<p class="mb-4 text-3-5 font-weight-medium">As an open-source project, FCast thrives on the contributions from the global developer community, fostering continuous growth and enhancement.</p>
-											</div>
-										</div>
-									</div>
-									<div class="col-lg-6 text-start">
-										<div class="feature-box feature-box-style-6 custom-feature-box-1">
-											<div class="feature-box-info">
-												<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Custom Receiver Implementation</h4>
-												<p class="mb-0 mb-lg-4 text-3-5 font-weight-medium">Developers have the freedom to create custom receivers, allowing them to explore new possibilities for content delivery.</p>
 											</div>
 										</div>
 									</div>
@@ -301,102 +305,119 @@
 
 				<section id="download" class="py-3 py-lg-5 pb-0">
 					<div class="container call-to-action custom-call-to-action py-0">
-						<div class="row py-1 text-color-light p-relative" style="margin: auto;">
+						<div class="row py-1 text-color-light p-relative" style="margin: auto; width: 100%;">
 							<div class="col text-center">
-								<h2 class="text-color-dark font-weight-bold text-10 mb-4-5 text-header">Download FCast Receiver</h2>
+								<h2 class="text-color-dark font-weight-bold text-10 mb-4-5 text-header">Download FCast Apps</h2>
 
-								<div class="row mt-4">
-									<div class="col d-flex flex-column">
-										<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Android</h4>
+								<div class="accordion">
+									<div class="accordion-item">
+										<h2 class="accordion-header" id="receiverDownloadsHeading">
+											<button class="accordion-button text-1 font-weight-bold text-subheading" type="button" data-bs-toggle="collapse" data-bs-target="#receiverDownloadsBody" aria-expanded="true" aria-controls="receiverDownloadsBody">FCast Receiver</button>
+										</h2>
+										<div id="receiverDownloadsBody" class="accordion-collapse collapse show" aria-labelledby="receiverDownloadsHeading">
+											<div class="accordion-body">
+												<div class="row py-1 text-color-light p-relative" style="margin: auto;">
+													<div class="col text-center">
+														<div class="row">
+															<div class="col d-flex flex-column">
+																<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Android</h4>
 
-										<a href="https://play.google.com/store/apps/details?id=com.futo.fcast.receiver.playstore&pli=1" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-google-play.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Google Play</span></span>
-										</a>
+																<a href="https://play.google.com/store/apps/details?id=com.futo.fcast.receiver.playstore&pli=1" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-google-play.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Google Play</span></span>
+																</a>
 
-										<a href="https://www.amazon.com/dp/B0CLKVH8GZ/ref=sr_1_1?keywords=fcast&amp;s=mobile-apps&amp;sr=1-1" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-amazon.svg" alt=""></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Amazon Appstore</span></span>
-										</a>
-										<a href="https://dl.fcast.org/android/fcast-release.apk" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-android.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Download APK</span></span>
-										</a>
-									</div>
-									<div class="col d-flex flex-column">
-										<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Desktop</h4>
+																<a href="https://www.amazon.com/dp/B0CLKVH8GZ/ref=sr_1_1?keywords=fcast&amp;s=mobile-apps&amp;sr=1-1" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-amazon.svg" alt=""></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Amazon Appstore</span></span>
+																</a>
+																<a href="https://dl.fcast.org/android/fcast-release.apk" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-android.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Download APK</span></span>
+																</a>
+															</div>
+															<div class="col d-flex flex-column">
+																<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Desktop</h4>
 
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-windows-x64-setup.msi" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-windows.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Windows (x64)</span></span>
-										</a>
-										<a href="https://flathub.org/en/apps/org.fcast.Receiver" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28"src="images/icon-linux.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Linux (Flatpak)</span></span>
-										</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-arm64.dmg" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-apple.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05">macOS (Apple Silicon)</span></span>
-										</a>
-									</div>
-								</div>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-windows-x64-setup.msi" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-windows.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Windows (x64)</span></span>
+																</a>
+																<a href="https://flathub.org/en/apps/org.fcast.Receiver" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28"src="images/icon-linux.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Linux (Flatpak)</span></span>
+																</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-arm64.dmg" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-apple.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05">macOS (Apple Silicon)</span></span>
+																</a>
+															</div>
+														</div>
 
-								<div class="row">
-									<div class="container py-4">
-										<hr class="bg-light opacity-2 m-0">
-									</div>
-									<h4 class="text-5 font-weight-bold mb-1 text-subheading">Additional Builds</h4>
+														<div class="row">
+															<div class="container py-4">
+																<hr class="bg-light opacity-2 m-0">
+															</div>
+															<h4 class="text-5 font-weight-bold mb-1 text-subheading">Additional Builds</h4>
 
-									<div class="col mt-3 d-flex flex-column">
-										<h4 class="text-5 font-weight-bold mb-1 text-subheading">Package</h4>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-x64.dmg">macOS Intel x64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-x64.deb">Linux DEB x64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-x64.rpm">Linux RPM x64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-arm64.deb">Linux DEB arm64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-arm64.rpm">Linux RPM arm64</a>
+															<div class="col mt-3 d-flex flex-column">
+																<h4 class="text-5 font-weight-bold mb-1 text-subheading">Package</h4>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-x64.dmg">macOS Intel x64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-x64.deb">Linux DEB x64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-x64.rpm">Linux RPM x64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-arm64.deb">Linux DEB arm64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-arm64.rpm">Linux RPM arm64</a>
 
-									</div>
-									<div class="col mt-3 d-flex flex-column">
-										<h4 class="text-5 font-weight-bold mb-1 text-subheading">Portable</h4>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-windows-x64.zip">Windows x64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-x64.zip">Linux x64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-arm64.zip">Linux arm64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-x64.zip">macOS x64</a>
-										<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-arm64.zip">macOS arm64</a>
-									</div>
+															</div>
+															<div class="col mt-3 d-flex flex-column">
+																<h4 class="text-5 font-weight-bold mb-1 text-subheading">Portable</h4>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-windows-x64.zip">Windows x64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-x64.zip">Linux x64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-linux-arm64.zip">Linux arm64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-x64.zip">macOS x64</a>
+																<a href="https://dl.fcast.org/electron/latest/fcast-receiver-latest-macOS-arm64.zip">macOS arm64</a>
+															</div>
 
-									<p class="mt-5">Previous releases can be downloaded from <a href="https://github.com/futo-org/fcast/releases">Github</a></p>
-								</div>
-							</div>
-						</div>
-
-						<div class="container py-4">
-							<hr class="bg-light opacity-2 m-0">
-						</div>
-
-						<div class="row py-1 text-color-light p-relative">
-							<div class="col text-center">
-								<h2 class="text-color-dark font-weight-bold text-10 mb-4-5 text-header">Download FCast Sender (Beta)</h2>
-
-								<div class="row mt-4">
-									<div class="col col-lg-2"></div>
-									<div class="col d-flex flex-column col-lg-8" style="margin: auto;">
-										<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Desktop</h4>
-
-										<a href="https://dl.fcast.org/sender/desktop/latest/FCastSender-latest-win64-installer.msi" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-windows.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Windows (x64)</span></span>
-										</a>
-										<a href="https://dl.fcast.org/sender/desktop/latest/fcast-sender-latest-macos-aarch64.dmg" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
-											<div class="me-2"><img height="28" width="28" src="images/icon-apple.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05">macOS (Apple Silicon)</span></span>
-										</a>
-										<div class="d-inline-flex">
-											<div class="me-2"><img height="28" width="28"src="images/icon-linux.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
-											<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Linux (Flatpak): <code id="senderFlatpak">flatpak install --user https://dl.flathub.org/build-repo/244035/org.fcast.Sender.flatpakref</code></span></span>
+															<p class="mt-5">Previous releases can be downloaded from <a href="https://github.com/futo-org/fcast/releases">Github</a></p>
+														</div>
+													</div>
+												</div>
+											</div>
 										</div>
 									</div>
-									<div class="col col-lg-2"></div>
+									<div class="accordion-item">
+										<h2 class="accordion-header" id="senderDownloadsHeading">
+											<button class="accordion-button text-1 font-weight-bold text-subheading" type="button" data-bs-toggle="collapse" data-bs-target="#senderDownloadsBody" aria-expanded="true" aria-controls="senderDownloadsBody">FCast Sender (Beta)</button>
+										</h2>
+										<div id="senderDownloadsBody" class="accordion-collapse collapse show" aria-labelledby="senderDownloadsHeading">
+											<div class="accordion-body">
+												<div class="row py-1 text-color-light p-relative">
+													<div class="col text-center">
+														<div class="row">
+															<div class="col col-lg-2"></div>
+															<div class="col d-flex flex-column col-lg-8" style="margin: auto;">
+																<h4 class="text-5 font-weight-bold mb-1 mt-3 text-subheading">Desktop</h4>
+
+																<a href="https://dl.fcast.org/sender/desktop/latest/FCastSender-latest-win64-installer.msi" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-windows.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Windows (x64)</span></span>
+																</a>
+																<a href="https://dl.fcast.org/sender/desktop/latest/fcast-sender-latest-macos-aarch64.dmg" class="d-inline-flex align-items-center btn btn-light btn-py-2 px-4 text-start me-2 mb-3 justify-content-center">
+																	<div class="me-2"><img height="28" width="28" src="images/icon-apple.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05">macOS (Apple Silicon)</span></span>
+																</a>
+																<div class="d-inline-flex">
+																	<div class="me-2"><img height="28" width="28"src="images/icon-linux.svg" alt="" data-icon data-plugin-options="{'onlySVG': true }" /></div>
+																	<span class="font-weight-semibold text-4"><span class="text-color text-4 negative-ls-05 p-relative">Linux (Flatpak): <code id="senderFlatpak">flatpak install --user https://dl.flathub.org/build-repo/244035/org.fcast.Sender.flatpakref</code></span></span>
+																</div>
+															</div>
+															<div class="col col-lg-2"></div>
+														</div>
+													</div>
+												</div>
+											</div>
+										</div>
+									</div>
 								</div>
 							</div>
 						</div>
@@ -420,6 +441,8 @@
 								<div class="d-inline-flex flex-row-reverse">
 									<a href="https://www.youtube.com/@FUTOTECH" target="_blank" class="mb-0 me-0 w-inline-block"><img src="images/youtube.svg" loading="lazy" alt="Youtube social icon"></a>
 									<a href="https://twitter.com/FUTO_Tech" target="_blank" class="mb-0 me-3 w-inline-block"><img src="images/x.svg" loading="lazy" alt="X social icon"></a>
+									<a href="https://chat.futo.org/#narrow/stream/67-FCast" target="_blank" class="mb-0 me-3 w-inline-block"><img src="images/zulip.svg" loading="lazy" alt="Zulip social icon"></a>
+									<a href="https://github.com/futo-org/fcast" target="_blank" class="mb-0 me-3 w-inline-block"><img src="images/github.svg" loading="lazy" alt="Github social icon"></a>
 								</div>
 							</div>
 						</div>
