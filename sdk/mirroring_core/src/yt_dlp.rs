@@ -33,7 +33,11 @@ impl Format {
                     "m4a_dash" | "m4v_dash" => "application/dash+xml",
                     _ => return None,
                 },
-                None => return None,
+                None => match self.id.as_str() {
+                    "mp4" => "video/mp4",
+                    "x-matroska" => "video/x-matroska",
+                    _ => return None,
+                }
             },
         })
     }
@@ -49,6 +53,7 @@ pub struct YtDlpSource {
     pub title: Option<String>,
     pub thumbnails: Option<SmallVec<[Thumbnail; 4]>>,
     pub formats: Option<Vec<Format>>,
+    pub duration: Option<f64>,
 }
 
 fn yt_dlp_command() -> tokio::process::Command {
