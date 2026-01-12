@@ -34,7 +34,7 @@ slint = "1.14.1"
 slint-build = "1.14.1"
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.18.1", features = [ "v4" ] }
-bytes = "1.11"
+bytes = "1"
 smallvec = { version = "1.15.1", features = ["serde"] }
 smol_str = { version = "0.3.4", features = ["serde"] }
 toml_edit = { version = "0.24", features = ["serde"] }

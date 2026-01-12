@@ -93,7 +93,9 @@ export enum UiYtDlpState {
 }
 
 export struct UiYtDlpSource {
+    id: int,
     title: string,
+    thumbnail: image,
 }
 
 export struct UiDevice {
@@ -126,6 +128,10 @@ export global Bridge {
     in property <string> log-string;
     in property <bool> is-yt-dlp-available: false;
     in property <string> settings-file-path;
+    in property <string> new-update-version;
+    in property <int> update-download-progress;
+    in property <string> updater-error-msg;
+    in property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
 
     in-out property <UiAppState> app-state: Disconnected;
     in-out property <string> device-name: "";
@@ -142,12 +148,12 @@ export global Bridge {
     in-out property <string> playback-pos-str: 0.0;
     in-out property <string> track-dur-str: 0.0;
     in-out property <float> playback-rate: 1.0;
-    in-out property <string> track-name;
+    in-out property <int> current-local-media-id: -1;
     in-out property <UiMediaFileType> track-type;
     in-out property <UiYtDlpState> yt-dlp-state: Fetching;
     in-out property <string> yt-dlp-url;
     in-out property <[UiYtDlpSource]> yt-dlp-sources: [];
-    in-out property <string> yt-dlp-source;
+    in-out property <int> current-yt-dlp-id: -1;
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
@@ -156,14 +162,6 @@ export global Bridge {
     in-out property <UiMediaFileType> current-media-type;
     in-out property <bool> update-available: false;
     in-out property <UiUpdaterState> updater-state: UiUpdaterState.Idle;
-
-    in property <string> new-update-version;
-    in property <int> update-download-progress;
-    in property <string> updater-error-msg;
-    in property <UiRootDirType> root-dir-type: UiRootDirType.Videos;
-
-    // in-out property <bool> update-available: true;
-    // in property <string> new-update-version: "0.0.2";
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -179,7 +177,7 @@ export global Bridge {
         yt-dlp-state = UiYtDlpState.Fetching;
         yt-dlp-url = "";
         yt-dlp-sources = [];
-        yt-dlp-source = "";
+        current-yt-dlp-id = -1;
     }
 
     public function clear-local-media-state() {
@@ -191,7 +189,7 @@ export global Bridge {
         if new-state == UiAppState.Disconnected {
             device-name = "";
             device-ip = "";
-            track-name = "";
+            current-local-media-id = -1;
             playback-state = UiPlaybackState.Idle;
             playback-position = 0.0;
             track-duration = 0.0;
@@ -231,7 +229,7 @@ export global Bridge {
     callback start-test-pattern-cast();
     callback open-url(url: string);
     callback try-play-url(url: string);
-    callback cast-yt-dlp(title: string);
+    callback cast-yt-dlp(id: int);
     callback change-root-dir(new-root: UiRootDirType);
     callback change-playback-rate(rate: float);
     callback update-settings();
@@ -239,6 +237,7 @@ export global Bridge {
     callback restart-application();
 
     pure callback is-device-info-valid(info: string) -> bool;
+    pure callback is-valid-url(url: string) -> bool;
 }
 
 component Spacer inherits Rectangle { }
@@ -624,23 +623,27 @@ component ConnectView inherits Rectangle {
 
                             i-dev-info-input := LineEdit {
                                 placeholder-text: "<fcast/gcast>://<ip>:<port>";
-                            }
 
-                            if !Bridge.is-connecting-to-manually-inputted-device: Button {
-                                enabled: Bridge.is-device-info-valid(i-dev-info-input.text);
-                                text: "Connect";
-
-                                clicked => {
-                                    Bridge.connect-manually(i-dev-info-input.text);
-                                    Bridge.is-connecting-to-manually-inputted-device = true;
+                                key-pressed(event) => {
+                                    if event.text == Key.Return {
+                                        connect-man-btn.clicked();
+                                        return accept;
+                                    }
+                                    reject
                                 }
                             }
 
-                            if Bridge.is-connecting-to-manually-inputted-device: Button {
-                                text: "Cancel";
+                            connect-man-btn := Button {
+                                enabled: Bridge.is-connecting-to-manually-inputted-device ? true : Bridge.is-device-info-valid(i-dev-info-input.text);
+                                text: Bridge.is-connecting-to-manually-inputted-device ? "Cancel" : "Connect";
 
                                 clicked => {
-                                    Bridge.disconnect();
+                                    if Bridge.is-connecting-to-manually-inputted-device {
+                                        Bridge.disconnect();
+                                    } else {
+                                        Bridge.connect-manually(i-dev-info-input.text);
+                                        Bridge.is-connecting-to-manually-inputted-device = true;
+                                    }
                                 }
                             }
                         }
@@ -814,7 +817,6 @@ component ImageBackground {
 
 component ReadyToCastView inherits Rectangle {
     callback show-mirroring;
-    // callback show-local-media;
     callback show-yt-dlp-view;
 
     ImageBackground {
@@ -825,10 +827,7 @@ component ReadyToCastView inherits Rectangle {
     Rectangle {
         VerticalLayout {
             spacing: 8px;
-
-            // VerticalBox {
             padding-top: 40px;
-            // padding-left: 20px;
             padding: 20px;
 
             SecondaryText {
@@ -864,16 +863,23 @@ component ReadyToCastView inherits Rectangle {
             if Bridge.is-yt-dlp-available: HorizontalLayout {
                 spacing: 8px;
 
-                // TODO: check that url is valid/supported (i.e. we can detect mime type from extension)
                 i-line-edit-url := LineEdit {
                     placeholder-text: "Paste URL (http/https, .mp4, .m3u8)...";
                     icon: Icons.link;
+
+                    key-pressed(event) => {
+                        if event.text == Key.Return {
+                            cast-url-btn.clicked();
+                            return accept;
+                        }
+                        reject
+                    }
                 }
 
-                Button {
+                cast-url-btn := Button {
                     width: self.preferred-width + 30px;
                     text: "Cast";
-                    enabled: !i-line-edit-url.text.is-empty;
+                    enabled: !i-line-edit-url.text.is-empty && Bridge.is-valid-url(i-line-edit-url.text);
                     background-default-color: FCastPalette.brand-600;
 
                     clicked => {
@@ -886,6 +892,22 @@ component ReadyToCastView inherits Rectangle {
                 }
             }
 
+            if !Bridge.is-yt-dlp-available: HorizontalLayout {
+                spacing: 5px;
+
+                FText {
+                    text: "yt-dlp was not found.";
+                    overflow: elide;
+                }
+
+                HyperLink {
+                    text: "Get it here.";
+                    url: "https://github.com/yt-dlp/yt-dlp/wiki/Installation";
+                }
+
+                Spacer { }
+            }
+
             GridLayout {
                 padding-top: 20px;
                 spacing: 10px;
@@ -895,12 +917,10 @@ component ReadyToCastView inherits Rectangle {
                     description: "Cast MP4, MKV, or MP3 files directly from your hard drive with zero compression.";
                     icon: Icons.folder-fcast;
                     icon-bg-color: #2889E821;
-                    // enabled: false;
 
                     clicked => {
                         Bridge.select-input-type(UiInputType.LocalMedia);
                         Bridge.app-state = UiAppState.LocalMedia;
-                        // show-local-media();
                     }
                 }
 
@@ -945,16 +965,23 @@ component YtDlpSourceItem inherits Rectangle {
     border-radius: 6px;
 
     states [
-        hover when i-touch-area.has-hover: {
-            root.background: FCastPalette.neutral-1100;
+        playing when !ta.has-hover && Bridge.current-yt-dlp-id == source.id: {
+            background: FCastPalette.brand-600.transparentize(92%);
+        }
+        hover when ta.has-hover: {
+            background: FCastPalette.brand-600.transparentize(92%);
+            border-width: 1px;
+            border-color: #1478DC33;
         }
     ]
 
-    i-touch-area := TouchArea {
+    ta := TouchArea {
+        mouse-cursor: pointer;
+
         clicked => {
-            if Bridge.yt-dlp-source == source.title {
+            if Bridge.current-yt-dlp-id == source.id {
                 Bridge.change-playback-state(UiPlaybackState.Idle);
-                Bridge.yt-dlp-source = "";
+                Bridge.current-yt-dlp-id = -1;
             } else {
                 root.cast-this();
             }
@@ -963,6 +990,28 @@ component YtDlpSourceItem inherits Rectangle {
 
     HorizontalLayout {
         padding: 10px;
+        spacing: 10px;
+
+        Rectangle {
+            height: 60px;
+            width: 120px;
+
+            states [
+                not-found when source.thumbnail.width == 0: {
+                    background: FCastPalette.neutral-600.transparentize(80%);
+                    border-radius: 6px;
+                    thumbnail.colorize: FCastPalette.foreground.transparentize(50%);
+                }
+            ]
+
+            thumbnail := Image {
+                height: 60px;
+                width: 120px;
+
+                source: source.thumbnail.width > 0 ? source.thumbnail : Icons.more;
+                image-fit: ImageFit.contain;
+            }
+        }
 
         FText {
             vertical-alignment: center;
@@ -972,35 +1021,21 @@ component YtDlpSourceItem inherits Rectangle {
 
         Spacer { }
 
-        if Bridge.yt-dlp-source != source.title && i-touch-area.has-hover: Rectangle {
-            background: FCastPalette.brand-600;
-            border-radius: 6px;
-            // visible: i-touch-area.has-hover;
+        if Bridge.current-yt-dlp-id != source.id && ta.has-hover: VerticalLayout {
+            alignment: center;
 
-            VerticalLayout {
-                padding: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-
-                FText {
-                    text: "Cast";
-                }
+            Image {
+                source: Icons.play;
+                width: 20px;
             }
         }
 
-        if Bridge.yt-dlp-source == source.title: Rectangle {
-            background: FCastPalette.brand-600;
-            border-radius: 6px;
-            // visible: i-touch-area.has-hover;
+        if Bridge.current-yt-dlp-id == source.id: VerticalLayout {
+            alignment: center;
 
-            VerticalLayout {
-                padding: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-
-                FText {
-                    text: "Stop";
-                }
+            Image {
+                source: Icons.stop;
+                width: 20px;
             }
         }
     }
@@ -1010,8 +1045,8 @@ component YtDlpSourceItem inherits Rectangle {
         width: 0;
 
         key-pressed(event) => {
-            if (event.text == "\n") {
-                i-touch-area.clicked();
+            if (event.text == Key.Return) {
+                ta.clicked();
                 return accept;
             }
             return reject;
@@ -1055,13 +1090,11 @@ component PlaybackSettingsMenuItem inherits Rectangle {
             Image {
                 width: 16px;
                 height: 16px;
-                // source: @image-url("playback_rate.svg");
                 source: icon;
             }
         }
 
         i-playback-rate-text := FText {
-            // text: "Playback Rate";
             text: label;
             color: FCastPalette.neutral-500;
         }
@@ -1113,7 +1146,7 @@ component PlaybackRateItem inherits Rectangle {
             text: rate;
         }
 
-        Spacer {}
+        Spacer { }
 
         VerticalLayout {
             alignment: center;
@@ -1151,8 +1184,9 @@ component PlaybackControls inherits Rectangle {
 
             FText {
                 text: Bridge.playback-pos-str;
-                font-weight: 300;
+                font-weight: 400;
                 vertical-alignment: center;
+                font-family: "Outfit Monospace";
             }
 
             Slider {
@@ -1172,8 +1206,9 @@ component PlaybackControls inherits Rectangle {
 
             FText {
                 text: Bridge.track-dur-str;
-                font-weight: 300;
+                font-weight: 400;
                 vertical-alignment: center;
+                font-family: "Outfit Monospace";
             }
         }
 
@@ -1226,7 +1261,7 @@ component PlaybackControls inherits Rectangle {
                 }
             }
 
-            Spacer {}
+            Spacer { }
 
             Spacer {
                 width: 200px - 60px;
@@ -1356,7 +1391,44 @@ component PlaybackControls inherits Rectangle {
     }
 }
 
+component RoundBackButton inherits Button {
+    icon: Icons.arrow-right;
+    colorize-icon: true;
+    icon-rotation: 180deg;
+    icon-size: 10px;
+    width: 36px;
+    height: 36px;
+}
+
+component PlaybackFocusScope inherits FocusScope {
+    width: 0; // Do not react on clicks
+
+    capture-key-pressed(event) => {
+        if Bridge.playback-state == UiPlaybackState.Paused || Bridge.playback-state == UiPlaybackState.Playing {
+            if event.text == Key.Space {
+                Bridge.change-playback-state(
+                    Bridge.playback-state == UiPlaybackState.Playing ? UiPlaybackState.Paused : UiPlaybackState.Playing);
+            } else if event.text == Key.UpArrow || event.text == "k" {
+                Bridge.change-volume(Math.min(Bridge.volume + 0.05, 1.0), true);
+            } else if event.text == Key.DownArrow || event.text == "j" {
+                Bridge.change-volume(Math.max(Bridge.volume - 0.05, 0.0), true);
+            } else if event.text == Key.LeftArrow || event.text == "h" {
+                Bridge.seek(Math.max(Bridge.playback-position - 10.0, 0.0), true);
+            } else if event.text == Key.RightArrow || event.text == "l" {
+                Bridge.seek(Math.min(Bridge.playback-position + 10.0, Bridge.track-duration), true);
+            } else {
+                return reject;
+            }
+
+            return accept;
+        }
+        return reject;
+    }
+}
+
 component YtDlpView inherits Rectangle {
+    PlaybackFocusScope { }
+
     ImageBackground {
         img-width: root.width;
         img-height: root.height;
@@ -1368,13 +1440,21 @@ component YtDlpView inherits Rectangle {
             spacing: 10px;
 
             HorizontalLayout {
-                LabelBox {
-                    label: Bridge.yt-dlp-url;
+                spacing: 10px;
+
+                RoundBackButton {
+                    clicked => {
+                        Bridge.app-state = UiAppState.SelectingInputType;
+                        Bridge.clear-yt-dlp-state();
+                    }
                 }
 
-                Spacer { }
-
-                DisconnectButton { }
+                FText {
+                    text: Bridge.yt-dlp-url;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    font-size: 20px;
+                }
             }
 
             if Bridge.yt-dlp-state == UiYtDlpState.HasData && Bridge.yt-dlp-sources.length == 0: FText {
@@ -1383,12 +1463,16 @@ component YtDlpView inherits Rectangle {
             }
 
             if Bridge.yt-dlp-state == UiYtDlpState.HasData || Bridge.yt-dlp-state == UiYtDlpState.HasDataButFetching: ListView {
-                for source in Bridge.yt-dlp-sources: YtDlpSourceItem {
-                    source: source;
+                for source in Bridge.yt-dlp-sources: HorizontalLayout {
+                    padding-right: 10px;
 
-                    cast-this => {
-                        Bridge.cast-yt-dlp(source.title);
-                        Bridge.yt-dlp-source = source.title;
+                    YtDlpSourceItem {
+                        source: source;
+
+                        cast-this => {
+                            Bridge.cast-yt-dlp(source.id);
+                            Bridge.current-yt-dlp-id = source.id;
+                        }
                     }
                 }
             }
@@ -1396,6 +1480,8 @@ component YtDlpView inherits Rectangle {
             if Bridge.yt-dlp-state == UiYtDlpState.Fetching || Bridge.yt-dlp-state == UiYtDlpState.HasDataButFetching: HorizontalLayout {
                 alignment: center;
                 spacing: 10px;
+
+                Spacer { }
 
                 Spinner {
                     indeterminate: true;
@@ -1405,6 +1491,8 @@ component YtDlpView inherits Rectangle {
                     vertical-alignment: center;
                     text: "Fetching...";
                 }
+
+                Spacer { }
             }
         }
 
@@ -1574,6 +1662,7 @@ component DirEntry inherits DirEntrySkeleton {
     clicked => {
         Bridge.change-dir-child(entry.id);
         Bridge.files = [];
+        Bridge.current-local-media-id = -1;
     }
 }
 
@@ -1584,7 +1673,7 @@ component FileEntry inherits Rectangle {
     border-radius: 6px;
 
     states [
-        playing when !ta.has-hover && Bridge.track-name == entry.name: {
+        playing when !ta.has-hover && Bridge.current-local-media-id == entry.id: {
             background: FCastPalette.brand-600.transparentize(92%);
         }
         hover when ta.has-hover: {
@@ -1599,12 +1688,12 @@ component FileEntry inherits Rectangle {
         mouse-cursor: pointer;
 
         clicked => {
-            if Bridge.track-name == entry.name {
+            if Bridge.current-local-media-id == entry.id {
                 Bridge.change-playback-state(UiPlaybackState.Idle);
-                Bridge.track-name = "";
+                Bridge.current-local-media-id = -1;
             } else {
                 Bridge.cast-local-media(entry.id);
-                Bridge.track-name = entry.name;
+                Bridge.current-local-media-id = entry.id;
             }
         }
     }
@@ -1643,23 +1732,21 @@ component FileEntry inherits Rectangle {
 
         Spacer { }
 
-        if ta.has-hover && Bridge.track-name != entry.name: VerticalLayout {
+        if ta.has-hover && Bridge.current-local-media-id != entry.id: VerticalLayout {
             alignment: center;
 
             Image {
                 source: Icons.play;
                 width: 14px;
-                // colorize: FCastPalette.foreground.transparentize(50%);
             }
         }
 
-        if Bridge.track-name == entry.name: VerticalLayout {
+        if Bridge.current-local-media-id == entry.id: VerticalLayout {
             alignment: center;
 
             Image {
                 source: Icons.stop;
                 width: 14px;
-                // colorize: FCastPalette.foreground.transparentize(50%);
             }
         }
     }
@@ -1683,6 +1770,8 @@ component FileEntry inherits Rectangle {
 }
 
 component LocalMediaView inherits Rectangle {
+    PlaybackFocusScope { }
+
     ImageBackground {
         img-width: root.width;
         img-height: root.height;
@@ -1694,12 +1783,13 @@ component LocalMediaView inherits Rectangle {
         HorizontalLayout {
             spacing: 10px;
 
-            Button {
-                icon: Icons.arrow-right;
-                colorize-icon: true;
-                icon-rotation: 180deg;
-                icon-size: 10px;
-                width: 36px;
+            // Button {
+            RoundBackButton {
+            //     icon: Icons.arrow-right;
+            //     colorize-icon: true;
+            //     icon-rotation: 180deg;
+            //     icon-size: 10px;
+            //     width: 36px;
 
                 clicked => {
                     Bridge.stop-cast(false);
@@ -1717,6 +1807,7 @@ component LocalMediaView inherits Rectangle {
                     Bridge.directories = [];
                     Bridge.files = [];
                     Bridge.root-dir-type = type;
+                    Bridge.current-local-media-id = -1;
                 }
             }
         }
@@ -1736,6 +1827,7 @@ component LocalMediaView inherits Rectangle {
                     clicked => {
                         Bridge.change-dir-parent();
                         Bridge.files = [];
+                        Bridge.current-local-media-id = -1;
                     }
                 }
 
@@ -2077,7 +2169,7 @@ component SettingsEntry inherits Rectangle {
             vertical-alignment: center;
         }
 
-        Spacer {}
+        Spacer { }
 
         @children
     }
@@ -2095,13 +2187,9 @@ export component MainWindow inherits Window {
     default-font-weight: 400;
 
     background: FCastPalette.background-color-primary;
-    // property <bool> is-showing-mirroring-popup: true;
     property <bool> is-showing-mirroring-popup: false;
-    // property <bool> is-showing-log-popup: true;
     property <bool> is-showing-log-popup: false;
-    // property <bool> is-showing-settings-popup: true;
     property <bool> is-showing-settings-popup: false;
-    // property <bool> is-showing-about-popup: true;
     property <bool> is-showing-about-popup: false;
 
     HorizontalLayout {
@@ -2214,7 +2302,7 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.is-reconnecting: ReconnectingView {}
+        if Bridge.is-reconnecting: ReconnectingView { }
 
         if !Bridge.is-reconnecting && (Bridge.app-state == UiAppState.Disconnected || Bridge.app-state == UiAppState.Connecting): ConnectView { }
 
@@ -2222,10 +2310,6 @@ export component MainWindow inherits Window {
             show-mirroring => {
                 is-showing-mirroring-popup = true;
             }
-
-            // show-local-media => {
-            //     is-showing-local-media-popup = true;
-            // }
 
             show-yt-dlp-view => {
                 Bridge.app-state = UiAppState.YtDlp;
@@ -2320,7 +2404,7 @@ export component MainWindow inherits Window {
                     label: Bridge.settings-file-path;
                 }
 
-                Spacer {}
+                Spacer { }
             }
 
             // TODO: Deduplicate settings entry related boilerplate etc.
@@ -2415,7 +2499,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Spacer {}
+            Spacer { }
 
             SecondaryText {
                 text: "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.";
@@ -2553,7 +2637,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Spacer {}
+            Spacer { }
         }
     }
 }
@@ -2613,7 +2697,7 @@ export component CrashWindow inherits Window {
             }
         }
 
-        log-te:= TextEdit {
+        log-te := TextEdit {
             text: log;
             read-only: true;
             enabled: false;

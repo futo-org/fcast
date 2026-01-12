@@ -10,9 +10,10 @@ use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
 use directories::{BaseDirs, UserDirs};
 use fcast_sender_sdk::{
     context::CastContext,
-    device::{self, DeviceFeature, DeviceInfo},
+    device::{self, DeviceFeature, DeviceInfo, EventSubscription},
 };
 use gst_video::prelude::*;
+use image::ImageFormat;
 #[cfg(target_os = "windows")]
 use mcore::VideoSource;
 use mcore::{
@@ -35,7 +36,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     runtime::Runtime,
-    sync::mpsc::{Sender, UnboundedSender, channel},
+    sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel},
 };
 use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
@@ -187,7 +188,6 @@ fn restart_application() -> ! {
 }
 
 type DirectoryId = i32;
-type FileId = i32;
 
 struct IdGenerator(i32);
 
@@ -206,10 +206,125 @@ impl IdGenerator {
 struct LocalMediaDataState {
     pub root: PathBuf,
     pub directories: HashMap<DirectoryId, String>,
-    pub files: HashMap<FileId, MediaFileEntry>,
+    pub files: Vec<MediaFileEntry>,
 }
 
 use mcore::preview::PreviewPipeline;
+
+enum ThumbnailDownloaderCmd {
+    Download { id: i32, url: String },
+    Quit,
+}
+
+fn img_format_from_str(mime: &str) -> Option<ImageFormat> {
+    match mime {
+        "image/png" | "image/jpeg" | "image/webp" | "image/avif" => {
+            ImageFormat::from_mime_type(mime)
+        }
+        _ => None,
+    }
+}
+
+enum ThumbnailResult {
+    Cached {
+        entry_id: i32,
+    },
+    New {
+        image: image::RgbaImage,
+    },
+}
+
+#[derive(Debug)]
+struct ThumbnailDownloader {
+    tx: UnboundedSender<ThumbnailDownloaderCmd>,
+}
+
+impl ThumbnailDownloader {
+    pub fn new<F>(on_downloaded: F) -> Self
+    where
+        F: FnMut(i32, ThumbnailResult) -> () + Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ThumbnailDownloaderCmd>();
+
+        tokio::spawn(async move {
+            Self::run_fetcher(on_downloaded, rx).await;
+        });
+
+        Self { tx }
+    }
+
+    async fn download_file(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> Result<(ImageFormat, bytes::Bytes)> {
+        let resp = client.get(url).send().await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let headers = resp.headers();
+            let Some(content_type) = headers.get(reqwest::header::CONTENT_TYPE) else {
+                bail!("Missing content type response header");
+            };
+
+            let Some(format) = img_format_from_str(content_type.to_str().unwrap_or("")) else {
+                bail!("Unsupported content type: {content_type:?}");
+            };
+
+            let body = resp.bytes().await?;
+            Ok((format, body))
+        } else {
+            bail!("Bad response status: {status}");
+        }
+    }
+
+    #[tracing::instrument(skip(on_downloaded, rx))]
+    async fn run_fetcher<F>(mut on_downloaded: F, mut rx: UnboundedReceiver<ThumbnailDownloaderCmd>)
+    where
+        F: FnMut(i32, ThumbnailResult) -> () + Send + 'static,
+    {
+        let client = reqwest::Client::new();
+        let mut cache = HashMap::<String, i32>::new();
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                ThumbnailDownloaderCmd::Download { id, url } => {
+                    if let Some(other_id) = cache.get(&url) {
+                        debug!(url, "Using cached download");
+                        on_downloaded(id, ThumbnailResult::Cached { entry_id: *other_id });
+                        continue;
+                    }
+
+                    let (format, buf) = match Self::download_file(&client, &url).await {
+                        Ok((f, b)) => (f, b),
+                        Err(err) => {
+                            error!(?err, "Failed to download thumbnail file");
+                            continue;
+                        }
+                    };
+
+                    match image::load_from_memory_with_format(&buf, format) {
+                        Ok(image) => {
+                            let image = image.to_rgba8();
+                            on_downloaded(id, ThumbnailResult::New { image });
+                            let _ = cache.insert(url, id);
+                        }
+                        Err(err) => error!(?err, "Failed to decode image"),
+                    }
+                }
+                ThumbnailDownloaderCmd::Quit => break,
+            }
+        }
+    }
+
+    pub fn queue_download(&self, id: i32, url: String) {
+        let _ = self.tx.send(ThumbnailDownloaderCmd::Download { id, url });
+    }
+}
+
+impl Drop for ThumbnailDownloader {
+    fn drop(&mut self) {
+        let _ = self.tx.send(ThumbnailDownloaderCmd::Quit);
+    }
+}
 
 #[derive(Debug)]
 enum SessionSpecificState {
@@ -229,6 +344,8 @@ enum SessionSpecificState {
     YtDlp {
         sources: Option<Vec<mcore::yt_dlp::YtDlpSource>>,
         fetcher_quit_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        thumbnail_downloader: ThumbnailDownloader,
+        current_id: usize,
     },
 }
 
@@ -617,7 +734,7 @@ impl Application {
                     *data = LocalMediaDataState {
                         root: path,
                         directories: HashMap::new(),
-                        files: HashMap::new(),
+                        files: Vec::new(),
                     };
                     let canceler = Canceler::new();
                     *listing_canceler = Some(canceler.clone());
@@ -733,12 +850,68 @@ impl Application {
                 if let Some(mut item) = sources.row_data(idx) {
                     item.preview = slint::Image::from_rgb8(slint_frame);
                     sources.set_row_data(idx, item);
-                    return;
                 }
             }
         });
 
         Ok(gst::FlowSuccess::Ok)
+    }
+
+    fn get_optimal_thumbnail(src: &mcore::yt_dlp::YtDlpSource) -> Option<String> {
+        src.thumbnails
+            .as_ref()
+            .map(|thumbs| {
+                let mut chosen = None;
+                for thumb in thumbs {
+                    if thumb.width.unwrap_or(0) >= 500 || thumb.height.unwrap_or(0) >= 500 {
+                        chosen = Some(thumb.url.clone());
+                        break;
+                    }
+                }
+                if chosen.is_some() {
+                    chosen
+                } else {
+                    thumbs.last().map(|thumb| thumb.url.clone())
+                }
+            })
+            .flatten()
+    }
+
+    fn cast_yt_dlp_source(
+        device: &Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+        src: &mcore::yt_dlp::YtDlpSource,
+    ) -> Result<()> {
+        let Some(formats) = src.formats.as_ref() else {
+            error!("Missing formats");
+            return Ok(());
+        };
+
+        let Some(format) = formats.get(0) else {
+            error!("No formats available");
+            return Ok(());
+        };
+
+        let Some(content_type) = format.content_type() else {
+            error!("No content type found for format");
+            return Ok(());
+        };
+
+        let url = format.src_url();
+        let content_type = content_type.to_owned();
+        device.load(fcast_sender_sdk::device::LoadRequest::Url {
+            content_type,
+            url,
+            resume_position: None,
+            speed: None,
+            volume: None,
+            metadata: Some(fcast_sender_sdk::device::Metadata {
+                title: src.title.clone(),
+                thumbnail_url: Self::get_optimal_thumbnail(&src),
+            }),
+            request_headers: None,
+        })?;
+
+        Ok(())
     }
 
     fn handle_yt_dlp_event(&mut self, event: mcore::YtDlpEvent) -> Result<()> {
@@ -751,7 +924,12 @@ impl Application {
 
         if let Some(session) = &mut self.session_state {
             match &mut session.specific {
-                SessionSpecificState::YtDlp { sources, .. } => match event {
+                SessionSpecificState::YtDlp {
+                    sources,
+                    thumbnail_downloader,
+                    current_id,
+                    ..
+                } => match event {
                     mcore::YtDlpEvent::SourceAvailable(new_source) => {
                         if let Some(formats) = new_source.formats.as_ref() {
                             if let Some(format) = formats.get(0) {
@@ -771,11 +949,23 @@ impl Application {
                             return Ok(());
                         }
 
-                        let source_item = UiYtDlpSource {
-                            title: get_title(&new_source).to_shared_string(),
+                        let id = match sources.as_ref() {
+                            Some(s) => s.len() as i32,
+                            None => 0,
                         };
 
+                        let title = get_title(&new_source).to_shared_string();
+
+                        if let Some(url) = Self::get_optimal_thumbnail(&new_source) {
+                            thumbnail_downloader.queue_download(id, url);
+                        }
+
                         self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            let source_item = UiYtDlpSource {
+                                id,
+                                title,
+                                thumbnail: slint::Image::default(),
+                            };
                             let bridge = ui.global::<Bridge>();
                             let sources_rc = bridge.get_yt_dlp_sources();
                             let sources = sources_rc
@@ -792,66 +982,16 @@ impl Application {
                             *sources = Some(vec![*new_source]);
                         }
                     }
-                    mcore::YtDlpEvent::Cast(title) => {
+                    mcore::YtDlpEvent::Cast(id) => {
                         if let Some(sources) = sources.as_ref() {
-                            for src in sources {
-                                if title != get_title(src) {
-                                    continue;
-                                }
+                            let Some(src) = sources.get(id as usize) else {
+                                error!(id, "No source found for id");
+                                return Ok(());
+                            };
 
-                                let Some(formats) = src.formats.as_ref() else {
-                                    error!("Missing formats");
-                                    break;
-                                };
+                            Self::cast_yt_dlp_source(&session.device, &src)?;
 
-                                let Some(format) = formats.get(0) else {
-                                    error!("No formats available");
-                                    break;
-                                };
-
-                                let Some(content_type) = format.content_type() else {
-                                    error!("No content type found for format");
-                                    break;
-                                };
-
-                                let url = format.src_url();
-                                let content_type = content_type.to_owned();
-                                session.device.load(
-                                    fcast_sender_sdk::device::LoadRequest::Url {
-                                        content_type,
-                                        url,
-                                        resume_position: None,
-                                        speed: None,
-                                        volume: None,
-                                        metadata: Some(fcast_sender_sdk::device::Metadata {
-                                            title: Some(title),
-                                            thumbnail_url: src
-                                                .thumbnails
-                                                .as_ref()
-                                                .map(|thumbs| {
-                                                    let mut chosen = None;
-                                                    for thumb in thumbs {
-                                                        if thumb.width.unwrap_or(0) >= 500
-                                                            || thumb.height.unwrap_or(0) >= 500
-                                                        {
-                                                            chosen = Some(thumb.url.clone());
-                                                            break;
-                                                        }
-                                                    }
-                                                    if chosen.is_some() {
-                                                        chosen
-                                                    } else {
-                                                        thumbs.last().map(|thumb| thumb.url.clone())
-                                                    }
-                                                })
-                                                .flatten(),
-                                        }),
-                                        request_headers: None,
-                                    },
-                                )?;
-
-                                break;
-                            }
+                            *current_id = id as usize;
                         }
                     }
                     mcore::YtDlpEvent::Finished => {
@@ -909,6 +1049,98 @@ impl Application {
             bridge.set_device_name(device_name);
             bridge.invoke_change_state(UiAppState::Connecting);
         })?;
+
+        Ok(())
+    }
+
+    fn cast_local_file(
+        device: &Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+        mut path: PathBuf,
+        file_entry: &MediaFileEntry,
+        volume: f64,
+        local_addr: &fcast_sender_sdk::IpAddr,
+        file_server: &FileServer,
+    ) -> Result<()> {
+        path.push(&file_entry.name);
+        debug!(?path, "Getting ready to cast");
+        let id = file_server.add_file(path, file_entry.mime_type);
+        let url = file_server.get_url(local_addr, &id);
+        device.load(device::LoadRequest::Url {
+            content_type: file_entry.mime_type.to_string(),
+            url,
+            resume_position: None,
+            speed: None,
+            volume: Some(volume),
+            metadata: None,
+            request_headers: None,
+        })?;
+
+        Ok(())
+    }
+
+    fn play_next_if_available(&mut self) -> Result<()> {
+        if let Some(session) = self.session_state.as_mut() {
+            match &mut session.specific {
+                SessionSpecificState::LocalMedia {
+                    current_id,
+                    file_server,
+                    data,
+                    ..
+                } => {
+                    if data.files.is_empty() {
+                        return Ok(());
+                    }
+
+                    let next_id = (*current_id as usize + 1) % data.files.len();
+
+                    if let Some(file) = data.files.get(next_id) {
+                        let Some(local_addr) = session.local_address.as_ref() else {
+                            error!("Missing local address");
+                            return Ok(());
+                        };
+
+                        Self::cast_local_file(
+                            &session.device,
+                            data.root.clone(),
+                            file,
+                            session.volume,
+                            local_addr,
+                            &file_server,
+                        )?;
+
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>().set_current_local_media_id(next_id as i32);
+                        })?;
+
+                        *current_id = next_id as u32;
+                    }
+                }
+                SessionSpecificState::YtDlp {
+                    sources,
+                    current_id,
+                    ..
+                } => {
+                    if let Some(sources) = sources {
+                        if sources.is_empty() {
+                            return Ok(());
+                        }
+
+                        let next_id = (*current_id + 1) % sources.len();
+
+                        if let Some(src) = sources.get(next_id) {
+                            Self::cast_yt_dlp_source(&session.device, &src)?;
+
+                            self.ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.global::<Bridge>().set_current_yt_dlp_id(next_id as i32);
+                            })?;
+
+                            *current_id = next_id;
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1130,6 +1362,14 @@ impl Application {
                             debug!(is_mirroring_supported, "Device connected");
                             let remote_addr: std::net::IpAddr = (&used_remote_addr).into();
                             let remote_addr_str = remote_addr.to_string().to_shared_string();
+                            if session
+                                .device
+                                .supports_feature(DeviceFeature::MediaEventSubscription)
+                            {
+                                let _ = session
+                                    .device
+                                    .subscribe_event(EventSubscription::MediaItemEnd);
+                            }
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 bridge.set_is_mirroring_supported(is_mirroring_supported);
@@ -1192,6 +1432,13 @@ impl Application {
                     }
                 }
                 mcore::DeviceEvent::PlaybackError(_) => (),
+                mcore::DeviceEvent::Media(media_event) => match media_event.type_ {
+                    device::MediaItemEventType::End => {
+                        // TODO: look for next item to play if any
+                        self.play_next_if_available()?;
+                    }
+                    _ => (),
+                },
                 _ => self.update_device_state(event)?,
             },
             Event::FromDevice { id, .. } => {
@@ -1217,7 +1464,8 @@ impl Application {
                         data: LocalMediaDataState {
                             root: PathBuf::new(),
                             directories: HashMap::new(),
-                            files: HashMap::new(),
+                            // files: HashMap::new(),
+                            files: Vec::new(),
                         },
                         listing_canceler: None,
                     };
@@ -1372,12 +1620,10 @@ impl Application {
                                 return Ok(ShouldQuit::No);
                             };
 
-                            let mut id_generator = IdGenerator::new();
                             let mut ui_entries: Vec<UiMediaFileEntry> = Vec::new();
-                            for entry in entries {
-                                let id = id_generator.next();
+                            for (idx, entry) in entries.iter().enumerate() {
                                 ui_entries.push(UiMediaFileEntry {
-                                    id,
+                                    id: idx as i32,
                                     name: entry.name.to_shared_string(),
                                     r#type: if entry.mime_type.starts_with("video") {
                                         UiMediaFileType::Video
@@ -1387,8 +1633,8 @@ impl Application {
                                         UiMediaFileType::Image
                                     },
                                 });
-                                let _ = data.files.insert(id, entry);
                             }
+                            data.files = entries;
 
                             self.ui_weak.upgrade_in_event_loop(|ui| {
                                 ui.global::<Bridge>()
@@ -1429,28 +1675,28 @@ impl Application {
                 let res = if let Some(session) = self.session_state.as_mut() {
                     match &mut session.specific {
                         SessionSpecificState::LocalMedia {
-                            data, file_server, ..
+                            data, file_server, current_id, ..
                         } => {
-                            if let Some(file_entry) = data.files.get(&file_id) {
-                                let mut path = data.root.clone();
-                                path.push(&file_entry.name);
-                                debug!(?path, "Getting ready to cast");
+                            if let Some(file_entry) = data.files.get(file_id as usize) {
                                 let Some(local_addr) = session.local_address.as_ref() else {
                                     error!("Missing local address");
                                     return Ok(ShouldQuit::No);
                                 };
 
-                                let id = file_server.add_file(path, file_entry.mime_type);
-                                let url = file_server.get_url(local_addr, &id);
-                                session.device.load(device::LoadRequest::Url {
-                                    content_type: file_entry.mime_type.to_string(),
-                                    url,
-                                    resume_position: None,
-                                    speed: None,
-                                    volume: Some(session.volume),
-                                    metadata: None,
-                                    request_headers: None,
-                                })
+                                match Self::cast_local_file(
+                                    &session.device,
+                                    data.root.clone(),
+                                    file_entry,
+                                    session.volume,
+                                    local_addr,
+                                    &file_server,
+                                ) {
+                                    Ok(_) => {
+                                        *current_id = file_id as u32;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err),
+                                }
                             } else {
                                 warn!(file_id, "No file found");
                                 return Ok(ShouldQuit::No);
@@ -1579,9 +1825,43 @@ impl Application {
                     };
                 });
                 if let Some(session) = &mut self.session_state {
+                    let ui_weak = self.ui_weak.clone();
                     session.specific = SessionSpecificState::YtDlp {
                         sources: None,
                         fetcher_quit_tx: Some(quit_tx),
+                        thumbnail_downloader: ThumbnailDownloader::new(move |id, thumbnail| {
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                let bridge = ui.global::<Bridge>();
+                                let sources_rc = bridge.get_yt_dlp_sources();
+                                let sources = sources_rc
+                                    .as_any()
+                                    .downcast_ref::<slint::VecModel<UiYtDlpSource>>()
+                                    .expect("The model is always a vec");
+
+                                let image = match thumbnail {
+                                    ThumbnailResult::Cached { entry_id } => {
+                                        let Some(entry) = sources.row_data(entry_id as usize) else {
+                                            return;
+                                        };
+                                        entry.thumbnail.clone()
+                                    }
+                                    ThumbnailResult::New { image } => {
+                                        slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                            image.as_raw(),
+                                            image.width(),
+                                            image.height(),
+                                        ))
+                                    }
+                                };
+
+
+                                if let Some(mut src) = sources.row_data(id as usize) {
+                                    src.thumbnail = image;
+                                    sources.set_row_data(id as usize, src);
+                                }
+                            });
+                        }),
+                        current_id: 0,
                     };
                 }
             }
@@ -1925,7 +2205,7 @@ impl Application {
             .await?;
 
         tokio::spawn({
-            // let ui_weak = self.ui_weak.clone();
+            let ui_weak = self.ui_weak.clone();
             async move {
                 let yt_dlp_available = match mcore::yt_dlp::is_yt_dlp_available().await {
                     Ok(p) => p,
@@ -1937,11 +2217,10 @@ impl Application {
 
                 debug!(?yt_dlp_available, "yt-dlp status");
 
-                // TODO: include this when ready
-                // let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                //     ui.global::<Bridge>()
-                //         .set_is_yt_dlp_available(yt_dlp_available);
-                // });
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.global::<Bridge>()
+                        .set_is_yt_dlp_available(yt_dlp_available);
+                });
             }
         });
 
@@ -2146,6 +2425,14 @@ fn main() -> Result<()> {
         .with(vec_layer)
         .init();
 
+    #[cfg(target_os = "linux")]
+    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+        error!(
+            ?err,
+            "Failed to register ring as rustls default crypto provider"
+        );
+    }
+
     let runtime = Runtime::new()?;
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
@@ -2347,9 +2634,9 @@ fn main() -> Result<()> {
 
     bridge.on_cast_yt_dlp({
         let event_tx = event_tx.clone();
-        move |title: slint::SharedString| {
+        move |id: i32| {
             event_tx
-                .send(Event::YtDlp(mcore::YtDlpEvent::Cast(title.to_string())))
+                .send(Event::YtDlp(mcore::YtDlpEvent::Cast(id)))
                 .unwrap();
         }
     });
@@ -2415,6 +2702,10 @@ fn main() -> Result<()> {
         move || {
             event_tx.send(Event::RestartApplication).unwrap();
         }
+    });
+
+    bridge.on_is_valid_url(|url| {
+        url::Url::parse(&url).is_ok()
     });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
