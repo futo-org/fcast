@@ -175,8 +175,8 @@ struct SharedReceiverState {
     pub playback_state: PlaybackState,
     pub source: Option<Source>,
     pub is_running: bool,
-    pub remote_addr: std::net::IpAddr,
-    pub stream_local_addr: std::net::IpAddr,
+    pub remote_sockaddr: std::net::SocketAddr,
+    pub stream_local_sockaddr: std::net::SocketAddr,
     pub media_item: Option<MediaItem>,
 }
 
@@ -512,8 +512,8 @@ impl InnerDevice {
                                     if !shared_state.is_running {
                                         self.event_handler.connection_state_changed(
                                             DeviceConnectionState::Connected {
-                                                used_remote_addr: shared_state.remote_addr.into(),
-                                                local_addr: shared_state.stream_local_addr.into(),
+                                                used_remote_addr: shared_state.remote_sockaddr.into(),
+                                                local_addr: shared_state.stream_local_sockaddr.into(),
                                             },
                                         );
                                     }
@@ -663,8 +663,9 @@ impl InnerDevice {
             return Ok(());
         };
 
-        let remote_addr = stream.peer_addr()?.ip();
-        let stream_local_addr = stream.local_addr()?.ip();
+        let remote_sockaddr = stream.peer_addr()?;
+        let stream_local_sockaddr = stream.local_addr()?;
+        let remote_addr = remote_sockaddr.ip();
 
         let config = ClientConfig::builder()
             .dangerous()
@@ -736,8 +737,8 @@ impl InnerDevice {
             playback_state: PlaybackState::Idle,
             source: None,
             is_running: false,
-            remote_addr,
-            stream_local_addr,
+            remote_sockaddr,
+            stream_local_sockaddr,
             media_item: None,
         };
 
