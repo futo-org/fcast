@@ -424,6 +424,24 @@ impl From<std::net::IpAddr> for IpAddr {
     }
 }
 
+#[cfg(any_protocol)]
+impl From<std::net::SocketAddr> for IpAddr {
+    fn from(addr: std::net::SocketAddr) -> Self {
+        match addr {
+            std::net::SocketAddr::V4(_) => addr.ip().into(),
+            std::net::SocketAddr::V6(v6) => {
+                let this_scope_id = v6.scope_id();
+                let mut ip: Self = addr.ip().into();
+                match &mut ip {
+                    IpAddr::V6 { scope_id, .. } => *scope_id = this_scope_id,
+                    _ => (),
+                }
+                ip
+            }
+        }
+    }
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[cfg(all(
     any(target_os = "android", target_os = "ios", feature = "_uniffi_csharp"),

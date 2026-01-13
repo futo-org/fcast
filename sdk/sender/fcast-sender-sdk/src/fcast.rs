@@ -306,8 +306,8 @@ impl InnerDevice {
 
         debug!("Successfully connected");
 
-        let used_remote_addr: IpAddr = stream.peer_addr()?.ip().into();
-        let local_addr: IpAddr = stream.local_addr()?.ip().into();
+        let used_remote_addr: IpAddr = stream.peer_addr()?.into();
+        let local_addr: IpAddr = stream.local_addr()?.into();
         let mut has_emitted_connected_event = false;
 
         tokio::spawn(async move {
