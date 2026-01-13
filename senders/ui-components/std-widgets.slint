@@ -15,7 +15,8 @@ export { Spinner } from "spinner.slint";
 export { Switch } from "switch.slint";
 export { TextEdit } from "textedit.slint";
 
-import { Palette } from "std-widgets-impl.slint";
+import { Palette, Button } from "std-widgets-impl.slint";
+import { FCastPalette } from "styling.slint";
 
 export component FText inherits Text {
     color: Palette.foreground;
@@ -66,4 +67,137 @@ export global Icons {
     out property <image> exclamation-mark: @image-url("icons/exclamation-mark.png");
     out property <image> music-note: @image-url("icons/music-note.svg");
     out property <image> playlist-next: @image-url("icons/playlist-next.svg");
+    out property <image> bars: @image-url("icons/bars.svg");
+}
+
+export component Spacer inherits Rectangle { }
+
+component Circle inherits Rectangle {
+    height: self.width;
+    border-width: 1.22px;
+    border-radius: self.height;
+    border-color: red;
+}
+
+component LabelText inherits Text {
+    color: Palette.foreground;
+    font-weight: 500;
+    font-size: 20px;
+}
+
+export component SecondaryText inherits Text {
+    color: FCastPalette.neutral-600;
+    font-weight: 300;
+    font-size: 12px;
+}
+
+export component NoReceiverFound {
+    HorizontalLayout {
+        Spacer { }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+
+            Circle {
+                width: 25%;
+                border-color: FCastPalette.border-secondary.transparentize(94%);
+
+                Circle {
+                    width: 75%;
+                    border-color: FCastPalette.border-secondary.transparentize(90%);
+
+                    Circle {
+                        width: 70%;
+                        border-color: FCastPalette.border-secondary.transparentize(85%);
+
+                        Circle {
+                            width: 60%;
+                            border-color: FCastPalette.border-secondary.transparentize(80%);
+                        }
+                    }
+                }
+            }
+
+            LabelText {
+                horizontal-alignment: center;
+                text: "No receivers found";
+            }
+
+            SecondaryText {
+                text: "FCast requires a Receiver App running on your target device before it appears here.";
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        Spacer { }
+    }
+}
+
+export component RoundBackButton inherits Button {
+    icon: Icons.arrow-right;
+    colorize-icon: true;
+    icon-rotation: 180deg;
+    icon-size: 10px;
+    width: 36px;
+    height: 36px;
+}
+
+export component LicenseAndCopyrightNotice inherits VerticalLayout {
+    spacing: 10px;
+
+    SecondaryText {
+        text: "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.";
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        max-width: 400px;
+    }
+
+    SecondaryText {
+        text: "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.";
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        max-width: 400px;
+    }
+
+    SecondaryText {
+        horizontal-alignment: center;
+        text: "Copyright © 2026 FUTO";
+    }
+}
+
+export component HyperLink inherits Rectangle {
+    in property <string> url;
+    in property <string> text;
+
+    callback clicked(url: string);
+
+    TouchArea {
+        mouse-cursor: pointer;
+
+        clicked => clicked(url);
+    }
+
+    HorizontalLayout {
+        spacing: 5.5px;
+
+        SecondaryText {
+            vertical-alignment: center;
+            color: FCastPalette.brand-600;
+            text: text;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            Image {
+                source: Icons.open-external;
+                width: 9px;
+                height: 9px;
+            }
+        }
+
+        Spacer { }
+    }
 }

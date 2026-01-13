@@ -2,8 +2,69 @@ package org.fcast.android.sender;
 
 import static android.opengl.EGLExt.EGL_OPENGL_ES3_BIT_KHR;
 import static android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES;
-import static android.opengl.GLES20.*;
-import static android.opengl.GLES30.*;
+import static android.opengl.GLES20.GL_ARRAY_BUFFER;
+import static android.opengl.GLES20.GL_CLAMP_TO_EDGE;
+import static android.opengl.GLES20.GL_COLOR_ATTACHMENT0;
+import static android.opengl.GLES20.GL_COMPILE_STATUS;
+import static android.opengl.GLES20.GL_FLOAT;
+import static android.opengl.GLES20.GL_FRAGMENT_SHADER;
+import static android.opengl.GLES20.GL_FRAMEBUFFER;
+import static android.opengl.GLES20.GL_FRAMEBUFFER_COMPLETE;
+import static android.opengl.GLES20.GL_LINEAR;
+import static android.opengl.GLES20.GL_LINK_STATUS;
+import static android.opengl.GLES20.GL_STATIC_DRAW;
+import static android.opengl.GLES20.GL_TEXTURE0;
+import static android.opengl.GLES20.GL_TEXTURE_2D;
+import static android.opengl.GLES20.GL_TEXTURE_MAG_FILTER;
+import static android.opengl.GLES20.GL_TEXTURE_MIN_FILTER;
+import static android.opengl.GLES20.GL_TEXTURE_WRAP_S;
+import static android.opengl.GLES20.GL_TEXTURE_WRAP_T;
+import static android.opengl.GLES20.GL_TRIANGLE_STRIP;
+import static android.opengl.GLES20.GL_TRUE;
+import static android.opengl.GLES20.GL_UNSIGNED_BYTE;
+import static android.opengl.GLES20.GL_VERTEX_SHADER;
+import static android.opengl.GLES20.glActiveTexture;
+import static android.opengl.GLES20.glAttachShader;
+import static android.opengl.GLES20.glBindBuffer;
+import static android.opengl.GLES20.glBindFramebuffer;
+import static android.opengl.GLES20.glBindTexture;
+import static android.opengl.GLES20.glBufferData;
+import static android.opengl.GLES20.glCheckFramebufferStatus;
+import static android.opengl.GLES20.glCompileShader;
+import static android.opengl.GLES20.glCreateProgram;
+import static android.opengl.GLES20.glCreateShader;
+import static android.opengl.GLES20.glDeleteFramebuffers;
+import static android.opengl.GLES20.glDeleteProgram;
+import static android.opengl.GLES20.glDeleteShader;
+import static android.opengl.GLES20.glDeleteTextures;
+import static android.opengl.GLES20.glDisableVertexAttribArray;
+import static android.opengl.GLES20.glDrawArrays;
+import static android.opengl.GLES20.glEnableVertexAttribArray;
+import static android.opengl.GLES20.glFinish;
+import static android.opengl.GLES20.glFramebufferTexture2D;
+import static android.opengl.GLES20.glGenBuffers;
+import static android.opengl.GLES20.glGenFramebuffers;
+import static android.opengl.GLES20.glGenTextures;
+import static android.opengl.GLES20.glGetAttribLocation;
+import static android.opengl.GLES20.glGetProgramInfoLog;
+import static android.opengl.GLES20.glGetProgramiv;
+import static android.opengl.GLES20.glGetShaderInfoLog;
+import static android.opengl.GLES20.glGetShaderiv;
+import static android.opengl.GLES20.glGetUniformLocation;
+import static android.opengl.GLES20.glLinkProgram;
+import static android.opengl.GLES20.glShaderSource;
+import static android.opengl.GLES20.glTexImage2D;
+import static android.opengl.GLES20.glTexParameteri;
+import static android.opengl.GLES20.glUniform1i;
+import static android.opengl.GLES20.glUniform2f;
+import static android.opengl.GLES20.glUniformMatrix4fv;
+import static android.opengl.GLES20.glUseProgram;
+import static android.opengl.GLES20.glVertexAttribPointer;
+import static android.opengl.GLES20.glViewport;
+import static android.opengl.GLES30.GL_COLOR_ATTACHMENT1;
+import static android.opengl.GLES30.GL_R8;
+import static android.opengl.GLES30.GL_RED;
+import static android.opengl.GLES30.glDrawBuffers;
 
 import android.app.Activity;
 import android.app.NativeActivity;
@@ -11,7 +72,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.res.*;
+import android.content.res.Configuration;
 import android.graphics.SurfaceTexture;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -24,12 +85,17 @@ import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLSurface;
-import android.os.*;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.DisplayMetrics;
 import android.util.Log;
-import android.view.*;
+import android.view.Display;
+import android.view.Surface;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.journeyapps.barcodescanner.ScanOptions;
@@ -41,11 +107,13 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.*;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 class FCastDiscoveryListener implements NsdManager.DiscoveryListener {
@@ -59,7 +127,11 @@ class FCastDiscoveryListener implements NsdManager.DiscoveryListener {
 
     private static ByteBuffer addrConvert(InetAddress addr) {
         byte[] addrB = addr.getAddress();
-        ByteBuffer buffer = ByteBuffer.allocateDirect(addrB.length);
+        int bufLen = addrB.length;
+        if (addr.getClass() == Inet6Address.class) {
+            bufLen += 4;
+        }
+        ByteBuffer buffer = ByteBuffer.allocateDirect(bufLen);
         buffer.put(addrB);
 
         if (addr.getClass() == Inet6Address.class) {
@@ -172,9 +244,8 @@ class Dimensions {
         this.height = height;
     }
 
-    // TODO: should probably make one rust function shared between all
     public Dimensions scale(Dimensions maxDims) {
-        if (height <= maxDims.width && height <= maxDims.height) {
+        if (width <= maxDims.width && height <= maxDims.height) {
             return new Dimensions(width, height);
         }
 
@@ -187,9 +258,9 @@ class Dimensions {
             maxDims.width = tmp;
         }
 
-        float aspect_ratio = Math.min((float)maxDims.width / (float)x, (float)maxDims.height / (float)y);
-        int scaledWidth = (int)((float)x * aspect_ratio);
-        int scaledHeight = (int)((float)y * aspect_ratio);
+        float aspect_ratio = Math.min((float) maxDims.width / (float) x, (float) maxDims.height / (float) y);
+        int scaledWidth = (int) ((float) x * aspect_ratio);
+        int scaledHeight = (int) ((float) y * aspect_ratio);
 
         // NOTE: make the dims divisible by 4 to make subsampling easier
         int uvWidth = 4 * (scaledWidth / 2 / 4);
@@ -205,12 +276,25 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     private static final int REQUEST_CODE = 1;
     private static final int QR_SCAN_REQUEST_CODE = 2;
     private static final String TAG = "MainActivity";
-
-    static {
-        System.loadLibrary("gstreamer_android");
-        System.loadLibrary("fcastsender");
-    }
-
+    private final ReentrantLock captureLock = new ReentrantLock();
+    private final CaptureBroadcastReceiver receiver = new CaptureBroadcastReceiver();
+    private final float[] quad = { //
+            -1f, -1f, 0f, 1f, //
+            1f, -1f, 1f, 1f,  //
+            -1f, 1f, 0f, 0f,  //
+            1f, 1f, 1f, 0f,   //
+    };
+    Program yProg = null;
+    MegaProgram megaProg = null;
+    Framebuffer yFramebuffer = null;
+    Megabuffer megabuffer = null;
+    int vboId;
+    Dimensions srcDims = null;
+    Dimensions downscaledDims = null;
+    Dimensions uvDims = null;
+    AtomicBoolean shouldCapture = new AtomicBoolean(false);
+    int oesTexId;
+    Instant lastFrameSent = Instant.EPOCH;
     private ProjectionCallback projectionCallback;
     private MediaProjectionManager mediaProjectionManager;
     private MediaProjection mediaProjection;
@@ -220,19 +304,25 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
     private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
     private Surface surface;
-    private HandlerThread glThread;
     private Handler glHandler;
     private DisplayManager displayManager;
-    private final ReentrantLock captureLock = new ReentrantLock();
     private int userMaxWidth = 1920;
     private int userMaxHeight = 1080;
     private int userMaxFps = 30;
+    private long nativeEglCtx = 0;
+
+    static {
+        System.loadLibrary("gstreamer_android");
+        System.loadLibrary("fcastsender");
+    }
 
     @Override
-    public void onDisplayAdded(int displayId) { }
+    public void onDisplayAdded(int displayId) {
+    }
 
     @Override
-    public void onDisplayRemoved(int displayId) { }
+    public void onDisplayRemoved(int displayId) {
+    }
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
@@ -241,7 +331,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
     @Override
     public void onDisplayChanged(int displayId) {
-        if (srcDims == null || this.getWindowManager().getDefaultDisplay().getDisplayId() != displayId) {
+        if (srcDims == null || Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE || this.getWindowManager().getDefaultDisplay().getDisplayId() != displayId) {
             return;
         }
 
@@ -269,21 +359,6 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
         }
     }
 
-    public class CaptureBroadcastReceiver extends BroadcastReceiver {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            Log.d(TAG, "Broadcast event intent=" + intent);
-
-            if (ACTION_MEDIA_PROJECTION_STARTED.equals(intent.getAction())) {
-                int resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED);
-                Intent data = intent.getParcelableExtra("data");
-                initializeCapture(resultCode, data);
-            }
-        }
-    }
-
-    private final CaptureBroadcastReceiver receiver = new CaptureBroadcastReceiver();
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -300,7 +375,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
         projectionCallback = new ProjectionCallback();
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
-        glThread = new HandlerThread("OpenGLThread");
+        HandlerThread glThread = new HandlerThread("OpenGLThread");
         glThread.start();
         glHandler = new Handler(glThread.getLooper());
 
@@ -308,218 +383,44 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
         filter.addCategory(Intent.CATEGORY_DEFAULT);
         LocalBroadcastManager.getInstance(this).registerReceiver(receiver, filter);
 
-        displayManager = (DisplayManager)getSystemService(Context.DISPLAY_SERVICE);
+        displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
         displayManager.registerDisplayListener(this, new Handler(getMainLooper()));
     }
 
-    private static final String vertexShader = """
-            #extension GL_OES_EGL_image_external : require
-            attribute vec4 aPosition;
-            attribute vec4 aTexCoord;
-            uniform mat4 uTexMatrix;
+    private void renderToMegaFbWithMegaProg(int oesTexId, Megabuffer fb, MegaProgram prog, float[] texMatrix) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fb.fboId);
+        glDrawBuffers(2, IntBuffer.wrap(new int[]{GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1}));
 
-            varying vec2 vTexCoord;
+        // NOTE: div by two here
+        glViewport(0, 0, fb.dims.width / 2, fb.dims.height / 2);
 
-            void main() {
-                gl_Position = aPosition;
-                vTexCoord = (uTexMatrix * aTexCoord).xy;
-            }""";
-    private static final String fragShaderHeader = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
+        glUseProgram(prog.program);
 
-            varying vec2 vTexCoord;
-            uniform samplerExternalOES sTexture;
-            """;
-    // Full range BT.709
-    // Coefficients from https://en.wikipedia.org/wiki/YCbCr#ITU-R_BT.709_conversion
-    private static final String fragmentShaderY = fragShaderHeader + """
-            void main() {
-                vec3 rgb = texture2D(sTexture, vTexCoord).rgb;
-                float y = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+        glBindBuffer(GL_ARRAY_BUFFER, vboId);
 
-                gl_FragColor = vec4(y, 0.0, 0.0, 0.0);
-            }""";
-    // Inline 4:2:0 subsampling function where the sample is the average of all texels in the block
-    private static final String subsampledRgb = """
-                vec2 step = 1.0 / srcSize;
-                vec3 rgbQ1 = texture2D(sTexture, vTexCoord).rgb;
-                vec3 rgbQ2 = texture2D(sTexture, vTexCoord + vec2(step.x, 0.0)).rgb;
-                vec3 rgbQ3 = texture2D(sTexture, vTexCoord + vec2(0.0, step.y)).rgb;
-                vec3 rgbQ4 = texture2D(sTexture, vTexCoord + vec2(step.x, step.y)).rgb;
+        glEnableVertexAttribArray(prog.position);
+        glVertexAttribPointer(prog.position, 2, GL_FLOAT, false, 16, 0);
 
-                // Compute average
-                vec3 rgb = (rgbQ1 + rgbQ2 + rgbQ3 + rgbQ4) * 0.25;
-            """;
-    private static final String fragmentShaderU = fragShaderHeader + """
-            uniform vec2 srcSize;
+        glEnableVertexAttribArray(prog.texCoord);
+        glVertexAttribPointer(prog.texCoord, 2, GL_FLOAT, false, 16, 8);
 
-            void main() {""" + subsampledRgb + """
-                // Add 0.5 to change the range from `-0.5 - 0.5` to `0 - 1`
-                float u = -0.1146 * rgb.r - 0.3854 * rgb.g + 0.5 * rgb.b + 0.5;
-                gl_FragColor = vec4(u, 0.0, 0.0, 0.0);
-            }""";
-    private static final String fragmentShaderV = fragShaderHeader + """
-            uniform vec2 srcSize;
+        glUniformMatrix4fv(prog.texMatrix, 1, false, texMatrix, 0);
 
-            void main() {""" + subsampledRgb + """
-                float v = 0.5 * rgb.r - 0.4542 * rgb.g - 0.0458 * rgb.b + 0.5;
-                gl_FragColor = vec4(v, 0.0, 0.0, 0.0);
-            }""";
-    Program yProg = null;
-    Program uProg = null;
-    Program vProg = null;
-    Framebuffer yFramebuffer = null;
-    Framebuffer uFramebuffer = null;
-    Framebuffer vFramebuffer = null;
-    private final float[] quad = { //
-            -1f, -1f, 0f, 1f, //
-            1f, -1f, 1f, 1f,  //
-            -1f, 1f, 0f, 0f,  //
-            1f, 1f, 1f, 0f,   //
-    };
-    int vboId;
-    Dimensions srcDims = null;
-    Dimensions downscaledDims = null;
-    Dimensions uvDims = null;
-    AtomicBoolean shouldCapture = new AtomicBoolean(false);
-    int oesTexId;
-    Instant lastFrameSent = Instant.EPOCH;
+        glUniform2f(prog.srcSize, (float) srcDims.width, (float) srcDims.height);
 
-    private int createOesTexture() {
-        int[] tex = new int[1];
-        glGenTextures(1, tex, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, oesTexId);
+        glUniform1i(prog.textureUniform, 0);
 
-        glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex[0]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glDisableVertexAttribArray(prog.position);
+        glDisableVertexAttribArray(prog.texCoord);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
 
         glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
 
-        return tex[0];
-    }
-
-    static class Program {
-        public int program;
-        public int position;
-        public int texCoord;
-        public int texMatrix;
-        public int textureUniform;
-        // Only present for chroma shaders
-        public int srcSize = 0;
-
-        private int loadShader(int shaderType, String source) {
-            int shader = glCreateShader(shaderType);
-            if (shader != 0) {
-                glShaderSource(shader, source);
-                glCompileShader(shader);
-
-                int[] compiled = new int[1];
-                glGetShaderiv(shader, GL_COMPILE_STATUS, compiled, 0);
-                if (compiled[0] == 0) {
-                    Log.e(TAG, "Could not compile shader " + shaderType + ": " + glGetShaderInfoLog(shader));
-                    glDeleteShader(shader);
-                    shader = 0;
-                }
-            }
-            return shader;
-        }
-
-        private int createProgram(String fragmentSource) {
-            int vert = loadShader(GL_VERTEX_SHADER, vertexShader);
-            if (vert == 0) {
-                return 0;
-            }
-
-            int frag = loadShader(GL_FRAGMENT_SHADER, fragmentSource);
-            if (frag == 0) {
-                glDeleteShader(vert);
-                return 0;
-            }
-
-            int program = glCreateProgram();
-            if (program != 0) {
-                glAttachShader(program, vert);
-                glAttachShader(program, frag);
-                glLinkProgram(program);
-
-                int[] linkStatus = new int[1];
-                glGetProgramiv(program, GL_LINK_STATUS, linkStatus, 0);
-                if (linkStatus[0] != GL_TRUE) {
-                    Log.e(TAG, "Could not link program: " + glGetProgramInfoLog(program));
-                    glDeleteProgram(program);
-                    program = 0;
-                }
-            }
-
-            glDeleteShader(vert);
-            glDeleteShader(frag);
-
-            return program;
-        }
-
-        // Must be called from a thread with a valid gl context
-        Program(String frag, boolean isChroma) {
-            program = createProgram(frag);
-            position = glGetAttribLocation(program, "aPosition");
-            texCoord = glGetAttribLocation(program, "aTexCoord");
-            texMatrix = glGetUniformLocation(program, "uTexMatrix");
-            textureUniform = glGetUniformLocation(program, "sTexture");
-            if (isChroma) {
-                srcSize = glGetUniformLocation(program, "srcSize");
-            }
-        }
-    }
-
-    static class Framebuffer {
-        int fboId;
-        int texId;
-        Dimensions dims;
-        ByteBuffer buf = ByteBuffer.allocateDirect(1);
-
-        Framebuffer(Dimensions dims) throws RuntimeException {
-            this.dims = dims;
-
-            int[] fbos = new int[1];
-            int[] texs = new int[1];
-
-            glGenFramebuffers(1, fbos, 0);
-            glGenTextures(1, texs, 0);
-            fboId = fbos[0];
-            texId = texs[0];
-
-            glBindTexture(GL_TEXTURE_2D, texId);
-
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, dims.width, dims.height, 0, GL_RED, GL_UNSIGNED_BYTE, null);
-
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-            glBindFramebuffer(GL_FRAMEBUFFER, fboId);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texId, 0);
-
-            int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-            if (status != GL_FRAMEBUFFER_COMPLETE) {
-                throw new RuntimeException("FBO setup failed: " + status);
-            }
-
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        }
-
-        private void readPixels() {
-            glBindFramebuffer(GL_FRAMEBUFFER, fboId);
-            if (buf.capacity() < dims.width * dims.height) {
-                buf = ByteBuffer.allocateDirect(dims.width * dims.height);
-            }
-            buf.position(0);
-            glReadPixels(0, 0, dims.width, dims.height, GL_RED, GL_UNSIGNED_BYTE, buf);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     private void renderToFbWithProg(int oesTexId, Framebuffer fb, Program prog, float[] texMatrix) {
@@ -538,10 +439,6 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
         glUniformMatrix4fv(prog.texMatrix, 1, false, texMatrix, 0);
 
-        if (prog.srcSize != 0) {
-            glUniform2f(prog.srcSize, (float)srcDims.width, (float)srcDims.height);
-        }
-
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_EXTERNAL_OES, oesTexId);
         glUniform1i(prog.textureUniform, 0);
@@ -558,10 +455,6 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
     }
 
     private void onFrameAvailable(SurfaceTexture surfaceTexture) throws RuntimeException {
-        if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
-            throw new RuntimeException("EGL make current failed: " + EGL14.eglGetError());
-        }
-
         surfaceTexture.updateTexImage();
 
         Instant now = Instant.now();
@@ -569,26 +462,19 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
         if (Duration.between(lastFrameSent, now).compareTo(Duration.ofMillis(1000 / userMaxFps)) < 0) {
             return;
         }
+        lastFrameSent = now;
 
         float[] texMatrix = new float[16];
         surfaceTexture.getTransformMatrix(texMatrix);
 
         renderToFbWithProg(oesTexId, yFramebuffer, yProg, texMatrix);
-        renderToFbWithProg(oesTexId, uFramebuffer, uProg, texMatrix);
-        renderToFbWithProg(oesTexId, vFramebuffer, vProg, texMatrix);
+        renderToMegaFbWithMegaProg(oesTexId, megabuffer, megaProg, texMatrix);
 
-        yFramebuffer.readPixels();
-        uFramebuffer.readPixels();
-        vFramebuffer.readPixels();
+        glFinish();
 
-        EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
-
-        nativeProcessFrame(downscaledDims.width, downscaledDims.height, yFramebuffer.buf, uFramebuffer.buf, vFramebuffer.buf);
-
-        lastFrameSent = now;
+        nativeProcessFrame(nativeEglCtx, downscaledDims.width, downscaledDims.height, userMaxFps, yFramebuffer.fboId, megabuffer.fboId);
     }
 
-    // TODO: handle errors
     private void setupGles(Dimensions maxDims, Dimensions suggestedDims) {
         captureLock.lock();
 
@@ -657,26 +543,26 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
             // TODO: return
         }
 
-        oesTexId = createOesTexture();
-
         yFramebuffer = new Framebuffer(downscaledDims);
-        uFramebuffer = new Framebuffer(uvDims);
-        vFramebuffer = new Framebuffer(uvDims);
+        megabuffer = new Megabuffer(downscaledDims);
 
-        yProg = new Program(fragmentShaderY, false);
-        uProg = new Program(fragmentShaderU, true);
-        vProg = new Program(fragmentShaderV, true);
+        yProg = new Program(nativeGetVertShader(), nativeGetYFragShader());
+        megaProg = new MegaProgram(nativeGetVertShader(), nativeGetUVFragShader());
 
         int[] vbos = new int[1];
         glGenBuffers(1, vbos, 0);
         vboId = vbos[0];
 
         glBindBuffer(GL_ARRAY_BUFFER, vboId);
-        FloatBuffer vertexBuffer = ByteBuffer.allocateDirect(quad.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        int float_size = 4;
+        FloatBuffer vertexBuffer = ByteBuffer.allocateDirect(quad.length * float_size).order(ByteOrder.nativeOrder()).asFloatBuffer();
         vertexBuffer.put(quad);
         vertexBuffer.position(0);
-        glBufferData(GL_ARRAY_BUFFER, quad.length * 4, vertexBuffer, GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, quad.length * float_size, vertexBuffer, GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        nativeEglCtx = nativeSetupEgl();
+        oesTexId = eglGetOesTexId(nativeEglCtx);
 
         surfaceTexture = new SurfaceTexture(oesTexId);
         surfaceTexture.setDefaultBufferSize(srcDims.width, srcDims.height);
@@ -704,7 +590,7 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
             virtualDisplay.resize(srcDims.width, srcDims.height, srcDensity);
         }
 
-        EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+        // EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
 
         shouldCapture.set(true);
 
@@ -733,35 +619,23 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
         glHandler.post(() -> {
             synchronized (captureLock) {
-                if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
-                    Log.e(TAG, "EGL make current failed: " + EGL14.eglGetError());
-                    return;
-                }
-
                 glDeleteProgram(yProg.program);
-                glDeleteProgram(uProg.program);
-                glDeleteProgram(vProg.program);
-
+                glDeleteProgram(megaProg.program);
                 yProg = null;
-                uProg = null;
-                vProg = null;
-
-                glDeleteFramebuffers(3, new int[]{yFramebuffer.fboId, uFramebuffer.fboId, vFramebuffer.fboId}, 0);
-
-                glDeleteTextures(4, new int[]{oesTexId, yFramebuffer.texId, uFramebuffer.texId, vFramebuffer.texId}, 0);
-
+                megaProg = null;
+                glDeleteFramebuffers(2, new int[]{yFramebuffer.fboId, megabuffer.fboId}, 0);
+                glDeleteTextures(3, new int[]{yFramebuffer.texId, megabuffer.uTexId, megabuffer.vTexId}, 0);
                 yFramebuffer = null;
-                uFramebuffer = null;
-                vFramebuffer = null;
+                megabuffer = null;
+
+                nativeTeardownEgl(nativeEglCtx);
+                nativeEglCtx = 0;
 
                 EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
-
                 EGL14.eglDestroySurface(eglDisplay, eglSurface);
                 eglSurface = EGL14.EGL_NO_SURFACE;
-
                 EGL14.eglDestroyContext(eglDisplay, eglContext);
                 eglContext = EGL14.EGL_NO_CONTEXT;
-
                 eglDisplay = EGL14.EGL_NO_DISPLAY;
 
                 if (shouldEmitStopSignal && virtualDisplay != null) {
@@ -844,20 +718,256 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
         }
     }
 
-    native void nativeProcessFrame(int width, int height, ByteBuffer bufferY, ByteBuffer bufferU, ByteBuffer bufferV);
-
+    native long nativeSetupEgl();
+    native int eglGetOesTexId(long eglCtx);
+    native void nativeProcessFrame(long eglCtx, int width, int height, int fps, int fbY, int fbUv);
+    native void nativeTeardownEgl(long eglCtx);
     native void nativeCaptureStarted();
-
     native void nativeCaptureStopped();
-
     native void nativeCaptureCancelled();
-
     native void nativeQrScanResult(String result);
+    native String nativeGetVertShader();
+    native String nativeGetYFragShader();
+    native String nativeGetUVFragShader();
+
+    static class MegaProgram {
+        public int program;
+        public int position;
+        public int texCoord;
+        public int texMatrix;
+        public int textureUniform;
+        public int srcSize;
+
+        MegaProgram(String vert, String frag) {
+            program = createProgram(vert, frag);
+            position = glGetAttribLocation(program, "position");
+            texCoord = glGetAttribLocation(program, "in_tex_coord");
+            texMatrix = glGetUniformLocation(program, "u_tex_matrix");
+            textureUniform = glGetUniformLocation(program, "u_texture");
+            srcSize = glGetUniformLocation(program, "u_src_size");
+        }
+
+        private int loadShader(int shaderType, String source) {
+            int shader = glCreateShader(shaderType);
+            if (shader != 0) {
+                glShaderSource(shader, source);
+                glCompileShader(shader);
+
+                int[] compiled = new int[1];
+                glGetShaderiv(shader, GL_COMPILE_STATUS, compiled, 0);
+                if (compiled[0] == 0) {
+                    Log.e(TAG, "Could not compile shader " + shaderType + ": " + glGetShaderInfoLog(shader));
+                    glDeleteShader(shader);
+                    shader = 0;
+                }
+            }
+            return shader;
+        }
+
+        private int createProgram(String vertSource, String fragmentSource) {
+            int vert = loadShader(GL_VERTEX_SHADER, vertSource);
+            if (vert == 0) {
+                return 0;
+            }
+
+            int frag = loadShader(GL_FRAGMENT_SHADER, fragmentSource);
+            if (frag == 0) {
+                glDeleteShader(vert);
+                return 0;
+            }
+
+            int program = glCreateProgram();
+            if (program != 0) {
+                glAttachShader(program, vert);
+                glAttachShader(program, frag);
+                glLinkProgram(program);
+
+                int[] linkStatus = new int[1];
+                glGetProgramiv(program, GL_LINK_STATUS, linkStatus, 0);
+                if (linkStatus[0] != GL_TRUE) {
+                    Log.e(TAG, "Could not link program: " + glGetProgramInfoLog(program));
+                    glDeleteProgram(program);
+                    program = 0;
+                }
+            }
+
+            glDeleteShader(vert);
+            glDeleteShader(frag);
+
+            return program;
+        }
+    }
+
+    static class Program {
+        public int program;
+        public int position;
+        public int texCoord;
+        public int texMatrix;
+        public int textureUniform;
+
+        // Must be called from a thread with a valid gl context
+        Program(String vert, String frag) {
+            program = createProgram(vert, frag);
+            position = glGetAttribLocation(program, "position");
+            texCoord = glGetAttribLocation(program, "in_tex_coord");
+            texMatrix = glGetUniformLocation(program, "u_tex_matrix");
+            textureUniform = glGetUniformLocation(program, "u_texture");
+        }
+
+        private int loadShader(int shaderType, String source) {
+            int shader = glCreateShader(shaderType);
+            if (shader != 0) {
+                glShaderSource(shader, source);
+                glCompileShader(shader);
+
+                int[] compiled = new int[1];
+                glGetShaderiv(shader, GL_COMPILE_STATUS, compiled, 0);
+                if (compiled[0] == 0) {
+                    Log.e(TAG, "Could not compile shader " + shaderType + ": " + glGetShaderInfoLog(shader));
+                    glDeleteShader(shader);
+                    shader = 0;
+                }
+            }
+            return shader;
+        }
+
+        private int createProgram(String vertSource, String fragmentSource) {
+            int vert = loadShader(GL_VERTEX_SHADER, vertSource);
+            if (vert == 0) {
+                return 0;
+            }
+
+            int frag = loadShader(GL_FRAGMENT_SHADER, fragmentSource);
+            if (frag == 0) {
+                glDeleteShader(vert);
+                return 0;
+            }
+
+            int program = glCreateProgram();
+            if (program != 0) {
+                glAttachShader(program, vert);
+                glAttachShader(program, frag);
+                glLinkProgram(program);
+
+                int[] linkStatus = new int[1];
+                glGetProgramiv(program, GL_LINK_STATUS, linkStatus, 0);
+                if (linkStatus[0] != GL_TRUE) {
+                    Log.e(TAG, "Could not link program: " + glGetProgramInfoLog(program));
+                    glDeleteProgram(program);
+                    program = 0;
+                }
+            }
+
+            glDeleteShader(vert);
+            glDeleteShader(frag);
+
+            return program;
+        }
+    }
+
+    static void setupTexture2D(int texId, int width, int height) {
+        glBindTexture(GL_TEXTURE_2D, texId);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    static class Megabuffer {
+        int fboId;
+        int uTexId;
+        int vTexId;
+        Dimensions dims;
+
+        Megabuffer(Dimensions dims) throws RuntimeException {
+            this.dims = dims;
+
+            int[] fbos = new int[1];
+            int[] texs = new int[2];
+
+            glGenFramebuffers(1, fbos, 0);
+            glGenTextures(2, texs, 0);
+            fboId = fbos[0];
+            uTexId = texs[0];
+            vTexId = texs[1];
+
+            glBindFramebuffer(GL_FRAMEBUFFER, fboId);
+
+            setupTexture2D(uTexId, dims.width / 2, dims.height / 2);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, uTexId, 0);
+
+            setupTexture2D(vTexId, dims.width / 2, dims.height / 2);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, vTexId, 0);
+
+            int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                throw new RuntimeException("FBO setup failed: " + status);
+            }
+        }
+    }
+
+    static class Framebuffer {
+        int fboId;
+        int texId;
+        Dimensions dims;
+
+        Framebuffer(Dimensions dims) throws RuntimeException {
+            this.dims = dims;
+
+            int[] fbos = new int[1];
+            int[] texs = new int[1];
+
+            glGenFramebuffers(1, fbos, 0);
+            glGenTextures(1, texs, 0);
+            fboId = fbos[0];
+            texId = texs[0];
+
+            setupTexture2D(texId, dims.width, dims.height);
+            glBindFramebuffer(GL_FRAMEBUFFER, fboId);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texId, 0);
+
+            int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                throw new RuntimeException("FBO setup failed: " + status);
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+    }
+
+    public class CaptureBroadcastReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            Log.d(TAG, "Broadcast event intent=" + intent);
+
+            if (ACTION_MEDIA_PROJECTION_STARTED.equals(intent.getAction())) {
+                int resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED);
+                Intent data = intent.getParcelableExtra("data");
+                initializeCapture(resultCode, data);
+            }
+        }
+    }
 
     public class ProjectionCallback extends MediaProjection.Callback {
         @Override
         public void onStop() {
             stopCapture();
+        }
+
+        @RequiresApi(api = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+        @Override
+        public void onCapturedContentResize(int width, int height) {
+            if (width == srcDims.width && height == srcDims.height) {
+                // No change
+                return;
+            }
+
+            Dimensions newDims = new Dimensions(width, height);
+            if (shouldCapture.get() && virtualDisplay != null) {
+                cleanupCapture(false);
+                glHandler.post(() -> setupGles(new Dimensions(userMaxWidth, userMaxHeight), newDims));
+            }
         }
     }
 }

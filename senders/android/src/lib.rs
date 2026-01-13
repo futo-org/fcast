@@ -1,20 +1,30 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use fcast_sender_sdk::{context::CastContext, device, device::DeviceInfo};
-use gst::prelude::{BufferPoolExt, BufferPoolExtManual};
-use gst_video::{VideoColorimetry, VideoFrameExt};
+use glow::HasContext;
+use gst::prelude::*;
+use gst_video::VideoColorimetry;
 use jni::{
-    objects::{JByteBuffer, JObject, JString},
     JavaVM,
+    objects::{JByteBuffer, JObject, JString},
+    sys::{jint, jlong, jstring},
 };
-use mcore::{transmission::WhepSink, DeviceEvent, Event, ShouldQuit, SourceConfig};
+use khronos_egl as egl;
+use mcore::{DeviceEvent, Event, ShouldQuit, SourceConfig, transmission::WhepSink};
+use mimalloc::MiMalloc;
 use parking_lot::{Condvar, Mutex};
+use slint::{SharedString, ToSharedString};
 use std::{collections::HashMap, net::Ipv6Addr, sync::Arc};
 use tracing::{debug, error};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
 
 lazy_static::lazy_static! {
     pub static ref GLOB_EVENT_CHAN: (crossbeam_channel::Sender<Event>, crossbeam_channel::Receiver<Event>)
         = crossbeam_channel::bounded(2);
-    pub static ref FRAME_PAIR: (Mutex<Option<gst_video::VideoFrame<gst_video::video_frame::Writable>>>, Condvar) = (Mutex::new(None), Condvar::new());
+    pub static ref FRAME_PAIR: (Mutex<Option<(gst_video::VideoFrame<gst_video::video_frame::Writable>, gst::Caps)>>, Condvar) = (Mutex::new(None), Condvar::new());
     pub static ref FRAME_POOL: Mutex<gst_video::VideoBufferPool> = Mutex::new(gst_video::VideoBufferPool::new());
 }
 
@@ -116,10 +126,10 @@ impl Application {
             .devices
             .iter()
             .filter(|(_, info)| !info.addresses.is_empty() && info.port != 0)
-            .map(|(name, _)| slint::SharedString::from(name))
-            .collect::<Vec<slint::SharedString>>();
+            .map(|(name, _)| SharedString::from(name))
+            .collect::<Vec<SharedString>>();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let model = std::rc::Rc::new(slint::VecModel::<slint::SharedString>::from_iter(
+            let model = std::rc::Rc::new(slint::VecModel::<SharedString>::from_iter(
                 receivers.into_iter(),
             ));
             ui.global::<Bridge>().set_devices(model.into());
@@ -128,9 +138,19 @@ impl Application {
         Ok(())
     }
 
-    fn add_or_update_device(&mut self, device_info: DeviceInfo) -> Result<()> {
-        self.devices.insert(device_info.name.clone(), device_info);
-        self.update_receivers_in_ui()?;
+    fn add_or_update_device(&mut self, mut device_info: DeviceInfo) -> Result<()> {
+        device_info
+            .addresses
+            .retain(|addr| match Into::<std::net::IpAddr>::into(addr) {
+                std::net::IpAddr::V4(_) => true,
+                std::net::IpAddr::V6(v6) => fcast_sender_sdk::ipv6_is_global(v6),
+            });
+
+        if !device_info.addresses.is_empty() {
+            self.devices.insert(device_info.name.clone(), device_info);
+            self.update_receivers_in_ui()?;
+        }
+
         Ok(())
     }
 
@@ -173,7 +193,7 @@ impl Application {
                     self.current_device_id,
                     self.event_tx.clone(),
                 )),
-                1000,
+                0, // NOTE: do not attempt to reconnect
             )
             .unwrap();
         self.active_device = Some(device);
@@ -205,11 +225,19 @@ impl Application {
                     error!("No device with name `{device_name}` found");
                 }
             }
-            Event::SignallerStarted { bound_port_v4, bound_port_v6 } => {
+            Event::SignallerStarted {
+                bound_port_v4,
+                bound_port_v6,
+            } => {
                 let Some(addr) = self.local_address.as_ref() else {
                     error!("Local address is missing");
                     return Ok(ShouldQuit::No);
                 };
+                let bound_port = match addr {
+                    fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
+                    fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
+                };
+
                 let bound_port = match addr {
                     fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
                     fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
@@ -271,6 +299,13 @@ impl Application {
                                             .invoke_change_state(AppState::SelectingSettings);
                                     })?;
                                 }
+                                device::DeviceConnectionState::Disconnected => {
+                                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                                        ui.global::<Bridge>()
+                                            .invoke_change_state(AppState::Disconnected);
+                                    })?;
+                                    self.stop_cast(false).await?;
+                                }
                                 _ => (),
                             }
                         }
@@ -315,10 +350,10 @@ impl Application {
             }
             Event::CaptureStarted => {
                 let appsrc = gst_app::AppSrc::builder()
+                    .name("fcastvideosrc")
                     .caps(
                         &gst_video::VideoCapsBuilder::new()
                             .format(gst_video::VideoFormat::I420)
-                            // .framerate(gst::Fraction::new(0, 1))
                             .build(),
                     )
                     .is_live(true)
@@ -331,7 +366,7 @@ impl Application {
                 appsrc.set_callbacks(
                     gst_app::AppSrcCallbacks::builder()
                         .need_data(move |appsrc, _| {
-                            let frame = {
+                            let (frame, now_caps) = {
                                 let (lock, cvar) = &*FRAME_PAIR;
                                 let mut frame = lock.lock();
                                 while (*frame).is_none() {
@@ -340,18 +375,6 @@ impl Application {
 
                                 (*frame).take().unwrap()
                             };
-
-                            use gst_video::prelude::*;
-
-                            let now_caps = gst_video::VideoInfo::builder(
-                                frame.format(),
-                                frame.width(),
-                                frame.height(),
-                            )
-                            .build()
-                            .unwrap()
-                            .to_caps()
-                            .unwrap();
 
                             match &caps {
                                 Some(old_caps) => {
@@ -448,6 +471,8 @@ impl Application {
         gst::init().unwrap();
         debug!("GStreamer version: {:?}", gst::version());
 
+        gst::rust_allocator().clone().set_default();
+
         // self.add_or_update_device(fcast_sender_sdk::device::DeviceInfo::fcast("Localhost for android emulator".to_owned(), vec![fcast_sender_sdk::IpAddr::v4(10, 0, 2, 2)], 46899))?;
 
         loop {
@@ -470,9 +495,12 @@ impl Application {
 // TODO: handle errs
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
-    );
+    #[cfg(debug_assertions)]
+    let log_level = log::LevelFilter::Debug;
+    #[cfg(not(debug_assertions))]
+    let log_level = log::LevelFilter::Info;
+
+    android_logger::init_once(android_logger::Config::default().with_max_level(log_level));
 
     let app_clone = app.clone();
 
@@ -484,7 +512,9 @@ fn android_main(app: slint::android::AndroidApp) {
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    ui.global::<Bridge>().on_connect_receiver({
+    let bridge = ui.global::<Bridge>();
+
+    bridge.on_connect_receiver({
         let event_tx = event_tx.clone();
         move |device_name| {
             event_tx
@@ -493,7 +523,7 @@ fn android_main(app: slint::android::AndroidApp) {
         }
     });
 
-    ui.global::<Bridge>().on_start_casting({
+    bridge.on_start_casting({
         let event_tx = event_tx.clone();
         move |scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
@@ -506,7 +536,7 @@ fn android_main(app: slint::android::AndroidApp) {
         }
     });
 
-    ui.global::<Bridge>().on_stop_casting({
+    bridge.on_stop_casting({
         let event_tx = event_tx.clone();
         move || {
             event_tx
@@ -515,12 +545,21 @@ fn android_main(app: slint::android::AndroidApp) {
         }
     });
 
-    ui.global::<Bridge>().on_scan_qr({
+    bridge.on_scan_qr({
         let android_app = app_clone.clone();
         move || {
             call_java_method_no_args(&android_app, JavaMethod::ScanQr);
         }
     });
+
+    bridge.on_open_url(|url: SharedString| {
+        debug!(?url, "Trying to open URL");
+        if let Err(err) = webbrowser::open(&url) {
+            error!(?err, "Failed to open URL");
+        }
+    });
+
+    bridge.set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
 
     let ui_weak = ui.as_weak();
 
@@ -652,6 +691,29 @@ pub extern "C" fn Java_org_fcast_android_sender_FCastDiscoveryListener_serviceFo
     );
 }
 
+fn read_pixels(
+    gl: &glow::Context,
+    fbo: glow::Framebuffer,
+    buffer: u32,
+    dst: &mut [u8],
+    width: i32,
+    height: i32,
+) {
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.read_buffer(buffer);
+        gl.read_pixels(
+            0,
+            0,
+            width,
+            height,
+            glow::RED,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(dst)),
+        );
+    }
+}
+
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_fcast_android_sender_FCastDiscoveryListener_serviceLost<'local>(
@@ -708,54 +770,22 @@ pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeCaptureCancel
 }
 
 fn process_frame<'local>(
-    env: jni::JNIEnv<'local>,
+    egl_ctx: &EglContext,
     width: jni::sys::jint,
     height: jni::sys::jint,
-    buffer_y: JByteBuffer<'local>,
-    buffer_u: JByteBuffer<'local>,
-    buffer_v: JByteBuffer<'local>,
+    fps: jni::sys::jint,
+    fb_y: jint,
+    fb_uv: jint,
 ) -> Result<()> {
     let width = width as usize;
     let height = height as usize;
-
-    fn buffer_as_slice<'local>(
-        env: &jni::JNIEnv<'local>,
-        buffer: &JByteBuffer<'local>,
-        size: usize,
-    ) -> Result<&'local [u8]> {
-        let buffer_cap = match env.get_direct_buffer_capacity(&buffer) {
-            Ok(cap) => cap,
-            Err(err) => {
-                bail!("Failed to get capacity of the byte buffer: {err}");
-            }
-        };
-
-        if buffer_cap < size {
-            bail!("buffer_cap < size: {buffer_cap} < {size}");
-        }
-
-        let buffer_ptr = match env.get_direct_buffer_address(&buffer) {
-            Ok(ptr) => {
-                assert!(!ptr.is_null());
-                ptr
-            }
-            Err(err) => {
-                bail!("Failed to get buffer address: {err}");
-            }
-        };
-
-        unsafe { Ok(std::slice::from_raw_parts(buffer_ptr, buffer_cap)) }
-    }
-
-    let slice_y = buffer_as_slice(&env, &buffer_y, width * height)?;
-    let slice_u = buffer_as_slice(&env, &buffer_u, (width / 2) * (height / 2))?;
-    let slice_v = buffer_as_slice(&env, &buffer_v, (width / 2) * (height / 2))?;
 
     let info = match gst_video::VideoInfo::builder(
         gst_video::VideoFormat::I420,
         width as u32,
         height as u32,
     )
+    .fps((fps, 1))
     .colorimetry(&VideoColorimetry::new(
         gst_video::VideoColorRange::Range0_255,
         gst_video::VideoColorMatrix::Bt709,
@@ -770,6 +800,7 @@ fn process_frame<'local>(
         }
     };
 
+    let frame_size = info.size();
     let new_caps = match info.to_caps() {
         Ok(caps) => caps,
         Err(err) => {
@@ -793,7 +824,6 @@ fn process_frame<'local>(
 
     let mut frame_pool = FRAME_POOL.lock();
     let old_config = frame_pool.config();
-    let frame_size = width * height + 2 * ((width / 2) * (height / 2));
     if !frame_pool.is_active() {
         init_frame_pool(&frame_pool, old_config, &new_caps, frame_size as u32)?;
     } else {
@@ -813,34 +843,40 @@ fn process_frame<'local>(
         bail!("Failed to crate VideoFrame from buffer");
     };
 
-    fn copy(
-        vframe: &mut gst_video::VideoFrame<gst_video::video_frame::Writable>,
-        plane_idx: u32,
-        src_plane: &[u8],
-    ) -> Result<()> {
-        let dest_y_stride = *vframe
-            .plane_stride()
-            .get(plane_idx as usize)
-            .ok_or(anyhow::anyhow!("Could not get plane stride"))?
-            as usize;
-        let dest_y = vframe.plane_data_mut(plane_idx)?;
-        for (dest, src) in dest_y
-            .chunks_exact_mut(dest_y_stride)
-            .zip(src_plane.chunks_exact(dest_y_stride))
-        {
-            dest[..dest_y_stride].copy_from_slice(&src[..dest_y_stride]);
-        }
+    let y_framebuffer = glow::NativeFramebuffer((fb_y as u32).try_into().unwrap());
+    let uv_framebuffer = glow::NativeFramebuffer((fb_uv as u32).try_into().unwrap());
 
-        Ok(())
-    }
-
-    copy(&mut vframe, 0, slice_y)?;
-    copy(&mut vframe, 1, slice_u)?;
-    copy(&mut vframe, 2, slice_v)?;
+    let dest_y = vframe.plane_data_mut(0)?;
+    read_pixels(
+        &egl_ctx.gl,
+        y_framebuffer,
+        glow::COLOR_ATTACHMENT0,
+        dest_y,
+        width as i32,
+        height as i32,
+    );
+    let dest_u = vframe.plane_data_mut(1)?;
+    read_pixels(
+        &egl_ctx.gl,
+        uv_framebuffer,
+        glow::COLOR_ATTACHMENT0,
+        dest_u,
+        width as i32 / 2,
+        height as i32 / 2,
+    );
+    let dest_v = vframe.plane_data_mut(2)?;
+    read_pixels(
+        &egl_ctx.gl,
+        uv_framebuffer,
+        glow::COLOR_ATTACHMENT1,
+        dest_v,
+        width as i32 / 2,
+        height as i32 / 2,
+    );
 
     let (lock, cvar) = &*FRAME_PAIR;
     let mut frame = lock.lock();
-    *frame = Some(vframe);
+    *frame = Some((vframe, new_caps));
     cvar.notify_one();
 
     Ok(())
@@ -849,15 +885,19 @@ fn process_frame<'local>(
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeProcessFrame<'local>(
-    env: jni::JNIEnv<'local>,
+    _env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
-    width: jni::sys::jint,
-    height: jni::sys::jint,
-    buffer_y: JByteBuffer<'local>,
-    buffer_u: JByteBuffer<'local>,
-    buffer_v: JByteBuffer<'local>,
+    egl_ctx: jlong,
+    width: jint,
+    height: jint,
+    fps: jint,
+    fb_y: jint,
+    fb_uv: jint,
 ) {
-    if let Err(err) = process_frame(env, width, height, buffer_y, buffer_u, buffer_v) {
+    assert_ne!(egl_ctx, 0);
+    let ctx_handle = EglContextHandle(egl_ctx as isize as *const EglContext);
+    let ctx = unsafe { ctx_handle.as_ref() };
+    if let Err(err) = process_frame(ctx, width, height, fps, fb_y, fb_uv) {
         error!(?err, "Failed to process frame");
     }
 }
@@ -876,4 +916,146 @@ pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeQrScanResult<
         ),
         Err(err) => error!(?err, "Failed to convert jstring to string"),
     }
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeGetVertShader<'local>(
+    env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) -> jstring {
+    env.new_string(include_str!("../shaders/vert.glsl"))
+        .unwrap()
+        .into_raw()
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeGetYFragShader<'local>(
+    env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) -> jstring {
+    env.new_string(include_str!("../shaders/y_frag.glsl"))
+        .unwrap()
+        .into_raw()
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeGetUVFragShader<'local>(
+    env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) -> jstring {
+    env.new_string(include_str!("../shaders/uv_frag.glsl"))
+        .unwrap()
+        .into_raw()
+}
+
+struct EglContext {
+    gl: glow::Context,
+    oes_tex_id: glow::NativeTexture,
+}
+
+struct EglContextHandle(*const EglContext);
+
+impl EglContextHandle {
+    pub fn new(ctx: EglContext) -> Self {
+        let boxed = Box::new(ctx);
+        Self(Box::into_raw(boxed))
+    }
+
+    unsafe fn as_ref(&self) -> &EglContext {
+        unsafe { &*self.0 }
+    }
+
+    // Safety: only convert back to Box (to drop) when sure handle is no longer shared.
+    pub unsafe fn into_box(self) -> Box<EglContext> {
+        unsafe { Box::from_raw(self.0 as *mut EglContext) }
+    }
+}
+
+impl From<EglContextHandle> for jlong {
+    fn from(handle: EglContextHandle) -> Self {
+        handle.0 as jlong
+    }
+}
+
+#[rustfmt::skip]
+fn create_oes_texture(gl: &glow::Context) -> glow::NativeTexture {
+    unsafe {
+        let tex = gl.create_texture().unwrap();
+
+        gl.bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(tex));
+        gl.tex_parameter_i32(GL_TEXTURE_EXTERNAL_OES, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(GL_TEXTURE_EXTERNAL_OES, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(GL_TEXTURE_EXTERNAL_OES, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(GL_TEXTURE_EXTERNAL_OES, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+
+        tex
+    }
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_eglGetOesTexId<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    egl_ctx: jlong,
+) -> jint {
+    let ctx_handle = EglContextHandle(egl_ctx as isize as *const EglContext);
+    unsafe { ctx_handle.as_ref() }.oes_tex_id.0.get() as i32
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeTeardownEgl<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    egl_ctx: jlong,
+) {
+    assert_ne!(egl_ctx, 0);
+    let ctx = unsafe { EglContextHandle(egl_ctx as isize as *const EglContext).into_box() };
+
+    unsafe {
+        ctx.gl.delete_texture(ctx.oes_tex_id);
+    }
+}
+
+fn get_lib_egl() -> libloading::Library {
+    for so in ["libEGL.so", "libEGL.so.1"] {
+        if let Ok(lib) = unsafe { libloading::Library::new(so) } {
+            return lib;
+        }
+    }
+
+    // Shouldn't happen
+    panic!("Unable to find libEGL.so");
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_android_sender_MainActivity_nativeSetupEgl<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) -> jlong {
+    let lib = get_lib_egl();
+    let egl = unsafe { egl::DynamicInstance::<egl::EGL1_4>::load_required_from(lib) }
+        .expect("unable to load libEGL.so.1");
+
+    let gl = unsafe {
+        glow::Context::from_loader_function(|name| match egl.get_proc_address(name) {
+            Some(f) => f as *const std::ffi::c_void,
+            None => std::ptr::null(),
+        })
+    };
+
+    let oes_tex_id = create_oes_texture(&gl);
+
+    let ctx = EglContext { gl, oes_tex_id };
+
+    let ctx_handle = EglContextHandle::new(ctx);
+
+    debug!("Created EGL context");
+
+    ctx_handle.into()
 }

@@ -29,10 +29,11 @@ endif
 GSTREAMER_NDK_BUILD_PATH  := $(GSTREAMER_ROOT)/share/gst-android/ndk-build/
 include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
 
-GSTREAMER_PLUGINS_CORE_CUSTOM := coreelements app videorate videoconvertscale videofilter videoparsersbad
-GSTREAMER_PLUGINS_NET_CUSTOM := tcp rtpmanager udp srtp dtls nice webrtc rtp rsrtp
-GSTREAMER_PLUGINS_CODECS_CUSTOM := vpx
-GSTREAMER_PLUGINS         := $(GSTREAMER_PLUGINS_CORE_CUSTOM) $(GSTREAMER_PLUGINS_CODECS_CUSTOM) $(GSTREAMER_PLUGINS_NET_CUSTOM)
+PLUGINS_CORE_CUSTOM       := coreelements app videorate videoconvertscale videofilter videoparsersbad
+PLUGINS_NET_CUSTOM        := tcp rtpmanager udp srtp dtls nice webrtc rtp rsrtp
+PLUGINS_CODECS_CUSTOM     := vpx
+PLUGINS_EFFECTS_CUSTOM    := debugutilsbad
+GSTREAMER_PLUGINS         := $(PLUGINS_CORE_CUSTOM) $(PLUGINS_CODECS_CUSTOM) $(PLUGINS_NET_CUSTOM) $(PLUGINS_EFFECTS_CUSTOM)
 
 GSTREAMER_EXTRA_DEPS      := gstreamer-video-1.0 glib-2.0 gstreamer-app-1.0 gstreamer-base-1.0 gstreamer-webrtc-1.0 gstreamer-rtp-1.0
 

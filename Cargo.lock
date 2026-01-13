@@ -257,7 +257,7 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
 name = "android-sender"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -266,13 +266,17 @@ dependencies = [
  "fcast-protocol",
  "fcast-sender-sdk",
  "futures-core",
+ "glow",
  "gstreamer 0.25.1",
  "gstreamer-app",
  "gstreamer-video",
  "jni 0.21.1",
+ "khronos-egl",
  "lazy_static",
+ "libloading 0.8.9",
  "log",
  "mcore",
+ "mimalloc",
  "ndk-context",
  "parking_lot",
  "slint",
@@ -280,6 +284,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-gstreamer",
+ "webbrowser",
 ]
 
 [[package]]
@@ -5458,6 +5463,16 @@ dependencies = [
  "bitflags 2.11.1",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "khronos-egl"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+dependencies = [
+ "libc",
+ "libloading 0.8.9",
 ]
 
 [[package]]

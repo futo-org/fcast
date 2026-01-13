@@ -60,6 +60,7 @@ mimalloc = { version = "0.1", features = ["v3"] }
 ctrlc = "3"
 hyper = "1.7.0"
 hyper-util = "0.1.17"
+webbrowser = "1"
 
 [profile.release]
 lto = "fat"
