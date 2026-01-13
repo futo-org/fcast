@@ -16,6 +16,7 @@ export { Switch } from "switch.slint";
 export { TextEdit } from "textedit.slint";
 
 import { Palette } from "std-widgets-impl.slint";
+import { FCastPalette } from "styling.slint";
 
 export component FText inherits Text {
     color: Palette.foreground;
@@ -52,4 +53,69 @@ export global Icons {
     out property <image> volume-high: @image-url("icons/volume-high.svg");
     out property <image> clipboard: @image-url("icons/clipboard.svg");
     out property <image> more: @image-url("icons/more.svg");
+}
+
+export component Spacer inherits Rectangle { }
+
+component Circle inherits Rectangle {
+    height: self.width;
+    border-width: 1.22px;
+    border-radius: self.height;
+    border-color: red;
+}
+
+component LabelText inherits Text {
+    color: Palette.foreground;
+    font-weight: 500;
+    font-size: 20px;
+}
+
+component SecondaryText inherits Text {
+    color: FCastPalette.neutral-600;
+    font-weight: 300;
+    font-size: 12px;
+}
+
+export component NoReceiverFound {
+    HorizontalLayout {
+        Spacer { }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+
+            Circle {
+                width: 25%;
+                border-color: FCastPalette.border-secondary.transparentize(94%);
+
+                Circle {
+                    width: 75%;
+                    border-color: FCastPalette.border-secondary.transparentize(90%);
+
+                    Circle {
+                        width: 70%;
+                        border-color: FCastPalette.border-secondary.transparentize(85%);
+
+                        Circle {
+                            width: 60%;
+                            border-color: FCastPalette.border-secondary.transparentize(80%);
+                        }
+                    }
+                }
+            }
+
+            LabelText {
+                horizontal-alignment: center;
+                text: "No receivers found";
+            }
+
+            SecondaryText {
+                text: "FCast requires a Receiver App running on your target device before it appears here.";
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        Spacer { }
+    }
 }

@@ -18,6 +18,7 @@ import {
     ListView,
     ScrollView,
     Icons,
+    NoReceiverFound,
 } from "../../ui-components/std-widgets.slint";
 import { FocusBorder } from "../../ui-components/components.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
@@ -387,13 +388,6 @@ component SecondaryText inherits Text {
     font-size: 12px;
 }
 
-component Circle inherits Rectangle {
-    height: self.width;
-    border-width: 1.22px;
-    border-radius: self.height;
-    border-color: red;
-}
-
 component HyperLink inherits Rectangle {
     in property <string> url;
     in property <string> text;
@@ -490,47 +484,7 @@ component ConnectView inherits Rectangle {
                     }
                 }
 
-                if Bridge.devices.length == 0: HorizontalLayout {
-                    Spacer { }
-
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 10px;
-
-                        Circle {
-                            width: 25%;
-                            border-color: FCastPalette.border-secondary.transparentize(94%);
-
-                            Circle {
-                                width: 75%;
-                                border-color: FCastPalette.border-secondary.transparentize(90%);
-
-                                Circle {
-                                    width: 70%;
-                                    border-color: FCastPalette.border-secondary.transparentize(85%);
-
-                                    Circle {
-                                        width: 60%;
-                                        border-color: FCastPalette.border-secondary.transparentize(80%);
-                                    }
-                                }
-                            }
-                        }
-
-                        LabelText {
-                            horizontal-alignment: center;
-                            text: "No receivers found";
-                        }
-
-                        SecondaryText {
-                            text: "FCast requires a Receiver App running on your target device before it appears here.";
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                    }
-
-                    Spacer { }
-                }
+                if Bridge.devices.length == 0: NoReceiverFound { }
 
                 if Bridge.devices.length > 0: ScrollView {
                     VerticalLayout {

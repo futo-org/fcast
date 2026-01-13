@@ -480,7 +480,7 @@ impl WhepSink {
     ) -> anyhow::Result<Self> {
         let pipeline = gst::Pipeline::new();
 
-        let sink = create_webrtcsink(rt_handle.clone(), event_tx.clone())?;
+        let sink = create_webrtcsink(0, rt_handle.clone(), event_tx.clone())?;
         let sink = sink.upcast();
         pipeline.add(&sink)?;
 

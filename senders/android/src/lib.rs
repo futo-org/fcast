@@ -174,7 +174,7 @@ impl Application {
                     self.current_device_id,
                     self.event_tx.clone(),
                 )),
-                1000,
+                0, // NOTE: do not attempt to reconnect
             )
             .unwrap();
         self.active_device = Some(device);
@@ -267,6 +267,8 @@ impl Application {
                                         ui.global::<Bridge>()
                                             .invoke_change_state(AppState::SelectingSettings);
                                     })?;
+                                }
+                                device::DeviceConnectionState::Disconnected => {
                                 }
                                 _ => (),
                             }
