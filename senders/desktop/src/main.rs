@@ -1010,11 +1010,21 @@ impl Application {
 
     fn connect_with_device_info(
         &mut self,
-        device_info: fcast_sender_sdk::device::DeviceInfo,
+        mut device_info: fcast_sender_sdk::device::DeviceInfo,
         device_name: &str,
     ) -> Result<()> {
+        device_info.addresses.sort_unstable_by(|a, b| {
+            fn weight(a: &fcast_sender_sdk::IpAddr) -> u8 {
+                match a {
+                    fcast_sender_sdk::IpAddr::V4 { .. } => 0,
+                    fcast_sender_sdk::IpAddr::V6 { .. } => 1,
+                }
+            }
+
+            weight(a).cmp(&weight(b))
+        });
         debug!(?device_info, "Trying to connect");
-        let device = self.cast_ctx.create_device_from_info(device_info.clone());
+        let device = self.cast_ctx.create_device_from_info(device_info);
         self.current_session_id += 1;
         if let Err(err) = device.connect(
             None,
