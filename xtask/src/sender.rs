@@ -250,8 +250,8 @@ impl SenderArgs {
                             concat_path(&root_path, "senders/android/app/src/main/jniLibs");
 
                         let targets = target.map(|t| vec![t]).unwrap_or(vec![
-                            AndroidAbiTarget::X64,
-                            AndroidAbiTarget::X86,
+                            // AndroidAbiTarget::X64,
+                            // AndroidAbiTarget::X86,
                             AndroidAbiTarget::Arm64,
                             AndroidAbiTarget::Arm32,
                         ]);

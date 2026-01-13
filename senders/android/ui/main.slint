@@ -1,5 +1,8 @@
-import { VerticalBox, Button, ListView, Spinner } from "std-widgets.slint";
+import { VerticalBox } from "std-widgets.slint";
+import { Button, Spinner, FText, ScrollView, Icons, Palette, NoReceiverFound, RoundBackButton, Spacer, ListView, SecondaryText, LicenseAndCopyrightNotice, HyperLink } from "../../ui-components/std-widgets.slint";
+import { FCastPalette } from "../../ui-components/styling.slint";
 import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
+import "../../ui-components/fonts/Outfit-Regular.ttf";
 
 enum AppState {
     Disconnected,
@@ -14,65 +17,143 @@ export global Bridge {
         // "Device 1", "Device 2",
     ];
     in-out property <AppState> app-state: AppState.Disconnected;
+    // in-out property <AppState> app-state: AppState.SelectingSettings;
+    in-out property <string> current-device-name;
+    in-out property <bool> is-showing-settings: false;
+
+    in property <string> app-version;
 
     callback connect-receiver(string);
     callback start-casting(scale-width: int, scale-height: int, max-framerate: int);
     callback stop-casting();
     callback scan-qr();
+    callback open-url(url: string);
 
     public function change-state(to: AppState) {
+        if to == AppState.Disconnected {
+            current-device-name = "";
+        }
+
         Bridge.app-state = to;
     }
 }
 
+component TopBar inherits Rectangle {
+    background: FCastPalette.neutral-1100;
+
+    HorizontalLayout {
+        padding: 12px;
+
+        if Bridge.app-state == AppState.SelectingSettings: RoundBackButton {
+            clicked => Bridge.stop-casting();
+        }
+
+        Spacer { }
+
+        Rectangle {
+            width: 30px;
+            height: 30px;
+
+            TouchArea {
+                clicked => {
+                    Bridge.is-showing-settings = !Bridge.is-showing-settings;
+                }
+            }
+
+            Image {
+                source: Bridge.is-showing-settings ? Icons.close : Icons.bars;
+                colorize: Palette.foreground;
+                width: Bridge.is-showing-settings ? 20px : parent.width;
+                height: Bridge.is-showing-settings ? 20px : parent.height;
+            }
+        }
+    }
+}
+
+component DeviceListItem {
+    in property <string> dev-name;
+    in property <bool> fcast;
+
+    accessible-role: list-item;
+
+    states [
+        hover when i-touch-area.has-hover: {
+            i-background.background: FCastPalette.brand-600.transparentize(92%);
+            i-background.border-width: 1px;
+            i-background.border-color: #1478DC33;
+        }
+    ]
+
+    i-touch-area := TouchArea {
+        clicked => {
+            Bridge.connect-receiver(dev-name);
+            Bridge.current-device-name = dev-name;
+        }
+    }
+
+    i-background := Rectangle {
+        background: #13151B;
+        border-radius: 8px;
+
+        VerticalLayout {
+            HorizontalLayout {
+                padding: 5px;
+                spacing: 5px;
+
+                Image {
+                    width: 36px;
+                    height: 36px;
+                    source: Icons.tv;
+                    vertical-alignment: center;
+                }
+
+                FText {
+                    text: dev-name;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
 component ConnectView inherits Rectangle {
+    background: FCastPalette.neutral-1200;
+
     VerticalBox {
-        Text {
+        if Bridge.devices.length > 0: FText {
             horizontal-alignment: center;
             font-size: 16px;
             font-weight: 600;
-            text: "Connect to your receiver";
+            text: "Discovered receivers";
         }
 
-        ListView {
-            for device in Bridge.devices: Rectangle {
-                height: 45px;
+        if Bridge.devices.length > 0: FText {
+            text: "Scanning local network (mDNS) for FCast-enabled devices...";
+            wrap: word-wrap;
+            font-size: 12px;
+            horizontal-alignment: center;
+            color: grey;
+        }
 
-                TouchArea {
-                    clicked => Bridge.connect-receiver(device);
-                }
-
-                Rectangle {
-                    width: parent.width - 10px;
-                    height: parent.height - 10px;
-                    background: lightsteelblue;
-                    border-radius: 8px;
-                    Text {
-                        vertical-alignment: center;
-                        horizontal-alignment: left;
-                        text: device;
-                    }
+        if Bridge.devices.length > 0: ScrollView {
+            VerticalLayout {
+                padding-top: 20px;
+                spacing: 8px;
+                for device in Bridge.devices: DeviceListItem {
+                    dev-name: device;
                 }
             }
         }
 
-        Rectangle {
-            height: 45px;
+        if Bridge.devices.length == 0: NoReceiverFound { }
 
-            TouchArea {
-                clicked => Bridge.scan-qr();
-            }
-
-            Rectangle {
-                width: parent.width - 10px;
-                height: parent.height - 10px;
-                background: lightsteelblue;
-                border-radius: 8px;
-                Text {
-                    vertical-alignment: center;
-                    horizontal-alignment: left;
-                    text: "Scan QR";
-                }
+        Button {
+            text: "Scan QR";
+            clicked => {
+                Bridge.scan-qr();
+                Bridge.current-device-name = "scanned device";
             }
         }
     }
@@ -84,7 +165,7 @@ component ConnectingView inherits Rectangle {
             indeterminate: true;
         }
 
-        Text {
+        FText {
             font-size: 12pt;
             vertical-alignment: center;
             text: "Connecting";
@@ -101,32 +182,36 @@ component SelectingSettingsView inherits Rectangle {
     property <int> video-resolution-idx: 2;
     property <int> video-framerate-idx: 2;
 
-    VerticalBox {
-        Text {
-            font-size: 12pt;
-            vertical-alignment: center;
-            text: "Max resolution";
-        }
+    VerticalLayout {
+        VerticalBox {
+            alignment: center;
 
-        VideoResolutionPicker {
-            current-index <=> video-resolution-idx;
-        }
+            FText {
+                font-size: 12pt;
+                vertical-alignment: center;
+                text: "Max resolution";
+            }
 
-        Text {
-            font-size: 12pt;
-            vertical-alignment: center;
-            text: "Max framerate";
-        }
+            VideoResolutionPicker {
+                current-index <=> video-resolution-idx;
+            }
 
-        FrameratePicker {
-            current-index <=> video-framerate-idx;
-        }
+            FText {
+                font-size: 12pt;
+                vertical-alignment: center;
+                text: "Max framerate";
+            }
 
-        Button {
-            text: "Start";
-            clicked => {
-                let scale = Utils.str-to-scale(video-resolution-idx);
-                Bridge.start-casting(scale.width, scale.height, Utils.video-framerates[video-framerate-idx].to-float())
+            FrameratePicker {
+                current-index <=> video-framerate-idx;
+            }
+
+            Button {
+                text: "Start";
+                clicked => {
+                    let scale = Utils.str-to-scale(video-resolution-idx);
+                    Bridge.start-casting(scale.width, scale.height, Utils.video-framerates[video-framerate-idx].to-float());
+                }
             }
         }
     }
@@ -134,7 +219,7 @@ component SelectingSettingsView inherits Rectangle {
 
 component WaitingForMediaView inherits Rectangle {
     VerticalBox {
-        Text {
+        FText {
             horizontal-alignment: center;
             text: "Waiting for media";
         }
@@ -142,27 +227,101 @@ component WaitingForMediaView inherits Rectangle {
 }
 
 component CastingView inherits Rectangle {
-    VerticalBox {
-        Text {
-            horizontal-alignment: center;
-            text: "Casting";
-        }
+    HorizontalLayout {
+        alignment: center;
 
-        Button {
-            text: "Stop";
-            clicked => Bridge.stop-casting();
+        VerticalBox {
+            alignment: center;
+
+            FText {
+                horizontal-alignment: center;
+                text: "Mirroring to " + Bridge.current-device-name;
+                wrap: word-wrap;
+            }
+
+            Button {
+                text: "Stop";
+                clicked => Bridge.stop-casting();
+            }
         }
     }
 }
 
+component SettingsView inherits Rectangle {
+    background: FCastPalette.background-color-primary;
+
+    VerticalLayout {
+        padding: 10px;
+
+        spacing: 10px;
+
+        FText {
+            text: "FCast Sender v" + Bridge.app-version;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            HyperLink {
+                url: "https://fcast.org";
+                text: self.url;
+                clicked(url) => Bridge.open-url(url);
+            }
+        }
+
+        FText {
+            text: "Please report any issues to";
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            HyperLink {
+                url: "https://github.com/futo-org/fcast/issues";
+                text: "our issue tracker";
+                clicked(url) => Bridge.open-url(url);
+            }
+        }
+
+        Spacer {}
+
+        LicenseAndCopyrightNotice { }
+    }
+}
+
 export component MainWindow inherits Window {
-    if Bridge.app-state == AppState.Disconnected: ConnectView { }
+    title: "FCast Sender";
+    icon: @image-url("../../extra/fcast.png");
 
-    if Bridge.app-state == AppState.Connecting: ConnectingView {}
+    default-font-family: "Outfit";
+    default-font-size: 15px;
+    default-font-weight: 400;
 
-    if Bridge.app-state == AppState.SelectingSettings: SelectingSettingsView {}
+    Rectangle {
+        background: FCastPalette.background-color-primary;
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.right - root.safe-area-insets.left;
+        height: root.height - root.safe-area-insets.bottom - root.safe-area-insets.top;
 
-    if Bridge.app-state == AppState.WaitingForMedia: WaitingForMediaView { }
+        VerticalLayout {
+            TopBar { }
 
-    if Bridge.app-state == AppState.Casting : CastingView {}
+            if !Bridge.is-showing-settings: Rectangle {
+                if Bridge.app-state == AppState.Disconnected: ConnectView { }
+
+                if Bridge.app-state == AppState.Connecting: ConnectingView { }
+
+                if Bridge.app-state == AppState.SelectingSettings: SelectingSettingsView { }
+
+                if Bridge.app-state == AppState.WaitingForMedia: WaitingForMediaView { }
+
+                if Bridge.app-state == AppState.Casting: CastingView { }
+            }
+
+            if Bridge.is-showing-settings: SettingsView { }
+        }
+    }
 }

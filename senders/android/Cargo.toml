@@ -1,13 +1,13 @@
 [package]
 name = "android-sender"
-version = "0.1.0"
-edition = "2021"
+version = "0.0.1"
+edition = "2024"
 
 [dependencies]
 android_logger = "0.15.0"
 ndk-context = "0.1.1"
 jni = "0.21.1"
-slint = { workspace = true, features = ["backend-android-activity-06"] }
+slint = { workspace = true, features = ["backend-android-activity-06", "std", "compat-1-2", "accessibility"] }
 async-channel = "2.3.1"
 lazy_static.workspace = true
 futures-core = "0.3.31"
@@ -24,6 +24,11 @@ parking_lot.workspace = true
 tracing-gstreamer = "0.9.0"
 tracing = { workspace = true, features = ["log", "log-always"] }
 log.workspace = true
+webbrowser.workspace = true
+mimalloc = { version = "0.1", features = ["v3"] }
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8.9"
+glow = "0.17"
 
 [build-dependencies]
 slint-build.workspace = true
