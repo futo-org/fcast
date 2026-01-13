@@ -15,7 +15,7 @@ export { Spinner } from "spinner.slint";
 export { Switch } from "switch.slint";
 export { TextEdit } from "textedit.slint";
 
-import { Palette } from "std-widgets-impl.slint";
+import { Palette, Button } from "std-widgets-impl.slint";
 import { FCastPalette } from "styling.slint";
 
 export component FText inherits Text {
@@ -53,6 +53,7 @@ export global Icons {
     out property <image> volume-high: @image-url("icons/volume-high.svg");
     out property <image> clipboard: @image-url("icons/clipboard.svg");
     out property <image> more: @image-url("icons/more.svg");
+    out property <image> bars: @image-url("icons/bars.svg");
 }
 
 export component Spacer inherits Rectangle { }
@@ -70,7 +71,7 @@ component LabelText inherits Text {
     font-size: 20px;
 }
 
-component SecondaryText inherits Text {
+export component SecondaryText inherits Text {
     color: FCastPalette.neutral-600;
     font-weight: 300;
     font-size: 12px;
@@ -117,5 +118,37 @@ export component NoReceiverFound {
         }
 
         Spacer { }
+    }
+}
+
+export component RoundBackButton inherits Button {
+    icon: Icons.arrow-right;
+    colorize-icon: true;
+    icon-rotation: 180deg;
+    icon-size: 10px;
+    width: 36px;
+    height: 36px;
+}
+
+export component LicenseAndCopyrightNotice inherits VerticalLayout {
+    spacing: 10px;
+
+    SecondaryText {
+        text: "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.";
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        max-width: 400px;
+    }
+
+    SecondaryText {
+        text: "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.";
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        max-width: 400px;
+    }
+
+    SecondaryText {
+        horizontal-alignment: center;
+        text: "Copyright © 2026 FUTO";
     }
 }

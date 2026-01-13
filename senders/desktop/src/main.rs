@@ -586,27 +586,6 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
     video_source_fetcher_tx
 }
 
-// Copy of https://doc.rust-lang.org/std/net/struct.Ipv6Addr.html#method.is_unicast_global to not have to force the use of a nightly toolchain
-fn ipv6_is_global(v6: std::net::Ipv6Addr) -> bool {
-    !(v6.is_unspecified()
-        || v6.is_loopback()
-        || matches!(v6.segments(), [0, 0, 0, 0, 0, 0xffff, _, _])
-        || matches!(v6.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
-        || matches!(v6.segments(), [0x100, 0, 0, 0, _, _, _, _])
-        || (matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
-            && !(
-                u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
-                || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
-                || matches!(v6.segments(), [0x2001, 3, _, _, _, _, _, _])
-                || matches!(v6.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
-                || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
-            ))
-        || matches!(v6.segments(), [0x2002, _, _, _, _, _, _, _])
-        || matches!(v6.segments(), [0x5f00, ..])
-        || v6.is_unique_local()
-        || v6.is_unicast_link_local())
-}
-
 impl Application {
     /// Must be called from a tokio runtime.
     pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
@@ -728,7 +707,7 @@ impl Application {
             .addresses
             .retain(|addr| match Into::<std::net::IpAddr>::into(addr) {
                 std::net::IpAddr::V4(_) => true,
-                std::net::IpAddr::V6(v6) => ipv6_is_global(v6),
+                std::net::IpAddr::V6(v6) => fcast_sender_sdk::ipv6_is_global(v6),
             });
 
         if !device_info.addresses.is_empty() {

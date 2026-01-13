@@ -129,9 +129,19 @@ impl Application {
         Ok(())
     }
 
-    fn add_or_update_device(&mut self, device_info: DeviceInfo) -> Result<()> {
-        self.devices.insert(device_info.name.clone(), device_info);
-        self.update_receivers_in_ui()?;
+    fn add_or_update_device(&mut self, mut device_info: DeviceInfo) -> Result<()> {
+        device_info
+            .addresses
+            .retain(|addr| match Into::<std::net::IpAddr>::into(addr) {
+                std::net::IpAddr::V4(_) => true,
+                std::net::IpAddr::V6(v6) => fcast_sender_sdk::ipv6_is_global(v6),
+            });
+
+        if !device_info.addresses.is_empty() {
+            self.devices.insert(device_info.name.clone(), device_info);
+            self.update_receivers_in_ui()?;
+        }
+
         Ok(())
     }
 
@@ -206,10 +216,15 @@ impl Application {
                     error!("No device with name `{device_name}` found");
                 }
             }
-            Event::SignallerStarted { bound_port } => {
+            Event::SignallerStarted { bound_port_v4, bound_port_v6 } => {
                 let Some(addr) = self.local_address.as_ref() else {
                     error!("Local address is missing");
                     return Ok(ShouldQuit::No);
+                };
+
+                let bound_port = match addr {
+                    fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
+                    fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                 };
 
                 let (content_type, url) = self
@@ -269,6 +284,11 @@ impl Application {
                                     })?;
                                 }
                                 device::DeviceConnectionState::Disconnected => {
+                                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                                        ui.global::<Bridge>()
+                                            .invoke_change_state(AppState::Disconnected);
+                                    })?;
+                                    self.stop_cast(false).await?;
                                 }
                                 _ => (),
                             }
@@ -469,8 +489,13 @@ impl Application {
 // TODO: handle errs
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
+    #[cfg(debug_assertions)]
+    let log_level = log::LevelFilter::Debug;
+    #[cfg(not(debug_assertions))]
+    let log_level = log::LevelFilter::Info;
+
     android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
+        android_logger::Config::default().with_max_level(log_level),
     );
 
     let app_clone = app.clone();

@@ -1,7 +1,8 @@
 import { VerticalBox } from "std-widgets.slint";
-import { Button, Spinner, FText, ScrollView, Icons, Palette, NoReceiverFound } from "../../ui-components/std-widgets.slint";
+import { Button, Spinner, FText, ScrollView, Icons, Palette, NoReceiverFound, RoundBackButton, Spacer, ListView, SecondaryText, LicenseAndCopyrightNotice } from "../../ui-components/std-widgets.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
 import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
+import "../../ui-components/fonts/Outfit-Regular.ttf";
 
 enum AppState {
     Disconnected,
@@ -13,11 +14,12 @@ enum AppState {
 
 export global Bridge {
     in property <[string]> devices: [
-        "Device 1", "Device 2",
+        // "Device 1", "Device 2",
     ];
-    // in-out property <AppState> app-state: AppState.Disconnected;
-    in-out property <AppState> app-state: AppState.Casting;
-    in-out property <string> current-device-name: "";
+    in-out property <AppState> app-state: AppState.Disconnected;
+    // in-out property <AppState> app-state: AppState.SelectingSettings;
+    in-out property <string> current-device-name;
+    in-out property <bool> is-showing-settings: false;
 
     callback connect-receiver(string);
     callback start-casting(scale-width: int, scale-height: int, max-framerate: int);
@@ -30,6 +32,38 @@ export global Bridge {
         }
 
         Bridge.app-state = to;
+    }
+}
+
+component TopBar inherits Rectangle {
+    background: FCastPalette.neutral-1100;
+
+    HorizontalLayout {
+        padding: 12px;
+
+        if Bridge.app-state == AppState.SelectingSettings: RoundBackButton {
+            clicked => Bridge.stop-casting();
+        }
+
+        Spacer { }
+
+        Rectangle {
+            width: 30px;
+            height: 30px;
+
+            TouchArea {
+                clicked => {
+                    Bridge.is-showing-settings = !Bridge.is-showing-settings;
+                }
+            }
+
+            Image {
+                source: Bridge.is-showing-settings ? Icons.close : Icons.bars;
+                colorize: Palette.foreground;
+                width: Bridge.is-showing-settings ? 20px : parent.width;
+                height: Bridge.is-showing-settings ? 20px : parent.height;
+            }
+        }
     }
 }
 
@@ -85,7 +119,7 @@ component ConnectView inherits Rectangle {
     background: FCastPalette.neutral-1200;
 
     VerticalBox {
-        FText {
+        if Bridge.devices.length > 0: FText {
             horizontal-alignment: center;
             font-size: 16px;
             font-weight: 600;
@@ -114,7 +148,10 @@ component ConnectView inherits Rectangle {
 
         Button {
             text: "Scan QR";
-            clicked => Bridge.scan-qr();
+            clicked => {
+                Bridge.scan-qr();
+                Bridge.current-device-name = "scanned device";
+            }
         }
     }
 }
@@ -142,34 +179,36 @@ component SelectingSettingsView inherits Rectangle {
     property <int> video-resolution-idx: 2;
     property <int> video-framerate-idx: 2;
 
-    VerticalBox {
-        alignment: center;
+    VerticalLayout {
+        VerticalBox {
+            alignment: center;
 
-        FText {
-            font-size: 12pt;
-            vertical-alignment: center;
-            text: "Max resolution";
-        }
+            FText {
+                font-size: 12pt;
+                vertical-alignment: center;
+                text: "Max resolution";
+            }
 
-        VideoResolutionPicker {
-            current-index <=> video-resolution-idx;
-        }
+            VideoResolutionPicker {
+                current-index <=> video-resolution-idx;
+            }
 
-        FText {
-            font-size: 12pt;
-            vertical-alignment: center;
-            text: "Max framerate";
-        }
+            FText {
+                font-size: 12pt;
+                vertical-alignment: center;
+                text: "Max framerate";
+            }
 
-        FrameratePicker {
-            current-index <=> video-framerate-idx;
-        }
+            FrameratePicker {
+                current-index <=> video-framerate-idx;
+            }
 
-        Button {
-            text: "Start";
-            clicked => {
-                let scale = Utils.str-to-scale(video-resolution-idx);
-                Bridge.start-casting(scale.width, scale.height, Utils.video-framerates[video-framerate-idx].to-float())
+            Button {
+                text: "Start";
+                clicked => {
+                    let scale = Utils.str-to-scale(video-resolution-idx);
+                    Bridge.start-casting(scale.width, scale.height, Utils.video-framerates[video-framerate-idx].to-float());
+                }
             }
         }
     }
@@ -205,6 +244,20 @@ component CastingView inherits Rectangle {
     }
 }
 
+component SettingsView inherits Rectangle {
+    background: FCastPalette.background-color-primary;
+
+    VerticalLayout {
+        padding: 10px;
+
+        spacing: 10px;
+
+        Spacer {}
+
+        LicenseAndCopyrightNotice { }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "FCast Sender";
     icon: @image-url("../../extra/fcast.png");
@@ -215,13 +268,21 @@ export component MainWindow inherits Window {
 
     background: FCastPalette.background-color-primary;
 
-    if Bridge.app-state == AppState.Disconnected: ConnectView { }
+    VerticalLayout {
+        TopBar { }
 
-    if Bridge.app-state == AppState.Connecting: ConnectingView {}
+        if !Bridge.is-showing-settings: Rectangle {
+            if Bridge.app-state == AppState.Disconnected: ConnectView { }
 
-    if Bridge.app-state == AppState.SelectingSettings: SelectingSettingsView {}
+            if Bridge.app-state == AppState.Connecting: ConnectingView { }
 
-    if Bridge.app-state == AppState.WaitingForMedia: WaitingForMediaView { }
+            if Bridge.app-state == AppState.SelectingSettings: SelectingSettingsView { }
 
-    if Bridge.app-state == AppState.Casting : CastingView {}
+            if Bridge.app-state == AppState.WaitingForMedia: WaitingForMediaView { }
+
+            if Bridge.app-state == AppState.Casting: CastingView { }
+        }
+
+        if Bridge.is-showing-settings: SettingsView { }
+    }
 }

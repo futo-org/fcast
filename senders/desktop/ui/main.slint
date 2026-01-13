@@ -1,5 +1,3 @@
-// TODO: split this big file into multiple ones
-
 import {
     VerticalBox,
     HorizontalBox,
@@ -19,6 +17,7 @@ import {
     ScrollView,
     Icons,
     NoReceiverFound,
+    RoundBackButton, SecondaryText, LicenseAndCopyrightNotice,
 } from "../../ui-components/std-widgets.slint";
 import { FocusBorder } from "../../ui-components/components.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
@@ -380,12 +379,6 @@ component RegularText inherits Text {
     color: Palette.foreground;
     font-weight: 400;
     font-size: 16px;
-}
-
-component SecondaryText inherits Text {
-    color: FCastPalette.neutral-600;
-    font-weight: 300;
-    font-size: 12px;
 }
 
 component HyperLink inherits Rectangle {
@@ -1344,15 +1337,6 @@ component PlaybackControls inherits Rectangle {
             }
         }
     }
-}
-
-component RoundBackButton inherits Button {
-    icon: Icons.arrow-right;
-    colorize-icon: true;
-    icon-rotation: 180deg;
-    icon-size: 10px;
-    width: 36px;
-    height: 36px;
 }
 
 component PlaybackFocusScope inherits FocusScope {
@@ -2466,24 +2450,7 @@ export component MainWindow inherits Window {
 
             Spacer { }
 
-            SecondaryText {
-                text: "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.";
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                max-width: 400px;
-            }
-
-            SecondaryText {
-                text: "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.";
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                max-width: 400px;
-            }
-
-            SecondaryText {
-                horizontal-alignment: center;
-                text: "Copyright © 2026 FUTO";
-            }
+            LicenseAndCopyrightNotice { }
         }
     }
 
