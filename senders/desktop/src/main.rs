@@ -396,6 +396,7 @@ impl MirroringSettings {
 struct Settings {
     file_server: Option<FileServerSettings>,
     mirroring: Option<MirroringSettings>,
+    allow_ipv6: Option<bool>,
 }
 
 impl Settings {
@@ -1013,6 +1014,15 @@ impl Application {
         mut device_info: fcast_sender_sdk::device::DeviceInfo,
         device_name: &str,
     ) -> Result<()> {
+        if self.settings.allow_ipv6 != Some(true) {
+            device_info.addresses.retain(|addr| {
+                match addr {
+                    fcast_sender_sdk::IpAddr::V4 { .. } => true,
+                    fcast_sender_sdk::IpAddr::V6 { .. } => false,
+                }
+            });
+        }
+
         device_info.addresses.sort_unstable_by(|a, b| {
             fn weight(a: &fcast_sender_sdk::IpAddr) -> u8 {
                 match a {
@@ -1912,12 +1922,15 @@ impl Application {
             Event::UpdateSettings {
                 file_server_port,
                 mirroring_server_port,
+                allow_ipv6,
             } => {
                 let has_changes = file_server_port != self.settings.file_server().port()
-                    || mirroring_server_port != self.settings.mirroring().server_port();
+                    || mirroring_server_port != self.settings.mirroring().server_port()
+                    || Some(allow_ipv6) != self.settings.allow_ipv6;
                 self.settings.set_file_server_port(file_server_port);
                 self.settings
                     .set_mirroring_server_port(mirroring_server_port);
+                self.settings.allow_ipv6 = Some(allow_ipv6);
                 // self.settings.file_server.port = port;
                 if has_changes {
                     self.write_settings_file()
@@ -2107,6 +2120,7 @@ impl Application {
             toml_edit::value(self.settings.file_server().port() as i64);
         settings_doc["mirroring"]["server_port"] =
             toml_edit::value(self.settings.mirroring().server_port() as i64);
+        settings_doc["allow_ipv6"] = toml_edit::value(self.settings.allow_ipv6.unwrap_or(false));
 
         debug!(?settings_doc, "New settings");
 
@@ -2190,10 +2204,12 @@ impl Application {
 
         let file_server_port = self.settings.file_server().port();
         let mirroring_server_port = self.settings.mirroring().server_port();
+        let allow_ipv6 = self.settings.allow_ipv6.unwrap_or(false);
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_file_server_port(file_server_port.to_shared_string());
             bridge.set_mirroring_server_port(mirroring_server_port.to_shared_string());
+            bridge.set_allow_ipv6(allow_ipv6);
             bridge.set_settings_file_path(settings_path_str.to_shared_string());
         })?;
 
@@ -2690,10 +2706,12 @@ fn main() -> Result<()> {
                 error!(?mirroring_server_port, "Invalid port");
                 return;
             };
+            let allow_ipv6 = bridge.get_allow_ipv6();
             event_tx
                 .send(Event::UpdateSettings {
                     file_server_port,
                     mirroring_server_port,
+                    allow_ipv6,
                 })
                 .unwrap();
         }

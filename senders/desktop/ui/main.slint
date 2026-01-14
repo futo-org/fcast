@@ -157,6 +157,7 @@ export global Bridge {
     in-out property <bool> is-connecting-to-manually-inputted-device: false;
     in-out property <string> file-server-port: 0;
     in-out property <string> mirroring-server-port: 0;
+    in-out property <bool> allow-ipv6: false;
     in-out property <string> mirroring-source-name;
     in-out property <bool> is-reconnecting: false;
     in-out property <UiMediaFileType> current-media-type;
@@ -2456,6 +2457,16 @@ export component MainWindow inherits Window {
                     width: 100px;
                     text <=> Bridge.mirroring-server-port;
                     input-type: number;
+                }
+            }
+
+            SettingsEntry {
+                height: 36px;
+
+                name: "Allow IPv6";
+
+                Switch {
+                    checked <=> Bridge.allow-ipv6;
                 }
             }
         }
