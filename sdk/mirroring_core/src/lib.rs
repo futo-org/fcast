@@ -260,6 +260,7 @@ pub enum Event {
         file_server_port: u16,
         mirroring_server_port: u16,
         allow_ipv6: bool,
+        connection_password: Option<String>,
     },
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     UpdateAvailable(Release),

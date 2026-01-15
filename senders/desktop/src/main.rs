@@ -393,6 +393,26 @@ impl MirroringSettings {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename = "password_settings")]
+struct PasswordSettings {
+    pub password: Option<String>,
+}
+
+impl Default for PasswordSettings {
+    fn default() -> Self {
+        Self {
+            password: None,
+        }
+    }
+}
+
+impl PasswordSettings {
+    pub fn password(&self) -> Option<String> {
+        self.password.clone()
+    }
+}
+
 const fn default_allow_ipv6() -> Option<bool> {
     Some(true)
 }
@@ -403,6 +423,7 @@ struct Settings {
     mirroring: Option<MirroringSettings>,
     #[serde(default = "default_allow_ipv6")]
     allow_ipv6: Option<bool>,
+    password: Option<PasswordSettings>,
 }
 
 impl Default for Settings {
@@ -411,6 +432,7 @@ impl Default for Settings {
             file_server: Default::default(),
             mirroring: Default::default(),
             allow_ipv6: default_allow_ipv6(),
+            password: Default::default(),
         }
     }
 }
@@ -446,6 +468,23 @@ impl Settings {
                 let mut mirroring = MirroringSettings::default();
                 mirroring.server_port = Some(port);
                 self.mirroring = Some(mirroring);
+            }
+        }
+    }
+
+    fn password_settings(&self) -> PasswordSettings {
+        self.password
+            .clone()
+            .unwrap_or(PasswordSettings::default())
+    }
+
+    fn set_password(&mut self, pass: Option<String>) {
+        match self.password.as_mut() {
+            Some(password) => password.password = pass,
+            None => {
+                let mut password = PasswordSettings::default();
+                password.password = pass;
+                self.password = Some(password);
             }
         }
     }
@@ -1081,6 +1120,12 @@ impl Application {
         debug!(?device_info, "Trying to connect");
         let device = self.cast_ctx.create_device_from_info(device_info);
         self.current_session_id += 1;
+
+        let pass = self.settings.password_settings().password();
+        if let Err(e) = device.set_password(pass.as_deref()) {
+            error!(?e);
+        }
+
         if let Err(err) = device.connect(
             None,
             Arc::new(mcore::DeviceHandler::new(
@@ -1979,15 +2024,18 @@ impl Application {
                 file_server_port,
                 mirroring_server_port,
                 allow_ipv6,
+                connection_password,
             } => {
                 let has_changes = file_server_port != self.settings.file_server().port()
                     || mirroring_server_port != self.settings.mirroring().server_port()
-                    || Some(allow_ipv6) != self.settings.allow_ipv6;
+                    || Some(allow_ipv6) != self.settings.allow_ipv6
+                    || connection_password != self.settings.password_settings().password();
                 self.settings.set_file_server_port(file_server_port);
                 self.settings
                     .set_mirroring_server_port(mirroring_server_port);
                 self.settings.allow_ipv6 = Some(allow_ipv6);
                 // self.settings.file_server.port = port;
+                self.settings.set_password(connection_password);
                 if has_changes {
                     self.write_settings_file()
                         .instrument(tracing::debug_span!("write_settings_file"))
@@ -2763,11 +2811,17 @@ fn main() -> Result<()> {
                 return;
             };
             let allow_ipv6 = bridge.get_allow_ipv6();
+            let password_setting = bridge.get_connection_password();
+            let connection_password = match password_setting.len() {
+                0 => None,
+                _ => Some(password_setting.to_string())
+            };
             event_tx
                 .send(Event::UpdateSettings {
                     file_server_port,
                     mirroring_server_port,
                     allow_ipv6,
+                    connection_password,
                 })
                 .unwrap();
         }
