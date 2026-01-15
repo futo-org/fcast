@@ -301,13 +301,13 @@ pub fn url_format_ip_addr(addr: &IpAddr) -> String {
             o14,
             o15,
             o16,
-            scope_id,
+            ..
         } => {
             let addr = std::net::Ipv6Addr::from_bits(u128::from_be_bytes([
                 *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *o10, *o11, *o12, *o13, *o14, *o15,
                 *o16,
             ]));
-            format!("[{addr}%{scope_id}]")
+            format!("[{addr}]")
         }
     }
 }

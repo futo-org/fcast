@@ -226,12 +226,8 @@ fn img_format_from_str(mime: &str) -> Option<ImageFormat> {
 }
 
 enum ThumbnailResult {
-    Cached {
-        entry_id: i32,
-    },
-    New {
-        image: image::RgbaImage,
-    },
+    Cached { entry_id: i32 },
+    New { image: image::RgbaImage },
 }
 
 #[derive(Debug)]
@@ -289,7 +285,12 @@ impl ThumbnailDownloader {
                 ThumbnailDownloaderCmd::Download { id, url } => {
                     if let Some(other_id) = cache.get(&url) {
                         debug!(url, "Using cached download");
-                        on_downloaded(id, ThumbnailResult::Cached { entry_id: *other_id });
+                        on_downloaded(
+                            id,
+                            ThumbnailResult::Cached {
+                                entry_id: *other_id,
+                            },
+                        );
                         continue;
                     }
 
@@ -392,11 +393,26 @@ impl MirroringSettings {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+const fn default_allow_ipv6() -> Option<bool> {
+    Some(true)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct Settings {
     file_server: Option<FileServerSettings>,
     mirroring: Option<MirroringSettings>,
+    #[serde(default = "default_allow_ipv6")]
     allow_ipv6: Option<bool>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            file_server: Default::default(),
+            mirroring: Default::default(),
+            allow_ipv6: default_allow_ipv6(),
+        }
+    }
 }
 
 impl Settings {
@@ -570,6 +586,27 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
     video_source_fetcher_tx
 }
 
+// Copy of https://doc.rust-lang.org/std/net/struct.Ipv6Addr.html#method.is_unicast_global to not have to force the use of a nightly toolchain
+fn ipv6_is_global(v6: std::net::Ipv6Addr) -> bool {
+    !(v6.is_unspecified()
+        || v6.is_loopback()
+        || matches!(v6.segments(), [0, 0, 0, 0, 0, 0xffff, _, _])
+        || matches!(v6.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
+        || matches!(v6.segments(), [0x100, 0, 0, 0, _, _, _, _])
+        || (matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
+            && !(
+                u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
+                || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
+                || matches!(v6.segments(), [0x2001, 3, _, _, _, _, _, _])
+                || matches!(v6.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
+                || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
+            ))
+        || matches!(v6.segments(), [0x2002, _, _, _, _, _, _, _])
+        || matches!(v6.segments(), [0x5f00, ..])
+        || v6.is_unique_local()
+        || v6.is_unicast_link_local())
+}
+
 impl Application {
     /// Must be called from a tokio runtime.
     pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
@@ -686,9 +723,19 @@ impl Application {
         Ok(())
     }
 
-    fn add_or_update_device(&mut self, device_info: DeviceInfo) -> Result<()> {
-        self.devices.insert(device_info.name.clone(), device_info);
-        self.update_receivers_in_ui()?;
+    fn add_or_update_device(&mut self, mut device_info: DeviceInfo) -> Result<()> {
+        device_info
+            .addresses
+            .retain(|addr| match Into::<std::net::IpAddr>::into(addr) {
+                std::net::IpAddr::V4(_) => true,
+                std::net::IpAddr::V6(v6) => ipv6_is_global(v6),
+            });
+
+        if !device_info.addresses.is_empty() {
+            self.devices.insert(device_info.name.clone(), device_info);
+            self.update_receivers_in_ui()?;
+        }
+
         Ok(())
     }
 
@@ -1015,11 +1062,9 @@ impl Application {
         device_name: &str,
     ) -> Result<()> {
         if self.settings.allow_ipv6 != Some(true) {
-            device_info.addresses.retain(|addr| {
-                match addr {
-                    fcast_sender_sdk::IpAddr::V4 { .. } => true,
-                    fcast_sender_sdk::IpAddr::V6 { .. } => false,
-                }
+            device_info.addresses.retain(|addr| match addr {
+                fcast_sender_sdk::IpAddr::V4 { .. } => true,
+                fcast_sender_sdk::IpAddr::V6 { .. } => false,
             });
         }
 
@@ -1129,7 +1174,8 @@ impl Application {
                         )?;
 
                         self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_current_local_media_id(next_id as i32);
+                            ui.global::<Bridge>()
+                                .set_current_local_media_id(next_id as i32);
                         })?;
 
                         *current_id = next_id as u32;
@@ -1245,7 +1291,7 @@ impl Application {
                 }
                 None => error!(device_name, "Device not found"),
             },
-            Event::SignallerStarted { bound_port } => {
+            Event::SignallerStarted { bound_port_v4, bound_port_v6 } => {
                 if let Some(session) = self.session_state.as_mut() {
                     let local_address = session.local_address;
                     let (content_type, url) = match &mut session.specific {
@@ -1257,6 +1303,11 @@ impl Application {
                             let Some(addr) = local_address else {
                                 error!("Local address is missing");
                                 return Ok(ShouldQuit::No);
+                            };
+
+                            let bound_port = match addr {
+                                fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
+                                fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                             };
 
                             let (content_type, url) = tx_sink
@@ -1695,7 +1746,10 @@ impl Application {
                 let res = if let Some(session) = self.session_state.as_mut() {
                     match &mut session.specific {
                         SessionSpecificState::LocalMedia {
-                            data, file_server, current_id, ..
+                            data,
+                            file_server,
+                            current_id,
+                            ..
                         } => {
                             if let Some(file_entry) = data.files.get(file_id as usize) {
                                 let Some(local_addr) = session.local_address.as_ref() else {
@@ -1860,20 +1914,22 @@ impl Application {
 
                                 let image = match thumbnail {
                                     ThumbnailResult::Cached { entry_id } => {
-                                        let Some(entry) = sources.row_data(entry_id as usize) else {
+                                        let Some(entry) = sources.row_data(entry_id as usize)
+                                        else {
                                             return;
                                         };
                                         entry.thumbnail.clone()
                                     }
                                     ThumbnailResult::New { image } => {
-                                        slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                        slint::Image::from_rgba8(slint::SharedPixelBuffer::<
+                                            slint::Rgba8Pixel,
+                                        >::clone_from_slice(
                                             image.as_raw(),
                                             image.width(),
                                             image.height(),
                                         ))
                                     }
                                 };
-
 
                                 if let Some(mut src) = sources.row_data(id as usize) {
                                     src.thumbnail = image;
@@ -2732,9 +2788,7 @@ fn main() -> Result<()> {
         }
     });
 
-    bridge.on_is_valid_url(|url| {
-        url::Url::parse(&url).is_ok()
-    });
+    bridge.on_is_valid_url(|url| url::Url::parse(&url).is_ok());
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     bridge.set_is_audio_supported(false);
