@@ -90,6 +90,9 @@ struct TerminalSender {
     /// Available events: [MediaItemStart, MediaItemEnd, MediaItemChange, KeyDown, KeyUp]
     #[arg(long, short)]
     subscriptions: Option<String>,
+    /// The password to use for communicating with the receiver
+    #[arg(long, short('P'))]
+    password: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -178,6 +181,11 @@ fn main() {
     );
 
     let device = context.create_device_from_info(device_info);
+
+    if let Err(e) = device.set_password(app.password.as_deref()) {
+        eprintln!("Invalid password {e}");
+        std::process::exit(2);
+    }
 
     let (tx, rx) = channel();
 
