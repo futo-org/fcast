@@ -307,6 +307,8 @@ pub enum CastingDeviceError {
     UnsupportedSubscription,
     #[error("unsupported feature")]
     UnsupportedFeature,
+    #[error("encryption error")]
+    EncryptionError(EncryptionError),
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -383,6 +385,16 @@ pub enum LoadRequest {
     },
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
+#[cfg_attr(feature = "uniffi", uniffi(flat_error))]
+#[derive(thiserror::Error, Debug)]
+pub enum EncryptionError {
+    #[error("invalid encryption password")]
+    PasswordError,
+    #[error("encryption not supported for device")]
+    UnsupportedProtocol(ProtocolType),
+}
+
 /// A generic interface for casting devices.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub trait CastingDevice: Send + Sync {
@@ -445,4 +457,5 @@ pub trait CastingDevice: Send + Sync {
     /// [`supports_feature`]: Self::supports_feature
     fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
     fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
+    fn set_password(&self, pass: Option<&str>) -> Result<(), CastingDeviceError>;
 }

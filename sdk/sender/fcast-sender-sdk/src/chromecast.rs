@@ -26,7 +26,7 @@ use tokio_rustls::TlsConnector;
 use crate::device::{
     ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
     DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, MediaItem, Metadata, PlaybackState,
-    PlaylistItem, ProtocolType, Source,
+    PlaylistItem, ProtocolType, Source, EncryptionError,
 };
 use crate::{googlecast_protocol, utils, IpAddr};
 
@@ -1055,5 +1055,10 @@ impl CastingDevice for ChromecastDevice {
     #[allow(unused_variables)]
     fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
         self.send_command(Command::Unsubscribe(group))
+    }
+
+    fn set_password(&self, _pass: Option<&str>) -> Result<(), CastingDeviceError> {
+        error!("Encryption not supported on Chromecast devices");
+        Err(CastingDeviceError::EncryptionError(EncryptionError::UnsupportedProtocol(self.casting_protocol())))
     }
 }

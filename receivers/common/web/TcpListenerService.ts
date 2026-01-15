@@ -1,4 +1,6 @@
 import * as net from 'net';
+const crypto = require('crypto');
+const { Buffer } = require('node:buffer');
 import { ListenerService } from 'common/ListenerService';
 import { FCastSession } from 'common/FCastSession';
 import { Opcode, PROTOCOL_VERSION, VersionMessage } from 'common/Packets';
@@ -8,11 +10,14 @@ const logger = new Logger('TcpListenerService', LoggerType.BACKEND);
 export class TcpListenerService extends ListenerService {
     public static readonly PORT = 46899;
     private server: net.Server;
+    private encKey: Buffer | null;
 
-    start() {
+    start(password: string | null = null) {
         if (this.server != null) {
             return;
         }
+
+        this.setPassword(password);
 
         this.server = net.createServer()
             .listen(TcpListenerService.PORT)
@@ -36,6 +41,32 @@ export class TcpListenerService extends ListenerService {
         this.sessionMap.delete(sessionId);
     }
 
+    setPassword(password: string | null) {
+        logger.debug('Setting encryption password, closing existing sessions');
+
+        for (const sessionId in this.sessionMap) {
+            this.disconnect(sessionId);
+        }
+
+        if (!password || password.length == 0) {
+            this.encKey = null;
+            return;
+        }
+
+        const salt = 'FCAST_SALT';
+        const iters = 100000;
+        const keyLen = 32;
+
+        crypto.pbkdf2(password.normalize(), salt, iters, keyLen, 'sha256', (err, derivedKey) => {
+            if (err) {
+                logger.error(err);
+            }
+            else {
+                this.encKey = derivedKey;
+            }
+        });
+    }
+
     public getSenders(): string[] {
         const senders = [];
         this.sessionMap.forEach((sender) => { senders.push(sender.socket.remoteAddress); });
@@ -45,7 +76,9 @@ export class TcpListenerService extends ListenerService {
     private handleConnection(socket: net.Socket) {
         logger.info(`New connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
-        const session = new FCastSession(socket, (data) => socket.write(data));
+        const session = new FCastSession(socket, (data) => {
+            socket.write(data);
+        });
         session.bindEvents(this.emitter);
         this.sessionMap.set(session.sessionId, session);
 
@@ -56,7 +89,30 @@ export class TcpListenerService extends ListenerService {
 
         socket.on("data", buffer => {
             try {
-                session.processBytes(buffer);
+                if (this.encKey) {
+                    const nonce = buffer.slice(0, 16);
+                    const tag_idx = buffer.length - 16;
+                    const tag = buffer.slice(tag_idx);
+
+                    const decipher = crypto.createDecipheriv('aes-256-gcm', this.encKey, nonce);
+                    decipher.setAuthTag(tag);
+
+                    let decrypted = Buffer.from('');
+                    try {
+                        decrypted = decipher.update(buffer.slice(16, tag_idx));
+                        decrypted = Buffer.concat([decrypted, decipher.final()]);
+                    }
+                    catch (err) {
+                        logger.error(`Error decrypting incoming packet ${err}. Closing socket`);
+                        this.disconnect(session.sessionId);
+                    }
+                    session.processBytes(decrypted);
+                }
+                else {
+                    logger.debug(`Incoming packet: ${buffer}`);
+                    logger.debug(`\t${[...buffer]}`);
+                    session.processBytes(buffer);
+                }
             } catch (e) {
                 logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
                 socket.end();

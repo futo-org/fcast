@@ -24,8 +24,15 @@ use crate::device::{
     ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
     DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent,
     MediaItem, MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
+    EncryptionError,
 };
 use crate::{utils, IpAddr};
+
+use aes_gcm::{AesGcm, aes::Aes256, Key, KeyInit, aead::{Aead, OsRng}, AeadCore};
+use typenum::U16;
+use pbkdf2;
+use sha2::Sha256;
+use hmac::Hmac;
 
 const DEFAULT_SESSION_VERSION: u64 = 2;
 const EVENT_SUB_MIN_PROTO_VERSION: u64 = 3;
@@ -33,6 +40,8 @@ const PLAYLIST_MIN_PROTO_VERSION: u64 = 3;
 const V3_FEATURES_MIN_PROTO_VERSION: u64 = 3;
 
 const CONNECTED_EVENT_DEADLINE_DURATION: Duration = Duration::from_secs(2);
+
+type Aes256Gcm = AesGcm<Aes256, U16>;
 
 #[derive(Debug, PartialEq)]
 enum LoadType {
@@ -111,6 +120,7 @@ pub struct FCastDevice {
     state: Mutex<State>,
     session_version: FCastVersion,
     supports_whep: Arc<AtomicBool>,
+    enc_key: Mutex<Option<Key<Aes256Gcm>>>,
 }
 
 impl FCastDevice {
@@ -119,6 +129,7 @@ impl FCastDevice {
             state: Mutex::new(State::new(device_info, rt_handle)),
             session_version: FCastVersion::new(),
             supports_whep: Arc::new(AtomicBool::new(false)),
+            enc_key: Mutex::new(None),
         }
     }
 }
@@ -155,12 +166,30 @@ fn meta_to_fcast_meta(meta: Option<Metadata>) -> Option<MetadataObject> {
     })
 }
 
+fn encrypt_packet(enc_key: &Key<Aes256Gcm>, packet: &Vec<u8>) -> Vec<u8> {
+    let cipher = Aes256Gcm::new(enc_key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+
+    match cipher.encrypt(&(nonce).into(), packet.as_slice()) {
+        Ok(ciphertext) => {
+            let mut res = Vec::from(nonce.as_slice());
+            res.extend(ciphertext);
+            res
+        },
+        Err(e) => {
+            error!("Error encrypting packet: {e}");
+            packet.to_vec()
+        }
+    }
+}
+
 struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
     writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     session_version: FCastVersion,
     app_info: Option<ApplicationInfo>,
     supports_whep: Arc<AtomicBool>,
+    enc_key: Option<Key<Aes256Gcm>>,
 }
 
 impl InnerDevice {
@@ -169,6 +198,7 @@ impl InnerDevice {
         event_handler: Arc<dyn DeviceEventHandler>,
         session_version: FCastVersion,
         supports_whep: Arc<AtomicBool>,
+        enc_key: Option<Key<Aes256Gcm>>,
     ) -> Self {
         Self {
             event_handler,
@@ -176,6 +206,7 @@ impl InnerDevice {
             session_version,
             app_info,
             supports_whep,
+            enc_key,
         }
     }
 
@@ -194,6 +225,10 @@ impl InnerDevice {
         let mut packet = header;
         packet.extend_from_slice(data);
 
+        if let Some(key) = self.enc_key {
+            packet = encrypt_packet(&key, &packet);
+        }
+
         writer.write_all(&packet).await?;
 
         debug!(
@@ -209,13 +244,18 @@ impl InnerDevice {
             bail!("`writer` is missing");
         };
 
-        let mut header = [0u8; HEADER_LENGTH];
+        let mut header = vec![0u8; HEADER_LENGTH];
         header[..HEADER_LENGTH - 1].copy_from_slice(&1u32.to_le_bytes());
         header[HEADER_LENGTH - 1] = op as u8;
 
-        writer.write_all(&header).await?;
+        let packet = match self.enc_key {
+            Some(key) => encrypt_packet(&key, &mut header),
+            None => header,
+        };
 
-        debug!("Sent {} bytes with opcode: {op:?}", header.len());
+        writer.write_all(&packet).await?;
+
+        debug!("Sent {} bytes with opcode: {op:?}", packet.len());
 
         Ok(())
     }
@@ -779,7 +819,7 @@ impl InnerDevice {
                                 self.emit_connected(used_remote_addr, local_addr);
                                 has_emitted_connected_event = true;
                             }
-                        }
+                        },
                     }
                 }
             }
@@ -1057,6 +1097,7 @@ impl CastingDevice for FCastDevice {
                 event_handler,
                 self.session_version.clone(),
                 Arc::clone(&self.supports_whep),
+                *self.enc_key.lock().unwrap(),
             )
             .work(addrs, rx, tx, reconnect_interval_millis),
         );
@@ -1108,5 +1149,29 @@ impl CastingDevice for FCastDevice {
         } else {
             Err(CastingDeviceError::UnsupportedFeature)
         }
+    }
+
+    fn set_password(&self, pass: Option<&str>) -> Result<(), CastingDeviceError> {
+        let Some(pass) = pass else {
+            debug!("Removing encryption password");
+
+            let mut enc_key = self.enc_key.lock().unwrap();
+            *enc_key = None;
+            return Ok(());
+        };
+
+        debug!("Setting encryption password \"{pass}\"");
+
+        let salt = b"FCAST_SALT";
+        let iters = 100000;
+        let mut key = [0u8; 32]; // 32 byte keylen
+        if let Err(_) = pbkdf2::pbkdf2::<Hmac<Sha256>>(pass.as_bytes(), salt, iters, &mut key) {
+            return Err(CastingDeviceError::EncryptionError(EncryptionError::PasswordError));
+        }
+
+        let mut enc_key = self.enc_key.lock().unwrap();
+        *enc_key = Some(Key::<Aes256Gcm>::from_slice(&key).to_owned());
+
+        Ok(())
     }
 }
