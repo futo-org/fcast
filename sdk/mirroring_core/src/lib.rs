@@ -1,8 +1,8 @@
 use fcast_sender_sdk::device::{self, DeviceInfo};
-use tokio::sync::mpsc::UnboundedSender;
-use tracing::error;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use serde::Deserialize;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::error;
 
 #[cfg(not(target_os = "android"))]
 pub mod preview;
@@ -129,7 +129,7 @@ pub enum DeviceEvent {
     #[cfg(not(target_os = "android"))]
     PlaybackError(String),
     #[cfg(not(target_os = "android"))]
-    Media(device::MediaEvent)
+    Media(device::MediaEvent),
 }
 
 #[cfg(not(target_os = "android"))]
@@ -177,7 +177,8 @@ pub enum Event {
     },
     ConnectToDevice(String),
     SignallerStarted {
-        bound_port: u16,
+        bound_port_v4: u16,
+        bound_port_v6: u16,
     },
     Quit,
     DeviceAvailable(DeviceInfo),
