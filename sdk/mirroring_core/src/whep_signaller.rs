@@ -373,7 +373,10 @@ mod imp {
                     #[cfg(not(target_os = "windows"))]
                     let bound_port_v4 = bound_port;
                     #[cfg(target_os = "windows")]
-                    let bound_port_v4 = listener_v4;
+                    let bound_port_v4 = {
+                        let local_addr = listener_v4.local_addr().unwrap();
+                        local_addr.port()
+                    };
 
                     obj.emit_by_name::<()>(
                         ON_SERVER_STARTED_SIGNAL_NAME,
