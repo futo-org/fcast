@@ -45,6 +45,7 @@ export class Main {
     static cache: AppCache = new AppCache();
     static noFullscreenPlayer = false;
     static noPlayerWindow = false;
+    static password: string | null;
 
     private static playerWindowContentViewer = null;
     private static mediaCache: MediaCache = null;
@@ -318,7 +319,7 @@ export class Main {
                 Main.sendWindowEvent("event-subscribed-keys-update", subscribeData);
             }
         });
-        Main.tcpListenerService.start();
+        Main.tcpListenerService.start(Main.password);
 
         ipcMain.on('send-playback-error', (event: IpcMainEvent, value: PlaybackErrorMessage) => {
             Main.tcpListenerService.send(Opcode.PlaybackError, value);
@@ -568,6 +569,7 @@ export class Main {
                 'log': { chocies: ['ALL', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'MARK', 'OFF'], alias: 'loglevel', desc: "Defines the verbosity level of the logger" },
                 'no-fullscreen-player': { type: 'boolean', desc: "Start player in windowed mode" },
                 'no-player-window': { type: 'boolean', desc: "Play videos in the main application window" },
+                'password': { type: 'string', desc: "Password to expect from incoming commands" },
             })
             .parseSync();
 
@@ -612,6 +614,7 @@ export class Main {
             Main.shouldOpenMainWindow = argv.noMainWindow === undefined ? !Settings.json.ui.noMainWindow : !argv.noMainWindow;
             Main.noFullscreenPlayer = argv.noFullscreenPlayer === undefined ? Settings.json.ui.noFullscreenPlayer : argv.noFullscreenPlayer;
             Main.noPlayerWindow = argv.noPlayerWindow === undefined ? Settings.json.ui.noPlayerWindow : argv.noPlayerWindow;
+            Main.password = argv.password === undefined ? null : argv.password;
 
             const lock = Main.application.requestSingleInstanceLock()
             if (!lock) {

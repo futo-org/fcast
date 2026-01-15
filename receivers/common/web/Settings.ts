@@ -31,6 +31,7 @@ export interface Settings {
     network: NetworkSettings,
     ui: UISettings,
     updater: UpdaterSettings,
+    password: string | null,
 }
 
 export class Settings {
@@ -89,6 +90,8 @@ export class Settings {
 
         Settings.json.updater.channel = Settings.json.updater.channel === undefined ? 'stable' : Settings.json.updater.channel;
         Settings.json.updater.checkForUpdatesOnStart = Settings.json.updater.checkForUpdatesOnStart === undefined ? true : Settings.json.updater.checkForUpdatesOnStart;
+
+        Settings.json.password = Settings.json.password === undefined ? null : Settings.json.password;
 
         Settings.save();
     }
