@@ -1160,7 +1160,7 @@ impl CastingDevice for FCastDevice {
             return Ok(());
         };
 
-        debug!("Setting encryption password \"{pass}\"");
+        debug!("Setting encryption password");
 
         let salt = b"FCAST_SALT";
         let iters = 100000;
