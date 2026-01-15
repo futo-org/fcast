@@ -109,8 +109,6 @@ export class TcpListenerService extends ListenerService {
                     session.processBytes(decrypted);
                 }
                 else {
-                    logger.debug(`Incoming packet: ${buffer}`);
-                    logger.debug(`\t${[...buffer]}`);
                     session.processBytes(buffer);
                 }
             } catch (e) {
