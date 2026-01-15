@@ -4,7 +4,7 @@ use crate::Event;
 #[cfg(target_os = "android")]
 use crate::{SourceConfig, VideoSource};
 use futures::StreamExt;
-use gst::prelude::*;
+use gst::{glib, prelude::*};
 use std::net::IpAddr;
 use tracing::{debug, error};
 
@@ -350,21 +350,31 @@ fn create_webrtcsink(
         crate::whep_signaller::ON_SERVER_STARTED_SIGNAL_NAME,
         false,
         move |vals| {
-            let Some(bound_port_val) = vals.get(1) else {
-                error!("Could not get bound port parameter");
+            let Some(bound_ipv4_port_val) = vals.get(1) else {
+                error!("Could not get bound ipv4 port parameter");
                 return None;
             };
-            let bound_port = match bound_port_val.get::<u32>() {
-                Ok(port) => port as u16,
-                Err(err) => {
-                    error!(?err, "Failed to get `bound_port_val` as u32");
-                    return None;
-                }
+            let Some(bound_ipv6_port_val) = vals.get(2) else {
+                error!("Could not get bound ipv6 port parameter");
+                return None;
             };
+
+            fn to_port(val: &glib::Value) -> Option<u16> {
+                match val.get::<u32>() {
+                    Ok(port) => Some(port as u16),
+                    Err(err) => {
+                        error!(?err, "Failed to get value as u32");
+                        None
+                    }
+                }
+            }
+
+            let bound_port_v4 = to_port(bound_ipv4_port_val)?;
+            let bound_port_v6 = to_port(bound_ipv6_port_val)?;
             let event_tx = event_tx.clone();
             rt_handle.spawn(async move {
                 event_tx
-                    .send(Event::SignallerStarted { bound_port })
+                    .send(Event::SignallerStarted { bound_port_v4, bound_port_v6 })
                     .unwrap();
             });
 

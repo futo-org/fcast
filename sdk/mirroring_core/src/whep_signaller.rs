@@ -21,7 +21,7 @@ mod imp {
 
     use std::{
         collections::HashMap,
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::{IpAddr, Ipv6Addr, SocketAddr},
         sync::LazyLock,
         time::Duration,
     };
@@ -351,68 +351,100 @@ mod imp {
             let self_weak = self.downgrade();
             let settings = self.settings.lock();
             let server_port = settings.server_port;
-            let jh = settings.rt_handle.spawn(
-                async move {
-                let listener =
-                        // TODO: Ipv6Addr::UNSPECIFIED
-                    // TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
-                    TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), server_port))
-                        .await
-                        .unwrap();
+            let jh = settings.rt_handle.spawn(async move {
+                let listener = TcpListener::bind(SocketAddr::new(
+                    IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                    server_port,
+                ))
+                .await
+                .expect("failed create TCP listener");
+                #[cfg(target_os = "windows")]
+                let listener_v4 = TcpListener::bind(SocketAddr::new(
+                    IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                    server_port,
+                ))
+                .await
+                .expect("failed create TCP listener");
 
                 if let Some(obj) = obj_weak.upgrade() {
                     let local_addr = listener.local_addr().unwrap();
                     let bound_port = local_addr.port();
+
+                    #[cfg(not(target_os = "windows"))]
+                    let bound_port_v4 = bound_port;
+                    #[cfg(target_os = "windows")]
+                    let bound_port_v4 = {
+                        let local_addr = listener_v4.local_addr().unwrap();
+                        local_addr.port()
+                    };
+
                     obj.emit_by_name::<()>(
                         ON_SERVER_STARTED_SIGNAL_NAME,
-                        &[&gst::glib::Value::from(bound_port as u32)],
+                        &[&gst::glib::Value::from(bound_port_v4 as u32), &gst::glib::Value::from(bound_port as u32)],
                     );
                 } else {
                     error!("Failed to upgrade obj_weak ");
                 }
 
-                loop {
-                    tokio::select! {
-                        conn = listener.accept() => {
-                            let (stream, _) = match conn {
-                                Ok(conn) => conn,
-                                Err(err) => {
-                                    error!(?err, "Accept error");
-                                    continue;
-                                }
-                            };
+                fn accept_connection(
+                    self_weak: &glib::subclass::ObjectImplWeakRef<Signaller>,
+                    conn: std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)>,
+                ) {
+                    let (stream, _) = match conn {
+                        Ok(conn) => conn,
+                        Err(err) => {
+                            error!(?err, "Accept error");
+                            return;
+                        }
+                    };
 
-                            let self_weak = self_weak.clone();
-                            tokio::spawn(
-                                async move {
-                                let stream = hyper_util::rt::TokioIo::new(Box::pin(stream));
-                                let server = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+                    let self_weak = self_weak.clone();
+                    tokio::spawn(async move {
+                        let stream = hyper_util::rt::TokioIo::new(Box::pin(stream));
+                        let server = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        );
 
-                                let conn = server.serve_connection_with_upgrades(stream, hyper::service::service_fn({
-                                    |req| {
-                                        let self_weak = self_weak.clone();
-                                        async move {
+                        let conn = server.serve_connection_with_upgrades(
+                            stream,
+                            hyper::service::service_fn({
+                                |req| {
+                                    let self_weak = self_weak.clone();
+                                    async move {
                                         if let Some(self_) = self_weak.upgrade() {
                                             self_.handle_request(req).await
                                         } else {
                                             resp_not_found()
                                         }
                                     }
-                                    }
-                                }));
-
-                                if let Err(err) = conn.await {
-                                    error!(?err, "Failed to handle connection");
                                 }
-                            });
+                            }),
+                        );
+
+                        if let Err(err) = conn.await {
+                            error!(?err, "Failed to handle connection");
                         }
-                        sig = &mut rx => {
-                            match sig {
-                                Ok(_) => debug!("Server shut down signal received"),
-                                Err(err) => error!(?err, "Sender dropped"),
-                            }
-                            break;
-                        }
+                    });
+                }
+
+                fn handle_sig(sig: std::result::Result<(), tokio::sync::oneshot::error::RecvError>) {
+                    match sig {
+                        Ok(_) => debug!("Server shut down signal received"),
+                        Err(err) => error!(?err, "Sender dropped"),
+                    }
+                }
+
+                loop {
+                    #[cfg(not(target_os = "windows"))]
+                    tokio::select! {
+                        conn = listener.accept() => accept_connection(&self_weak, conn),
+                        sig = &mut rx => break handle_sig(sig),
+                    }
+                    #[cfg(target_os = "windows")]
+                    tokio::select! {
+                        conn = listener.accept() => accept_connection(&self_weak, conn),
+                        conn = listener_v4.accept() => accept_connection(&self_weak, conn),
+                        sig = &mut rx => break handle_sig(sig),
                     }
                 }
             });
@@ -515,7 +547,8 @@ mod imp {
             static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
                 vec![
                     glib::subclass::Signal::builder(ON_SERVER_STARTED_SIGNAL_NAME)
-                        .param_types([u32::static_type()])
+                        // [Ipv4 listener port, Ipv6 listener port]
+                        .param_types([u32::static_type(), u32::static_type()])
                         .build(),
                 ]
             });
