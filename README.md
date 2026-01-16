@@ -37,17 +37,19 @@ In FCast, a "sender" is a device or software application that discovers and comm
 
 A "receiver", in this context, is a software implementation running on various platforms (Linux, Windows, MacOS, Android, ...) that receives media content from the sender. It continuously provides updates to the sender about the current state of playback.
 
-## Project Structure
+## Supported Applications
 
-- Receivers
-  - [**Android**](receivers/android) native.
-  - [**MacOS, Windows, Linux**](receivers/electron) electron.
-  - [**webOS**](receivers/webos)
-  - [**Tizen**](receivers/tizen)
+**Receivers**
+- [**Android**](receivers/android)
+- [**Electron**](receivers/electron)
+- [**webOS**](receivers/webos)
+- [**Tizen**](receivers/tizen)
 
-- Senders
-  - [**Grayjay**](https://github.com/futo-org/grayjay-android) is a player that exposes multiple video websites as sources in the app.
+**Senders**
+- FCast Senders:
+  - [**Desktop**](https://github.com/futo-org/fcast/tree/master/senders/desktop) sender for mirroring your screen or casting multimedia content to FCast receivers.
   - [**Terminal**](https://github.com/futo-org/fcast/tree/master/senders/terminal) sender allows you use the FCast protocol over the command line interface.
+- **Grayjay** ([**Android**](https://github.com/futo-org/grayjay-android) / [**Desktop**](https://github.com/futo-org/Grayjay.Desktop)) is a multi-platform media application that allows you to watch content from multiple platforms in a single application.
 
 ## Contributing
 
