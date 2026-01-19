@@ -17,7 +17,7 @@ import {
     ScrollView,
     Icons,
     NoReceiverFound,
-    RoundBackButton, SecondaryText, LicenseAndCopyrightNotice,
+    RoundBackButton, SecondaryText, LicenseAndCopyrightNotice, HyperLink,
 } from "../../ui-components/std-widgets.slint";
 import { FocusBorder } from "../../ui-components/components.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
@@ -381,41 +381,6 @@ component RegularText inherits Text {
     font-size: 16px;
 }
 
-component HyperLink inherits Rectangle {
-    in property <string> url;
-    in property <string> text;
-
-    TouchArea {
-        mouse-cursor: pointer;
-
-        clicked => {
-            Bridge.open-url(url);
-        }
-    }
-
-    HorizontalLayout {
-        spacing: 5.5px;
-
-        SecondaryText {
-            vertical-alignment: center;
-            color: FCastPalette.brand-600;
-            text: text;
-        }
-
-        VerticalLayout {
-            alignment: center;
-
-            Image {
-                source: Icons.open-external;
-                width: 9px;
-                height: 9px;
-            }
-        }
-
-        Spacer { }
-    }
-}
-
 component DisconnectButton inherits Button {
     icon: Icons.disconnect;
     text: "Disconnect";
@@ -622,6 +587,8 @@ component ConnectView inherits Rectangle {
                         HyperLink {
                             url: "https://fcast.org/";
                             text: "Get the receiver app";
+
+                            clicked(url) => Bridge.open-url(url);
                         }
                     }
                 }
@@ -851,6 +818,8 @@ component ReadyToCastView inherits Rectangle {
                 HyperLink {
                     text: "Get it here.";
                     url: "https://github.com/yt-dlp/yt-dlp/wiki/Installation";
+
+                    clicked(url) => Bridge.open-url(url);
                 }
 
                 Spacer { }
@@ -2431,6 +2400,8 @@ export component MainWindow inherits Window {
                 HyperLink {
                     url: "https://fcast.org";
                     text: self.url;
+
+                    clicked(url) => Bridge.open-url(url);
                 }
             }
 
@@ -2445,6 +2416,8 @@ export component MainWindow inherits Window {
                 HyperLink {
                     url: "https://github.com/futo-org/fcast/issues";
                     text: "our issue tracker";
+
+                    clicked(url) => Bridge.open-url(url);
                 }
             }
 
@@ -2566,6 +2539,8 @@ export component MainWindow inherits Window {
                 HyperLink {
                     text: "Download and install the update manually";
                     url: "https://fcast.org";
+
+                    clicked(url) => Bridge.open-url(url);
                 }
             }
 
@@ -2614,6 +2589,8 @@ export component CrashWindow inherits Window {
             HyperLink {
                 text: "https://github.com/futo-org/fcast/issues";
                 url: "https://github.com/futo-org/fcast/issues";
+
+                clicked(url) => Bridge.open-url(url);
             }
         }
 

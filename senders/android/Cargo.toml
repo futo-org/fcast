@@ -1,7 +1,7 @@
 [package]
 name = "android-sender"
-version = "0.1.0"
-edition = "2021"
+version = "0.0.1"
+edition = "2024"
 
 [dependencies]
 android_logger = "0.15.0"
@@ -24,6 +24,7 @@ parking_lot.workspace = true
 tracing-gstreamer = "0.9.0"
 tracing = { workspace = true, features = ["log", "log-always"] }
 log.workspace = true
+webbrowser.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

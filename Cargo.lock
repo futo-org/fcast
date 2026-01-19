@@ -228,7 +228,7 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
 name = "android-sender"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -251,6 +251,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-gstreamer",
+ "webbrowser",
 ]
 
 [[package]]

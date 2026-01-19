@@ -38,6 +38,7 @@ bytes = "1"
 smallvec = { version = "1.15.1", features = ["serde"] }
 smol_str = { version = "0.3.4", features = ["serde"] }
 toml_edit = { version = "0.24", features = ["serde"] }
+webbrowser = "1"
 
 [profile.release]
 lto = "thin"

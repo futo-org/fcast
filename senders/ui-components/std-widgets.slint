@@ -152,3 +152,38 @@ export component LicenseAndCopyrightNotice inherits VerticalLayout {
         text: "Copyright © 2026 FUTO";
     }
 }
+
+export component HyperLink inherits Rectangle {
+    in property <string> url;
+    in property <string> text;
+
+    callback clicked(url: string);
+
+    TouchArea {
+        mouse-cursor: pointer;
+
+        clicked => clicked(url);
+    }
+
+    HorizontalLayout {
+        spacing: 5.5px;
+
+        SecondaryText {
+            vertical-alignment: center;
+            color: FCastPalette.brand-600;
+            text: text;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            Image {
+                source: Icons.open-external;
+                width: 9px;
+                height: 9px;
+            }
+        }
+
+        Spacer { }
+    }
+}

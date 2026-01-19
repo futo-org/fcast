@@ -1,5 +1,5 @@
 import { VerticalBox } from "std-widgets.slint";
-import { Button, Spinner, FText, ScrollView, Icons, Palette, NoReceiverFound, RoundBackButton, Spacer, ListView, SecondaryText, LicenseAndCopyrightNotice } from "../../ui-components/std-widgets.slint";
+import { Button, Spinner, FText, ScrollView, Icons, Palette, NoReceiverFound, RoundBackButton, Spacer, ListView, SecondaryText, LicenseAndCopyrightNotice, HyperLink } from "../../ui-components/std-widgets.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
 import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
 import "../../ui-components/fonts/Outfit-Regular.ttf";
@@ -21,10 +21,13 @@ export global Bridge {
     in-out property <string> current-device-name;
     in-out property <bool> is-showing-settings: false;
 
+    in property <string> app-version;
+
     callback connect-receiver(string);
     callback start-casting(scale-width: int, scale-height: int, max-framerate: int);
     callback stop-casting();
     callback scan-qr();
+    callback open-url(url: string);
 
     public function change-state(to: AppState) {
         if to == AppState.Disconnected {
@@ -251,6 +254,36 @@ component SettingsView inherits Rectangle {
         padding: 10px;
 
         spacing: 10px;
+
+        FText {
+            text: "FCast Sender v" + Bridge.app-version;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            HyperLink {
+                url: "https://fcast.org";
+                text: self.url;
+                clicked(url) => Bridge.open-url(url);
+            }
+        }
+
+        FText {
+            text: "Please report any issues to";
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            HyperLink {
+                url: "https://github.com/futo-org/fcast/issues";
+                text: "our issue tracker";
+                clicked(url) => Bridge.open-url(url);
+            }
+        }
 
         Spacer {}
 

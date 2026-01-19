@@ -8,6 +8,7 @@ use jni::{
 };
 use mcore::{transmission::WhepSink, DeviceEvent, Event, ShouldQuit, SourceConfig};
 use parking_lot::{Condvar, Mutex};
+use slint::ToSharedString;
 use std::net::Ipv6Addr;
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, error};
@@ -508,7 +509,9 @@ fn android_main(app: slint::android::AndroidApp) {
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    ui.global::<Bridge>().on_connect_receiver({
+    let bridge = ui.global::<Bridge>();
+
+    bridge.on_connect_receiver({
         let event_tx = event_tx.clone();
         move |device_name| {
             event_tx
@@ -517,7 +520,7 @@ fn android_main(app: slint::android::AndroidApp) {
         }
     });
 
-    ui.global::<Bridge>().on_start_casting({
+    bridge.on_start_casting({
         let event_tx = event_tx.clone();
         move |scale_width: i32, scale_height: i32, max_framerate: i32| {
             event_tx
@@ -530,19 +533,28 @@ fn android_main(app: slint::android::AndroidApp) {
         }
     });
 
-    ui.global::<Bridge>().on_stop_casting({
+    bridge.on_stop_casting({
         let event_tx = event_tx.clone();
         move || {
             event_tx.send(Event::EndSession { disconnect: true }).unwrap();
         }
     });
 
-    ui.global::<Bridge>().on_scan_qr({
+    bridge.on_scan_qr({
         let android_app = app_clone.clone();
         move || {
             call_java_method_no_args(&android_app, JavaMethod::ScanQr);
         }
     });
+
+    bridge.on_open_url(|url: slint::SharedString| {
+        debug!(?url, "Trying to open URL");
+        if let Err(err) = webbrowser::open(&url) {
+            error!(?err, "Failed to open URL");
+        }
+    });
+
+    bridge.set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
 
     let ui_weak = ui.as_weak();
 
