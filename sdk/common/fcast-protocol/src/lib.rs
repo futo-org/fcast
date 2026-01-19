@@ -9,6 +9,8 @@ pub mod v1;
 pub mod v2;
 pub mod v3;
 
+pub const HEADER_LENGTH: usize = 5;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TryFromByteError {
     #[error("Unknown opcode: {0}")]

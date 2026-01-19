@@ -1,0 +1,22 @@
+[package]
+name = "file-server"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+http-range = "0.1.5"
+parking_lot.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+hyper = "1.7.0"
+hyper-util = { version = "0.1.17", features = [ "server-auto", "tokio" ] }
+http-body-util = "0.1.3"
+
+[dependencies.fcast-sender-sdk]
+path = "../../sdk/sender/fcast-sender-sdk"
+default-features = false
+features = [ "fcast", "chromecast", "discovery" ]
