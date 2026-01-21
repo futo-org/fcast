@@ -199,7 +199,10 @@ export class FCastSession {
                             ),
                         ));
 
-                        this.send(Opcode.PlaybackUpdate, getPlaybackUpdateMessage());
+                        const updateMessage = getPlaybackUpdateMessage();
+                        if (updateMessage) {
+                            this.send(Opcode.PlaybackUpdate, getPlaybackUpdateMessage());
+                        }
                         this.sentInitialMessage = true;
                     }
 
