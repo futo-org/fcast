@@ -2,7 +2,7 @@ use file_server::FileServer;
 use futures::StreamExt;
 use simply_colored::{GREEN, RED, RESET};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::Write,
     net::SocketAddr,
     path::PathBuf,
@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand};
 use fast::{Step, TestCase};
 use fcast_protocol::{
     HEADER_LENGTH, Opcode, PlaybackState, SetVolumeMessage, VersionMessage, v2,
-    v3::{self, InitialSenderMessage},
+    v3::{self, EventSubscribeObject, InitialSenderMessage},
 };
 
 #[derive(Subcommand)]
@@ -114,6 +114,21 @@ enum InternalState {
     WaitingForPlaybackUpdate,
 }
 
+fn play_message_to_media_item(msg: v3::PlayMessage) -> v3::MediaItem {
+    v3::MediaItem {
+        container: msg.container,
+        url: msg.url,
+        content: msg.content,
+        time: msg.time,
+        volume: msg.volume,
+        speed: msg.speed,
+        cache: None,
+        show_duration: None,
+        headers: msg.headers,
+        metadata: msg.metadata,
+    }
+}
+
 struct State {
     steps: &'static [Step],
     internal: InternalState,
@@ -124,6 +139,8 @@ struct State {
     expecting_pause: bool,
     expecting_resume: bool,
     invalid_volume_updates_received: usize,
+    subscriptions: HashSet<EventSubscribeObject>,
+    expected_media_item_start: Option<v3::MediaItem>,
 }
 
 impl State {
@@ -138,6 +155,8 @@ impl State {
             expecting_pause: false,
             expecting_resume: false,
             invalid_volume_updates_received: 0,
+            subscriptions: HashSet::new(),
+            expected_media_item_start: None,
         }
     }
 
@@ -226,6 +245,26 @@ impl State {
                     info!("Play update correct");
                 }
             }
+            Opcode::Event => {
+                let msg = serde_json::from_str::<v3::EventMessage>(
+                    &body
+                        .clone()
+                        .ok_or(anyhow!("Event message is missing body"))?,
+                )?;
+                match msg.event {
+                    v3::EventObject::MediaItem { variant, item } => match variant {
+                        v3::EventType::MediaItemStart => {
+                            if let Some(expected_media_item_start) =
+                                self.expected_media_item_start.take()
+                            {
+                                assert_eq!(item, expected_media_item_start);
+                            }
+                        }
+                        _ => (),
+                    },
+                    v3::EventObject::Key { .. } => (),
+                }
+            }
             _ => (),
         }
 
@@ -265,19 +304,12 @@ impl State {
     }
 
     fn ready(&self) -> bool {
-        debug!(
-            b = (self.expected_volume.is_none()),
-            c = (self.expected_play_update.is_none()),
-            d = (!self.expecting_pause),
-            e = (!self.expecting_resume),
-            sleeping = self.internal != InternalState::Sleeping
-        );
-
         self.expected_volume.is_none()
             && self.expected_play_update.is_none()
             && !self.expecting_pause
             && !self.expecting_resume
             && self.internal != InternalState::Sleeping
+            && self.expected_media_item_start.is_none()
     }
 
     #[instrument(skip_all)]
@@ -361,6 +393,13 @@ impl State {
                                 metadata: None,
                             };
                             self.expected_play_update = Some(body.clone());
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemStart)
+                            {
+                                self.expected_media_item_start =
+                                    Some(play_message_to_media_item(body.clone()));
+                            }
                             return Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
                                 body: serde_json::to_vec(&body).unwrap(),
@@ -374,10 +413,82 @@ impl State {
                             self.expecting_resume = true;
                             return Ok(Some(Action::WriteSimple(Opcode::Resume)));
                         }
+                        fast::Send::SubscribeEvent(event) => {
+                            self.subscriptions.insert(event.clone());
+                            let body = v3::SubscribeEventMessage {
+                                event: event.clone(),
+                            };
+                            return Ok(Some(Action::WritePacket {
+                                op: Opcode::SubscribeEvent,
+                                body: serde_json::to_vec(&body).unwrap(),
+                            }));
+                        }
+                        // fast::Send::PlaylistV3 { items } => {
+                        //     let items = items
+                        //         .iter()
+                        //         .map(|itm| {
+                        //             let file_entry = file_urls.get(&itm.file_id).unwrap();
+                        //             v3::MediaItem {
+                        //                 container: file_entry.1.to_owned(),
+                        //                 url: Some(file_entry.0.to_owned()),
+                        //                 content: None,
+                        //                 time: None,
+                        //                 volume: None,
+                        //                 speed: None,
+                        //                 cache: None,
+                        //                 show_duration: None,
+                        //                 headers: None,
+                        //                 metadata: None,
+                        //             }
+                        //         })
+                        //         .collect::<Vec<v3::MediaItem>>();
+
+                        //     info!(?items);
+
+                        //     if self
+                        //         .subscriptions
+                        //         .contains(&v3::EventSubscribeObject::MediaItemStart)
+                        //     {
+                        //         self.expected_media_item_start =
+                        //             Some(items.first().cloned().unwrap());
+                        //     }
+
+                        //     let playlist = v3::PlaylistContent {
+                        //         variant: v3::ContentType::Playlist,
+                        //         items,
+                        //         offset: None,
+                        //         volume: None,
+                        //         speed: None,
+                        //         forward_cache: None,
+                        //         backward_cache: None,
+                        //         metadata: None,
+                        //     };
+
+                        //     let playlist_json = serde_json::to_string(&playlist).unwrap();
+
+                        //     let body = v3::PlayMessage {
+                        //         container: "application/json".to_owned(),
+                        //         url: None,
+                        //         content: Some(playlist_json),
+                        //         time: None,
+                        //         speed: None,
+                        //         headers: None,
+                        //         volume: None,
+                        //         metadata: None,
+                        //     };
+
+                        //     self.expected_play_update = Some(body.clone());
+
+                        //     return Ok(Some(Action::WritePacket {
+                        //         op: Opcode::Play,
+                        //         body: serde_json::to_vec(&body).unwrap(),
+                        //     }));
+                        // }
                     },
                     Step::Receive(receive) => {
                         self.internal = match receive {
                             fast::Receive::Version => InternalState::WaitingForVersion,
+                            // TODO: this can and should be auto detected and auto set
                             fast::Receive::Initial => InternalState::WaitingForInitial,
                             fast::Receive::Pong => InternalState::WaitingForPong,
                             fast::Receive::Volume => InternalState::WaitingForVolume,
@@ -419,6 +530,7 @@ impl State {
         ensure!(self.expected_play_update.is_none());
         ensure!(!self.expecting_pause);
         ensure!(!self.expecting_resume);
+        ensure!(self.expected_media_item_start.is_none());
         Ok(())
     }
 }

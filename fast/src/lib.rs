@@ -1,3 +1,10 @@
+use fcast_protocol::v3;
+
+// #[derive(Debug)]
+// pub struct PlaylistItem {
+//     pub file_id: u32,
+// }
+
 #[derive(Debug)]
 pub enum Send {
     Version(u64),
@@ -9,6 +16,9 @@ pub enum Send {
     PlayV3 { file_id: u32 },
     Pause,
     Resume,
+    SubscribeEvent(v3::EventSubscribeObject),
+    // PlaylistV3 { items: &'static [PlaylistItem] },
+    // TODO: test that HTTP request headers are correctly handled by the receiver
 }
 
 #[derive(Debug)]
@@ -58,7 +68,9 @@ cases!(
     cast_video_v3,
     cast_video_set_volume_v3,
     cast_pause_resume_v2,
-    cast_pause_resume_v3
+    cast_pause_resume_v3,
+    subscribe_media_item_start
+    // cast_simple_playlist
 );
 
 macro_rules! define_test_case {
@@ -206,7 +218,7 @@ define_test_case!(
             mime: "video/mp4"
         },
         send!(Send::PlayV2 { file_id: 0 }),
-        Step::SleepMillis(2000),
+        Step::SleepMillis(750),
         send!(Send::Stop),
     ]
 );
@@ -222,7 +234,7 @@ define_test_case!(
             mime: "video/mp4"
         },
         send!(Send::PlayV2 { file_id: 0 }),
-        Step::SleepMillis(2000),
+        Step::SleepMillis(750),
         send!(Send::SetVolume(0.5)),
         send!(Send::SetVolume(1.0)),
         send!(Send::Stop),
@@ -301,3 +313,57 @@ define_test_case!(
         send!(Send::Stop),
     ]
 );
+
+define_test_case!(
+    subscribe_media_item_start,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::SleepMillis(500), // Electron receiver workaround
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        Step::SleepMillis(500), // Electron receiver workaround
+        Step::ServeFile {
+            path: "image/flowers.jpg",
+            id: 0,
+            mime: "image/jpeg"
+        },
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Stop),
+    ]
+);
+
+// define_test_case!(
+//     cast_simple_playlist,
+//     &[
+//         recv!(Receive::Version),
+//         send!(Send::Version(3)),
+//         send!(Send::Initial),
+//         recv!(Receive::Initial),
+//         Step::SleepMillis(500), // Electron receiver workaround
+//         send!(Send::SubscribeEvent(
+//             v3::EventSubscribeObject::MediaItemStart
+//         )),
+//         Step::SleepMillis(500), // Electron receiver workaround
+//         Step::ServeFile {
+//             path: "image/flowers.jpg",
+//             id: 0,
+//             mime: "image/jpeg"
+//         },
+//         Step::ServeFile {
+//             path: "image/garden.jpg",
+//             id: 1,
+//             mime: "image/jpeg"
+//         },
+//         send!(Send::PlaylistV3 {
+//             items: &[
+//                 PlaylistItem { file_id: 0 },
+//                 PlaylistItem { file_id: 1 },
+//             ]
+//         }),
+//         send!(Send::Stop),
+//     ]
+// );
