@@ -119,6 +119,47 @@ pub struct PlayMessage {
     pub metadata: Option<MetadataObject>,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct V4MediaItem {
+    /// The MIME type (video/mp4)
+    pub container: String,
+    // The URL to load (optional)
+    pub url: Option<String>,
+    // The content to load (i.e. a DASH manifest, json content, optional)
+    pub content: Option<String>,
+    // The time to start playing in seconds
+    pub time: Option<f64>,
+    // The desired volume (0-1)
+    pub volume: Option<f64>,
+    // The factor to multiply playback speed by (defaults to 1.0)
+    pub speed: Option<f64>,
+    // HTTP request headers to add to the play request Map<string, string>
+    pub headers: Option<HashMap<String, String>>,
+    pub metadata: Option<MetadataObject>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct QueueItem {
+    pub media_item: V4MediaItem,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum V4PlayMessage {
+    #[serde(rename = "Single")]
+    Single {
+        media_item: V4MediaItem,
+    },
+    #[serde(rename = "QUEUE")]
+    Queue {
+        items: Vec<QueueItem>,
+        #[serde(rename = "startIndex")]
+        start_index: u32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize_repr, Serialize_repr)]
 #[repr(u8)]
 pub enum ContentType {
