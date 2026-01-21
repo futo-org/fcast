@@ -52,11 +52,13 @@ cases!(
     cast_photo_v2,
     cast_photos_v2,
     cast_photo_v3,
+    cast_photos_v3,
     cast_video_v2,
     cast_video_set_volume_v2,
     cast_video_v3,
     cast_video_set_volume_v3,
-    cast_pause_resume_v2
+    cast_pause_resume_v2,
+    cast_pause_resume_v3
 );
 
 macro_rules! define_test_case {
@@ -171,6 +173,29 @@ define_test_case!(
 );
 
 define_test_case!(
+    cast_photos_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::ServeFile {
+            path: "image/flowers.jpg",
+            id: 0,
+            mime: "image/jpeg"
+        },
+        Step::ServeFile {
+            path: "image/garden.jpg",
+            id: 1,
+            mime: "image/jpeg"
+        },
+        send!(Send::PlayV2 { file_id: 0 }),
+        send!(Send::PlayV2 { file_id: 1 }),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
     cast_video_v2,
     &[
         recv!(Receive::Version),
@@ -217,7 +242,6 @@ define_test_case!(
             mime: "video/mp4"
         },
         send!(Send::PlayV3 { file_id: 0 }),
-        Step::SleepMillis(2000),
         send!(Send::Stop),
     ]
 );
