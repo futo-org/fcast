@@ -258,3 +258,22 @@ define_test_case!(
         send!(Send::Stop),
     ]
 );
+
+define_test_case!(
+    cast_pause_resume_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::ServeFile {
+            path: "video/BigBuckBunny.mp4",
+            id: 0,
+            mime: "video/mp4"
+        },
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Pause),
+        send!(Send::Resume),
+        send!(Send::Stop),
+    ]
+);

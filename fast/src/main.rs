@@ -164,12 +164,14 @@ impl State {
                 if msg.state != PlaybackState::Idle && self.expecting_pause {
                     if msg.state == PlaybackState::Paused {
                         self.expecting_pause = false;
+                        info!("Paused state correct");
                     } else {
                         bail!("Expected paused state got {:?}", msg.state);
                     }
                 } else if msg.state != PlaybackState::Idle && self.expecting_resume {
                     if msg.state == PlaybackState::Playing {
                         self.expecting_resume = false;
+                        info!("Playing state correct");
                     } else {
                         bail!("Expected playing state got {:?}", msg.state);
                     }
@@ -195,7 +197,7 @@ impl State {
                             self.invalid_volume_updates_received = 0;
                             info!("Volume correct");
                         } else {
-                            self.invalid_volume_updates_received += 0;
+                            self.invalid_volume_updates_received += 1;
                             if self.invalid_volume_updates_received >= MAX_INVALID_VOLUME_UPDATES {
                                 panic!(
                                     "Invalid volume. expected: {:?} got: {:?}",
