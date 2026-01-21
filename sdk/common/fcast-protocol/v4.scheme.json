@@ -1,0 +1,813 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FCastProtocolV4Export",
+  "type": "object",
+  "properties": {
+    "add_subtitle_source_message": {
+      "$ref": "#/$defs/AddSubtitleSourceMessage"
+    },
+    "change_track_message": {
+      "$ref": "#/$defs/ChangeTrackMessage"
+    },
+    "duration_changed_message": {
+      "$ref": "#/$defs/DurationChangedMessage"
+    },
+    "initial_receiver_message": {
+      "$ref": "#/$defs/InitialReceiverMessage"
+    },
+    "initial_sender_message": {
+      "$ref": "#/$defs/InitialSenderMessage"
+    },
+    "play_message": {
+      "$ref": "#/$defs/PlayMessage"
+    },
+    "playback_error_message": {
+      "$ref": "#/$defs/PlaybackErrorMessage"
+    },
+    "position_changed_message": {
+      "$ref": "#/$defs/PositionChangedMessage"
+    },
+    "queue_insert_message": {
+      "$ref": "#/$defs/QueueInsertMessage"
+    },
+    "queue_item_selected_message": {
+      "$ref": "#/$defs/QueueItemSelectedMessage"
+    },
+    "queue_remove_message": {
+      "$ref": "#/$defs/QueueRemoveMessage"
+    },
+    "seek_message": {
+      "$ref": "#/$defs/SeekMessage"
+    },
+    "set_speed_message": {
+      "$ref": "#/$defs/SetSpeedMessage"
+    },
+    "tracks_available_message": {
+      "$ref": "#/$defs/TracksAvailableMessage"
+    },
+    "update_playback_state_message": {
+      "$ref": "#/$defs/UpdatePlaybackStateMessage"
+    },
+    "version_message": {
+      "$ref": "#/$defs/VersionMessage"
+    },
+    "volume_update_message": {
+      "$ref": "#/$defs/UpdateVolumeMessage"
+    }
+  },
+  "required": [
+    "play_message",
+    "seek_message",
+    "volume_update_message",
+    "set_speed_message",
+    "version_message",
+    "update_playback_state_message",
+    "playback_error_message",
+    "position_changed_message",
+    "duration_changed_message",
+    "initial_sender_message",
+    "initial_receiver_message",
+    "tracks_available_message",
+    "change_track_message",
+    "queue_insert_message",
+    "queue_remove_message",
+    "queue_item_selected_message",
+    "add_subtitle_source_message"
+  ],
+  "$defs": {
+    "AddSubtitleSourceMessage": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "description": "Should only be an instance of `SUBTITLE`",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MediaTrackMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "select": {
+          "description": "Whether this track should be selected immediately",
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "select"
+      ]
+    },
+    "ChangeTrackMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "When `id` is null, the receiver should disable playback of `track_type` (e.g. turn of subtitles)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "track_type": {
+          "$ref": "#/$defs/TrackType"
+        }
+      },
+      "required": [
+        "track_type"
+      ]
+    },
+    "DeviceInfo": {
+      "type": "object",
+      "properties": {
+        "app_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "app_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "DisplayCapabilities": {
+      "type": "object",
+      "properties": {
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoResolution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "DurationChangedMessage": {
+      "type": "object",
+      "properties": {
+        "duration": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "duration"
+      ]
+    },
+    "InitialReceiverMessage": {
+      "type": "object",
+      "properties": {
+        "app_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReceiverCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "device_info": {
+          "$ref": "#/$defs/DeviceInfo"
+        }
+      },
+      "required": [
+        "device_info"
+      ]
+    },
+    "InitialSenderMessage": {
+      "type": "object",
+      "properties": {
+        "device_info": {
+          "$ref": "#/$defs/DeviceInfo"
+        }
+      },
+      "required": [
+        "device_info"
+      ]
+    },
+    "MediaCapabilities": {
+      "type": "object",
+      "properties": {
+        "audio_formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "containers": {
+          "description": "e.g. video/mp4, video/webm, audio/ogg",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "external_subtitles": {
+          "type": "boolean"
+        },
+        "hdr_formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "image_formats": {
+          "description": "e.g. png, jepg, jp2, heif, heic, avif",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "protocols": {
+          "description": "e.g. application/http, application/x-rtsp, application/x-whep",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subtitle_formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "video_formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "protocols",
+        "containers",
+        "video_formats",
+        "audio_formats",
+        "subtitle_formats",
+        "hdr_formats",
+        "image_formats",
+        "external_subtitles"
+      ]
+    },
+    "MediaItem": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "description": "The MIME type",
+          "type": "string"
+        },
+        "extra_metadata": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "headers": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_url": {
+          "type": "string"
+        },
+        "speed": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "start_time": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "thumbnail_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "container",
+        "source_url"
+      ]
+    },
+    "MediaTrack": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "metadata": {
+          "$ref": "#/$defs/MediaTrackMetadata"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "metadata"
+      ]
+    },
+    "MediaTrackMetadata": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "VIDEO": {
+              "type": "object",
+              "properties": {
+                "resolution": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/VideoResolution"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "VIDEO"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "AUDIO": {
+              "type": "object",
+              "properties": {
+                "language_code": {
+                  "description": "ISO 639",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "AUDIO"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "SUBTITLE": {
+              "type": "object",
+              "properties": {
+                "language_code": {
+                  "description": "ISO 639",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "SUBTITLE"
+          ]
+        }
+      ]
+    },
+    "Metadata": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "VIDEO": {
+              "type": "object",
+              "properties": {
+                "subtitle_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "VIDEO"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "AUDIO": {
+              "type": "object",
+              "properties": {
+                "album": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "artist": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "AUDIO"
+          ]
+        }
+      ]
+    },
+    "PlayMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "SINGLE": {
+              "type": "object",
+              "properties": {
+                "media_item": {
+                  "$ref": "#/$defs/MediaItem"
+                }
+              },
+              "required": [
+                "media_item"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "SINGLE"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "QUEUE": {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/QueueItem"
+                  }
+                },
+                "start_index": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "items",
+                "start_index"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "QUEUE"
+          ]
+        }
+      ]
+    },
+    "PlaybackErrorMessage": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ]
+    },
+    "PlaybackState": {
+      "type": "integer",
+      "enum": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "PositionChangedMessage": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "position"
+      ]
+    },
+    "QueueInsertMessage": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/QueueItem"
+        },
+        "position": {
+          "$ref": "#/$defs/QueuePosition"
+        }
+      },
+      "required": [
+        "item",
+        "position"
+      ]
+    },
+    "QueueItem": {
+      "type": "object",
+      "properties": {
+        "media_item": {
+          "$ref": "#/$defs/MediaItem"
+        }
+      },
+      "required": [
+        "media_item"
+      ]
+    },
+    "QueueItemSelectedMessage": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/QueuePosition"
+        }
+      },
+      "required": [
+        "position"
+      ]
+    },
+    "QueuePosition": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "FRONT",
+            "BACK"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "INDEX": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "index"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "INDEX"
+          ]
+        }
+      ]
+    },
+    "QueueRemoveMessage": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/QueuePosition"
+        }
+      },
+      "required": [
+        "position"
+      ]
+    },
+    "ReceiverCapabilities": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DisplayCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "media": {
+          "$ref": "#/$defs/MediaCapabilities"
+        }
+      },
+      "required": [
+        "media"
+      ]
+    },
+    "SeekMessage": {
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "time"
+      ]
+    },
+    "SetSpeedMessage": {
+      "type": "object",
+      "properties": {
+        "speed": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "speed"
+      ]
+    },
+    "TrackType": {
+      "type": "string",
+      "enum": [
+        "VIDEO",
+        "AUDIO",
+        "SUBTITLE"
+      ]
+    },
+    "TracksAvailableMessage": {
+      "type": "object",
+      "properties": {
+        "audios": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/MediaTrack"
+          }
+        },
+        "subtitles": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/MediaTrack"
+          }
+        },
+        "videos": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/MediaTrack"
+          }
+        }
+      }
+    },
+    "UpdatePlaybackStateMessage": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/PlaybackState"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "UpdateVolumeMessage": {
+      "type": "object",
+      "properties": {
+        "volume": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "volume"
+      ]
+    },
+    "VersionMessage": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "version"
+      ]
+    },
+    "VideoResolution": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ]
+    }
+  }
+}

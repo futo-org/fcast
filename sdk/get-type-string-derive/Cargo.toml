@@ -1,0 +1,13 @@
+[package]
+name = "get-type-string-derive"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1"
+syn = "2"
+prettyplease = "0.2"

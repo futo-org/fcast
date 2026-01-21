@@ -16,6 +16,7 @@ pub mod csharp;
 #[cfg(feature = "uniffi")]
 pub mod kotlin;
 pub mod mdns;
+pub mod protocol;
 pub mod receiver;
 pub mod sender;
 #[cfg(feature = "uniffi")]

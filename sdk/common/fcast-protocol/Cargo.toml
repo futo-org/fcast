@@ -11,3 +11,16 @@ serde.workspace = true
 serde_json.workspace = true
 serde_repr = "0.1.20"
 serde_with = "3.16"
+thiserror.workspace = true
+serde_with = { version = "3.18", default-features = false, features = ["macros"] }
+smol_str.workspace = true
+
+schemars = { version = "1.2", features = ["smol_str03"], optional = true }
+askama = { workspace = true, optional = true }
+get-type-string-derive = { path = "../../get-type-string-derive", optional = true }
+
+[features]
+# default = []
+default = ["__schema"] # TODO: disable
+# __schema = ["dep:schemars", "dep:askama"]
+__schema = ["dep:schemars", "dep:askama", "dep:get-type-string-derive"]

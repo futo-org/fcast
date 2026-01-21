@@ -4,12 +4,17 @@
 
 // TODO: most strings should be SmolStr
 
+#[cfg(feature = "__schema")]
+use get_type_string_derive::GetTypeString;
+#[cfg(feature = "__schema")]
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 pub mod v1;
 pub mod v2;
 pub mod v3;
+pub mod v4;
 
 pub const HEADER_LENGTH: usize = 5;
 
@@ -111,12 +116,14 @@ pub enum PlaybackState {
     Paused = 2,
 }
 
+#[cfg_attr(feature = "__schema", derive(JsonSchema, GetTypeString))]
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PlaybackErrorMessage {
     pub message: String,
 }
 
+#[cfg_attr(feature = "__schema", derive(JsonSchema, GetTypeString))]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct VersionMessage {
     pub version: u64,
