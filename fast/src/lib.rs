@@ -84,14 +84,17 @@ macro_rules! recv {
 
 define_test_case!(
     connect_version_2,
-    &[send!(Send::Version(2)), recv!(Receive::Version),]
+    &[
+        recv!(Receive::Version), //
+        send!(Send::Version(2)), //
+    ]
 );
 
 define_test_case!(
     connect_version_3,
     &[
-        send!(Send::Version(3)),
         recv!(Receive::Version),
+        send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial)
     ]
@@ -100,8 +103,8 @@ define_test_case!(
 define_test_case!(
     heartbeat,
     &[
-        send!(Send::Version(2)),
         recv!(Receive::Version),
+        send!(Send::Version(2)),
         send!(Send::Ping),
         recv!(Receive::Pong),
         send!(Send::Ping),
@@ -114,8 +117,8 @@ define_test_case!(
 define_test_case!(
     cast_photo_v2,
     &[
-        send!(Send::Version(2)),
         recv!(Receive::Version),
+        send!(Send::Version(2)),
         Step::ServeFile {
             path: "image/flowers.jpg",
             id: 0,
@@ -130,8 +133,8 @@ define_test_case!(
 define_test_case!(
     cast_photos_v2,
     &[
-        send!(Send::Version(2)),
         recv!(Receive::Version),
+        send!(Send::Version(2)),
         Step::ServeFile {
             path: "image/flowers.jpg",
             id: 0,
@@ -153,8 +156,8 @@ define_test_case!(
 define_test_case!(
     cast_photo_v3,
     &[
-        send!(Send::Version(3)),
         recv!(Receive::Version),
+        send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
         Step::ServeFile {
@@ -170,8 +173,8 @@ define_test_case!(
 define_test_case!(
     cast_video_v2,
     &[
-        send!(Send::Version(2)),
         recv!(Receive::Version),
+        send!(Send::Version(2)),
         Step::ServeFile {
             path: "video/BigBuckBunny.mp4",
             id: 0,
@@ -186,8 +189,8 @@ define_test_case!(
 define_test_case!(
     cast_video_set_volume_v2,
     &[
-        send!(Send::Version(2)),
         recv!(Receive::Version),
+        send!(Send::Version(2)),
         Step::ServeFile {
             path: "video/BigBuckBunny.mp4",
             id: 0,
@@ -204,8 +207,8 @@ define_test_case!(
 define_test_case!(
     cast_video_v3,
     &[
-        send!(Send::Version(3)),
         recv!(Receive::Version),
+        send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
         Step::ServeFile {
@@ -222,8 +225,8 @@ define_test_case!(
 define_test_case!(
     cast_video_set_volume_v3,
     &[
-        send!(Send::Version(3)),
         recv!(Receive::Version),
+        send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
         Step::ServeFile {
@@ -241,8 +244,8 @@ define_test_case!(
 define_test_case!(
     cast_pause_resume_v2,
     &[
-        send!(Send::Version(2)),
         recv!(Receive::Version),
+        send!(Send::Version(2)),
         Step::ServeFile {
             path: "video/BigBuckBunny.mp4",
             id: 0,
