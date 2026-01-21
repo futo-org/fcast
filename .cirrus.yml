@@ -60,7 +60,7 @@ desktop_sender_task:
     path: target/fcast-sender-*.*
 
 sender_sdk_csharp_task:
-  name crossCompileForDarwinCSharp
+  name: crossCompileForDarwinCSharp
   macos_instance:
     image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
   buildSenderSdkDarwin_script:
