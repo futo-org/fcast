@@ -58,3 +58,19 @@ desktop_sender_task:
     - cargo xtask sender build-macos-installer --sign --p12-file=./.secure_files/Certificates.p12 --p12-password-file=./.secure_files/p12_certs_password --api-key-file=./.secure_files/notary_key.json
   binary_artifacts:
     path: target/fcast-sender-*.*
+
+sender_sdk_csharp_task:
+  name crossCompileForDarwinCSharp
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+  buildSenderSdkDarwin_script:
+    - brew install rustup-init protobuf
+    - rustup-init -y
+    - rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    - source $HOME/.cargo/env
+
+    - cargo build --release --target aarch64-apple-darwin -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+    - cargo build --release --target x86_64-apple-darwin -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+
+  binary_artifacts:
+    path: target/*-apple-darwin/release/libfcast_sender_sdk.dylib
