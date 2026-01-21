@@ -21,7 +21,7 @@
   </description>
   <content_rating type="oars-1.1" />
   <releases>
-    <!-- TODO: add to this section when future versions are released -->
+    <release version="0.0.2" date="2026-01-21"></release>
     <release version="0.0.1" date="2026-01-08"></release>
   </releases>
   <launchable type="desktop-id">org.fcast.Sender.desktop</launchable>
