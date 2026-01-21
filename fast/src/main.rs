@@ -13,13 +13,14 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::unbounded_channel,
 };
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use clap::{Parser, Subcommand};
 use fast::{Step, TestCase};
 use fcast_protocol::{
-    HEADER_LENGTH, Opcode, PlaybackState, SetVolumeMessage, VersionMessage, v2, v3::{self, InitialSenderMessage}
+    HEADER_LENGTH, Opcode, PlaybackState, SetVolumeMessage, VersionMessage, v2,
+    v3::{self, InitialSenderMessage},
 };
 
 #[derive(Subcommand)]
@@ -122,6 +123,7 @@ struct State {
     expected_play_update: Option<v3::PlayMessage>,
     expecting_pause: bool,
     expecting_resume: bool,
+    invalid_volume_updates_received: usize,
 }
 
 impl State {
@@ -135,6 +137,7 @@ impl State {
             expected_play_update: None,
             expecting_pause: false,
             expecting_resume: false,
+            invalid_volume_updates_received: 0,
         }
     }
 
@@ -181,17 +184,34 @@ impl State {
                         .ok_or(anyhow!("Volume update is missing body"))?,
                 )?;
 
+                const MAX_INVALID_VOLUME_UPDATES: usize = 3;
+
                 if let Some(expected) = self.expected_volume
                     && expected.1 <= msg.generation_time
                 {
-                    if let Some(expected_volume) = self.expected_volume.take() {
-                        assert!(
-                            (msg.volume - expected_volume.0).abs() <= 0.001,
-                            "expected: {:?} got: {:?}",
-                            expected_volume,
-                            (msg.volume, msg.generation_time),
-                        );
-                        info!("Volume correct");
+                    if let Some(expected_volume) = self.expected_volume {
+                        if (msg.volume - expected_volume.0).abs() <= 0.001 {
+                            self.expected_volume = None;
+                            self.invalid_volume_updates_received = 0;
+                            info!("Volume correct");
+                        } else {
+                            self.invalid_volume_updates_received += 0;
+                            if self.invalid_volume_updates_received >= MAX_INVALID_VOLUME_UPDATES {
+                                panic!(
+                                    "Invalid volume. expected: {:?} got: {:?}",
+                                    expected_volume,
+                                    (msg.volume, msg.generation_time)
+                                );
+                            } else {
+                                warn!(
+                                    "Received invalid volume on retry {}. expected: {:?} got: {}",
+                                    self.invalid_volume_updates_received,
+                                    expected_volume,
+                                    msg.volume
+                                );
+                                return Ok(None);
+                            }
+                        }
                     }
                 }
             }
@@ -252,14 +272,17 @@ impl State {
         );
 
         self.expected_volume.is_none()
-        && self.expected_play_update.is_none()
-        && !self.expecting_pause
-        && !self.expecting_resume
-        && self.internal != InternalState::Sleeping
+            && self.expected_play_update.is_none()
+            && !self.expecting_pause
+            && !self.expecting_resume
+            && self.internal != InternalState::Sleeping
     }
 
     #[instrument(skip_all)]
-    fn next_state(&mut self, file_urls: &HashMap<u32, (String, &'static str)>) -> anyhow::Result<Option<Action>> {
+    fn next_state(
+        &mut self,
+        file_urls: &HashMap<u32, (String, &'static str)>,
+    ) -> anyhow::Result<Option<Action>> {
         if !self.ready() {
             return Ok(Some(Action::WaitForPacket));
         }
