@@ -6,7 +6,8 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
-use desktop_sender::{FetchEvent, device_info_parser, file_server::FileServer};
+use desktop_sender::{FetchEvent, device_info_parser};
+use file_server::FileServer;
 use directories::{BaseDirs, UserDirs};
 use fcast_sender_sdk::{
     context::CastContext,

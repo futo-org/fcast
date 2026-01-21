@@ -14,7 +14,7 @@ tokio.workspace = true
 log.workspace= true
 anyhow.workspace = true
 thiserror.workspace = true
-futures = "0.3.31"
+futures.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
