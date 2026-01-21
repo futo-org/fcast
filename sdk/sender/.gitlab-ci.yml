@@ -102,23 +102,18 @@ crossCompileForDarwinCSharp:
   stage: buildSenderSDK
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
-    - tart-installed
+    - macscript
   before_script:
-    - brew install rustup-init protobuf
-    - rustup-init -y
-    - rustup target add aarch64-apple-darwin x86_64-apple-darwin
-    - source $HOME/.cargo/env
+    - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
   script:
-    - cargo build --release --target aarch64-apple-darwin -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
-    - cargo build --release --target x86_64-apple-darwin -p fcast-sender-sdk --no-default-features --features fcast,chromecast,uniffi,logging,discovery,_uniffi_csharp
+    - cirrus run crossCompileForDarwinCSharp --artifacts-dir . --env-file .cienv
   artifacts:
     untracked: false
     when: on_success
     access: all
-    expire_in: "30 days"
     paths:
-      - target/aarch64-apple-darwin/release/libfcast_sender_sdk.dylib
-      - target/x86_64-apple-darwin/release/libfcast_sender_sdk.dylib
+      - crossCompileForDarwinCSharp/binary/target/aarch64-apple-darwin/release/libfcast_sender_sdk.dylib
+      - crossCompileForDarwinCSharp/binary/target/x86_64-apple-darwin/release/libfcast_sender_sdk.dylib
   when: manual
 
 crossCompileForAarch64LinuxCSharp:

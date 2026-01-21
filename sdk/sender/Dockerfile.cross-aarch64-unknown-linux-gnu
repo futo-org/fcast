@@ -2,7 +2,7 @@
 # docker build --no-cache -t fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest -f Dockerfile.cross-aarch64-unknown-linux-gnu .
 # docker run --rm -it -w /app --entrypoint='bash' --network host -v .:/app fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest
 
-FROM rust:latest
+FROM rust:bullseye
 
 RUN apt update && apt upgrade -y
 RUN apt install -y g++-aarch64-linux-gnu libc6-dev-arm64-cross protobuf-compiler
