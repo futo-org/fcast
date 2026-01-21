@@ -275,7 +275,7 @@ impl KeyNames {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum EventSubscribeObject {
     MediaItemStart,
     MediaItemEnd,

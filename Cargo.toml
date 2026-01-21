@@ -9,7 +9,7 @@ members = [
     "sdk/mirroring_core",
     "senders/desktop",
     "senders/android"
-]
+, "fast", "sdk/file-server"]
 resolver = "2"
 
 [workspace.package]
@@ -38,6 +38,7 @@ bytes = "1"
 smallvec = { version = "1.15.1", features = ["serde"] }
 smol_str = { version = "0.3.4", features = ["serde"] }
 toml_edit = { version = "0.24", features = ["serde"] }
+futures = "0.3.31"
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,19 @@
+[package]
+name = "fast"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+fcast-protocol.path = "../sdk/common/fcast-protocol"
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+simply_colored = "0.1.4"
+file-server.path = "../sdk/file-server"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap-verbosity-flag = { version = "3", default-features = false, features = [ "tracing" ] }
+futures.workspace = true
