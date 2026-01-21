@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{de, ser, Deserialize, Serialize};
 use serde_json::{json, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use serde_with::skip_serializing_none;
 
 macro_rules! get_from_map {
     ($map:expr, $key:expr) => {
@@ -98,6 +99,7 @@ impl<'de> Deserialize<'de> for MetadataObject {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayMessage {
     /// The MIME type (video/mp4)
@@ -124,6 +126,7 @@ pub enum ContentType {
     Playlist = 0,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct MediaItem {
     /// The MIME type (video/mp4)
@@ -148,6 +151,7 @@ pub struct MediaItem {
     pub metadata: Option<MetadataObject>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct PlaylistContent {
     #[serde(rename = "contentType")]
@@ -168,6 +172,7 @@ pub struct PlaylistContent {
     pub metadata: Option<MetadataObject>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PlaybackUpdateMessage {
     // The time the packet was generated (unix time milliseconds)
@@ -186,6 +191,7 @@ pub struct PlaybackUpdateMessage {
     pub item_index: Option<u64>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialSenderMessage {
     #[serde(rename = "displayName")]
@@ -196,22 +202,26 @@ pub struct InitialSenderMessage {
     pub app_version: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct LivestreamCapabilities {
     /// https://datatracker.ietf.org/doc/draft-murillo-whep/
     pub whep: Option<bool>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct AVCapabilities {
     pub livestream: Option<LivestreamCapabilities>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct ReceiverCapabilities {
     pub av: Option<AVCapabilities>,
 }
 
+#[skip_serializing_none]
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialReceiverMessage {
@@ -227,6 +237,7 @@ pub struct InitialReceiverMessage {
     pub experimental_capabilities: Option<ReceiverCapabilities>,
 }
 
+#[skip_serializing_none]
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct PlayUpdateMessage {
@@ -644,7 +655,7 @@ mod tests {
         headers: None,
         metadata: None,
     };
-    const TEST_MEDIA_ITEM_JSON: &str = r#"{"cache":null,"container":"","content":null,"headers":null,"metadata":null,"showDuration":null,"speed":null,"time":null,"url":null,"volume":null}"#;
+    const TEST_MEDIA_ITEM_JSON: &str = r#"{"container":""}"#;
 
     #[test]
     fn serialize_event_obj() {
@@ -767,7 +778,21 @@ mod tests {
                 metadata: None
             })
             .unwrap(),
-            r#"{"contentType":0,"items":[],"offset":null,"volume":null,"speed":null,"forwardCache":null,"backwardCache":null,"metadata":null}"#,
+            r#"{"contentType":0,"items":[]}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&PlaylistContent {
+                variant: ContentType::Playlist,
+                items: Vec::new(),
+                offset: None,
+                volume: Some(1.0),
+                speed: Some(1.0),
+                forward_cache: None,
+                backward_cache: None,
+                metadata: None
+            })
+            .unwrap(),
+            r#"{"contentType":0,"items":[],"volume":1.0,"speed":1.0}"#,
         );
         assert_eq!(
             serde_json::to_string(&PlaylistContent {
@@ -792,7 +817,32 @@ mod tests {
                 metadata: None
             })
             .unwrap(),
-            r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc","content":null,"time":null,"volume":null,"speed":null,"cache":null,"showDuration":null,"headers":null,"metadata":null}],"offset":null,"volume":null,"speed":null,"forwardCache":null,"backwardCache":null,"metadata":null}"#,
+            r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc"}]}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&PlaylistContent {
+                variant: ContentType::Playlist,
+                items: vec![MediaItem {
+                    container: "video/mp4".to_string(),
+                    url: Some("abc".to_string()),
+                    content: None,
+                    time: None,
+                    volume: None,
+                    speed: None,
+                    cache: None,
+                    show_duration: None,
+                    headers: None,
+                    metadata: None
+                }],
+                offset: None,
+                volume: Some(1.0),
+                speed: Some(1.0),
+                forward_cache: None,
+                backward_cache: None,
+                metadata: Some(MetadataObject::Generic { title: None, thumbnail_url: None, custom: None })
+            })
+            .unwrap(),
+            r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc"}],"volume":1.0,"speed":1.0,"metadata":{"thumbnailUrl":null,"title":null,"type":0}}"#,
         );
     }
 }
