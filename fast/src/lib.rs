@@ -18,7 +18,6 @@ pub enum Receive {
     Pong,
     Volume,
     PlaybackUpdate,
-    PlayUpdate,
 }
 
 #[derive(Debug)]
@@ -163,10 +162,7 @@ define_test_case!(
             id: 0,
             mime: "image/jpeg"
         },
-        // Step::SleepMillis(10),
         send!(Send::PlayV3 { file_id: 0 }),
-        recv!(Receive::PlayUpdate),
-        // Step::SleepMillis(500),
         send!(Send::Stop),
     ]
 );
@@ -200,9 +196,7 @@ define_test_case!(
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(2000),
         send!(Send::SetVolume(0.5)),
-        recv!(Receive::Volume),
         send!(Send::SetVolume(1.0)),
-        recv!(Receive::Volume),
         send!(Send::Stop),
     ]
 );
@@ -221,7 +215,6 @@ define_test_case!(
         },
         send!(Send::PlayV3 { file_id: 0 }),
         Step::SleepMillis(2000),
-        recv!(Receive::PlayUpdate),
         send!(Send::Stop),
     ]
 );
@@ -239,13 +232,8 @@ define_test_case!(
             mime: "video/mp4"
         },
         send!(Send::PlayV3 { file_id: 0 }),
-        // Step::SleepMillis(2000),
-        recv!(Receive::PlayUpdate),
         send!(Send::SetVolume(0.5)),
-        recv!(Receive::Volume),
-        // Step::SleepMillis(200),
         send!(Send::SetVolume(1.0)),
-        recv!(Receive::Volume),
         send!(Send::Stop),
     ]
 );

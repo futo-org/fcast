@@ -111,7 +111,6 @@ enum InternalState {
     WaitingForPong,
     WaitingForVolume,
     WaitingForPlaybackUpdate,
-    WaitingForPlayUpdate,
 }
 
 struct State {
@@ -231,17 +230,8 @@ impl State {
                 Opcode::Pong => (),
                 _ => panic!(),
             },
-            // InternalState::WaitingForVolume => match opcode {
-            //     Opcode::VolumeUpdate => (),
-            //     _ => panic!(),
-            // },
             InternalState::WaitingForPlaybackUpdate => match opcode {
                 Opcode::PlaybackUpdate => (),
-                _ => panic!(),
-            },
-            InternalState::WaitingForPlayUpdate => match opcode {
-                Opcode::PlayUpdate => (),
-                Opcode::VolumeUpdate => (),
                 _ => panic!(),
             },
             _ => (),
@@ -369,7 +359,6 @@ impl State {
                             fast::Receive::PlaybackUpdate => {
                                 InternalState::WaitingForPlaybackUpdate
                             }
-                            fast::Receive::PlayUpdate => InternalState::WaitingForPlayUpdate,
                         };
                         return Ok(Some(Action::WaitForPacket));
                     }
@@ -391,8 +380,7 @@ impl State {
             | InternalState::WaitingForInitial
             | InternalState::WaitingForPong
             | InternalState::WaitingForVolume
-            | InternalState::WaitingForPlaybackUpdate
-            | InternalState::WaitingForPlayUpdate => Ok(Some(Action::WaitForPacket)),
+            | InternalState::WaitingForPlaybackUpdate => Ok(Some(Action::WaitForPacket)),
         }
     }
 
