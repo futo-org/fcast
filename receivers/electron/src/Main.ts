@@ -700,6 +700,10 @@ export function getAppVersion() {
 }
 
 export function getPlayMessage() {
+    if (!Main.cache.playMessage) {
+        return null;
+    }
+
     return Main.cache.playbackUpdate === null ? Main.cache.playMessage : {
         ...Main.cache.playMessage,
         time: Main.cache.playbackUpdate.time,

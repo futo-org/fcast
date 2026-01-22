@@ -201,7 +201,7 @@ export class FCastSession {
 
                         const updateMessage = getPlaybackUpdateMessage();
                         if (updateMessage) {
-                            this.send(Opcode.PlaybackUpdate, getPlaybackUpdateMessage());
+                            this.send(Opcode.PlaybackUpdate, updateMessage);
                         }
                         this.sentInitialMessage = true;
                     }
