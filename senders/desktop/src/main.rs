@@ -162,6 +162,8 @@ async fn process_files(
         root_path.pop();
     }
 
+    media_files.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+
     if !media_files.is_empty() {
         event_tx.send(Event::FilesListing {
             id,
