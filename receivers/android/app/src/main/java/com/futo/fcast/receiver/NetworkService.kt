@@ -447,13 +447,13 @@ class NetworkService : Service() {
         fun getPlayMessage(): PlayMessage? {
             return if (cache.playMessage == null) null else PlayMessage(
                 cache.playMessage!!.container,
-                cache.playMessage!!.url,
-                cache.playMessage!!.content,
-                cache.playbackUpdate!!.time,
+                cache.playMessage?.url,
+                cache.playMessage?.content,
+                cache.playbackUpdate?.time,
                 cache.playerVolume,
-                cache.playbackUpdate!!.speed,
-                cache.playMessage!!.headers,
-                cache.playMessage!!.metadata
+                cache.playbackUpdate?.speed,
+                cache.playMessage?.headers,
+                cache.playMessage?.metadata
             )
         }
     }
