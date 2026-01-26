@@ -23,10 +23,7 @@ class NetworkWorker(private val _context: Context) {
         _context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val _wifiManager =
         _context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-    private val _powerManager = _context.getSystemService(Context.POWER_SERVICE) as PowerManager
     private var _stopped: Boolean = true
-    private var _wifiLock: WifiLock? = null
-    private var _cpuWakeLock: WakeLock? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         @OptIn(UnstableApi::class)
@@ -99,20 +96,6 @@ class NetworkWorker(private val _context: Context) {
             return
         }
         _stopped = false
-        if (_cpuWakeLock == null) {
-            _cpuWakeLock =
-                _powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:cpu-lock")
-        }
-        if (_wifiLock == null) {
-            _wifiLock =
-                _wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$TAG:wifi-lock")
-        }
-        if (_cpuWakeLock?.isHeld == false) {
-            _cpuWakeLock?.acquire()
-        }
-        if (_wifiLock?.isHeld == false) {
-            _wifiLock?.acquire()
-        }
 
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -142,12 +125,6 @@ class NetworkWorker(private val _context: Context) {
         }
         _stopped = true
         _connectivityManager.unregisterNetworkCallback(networkCallback)
-        if (_cpuWakeLock?.isHeld == true) {
-            _cpuWakeLock?.release()
-        }
-        if (_wifiLock?.isHeld == true) {
-            _wifiLock?.release()
-        }
 
         Log.i(TAG, "Stopped $TAG")
     }

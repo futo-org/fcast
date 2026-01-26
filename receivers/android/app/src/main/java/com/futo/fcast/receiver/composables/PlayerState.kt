@@ -58,10 +58,10 @@ fun rememberPlayerState(player: Player): PlayerState {
     val updateState: (events: Player.Events?) -> Unit = {
         if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && player.isPlaying) {
             PlayerActivity.instance?.mediaPlayHandler()
-//        } else if (it?.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) == true || player.playbackState == Player.STATE_ENDED) {
-//        } else if (it?.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) == true) {
         } else if (player.playbackState == Player.STATE_ENDED && player.playbackState != lastPlaybackState) {
-            PlayerActivity.instance?.mediaEndHandler()
+            if (abs(currentPosition - duration) < 2000) {
+                PlayerActivity.instance?.mediaEndHandler()
+            }
         }
 
         currentPosition = player.currentPosition

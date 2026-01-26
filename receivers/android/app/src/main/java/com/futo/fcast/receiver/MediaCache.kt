@@ -2,25 +2,25 @@ package com.futo.fcast.receiver
 
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
+import androidx.media3.exoplayer.source.preload.DefaultPreloadManager.PreloadStatus
 import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
 import com.futo.fcast.receiver.models.PlaylistContent
 
 
 @UnstableApi
 class MediaPreloadStatusControl(val _playlistContent: PlaylistContent) :
-    TargetPreloadStatusControl<Int, DefaultPreloadManager.PreloadStatus> {
+    TargetPreloadStatusControl<Int, PreloadStatus> {
     var currentItemIndex: Int = C.INDEX_UNSET
 
 
-    override fun getTargetPreloadStatus(index: Int): DefaultPreloadManager.PreloadStatus? {
-//        Log.i("preload", "preload index: $index")
+    override fun getTargetPreloadStatus(index: Int): PreloadStatus {
+        //        Log.i("preload", "preload index: $index")
 
         if (index < 0 || index >= _playlistContent.items.size) {
-            return null
+            return PreloadStatus.PRELOAD_STATUS_NOT_PRELOADED
         }
         if (_playlistContent.items[index].cache != true) {
-            return null
+            return PreloadStatus.PRELOAD_STATUS_NOT_PRELOADED
         }
 
         val forwardCacheAmount = _playlistContent.forwardCache ?: 0
@@ -32,12 +32,12 @@ class MediaPreloadStatusControl(val _playlistContent: PlaylistContent) :
                 (index >= currentItemIndex - backwardCacheAmount)
 
         return if (isForwardCacheCandidate || isBackwardCacheCandidate) {
-            DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(
+            PreloadStatus.specifiedRangeLoaded(
                 _playlistContent.items[index].time?.toLong()?.times(1000) ?: 0,
                 5_000
             )
         } else {
-            null
+            PreloadStatus.PRELOAD_STATUS_NOT_PRELOADED
         }
     }
 }

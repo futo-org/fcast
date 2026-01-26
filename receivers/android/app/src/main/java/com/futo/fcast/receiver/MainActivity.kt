@@ -26,6 +26,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -62,7 +63,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        _player = ExoPlayer.Builder(this).build()
+        _player = ExoPlayer.Builder(this)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .build()
         setContent {
             _screenResolution = getScreenResolution()
             MainActivity(viewModel, _player)

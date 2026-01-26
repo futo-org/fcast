@@ -295,7 +295,9 @@ class FCastSession(
                             )
                         )
 
-                        this.send(Opcode.PlaybackUpdate, NetworkService.cache.playbackUpdate)
+                        if (NetworkService.cache.playbackUpdate != null) {
+                            this.send(Opcode.PlaybackUpdate, NetworkService.cache.playbackUpdate)
+                        }
                         this._sentInitialMessage = true
                     }
 

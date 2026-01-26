@@ -28,6 +28,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -576,7 +577,12 @@ class PlayerActivity : AppCompatActivity() {
 //            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
             .build()
 
+        val renderersFactory = DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
+
         val exoPlayerBuilder = ExoPlayer.Builder(this)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
             .setSeekForwardIncrementMs(SEEK_FORWARD_MILLIS)
             .setSeekBackIncrementMs(SEEK_BACKWARD_MILLIS)
