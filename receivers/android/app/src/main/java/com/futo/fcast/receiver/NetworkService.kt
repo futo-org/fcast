@@ -153,11 +153,19 @@ class NetworkService : Service() {
 
         Log.i(TAG, "Stopped NetworkService")
 
-        discoveryService.stop()
-        _tcpListenerService.stop()
+        if (::discoveryService.isInitialized) {
+            discoveryService.stop()
+        }
+        if (::_tcpListenerService.isInitialized) {
+            _tcpListenerService.stop()
+        }
 
-        networkWorker.stop()
-        _scope.cancel()
+        if (::networkWorker.isInitialized) {
+            networkWorker.stop()
+        }
+        if (::_scope.isInitialized) {
+            _scope.cancel()
+        }
 
         Toast.makeText(this, "Stopped FCast service", Toast.LENGTH_LONG).show()
         instance = null
