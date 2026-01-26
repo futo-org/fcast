@@ -581,6 +581,7 @@ class PlayerActivity : AppCompatActivity() {
             .setEnableDecoderFallback(true)
 
         val exoPlayerBuilder = ExoPlayer.Builder(this)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
             .setSeekForwardIncrementMs(SEEK_FORWARD_MILLIS)
