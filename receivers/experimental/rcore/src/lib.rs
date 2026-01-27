@@ -65,6 +65,7 @@ type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
 #[derive(Debug)]
 pub enum MdnsEvent {
+    NameSet(String),
     IpAdded(IpAddr),
     IpRemoved(IpAddr),
     SetIps(Vec<IpAddr>),
@@ -235,10 +236,10 @@ fn image_decode_worker(
     Ok(())
 }
 
-struct PlaylistPlaybackState {
-    playlist: v3::PlaylistContent,
-    current_item_idx: usize,
-}
+// struct PlaylistPlaybackState {
+//     playlist: v3::PlaylistContent,
+//     current_item_idx: usize,
+// }
 
 // TODO: store either single item or playlist etc.
 
@@ -275,6 +276,7 @@ struct Application {
     current_request_headers: Arc<Mutex<Option<HashMap<String, String>>>>,
     current_playlist: Option<v3::PlaylistContent>,
     current_playlist_item_idx: Option<usize>,
+    device_name: Option<String>,
 }
 
 impl Application {
@@ -396,6 +398,9 @@ impl Application {
         let mdns = {
             use if_addrs::get_if_addrs;
 
+            let device_name = format!("FCast-{}", gethostname::gethostname().to_string_lossy());
+            let _ = event_tx.send(Event::Mdns(MdnsEvent::NameSet(device_name.clone())));
+
             if let Ok(ifaces) = get_if_addrs() {
                 let event =
                     MdnsEvent::SetIps(ifaces.into_iter().map(|iface| iface.addr.ip()).collect());
@@ -404,22 +409,10 @@ impl Application {
 
             let daemon = mdns_sd::ServiceDaemon::new()?;
 
-            // let ips: Vec<IpAddr> = get_all_available_addrs_ignore_v6_and_localhost()?
-            //     .into_iter()
-            //     .map(IpAddr::V4)
-            //     .collect::<Vec<IpAddr>>();
-
-            // if ips.is_empty() {
-            //     bail!("No addresses available to use for mDNS discovery");
-            // }
-
-            let name = format!("FCast-{}", gethostname::gethostname().to_string_lossy());
-
             let service = mdns_sd::ServiceInfo::new(
                 "_fcast._tcp.local.",
-                &name,
-                &format!("{name}.local."),
-                // ips.as_slice(),
+                &device_name,
+                &format!("{device_name}.local."),
                 (), // Auto
                 FCAST_TCP_PORT,
                 None::<std::collections::HashMap<String, String>>,
@@ -490,6 +483,7 @@ impl Application {
             current_request_headers: headers,
             current_playlist: None,
             current_playlist_item_idx: None,
+            device_name: None,
         })
     }
 
@@ -753,9 +747,9 @@ impl Application {
         //  * Audio only
         //  * Video+audio
 
-        // TODO: audio & video; these are really just hints. Should we check if the stream has video streams before setting this?
         let container = media_item.container.as_str();
         let player_variant = if container.starts_with("image/") {
+            // TODO: use gst-plugin-gif::gifdec for GIFs
             UiPlayerVariant::Image
         } else if container.starts_with("audio/") {
             UiPlayerVariant::Audio
@@ -1285,6 +1279,13 @@ impl Application {
 
     fn handle_mdns_event(&mut self, event: MdnsEvent) -> Result<()> {
         match event {
+            MdnsEvent::NameSet(device_name) => {
+                let device_name_shared = device_name.to_shared_string();
+                self.device_name = Some(device_name);
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.global::<Bridge>().set_device_name(device_name_shared);
+                })?;
+            }
             MdnsEvent::IpAdded(addr) => {
                 let _ = self.current_addresses.insert(addr);
             }
@@ -1315,9 +1316,10 @@ impl Application {
 
         if addrs.is_empty() {
             // TODO: Reset QR
-        } else {
+        } else if let Some(device_name) = self.device_name.clone() {
+            let ips_string = addrs.join(", ");
             let net_config = fcast_protocol::FCastNetworkConfig {
-                name: "TODO".to_string(),
+                name: device_name,
                 addresses: addrs.to_vec(),
                 services: vec![fcast_protocol::FCastService {
                     port: 46899,
@@ -1334,33 +1336,34 @@ impl Application {
             );
 
             let qrcode = fast_qr::QRBuilder::new(device_url.as_bytes()).build()?;
-            use fast_qr::convert::Builder;
-            let qr_svg = fast_qr::convert::svg::SvgBuilder::default()
-                .shape(fast_qr::convert::Shape::Circle)
-                .module_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0xFF]))
-                .background_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0x00]))
-                .margin(1)
-                .to_str(&qrcode);
+            // use fast_qr::convert::Builder;
+            // let qr_svg = fast_qr::convert::svg::SvgBuilder::default()
+            //     .shape(fast_qr::convert::Shape::Circle)
+            //     .module_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0xFF]))
+            //     .background_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0x00]))
+            //     .margin(1)
+            //     .to_str(&qrcode);
 
-            // let dims = qrcode.size as u32;
-            // let mut pixbuf: slint::SharedPixelBuffer<slint::Rgb8Pixel> =
-            //     slint::SharedPixelBuffer::new(dims, dims);
-            // let pixbuf_pixels = pixbuf.make_mut_slice();
-            // for (idx, module) in qrcode.data[0..pixbuf_pixels.len()].iter().enumerate() {
-            //     if *module == fast_qr::Module::LIGHT {
-            //         pixbuf_pixels[idx] = slint::Rgb8Pixel::new(0xFF, 0xFF, 0xFF);
-            //     } else {
-            //         pixbuf_pixels[idx] = slint::Rgb8Pixel::new(0x00, 0x00, 0x00);
-            //     }
-            // }
+            let dims = qrcode.size as u32;
+            let mut pixbuf: slint::SharedPixelBuffer<slint::Rgb8Pixel> =
+                slint::SharedPixelBuffer::new(dims, dims);
+            let pixbuf_pixels = pixbuf.make_mut_slice();
+            for (idx, module) in qrcode.data[0..pixbuf_pixels.len()].iter().enumerate() {
+                if *module == fast_qr::Module::LIGHT {
+                    pixbuf_pixels[idx] = slint::Rgb8Pixel::new(0xFF, 0xFF, 0xFF);
+                } else {
+                    pixbuf_pixels[idx] = slint::Rgb8Pixel::new(0x00, 0x00, 0x00);
+                }
+            }
 
             self.ui_weak.upgrade_in_event_loop(move |ui| {
-                // ui.global::<Bridge>()
-                //     .set_qr_code(slint::Image::from_rgb8(pixbuf));
+                let bridge = ui.global::<Bridge>();
+                bridge.set_qr_code(slint::Image::from_rgb8(pixbuf));
+                bridge.set_local_ip_addrs(ips_string.to_shared_string());
 
-                if let Ok(qr) = slint::Image::load_from_svg_data(qr_svg.as_bytes()) {
-                    ui.global::<Bridge>().set_qr_code(qr);
-                }
+                // if let Ok(qr) = slint::Image::load_from_svg_data(qr_svg.as_bytes()) {
+                //     ui.global::<Bridge>().set_qr_code(qr);
+                // }
             })?;
         }
 
@@ -1664,6 +1667,8 @@ pub fn run(
         gst::log::set_threshold_for_name("gldebug", gst::DebugLevel::None);
     }
 
+    let start = std::time::Instant::now();
+
     gst::init()?;
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1697,6 +1702,8 @@ pub fn run(
     let slint_appsink = slint_sink.video_sink();
 
     let ui = MainWindow::new()?;
+
+    // TODO: use AndroidApp set window flag with KEEP_SCREEN_ON when viewing media
 
     #[cfg(debug_assertions)]
     ui.global::<Bridge>().set_is_debugging(true);
@@ -1832,6 +1839,8 @@ pub fn run(
     });
 
     // ui.global::<Bridge>().set_label(format!("{ips:?}").into());
+
+    info!(finished_in = ?start.elapsed());
 
     ui.run()?;
 

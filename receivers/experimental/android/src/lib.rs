@@ -1,12 +1,16 @@
 use jni::objects::JByteBuffer;
 use parking_lot::Mutex;
-use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr}, sync::{Arc, LazyLock}};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::LazyLock,
+};
 
 use rcore::{MdnsEvent, slint, tracing::error};
 
-use tokio::sync::mpsc::{self, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
-static EVENT_TX: LazyLock<Mutex<Option<UnboundedSender<rcore::Event>>>> = LazyLock::new(|| Mutex::new(None));
+static EVENT_TX: LazyLock<Mutex<Option<UnboundedSender<rcore::Event>>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
@@ -27,6 +31,27 @@ fn android_main(app: slint::android::AndroidApp) {
     *EVENT_TX.lock() = Some(event_tx);
 
     rcore::run(app, event_rx).unwrap();
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_setMdnsDeviceName<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    name: jni::objects::JString,
+) {
+    let event_tx = EVENT_TX.lock();
+    let Some(event_tx) = event_tx.as_ref() else {
+        // Unreachable
+        return;
+    };
+
+    let Ok(device_name) = env.get_string(&name) else {
+        return;
+    };
+
+    let event = rcore::MdnsEvent::NameSet(device_name.to_string_lossy().to_string());
+    let _ = event_tx.send(rcore::Event::Mdns(event));
 }
 
 #[allow(non_snake_case)]

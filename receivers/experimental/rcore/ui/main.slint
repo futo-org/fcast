@@ -84,6 +84,8 @@ export global Bridge {
     in property <[UiAudioStreamDbg]> audio-dbg;
     in property <[UiVideoStreamDbg]> video-dbg;
     in property <[UiSubtitleStreamDbg]> subtitle-dbg;
+    in property <string> local-ip-addrs;
+    in property <string> device-name;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <bool> playing: false;
@@ -552,19 +554,18 @@ component IdleView inherits Rectangle {
         padding-left: self.padding-right;
         spacing: 20px;
 
-        HorizontalLayout {
-            Rectangle { }
+        // TODO: re-introduce when we have settings
+        // HorizontalLayout {
+        //     Rectangle { }
 
-            Button {
-                icon-size: 18px;
-                width: 40px;
-                height: 40px;
-                background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.1) 6.7%, rgba(20, 20, 20, 0.1) 92.77%);
-                icon: Icons.settings;
-
-                // TODO:
-            }
-        }
+        //     Button {
+        //         icon-size: 18px;
+        //         width: 40px;
+        //         height: 40px;
+        //         background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.1) 6.7%, rgba(20, 20, 20, 0.1) 92.77%);
+        //         icon: Icons.settings;
+        //     }
+        // }
 
         pure function qr-size() -> length {
             let width = Math.min(root.width * 35%, 400px);
@@ -617,7 +618,7 @@ component IdleView inherits Rectangle {
                                 icon-width: 15px;
                                 icon-height: 12.3px;
                                 key: "Device name";
-                                value: "FCast-todo...";
+                                value: Bridge.device-name;
                             }
 
                             Rectangle {
@@ -630,7 +631,7 @@ component IdleView inherits Rectangle {
                                 icon-width: 13.3px;
                                 icon-height: 14px;
                                 key: "Local IP Address";
-                                value: "127.0.0.1, 127.0.0.1, 127.0.0.1";
+                                value: Bridge.local-ip-addrs;
                             }
                         }
                     }

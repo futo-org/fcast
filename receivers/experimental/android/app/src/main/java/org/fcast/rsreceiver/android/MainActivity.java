@@ -61,6 +61,7 @@ public class MainActivity extends NativeActivity implements NsdManager.Registrat
     }
 
     native void nativeNetworkEvent(boolean available, List<ByteBuffer> addrs);
+    native void setMdnsDeviceName(String name);
 
     class NetworkCallbackHandler extends ConnectivityManager.NetworkCallback {
         @Override
@@ -93,7 +94,16 @@ public class MainActivity extends NativeActivity implements NsdManager.Registrat
 
         nsdManager = (NsdManager) this.getSystemService(Context.NSD_SERVICE);
         NsdServiceInfo serviceInfo = new NsdServiceInfo();
-        serviceInfo.setServiceName("FCast-TODO");
+
+        String modelName;
+        if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
+            modelName = android.os.Build.MODEL.replaceFirst("^" + android.os.Build.MANUFACTURER, "").trim();
+        } else {
+            modelName = android.os.Build.MODEL;
+        }
+        String serviceName = "FCast-" + android.os.Build.MANUFACTURER + "-" + modelName;
+        setMdnsDeviceName(serviceName);
+        serviceInfo.setServiceName(serviceName);
         serviceInfo.setServiceType("_fcast._tcp");
         serviceInfo.setPort(46899);
         nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, this);
