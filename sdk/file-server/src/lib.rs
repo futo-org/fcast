@@ -141,6 +141,19 @@ fn bad_request() -> Result<Response<FileBody>, hyper::http::Error> {
 struct FileEntry {
     path: PathBuf,
     content_type: &'static str,
+    #[cfg(feature = "headers")]
+    required_headers: Option<HashMap<String, String>>,
+}
+
+impl FileEntry {
+    pub fn new(path: PathBuf, content_type: &'static str) -> Self {
+        Self {
+            path,
+            content_type,
+            #[cfg(feature = "headers")]
+            required_headers: None,
+        }
+    }
 }
 
 async fn handle_request(
@@ -166,6 +179,8 @@ async fn handle_request(
         return not_found();
     };
 
+    let headers = req.headers();
+
     let (file, content_type) = {
         let entry = {
             let files = files.read();
@@ -176,6 +191,27 @@ async fn handle_request(
 
             entry.clone()
         };
+
+        #[cfg(feature = "headers")]
+        if let Some(required_headers) = entry.required_headers {
+            for (key, expected_value) in required_headers {
+                let expected_value = expected_value.as_bytes();
+                let header = key.to_lowercase();
+                if let Some(actual_value) = headers.get(header) {
+                    if expected_value != actual_value.as_bytes() {
+                        debug!(
+                            actual_value = ?actual_value.to_str(),
+                            expected_value = ?str::from_utf8(expected_value),
+                            "Header check failed"
+                        );
+                        return bad_request();
+                    }
+                } else {
+                    debug!(missing_key = key, "Header check failed");
+                    return bad_request();
+                }
+            }
+        }
 
         let Ok(file) = File::open(&entry.path).await else {
             return not_found();
@@ -189,7 +225,6 @@ async fn handle_request(
     };
     let file_len = meta.len();
 
-    let headers = req.headers();
     match headers.get(hyper::http::header::RANGE) {
         Some(range) => {
             let Ok(mut ranges) = HttpRange::parse_bytes(range.as_bytes(), file_len) else {
@@ -367,7 +402,28 @@ impl FileServer {
         let id = Uuid::new_v4();
         let mut files = self.files.write();
         debug!(?id, ?path, "Adding file");
-        let _ = files.insert(id, FileEntry { path, content_type });
+        let _ = files.insert(id, FileEntry::new(path, content_type));
+        id
+    }
+
+    #[cfg(feature = "headers")]
+    pub fn add_file_with_headers(
+        &self,
+        path: PathBuf,
+        content_type: &'static str,
+        required_headers: HashMap<String, String>,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        let mut files = self.files.write();
+        debug!(?id, ?path, ?required_headers, "Adding file");
+        let _ = files.insert(
+            id,
+            FileEntry {
+                path,
+                content_type,
+                required_headers: Some(required_headers),
+            },
+        );
         id
     }
 

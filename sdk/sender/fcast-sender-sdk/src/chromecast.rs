@@ -1,13 +1,14 @@
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{anyhow, bail, Result};
 use futures::StreamExt;
-use googlecast_protocol::prost::Message;
 use googlecast_protocol::{
-    self as protocol, namespaces, protos, MediaInformation, PlayerState, QueueItem,
+    self as protocol, namespaces, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
     QueueRepeatMode, StreamType, CONNECTION_NAMESPACE, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE,
     RECEIVER_NAMESPACE,
 };
@@ -15,20 +16,26 @@ use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
 use serde_json as json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::runtime::Handle;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::{self, ClientConfig};
-use tokio_rustls::TlsConnector;
-
-use crate::device::{
-    ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState, DeviceEventHandler,
-    DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, MediaItem, Metadata, PlaybackState,
-    PlaylistItem, ProtocolType, Source,
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    runtime::Handle,
+    sync::mpsc::{Receiver, Sender},
 };
-use crate::{googlecast_protocol, utils, IpAddr};
+use tokio_rustls::{
+    client::TlsStream,
+    rustls::{self, ClientConfig},
+    TlsConnector,
+};
+
+use crate::{
+    device::{
+        ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
+        DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, MediaItem,
+        Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
+    },
+    googlecast_protocol, utils, IpAddr,
+};
 
 const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
 const RECEIVER_APP_ID: &str = "CC1AD845";

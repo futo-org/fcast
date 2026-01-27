@@ -9,7 +9,7 @@ ndk-context = "0.1.1"
 jni = "0.21.1"
 slint = { workspace = true, features = ["backend-android-activity-06"] }
 async-channel = "2.3.1"
-lazy_static = "1.5.0"
+lazy_static.workspace = true
 futures-core = "0.3.31"
 tokio.workspace = true
 gst-video.workspace = true
