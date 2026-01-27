@@ -37,26 +37,7 @@ let imageViewerPlaybackState: PlaybackState = PlaybackState.Idle;
 
 let uiHideTimer = new Timer(() => { playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut); }, 3000);
 let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 100, false);
-
-let showDurationTimer = new Timer(() => {
-    if (playlistIndex < cachedPlaylist.items.length - 1) {
-        setPlaylistItem(playlistIndex + 1);
-    }
-    else {
-        logger.info('End of playlist');
-        imageViewer.style.display = 'none';
-        imageViewer.src = '';
-
-        genericViewer.style.display = 'none';
-        genericViewer.src = '';
-
-        idleBackground.style.display = 'block';
-        idleIcon.style.display = 'block';
-
-        playerCtrlAction.setAttribute("class", "play iconSize");
-        sendPlaybackUpdate(PlaybackState.Idle);
-    }
-}, 0, false);
+let showDurationTimer = new Timer(mediaEndHandler, 0, false);
 
 function sendPlaybackUpdate(updateState: PlaybackState) {
     const updateMessage = new PlaybackUpdateMessage(
@@ -89,6 +70,7 @@ function onPlay(_event, value: PlayMessage) {
         imageViewer.onload = (ev) => {
             loadingTimer.stop();
             loadingSpinner.style.display = 'none';
+            mediaPlayHandler();
             playerCtrlStateUpdate(PlayerControlEvent.Load);
         };
 
@@ -110,6 +92,7 @@ function onPlay(_event, value: PlayMessage) {
         genericViewer.onload = (ev) => {
             loadingTimer.stop();
             loadingSpinner.style.display = 'none';
+            mediaPlayHandler();
             playerCtrlStateUpdate(PlayerControlEvent.Load);
         };
 
@@ -284,6 +267,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
                     showDurationTimer.start(cachedPlayMediaItem.showDuration * 1000);
                 }
 
+                mediaPlayHandler();
                 sendPlaybackUpdate(PlaybackState.Playing);
             }
             break;
@@ -320,6 +304,35 @@ playerCtrlAction.onclick = () => {
 
 playerCtrlPlayPrevious.onclick = () => { setPlaylistItem(playlistIndex - 1); }
 playerCtrlPlayNext.onclick = () => { setPlaylistItem(playlistIndex + 1); }
+
+function mediaPlayHandler() {
+    if (imageViewerPlaybackState === PlaybackState.Idle) {
+        logger.info('Media playback start:', cachedPlayMediaItem);
+        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
+    }
+}
+
+function mediaEndHandler() {
+    if (playlistIndex < cachedPlaylist.items.length - 1) {
+        setPlaylistItem(playlistIndex + 1);
+    }
+    else {
+        logger.info('End of playlist');
+        imageViewer.style.display = 'none';
+        imageViewer.src = '';
+
+        genericViewer.style.display = 'none';
+        genericViewer.src = '';
+
+        idleBackground.style.display = 'block';
+        idleIcon.style.display = 'block';
+
+        playerCtrlAction.setAttribute("class", "play iconSize");
+        sendPlaybackUpdate(PlaybackState.Idle);
+    }
+
+    window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
+}
 
 // Component hiding
 let uiVisible = true;
