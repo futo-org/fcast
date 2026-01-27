@@ -1,6 +1,6 @@
 use file_server::FileServer;
 use futures::StreamExt;
-use simply_colored::{GREEN, RED, RESET};
+use simply_colored::{GREEN, YELLOW, RED, RESET};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Write,
@@ -20,12 +20,19 @@ use clap::{Parser, Subcommand};
 use fast::{Step, TestCase};
 use fcast_protocol::{
     HEADER_LENGTH, Opcode, PlaybackState, SetVolumeMessage, VersionMessage, v2,
-    v3::{self, EventSubscribeObject, InitialSenderMessage},
+    v3::{self, EventSubscribeObject, InitialSenderMessage, PlaylistContent},
 };
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run all test cases
     RunAll,
+    /// Runs specific test cases
+    Run {
+        /// Space delimited list of test case names
+        #[arg(value_delimiter = ' ', num_args = 1..)]
+        tests: Vec<String>,
+    },
 }
 
 #[derive(Parser)]
@@ -141,6 +148,9 @@ struct State {
     invalid_volume_updates_received: usize,
     subscriptions: HashSet<EventSubscribeObject>,
     expected_media_item_start: Option<v3::MediaItem>,
+    expected_media_item_changed: Option<v3::MediaItem>,
+    expected_media_item_end: Option<v3::MediaItem>,
+    playlist: Option<PlaylistContent>,
 }
 
 impl State {
@@ -157,6 +167,9 @@ impl State {
             invalid_volume_updates_received: 0,
             subscriptions: HashSet::new(),
             expected_media_item_start: None,
+            expected_media_item_changed: None,
+            expected_media_item_end: None,
+            playlist: None,
         }
     }
 
@@ -260,6 +273,20 @@ impl State {
                                 assert_eq!(item, expected_media_item_start);
                             }
                         }
+                        v3::EventType::MediaItemChange => {
+                            if let Some(expected_media_item_changed) =
+                                self.expected_media_item_changed.take()
+                            {
+                                assert_eq!(item, expected_media_item_changed);
+                            }
+                        }
+                        v3::EventType::MediaItemEnd => {
+                            if let Some(expected_media_item_end) =
+                                self.expected_media_item_end.take()
+                            {
+                                assert_eq!(item, expected_media_item_end);
+                            }
+                        }
                         _ => (),
                     },
                     v3::EventObject::Key { .. } => (),
@@ -310,6 +337,8 @@ impl State {
             && !self.expecting_resume
             && self.internal != InternalState::Sleeping
             && self.expected_media_item_start.is_none()
+            && self.expected_media_item_changed.is_none()
+            && self.expected_media_item_end.is_none()
     }
 
     #[instrument(skip_all)]
@@ -400,6 +429,59 @@ impl State {
                                 self.expected_media_item_start =
                                     Some(play_message_to_media_item(body.clone()));
                             }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemChanged)
+                            {
+                                self.expected_media_item_changed =
+                                    Some(play_message_to_media_item(body.clone()));
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemEnd)
+                            {
+                                self.expected_media_item_end =
+                                    Some(play_message_to_media_item(body.clone()));
+                            }
+                            return Ok(Some(Action::WritePacket {
+                                op: Opcode::Play,
+                                body: serde_json::to_vec(&body).unwrap(),
+                            }));
+                        }
+                        fast::Send::PlayV3WithBody { file_id, time, volume, speed } => {
+                            let (url, mime) = file_urls.get(file_id).unwrap();
+                            let body = v3::PlayMessage {
+                                container: mime.to_string(),
+                                url: Some(url.clone()),
+                                content: None,
+                                time: *time,
+                                speed: *speed,
+                                headers: None,
+                                volume: *volume,
+                                metadata: None,
+                            };
+                            self.expected_play_update = Some(body.clone());
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemStart)
+                            {
+                                self.expected_media_item_start =
+                                    Some(play_message_to_media_item(body.clone()));
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemChanged)
+                            {
+                                self.expected_media_item_changed =
+                                    Some(play_message_to_media_item(body.clone()));
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemEnd)
+                            {
+                                self.expected_media_item_end =
+                                    Some(play_message_to_media_item(body.clone()));
+                            }
                             return Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
                                 body: serde_json::to_vec(&body).unwrap(),
@@ -423,67 +505,112 @@ impl State {
                                 body: serde_json::to_vec(&body).unwrap(),
                             }));
                         }
-                        // fast::Send::PlaylistV3 { items } => {
-                        //     let items = items
-                        //         .iter()
-                        //         .map(|itm| {
-                        //             let file_entry = file_urls.get(&itm.file_id).unwrap();
-                        //             v3::MediaItem {
-                        //                 container: file_entry.1.to_owned(),
-                        //                 url: Some(file_entry.0.to_owned()),
-                        //                 content: None,
-                        //                 time: None,
-                        //                 volume: None,
-                        //                 speed: None,
-                        //                 cache: None,
-                        //                 show_duration: None,
-                        //                 headers: None,
-                        //                 metadata: None,
-                        //             }
-                        //         })
-                        //         .collect::<Vec<v3::MediaItem>>();
+                        fast::Send::PlaylistV3 { items } => {
+                            let items = items
+                                .iter()
+                                .map(|itm| {
+                                    let file_entry = file_urls.get(&itm.file_id).unwrap();
+                                    v3::MediaItem {
+                                        container: file_entry.1.to_owned(),
+                                        url: Some(file_entry.0.to_owned()),
+                                        content: None,
+                                        time: None,
+                                        volume: None,
+                                        speed: None,
+                                        cache: None,
+                                        show_duration: None,
+                                        headers: None,
+                                        metadata: None,
+                                    }
+                                })
+                                .collect::<Vec<v3::MediaItem>>();
 
-                        //     info!(?items);
+                            info!(?items);
 
-                        //     if self
-                        //         .subscriptions
-                        //         .contains(&v3::EventSubscribeObject::MediaItemStart)
-                        //     {
-                        //         self.expected_media_item_start =
-                        //             Some(items.first().cloned().unwrap());
-                        //     }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemStart)
+                            {
+                                self.expected_media_item_start =
+                                    Some(items.first().cloned().unwrap());
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemChanged)
+                            {
+                                self.expected_media_item_changed =
+                                    Some(items.first().cloned().unwrap());
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemEnd)
+                            {
+                                self.expected_media_item_end =
+                                    Some(items.first().cloned().unwrap());
+                            }
 
-                        //     let playlist = v3::PlaylistContent {
-                        //         variant: v3::ContentType::Playlist,
-                        //         items,
-                        //         offset: None,
-                        //         volume: None,
-                        //         speed: None,
-                        //         forward_cache: None,
-                        //         backward_cache: None,
-                        //         metadata: None,
-                        //     };
+                            let playlist = v3::PlaylistContent {
+                                variant: v3::ContentType::Playlist,
+                                items,
+                                offset: None,
+                                volume: None,
+                                speed: None,
+                                forward_cache: None,
+                                backward_cache: None,
+                                metadata: None,
+                            };
+                            self.playlist = Some(playlist.clone());
 
-                        //     let playlist_json = serde_json::to_string(&playlist).unwrap();
+                            let playlist_json = serde_json::to_string(&playlist).unwrap();
 
-                        //     let body = v3::PlayMessage {
-                        //         container: "application/json".to_owned(),
-                        //         url: None,
-                        //         content: Some(playlist_json),
-                        //         time: None,
-                        //         speed: None,
-                        //         headers: None,
-                        //         volume: None,
-                        //         metadata: None,
-                        //     };
+                            let body = v3::PlayMessage {
+                                container: "application/json".to_owned(),
+                                url: None,
+                                content: Some(playlist_json),
+                                time: None,
+                                speed: None,
+                                headers: None,
+                                volume: None,
+                                metadata: None,
+                            };
 
-                        //     self.expected_play_update = Some(body.clone());
+                            self.expected_play_update = Some(body.clone());
 
-                        //     return Ok(Some(Action::WritePacket {
-                        //         op: Opcode::Play,
-                        //         body: serde_json::to_vec(&body).unwrap(),
-                        //     }));
-                        // }
+                            return Ok(Some(Action::WritePacket {
+                                op: Opcode::Play,
+                                body: serde_json::to_vec(&body).unwrap(),
+                            }));
+                        }
+                        fast::Send::SetPlaylistItem { index } => {
+                            let body = v3::SetPlaylistItemMessage { item_index: *index };
+
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemStart)
+                            {
+                                self.expected_media_item_start =
+                                    Some(self.playlist.as_ref().unwrap().items[*index as usize].clone());
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemChanged)
+                            {
+                                self.expected_media_item_changed =
+                                    Some(self.playlist.as_ref().unwrap().items[*index as usize].clone());
+                            }
+                            if self
+                                .subscriptions
+                                .contains(&v3::EventSubscribeObject::MediaItemEnd)
+                            {
+                                self.expected_media_item_end =
+                                    Some(self.playlist.as_ref().unwrap().items[*index as usize].clone());
+                            }
+
+                            return Ok(Some(Action::WritePacket {
+                                op: Opcode::SetPlaylistItem,
+                                body: serde_json::to_vec(&body).unwrap(),
+                            }));
+                        }
                     },
                     Step::Receive(receive) => {
                         self.internal = match receive {
@@ -531,6 +658,8 @@ impl State {
         ensure!(!self.expecting_pause);
         ensure!(!self.expecting_resume);
         ensure!(self.expected_media_item_start.is_none());
+        ensure!(self.expected_media_item_changed.is_none());
+        ensure!(self.expected_media_item_end.is_none());
         Ok(())
     }
 }
@@ -676,26 +805,36 @@ async fn run_test(
     state.finish()
 }
 
-async fn run_all_tests(receiver: SocketAddr, sample_media_path: PathBuf) {
+async fn run_tests(receiver: SocketAddr, sample_media_path: PathBuf, tests: Vec<String>) {
     let file_server = FileServer::new(0).await.unwrap();
     let mut stdout = std::io::stdout();
 
-    for (idx, case) in fast::TEST_CASES.iter().enumerate() {
-        print!("test {} ...", case.name);
-        stdout.flush().unwrap();
-        match run_test(&receiver, &file_server, &sample_media_path, case).await {
-            Ok(_) => {
-                println!("\rtest {} ... {GREEN}OK{RESET}", case.name);
-            }
-            Err(err) => {
-                println!("\rtest {} ... {RED}FAILED{RESET}", case.name);
-                println!("Reason: {err:?}");
-                return;
-            }
+    for (test_idx, target_name) in tests.iter().enumerate() {
+        let matched: Vec<_> = fast::TEST_CASES.iter().filter(|t | t.name.contains(target_name)).collect();
+
+        if matched.is_empty() {
+            println!("test {} ... {YELLOW}SKIPPED{RESET}", target_name);
+            println!("Reason: Test case does not exist...");
+            continue;
         }
 
-        if idx != fast::TEST_CASES.len() - 1 {
-            std::thread::sleep(Duration::from_millis(250));
+        for (idx, case) in matched.iter().enumerate() {
+            print!("test {} ...", case.name);
+            stdout.flush().unwrap();
+            match run_test(&receiver, &file_server, &sample_media_path, case).await {
+                Ok(_) => {
+                    println!("\rtest {} ... {GREEN}OK{RESET}", case.name);
+                }
+                Err(err) => {
+                    println!("\rtest {} ... {RED}FAILED{RESET}", case.name);
+                    println!("Reason: {err:?}");
+                    return;
+                }
+            }
+
+            if !(test_idx == tests.len() - 1  && idx == matched.len() - 1) {
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
     }
 }
@@ -712,6 +851,7 @@ async fn main() {
     let receiver = SocketAddr::new(cli.host.parse().unwrap(), cli.port);
 
     match cli.command {
-        Command::RunAll => run_all_tests(receiver, sample_media_path).await,
+        Command::RunAll => run_tests(receiver, sample_media_path, fast::TEST_CASES.iter().map(|t| t.name.to_string()).collect()).await,
+        Command::Run { tests } => run_tests(receiver, sample_media_path, tests).await,
     }
 }

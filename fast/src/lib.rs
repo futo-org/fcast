@@ -1,9 +1,9 @@
 use fcast_protocol::v3;
 
-// #[derive(Debug)]
-// pub struct PlaylistItem {
-//     pub file_id: u32,
-// }
+#[derive(Debug)]
+pub struct PlaylistItem {
+    pub file_id: u32,
+}
 
 #[derive(Debug)]
 pub enum Send {
@@ -14,10 +14,17 @@ pub enum Send {
     Stop,
     PlayV2 { file_id: u32 },
     PlayV3 { file_id: u32 },
+    PlayV3WithBody {
+        file_id: u32,
+        time: Option<f64>,
+        volume: Option<f64>,
+        speed: Option<f64>,
+    },
     Pause,
     Resume,
     SubscribeEvent(v3::EventSubscribeObject),
-    // PlaylistV3 { items: &'static [PlaylistItem] },
+    PlaylistV3 { items: &'static [PlaylistItem] },
+    SetPlaylistItem { index: u64 },
     // TODO: test that HTTP request headers are correctly handled by the receiver
 }
 
@@ -69,8 +76,10 @@ cases!(
     cast_video_set_volume_v3,
     cast_pause_resume_v2,
     cast_pause_resume_v3,
-    subscribe_media_item_start
-    // cast_simple_playlist
+    subscribe_media_item_start_1,
+    subscribe_media_item_start_2,
+    subscribe_media_item_end,
+    cast_simple_playlist
 );
 
 macro_rules! define_test_case {
@@ -308,6 +317,7 @@ define_test_case!(
             mime: "video/mp4"
         },
         send!(Send::PlayV3 { file_id: 0 }),
+        Step::SleepMillis(500),
         send!(Send::Pause),
         send!(Send::Resume),
         send!(Send::Stop),
@@ -315,7 +325,7 @@ define_test_case!(
 );
 
 define_test_case!(
-    subscribe_media_item_start,
+    subscribe_media_item_start_1,
     &[
         recv!(Receive::Version),
         send!(Send::Version(3)),
@@ -336,34 +346,87 @@ define_test_case!(
     ]
 );
 
-// define_test_case!(
-//     cast_simple_playlist,
-//     &[
-//         recv!(Receive::Version),
-//         send!(Send::Version(3)),
-//         send!(Send::Initial),
-//         recv!(Receive::Initial),
-//         Step::SleepMillis(500), // Electron receiver workaround
-//         send!(Send::SubscribeEvent(
-//             v3::EventSubscribeObject::MediaItemStart
-//         )),
-//         Step::SleepMillis(500), // Electron receiver workaround
-//         Step::ServeFile {
-//             path: "image/flowers.jpg",
-//             id: 0,
-//             mime: "image/jpeg"
-//         },
-//         Step::ServeFile {
-//             path: "image/garden.jpg",
-//             id: 1,
-//             mime: "image/jpeg"
-//         },
-//         send!(Send::PlaylistV3 {
-//             items: &[
-//                 PlaylistItem { file_id: 0 },
-//                 PlaylistItem { file_id: 1 },
-//             ]
-//         }),
-//         send!(Send::Stop),
-//     ]
-// );
+define_test_case!(
+    subscribe_media_item_start_2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::SleepMillis(500),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        Step::SleepMillis(500),
+        Step::ServeFile {
+            path: "audio/Court_House_Blues_Take_1.mp3",
+            id: 0,
+            mime: "audio/mp4"
+        },
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    subscribe_media_item_end,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::SleepMillis(500),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemEnd
+        )),
+        Step::SleepMillis(500),
+        Step::ServeFile {
+            path: "audio/Dont_Go_Way_Nobody.mp3",
+            id: 0,
+            mime: "audio/mp4"
+        },
+        send!(Send::PlayV3WithBody {
+            file_id: 0,
+            time: Some(243.0),
+            speed: None,
+            volume: None,
+        }),
+        Step::SleepMillis(1250),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_simple_playlist,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::SleepMillis(500),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemChanged
+        )),
+        Step::SleepMillis(500),
+        Step::ServeFile {
+            path: "image/flowers.jpg",
+            id: 0,
+            mime: "image/jpeg"
+        },
+        Step::ServeFile {
+            path: "image/garden.jpg",
+            id: 1,
+            mime: "image/jpeg"
+        },
+        send!(Send::PlaylistV3 {
+            items: &[
+                PlaylistItem { file_id: 0 },
+                PlaylistItem { file_id: 1 },
+            ]
+        }),
+        Step::SleepMillis(500),
+        send!(Send::SetPlaylistItem { index: 1 }),
+        Step::SleepMillis(500),
+        send!(Send::Stop),
+    ]
+);
