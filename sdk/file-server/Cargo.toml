@@ -20,3 +20,7 @@ http-body-util = "0.1.3"
 path = "../../sdk/sender/fcast-sender-sdk"
 default-features = false
 features = [ "fcast", "chromecast", "discovery" ]
+
+[features]
+default = []
+headers = []

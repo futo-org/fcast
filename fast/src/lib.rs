@@ -45,6 +45,7 @@ pub enum Step {
         path: &'static str,
         id: u32,
         mime: &'static str,
+        headers: Option<&'static [(&'static str, &'static str)]>,
     },
     SleepMillis(u64),
 }
@@ -79,7 +80,13 @@ cases!(
     subscribe_media_item_start_1,
     subscribe_media_item_start_2,
     subscribe_media_item_end,
-    cast_simple_playlist
+    cast_simple_playlist,
+    cast_photo_with_headers_v2,
+    cast_photos_with_headers_v2,
+    cast_photo_with_headers_v3,
+    cast_photos_with_headers_v3,
+    cast_video_with_headers_v2,
+    cast_video_with_headers_v3
 );
 
 macro_rules! define_test_case {
@@ -102,6 +109,25 @@ macro_rules! send {
 macro_rules! recv {
     ($op:expr) => {
         Step::Receive($op)
+    };
+}
+
+macro_rules! serve {
+    ($path:expr, $id:expr, $mime:expr) => {
+        Step::ServeFile {
+            path: $path,
+            id: $id,
+            mime: $mime,
+            headers: None,
+        }
+    };
+    ($path:expr, $id:expr, $mime:expr, $headers:expr) => {
+        Step::ServeFile {
+            path: $path,
+            id: $id,
+            mime: $mime,
+            headers: Some(&($headers)),
+        }
     };
 }
 
@@ -142,11 +168,7 @@ define_test_case!(
     &[
         recv!(Receive::Version),
         send!(Send::Version(2)),
-        Step::ServeFile {
-            path: "image/flowers.jpg",
-            id: 0,
-            mime: "image/jpeg"
-        },
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(500),
         send!(Send::Stop),
@@ -158,16 +180,8 @@ define_test_case!(
     &[
         recv!(Receive::Version),
         send!(Send::Version(2)),
-        Step::ServeFile {
-            path: "image/flowers.jpg",
-            id: 0,
-            mime: "image/jpeg"
-        },
-        Step::ServeFile {
-            path: "image/garden.jpg",
-            id: 1,
-            mime: "image/jpeg"
-        },
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        serve!("image/garden.jpg", 1, "image/jpeg"),
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(500),
         send!(Send::PlayV2 { file_id: 1 }),
@@ -183,11 +197,7 @@ define_test_case!(
         send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
-        Step::ServeFile {
-            path: "image/flowers.jpg",
-            id: 0,
-            mime: "image/jpeg"
-        },
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
         send!(Send::PlayV3 { file_id: 0 }),
         send!(Send::Stop),
     ]
@@ -200,16 +210,8 @@ define_test_case!(
         send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
-        Step::ServeFile {
-            path: "image/flowers.jpg",
-            id: 0,
-            mime: "image/jpeg"
-        },
-        Step::ServeFile {
-            path: "image/garden.jpg",
-            id: 1,
-            mime: "image/jpeg"
-        },
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        serve!("image/garden.jpg", 1, "image/jpeg"),
         send!(Send::PlayV2 { file_id: 0 }),
         send!(Send::PlayV2 { file_id: 1 }),
         send!(Send::Stop),
@@ -221,11 +223,7 @@ define_test_case!(
     &[
         recv!(Receive::Version),
         send!(Send::Version(2)),
-        Step::ServeFile {
-            path: "video/BigBuckBunny.mp4",
-            id: 0,
-            mime: "video/mp4"
-        },
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(750),
         send!(Send::Stop),
@@ -237,11 +235,7 @@ define_test_case!(
     &[
         recv!(Receive::Version),
         send!(Send::Version(2)),
-        Step::ServeFile {
-            path: "video/BigBuckBunny.mp4",
-            id: 0,
-            mime: "video/mp4"
-        },
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(750),
         send!(Send::SetVolume(0.5)),
@@ -257,11 +251,10 @@ define_test_case!(
         send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
-        Step::ServeFile {
-            path: "video/BigBuckBunny.mp4",
-            id: 0,
-            mime: "video/mp4"
-        },
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV3 { file_id: 0 }),
         send!(Send::Stop),
     ]
@@ -274,11 +267,7 @@ define_test_case!(
         send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
-        Step::ServeFile {
-            path: "video/BigBuckBunny.mp4",
-            id: 0,
-            mime: "video/mp4"
-        },
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV3 { file_id: 0 }),
         send!(Send::SetVolume(0.5)),
         send!(Send::SetVolume(1.0)),
@@ -291,11 +280,7 @@ define_test_case!(
     &[
         recv!(Receive::Version),
         send!(Send::Version(2)),
-        Step::ServeFile {
-            path: "video/BigBuckBunny.mp4",
-            id: 0,
-            mime: "video/mp4"
-        },
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(500),
         send!(Send::Pause),
@@ -311,11 +296,7 @@ define_test_case!(
         send!(Send::Version(3)),
         send!(Send::Initial),
         recv!(Receive::Initial),
-        Step::ServeFile {
-            path: "video/BigBuckBunny.mp4",
-            id: 0,
-            mime: "video/mp4"
-        },
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV3 { file_id: 0 }),
         Step::SleepMillis(500),
         send!(Send::Pause),
@@ -336,11 +317,128 @@ define_test_case!(
             v3::EventSubscribeObject::MediaItemStart
         )),
         Step::SleepMillis(500), // Electron receiver workaround
-        Step::ServeFile {
-            path: "image/flowers.jpg",
-            id: 0,
-            mime: "image/jpeg"
-        },
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_photo_with_headers_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!(
+            "image/flowers.jpg",
+            0,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
+        send!(Send::PlayV2 { file_id: 0 }),
+        Step::SleepMillis(500),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_photos_with_headers_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!(
+            "image/flowers.jpg",
+            0,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
+        serve!(
+            "image/garden.jpg",
+            1,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
+        send!(Send::PlayV2 { file_id: 0 }),
+        Step::SleepMillis(500),
+        send!(Send::PlayV2 { file_id: 1 }),
+        Step::SleepMillis(500),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_photo_with_headers_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        serve!(
+            "image/flowers.jpg",
+            0,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_photos_with_headers_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        serve!(
+            "image/flowers.jpg",
+            0,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
+        serve!(
+            "image/garden.jpg",
+            1,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::PlayV3 { file_id: 1 }),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_video_with_headers_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4", [("User-Agent", "Fake"), ("Custom-Key", "ABC")]),
+        send!(Send::PlayV2 { file_id: 0 }),
+        Step::SleepMillis(750),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_video_with_headers_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        serve!(
+            "video/BigBuckBunny.mp4",
+            0,
+            "video/mp4",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABCDEF")]
+        ),
         send!(Send::PlayV3 { file_id: 0 }),
         send!(Send::Stop),
     ]
@@ -358,11 +456,7 @@ define_test_case!(
             v3::EventSubscribeObject::MediaItemStart
         )),
         Step::SleepMillis(500),
-        Step::ServeFile {
-            path: "audio/Court_House_Blues_Take_1.mp3",
-            id: 0,
-            mime: "audio/mp4"
-        },
+        serve!("audio/Court_House_Blues_Take_1.mp3", 0, "audio/mp4"),
         send!(Send::PlayV3 { file_id: 0 }),
         send!(Send::Stop),
     ]
@@ -380,11 +474,7 @@ define_test_case!(
             v3::EventSubscribeObject::MediaItemEnd
         )),
         Step::SleepMillis(500),
-        Step::ServeFile {
-            path: "audio/Dont_Go_Way_Nobody.mp3",
-            id: 0,
-            mime: "audio/mp4"
-        },
+        serve!("audio/Dont_Go_Way_Nobody.mp3", 0, "audio/mp4"),
         send!(Send::PlayV3WithBody {
             file_id: 0,
             time: Some(243.0),
@@ -408,16 +498,8 @@ define_test_case!(
             v3::EventSubscribeObject::MediaItemChanged
         )),
         Step::SleepMillis(500),
-        Step::ServeFile {
-            path: "image/flowers.jpg",
-            id: 0,
-            mime: "image/jpeg"
-        },
-        Step::ServeFile {
-            path: "image/garden.jpg",
-            id: 1,
-            mime: "image/jpeg"
-        },
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        serve!("image/garden.jpg", 1, "image/jpeg"),
         send!(Send::PlaylistV3 {
             items: &[
                 PlaylistItem { file_id: 0 },

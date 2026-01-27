@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use serde::Deserialize;
 use smallvec::SmallVec;
@@ -21,6 +23,7 @@ pub struct Format {
     pub manifest_url: Option<String>,
     pub protocol: SmolStr,
     pub container: Option<SmolStr>,
+    pub http_headers: Option<HashMap<SmolStr, SmolStr>>,
 }
 
 impl Format {

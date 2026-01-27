@@ -57,8 +57,13 @@ export component Slider {
     rail := Rectangle {
         x: base.vertical ? (parent.width - self.width) / 2 : thumb.width / 2;
         y: base.vertical ? thumb.height / 2 : (parent.height - self.height) / 2;
+
         width: base.vertical ? 4px : parent.width - thumb.width;
         height: base.vertical ? parent.height - thumb.height : 4px;
+
+        // width: base.vertical ? 2px : parent.width - thumb.width;
+        // height: base.vertical ? parent.height - thumb.height : 2px;
+
         background: rail-color;
         border-radius: 2px;
     }

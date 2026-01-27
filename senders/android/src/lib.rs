@@ -8,8 +8,7 @@ use jni::{
 };
 use mcore::{transmission::WhepSink, DeviceEvent, Event, ShouldQuit, SourceConfig};
 use parking_lot::{Condvar, Mutex};
-use std::net::Ipv6Addr;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, net::Ipv6Addr, sync::Arc};
 use tracing::{debug, error};
 
 lazy_static::lazy_static! {
@@ -506,7 +505,9 @@ fn android_main(app: slint::android::AndroidApp) {
     ui.global::<Bridge>().on_stop_casting({
         let event_tx = event_tx.clone();
         move || {
-            event_tx.send(Event::EndSession { disconnect: true }).unwrap();
+            event_tx
+                .send(Event::EndSession { disconnect: true })
+                .unwrap();
         }
     });
 

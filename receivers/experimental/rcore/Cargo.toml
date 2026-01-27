@@ -1,0 +1,112 @@
+[package]
+name = "rcore"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio.workspace = true
+gst = { workspace = true, features = [ "v1_26" ] }
+fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
+# common.path = "../common"
+gethostname = "1"
+# slint = { workspace = true, features = ["unstable-wgpu-26", "renderer-femtovg-wgpu"] }
+# slint = { workspace = true, features = ["unstable-wgpu-26"] }
+# slint = { version = "1.14.1", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "std", "raw-window-handle-06" ] }
+anyhow.workspace = true
+# futures.workspace = true
+futures = "0.3"
+# tokio-stream.workspace = true
+tokio-stream = "0.1"
+url = "2"
+thiserror = "2"
+clap = { version = "4.5", features = ["derive"] }
+mdns-sd.workspace = true
+fast_qr = { version = "0.13", features = [ "svg" ] }
+gst-app.workspace = true
+gst-video.workspace = true
+gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
+gst-play = { package = "gstreamer-play", version = "0.24.2", features = [ "v1_26" ] }
+serde_json.workspace = true
+if-addrs = "0.14"
+base64 = "0.22"
+bitflags = "2.10"
+smallvec.workspace = true
+parking_lot.workspace = true
+image_swizzle = "0.2.0"
+bytes.workspace = true
+# libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] } # TODO
+gst-plugin-reqwest = { version = "0.14.3", features = [ "static" ] }
+
+[dependencies.slint]
+version = "1.14.1"
+default-features = false
+features = [
+    "accessibility",
+    "backend-default",
+    "compat-1-2",
+    # "renderer-femtovg",
+    "renderer-skia-opengl",
+    "std",
+    "backend-linuxkms"
+]
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = [
+    # TODO:
+    #  * APNG
+    #  * GIF
+    # "rayon", Only good for encoding?
+    "avif",
+    "avif-native",
+    "bmp",
+    "gif",
+    "ico",
+    "jpeg",
+    "png",
+    "webp",
+]
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tracing-gstreamer.workspace = true
+tracing-panic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
+glutin_egl_sys = { version = "0.7.1" }
+glutin_glx_sys = { version = "0.6.1" }
+# rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
+# reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider" ] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider" ] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+glutin_egl_sys = { version = "0.7.1" }
+tracing-gstreamer.workspace = true
+tracing-panic.workspace = true
+tracing = { workspace = true, features = [ "log" ] }
+jni = "0.21.1"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+reqwest = { version = "0.13", features = [ "native-tls" ] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[features]
+# desktop = ["slint/backend-linuxkms"]
+desktop = []
+android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
+default = []
+
+# TODO: have a build mode which statically links every rust plugin we use + use fat LTO to check performance gains

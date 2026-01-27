@@ -9,7 +9,7 @@ use xshell::cmd;
 #[cfg(target_os = "windows")]
 use xshell::Shell;
 
-use crate::{sh, workspace};
+use crate::{sh, workspace, AndroidAbiTarget};
 
 #[cfg(target_os = "windows")]
 const GSTREAMER_BASE_LIBS: [&'static str; 19] = [
@@ -91,25 +91,6 @@ struct InfoPlistTemplate {
     version: String,
 }
 
-#[derive(clap::ValueEnum, Clone)]
-pub enum AbiTarget {
-    X64,
-    X86,
-    Arm64,
-    Arm32,
-}
-
-impl AbiTarget {
-    pub fn translate(&self) -> &'static str {
-        match self {
-            AbiTarget::X64 => "x86_64-linux-android",
-            AbiTarget::X86 => "i686-linux-android",
-            AbiTarget::Arm64 => "aarch64-linux-android",
-            AbiTarget::Arm32 => "armv7-linux-androideabi",
-        }
-    }
-}
-
 #[derive(Subcommand)]
 pub enum AndroidSenderCommand {
     Check,
@@ -119,7 +100,7 @@ pub enum AndroidSenderCommand {
         #[clap(short, long)]
         release: bool,
         #[clap(short, long)]
-        target: Option<AbiTarget>,
+        target: Option<AndroidAbiTarget>,
     },
 }
 
@@ -278,10 +259,10 @@ impl SenderArgs {
                             concat_path(&root_path, "senders/android/app/src/main/jniLibs");
 
                         let targets = target.map(|t| vec![t]).unwrap_or(vec![
-                            AbiTarget::X64,
-                            AbiTarget::X86,
-                            AbiTarget::Arm64,
-                            AbiTarget::Arm32,
+                            AndroidAbiTarget::X64,
+                            AndroidAbiTarget::X86,
+                            AndroidAbiTarget::Arm64,
+                            AndroidAbiTarget::Arm32,
                         ]);
 
                         for target in targets {
@@ -290,10 +271,10 @@ impl SenderArgs {
                                 "PKG_CONFIG_PATH",
                                 gst_root
                                     + match target {
-                                        AbiTarget::X64 => "/x86_64",
-                                        AbiTarget::X86 => "/x86",
-                                        AbiTarget::Arm64 => "/arm64",
-                                        AbiTarget::Arm32 => "/armv7",
+                                        AndroidAbiTarget::X64 => "/x86_64",
+                                        AndroidAbiTarget::X86 => "/x86",
+                                        AndroidAbiTarget::Arm64 => "/arm64",
+                                        AndroidAbiTarget::Arm32 => "/armv7",
                                     }
                                     + "/lib/pkgconfig",
                             );
