@@ -175,10 +175,13 @@ export class Main {
         this.tray = tray;
     }
 
-    private static async play(message: PlayMessage) {
-        Main.tcpListenerService.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message));
+    private static async play(message: PlayMessage, skipPlayUpdate: boolean = false) {
+        if (!skipPlayUpdate) {
+            Main.tcpListenerService.send(Opcode.PlayUpdate, new PlayUpdateMessage(Date.now(), message));
+        }
+
         Main.cache.playMessage = message;
-        const messageInfo = await preparePlayMessage(message, Main.cache.playerVolume, (playMessage: PlaylistContent) => {
+        const messageInfo = await preparePlayMessage(message, (playMessage: PlaylistContent) => {
             Main.mediaCache?.destroy();
             Main.mediaCache = new MediaCache(playMessage);
         });
@@ -206,7 +209,7 @@ export class Main {
 
                 Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
                 Main.playerWindow.once('ready-to-show', async () => {
-                    Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
+                    Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
                 });
                 Main.playerWindow.on('closed', () => {
                     Main.playerWindow = null;
@@ -219,7 +222,7 @@ export class Main {
                     Main.playerWindow = Main.mainWindow;
                     Main.mainWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
                     Main.mainWindow.once('ready-to-show', async () => {
-                        Main.mainWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
+                        Main.mainWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
                     });
                 }
             }
@@ -228,11 +231,11 @@ export class Main {
             Main.playerWindow.setTitle(windowTitle);
             Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
             Main.playerWindow.once('ready-to-show', async () => {
-                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
+                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
             });
         } else {
             Main.playerWindow.setTitle(windowTitle);
-            Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage);
+            Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
         }
 
         Main.playerWindowContentViewer = messageInfo.contentViewer;
@@ -342,7 +345,7 @@ export class Main {
             logger.debug(`Received play request for index ${playlistIndex}:`, value);
             value.url = Main.mediaCache?.has(playlistIndex) ? Main.mediaCache?.getUrl(playlistIndex) : value.url;
             Main.mediaCache?.cacheItems(playlistIndex);
-            Main.play(value);
+            Main.play(value, true);
         });
 
         // @ts-ignore

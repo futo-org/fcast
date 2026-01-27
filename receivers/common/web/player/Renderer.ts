@@ -76,6 +76,8 @@ let captionsContentHeight = 0;
 
 let cachedPlaylist: PlaylistContent = null;
 let cachedPlayMediaItem: MediaItem = null;
+let cachedVolume: number = null;
+let cachedSpeed: number = 1.0;
 let playlistIndex = 0;
 let isMediaItem = false;
 let playItemCached = false;
@@ -136,6 +138,8 @@ function onPlayerLoad(value: PlayMessage) {
         }
         if (value.speed) {
             player.setPlaybackRate(value.speed);
+        } else {
+            player.setPlaybackRate(cachedSpeed);
         }
         playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
 
@@ -145,8 +149,8 @@ function onPlayerLoad(value: PlayMessage) {
         else {
             // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
             // getting out-of-sync with the sender on 1st playback.
-            volumeChangeHandler(1.0);
-            window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: 1.0 });
+            volumeChangeHandler(cachedVolume);
+            window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: cachedVolume });
         }
         playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
 
@@ -158,7 +162,7 @@ function onPlayerLoad(value: PlayMessage) {
     }
 }
 
-function onPlay(_event, value: PlayMessage) {
+function onPlay(_event, value: PlayMessage, cachedPlayerVolume: number = null) {
     if (!playItemCached) {
         cachedPlayMediaItem = mediaItemFromPlayMessage(value);
         isMediaItem = false;
@@ -167,6 +171,11 @@ function onPlay(_event, value: PlayMessage) {
     logger.info('Media playback changed:', cachedPlayMediaItem);
     playItemCached = false;
     showDurationTimer.stop();
+
+    // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+    // getting out-of-sync with the sender when player windows are closed and re-opened. Same for v3
+    // when volume is not set in the PlayMessage.
+    cachedVolume = (cachedVolume === null && cachedPlayerVolume === null) ? 1.0 : cachedPlayerVolume;
 
     if (player) {
         if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
@@ -367,11 +376,20 @@ window.targetAPI.onPause(() => { player?.pause(); });
 window.targetAPI.onResume(() => { player?.play(); });
 window.targetAPI.onSeek((_event, value: SeekMessage) => { player?.setCurrentTime(value.time); });
 window.targetAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
-window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => { player?.setPlaybackRate(value.speed); playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate); });
+window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => {
+    cachedSpeed = Math.min(16.0, Math.max(0.0, value.speed));
+    player?.setPlaybackRate(value.speed);
+    playerCtrlStateUpdate(PlayerControlEvent.SetPlaybackRate);
+});
 
-function onPlayPlaylist(_event, value: PlaylistContent) {
+function onPlayPlaylist(_event, value: PlaylistContent, cachedPlayerVolume: number) {
     logger.info('Handle play playlist message', JSON.stringify(value));
     cachedPlaylist = value;
+
+    // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
+    // getting out-of-sync with the sender when player windows are closed and re-opened. Same for v3
+    // when volume is not set in the PlayMessage.
+    cachedVolume = (cachedVolume === null && cachedPlayerVolume === null) ? 1.0 : cachedPlayerVolume;
 
     const offset = value.offset ? value.offset : 0;
     const volume = value.items[offset].volume ? value.items[offset].volume : value.volume;
@@ -742,6 +760,7 @@ function volumeChangeHandler(volume: number) {
         player?.setMute(false);
     }
 
+    cachedVolume = Math.min(1.0, Math.max(0.0, volume));
     player?.setVolume(volume);
 }
 
@@ -864,7 +883,6 @@ function mediaEndHandler() {
         else {
             logger.info('End of playlist:', cachedPlayMediaItem);
             sendPlaybackUpdate(PlaybackState.Idle);
-            window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
 
             setIdleScreenVisible(true);
             player.setAutoPlay(false);
@@ -874,12 +892,13 @@ function mediaEndHandler() {
     else {
         logger.info('Media playback ended:', cachedPlayMediaItem);
         sendPlaybackUpdate(PlaybackState.Idle);
-        window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
 
         setIdleScreenVisible(true);
         player.setAutoPlay(false);
         player.stop();
     }
+
+    window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
 }
 
 // Component hiding

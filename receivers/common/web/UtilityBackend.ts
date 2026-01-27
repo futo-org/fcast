@@ -16,12 +16,7 @@ export function deepEqual(x, y) {
     ) : (x === y);
 }
 
-export async function preparePlayMessage(message: PlayMessage, cachedPlayerVolume: number, mediaCacheInitializationCb: ((playMessage: PlaylistContent) => void)) {
-    // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
-    // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
-    // is cached in the play message when volume is not set in v3 PlayMessage.
-    message.volume = message.volume === undefined ? cachedPlayerVolume : message.volume;
-
+export async function preparePlayMessage(message: PlayMessage, mediaCacheInitializationCb: ((playMessage: PlaylistContent) => void)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let rendererMessage: any = await NetworkService.proxyPlayIfRequired(message);
     let rendererEvent = 'play';
