@@ -110,7 +110,8 @@ export class FCastSession {
     }
 
     private handleLengthBytes(receivedBytes: Buffer) {
-        const bytesToRead = Math.min(LENGTH_BYTES, receivedBytes.length);
+        const remaining = LENGTH_BYTES - this.bytesRead;
+        const bytesToRead = Math.min(remaining, receivedBytes.length);
         const bytesRemaining = receivedBytes.length - bytesToRead;
         receivedBytes.copy(this.buffer, this.bytesRead, 0, bytesToRead);
         this.bytesRead += bytesToRead;
@@ -135,7 +136,8 @@ export class FCastSession {
     }
 
     private handlePacketBytes(receivedBytes: Buffer) {
-        const bytesToRead = Math.min(this.packetLength, receivedBytes.length);
+        const remaining = this.packetLength - this.bytesRead;
+        const bytesToRead = Math.min(remaining, receivedBytes.length);
         const bytesRemaining = receivedBytes.length - bytesToRead;
         receivedBytes.copy(this.buffer, this.bytesRead, 0, bytesToRead);
         this.bytesRead += bytesToRead;
