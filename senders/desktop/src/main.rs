@@ -7,12 +7,12 @@ use clap::Parser;
 #[cfg(target_os = "macos")]
 use desktop_sender::macos;
 use desktop_sender::{FetchEvent, device_info_parser};
-use file_server::FileServer;
 use directories::{BaseDirs, UserDirs};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{self, DeviceFeature, DeviceInfo, EventSubscription},
 };
+use file_server::FileServer;
 use gst_video::prelude::*;
 use image::ImageFormat;
 #[cfg(target_os = "windows")]
@@ -597,13 +597,11 @@ fn ipv6_is_global(v6: std::net::Ipv6Addr) -> bool {
         || matches!(v6.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
         || matches!(v6.segments(), [0x100, 0, 0, 0, _, _, _, _])
         || (matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
-            && !(
-                u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
+            && !(u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
                 || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
                 || matches!(v6.segments(), [0x2001, 3, _, _, _, _, _, _])
                 || matches!(v6.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
-                || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
-            ))
+                || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)))
         || matches!(v6.segments(), [0x2002, _, _, _, _, _, _, _])
         || matches!(v6.segments(), [0x5f00, ..])
         || v6.is_unique_local()
@@ -959,7 +957,9 @@ impl Application {
                 title: src.title.clone(),
                 thumbnail_url: Self::get_optimal_thumbnail(&src),
             }),
-            request_headers: None,
+            request_headers: format.http_headers.as_ref().map(|headers| {
+                HashMap::from_iter(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+            }),
         })?;
 
         Ok(())
@@ -1294,7 +1294,10 @@ impl Application {
                 }
                 None => error!(device_name, "Device not found"),
             },
-            Event::SignallerStarted { bound_port_v4, bound_port_v6 } => {
+            Event::SignallerStarted {
+                bound_port_v4,
+                bound_port_v6,
+            } => {
                 if let Some(session) = self.session_state.as_mut() {
                     let local_address = session.local_address;
                     let (content_type, url) = match &mut session.specific {

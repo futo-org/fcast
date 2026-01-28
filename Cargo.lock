@@ -3047,6 +3047,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-webrtchttp"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3ca46357f2097dbcfc0915b01b49d3fbe5cc5bee9e4450eb49d7d7adb900e43"
+dependencies = [
+ "async-recursion",
+ "bytes",
+ "futures",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-sdp",
+ "gstreamer-webrtc",
+ "parse_link_header",
+ "reqwest 0.12.28",
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "gstreamer"
 version = "0.24.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5075,6 +5094,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi 0.5.2",
+ "libc",
+]
+
+[[package]]
 name = "num_enum"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6232,6 +6261,9 @@ dependencies = [
  "glutin_egl_sys",
  "glutin_glx_sys",
  "gst-plugin-reqwest",
+ "gst-plugin-rtp",
+ "gst-plugin-webrtc",
+ "gst-plugin-webrtchttp",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-gl",
@@ -6244,8 +6276,10 @@ dependencies = [
  "image_swizzle",
  "jni",
  "mdns-sd",
+ "num_cpus",
  "objc2-app-kit 0.3.2",
  "parking_lot",
+ "rand",
  "reqwest 0.13.1",
  "rustls",
  "serde_json",

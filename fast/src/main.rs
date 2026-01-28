@@ -521,7 +521,7 @@ impl State {
                                         speed: None,
                                         cache: None,
                                         show_duration: None,
-                                        headers: None,
+                                        headers: file_entry.2.clone(),
                                         metadata: None,
                                     }
                                 })

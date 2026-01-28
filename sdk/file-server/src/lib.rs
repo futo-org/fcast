@@ -199,7 +199,9 @@ async fn handle_request(
                 let header = key.to_lowercase();
                 if let Some(actual_value) = headers.get(header) {
                     if expected_value != actual_value.as_bytes() {
-                        debug!(
+                        use tracing::warn;
+
+                        warn!(
                             actual_value = ?actual_value.to_str(),
                             expected_value = ?str::from_utf8(expected_value),
                             "Header check failed"

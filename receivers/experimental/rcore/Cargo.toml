@@ -36,6 +36,10 @@ image_swizzle = "0.2.0"
 bytes.workspace = true
 # libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] } # TODO
 gst-plugin-reqwest = { version = "0.14.3", features = [ "static" ] }
+gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [ "static" ] }
+gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
+num_cpus = "1"
+rand = "0.9"
 
 [dependencies.slint]
 version = "1.14.1"
@@ -73,6 +77,7 @@ tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+gst-plugin-rtp = { version = "0.14.4", features = [ "static" ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"

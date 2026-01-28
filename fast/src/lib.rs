@@ -86,7 +86,8 @@ cases!(
     cast_photo_with_headers_v3,
     cast_photos_with_headers_v3,
     cast_video_with_headers_v2,
-    cast_video_with_headers_v3
+    cast_video_with_headers_v3,
+    cast_simple_playlist_with_headers
 );
 
 macro_rules! define_test_case {
@@ -509,6 +510,26 @@ define_test_case!(
         Step::SleepMillis(500),
         send!(Send::SetPlaylistItem { index: 1 }),
         Step::SleepMillis(500),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_simple_playlist_with_headers,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemChanged
+        )),
+        serve!("image/flowers.jpg", 0, "image/jpeg", [("User-Agent", "Fake"), ("Custom-Key", "ABC")]),
+        send!(Send::PlaylistV3 {
+            items: &[
+                PlaylistItem { file_id: 0 },
+            ]
+        }),
         send!(Send::Stop),
     ]
 );
