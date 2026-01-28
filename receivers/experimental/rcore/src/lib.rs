@@ -42,6 +42,7 @@ mod player;
 mod session;
 // mod small_vec_model; // For later
 mod video;
+mod user_agent;
 
 use crate::session::{Operation, ReceiverToSenderMessage, TranslatableMessage};
 
@@ -55,10 +56,12 @@ pub enum DownloadImageError {
     InvalidContentType,
     #[error("content type is not a string")]
     ContentTypeIsNotString,
-    #[error("content type is unsupported")]
-    UnsupportedContentType,
+    #[error("content type ({0}) is unsupported")]
+    UnsupportedContentType(String),
     #[error("failed to decode image: {0}")]
     DecodeImage(#[from] image::ImageError),
+    #[error("failed to parse URL: {0}")]
+    InvalidUrl(#[from] url::ParseError),
 }
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
@@ -70,6 +73,8 @@ pub enum MdnsEvent {
     IpRemoved(IpAddr),
     SetIps(Vec<IpAddr>),
 }
+
+type MediaItemId = u64;
 
 #[derive(Debug)]
 pub enum Event {
@@ -100,6 +105,10 @@ pub enum Event {
         image: SlintRgba8Pixbuf,
     },
     Mdns(MdnsEvent),
+    PlaylistDataResult {
+        play_message: Option<v3::PlayMessage>,
+    },
+    MediaItemFinish(MediaItemId),
 }
 
 #[macro_export]
@@ -277,6 +286,7 @@ struct Application {
     current_playlist: Option<v3::PlaylistContent>,
     current_playlist_item_idx: Option<usize>,
     device_name: Option<String>,
+    current_media_item_id: MediaItemId,
 }
 
 impl Application {
@@ -342,14 +352,20 @@ impl Application {
                         if let Some(ref headers) = *headers.lock() {
                             let mut extra_headers_builder =
                                 gst::Structure::builder("reqwesthttpsrc-extra-headers");
+                            let mut did_set_user_agent = false;
                             for (k, v) in headers {
                                 if k == "User-Agent" || k == "user-agent" {
                                     elem.set_property("user-agent", v);
+                                    did_set_user_agent = true;
                                 } else {
                                     extra_headers_builder = extra_headers_builder.field(k, v);
                                 }
                             }
                             elem.set_property("extra-headers", extra_headers_builder.build());
+
+                            if !did_set_user_agent {
+                                elem.set_property("user-agent", user_agent::random_browser_user_agent(None));
+                            }
                         }
                     }
                     _ => (),
@@ -438,14 +454,16 @@ impl Application {
         };
 
         let (image_decode_tx, image_decode_rx) = std::sync::mpsc::channel();
-        std::thread::spawn({
-            let event_tx = event_tx.clone();
-            move || {
-                if let Err(err) = image_decode_worker(image_decode_rx, event_tx) {
-                    error!(?err, "Image decode worker failed");
+        std::thread::Builder::new()
+            .name("image-decoder".to_owned())
+            .spawn({
+                let event_tx = event_tx.clone();
+                move || {
+                    if let Err(err) = image_decode_worker(image_decode_rx, event_tx) {
+                        error!(?err, "Image decode worker failed");
+                    }
                 }
-            }
-        });
+            })?;
 
         Ok(Self {
             event_tx,
@@ -484,30 +502,44 @@ impl Application {
             current_playlist: None,
             current_playlist_item_idx: None,
             device_name: None,
+            current_media_item_id: 0,
         })
     }
 
-    // TODO: include headers
+    fn map_to_header_map(headers: &HashMap<String, String>) -> reqwest::header::HeaderMap {
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (k, v) in headers {
+            let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) else {
+                warn!(k, "Invalid header name");
+                continue;
+            };
+            let Ok(value) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) else {
+                warn!(v, "Invalid header value");
+                continue;
+            };
+            header_map.insert(name, value);
+        }
+
+        header_map
+    }
+
     async fn download_image(
         client: &reqwest::Client,
         url: &str,
         headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(Bytes, ImageFormat), DownloadImageError> {
+        let url = url::Url::parse(url)?;
+        debug!(%url, "Trying to download image");
+        let random_user_agent = user_agent::random_browser_user_agent(url.domain());
         let mut request = client.get(url);
+        let mut did_set_user_agent = false;
         if let Some(headers) = headers {
-            let mut header_map = reqwest::header::HeaderMap::new();
-            for (k, v) in headers.into_iter() {
-                let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) else {
-                    warn!(k, "Invalid header name");
-                    continue;
-                };
-                let Ok(value) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) else {
-                    warn!(v, "Invalid header value");
-                    continue;
-                };
-                header_map.insert(name, value);
-            }
+            let header_map = Self::map_to_header_map(&headers);
+            did_set_user_agent = header_map.contains_key(reqwest::header::USER_AGENT);
             request = request.headers(header_map);
+        }
+        if !did_set_user_agent {
+            request = request.header(reqwest::header::USER_AGENT, random_user_agent);
         }
 
         let resp = request.send().await?;
@@ -517,8 +549,9 @@ impl Application {
             .ok_or(DownloadImageError::MissingContentType)?
             .to_str()
             .map_err(|_| DownloadImageError::ContentTypeIsNotString)?;
-        let format = ImageFormat::from_mime_type(content_type)
-            .ok_or(DownloadImageError::UnsupportedContentType)?;
+        let format = ImageFormat::from_mime_type(content_type).ok_or(
+            DownloadImageError::UnsupportedContentType(content_type.to_string()),
+        )?;
 
         let body = resp.bytes().await?;
         Ok((body, format))
@@ -667,7 +700,6 @@ impl Application {
     }
 
     fn media_loaded_successfully(&mut self) {
-        // TODO: v3::EventType::MediaItemStart
         // TODO: needs debouncing since seeks will trigger this too, or maybe not?
         info!("Media loaded successfully");
 
@@ -688,20 +720,34 @@ impl Application {
         }
 
         if let Some(playlist) = self.current_playlist.as_ref()
-            && self.updates_tx.receiver_count() > 0
             && let Some(playlist_item_idx) = self.current_playlist_item_idx
         {
-            let event = v3::EventObject::MediaItem {
-                variant: v3::EventType::MediaItemChange,
-                item: playlist.items.get(playlist_item_idx).unwrap(/* TODO: */).clone(),
+            let Some(item) = playlist.items.get(playlist_item_idx).cloned() else {
+                return;
             };
-            let msg = v3::EventMessage {
-                generation_time: current_time_millis(),
-                event,
-            };
-            let _ = self
-                .updates_tx
-                .send(Arc::new(ReceiverToSenderMessage::Event { msg }));
+
+            if let Some(show_duration) = item.show_duration {
+                let event_tx = self.event_tx.clone();
+                let id = self.current_media_item_id;
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
+                    let _ = event_tx.send(Event::MediaItemFinish(id));
+                });
+            }
+
+            if self.updates_tx.receiver_count() > 0 {
+                let event = v3::EventObject::MediaItem {
+                    variant: v3::EventType::MediaItemChange,
+                    item,
+                };
+                let msg = v3::EventMessage {
+                    generation_time: current_time_millis(),
+                    event,
+                };
+                let _ = self
+                    .updates_tx
+                    .send(Arc::new(ReceiverToSenderMessage::Event { msg }));
+            }
         }
     }
 
@@ -848,35 +894,49 @@ impl Application {
         self.video_sink_is_eos
             .store(true, atomic::Ordering::Relaxed);
 
-        // TODO: v3::EventType::MediaItemChange?
+        self.current_media_item_id += 1;
 
         Ok(())
     }
 
     fn handle_playlist_play_request(&mut self, play_message: &v3::PlayMessage) -> Result<()> {
-        // TODO: load the json from URL
-        let playlist = serde_json::from_str::<v3::PlaylistContent>(
-            play_message
-                .content
-                .as_ref()
-                .ok_or(anyhow::anyhow!("No playlist found in content field"))?,
-        )?;
+        if let Some(url) = play_message.url.as_ref() {
+            let url = url.clone();
+            let mut play_message = play_message.clone();
+            let event_tx = self.event_tx.clone();
+            let client = self.http_client.clone();
+            tokio::spawn(async move {
+                let mut request = client.get(url);
+                if let Some(headers) = play_message.headers.as_ref() {
+                    request = request.headers(Self::map_to_header_map(headers));
+                }
+                let mut result = None;
+                match request.send().await {
+                    Ok(resp) => match resp.text().await {
+                        Ok(json) => {
+                            play_message.content = Some(json);
+                            result = Some(play_message);
+                        }
+                        Err(err) => {
+                            error!(?err, "Failed to convert response to text");
+                        }
+                    },
+                    Err(err) => {
+                        error!(?err, "Failed to download playlist json data");
+                    }
+                }
 
-        // TODO: play the actual playlist
-
-        let start_idx = match playlist.offset {
-            Some(idx) => idx as usize,
-            None => 0,
-        };
-
-        let start_item = playlist.items.get(start_idx).unwrap(/* TODO: */);
-
-        self.load_media_item(start_item)?; // TODO: how should errors be handled?
-
-        // TODO: handle show duration for the item
-
-        self.current_playlist = Some(playlist);
-        self.current_playlist_item_idx = Some(start_idx);
+                let _ = event_tx.send(Event::PlaylistDataResult {
+                    play_message: result,
+                });
+            });
+        } else if play_message.content.is_some() {
+            self.event_tx.send(Event::PlaylistDataResult {
+                play_message: Some(play_message.clone()),
+            })?;
+        } else {
+            bail!("No playlist available");
+        }
 
         Ok(())
     }
@@ -1502,6 +1562,60 @@ impl Application {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;
             }
+            Event::PlaylistDataResult { play_message } => {
+                let Some(play_message) = play_message else {
+                    error!("Playlist failed to laod");
+                    return Ok(false);
+                };
+
+                let Some(content) = play_message.content else {
+                    // Unreachable
+                    error!("Playlist play message is missing content");
+                    return Ok(false);
+                };
+
+                let playlist = serde_json::from_str::<v3::PlaylistContent>(&content)?;
+
+                let start_idx = match playlist.offset {
+                    Some(idx) => idx as usize,
+                    None => 0,
+                };
+
+                let Some(start_item) = playlist.items.get(start_idx) else {
+                    error!(
+                        start_idx,
+                        ?playlist,
+                        "Playlist's start index is out of bounds"
+                    );
+                    return Ok(false);
+                };
+
+                self.load_media_item(start_item)?; // TODO: how should errors be handled?
+
+                self.current_playlist = Some(playlist);
+                self.current_playlist_item_idx = Some(start_idx);
+            }
+            Event::MediaItemFinish(id) => {
+                if self.current_playlist_item_idx.is_none() || id != self.current_media_item_id {
+                    debug!(id, "Ignoring media item finish event");
+                    return Ok(false);
+                }
+
+                if let Some(playlist) = self.current_playlist.as_ref()
+                    && let Some(item_idx) = self.current_playlist_item_idx
+                {
+                    let next_idx = item_idx + 1;
+                    if next_idx < playlist.items.len() {
+                        self.handle_operation(Operation::SetPlaylistItem(
+                            v3::SetPlaylistItemMessage {
+                                item_index: next_idx as u64,
+                            },
+                        ))?;
+                    } else {
+                        info!("Playlist ended");
+                    }
+                }
+            }
         }
 
         Ok(false)
@@ -1671,7 +1785,12 @@ pub fn run(
 
     gst::init()?;
 
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(num_cpus::get().min(4))
+        .thread_name("main-async-worker")
+        .build()
+        .unwrap();
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
@@ -1779,6 +1898,10 @@ pub fn run(
         async move {
             fcastwhepsrcbin::plugin_init().unwrap();
             gstreqwest::plugin_register_static().unwrap();
+            gstwebrtchttp::plugin_register_static().unwrap();
+            gstrswebrtc::plugin_register_static().unwrap();
+            #[cfg(not(target_os = "android"))]
+            gstrsrtp::plugin_register_static().unwrap();
 
             Application::new(slint_appsink, event_tx, ui_weak, video_sink_is_eos)
                 .await

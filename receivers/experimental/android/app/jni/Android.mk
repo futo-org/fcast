@@ -30,7 +30,7 @@ GSTREAMER_NDK_BUILD_PATH  := $(GSTREAMER_ROOT)/share/gst-android/ndk-build/
 include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
 
 EFFECTS := audiofx deinterlace
-GSTREAMER_PLUGINS_NET_NO_RSWEBRTC := tcp rtsp rtp rtpmanager soup udp dtls netsim rist rtmp2 rtpmanagerbad rtponvif sctp sdpelem srtp srt webrtc nice rtspclientsink aws elevenlabs hlssink3 hlsmultivariantsink mpegtslive ndi quinn rsonvif raptorq rsrtp rsrtsp webrtchttp
+GSTREAMER_PLUGINS_NET_NO_RSWEBRTC := tcp rtsp rtp rtpmanager soup udp dtls rist rtmp2 rtpmanagerbad rtponvif sctp sdpelem srtp srt webrtc nice rtspclientsink hlssink3 hlsmultivariantsink mpegtslive ndi quinn rsonvif raptorq rsrtp rsrtsp
 GSTREAMER_PLUGINS         := $(GSTREAMER_PLUGINS_CORE) $(GSTREAMER_PLUGINS_CODECS) $(GSTREAMER_PLUGINS_NET_NO_RSWEBRTC) $(GSTREAMER_PLUGINS_PLAYBACK) $(GSTREAMER_PLUGINS_CODECS_RESTRICTED) $(GSTREAMER_PLUGINS_SYS) $(EFFECTS)
 GSTREAMER_EXTRA_DEPS      := gstreamer-video-1.0 gstreamer-gl-1.0 gstreamer-app-1.0 gstreamer-base-1.0 gstreamer-webrtc-1.0 gstreamer-pbutils-1.0 gstreamer-tag-1.0
 
