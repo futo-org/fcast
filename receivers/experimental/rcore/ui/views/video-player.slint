@@ -9,6 +9,7 @@ import {
     PositionScrubber,
     ProgressLabels,
     MasterButton,
+    ProgressLabelBox,
 } from "../common.slint";
 import {
     FCastPalette,
@@ -254,7 +255,7 @@ component PlaybackControls inherits Rectangle {
 
     // TODO: maybe touch area inside this component
 
-    VerticalLayout {
+    main-vlayout := VerticalLayout {
         padding: 58px;
         padding-top: 20px;
         padding-bottom: 20px;
@@ -329,16 +330,16 @@ component PlaybackControls inherits Rectangle {
         }
 
         scrubber := PositionScrubber {
-            changed(_) => {
-                scrubber-changed();
-            }
+            changed(_) => scrubber-changed();
             released(position) => {
                 Bridge.is-scrubbing-position = false;
                 Bridge.seek-to-percent(position);
             }
         }
 
-        ProgressLabels { }
+        ProgressLabels {
+            visible: !scrubber.has-hover;
+        }
 
         Rectangle {
             height: 5px;
@@ -561,6 +562,19 @@ component PlaybackControls inherits Rectangle {
             }
         }
     }
+
+    Rectangle {
+        visible: scrubber.has-hover;
+        x: scrubber.mouse-x + main-vlayout.padding - self.width / 2;
+        y: scrubber.y + scrubber.height + main-vlayout.spacing;
+        width: plb.width;
+        height: plb.height;
+
+        plb := ProgressLabelBox {
+            text: Bridge.sec-to-string(Bridge.duration-seconds * scrubber.mouse-x / scrubber.width);
+        }
+    }
+
 
     tim := Timer {
         property <int> counter;

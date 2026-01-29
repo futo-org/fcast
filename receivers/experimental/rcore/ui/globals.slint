@@ -67,6 +67,7 @@ export global Bridge {
     in property <string> label;
     in property <string> progress-label;
     in property <string> duration-label;
+    in property <int> duration-seconds;
     in property <AppState> app-state: AppState.Idle;
     in property <[UiSubOverlay]> overlays;
     in property <bool> is-live: false;
@@ -111,6 +112,7 @@ export global Bridge {
     callback change-playback-rate(rate: float);
     callback hide-cursor-hack();
     callback select-track(id: int, variant: UiMediaTrackType);
+    pure callback sec-to-string(sec: int) -> string;
 
     public pure function gui-playback-state-to-string(pbstate: GuiPlaybackState) -> string {
         if (pbstate == GuiPlaybackState.Idle) {

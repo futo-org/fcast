@@ -252,6 +252,17 @@ fn image_decode_worker(
     Ok(())
 }
 
+fn sec_to_string(sec: f64) -> String {
+    let time_secs = sec % 60.0;
+    let time_mins = (sec / 60.0) % 60.0;
+    let time_hours = sec / 60.0 / 60.0;
+
+    format!(
+        "{:02}:{:02}:{:02}",
+        time_hours as u32, time_mins as u32, time_secs as u32,
+    )
+}
+
 // struct PlaylistPlaybackState {
 //     playlist: v3::PlaylistContent,
 //     current_item_idx: usize,
@@ -595,17 +606,6 @@ impl Application {
             .unwrap_or(&gst::ClockTime::default())
             .seconds_f64();
 
-        fn sec_to_string(sec: f64) -> String {
-            let time_secs = sec % 60.0;
-            let time_mins = (sec / 60.0) % 60.0;
-            let time_hours = sec / 60.0 / 60.0;
-
-            format!(
-                "{:02}:{:02}:{:02}",
-                time_hours as u32, time_mins as u32, time_secs as u32,
-            )
-        }
-
         let progress_str = sec_to_string(position);
         let duration_str = sec_to_string(duration);
         let progress_percent = (position / duration) as f32;
@@ -631,6 +631,7 @@ impl Application {
             bridge.set_playback_state(playback_state);
             bridge.set_is_live(is_live);
             bridge.set_playback_rate(playback_rate as f32);
+            bridge.set_duration_seconds(duration as i32);
         })?;
 
         if self.updates_tx.receiver_count() > 0
@@ -702,6 +703,7 @@ impl Application {
             bridge.set_label("".to_shared_string());
             bridge.set_progress_label("".to_shared_string());
             bridge.set_duration_label("".to_shared_string());
+            bridge.set_duration_seconds(0);
             bridge.set_playback_state(GuiPlaybackState::Idle);
             bridge.set_media_title("".to_shared_string());
             bridge.set_artist_name("".to_shared_string());
@@ -2231,6 +2233,10 @@ pub fn run(
                 variant,
             }));
         }
+    });
+
+    ui.global::<Bridge>().on_sec_to_string(|sec: i32| -> slint::SharedString {
+        sec_to_string(sec as f64).to_shared_string()
     });
 
     info!(finished_in = ?start.elapsed());

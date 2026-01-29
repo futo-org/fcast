@@ -15,6 +15,8 @@ export component Slider {
     in property <bool> hide-thumb: false;
     in property <color> thumb-color: FCastPalette.brand-600;
     out property <bool> has-focus: base.has-focus;
+    out property <bool> has-hover: base.has-hover;
+    out property <length> mouse-x <=> base.mouse-x;
     in-out property <float> value <=> base.value;
 
     callback changed <=> base.changed;
