@@ -1,0 +1,138 @@
+export enum GuiPlaybackState {
+    Idle,
+    Playing,
+    Paused,
+    Loading,
+}
+
+export enum AppState {
+    Idle,
+    LoadingMedia,
+    Playing,
+}
+
+export enum UiPlayerVariant {
+    Unknown,
+    Image,
+    Audio,
+    Video,
+}
+
+export struct UiSubOverlay {
+    img: image,
+    x: length,
+    y: length,
+}
+
+export struct UiStreamDbg {
+    id: string,
+    codec: string,
+}
+
+export struct UiAudioStreamDbg {
+    info: UiStreamDbg,
+    bitrate: string,
+    channels: int,
+    language: string,
+    max_bitrate: string,
+    sample_rate: int,
+}
+
+export struct UiVideoStreamDbg {
+    info: UiStreamDbg,
+    bitrate: string,
+    max_bitrate: string,
+    framerate_n: int,
+    framerate_d: int,
+    width: int,
+    height: int,
+}
+
+export struct UiSubtitleStreamDbg {
+    info: UiStreamDbg,
+    language: string,
+}
+
+export global Bridge {
+    in property <string> label;
+    in property <string> progress-label;
+    in property <string> duration-label;
+    in property <AppState> app-state: AppState.Idle;
+    in property <[UiSubOverlay]> overlays;
+    in property <bool> is-live: false;
+    in property <string> media-title;
+    in property <string> artist-name;
+    in property <bool> is-fullscreen;
+    in property <image> qr-code;
+    in property <image> video-frame;
+    in property <image> image-preview;
+    in property <image> audio-track-cover;
+    in property <image> blured-audio-track-cover;
+    in property <[UiAudioStreamDbg]> audio-dbg;
+    in property <[UiVideoStreamDbg]> video-dbg;
+    in property <[UiSubtitleStreamDbg]> subtitle-dbg;
+    in property <string> local-ip-addrs;
+    in property <string> device-name;
+
+    in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
+    in-out property <bool> playing: false;
+    in-out property <float> volume: 1.0;
+    in-out property <bool> is-debugging: false;
+    in-out property <int> connected_devices: 0;
+    in-out property <float> playback-position: 0.0;
+    in-out property <bool> is-scrubbing-position: false;
+    in-out property <UiPlayerVariant> player-variant: UiPlayerVariant.Unknown;
+
+    out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
+
+    callback resume-or-pause();
+    callback seek-to-percent(float);
+    callback toggle-fullscreen();
+    callback set-volume(float);
+    callback force-quit();
+    callback debug-toggled();
+
+    public pure function gui-playback-state-to-string(pbstate: GuiPlaybackState) -> string {
+        if (pbstate == GuiPlaybackState.Idle) {
+            return "Idle";
+        }
+        if (pbstate == GuiPlaybackState.Playing) {
+            return "Playing";
+        }
+        if (pbstate == GuiPlaybackState.Paused) {
+            return "Paused";
+        }
+        if (pbstate == GuiPlaybackState.Loading) {
+            return "Loading";
+        }
+        return "Invalid";
+    }
+
+    public function toggle-debug-mode() {
+        is-debugging = !is-debugging;
+        debug-toggled();
+    }
+
+    public function device-disconnected() {
+        connected_devices = max(connected_devices - 1, 0);
+    }
+
+    public function capture-key-pressed(event: KeyEvent) -> EventResult {
+        if event.text == "q" {
+            force-quit();
+            return accept;
+        } else if event.text == "d" {
+            toggle-debug-mode();
+            return accept;
+        } else if event.text == "f" {
+            toggle-fullscreen();
+            return accept;
+        } else if Bridge.playing && event.text == Key.Space {
+            resume-or-pause();
+            return accept;
+        } else if Bridge.playing && (event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Return) {
+            // TODO: do something
+        }
+        reject
+    }
+}

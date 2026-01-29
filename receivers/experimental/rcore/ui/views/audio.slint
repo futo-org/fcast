@@ -1,0 +1,101 @@
+import { FText } from "../../../../../senders/ui-components/std-widgets.slint";
+import { Bridge } from "../globals.slint";
+import { PositionScrubber, ProgressLabels, MasterButton } from "../common.slint";
+import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+
+export component AudioPlayerView inherits Rectangle {
+    background: FCastPalette.neutral-1100;
+
+    property <bool> small-mode: root.height <= (500px +  (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
+
+    Image {
+        image-fit: cover;
+        source: Bridge.blured-audio-track-cover;
+        width: 100%;
+        height: 100%;
+    }
+
+    if Bridge.blured-audio-track-cover.width > 0: Rectangle {
+        background: Bridge.controls-bg-gradient;
+    }
+
+    VerticalLayout {
+        padding: !small-mode ? 58px : 10px;
+        padding-bottom: 20px;
+        spacing: 5px;
+        alignment: center;
+
+        if root.height > 300px: HorizontalLayout {
+            alignment: center;
+
+            pure function thumbnail-size() -> length {
+                let width = Math.min(root.width * (!small-mode ? 35% : 10%), 400px);
+                let height = Math.min(root.height * (!small-mode ? 50% : 20%), 550px);
+                Math.min(width, height)
+            }
+
+            Rectangle {
+                width: thumbnail-size();
+                height: self.width;
+                border-radius: 4px;
+                background: Bridge.audio-track-cover.width == 0 ? FCastPalette.neutral-1000 : transparent;
+
+                if Bridge.audio-track-cover.width > 0: Image {
+                    source: Bridge.audio-track-cover;
+                    image-fit: contain;
+                    width: parent.width;
+                    height: parent.height;
+                }
+
+                if Bridge.audio-track-cover.width == 0: Image {
+                    source: @image-url("./music-note.svg");
+                    width: parent.width * 50%;
+                    height: parent.height * 52%;
+                }
+            }
+        }
+
+        Rectangle {
+            height: !small-mode ? 43px : 5px;
+        }
+
+        if !Bridge.media-title.is-empty: FText {
+            horizontal-alignment: center;
+            text: Bridge.media-title;
+            font-size: 28px;
+            font-weight: 600;
+            color: FCastPalette.neutral-100;
+        }
+
+        if !Bridge.artist-name.is-empty: FText {
+            horizontal-alignment: center;
+            text: Bridge.artist-name;
+            font-size: 18px;
+            font-weight: 600;
+            color: FCastPalette.opacity-light-500;
+        }
+
+        Rectangle {
+            height: 20px;
+        }
+
+        scrubber := PositionScrubber {
+            changed(_) => {
+                // scrubber-changed();
+            }
+
+            released(position) => {
+                Bridge.is-scrubbing-position = false;
+                Bridge.seek-to-percent(position);
+            }
+        }
+
+        ProgressLabels { }
+
+        HorizontalLayout {
+            alignment: center;
+
+            MasterButton { }
+        }
+    }
+}

@@ -1,0 +1,18 @@
+import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
+
+export component LoadingMediaView inherits Rectangle {
+    Image {
+        source: Icons.background-dark;
+        width: 100%;
+        height: 100%;
+    }
+
+    VerticalLayout {
+        alignment: center;
+
+        FText {
+            text: "Loading media...";
+            horizontal-alignment: center;
+        }
+    }
+}

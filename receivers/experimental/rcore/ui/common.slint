@@ -1,0 +1,72 @@
+import { Slider, Button, Icons } from "../../../../senders/ui-components/std-widgets.slint";
+import { Bridge, GuiPlaybackState } from "globals.slint";
+import { FCastPalette } from "../../../../senders/ui-components/styling.slint";
+
+export component PositionScrubber inherits Slider {
+    hide-thumb: true;
+    maximum: 1.0;
+    minimum: 0.0;
+    value <=> Bridge.playback-position;
+    enabled: false;
+    rail-color: #FFFFFF33;
+    track-color: Bridge.is-live ? FCastPalette.negative-800 : FCastPalette.foreground;
+    thumb-color: self.track-color;
+
+    states [
+        enabled when Bridge.playback-state != GuiPlaybackState.Loading: {
+            enabled: true;
+        }
+    ]
+}
+
+component ProgressLabelBox inherits Rectangle {
+    in property <string> text <=> txt.text;
+
+    background: FCastPalette.opacity-light-1000;
+    border-radius: 12px;
+    height: txt.preferred-height + 4px;
+    width: txt.preferred-width + 16px;
+
+    txt := Text {
+        color: FCastPalette.foreground;
+        font-size: 13px;
+    }
+}
+
+export component ProgressLabels inherits HorizontalLayout {
+    padding-left: 10px;
+    padding-right: self.padding-left;
+
+    ProgressLabelBox {
+        text: Bridge.progress-label;
+    }
+
+    Rectangle {}
+
+    if !Bridge.is-live: ProgressLabelBox {
+        text: Bridge.duration-label;
+    }
+}
+
+export component MasterButton inherits Button {
+    height: 60px;
+    width: 60px;
+    icon-size: 20px;
+    enabled: false;
+    background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.6) 6.7%, rgba(20, 20, 20, 0.6) 92.77%);
+
+    states [
+        playing when Bridge.playback-state == GuiPlaybackState.Playing: {
+            icon: Icons.pause;
+            enabled: true;
+        }
+        paused when Bridge.playback-state == GuiPlaybackState.Paused: {
+            icon: Icons.play;
+            enabled: true;
+        }
+    ]
+
+    clicked => {
+        Bridge.resume-or-pause();
+    }
+}

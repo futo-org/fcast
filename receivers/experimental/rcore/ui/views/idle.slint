@@ -1,0 +1,186 @@
+import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
+import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+import { Bridge } from "../globals.slint";
+
+component ReceiverInfoEntry inherits HorizontalLayout {
+    in property <image> icon <=> i-icon.source;
+    in property <length> icon-width <=> i-icon.width;
+    in property <length> icon-height <=> i-icon.height;
+    in property <string> key;
+    in property <string> value;
+
+    padding: 5px;
+    spacing: 15px;
+
+    VerticalLayout {
+        alignment: center;
+
+        i-icon := Image {
+        }
+    }
+
+    VerticalLayout {
+        Text {
+            text: key;
+            color: FCastPalette.opacity-light-700;
+            font-size: 12px;
+        }
+
+        Text {
+            text: value;
+            color: FCastPalette.foreground;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+    }
+
+    Rectangle {}
+}
+
+export component IdleView inherits Rectangle {
+    // background: @linear-gradient(155deg, #414141 0%, #000000 100%);
+
+    Image {
+        source: Icons.background-dark;
+        width: 100%;
+        height: 100%;
+    }
+
+    VerticalLayout {
+        padding: 32px;
+        padding-right: 58px;
+        padding-left: self.padding-right;
+        spacing: 20px;
+
+        // TODO: re-introduce when we have settings
+        // HorizontalLayout {
+        //     Rectangle { }
+
+        //     Button {
+        //         icon-size: 18px;
+        //         width: 40px;
+        //         height: 40px;
+        //         background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.1) 6.7%, rgba(20, 20, 20, 0.1) 92.77%);
+        //         icon: Icons.settings;
+        //     }
+        // }
+
+        pure function qr-size() -> length {
+            let width = Math.min(root.width * 35%, 400px);
+            let height = Math.min(root.height * 50%, 750px);
+            Math.min(width, height)
+        }
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Rectangle {
+                width: Math.min(root.width * 45%, 500px);
+
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 10px;
+
+                    visible: !Bridge.playing;
+                    alignment: center;
+                    Text {
+                        font-size: 28px;
+                        text: "Idle. Ready to cast";
+                        font-weight: 600;
+                        // horizontal-alignment: center;
+                        font-family: "Outfit Semibold";
+                        overflow: elide;
+                        color: @linear-gradient(180deg, #FFFFFF 17.11%, #B4B4B4 78.95%);
+                    }
+
+                    if root.height > 380px: Text {
+                        font-size: 12pt;
+                        text: "Stream to this device by opening your FCast sender app and selecting this device from the Cast menu, or scan the QR code for instant setup.";
+                        wrap: word-wrap;
+                        // horizontal-alignment: center;
+                        color: FCastPalette.opacity-light-500;
+                    }
+
+                    Rectangle {
+                        background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: @linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0) 100%);
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 3px;
+
+                            ReceiverInfoEntry {
+                                icon: Icons.tv-outline;
+                                icon-width: 15px;
+                                icon-height: 12.3px;
+                                key: "Device name";
+                                value: Bridge.device-name;
+                            }
+
+                            Rectangle {
+                                height: 1px;
+                                background: FCastPalette.opacity-light-1100;
+                            }
+
+                            ReceiverInfoEntry {
+                                icon: Icons.network;
+                                icon-width: 13.3px;
+                                icon-height: 14px;
+                                key: "Local IP Address";
+                                value: Bridge.local-ip-addrs;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Rectangle { }
+
+            VerticalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: qr-size();
+                    height: self.width;
+                    border-radius: 8px;
+                    clip: true;
+                    background: Bridge.qr-code.width > 0 ? white : @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
+
+                    if Bridge.qr-code.width > 0: Image {
+                        width: parent.width - 20px;
+                        height: parent.height - 20px;
+                        source <=> Bridge.qr-code;
+                        image-rendering: pixelated;
+                    }
+
+                    if Bridge.qr-code.width == 0: VerticalLayout {
+                        alignment: center;
+                        spacing: 20px;
+                        padding: 15px;
+
+                        Rectangle {
+                            Image {
+                                source: @image-url("warning-triangle.svg");
+                                width: 80px;
+                            }
+
+                            Image {
+                                source: @image-url("exclamation-mark.svg");
+                                width: 60px;
+                            }
+                        }
+
+                        FText {
+                            text: "Your device isn’t connected to a network. Connect to network via LAN or Wifi to continue.";
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            font-size: 18px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

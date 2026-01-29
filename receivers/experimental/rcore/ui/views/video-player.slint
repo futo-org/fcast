@@ -1,0 +1,269 @@
+import {
+    Icons,
+    FText,
+    ScrollView,
+    Button,
+} from "../../../../../senders/ui-components/std-widgets.slint";
+import { Bridge, GuiPlaybackState } from "../globals.slint";
+import { PositionScrubber, ProgressLabels, MasterButton } from "../common.slint";
+import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+
+component PlaybackControls inherits Rectangle {
+    // TODO: speed changer
+
+    // in property <string> progress-label;
+
+    // in-out property <GuiPlaybackState> pb-state;
+
+    background: Bridge.controls-bg-gradient;
+
+    out property <MouseCursor> suggested-cursor: default;
+
+    // property <bool> is-scrubbing: false;
+    property <bool> is-changing-volume: false;
+
+    public function show() {
+        root.visible = true;
+        tim.counter = 0;
+        tim.running = true;
+        suggested-cursor = MouseCursor.default;
+    }
+
+    public function close() {
+        root.visible = false;
+        tim.running = false;
+        suggested-cursor = MouseCursor.none;
+    }
+
+    public function playback-started() {
+        show();
+    }
+
+    public function playback-stopped() {
+        show();
+    }
+
+    public function update-progress-percent(percent: float) {
+        // if ! is-scrubbing {
+        if !Bridge.is-scrubbing-position {
+            scrubber.value = percent;
+        }
+    }
+
+    function scrubber-changed() {
+        // Make the bar not disipear when the user is engaging with the scrubber
+        // is-scrubbing = true;
+        Bridge.is-scrubbing-position = true;
+        show();
+    }
+
+    function volume-changed() {
+        is-changing-volume = true;
+        show();
+    }
+
+    // TODO: maybe touch area inside this component
+
+    VerticalLayout {
+        padding: 58px;
+        padding-top: 20px;
+        padding-bottom: 20px;
+        spacing: 5px;
+
+        HorizontalLayout {
+            Rectangle { }
+
+            Button {
+                icon-size: 18px;
+                width: 40px;
+                height: 40px;
+
+                // TODO: change icon to minimize/maximize
+                icon: Icons.subtitles;
+
+                clicked => Bridge.toggle-fullscreen();
+            }
+        }
+
+        Rectangle { }
+
+        HorizontalLayout {
+            padding: 10px;
+            padding-bottom: 15px;
+
+            FText {
+                text: Bridge.media-title;
+                width: 50%;
+                wrap: word-wrap;
+                overflow: elide;
+                font-size: 24px;
+                max-height: 5px;
+                font-weight: 500;
+                color: FCastPalette.neutral-100;
+            }
+
+            Rectangle { /* Spacer */ }
+
+            if Bridge.is-live: VerticalLayout {
+                Rectangle { }
+
+                Rectangle {
+                    background: #FB2C2C;
+                    border-radius: 3.3px;
+                    width: i-hl.preferred-width;
+
+                    i-hl := HorizontalLayout {
+                        padding: 12px;
+                        padding-top: 6px;
+                        padding-bottom: self.padding-top;
+                        spacing: 6px;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 5px;
+                                background: FCastPalette.foreground;
+                            }
+                        }
+
+                        FText {
+                            text: "LIVE";
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        scrubber := PositionScrubber {
+            changed(_) => {
+                scrubber-changed();
+            }
+            released(position) => {
+                Bridge.is-scrubbing-position = false;
+                Bridge.seek-to-percent(position);
+            }
+        }
+
+        ProgressLabels { }
+
+        Rectangle {
+            height: 5px;
+        }
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Rectangle {
+                width: right-side-ctrls.preferred-width;
+            }
+
+            Rectangle {
+                MasterButton {
+                    height: 50px;
+                    width: 50px;
+                }
+            }
+
+            right-side-ctrls := HorizontalLayout {
+                alignment: end;
+
+                Button {
+                    icon-size: 18px;
+                    width: 40px;
+                    height: 40px;
+                    icon: Icons.subtitles;
+                }
+            }
+        }
+    }
+
+    tim := Timer {
+        property <int> counter;
+        interval: 500ms;
+        running: true;
+        triggered => {
+            counter += 1;
+            // mouse cursor in root root
+            // Wait 500ms * 4 before hiding the bar
+            if counter >= 4 {
+                parent.close();
+
+                // TODO: don't close if user is hovering widgets
+
+                // if fullscreen-btn.is-engaged || volume-btn.is-engaged {
+                //     parent.show();
+                // } else {
+                //     parent.close();
+                // }
+            }
+        }
+    }
+}
+
+export component VideoPlayerView inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: black;
+
+    vframe := Image {
+        source <=> Bridge.video-frame;
+        image-fit: contain;
+        width: 100%;
+        height: 100%;
+    }
+
+    pure function scale() -> length {
+        Math.min(root.height / vframe.source.height, root.width / vframe.source.width)
+    }
+
+    pure function frame-x() -> length {
+        root.width / 2 - vframe.source.width * scale() / 2
+    }
+
+    pure function frame-y() -> length {
+        root.height / 2 - vframe.source.height * scale() / 2
+    }
+
+    for overlay in Bridge.overlays: Image {
+        x: frame-x() + (overlay.x * scale() / 1px);
+        y: frame-y() + (overlay.y * scale() / 1px);
+        width: scale() * overlay.img.width;
+        height: scale() * overlay.img.height;
+        source: overlay.img;
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+
+        visible: Bridge.playing;
+
+        mouse-cursor: self.visible && !playback-control.visible ? none : default;
+
+        FocusScope {
+            capture-key-pressed(event) => Bridge.capture-key-pressed(event);
+        }
+
+        pointer-event(pe) => {
+            if (pe.kind == PointerEventKind.move) {
+                playback-control.show();
+            }
+        }
+
+        playback-control := PlaybackControls {
+            // visible: false;
+            visible: true;
+            width: 100%;
+            height: 100%;
+            // y: parent.height - self.height;
+            // progress-label <=> Bridge.progress-label;
+            // pb-state: Bridge.playback-state;
+        }
+    }
+}
+
