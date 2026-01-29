@@ -1760,6 +1760,7 @@ impl Application {
                     }
                 }
             }
+            // NOTE: we can't use the new functions until <https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/10647> is widely adopted
             #[allow(deprecated)]
             Event::SelectTrack { id, variant } => {
                 debug!(id, ?variant, "Selecting track");
