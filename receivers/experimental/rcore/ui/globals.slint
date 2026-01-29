@@ -53,6 +53,16 @@ export struct UiSubtitleStreamDbg {
     language: string,
 }
 
+export enum UiMediaTrackType {
+    Video,
+    Audio,
+    Subtitle,
+}
+
+export struct UiMediaTrack {
+    name: string,
+}
+
 export global Bridge {
     in property <string> label;
     in property <string> progress-label;
@@ -73,6 +83,12 @@ export global Bridge {
     in property <[UiSubtitleStreamDbg]> subtitle-dbg;
     in property <string> local-ip-addrs;
     in property <string> device-name;
+    in property <[UiMediaTrack]> video-tracks;
+    in property <[UiMediaTrack]> audio-tracks;
+    in property <[UiMediaTrack]> subtitle-tracks;
+    in property <int> current-video-track;
+    in property <int> current-audio-track;
+    in property <int> current-subtitle-track;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <bool> playing: false;
@@ -82,6 +98,7 @@ export global Bridge {
     in-out property <float> playback-position: 0.0;
     in-out property <bool> is-scrubbing-position: false;
     in-out property <UiPlayerVariant> player-variant: UiPlayerVariant.Unknown;
+    in-out property <float> playback-rate: 1.0;
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
 
@@ -91,6 +108,9 @@ export global Bridge {
     callback set-volume(float);
     callback force-quit();
     callback debug-toggled();
+    callback change-playback-rate(rate: float);
+    callback hide-cursor-hack();
+    callback select-track(id: int, variant: UiMediaTrackType);
 
     public pure function gui-playback-state-to-string(pbstate: GuiPlaybackState) -> string {
         if (pbstate == GuiPlaybackState.Idle) {

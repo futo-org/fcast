@@ -28,7 +28,8 @@ const BROWSERS: &[&'static str] = &[
 ];
 
 // Use one UA string for each domain, helps against bot detection for certain websites
-static CACHE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn random_browser_user_agent(domain: Option<&str>) -> String {
     if let Some(domain) = domain {
@@ -45,9 +46,7 @@ pub fn random_browser_user_agent(domain: Option<&str>) -> String {
     let platform = PLATFORMS.choose(&mut rng).unwrap();
     let browser = BROWSERS.choose(&mut rng).unwrap();
 
-    let ua = format!(
-        "Mozilla/5.0 {system} {platform} {browser}"
-    );
+    let ua = format!("Mozilla/5.0 {system} {platform} {browser}");
 
     if let Some(domain) = domain {
         CACHE.lock().insert(domain.to_owned(), ua.clone());
