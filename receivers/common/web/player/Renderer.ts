@@ -162,7 +162,7 @@ function onPlayerLoad(value: PlayMessage) {
     }
 }
 
-function onPlay(_event, value: PlayMessage, cachedPlayerVolume: number = null) {
+function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlayerVolume: number = null) {
     if (!playItemCached) {
         cachedPlayMediaItem = mediaItemFromPlayMessage(value);
         isMediaItem = false;
@@ -177,8 +177,9 @@ function onPlay(_event, value: PlayMessage, cachedPlayerVolume: number = null) {
     // when volume is not set in the PlayMessage.
     cachedVolume = (cachedVolume === null && cachedPlayerVolume === null) ? 1.0 : cachedPlayerVolume;
 
+    const url = proxyUrl ? proxyUrl : value.url;
     if (player) {
-        if ((player.getSource() === value.url) || (player.getSource() === value.content)) {
+        if ((player.getSource() === url) || (player.getSource() === value.content)) {
             if (value.time) {
                 console.info('Skipped changing video URL because URL is the same. Discarding time and using current receiver time instead');
             }
@@ -197,8 +198,8 @@ function onPlay(_event, value: PlayMessage, cachedPlayerVolume: number = null) {
     isLivePosition = false;
     captionsBaseHeight = captionsBaseHeightExpanded;
 
-    if ((value.url || value.content) && value.container && videoElement) {
-        player = new Player(videoElement, value);
+    if ((url || value.content) && value.container && videoElement) {
+        player = new Player(videoElement, { ...value, url: url });
         logger.info(`Loaded ${PlayerType[player.playerType]} player`);
 
         if (value.container === 'application/dash+xml') {

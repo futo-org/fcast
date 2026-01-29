@@ -53,7 +53,7 @@ function sendPlaybackUpdate(updateState: PlaybackState) {
     window.targetAPI.sendPlaybackUpdate(updateMessage);
 };
 
-function onPlay(_event, value: PlayMessage) {
+function onPlay(_event, value: PlayMessage, proxyUrl: string = null) {
     if (isPlaylistPlayRequestCounter === 0) {
         cachedPlayMediaItem = mediaItemFromPlayMessage(value);
         isMediaItem = false;
@@ -62,7 +62,8 @@ function onPlay(_event, value: PlayMessage) {
     logger.info('Media playback changed:', cachedPlayMediaItem);
     isPlaylistPlayRequestCounter = isPlaylistPlayRequestCounter <= 0 ? 0 : isPlaylistPlayRequestCounter - 1;
     showDurationTimer.stop();
-    const src = value.url ? value.url : value.content;
+    const url = proxyUrl ? proxyUrl : value.url;
+    const src = url ? url : value.content;
 
     loadingTimer.start();
     if (src && value.container && supportedImageTypes.find(v => v === value.container.toLocaleLowerCase()) && imageViewer) {

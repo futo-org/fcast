@@ -209,7 +209,7 @@ export class Main {
 
                 Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
                 Main.playerWindow.once('ready-to-show', async () => {
-                    Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
+                    Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, messageInfo.proxyUrl, Main.cache.playerVolume);
                 });
                 Main.playerWindow.on('closed', () => {
                     Main.playerWindow = null;
@@ -222,7 +222,7 @@ export class Main {
                     Main.playerWindow = Main.mainWindow;
                     Main.mainWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
                     Main.mainWindow.once('ready-to-show', async () => {
-                        Main.mainWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
+                        Main.mainWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, messageInfo.proxyUrl, Main.cache.playerVolume);
                     });
                 }
             }
@@ -231,11 +231,11 @@ export class Main {
             Main.playerWindow.setTitle(windowTitle);
             Main.playerWindow.loadFile(path.join(__dirname, `${messageInfo.contentViewer}/index.html`));
             Main.playerWindow.once('ready-to-show', async () => {
-                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
+                Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, messageInfo.proxyUrl, Main.cache.playerVolume);
             });
         } else {
             Main.playerWindow.setTitle(windowTitle);
-            Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, Main.cache.playerVolume);
+            Main.playerWindow?.webContents?.send(messageInfo.rendererEvent, messageInfo.rendererMessage, messageInfo.proxyUrl, Main.cache.playerVolume);
         }
 
         Main.playerWindowContentViewer = messageInfo.contentViewer;
@@ -466,7 +466,7 @@ export class Main {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    static openMainWindow(playMessageInfo: { rendererEvent: string, rendererMessage: any, contentViewer: string } = null) {
+    static openMainWindow(playMessageInfo: { rendererEvent: string, rendererMessage: any, proxyUrl: string, contentViewer: string } = null) {
         if (Main.mainWindow) {
             Main.mainWindow.focus();
             return;
@@ -496,7 +496,7 @@ export class Main {
             Main.playerWindow = Main.mainWindow;
             Main.mainWindow.loadFile(path.join(__dirname, `${playMessageInfo.contentViewer}/index.html`));
             Main.mainWindow.once('ready-to-show', async () => {
-                Main.mainWindow?.webContents?.send(playMessageInfo.rendererEvent, playMessageInfo.rendererMessage);
+                Main.mainWindow?.webContents?.send(playMessageInfo.rendererEvent, playMessageInfo.rendererMessage, playMessageInfo.proxyUrl, Main.cache.playerVolume);
             });
         }
 

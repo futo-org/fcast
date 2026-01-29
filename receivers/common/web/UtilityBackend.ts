@@ -17,8 +17,10 @@ export function deepEqual(x, y) {
 }
 
 export async function preparePlayMessage(message: PlayMessage, mediaCacheInitializationCb: ((playMessage: PlaylistContent) => void)) {
+    const proxyUrl = await NetworkService.proxyPlayIfRequired(message);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let rendererMessage: any = await NetworkService.proxyPlayIfRequired(message);
+    let rendererMessage: any = message;
     let rendererEvent = 'play';
     let contentViewer = supportedPlayerTypes.find(v => v === message.container.toLocaleLowerCase()) ? 'player' : 'viewer';
 
@@ -43,7 +45,7 @@ export async function preparePlayMessage(message: PlayMessage, mediaCacheInitial
         }
     }
 
-    return { rendererEvent: rendererEvent, rendererMessage: rendererMessage, contentViewer: contentViewer };
+    return { rendererEvent: rendererEvent, rendererMessage: rendererMessage, proxyUrl: proxyUrl, contentViewer: contentViewer };
 }
 
 export async function fetchJSON(url: string): Promise<any> {

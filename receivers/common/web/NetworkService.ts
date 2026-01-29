@@ -121,11 +121,11 @@ export class NetworkService {
         });
     }
 
-    static async proxyPlayIfRequired(message: PlayMessage): Promise<PlayMessage> {
+    static async proxyPlayIfRequired(message: PlayMessage): Promise<string> {
         if (message.url && (message.url.startsWith('app://') || (message.headers && !streamingMediaTypes.find(v => v === message.container.toLocaleLowerCase())))) {
-            return { ...message, url: await NetworkService.proxyFile(message) };
+            return await NetworkService.proxyFile(message);
         }
-        return message;
+        return null;
     }
 
     static async proxyFile(message: PlayMessage): Promise<string> {
