@@ -6279,6 +6279,7 @@ dependencies = [
  "num_cpus",
  "objc2-app-kit 0.3.2",
  "parking_lot",
+ "paste",
  "rand",
  "reqwest 0.13.1",
  "rustls",

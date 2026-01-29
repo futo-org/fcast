@@ -4,13 +4,203 @@ import {
     ScrollView,
     Button,
 } from "../../../../../senders/ui-components/std-widgets.slint";
-import { Bridge, GuiPlaybackState } from "../globals.slint";
-import { PositionScrubber, ProgressLabels, MasterButton } from "../common.slint";
-import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+import { Bridge, UiMediaTrack, GuiPlaybackState, UiMediaTrackType } from "../globals.slint";
+import {
+    PositionScrubber,
+    ProgressLabels,
+    MasterButton,
+} from "../common.slint";
+import {
+    FCastPalette,
+} from "../../../../../senders/ui-components/styling.slint";
+
+component SecondaryButton inherits Button {
+    icon-size: 18px;
+    width: 45px;
+    height: 45px;
+    background-default-color: @linear-gradient(133.14deg, rgba(204, 204, 204, 0.1) 6.7%, rgba(122, 122, 122, 0.1) 92.77%);
+    colorize-icon: true;
+}
+
+component PlaybackSettingsMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> enabled <=> i-ta-playback-rate.enabled;
+
+    callback clicked;
+
+    border-radius: 6px;
+
+    states [
+        hover when i-ta-playback-rate.has-hover: {
+            i-playback-rate-text.color: FCastPalette.foreground;
+            i-playback-rate-arrow-icon.colorize: FCastPalette.foreground;
+            background: FCastPalette.brand-600;
+        }
+    ]
+
+    i-ta-playback-rate := TouchArea {
+        clicked => root.clicked();
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 8px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Image {
+                width: 16px;
+                height: 16px;
+                source: icon;
+            }
+        }
+
+        i-playback-rate-text := FText {
+            text: label;
+            color: FCastPalette.neutral-500;
+        }
+
+        Rectangle { }
+
+        VerticalLayout {
+            alignment: center;
+
+            i-playback-rate-arrow-icon := Image {
+                width: 4.67px;
+                height: 8px;
+                source: Icons.arrow-right;
+            }
+        }
+    }
+}
+
+component SettingsItemDivider inherits Rectangle {
+    height: 1px;
+    background: #FFFFFF0A;
+}
+
+component SettingsPopupBase inherits PopupWindow {
+    width: settings-rect.preferred-width;
+    height: settings-rect.preferred-height;
+    close-policy: close-on-click-outside;
+
+    settings-rect := Rectangle {
+        background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
+        border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
+        border-width: 1px;
+        border-radius: 6px;
+        forward-focus: inner-fs;
+
+        inner-fs := FocusScope {
+            VerticalLayout {
+                padding: 15px;
+                padding-top: 18px;
+
+                @children
+            }
+        }
+    }
+}
+
+component SettingItem inherits Rectangle {
+    // in property <float> rate;
+    in property <string> value;
+    in property <bool> selected;
+
+    callback clicked;
+
+    border-radius: 6px;
+
+    states [
+        selected when selected: {
+            background: @linear-gradient(90.92deg, #2D7AF8 0.79%, #0757D9 104.49%);
+            icon.source: Icons.check-tick;
+        }
+        hover when ta.has-hover: {
+            background: @linear-gradient(90.92deg, #2D7AF850 0.79%, #0757D950 104.49%);
+        }
+    ]
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+
+        clicked => clicked();
+    }
+
+    HorizontalLayout {
+        padding: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
+
+        FText {
+            // text: rate;
+            text: value;
+        }
+
+        Rectangle { }
+
+        VerticalLayout {
+            alignment: center;
+
+            icon := Image {
+                source: Icons.arrow-right;
+            }
+        }
+    }
+}
+
+component PlaybackSettingHeader inherits HorizontalLayout {
+    in property <string> title;
+
+    callback navigate-previous;
+
+    spacing: 15px;
+
+    Button {
+        icon: Icons.arrow-right;
+        icon-size: 8px;
+        width: 30px;
+        height: 30px;
+        transform-rotation: 180deg;
+        colorize-icon: true;
+
+        clicked => navigate-previous();
+    }
+
+    FText {
+        text: title;
+        font-weight: 500;
+        font-size: 18px;
+        vertical-alignment: center;
+    }
+ }
+
+component SettingsTrackList inherits VerticalLayout {
+    in property <[UiMediaTrack]> tracks;
+    in property <int> selected-id;
+
+    callback clicked(id: int);
+
+    for track[id] in tracks: VerticalLayout {
+        SettingItem {
+            value: track.name;
+            selected: selected-id == id;
+
+            clicked => clicked(id);
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #FFFFFF0A;
+        }
+    }
+}
 
 component PlaybackControls inherits Rectangle {
-    // TODO: speed changer
-
     // in property <string> progress-label;
 
     // in-out property <GuiPlaybackState> pb-state;
@@ -73,13 +263,12 @@ component PlaybackControls inherits Rectangle {
         HorizontalLayout {
             Rectangle { }
 
-            Button {
-                icon-size: 18px;
-                width: 40px;
-                height: 40px;
+            SecondaryButton {
+                // icon-size: 18px;
+                // width: 45px;
+                // height: 45px;
 
-                // TODO: change icon to minimize/maximize
-                icon: Icons.subtitles;
+                icon: Bridge.is-fullscreen ? Icons.minimize : Icons.maximize;
 
                 clicked => Bridge.toggle-fullscreen();
             }
@@ -171,12 +360,203 @@ component PlaybackControls inherits Rectangle {
 
             right-side-ctrls := HorizontalLayout {
                 alignment: end;
+                spacing: 15px;
 
-                Button {
-                    icon-size: 18px;
-                    width: 40px;
-                    height: 40px;
+                SecondaryButton {
                     icon: Icons.subtitles;
+                }
+
+                settings-btn := SecondaryButton {
+                    icon: Icons.settings;
+
+                    clicked => settings-popup.show();
+                }
+
+                settings-popup := SettingsPopupBase {
+                    x: settings-btn.x - self.width + settings-btn.width;
+                    y: settings-btn.y - self.height - 15px;
+
+                    FText {
+                        text: "Playback settings";
+                        font-weight: 500;
+                        font-size: 18px;
+                    }
+
+                    VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
+
+                        PlaybackSettingsMenuItem {
+                            label: "Video";
+                            icon: Icons.settings-video;
+                            enabled: Bridge.video-tracks.length > 0;
+
+                            clicked => {
+                                pb-video-popup.show();
+                                settings-popup.close();
+                            }
+                        }
+
+                        SettingsItemDivider { }
+
+                        PlaybackSettingsMenuItem {
+                            label: "Audio";
+                            icon: Icons.details-audio;
+                            enabled: Bridge.audio-tracks.length > 0;
+
+                            clicked => {
+                                pb-audio-popup.show();
+                                settings-popup.close();
+                            }
+                        }
+
+                        SettingsItemDivider { }
+
+                        PlaybackSettingsMenuItem {
+                            label: "Subtitles";
+                            icon: Icons.subtitles;
+                            enabled: Bridge.subtitle-tracks.length > 0;
+
+                            clicked => {
+                                pb-subtitle-popup.show();
+                                settings-popup.close();
+                            }
+                        }
+
+                        SettingsItemDivider { }
+
+                        PlaybackSettingsMenuItem {
+                            label: "Playback Speed";
+                            icon: Icons.playback-rate;
+
+                            clicked => {
+                                pb-rate-popup.show();
+                                settings-popup.close();
+                            }
+                        }
+                    }
+                }
+
+                pb-video-popup := SettingsPopupBase {
+                    x: settings-btn.x - self.width + settings-btn.width;
+                    y: settings-btn.y - self.height - 15px;
+
+                    PlaybackSettingHeader {
+                        title: "Video track";
+
+                        navigate-previous => {
+                            settings-popup.show();
+                            pb-video-popup.close();
+                        }
+                    }
+
+                    VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
+
+                        // TODO: scroll view if needed
+
+                        SettingsTrackList {
+                            tracks: Bridge.video-tracks;
+                            selected-id: Bridge.current-video-track;
+                            clicked(id) => Bridge.select-track(id, UiMediaTrackType.Video);
+                        }
+                    }
+                }
+
+                pb-audio-popup := SettingsPopupBase {
+                    x: settings-btn.x - self.width + settings-btn.width;
+                    y: settings-btn.y - self.height - 15px;
+
+                    PlaybackSettingHeader {
+                        title: "Audio track";
+
+                        navigate-previous => {
+                            settings-popup.show();
+                            pb-audio-popup.close();
+                        }
+                    }
+
+                    VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
+
+                        // TODO: scroll view if needed
+
+                        SettingsTrackList {
+                            tracks: Bridge.audio-tracks;
+                            selected-id: Bridge.current-audio-track;
+                            clicked(id) => Bridge.select-track(id, UiMediaTrackType.Audio);
+                        }
+                    }
+                }
+
+                pb-subtitle-popup := SettingsPopupBase {
+                    x: settings-btn.x - self.width + settings-btn.width;
+                    y: settings-btn.y - self.height - 15px;
+
+                    PlaybackSettingHeader {
+                        title: "Subtitles";
+
+                        navigate-previous => {
+                            settings-popup.show();
+                            pb-subtitle-popup.close();
+                        }
+                    }
+
+                    VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
+
+                        // TODO: scroll view if needed
+
+                        SettingsTrackList {
+                            tracks: Bridge.subtitle-tracks;
+                            selected-id: Bridge.current-subtitle-track;
+                            clicked(id) => Bridge.select-track(id, UiMediaTrackType.Subtitle);
+                        }
+                    }
+                }
+
+                pb-rate-popup := SettingsPopupBase {
+                    x: settings-btn.x - self.width + settings-btn.width;
+                    y: settings-btn.y - self.height - 15px;
+
+                    PlaybackSettingHeader {
+                        title: "Playback speed";
+
+                        navigate-previous => {
+                            settings-popup.show();
+                            pb-rate-popup.close();
+                        }
+                    }
+
+                    VerticalLayout {
+                        padding-top: 10px;
+                        spacing: 5px;
+
+                        property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
+
+                        // TODO: scroll view if needed
+
+                        for rate in rates: VerticalLayout {
+                            SettingItem {
+                                // rate: rate;
+                                value: rate;
+                                selected: Bridge.playback-rate == rate;
+
+                                clicked => {
+                                    Bridge.change-playback-rate(rate);
+                                    Bridge.playback-rate = rate;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 1px;
+                                background: #FFFFFF0A;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -192,6 +572,7 @@ component PlaybackControls inherits Rectangle {
             // Wait 500ms * 4 before hiding the bar
             if counter >= 4 {
                 parent.close();
+                Bridge.hide-cursor-hack();
 
                 // TODO: don't close if user is hovering widgets
 
@@ -266,4 +647,3 @@ export component VideoPlayerView inherits Rectangle {
         }
     }
 }
-
