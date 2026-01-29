@@ -89,7 +89,6 @@ class NetworkWorker(private val _context: Context) {
 
     val interfaces = mutableListOf<NetworkInterfaceData>()
 
-    @SuppressLint("WakelockTimeout")
     fun start() {
         Log.i(TAG, "Starting $TAG")
         if (!_stopped) {

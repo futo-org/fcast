@@ -618,7 +618,7 @@ class PlayerActivity : AppCompatActivity() {
         val speed = if (message.speed?.toFloat() != null && message.speed.toFloat() > 0.0) {
             message.speed.toFloat()
         } else {
-            1.0f
+            if (NetworkService.cache.playbackUpdate?.speed != null) NetworkService.cache.playbackUpdate?.speed!!.toFloat() else 1.0f
         }
         _exoPlayer.setPlaybackSpeed(speed)
 
@@ -627,11 +627,11 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
             // getting out-of-sync with the sender on 1st playback.
-            _exoPlayer.volume = 1f
+            _exoPlayer.volume = NetworkService.cache.playerVolume.toFloat()
             NetworkService.instance?.sendVolumeUpdate(
                 VolumeUpdateMessage(
                     System.currentTimeMillis(),
-                    1.toDouble()
+                    NetworkService.cache.playerVolume
                 )
             )
         }
@@ -1089,7 +1089,6 @@ class PlayerActivity : AppCompatActivity() {
         } else if (viewModel.isIdle) {
             _exoPlayer.seekTo(0)
             _exoPlayer.prepare()
-            mediaPlayHandler()
         }
 
         _uiHideTimer.start()

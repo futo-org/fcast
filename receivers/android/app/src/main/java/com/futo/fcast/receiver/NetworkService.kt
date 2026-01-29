@@ -49,7 +49,7 @@ data class AppCache(
     val appVersion: String = BuildConfig.VERSION_NAME,
     var playMessage: PlayMessage? = null,
     var playlistContent: PlaylistContent? = null,
-    var playerVolume: Double? = null,
+    var playerVolume: Double = 1.0,
     var playbackUpdate: PlaybackUpdateMessage? = null,
     var subscribedKeys: Set<String> = setOf(),
 )
@@ -186,20 +186,8 @@ class NetworkService : Service() {
         _tcpListenerService.forEachSession(sender)
     }
 
-    fun preparePlayMessage(
-        message: PlayMessage,
-        cachedPlayerVolume: Double?
-    ) {
+    fun preparePlayMessage(message: PlayMessage) {
         cache.playlistContent = null
-
-        // Protocol v2 FCast PlayMessage does not contain volume field and could result in the receiver
-        // getting out-of-sync with the sender when player windows are closed and re-opened. Volume
-        // is cached in the play message when volume is not set in v3 PlayMessage.
-        val rendererMessage = PlayMessage(
-            message.container, message.url,
-            message.content, message.time, message.volume ?: cachedPlayerVolume,
-            message.speed, message.headers, message.metadata
-        )
 
         if (message.container == "application/json") {
             val jsonStr: String =
@@ -223,7 +211,7 @@ class NetworkService : Service() {
             }
         }
 
-        cache.playMessage = rendererMessage
+        cache.playMessage = message
     }
 
     @OptIn(UnstableApi::class)
@@ -231,7 +219,7 @@ class NetworkService : Service() {
         _scope.launch(Dispatchers.IO) {
             send(Opcode.PlayUpdate, PlayUpdateMessage(System.currentTimeMillis(), playMessage))
             withContext(Dispatchers.IO) {
-                preparePlayMessage(playMessage, cache.playerVolume)
+                preparePlayMessage(playMessage)
             }
 
             // Prevent multiple instance creation if sender sends multiple play messages at same time
