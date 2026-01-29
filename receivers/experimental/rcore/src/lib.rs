@@ -10,6 +10,8 @@ use gst_play::prelude::*;
 use image::ImageFormat;
 use parking_lot::Mutex;
 use session::{SessionDriver, SessionId};
+#[cfg(target_os = "android")]
+use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
 use smallvec::SmallVec;
 use tokio::{
@@ -253,6 +255,8 @@ fn image_decode_worker(
 // TODO: store either single item or playlist etc.
 
 struct Application {
+    #[cfg(target_os = "android")]
+    android_app: slint::android::AndroidApp,
     event_tx: UnboundedSender<Event>,
     ui_weak: slint::Weak<MainWindow>,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
@@ -295,6 +299,8 @@ impl Application {
         event_tx: UnboundedSender<Event>,
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
+        #[cfg(target_os = "android")]
+        android_app: slint::android::AndroidApp,
     ) -> Result<Self> {
         let video_renderer = gst_play::PlayVideoOverlayVideoRenderer::with_sink(&appsink);
         let player =
@@ -466,6 +472,8 @@ impl Application {
             })?;
 
         Ok(Self {
+            #[cfg(target_os = "android")]
+            android_app,
             event_tx,
             ui_weak,
             updates_tx,
@@ -985,6 +993,8 @@ impl Application {
                     }
                 }
 
+                #[cfg(target_os = "android")]
+                self.android_app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
                 self.player.play();
             }
             gst_play::PlayMessage::PositionUpdated(position_updated) => {
@@ -1046,6 +1056,14 @@ impl Application {
                         //         }
                         //     }
                         // }
+
+                        if self.player_state == gst_play::PlayState::Playing || self.player_state == gst_play::PlayState::Buffering {
+                            #[cfg(target_os = "android")]
+                            self.android_app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
+                        } else {
+                            #[cfg(target_os = "android")]
+                            self.android_app.set_window_flags(WindowManagerFlags::empty(), WindowManagerFlags::KEEP_SCREEN_ON);
+                        }
                     }
                     gst_play::PlayState::Stopped => {
                         // TODO: reset playback info, time, duration, etc.
@@ -1059,6 +1077,8 @@ impl Application {
             gst_play::PlayMessage::EndOfStream(_) => {
                 debug!("Player reached EOS");
 
+                #[cfg(target_os = "android")]
+                self.android_app.set_window_flags(WindowManagerFlags::empty(), WindowManagerFlags::KEEP_SCREEN_ON);
                 self.media_ended();
 
                 // TODO: this should be the last message sent regarding the media currently being played
@@ -1822,8 +1842,6 @@ pub fn run(
 
     let ui = MainWindow::new()?;
 
-    // TODO: use AndroidApp set window flag with KEEP_SCREEN_ON when viewing media
-
     #[cfg(debug_assertions)]
     ui.global::<Bridge>().set_is_debugging(true);
 
@@ -1903,7 +1921,14 @@ pub fn run(
             #[cfg(not(target_os = "android"))]
             gstrsrtp::plugin_register_static().unwrap();
 
-            Application::new(slint_appsink, event_tx, ui_weak, video_sink_is_eos)
+            Application::new(
+                slint_appsink,
+                event_tx,
+                ui_weak,
+                video_sink_is_eos,
+                #[cfg(target_os = "android")]
+                android_app
+            )
                 .await
                 .unwrap()
                 .run_event_loop(event_rx, fin_tx)
