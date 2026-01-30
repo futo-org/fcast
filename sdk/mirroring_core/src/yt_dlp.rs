@@ -39,6 +39,7 @@ impl Format {
                 None => match self.id.as_str() {
                     "mp4" => "video/mp4",
                     "x-matroska" => "video/x-matroska",
+                    "mp3" => "audio/mp3",
                     _ => return None,
                 }
             },
