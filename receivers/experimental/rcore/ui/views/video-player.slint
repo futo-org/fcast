@@ -9,7 +9,7 @@ import {
     PositionScrubber,
     ProgressLabels,
     MasterButton,
-    ProgressLabelBox,
+    ScrubbyMcScrub,
 } from "../common.slint";
 import {
     FCastPalette,
@@ -202,16 +202,11 @@ component SettingsTrackList inherits VerticalLayout {
 }
 
 component PlaybackControls inherits Rectangle {
-    // in property <string> progress-label;
-
-    // in-out property <GuiPlaybackState> pb-state;
-
-    background: Bridge.controls-bg-gradient;
-
     out property <MouseCursor> suggested-cursor: default;
 
-    // property <bool> is-scrubbing: false;
     property <bool> is-changing-volume: false;
+
+    background: Bridge.controls-bg-gradient;
 
     public function show() {
         root.visible = true;
@@ -233,27 +228,6 @@ component PlaybackControls inherits Rectangle {
     public function playback-stopped() {
         show();
     }
-
-    public function update-progress-percent(percent: float) {
-        // if ! is-scrubbing {
-        if !Bridge.is-scrubbing-position {
-            scrubber.value = percent;
-        }
-    }
-
-    function scrubber-changed() {
-        // Make the bar not disipear when the user is engaging with the scrubber
-        // is-scrubbing = true;
-        Bridge.is-scrubbing-position = true;
-        show();
-    }
-
-    function volume-changed() {
-        is-changing-volume = true;
-        show();
-    }
-
-    // TODO: maybe touch area inside this component
 
     main-vlayout := VerticalLayout {
         padding: 58px;
@@ -329,17 +303,7 @@ component PlaybackControls inherits Rectangle {
             }
         }
 
-        scrubber := PositionScrubber {
-            changed(_) => scrubber-changed();
-            released(position) => {
-                Bridge.is-scrubbing-position = false;
-                Bridge.seek-to-percent(position);
-            }
-        }
-
-        ProgressLabels {
-            visible: !scrubber.has-hover;
-        }
+        ScrubbyMcScrub { }
 
         Rectangle {
             height: 5px;
@@ -563,19 +527,6 @@ component PlaybackControls inherits Rectangle {
         }
     }
 
-    Rectangle {
-        visible: scrubber.has-hover;
-        x: scrubber.mouse-x + main-vlayout.padding - self.width / 2;
-        y: scrubber.y + scrubber.height + main-vlayout.spacing;
-        width: plb.width;
-        height: plb.height;
-
-        plb := ProgressLabelBox {
-            text: Bridge.sec-to-string(Bridge.duration-seconds * scrubber.mouse-x / scrubber.width);
-        }
-    }
-
-
     tim := Timer {
         property <int> counter;
         interval: 500ms;
@@ -651,13 +602,9 @@ export component VideoPlayerView inherits Rectangle {
         }
 
         playback-control := PlaybackControls {
-            // visible: false;
-            visible: true;
+            visible: false;
             width: 100%;
             height: 100%;
-            // y: parent.height - self.height;
-            // progress-label <=> Bridge.progress-label;
-            // pb-state: Bridge.playback-state;
         }
     }
 }

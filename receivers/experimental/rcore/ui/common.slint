@@ -10,7 +10,8 @@ export component PositionScrubber inherits Slider {
     enabled: false;
     rail-color: #FFFFFF33;
     track-color: Bridge.is-live ? FCastPalette.negative-800 : FCastPalette.foreground;
-    thumb-color: self.track-color;
+    thumb-color: black.transparentize(85%);
+    thumb-border-color: FCastPalette.foreground;
 
     states [
         enabled when Bridge.playback-state != GuiPlaybackState.Loading: {
@@ -45,6 +46,35 @@ export component ProgressLabels inherits HorizontalLayout {
 
     if !Bridge.is-live: ProgressLabelBox {
         text: Bridge.duration-label;
+    }
+}
+
+export component ScrubbyMcScrub {
+    main-vlayout := VerticalLayout {
+        spacing: 8px;
+
+        scrubber := PositionScrubber {
+            released(position) => {
+                Bridge.is-scrubbing-position = false;
+                Bridge.seek-to-percent(position);
+            }
+        }
+
+        ProgressLabels {
+            visible: !scrubber.has-hover;
+        }
+    }
+
+    Rectangle {
+        visible: scrubber.has-hover;
+        x: scrubber.mouse-x + main-vlayout.padding - self.width / 2;
+        y: scrubber.y + scrubber.height + main-vlayout.spacing;
+        width: plb.width;
+        height: plb.height;
+
+        plb := ProgressLabelBox {
+            text: Bridge.sec-to-string(Bridge.duration-seconds * scrubber.mouse-x / scrubber.width);
+        }
     }
 }
 

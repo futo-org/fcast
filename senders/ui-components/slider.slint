@@ -14,6 +14,7 @@ export component Slider {
     in property <color> track-color: FCastPalette.foreground;
     in property <bool> hide-thumb: false;
     in property <color> thumb-color: FCastPalette.brand-600;
+    in property <color> thumb-border-color: FluentPalette.border;
     out property <bool> has-focus: base.has-focus;
     out property <bool> has-hover: base.has-hover;
     out property <length> mouse-x <=> base.mouse-x;
@@ -49,7 +50,6 @@ export component Slider {
         }
         pressed when base.handle-pressed || base.has-focus : {
             thumb-inner.width: 10px;
-            thumb.border-color: FluentPalette.border;
         }
         hover when base.has-hover : {
             thumb-inner.width: 14px;
@@ -85,7 +85,7 @@ export component Slider {
         width: 20px;
         height: self.width;
         border-radius: 10px;
-        background: FluentPalette.control-solid;
+        background: thumb-border-color;
         visible: !hide-thumb || base.has-hover;
 
         thumb-border := Rectangle {

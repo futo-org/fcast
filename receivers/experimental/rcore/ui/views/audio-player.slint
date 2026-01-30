@@ -1,6 +1,6 @@
 import { FText } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge } from "../globals.slint";
-import { PositionScrubber, ProgressLabels, MasterButton } from "../common.slint";
+import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub } from "../common.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
 
 export component AudioPlayerView inherits Rectangle {
@@ -79,18 +79,7 @@ export component AudioPlayerView inherits Rectangle {
             height: 20px;
         }
 
-        scrubber := PositionScrubber {
-            changed(_) => {
-                // scrubber-changed();
-            }
-
-            released(position) => {
-                Bridge.is-scrubbing-position = false;
-                Bridge.seek-to-percent(position);
-            }
-        }
-
-        ProgressLabels { }
+        ScrubbyMcScrub { }
 
         HorizontalLayout {
             alignment: center;
