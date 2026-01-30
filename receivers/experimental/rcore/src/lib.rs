@@ -373,10 +373,10 @@ impl Application {
                         elem.set_property("video-caps", caps);
                     }
                     "reqwesthttpsrc" => {
+                        let mut did_set_user_agent = false;
                         if let Some(ref headers) = *headers.lock() {
                             let mut extra_headers_builder =
                                 gst::Structure::builder("reqwesthttpsrc-extra-headers");
-                            let mut did_set_user_agent = false;
                             for (k, v) in headers {
                                 if k == "User-Agent" || k == "user-agent" {
                                     elem.set_property("user-agent", v);
@@ -386,13 +386,12 @@ impl Application {
                                 }
                             }
                             elem.set_property("extra-headers", extra_headers_builder.build());
-
-                            if !did_set_user_agent {
-                                elem.set_property(
-                                    "user-agent",
-                                    user_agent::random_browser_user_agent(None),
-                                );
-                            }
+                        }
+                        if !did_set_user_agent {
+                            elem.set_property(
+                                "user-agent",
+                                user_agent::random_browser_user_agent(None),
+                            );
                         }
                     }
                     _ => (),
@@ -2024,7 +2023,7 @@ pub fn run(
         .build()
         .unwrap();
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         error!(
             ?err,
