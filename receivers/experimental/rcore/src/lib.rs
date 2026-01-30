@@ -711,10 +711,6 @@ impl Application {
             bridge.set_media_title("".to_shared_string());
             bridge.set_artist_name("".to_shared_string());
 
-            bridge.set_video_dbg(slint::ModelRc::default());
-            bridge.set_audio_dbg(slint::ModelRc::default());
-            bridge.set_subtitle_dbg(slint::ModelRc::default());
-
             bridge.set_video_tracks(slint::ModelRc::default());
             bridge.set_audio_tracks(slint::ModelRc::default());
             bridge.set_subtitle_tracks(slint::ModelRc::default());
@@ -1328,67 +1324,6 @@ impl Application {
                     }
 
                     self.have_media_info = true;
-                }
-
-                fn bitrate_to_string(bitrate: i32) -> String {
-                    if bitrate > 1_000_000 {
-                        format!("{:.2} Mbps", bitrate as f32 / 1_000_000.0)
-                    } else if bitrate > 1_000 {
-                        format!("{:.2} Kbps", bitrate as f32 / 1_000.0)
-                    } else {
-                        format!("{} bps", bitrate)
-                    }
-                }
-
-                fn play_info_to_stream_dbg(play_info: &impl PlayStreamInfoExt) -> UiStreamDbg {
-                    UiStreamDbg {
-                        id: play_info.stream_id().to_shared_string(),
-                        codec: play_info.codec().unwrap_or("n/a".into()).to_shared_string(),
-                    }
-                }
-
-                // if self.debug_mode && !self.has_media_info  {
-                if !self.have_media_info {
-                    let audio_streams: Vec<UiAudioStreamDbg> = info
-                        .audio_streams()
-                        .into_iter()
-                        .map(|stream| UiAudioStreamDbg {
-                            info: play_info_to_stream_dbg(&stream),
-                            bitrate: bitrate_to_string(stream.bitrate()).to_shared_string(),
-                            max_bitrate: bitrate_to_string(stream.max_bitrate()).to_shared_string(),
-                            channels: stream.channels(),
-                            language: stream.language().unwrap_or("n/a".into()).to_shared_string(),
-                            sample_rate: stream.sample_rate(),
-                        })
-                        .collect();
-                    let video_streams: Vec<UiVideoStreamDbg> = info
-                        .video_streams()
-                        .into_iter()
-                        .map(|stream| UiVideoStreamDbg {
-                            info: play_info_to_stream_dbg(&stream),
-                            bitrate: bitrate_to_string(stream.bitrate()).to_shared_string(),
-                            max_bitrate: bitrate_to_string(stream.max_bitrate()).to_shared_string(),
-                            width: stream.width(),
-                            height: stream.height(),
-                            framerate_n: stream.framerate().numer(),
-                            framerate_d: stream.framerate().denom(),
-                        })
-                        .collect();
-                    let subtitle_streams: Vec<UiSubtitleStreamDbg> = info
-                        .subtitle_streams()
-                        .into_iter()
-                        .map(|stream| UiSubtitleStreamDbg {
-                            info: play_info_to_stream_dbg(&stream),
-                            language: stream.language().unwrap_or("n/a".into()).to_shared_string(),
-                        })
-                        .collect();
-
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let bridge = ui.global::<Bridge>();
-                        bridge.set_audio_dbg(Rc::new(VecModel::from(audio_streams)).into());
-                        bridge.set_video_dbg(Rc::new(VecModel::from(video_streams)).into());
-                        bridge.set_subtitle_dbg(Rc::new(VecModel::from(subtitle_streams)).into());
-                    })?;
                 }
 
                 self.current_media = Some(info.to_owned());

@@ -29,58 +29,6 @@ export component DebugOverlay inherits Rectangle {
                 + "  Is live: " + (Bridge.is-live ? "true" : "false");
                 wrap: word-wrap;
             }
-
-            if Bridge.video-dbg.length > 0: OutlinedText {
-                text: "-- Video --";
-            }
-
-            if Bridge.video-dbg.length > 0: VerticalLayout {
-                for video[idx] in Bridge.video-dbg: OutlinedText {
-                    text: "#" + idx //
-                    + "  Codec: " + video.info.codec //
-                    + "  Bitrate: " + video.bitrate //
-                    + "  Max bitrate: " + video.max-bitrate //
-                    + "  Resolution: " + video.width + "x" + video.height //
-                    + "  Framerate: " + video.framerate-n + "/" + video.framerate-d;
-                    wrap: word-wrap;
-                }
-            }
-
-            if Bridge.audio-dbg.length > 0: OutlinedText {
-                text: "-- Audio --";
-            }
-
-            if Bridge.audio-dbg.length > 0: VerticalLayout {
-                spacing: 10px;
-
-                for audio[idx] in Bridge.audio-dbg: OutlinedText {
-                    text: "#" + idx //
-                    + "  Codec: " + audio.info.codec //
-                    + "  Bitrate: " + audio.bitrate //
-                    + "  Max bitrate: " + audio.max-bitrate //
-                    + "  Sample rate: " + audio.sample-rate //
-                    + "  Channels: " + audio.channels //
-                    + "  Language: " + audio.language;
-                    wrap: word-wrap;
-                }
-            }
-
-            if Bridge.subtitle-dbg.length > 0: OutlinedText {
-                text: "-- Subtitle --";
-            }
-
-            if Bridge.subtitle-dbg.length > 0: VerticalLayout {
-                spacing: 10px;
-
-                for sub[idx] in Bridge.subtitle-dbg: OutlinedText {
-                    text: "#" + idx //
-                    + "  Codec: " + sub.info.codec //
-                    + "  Language: " + sub.language;
-                    wrap: word-wrap;
-                }
-            }
-
-            Rectangle { }
         }
     }
 }

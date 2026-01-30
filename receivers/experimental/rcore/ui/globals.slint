@@ -29,30 +29,6 @@ export struct UiStreamDbg {
     codec: string,
 }
 
-export struct UiAudioStreamDbg {
-    info: UiStreamDbg,
-    bitrate: string,
-    channels: int,
-    language: string,
-    max_bitrate: string,
-    sample_rate: int,
-}
-
-export struct UiVideoStreamDbg {
-    info: UiStreamDbg,
-    bitrate: string,
-    max_bitrate: string,
-    framerate_n: int,
-    framerate_d: int,
-    width: int,
-    height: int,
-}
-
-export struct UiSubtitleStreamDbg {
-    info: UiStreamDbg,
-    language: string,
-}
-
 export enum UiMediaTrackType {
     Video,
     Audio,
@@ -79,9 +55,6 @@ export global Bridge {
     in property <image> image-preview;
     in property <image> audio-track-cover;
     in property <image> blured-audio-track-cover;
-    in property <[UiAudioStreamDbg]> audio-dbg;
-    in property <[UiVideoStreamDbg]> video-dbg;
-    in property <[UiSubtitleStreamDbg]> subtitle-dbg;
     in property <string> local-ip-addrs;
     in property <string> device-name;
     in property <[UiMediaTrack]> video-tracks;
