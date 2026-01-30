@@ -45,6 +45,7 @@ mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
+mod media;
 mod user_agent;
 mod video;
 
@@ -950,8 +951,7 @@ impl Application {
                 self.on_playing_command_queue
                     .push(OnFirstPlayingStateChangedCommand::Rate(rate));
             }
-            if !is_for_sure_live
-            {
+            if !is_for_sure_live {
                 self.on_playing_command_queue
                     .push(OnFirstPlayingStateChangedCommand::Seek(
                         media_item.time.unwrap_or(0.0),
@@ -1163,39 +1163,6 @@ impl Application {
                 }
 
                 let info = media_info_updated.media_info();
-                fn stream_title(stream: &gst_play::PlayStreamInfo) -> String {
-                    let mut res = String::new();
-                    if let Some(tags) = stream.tags() {
-                        if let Some(language) = tags.get::<gst::tags::LanguageName>() {
-                            res += language.get();
-                        } else if let Some(language) = tags.get::<gst::tags::LanguageCode>() {
-                            let code = language.get();
-                            if let Some(lang) = gst_tag::language_codes::language_name(code) {
-                                res += lang;
-                            } else {
-                                res += code;
-                            }
-                        }
-                        if let Some(title) = tags.get::<gst::tags::Title>() {
-                            if !res.is_empty() {
-                                res += " - ";
-                            }
-                            let title = title.get();
-                            if !title.is_empty() {
-                                res += &title[0..title.len().min(16)];
-                                if title.len() >= 16 {
-                                    res += "...";
-                                }
-                            }
-                        }
-                    }
-
-                    if res.is_empty() {
-                        res += "Unknown";
-                    }
-
-                    res
-                }
 
                 fn streams_to_tracks(
                     streams: impl IntoIterator<Item = gst_play::PlayStreamInfo>,
@@ -1203,7 +1170,7 @@ impl Application {
                     streams
                         .into_iter()
                         .map(|track| UiMediaTrack {
-                            name: stream_title(track.upcast_ref()).to_shared_string(),
+                            name: media::play_stream_title(track.upcast_ref()).to_shared_string(),
                         })
                         .collect()
                 }
