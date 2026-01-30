@@ -2967,10 +2967,10 @@ dependencies = [
 [[package]]
 name = "gst-plugin-reqwest"
 version = "0.14.4"
-source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=fbc765af4967e3f71e571a8db931f2c36304133e#fbc765af4967e3f71e571a8db931f2c36304133e"
+source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=5d4c8c93ab3a84113f1326037e82259c0d77ee25#5d4c8c93ab3a84113f1326037e82259c0d77ee25"
 dependencies = [
  "futures",
- "gst-plugin-version-helper 0.8.3 (git+https://github.com/MAlba124/gst-plugins-rs.git?rev=fbc765af4967e3f71e571a8db931f2c36304133e)",
+ "gst-plugin-version-helper 0.8.3 (git+https://github.com/MAlba124/gst-plugins-rs.git?rev=5d4c8c93ab3a84113f1326037e82259c0d77ee25)",
  "gstreamer 0.24.4 (git+https://gitlab.freedesktop.org/gstreamer/gstreamer-rs?branch=0.24)",
  "gstreamer-base 0.24.4 (git+https://gitlab.freedesktop.org/gstreamer/gstreamer-rs?branch=0.24)",
  "headers",
@@ -3028,7 +3028,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-version-helper"
 version = "0.8.3"
-source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=fbc765af4967e3f71e571a8db931f2c36304133e#fbc765af4967e3f71e571a8db931f2c36304133e"
+source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=5d4c8c93ab3a84113f1326037e82259c0d77ee25#5d4c8c93ab3a84113f1326037e82259c0d77ee25"
 dependencies = [
  "chrono",
  "toml_edit 0.24.0+spec-1.1.0",

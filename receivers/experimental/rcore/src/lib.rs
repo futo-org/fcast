@@ -52,7 +52,7 @@ use crate::session::{Operation, ReceiverToSenderMessage, TranslatableMessage};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadImageError {
-    #[error("failed to send request: {0}")]
+    #[error("request failed: {0:?}")]
     RequestFailed(#[from] reqwest::Error),
     #[error("response is missing content type")]
     MissingContentType,
@@ -62,9 +62,9 @@ pub enum DownloadImageError {
     ContentTypeIsNotString,
     #[error("content type ({0}) is unsupported")]
     UnsupportedContentType(String),
-    #[error("failed to decode image: {0}")]
+    #[error("failed to decode image: {0:?}")]
     DecodeImage(#[from] image::ImageError),
-    #[error("failed to parse URL: {0}")]
+    #[error("failed to parse URL: {0:?}")]
     InvalidUrl(#[from] url::ParseError),
 }
 

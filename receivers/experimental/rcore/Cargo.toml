@@ -35,7 +35,7 @@ parking_lot.workspace = true
 image_swizzle = "0.2.0"
 bytes.workspace = true
 # libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] } # TODO
-gst-plugin-reqwest = { rev = "fbc765af4967e3f71e571a8db931f2c36304133e", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
+gst-plugin-reqwest = { rev = "5d4c8c93ab3a84113f1326037e82259c0d77ee25", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
 gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [ "static" ] }
 gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
 gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
@@ -90,7 +90,7 @@ gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
 glutin_egl_sys = { version = "0.7.1" }
 glutin_glx_sys = { version = "0.6.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
-reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
