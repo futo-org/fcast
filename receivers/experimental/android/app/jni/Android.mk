@@ -30,10 +30,10 @@ GSTREAMER_NDK_BUILD_PATH  := $(GSTREAMER_ROOT)/share/gst-android/ndk-build/
 include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
 
 EFFECTS := audiofx deinterlace
-GSTREAMER_PLUGINS_NET_NO_RSWEBRTC := tcp rtsp rtp rtpmanager soup udp dtls rist rtmp2 rtpmanagerbad rtponvif sctp sdpelem srtp srt webrtc nice rtspclientsink hlssink3 hlsmultivariantsink mpegtslive ndi quinn rsonvif raptorq rsrtp rsrtsp
-GSTREAMER_PLUGINS         := $(GSTREAMER_PLUGINS_CORE) $(GSTREAMER_PLUGINS_CODECS) $(GSTREAMER_PLUGINS_NET_NO_RSWEBRTC) $(GSTREAMER_PLUGINS_PLAYBACK) $(GSTREAMER_PLUGINS_CODECS_RESTRICTED) $(GSTREAMER_PLUGINS_SYS) $(EFFECTS)
-GSTREAMER_EXTRA_DEPS      := gstreamer-video-1.0 gstreamer-gl-1.0 gstreamer-app-1.0 gstreamer-base-1.0 gstreamer-webrtc-1.0 gstreamer-pbutils-1.0 gstreamer-tag-1.0
+GSTREAMER_PLUGINS_NET_NO_RSWEBRTC := tcp rtsp rtp rtpmanager udp dtls rist rtmp2 rtpmanagerbad rtponvif sctp sdpelem srtp srt webrtc nice mpegtslive quinn rsonvif raptorq rsrtp rsrtsp
+CUSTOM_GSTREAMER_PLUGINS_CODECS := subparse ogg theora vorbis opus adaptivedemux2 alaw amrnb amrwbdec apetag audioparsers auparse avi dv flac flv flxdec icydemux id3demux isomp4 jpeg lame matroska mpg123 mulaw multipart png speex taglib vpx wavenc wavpack wavparse xingmux y4m adpcmdec adpcmenc assrender bz2 codecalpha codectimestamper dash dvbsubenc dvbsuboverlay dvdspu hls id3tag ivfparse midi mxf openh264 opusparse pcapparse pnm rfbsrc siren smoothstreaming subenc transcode videoparsersbad jpegformat gdp openjpeg spandsp sbc zbar rsvg svtav1 androidmedia rsaudioparsers cdg claxon dav1d rsclosedcaption ffv1 gif hsv isobmff lewton rav1e json rspng regex textwrap textahead
 
-G_IO_MODULES = openssl
+GSTREAMER_PLUGINS := $(GSTREAMER_PLUGINS_CORE) $(CUSTOM_GSTREAMER_PLUGINS_CODECS) $(GSTREAMER_PLUGINS_NET_NO_RSWEBRTC) $(GSTREAMER_PLUGINS_PLAYBACK) $(GSTREAMER_PLUGINS_CODECS_RESTRICTED) $(GSTREAMER_PLUGINS_SYS) $(EFFECTS)
+GSTREAMER_EXTRA_DEPS      := gstreamer-video-1.0 gstreamer-gl-1.0 gstreamer-app-1.0 gstreamer-base-1.0 gstreamer-webrtc-1.0 gstreamer-pbutils-1.0 gstreamer-tag-1.0
 
 include $(GSTREAMER_NDK_BUILD_PATH)/gstreamer-1.0.mk

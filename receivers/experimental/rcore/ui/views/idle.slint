@@ -183,4 +183,61 @@ export component IdleView inherits Rectangle {
             }
         }
     }
+
+    if Bridge.is-showing-error-message: VerticalLayout {
+        pure function compute-width(available: length) -> length {
+            Math.min(available, error-rect.preferred-width + self.padding * 2)
+        }
+
+        width: compute-width(root.width > 700px ? 700px : root.width);
+        padding: 20px;
+
+        error-rect := Rectangle {
+            background: @linear-gradient(90.17deg, rgba(255, 255, 255, 0.08) 0.15%, rgba(255, 255, 255, 0.03) 84.27%);
+            border-radius: self.height / 2;
+            border-width: 1px;
+            border-color: @linear-gradient(153.5deg, rgba(255, 255, 255, 0.1) 7.41%, rgba(255, 255, 255, 0.031) 27.47%, rgba(255, 255, 255, 0.1) 52.75%, rgba(255, 255, 255, 0.03) 73.25%, rgba(255, 255, 255, 0.1) 94.61%);
+
+            HorizontalLayout {
+                alignment: center;
+                padding: 16px;
+                spacing: 10px;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: t.width;
+                        height: t.height;
+
+                        t := Image {
+                            source: @image-url("../warning-triangle.svg");
+                            colorize: @linear-gradient(140.89deg, #F44F5A 15.72%, #EE3D4A 46.23%, #E52030 84.58%);
+                        }
+
+                        Image {
+                            source: @image-url("../exclamation-mark.svg");
+                            width: 35px;
+                        }
+                    }
+                }
+
+                FText {
+                    text: Bridge.error-message;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                }
+            }
+
+            Timer {
+                interval: 4s;
+                running: true;
+                triggered() => {
+                    Bridge.is-showing-error-message = false;
+                }
+            }
+        }
+
+        Rectangle { }
+    }
 }

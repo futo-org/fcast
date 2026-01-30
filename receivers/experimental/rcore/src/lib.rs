@@ -3,7 +3,9 @@
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use bytes::Bytes;
-use fcast_protocol::{Opcode, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3};
+use fcast_protocol::{
+    Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
+};
 use futures::StreamExt;
 use gst::prelude::*;
 use gst_play::prelude::*;
@@ -685,6 +687,7 @@ impl Application {
         self.audio_tracks.clear();
         self.subtitle_tracks.clear();
 
+        self.player.stop();
         self.player.set_video_track_enabled(true);
         self.player.set_audio_track_enabled(true);
         self.player.set_video_track_enabled(true);
@@ -703,6 +706,7 @@ impl Application {
             bridge.set_progress_label("".to_shared_string());
             bridge.set_duration_label("".to_shared_string());
             bridge.set_duration_seconds(0);
+            bridge.set_app_state(AppState::Idle);
             bridge.set_playback_state(GuiPlaybackState::Idle);
             bridge.set_media_title("".to_shared_string());
             bridge.set_artist_name("".to_shared_string());
@@ -738,7 +742,16 @@ impl Application {
         }
     }
 
+    fn is_playing(&self) -> bool {
+        self.current_play_data.is_some() || self.current_playlist.is_some()
+    }
+
     fn media_loaded_successfully(&mut self) {
+        if !self.is_playing() {
+            debug!("Ignoring old media loaded succesfully event");
+            return;
+        };
+
         // TODO: needs debouncing since seeks will trigger this too, or maybe not?
         info!("Media loaded successfully");
 
@@ -788,6 +801,43 @@ impl Application {
                     .send(Arc::new(ReceiverToSenderMessage::Event { msg }));
             }
         }
+    }
+
+    fn media_error(&mut self, message: String) -> Result<()> {
+        error!(message, "Media error");
+
+        self.cleanup_playback_data()?;
+
+        if self.updates_tx.receiver_count() > 0 {
+            let update = v3::PlaybackUpdateMessage {
+                generation_time: current_time_millis(),
+                time: None,
+                duration: None,
+                state: PlaybackState::Idle,
+                speed: None,
+                item_index: None,
+            };
+            let msg = ReceiverToSenderMessage::Translatable {
+                op: Opcode::PlaybackUpdate,
+                msg: TranslatableMessage::PlaybackUpdate(update),
+            };
+            let _ = self.updates_tx.send(Arc::new(msg));
+            let _ = self
+                .updates_tx
+                .send(Arc::new(ReceiverToSenderMessage::Error(
+                    PlaybackErrorMessage {
+                        message: message.clone(),
+                    },
+                )));
+        }
+
+        self.ui_weak.upgrade_in_event_loop(move |ui| {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_error_message(message.to_shared_string());
+            bridge.set_is_showing_error_message(true);
+        })?;
+
+        Ok(())
     }
 
     fn media_ended(&mut self) {
@@ -882,8 +932,6 @@ impl Application {
         *self.current_request_headers.lock() = media_item.headers.clone();
 
         if container.starts_with("image/") {
-            self.player.stop();
-
             let event_tx = self.event_tx.clone();
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
@@ -907,13 +955,11 @@ impl Application {
                     .push(OnFirstPlayingStateChangedCommand::Rate(rate));
             }
             if !is_for_sure_live
-                && let Some(time) = media_item.time
-                // Don't seek if we don't need to
-                && time >= 1.0
             {
                 self.on_playing_command_queue
-                    // .push(OnUriLoadedCommand::Seek(time));
-                    .push(OnFirstPlayingStateChangedCommand::Seek(time));
+                    .push(OnFirstPlayingStateChangedCommand::Seek(
+                        media_item.time.unwrap_or(0.0),
+                    ));
             }
         }
 
@@ -985,6 +1031,11 @@ impl Application {
     }
 
     fn video_stream_available(&self) -> Result<()> {
+        if !self.is_playing() {
+            debug!("Ignoring old video stream available event");
+            return Ok(());
+        };
+
         debug!("Video stream available");
 
         self.ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1003,24 +1054,11 @@ impl Application {
         match play_message {
             gst_play::PlayMessage::UriLoaded(loaded) => {
                 debug!(uri = %loaded.uri(), "URI loaded");
-                debug!("Commands: {:?}", self.on_playing_command_queue);
-                // TODO: Some streams are not happy about setting theese things so early, should we wait for first playing state change?
-                // for command in self.on_playing_command_queue.iter() {
                 for command in self.on_uri_loaded_command_queue.iter() {
                     match command {
                         OnUriLoadedCommand::Volume(volume) => {
                             self.player.set_volume(*volume);
                         }
-                    }
-                }
-
-                // TODO: can this be done here 100% of the time?
-                while let Some(command) = self.on_playing_command_queue.pop() {
-                    match command {
-                        OnFirstPlayingStateChangedCommand::Seek(time) => {
-                            self.player.seek(gst::ClockTime::from_seconds_f64(time))
-                        }
-                        OnFirstPlayingStateChangedCommand::Rate(rate) => self.player.set_rate(rate),
                     }
                 }
 
@@ -1041,55 +1079,21 @@ impl Application {
                 {
                     self.notify_updates(false)?;
                 }
-                // TODO: check if it's been a second since last update (stream time, not wall clock)?
             }
             gst_play::PlayMessage::DurationChanged(duration_changed) => {
                 self.current_duration = duration_changed.duration();
             }
             gst_play::PlayMessage::StateChanged(state_change) => {
-                // TODO: should start events be sent when the first Playing state change has happened?
-
-                // TODO: is this robust enough? or should we wait fro the Stopped state?
-                if self.current_media.is_none() {
+                if !self.is_playing() {
                     debug!(?state_change, "Ignoring old player state change");
                     return Ok(());
                 }
 
                 self.player_state = state_change.state();
                 match self.player_state {
-                    // gst_play::PlayState::Stopped => todo!(),
-                    // gst_play::PlayState::Buffering => todo!(),
                     gst_play::PlayState::Paused | gst_play::PlayState::Playing => {
-                        self.ui_weak.upgrade_in_event_loop(|ui| {
-                            ui.invoke_playback_started();
-                            ui.global::<Bridge>().set_app_state(AppState::Playing);
-                        })?;
                         self.notify_updates(true)
                             .context("Failed to notify about updates")?;
-
-                        if self.player_state == gst_play::PlayState::Playing
-                            && !self.on_playing_command_queue.is_empty()
-                        {
-                            debug!(?self.on_playing_command_queue, "Updating player");
-                            // while let Some(command) = self.on_playing_command_queue.pop() {
-                            //     match command {
-                            //         OnFirstPlayingStateChangedCommand::Seek(time) => self
-                            //             .player
-                            //             .seek(gst::ClockTime::from_seconds_f64(time)),
-                            //         OnFirstPlayingStateChangedCommand::Rate(rate) => {
-                            //             self.player.set_rate(rate)
-                            //         }
-                            //     }
-                            // }
-                            // self.on_playing_command_queue.clear();
-                        }
-
-                        // if state == gst_play::PlayState::Playing {
-                        //     while let Some(command) = self.on_playing_command_queue.pop() {
-                        //         match command {
-                        //         }
-                        //     }
-                        // }
 
                         if self.player_state == gst_play::PlayState::Playing
                             || self.player_state == gst_play::PlayState::Buffering
@@ -1152,9 +1156,16 @@ impl Application {
                         .send(Arc::new(ReceiverToSenderMessage::Event { msg: event }))?;
                 }
             }
-            gst_play::PlayMessage::Error(_error) => (),
+            gst_play::PlayMessage::Error(error) => {
+                self.player.stop();
+                self.media_error(error.error().message().to_owned())?;
+            }
             gst_play::PlayMessage::Warning(_warning) => (),
             gst_play::PlayMessage::MediaInfoUpdated(media_info_updated) => {
+                if !self.is_playing() {
+                    return Ok(());
+                }
+
                 let info = media_info_updated.media_info();
                 fn stream_title(stream: &gst_play::PlayStreamInfo) -> String {
                     let mut res = String::new();
@@ -1163,11 +1174,11 @@ impl Application {
                             res += language.get();
                         } else if let Some(language) = tags.get::<gst::tags::LanguageCode>() {
                             let code = language.get();
-                            res += match code {
-                                "en" => "English",
-                                "und" => "Undetermined",
-                                _ => code,
-                            };
+                            if let Some(lang) = gst_tag::language_codes::language_name(code) {
+                                res += lang;
+                            } else {
+                                res += code;
+                            }
                         }
                         if let Some(title) = tags.get::<gst::tags::Title>() {
                             if !res.is_empty() {
@@ -1254,9 +1265,26 @@ impl Application {
                 if !self.have_media_info && info.number_of_streams() > 0 {
                     self.media_loaded_successfully(); // TODO: is this the best place to put this?
 
+                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                        ui.invoke_playback_started();
+                        ui.global::<Bridge>().set_app_state(AppState::Playing);
+                    })?;
+
                     self.current_duration = info.duration();
                     if info.number_of_video_streams() > 0 {
                         self.video_stream_available()?;
+                    }
+
+                    debug!("Commands: {:?}", self.on_playing_command_queue);
+                    while let Some(command) = self.on_playing_command_queue.pop() {
+                        match command {
+                            OnFirstPlayingStateChangedCommand::Seek(time) => {
+                                self.player.seek(gst::ClockTime::from_seconds_f64(time))
+                            }
+                            OnFirstPlayingStateChangedCommand::Rate(rate) => {
+                                self.player.set_rate(rate)
+                            }
+                        }
                     }
 
                     if info.number_of_video_streams() == 0
@@ -1406,23 +1434,23 @@ impl Application {
     fn handle_operation(&mut self, op: Operation) -> Result<bool> {
         match op {
             Operation::Pause => {
-                self.player.pause();
+                if self.is_playing() {
+                    self.player.pause();
+                }
             }
             Operation::Resume => {
-                self.player.play();
+                if self.is_playing() {
+                    self.player.play();
+                }
             }
             Operation::Stop => {
-                // TODO: handle this case correctly:
-                // DEBUG rcore: Operation from sender id=0 op=Stop
-                // DEBUG rcore: Player event event=StateChanged(Playing)
-                // DEBUG rcore: Player event event=StateChanged(Stopped)
-                //              * gui is in playing mode and screen is black (eos) *
-
-                self.player.stop();
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.global::<Bridge>().set_app_state(AppState::Idle);
-                })?;
-                self.cleanup_playback_data()?;
+                if self.is_playing() {
+                    self.player.stop();
+                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                        ui.global::<Bridge>().set_app_state(AppState::Idle);
+                    })?;
+                    self.cleanup_playback_data()?;
+                }
                 // TODO: notify update? or wait for async state change from player
             }
             Operation::Play(play_message) => {
@@ -1446,10 +1474,12 @@ impl Application {
                 self.current_play_data = Some(play_message);
             }
             Operation::Seek(seek_message) => {
-                let time = seek_message.time;
-                if !self.seek_lock.is_locked() && time >= 0.0 && time.is_normal() {
-                    self.seek_lock.acquire();
-                    self.player.seek(gst::ClockTime::from_seconds_f64(time));
+                if self.is_playing() {
+                    let time = seek_message.time;
+                    if !self.seek_lock.is_locked() && time >= 0.0 && time.is_normal() {
+                        self.seek_lock.acquire();
+                        self.player.seek(gst::ClockTime::from_seconds_f64(time));
+                    }
                 }
             }
             Operation::SetSpeed(set_speed_message) => {
@@ -1661,7 +1691,7 @@ impl Application {
                         ))?;
                     }
                     Err(err) => {
-                        error!(%err, "Image download failed");
+                        self.media_error(format!("Image download failed: {err:?}"))?;
                     }
                 }
             }
@@ -1862,10 +1892,6 @@ impl Application {
             TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 46899)).await?;
 
         let mut session_id: SessionId = 0;
-        // let mut update_interval = tokio::time::interval(Duration::from_millis(250));
-
-        // let event_tx_cl = self.event_tx.clone();
-
         loop {
             tokio::select! {
                 event = event_rx.recv() => {
@@ -1879,14 +1905,6 @@ impl Application {
                         break;
                     }
                 }
-                // _ = update_interval.tick() => {
-                    // TODO: in what states can we omit updates?
-                    // if self.player_state != gst_play::PlayState::Stopped
-                    //     && self.player_state != gst_play::PlayState::Paused
-                    //     && self.player_state != gst_play::PlayState::Buffering {
-                    //     self.notify_updates(false)?;
-                    // }
-                // }
                 session = dispatch_listener.accept() => {
                     let (stream, _) = session?;
 
@@ -2234,11 +2252,12 @@ pub fn run(
         }
     });
 
-    ui.global::<Bridge>().on_sec_to_string(|sec: i32| -> slint::SharedString {
-        sec_to_string(sec as f64).to_shared_string()
-    });
+    ui.global::<Bridge>()
+        .on_sec_to_string(|sec: i32| -> slint::SharedString {
+            sec_to_string(sec as f64).to_shared_string()
+        });
 
-    info!(finished_in = ?start.elapsed());
+    info!(initialized_in = ?start.elapsed());
 
     ui.run()?;
 

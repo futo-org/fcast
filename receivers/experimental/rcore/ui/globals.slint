@@ -90,6 +90,7 @@ export global Bridge {
     in property <int> current-video-track;
     in property <int> current-audio-track;
     in property <int> current-subtitle-track;
+    in property <string> error-message;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <bool> playing: false;
@@ -100,6 +101,7 @@ export global Bridge {
     in-out property <bool> is-scrubbing-position: false;
     in-out property <UiPlayerVariant> player-variant: UiPlayerVariant.Unknown;
     in-out property <float> playback-rate: 1.0;
+    in-out property <bool> is-showing-error-message: false;
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
 

@@ -3,8 +3,10 @@ use std::{sync::Arc, time::Duration};
 use crate::Event;
 use bitflags::bitflags;
 use fcast_protocol::{
-    Opcode, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage, v1, v2,
-    v3::{self, ReceiverCapabilities},
+    Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
+    v1, v2,
+    v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
+    v3::{self, InitialReceiverMessage, ReceiverCapabilities},
 };
 use futures::stream::unfold;
 use tokio::{
@@ -26,12 +28,6 @@ pub const HEADER_BUFFER_SIZE: usize = 5;
 pub const MAX_BODY_SIZE: usize = 32000 - 1;
 
 use anyhow::{Context, bail};
-
-use fcast_protocol::{
-    PlaybackErrorMessage,
-    v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
-    v3::InitialReceiverMessage,
-};
 
 #[derive(Debug, PartialEq)]
 pub struct Header {
@@ -241,6 +237,7 @@ pub enum ReceiverToSenderMessage {
     //     op: Opcode,
     //     data: Vec<u8>,
     // },
+    Error(PlaybackErrorMessage),
     Translatable {
         op: Opcode,
         msg: TranslatableMessage,
@@ -622,9 +619,8 @@ impl State {
                 }
             }
             DriverEvent::ToSender(msg) => match msg.as_ref() {
-                // ReceiverToSenderMessage::Mandatory { .. }
-                // | ReceiverToSenderMessage::Translatable { .. } => Action::Forward {
-                ReceiverToSenderMessage::Translatable { .. } => Action::Forward {
+                ReceiverToSenderMessage::Error(_)
+                | ReceiverToSenderMessage::Translatable { .. } => Action::Forward {
                     session_version: self.variant.version(),
                     msg,
                 },
@@ -770,6 +766,12 @@ impl SessionDriver {
                     session_version,
                     msg,
                 } => match msg.as_ref() {
+                    ReceiverToSenderMessage::Error(msg) => {
+                        let body = serde_json::to_vec(&msg)?;
+                        let header = Header::new(Opcode::PlaybackError, body.len() as u32).encode();
+                        tcp_stream_tx.write_all(&header).await?;
+                        tcp_stream_tx.write_all(&body).await?;
+                    }
                     ReceiverToSenderMessage::Translatable { op, msg } => {
                         let Some(session_version) = session_version else {
                             // Unreachable

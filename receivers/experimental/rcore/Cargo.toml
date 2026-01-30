@@ -38,6 +38,7 @@ bytes.workspace = true
 gst-plugin-reqwest = { rev = "fbc765af4967e3f71e571a8db931f2c36304133e", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
 gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [ "static" ] }
 gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
+gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
 num_cpus = "1"
 rand = "0.9"
 paste = "1"

@@ -3532,6 +3532,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-tag"
+version = "0.24.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b429934f5fb1c858b0980a1678409772afbdc8d380d6a19a92df0214ce8d4c7"
+dependencies = [
+ "glib 0.21.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gstreamer 0.24.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gstreamer-tag-sys",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-tag-sys"
+version = "0.24.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0709c37980e6b1c599bd22fa0dd5e1e45ded5dce76fcf887bd6083d36cbdaf5e"
+dependencies = [
+ "glib-sys 0.21.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gobject-sys 0.21.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gstreamer-sys 0.24.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gstreamer-utils"
 version = "0.24.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6402,6 +6427,7 @@ dependencies = [
  "gstreamer-gl-egl",
  "gstreamer-gl-x11",
  "gstreamer-play",
+ "gstreamer-tag",
  "gstreamer-video",
  "if-addrs",
  "image",

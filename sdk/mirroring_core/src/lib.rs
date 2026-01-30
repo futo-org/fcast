@@ -39,6 +39,7 @@ use std::os::fd::OwnedFd;
 
 #[derive(Debug)]
 pub enum VideoSource {
+    #[cfg(not(target_os = "android"))]
     TestSrc,
     #[cfg(target_os = "linux")]
     PipeWire {
@@ -71,6 +72,7 @@ pub enum VideoSource {
 impl VideoSource {
     pub fn display_name(&self) -> String {
         match self {
+            #[cfg(not(target_os = "android"))]
             VideoSource::TestSrc => "Test source".to_owned(),
             #[cfg(target_os = "linux")]
             VideoSource::PipeWire { .. } => "PipeWire Video Source".to_owned(),
@@ -265,6 +267,7 @@ pub enum Event {
     UpdateAvailable(Release),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     UpdateApplication,
+    #[cfg(not(target_os = "android"))]
     RestartApplication,
 
     // Android

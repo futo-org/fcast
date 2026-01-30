@@ -205,10 +205,14 @@ impl Application {
                     error!("No device with name `{device_name}` found");
                 }
             }
-            Event::SignallerStarted { bound_port } => {
+            Event::SignallerStarted { bound_port_v4, bound_port_v6 } => {
                 let Some(addr) = self.local_address.as_ref() else {
                     error!("Local address is missing");
                     return Ok(ShouldQuit::No);
+                };
+                let bound_port = match addr {
+                    fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
+                    fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                 };
 
                 let (content_type, url) = self
