@@ -28,7 +28,7 @@ buildReceiverExperimentalAndroid:
 
     - cargo xtask receiver android
       --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.26.10"
-      build --release --target arm64
+      build --release
 
     - ANDROID_HOME="$ANDROID_HOME_PATH" ANDROID_NDK_ROOT="$THIRDPARTY_DEPS_PATH/android-ndk-r25c"
       ./gradlew --stacktrace assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
