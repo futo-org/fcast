@@ -22,10 +22,10 @@ RUN yes | /thirdparty/cmdline-tools/bin/sdkmanager --sdk_root="$ANDROID_HOME_PAT
 RUN /thirdparty/cmdline-tools/bin/sdkmanager --sdk_root="$ANDROID_HOME_PATH" --install "platforms;android-35"
 RUN /thirdparty/cmdline-tools/bin/sdkmanager --sdk_root="$ANDROID_HOME_PATH" --install "build-tools;35.0.0"
 
-RUN wget2 https://gstreamer.freedesktop.org/data/pkg/android/1.26.10/gstreamer-1.0-android-universal-1.26.10.tar.xz -O /thirdparty/gstreamer-1.0-android-universal-1.26.10.tar.xz
-RUN mkdir -p /thirdparty/gstreamer-1.0-android-universal-1.26.10
-RUN tar -xf /thirdparty/gstreamer-1.0-android-universal-1.26.10.tar.xz -C /thirdparty/gstreamer-1.0-android-universal-1.26.10
-RUN rm /thirdparty/gstreamer-1.0-android-universal-1.26.10.tar.xz
+RUN wget2 https://gstreamer.freedesktop.org/pkg/android/1.28.0/gstreamer-1.0-android-universal-1.28.0.tar.xz -O /thirdparty/gstreamer-1.0-android-universal-1.28.0.tar.xz
+RUN mkdir -p /thirdparty/gstreamer-1.0-android-universal-1.28.0
+RUN tar -xf /thirdparty/gstreamer-1.0-android-universal-1.28.0.tar.xz -C /thirdparty/gstreamer-1.0-android-universal-1.28.0
+RUN rm /thirdparty/gstreamer-1.0-android-universal-1.28.0.tar.xz
 
 RUN wget2 https://dl.google.com/android/repository/android-ndk-r25c-linux.zip -O /thirdparty/android-ndk-r25d-linux.zip
 RUN unzip /thirdparty/android-ndk-r25d-linux.zip -d /thirdparty/
