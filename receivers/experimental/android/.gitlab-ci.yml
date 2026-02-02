@@ -38,7 +38,7 @@ buildReceiverExperimentalAndroid:
 
     - ANDROID_HOME="$ANDROID_HOME_PATH" ANDROID_NDK_ROOT="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" ./gradlew assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
     - mkdir -p "./$ANDROID_VERSION_CODE"
-    - mv ./app/build/outputs/apk/release/app-release-unsigned.apk "./$ANDROID_VERSION_CODE/fcast-receiver-experimental-release.apk"
+    - mv ./app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk "./$ANDROID_VERSION_CODE/fcast-receiver-experimental-release.apk"
     - mv ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab "./$ANDROID_VERSION_CODE/fcast-receiver-experimental-playstore-release.aab"
   artifacts:
     untracked: false
