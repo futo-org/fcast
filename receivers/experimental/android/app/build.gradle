@@ -2,6 +2,20 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+ext {
+    currentVersionName = project.hasProperty('versionName') ? project.property('versionName') : '1.0.0'
+    currentVersionCode = project.hasProperty('versionCode') ? Integer.parseInt(project.property('versionCode')) : 1
+}
+
+println("Version Name: $currentVersionName")
+println("Version Code: $currentVersionCode")
+
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('/certs/key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace 'org.fcast.rsreceiver.android'
     compileSdk 34
@@ -25,8 +39,18 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        release {
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
+            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+            storePassword keystoreProperties['storePassword']
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
