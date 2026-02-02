@@ -39,6 +39,18 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    flavorDimensions "type"
+    productFlavors {
+        playstore {
+            dimension "type"
+            applicationIdSuffix ".playstore"
+            versionNameSuffix "-playstore"
+        }
+        defaultFlavor {
+            dimension "type"
+        }
+    }
+
     signingConfigs {
         release {
             keyAlias keystoreProperties['keyAlias']

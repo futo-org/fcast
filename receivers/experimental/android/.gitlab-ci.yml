@@ -17,8 +17,8 @@ buildReceiverExperimentalAndroid:
   tags:
     - fcast-instance-runner
   variables:
-    APP_VERSION_NAME: "1"
-    APP_VERSION_CODE: "1"
+    ANDROID_VERSION_NAME: "1"
+    ANDROID_VERSION_CODE: "1"
   before_script:
     - cd receivers/experimental/android
   script:
@@ -31,7 +31,7 @@ buildReceiverExperimentalAndroid:
       build --release --target arm64
 
     - ANDROID_HOME="$ANDROID_HOME_PATH" ANDROID_NDK_ROOT="$THIRDPARTY_DEPS_PATH/android-ndk-r25c"
-      ./gradlew --stacktrace --no-daemon assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
+      ./gradlew --stacktrace assembleRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
 
     - ANDROID_HOME="$ANDROID_HOME_PATH" ANDROID_NDK_ROOT="$THIRDPARTY_DEPS_PATH/android-ndk-r25c"
       ./gradlew --stacktrace bundlePlaystoreRelease -PversionName=$ANDROID_VERSION_NAME -PversionCode=$ANDROID_VERSION_CODE
