@@ -13,9 +13,7 @@ gethostname = "1"
 # slint = { workspace = true, features = ["unstable-wgpu-26"] }
 # slint = { version = "1.14.1", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "std", "raw-window-handle-06" ] }
 anyhow.workspace = true
-# futures.workspace = true
 futures = "0.3"
-# tokio-stream.workspace = true
 tokio-stream = "0.1"
 url = "2"
 thiserror = "2"
@@ -25,7 +23,6 @@ fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
-gst-play = { package = "gstreamer-play", version = "0.24.2", features = [ "v1_26" ] }
 serde_json.workspace = true
 if-addrs = "0.14"
 base64 = "0.22"
@@ -41,7 +38,6 @@ gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
 gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
 num_cpus = "1"
 rand = "0.9"
-paste = "1"
 
 [dependencies.slint]
 version = "1.14.1"

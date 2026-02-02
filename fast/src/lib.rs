@@ -87,7 +87,8 @@ cases!(
     cast_photos_with_headers_v3,
     cast_video_with_headers_v2,
     cast_video_with_headers_v3,
-    cast_simple_playlist_with_headers
+    cast_simple_playlist_with_headers,
+    cast_video_with_start_speed_volume_v3
 );
 
 macro_rules! define_test_case {
@@ -529,6 +530,27 @@ define_test_case!(
             items: &[
                 PlaylistItem { file_id: 0 },
             ]
+        }),
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    cast_video_with_start_speed_volume_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart,
+        )),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV3WithBody {
+            file_id: 0,
+            time: Some(10.0),
+            speed: Some(1.5),
+            volume: Some(0.5),
         }),
         send!(Send::Stop),
     ]
