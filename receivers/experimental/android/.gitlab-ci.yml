@@ -23,11 +23,11 @@ buildReceiverExperimentalAndroid:
     - cd receivers/experimental/android
   script:
     - cargo xtask receiver android
-      --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.26.10"
+      --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.28.0"
       build-lib-gst
 
     - cargo xtask receiver android
-      --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.26.10"
+      --android-home-override="$ANDROID_HOME_PATH" --android-ndk-root-override="$THIRDPARTY_DEPS_PATH/android-ndk-r25c" --gstreamer-root-override="$THIRDPARTY_DEPS_PATH/gstreamer-1.0-android-universal-1.28.0"
       build --release
 
     - ANDROID_HOME="$ANDROID_HOME_PATH" ANDROID_NDK_ROOT="$THIRDPARTY_DEPS_PATH/android-ndk-r25c"
