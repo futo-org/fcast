@@ -1330,8 +1330,8 @@ impl Application {
                     }
                 }
             }
-            player::PlayerEvent::QueueSeek(seconds) => {
-                self.player.queue_seek(seconds);
+            player::PlayerEvent::QueueSeek(seek) => {
+                self.player.queue_seek(seek);
             }
             player::PlayerEvent::StreamsSelected {
                 video,

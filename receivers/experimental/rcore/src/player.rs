@@ -38,6 +38,12 @@ pub enum PlayerState {
 
 type StreamId = String;
 
+#[derive(Debug, Default)]
+pub struct Seek {
+    pub position: Option<f64>,
+    pub rate: Option<f64>,
+}
+
 #[derive(Debug)]
 pub enum PlayerEvent {
     EndOfStream,
@@ -56,7 +62,7 @@ pub enum PlayerEvent {
         current: gst::State,
         pending: gst::State,
     },
-    QueueSeek(f64),
+    QueueSeek(Seek),
     StreamsSelected {
         video: Option<StreamId>,
         audio: Option<StreamId>,
@@ -71,8 +77,7 @@ pub enum PlayerEvent {
 enum Job {
     SetState(gst::State),
     SetUri(String),
-    SetRate(f64),
-    Seek(f64),
+    Seek(Seek),
     Quit,
 }
 
@@ -128,7 +133,7 @@ pub struct Player {
     pub player_state: PlayerState,
     position: Option<gst::ClockTime>,
     work_tx: std::sync::mpsc::Sender<Job>,
-    pending_seek: Option<f64>,
+    pending_seek: Option<Seek>,
     target_state: Option<gst::State>,
     pub video_streams: SmallVec<[gst::Stream; 3]>,
     pub audio_streams: SmallVec<[gst::Stream; 3]>,
@@ -212,11 +217,34 @@ impl Player {
                                     .send(crate::Event::NewPlayerEvent(PlayerEvent::IsLive));
                             }
                         }
-                        Job::SetRate(rate) => {
-                            let Some(position) = playbin.query_position::<gst::ClockTime>() else {
-                                error!("Failed to query playback position");
+                        Job::Seek(seek) => {
+                            let (_, state, _) = playbin.state(None);
+
+                            if state != gst::State::Paused {
+                                let _ = event_tx.send(crate::Event::NewPlayerEvent(
+                                    // PlayerEvent::QueueSeek(seconds),
+                                    PlayerEvent::QueueSeek(seek),
+                                ));
+                                let _ = playbin.set_state(gst::State::Paused);
                                 continue;
+                            }
+
+                            let position = match seek.position {
+                                Some(pos) => gst::ClockTime::from_seconds_f64(pos),
+                                None => {
+                                    let Some(pos) = playbin.query_position::<gst::ClockTime>()
+                                    else {
+                                        error!("Failed to query playback position");
+                                        continue;
+                                    };
+
+                                    pos
+                                }
                             };
+
+                            let rate = seek.rate.unwrap_or(1.0);
+
+                            debug!(rate, ?position);
 
                             if let Err(err) = if rate >= 0.0 {
                                 playbin.seek(
@@ -242,24 +270,6 @@ impl Player {
                                 let _ = event_tx.send(crate::Event::NewPlayerEvent(
                                     PlayerEvent::RateChanged(rate),
                                 ));
-                            }
-                        }
-                        Job::Seek(seconds) => {
-                            let (_, state, _) = playbin.state(None);
-
-                            if state != gst::State::Paused {
-                                let _ = event_tx.send(crate::Event::NewPlayerEvent(
-                                    PlayerEvent::QueueSeek(seconds),
-                                ));
-                                let _ = playbin.set_state(gst::State::Paused);
-                                continue;
-                            }
-
-                            if let Err(err) = playbin.seek_simple(
-                                gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH,
-                                gst::ClockTime::from_seconds_f64(seconds),
-                            ) {
-                                error!(seconds, ?err, "Failed to seek");
                             }
                         }
                         Job::Quit => {
@@ -431,27 +441,60 @@ impl Player {
         let _ = self.work_tx.send(Job::SetUri(uri.to_string()));
     }
 
-    pub fn seek(&mut self, seconds: f64) {
-        if self.seek_lock.is_locked() {
-            warn!("Cannot seek because a seek request is pending");
+    fn seek_internal(&mut self, mut seek: Seek) {
+        if self.is_live {
+            warn!("Cannot seek when source is live");
             return;
         }
 
+        if self.seek_lock.is_locked() {
+            warn!("Cannot seek because a seek request is pending");
+            self.pending_seek = Some(seek);
+            return;
+        }
+
+        if seek.rate.is_none() {
+            seek.rate = Some(self.rate);
+        }
+
+        let _ = self.work_tx.send(Job::Seek(seek));
+
+        self.seek_lock.acquire();
+    }
+
+    pub fn seek(&mut self, seconds: f64) {
         if !seconds.is_sign_positive() || seconds.is_nan() {
             warn!(seconds, "Invalid seek timestamp");
             return;
         }
 
-        let _ = self.work_tx.send(Job::Seek(seconds));
-
-        self.seek_lock.acquire();
+        self.seek_internal(Seek {
+            position: Some(seconds),
+            rate: None,
+        });
     }
 
-    pub fn queue_seek(&mut self, seconds: f64) {
+    pub fn queue_seek(&mut self, seek: Seek) {
+        debug!(?seek, "queue seek");
+
         if self.target_state.is_none() {
             self.target_state = Some(self.current_state);
         }
-        self.pending_seek = Some(seconds);
+
+        if self.pending_seek.is_none() {
+            self.pending_seek = Some(Seek::default());
+        }
+
+        if let Some(pending) = self.pending_seek.as_mut() {
+            if let Some(pos) = seek.position {
+                pending.position = Some(pos);
+            }
+            if pending.rate.is_none()
+                && let Some(rate) = seek.rate
+            {
+                pending.rate = Some(rate);
+            }
+        }
     }
 
     pub fn set_volume(&mut self, volume: f64) {
@@ -470,7 +513,10 @@ impl Player {
     }
 
     pub fn set_rate(&mut self, rate: f64) {
-        let _ = self.work_tx.send(Job::SetRate(rate));
+        self.seek_internal(Seek {
+            position: None,
+            rate: Some(rate),
+        });
     }
 
     fn set_state_async(&self, state: gst::State) {
@@ -562,10 +608,9 @@ impl Player {
         self.current_state = new;
 
         let new_state = if new == gst::State::Paused && pending == gst::State::VoidPending {
-            if let Some(seconds) = self.pending_seek.take() {
-                // TODO: check if media is actually seekable
+            if let Some(seek) = self.pending_seek.take() {
                 self.seek_lock.release();
-                self.seek(seconds);
+                self.seek_internal(seek);
                 return StateChangeResult::SeekPending;
             } else if self.seek_lock.is_locked() {
                 tracing::info!("Seek completed");
