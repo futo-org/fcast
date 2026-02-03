@@ -1,14 +1,12 @@
 #![feature(ip)]
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use base64::Engine;
 use bytes::Bytes;
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
 };
-use futures::StreamExt;
 use gst::prelude::*;
-use gst_play::prelude::*;
 use image::ImageFormat;
 use parking_lot::Mutex;
 use session::{SessionDriver, SessionId};
@@ -45,11 +43,13 @@ mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
-mod media;
 mod user_agent;
 mod video;
 
-use crate::session::{Operation, ReceiverToSenderMessage, TranslatableMessage};
+use crate::{
+    player::{PlayerState, StateChangeResult},
+    session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadImageError {
@@ -88,7 +88,8 @@ pub enum Event {
     ResumeOrPause,
     SeekPercent(f32),
     ToggleDebug,
-    Player(gst::Message),
+    // Player(gst::Message),
+    NewPlayerEvent(player::PlayerEvent),
     Op {
         /// The UI also sends operations with session_id == 0
         session_id: SessionId,
@@ -116,7 +117,8 @@ pub enum Event {
     },
     MediaItemFinish(MediaItemId),
     SelectTrack {
-        id: usize,
+        // id: usize,
+        id: i32,
         variant: UiMediaTrackType,
     },
 }
@@ -148,29 +150,10 @@ enum OnUriLoadedCommand {
 }
 
 #[derive(Debug)]
+// TODO: rename and merge with OnUriLoadedCommand
 enum OnFirstPlayingStateChangedCommand {
     Seek(f64),
     Rate(f64),
-}
-
-struct BoolLock(bool);
-
-impl BoolLock {
-    pub fn new() -> Self {
-        Self(false)
-    }
-
-    pub fn acquire(&mut self) {
-        self.0 = true;
-    }
-
-    pub fn release(&mut self) {
-        self.0 = false;
-    }
-
-    pub fn is_locked(&self) -> bool {
-        self.0
-    }
 }
 
 enum ImageDecodeJobType {
@@ -189,7 +172,7 @@ impl std::ops::Deref for EncodedImageData {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Vec(vec) => vec.as_slice(),
-            Self::Bytes(bytes) => &bytes,
+            Self::Bytes(bytes) => bytes,
         }
     }
 }
@@ -283,9 +266,7 @@ struct Application {
     mdns: mdns_sd::ServiceDaemon,
     last_sent_update: Instant,
     debug_mode: bool,
-    player: gst_play::Play,
-    player_state: gst_play::PlayState,
-    current_media: Option<gst_play::PlayMediaInfo>,
+    player: player::Player,
     current_duration: Option<gst::ClockTime>,
     on_uri_loaded_command_queue: smallvec::SmallVec<[OnUriLoadedCommand; 1]>,
     on_playing_command_queue: smallvec::SmallVec<[OnFirstPlayingStateChangedCommand; 2]>,
@@ -301,8 +282,6 @@ struct Application {
     image_decode_tx: std::sync::mpsc::Sender<(ImageId, ImageDecodeJob)>,
     current_addresses: HashSet<IpAddr>,
     have_media_title: bool,
-    volume_lock: BoolLock,
-    seek_lock: BoolLock,
     last_position_updated: f64,
     http_client: reqwest::Client,
     current_request_headers: Arc<Mutex<Option<HashMap<String, String>>>>,
@@ -310,9 +289,6 @@ struct Application {
     current_playlist_item_idx: Option<usize>,
     device_name: Option<String>,
     current_media_item_id: MediaItemId,
-    video_tracks: Vec<(i32, String)>,
-    audio_tracks: Vec<(i32, String)>,
-    subtitle_tracks: Vec<(i32, String)>,
 }
 
 impl Application {
@@ -323,27 +299,23 @@ impl Application {
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
     ) -> Result<Self> {
-        let video_renderer = gst_play::PlayVideoOverlayVideoRenderer::with_sink(&appsink);
-        let player =
-            gst_play::Play::new(Some(video_renderer.upcast::<gst_play::PlayVideoRenderer>()));
-
-        let mut player_config = player.config();
-        player_config.set_position_update_interval(250);
-        player_config.set_seek_accurate(true);
-        player
-            .set_config(player_config)
-            .context("Failed to set gst player config")?;
-
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
         if let Some(reqwest_src) = registry.lookup_feature("reqwesthttpsrc") {
             reqwest_src.set_rank(gst::Rank::PRIMARY + 1);
         }
 
+        #[cfg(target_os = "android")]
+        if let Some(amcaudiodec) = registry.lookup_feature("amcaudiodec") {
+            // https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/4883
+            amcaudiodec.set_rank(gst::Rank::NONE);
+        }
+
+        let player = player::Player::new(appsink, event_tx.clone())?;
+
         let headers = Arc::new(Mutex::new(None));
 
-        let player_playbin = player.pipeline();
-        player_playbin.connect("element-setup", false, {
+        player.playbin.connect("element-setup", false, {
             let headers = Arc::clone(&headers);
             move |vals| {
                 let Ok(elem) = vals[1].get::<gst::Element>() else {
@@ -423,17 +395,17 @@ impl Application {
         // };
         // player_playbin.set_property("audio-sink", audiosink);
 
-        tokio::spawn({
-            let player_bus = player.message_bus();
-            let event_tx = event_tx.clone();
-            async move {
-                let mut messages = player_bus.stream();
+        // tokio::spawn({
+        //     let player_bus = player.message_bus();
+        //     let event_tx = event_tx.clone();
+        //     async move {
+        //         let mut messages = player_bus.stream();
 
-                while let Some(msg) = messages.next().await {
-                    let _ = event_tx.send(Event::Player(msg));
-                }
-            }
-        });
+        //         while let Some(msg) = messages.next().await {
+        //             let _ = event_tx.send(Event::Player(msg));
+        //         }
+        //     }
+        // });
 
         let (updates_tx, _) = broadcast::channel(10);
 
@@ -508,8 +480,6 @@ impl Application {
             #[cfg(not(debug_assertions))]
             debug_mode: false,
             player,
-            player_state: gst_play::PlayState::Stopped,
-            current_media: None,
             current_duration: None,
             on_uri_loaded_command_queue: smallvec::SmallVec::new(),
             on_playing_command_queue: smallvec::SmallVec::new(),
@@ -525,8 +495,6 @@ impl Application {
             pending_thumbnail_download: None,
             current_addresses: HashSet::new(),
             have_media_title: false,
-            volume_lock: BoolLock::new(),
-            seek_lock: BoolLock::new(),
             last_position_updated: -1.0,
             http_client: reqwest::Client::new(),
             current_request_headers: headers,
@@ -534,9 +502,6 @@ impl Application {
             current_playlist_item_idx: None,
             device_name: None,
             current_media_item_id: 0,
-            video_tracks: Vec::new(),
-            audio_tracks: Vec::new(),
-            subtitle_tracks: Vec::new(),
         })
     }
 
@@ -591,38 +556,40 @@ impl Application {
         Ok((body, format))
     }
 
+    #[tracing::instrument(skip_all)]
     fn notify_updates(&mut self, force: bool) -> Result<()> {
-        let Some(info) = self.current_media.as_ref() else {
+        if !self.player.have_media_info() {
             return Ok(());
-        };
+        }
 
-        let Some(position) = self.player.position() else {
-            error!("No position");
+        let Some(position) = self.player.get_position() else {
+            error!("player does not have a playback position");
             return Ok(());
         };
         let position = position.seconds_f64();
         self.last_position_updated = position;
-        let duration = self
-            .current_duration
-            .as_ref()
-            .unwrap_or(&gst::ClockTime::default())
-            .seconds_f64();
-
+        let duration = match self.current_duration {
+            Some(dur) => dur,
+            None => {
+                let dur = self.player.get_duration().unwrap_or_default();
+                self.current_duration = Some(dur);
+                dur
+            }
+        };
+        let duration = duration.seconds_f64();
         let progress_str = sec_to_string(position);
         let duration_str = sec_to_string(duration);
         let progress_percent = (position / duration) as f32;
-        let is_live = info.is_live();
+        let is_live = self.player.is_live;
         let playback_state = {
-            match self.player_state {
-                gst_play::PlayState::Stopped => GuiPlaybackState::Loading,
-                gst_play::PlayState::Buffering => GuiPlaybackState::Loading,
-                gst_play::PlayState::Playing => GuiPlaybackState::Playing,
-                gst_play::PlayState::Paused => GuiPlaybackState::Paused,
-                _ => return Ok(()),
+            match self.player.player_state {
+                PlayerState::Stopped | PlayerState::Buffering => GuiPlaybackState::Loading,
+                PlayerState::Playing => GuiPlaybackState::Playing,
+                PlayerState::Paused => GuiPlaybackState::Paused,
             }
         };
 
-        let playback_rate = self.player.rate();
+        let playback_rate = self.player.rate;
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_progress_label(progress_str.into());
@@ -666,7 +633,6 @@ impl Application {
     }
 
     fn cleanup_playback_data(&mut self) -> Result<()> {
-        self.current_media = None;
         self.current_duration = None;
         self.on_uri_loaded_command_queue.clear();
         self.on_playing_command_queue.clear();
@@ -674,24 +640,14 @@ impl Application {
         self.current_play_data = None;
         self.have_media_info = false;
         self.pending_thumbnail = None;
-        self.player_state = gst_play::PlayState::Stopped;
         self.video_sink_is_eos
             .store(true, atomic::Ordering::Relaxed);
         self.have_media_title = false;
-        self.seek_lock.release();
-        self.volume_lock.release();
         self.last_position_updated = -1.0;
         *self.current_request_headers.lock() = None;
         self.current_playlist = None;
         self.current_playlist_item_idx = None;
-        self.video_tracks.clear();
-        self.audio_tracks.clear();
-        self.subtitle_tracks.clear();
-
         self.player.stop();
-        self.player.set_video_track_enabled(true);
-        self.player.set_audio_track_enabled(true);
-        self.player.set_video_track_enabled(true);
 
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
@@ -751,6 +707,12 @@ impl Application {
 
         // TODO: needs debouncing since seeks will trigger this too, or maybe not?
         info!("Media loaded successfully");
+
+        #[cfg(target_os = "android")]
+        self.android_app.set_window_flags(
+            WindowManagerFlags::KEEP_SCREEN_ON,
+            WindowManagerFlags::empty(),
+        );
 
         if self.updates_tx.receiver_count() > 0
             && let Some(play_msg) = self.current_play_data.clone()
@@ -839,6 +801,12 @@ impl Application {
 
     fn media_ended(&mut self) {
         info!("Media finished");
+
+        #[cfg(target_os = "android")]
+        self.android_app.set_window_flags(
+            WindowManagerFlags::empty(),
+            WindowManagerFlags::KEEP_SCREEN_ON,
+        );
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
@@ -899,31 +867,27 @@ impl Application {
         };
 
         let mut media_title = None;
-        if let Some(metadata) = media_item.metadata.as_ref() {
-            match metadata {
-                v3::MetadataObject::Generic {
-                    thumbnail_url: Some(thumbnail_url),
-                    title,
-                    ..
-                } => {
-                    media_title = title.as_ref().map(|title| title.to_shared_string());
-                    self.have_audio_track_cover = true;
-                    let event_tx = self.event_tx.clone();
-                    self.current_image_download_id += 1;
-                    let this_id = self.current_image_download_id;
-                    let url = thumbnail_url.clone();
-                    self.pending_thumbnail_download = Some(this_id);
-                    let client = self.http_client.clone();
-                    let headers = self.current_request_headers.lock().clone();
-                    tokio::spawn(async move {
-                        let res = Self::download_image(&client, &url, headers)
-                            .instrument(debug_span!("download_image", this_id))
-                            .await;
-                        let _ = event_tx.send(Event::ImageDownloadResult { id: this_id, res });
-                    });
-                }
-                _ => (),
-            }
+        if let Some(v3::MetadataObject::Generic {
+            thumbnail_url: Some(thumbnail_url),
+            title,
+            ..
+        }) = media_item.metadata.as_ref()
+        {
+            media_title = title.as_ref().map(|title| title.to_shared_string());
+            self.have_audio_track_cover = true;
+            let event_tx = self.event_tx.clone();
+            self.current_image_download_id += 1;
+            let this_id = self.current_image_download_id;
+            let url = thumbnail_url.clone();
+            self.pending_thumbnail_download = Some(this_id);
+            let client = self.http_client.clone();
+            let headers = self.current_request_headers.lock().clone();
+            tokio::spawn(async move {
+                let res = Self::download_image(&client, &url, headers)
+                    .instrument(debug_span!("download_image", this_id))
+                    .await;
+                let _ = event_tx.send(Event::ImageDownloadResult { id: this_id, res });
+            });
         }
 
         *self.current_request_headers.lock() = media_item.headers.clone();
@@ -941,7 +905,8 @@ impl Application {
                 let _ = event_tx.send(Event::ImageDownloadResult { id, res });
             });
         } else {
-            self.player.set_uri(Some(&url));
+            // self.player.set_uri(Some(&url));
+            self.player.set_uri(&url);
             if let Some(volume) = media_item.volume {
                 self.on_uri_loaded_command_queue
                     .push(OnUriLoadedCommand::Volume(volume));
@@ -1042,297 +1007,6 @@ impl Application {
         Ok(())
     }
 
-    async fn handle_player_event(&mut self, event: gst::Message) -> Result<()> {
-        let Ok(play_message) = gst_play::PlayMessage::parse(&event) else {
-            return Ok(());
-        };
-
-        match play_message {
-            gst_play::PlayMessage::UriLoaded(loaded) => {
-                debug!(uri = %loaded.uri(), "URI loaded");
-                for command in self.on_uri_loaded_command_queue.iter() {
-                    match command {
-                        OnUriLoadedCommand::Volume(volume) => {
-                            self.player.set_volume(*volume);
-                        }
-                    }
-                }
-
-                #[cfg(target_os = "android")]
-                self.android_app.set_window_flags(
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                    WindowManagerFlags::empty(),
-                );
-                self.player.play();
-            }
-            gst_play::PlayMessage::PositionUpdated(position_updated) => {
-                if self.player_state != gst_play::PlayState::Stopped
-                    && self.player_state != gst_play::PlayState::Paused
-                    && self.player_state != gst_play::PlayState::Buffering
-                    && let Some(new_position) =
-                        position_updated.position().map(|pos| pos.seconds_f64())
-                    && (self.last_position_updated - new_position).abs() >= 0.75
-                {
-                    self.notify_updates(false)?;
-                }
-            }
-            gst_play::PlayMessage::DurationChanged(duration_changed) => {
-                self.current_duration = duration_changed.duration();
-            }
-            gst_play::PlayMessage::StateChanged(state_change) => {
-                if !self.is_playing() {
-                    debug!(?state_change, "Ignoring old player state change");
-                    return Ok(());
-                }
-
-                self.player_state = state_change.state();
-                match self.player_state {
-                    gst_play::PlayState::Paused | gst_play::PlayState::Playing => {
-                        self.notify_updates(true)
-                            .context("Failed to notify about updates")?;
-
-                        if self.player_state == gst_play::PlayState::Playing
-                            || self.player_state == gst_play::PlayState::Buffering
-                        {
-                            #[cfg(target_os = "android")]
-                            self.android_app.set_window_flags(
-                                WindowManagerFlags::KEEP_SCREEN_ON,
-                                WindowManagerFlags::empty(),
-                            );
-                        } else {
-                            #[cfg(target_os = "android")]
-                            self.android_app.set_window_flags(
-                                WindowManagerFlags::empty(),
-                                WindowManagerFlags::KEEP_SCREEN_ON,
-                            );
-                        }
-                    }
-                    gst_play::PlayState::Stopped => {
-                        // TODO: reset playback info, time, duration, etc.
-                        self.notify_updates(true)
-                            .context("Failed to notify about updates")?;
-                    }
-                    _ => (),
-                }
-            }
-            gst_play::PlayMessage::Buffering(_buffering) => (),
-            gst_play::PlayMessage::EndOfStream(_) => {
-                debug!("Player reached EOS");
-
-                #[cfg(target_os = "android")]
-                self.android_app.set_window_flags(
-                    WindowManagerFlags::empty(),
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                );
-                self.media_ended();
-
-                // TODO: this should be the last message sent regarding the media currently being played
-                if self.updates_tx.receiver_count() > 0
-                    && let Some(play_data) = self.current_play_data.as_ref()
-                {
-                    let event = v3::EventMessage {
-                        generation_time: current_time_millis(),
-                        event: v3::EventObject::MediaItem {
-                            variant: v3::EventType::MediaItemEnd,
-                            item: v3::MediaItem {
-                                container: play_data.container.clone(),
-                                url: play_data.url.clone(),
-                                content: play_data.content.clone(),
-                                time: play_data.time,
-                                volume: play_data.volume,
-                                speed: play_data.speed,
-                                cache: None,
-                                show_duration: None,
-                                headers: None,
-                                metadata: play_data.metadata.clone(),
-                            },
-                        },
-                    };
-                    self.updates_tx
-                        .send(Arc::new(ReceiverToSenderMessage::Event { msg: event }))?;
-                }
-            }
-            gst_play::PlayMessage::Error(error) => {
-                self.player.stop();
-                self.media_error(error.error().message().to_owned())?;
-            }
-            gst_play::PlayMessage::Warning(_warning) => (),
-            gst_play::PlayMessage::MediaInfoUpdated(media_info_updated) => {
-                if !self.is_playing() {
-                    return Ok(());
-                }
-
-                let info = media_info_updated.media_info();
-
-                fn streams_to_tracks(
-                    streams: impl IntoIterator<Item = gst_play::PlayStreamInfo>,
-                ) -> Vec<UiMediaTrack> {
-                    streams
-                        .into_iter()
-                        .map(|track| UiMediaTrack {
-                            name: media::play_stream_title(track.upcast_ref()).to_shared_string(),
-                        })
-                        .collect()
-                }
-
-                macro_rules! handle_stream {
-                    ($type:ident) => {
-                        {
-                        paste::paste! {
-                            let [<$type s>] = info.[<$type _streams>]();
-                            let [<new_ $type>] = [<$type s>].iter().enumerate().map(|(idx, s)| (idx as i32, s.stream_id().to_string())).collect();
-                            let [<$type _tracks>] = if [<new_ $type>] != self.[<$type _tracks>] {
-                                self.[<$type _tracks>] = [<new_ $type>];
-                                Some(streams_to_tracks([<$type s>].into_iter().map(|s| s.upcast())))
-                            } else {
-                                None
-                            };
-
-                            let mut [<current_ $type _idx>] = None;
-                            if let Some([<current_ $type>]) = self.player.[<current_ $type _track>]() {
-                                let stream_id = [<current_ $type>].stream_id();
-                                for (idx, track) in self.[<$type _tracks>].iter().enumerate() {
-                                    if track.1 == stream_id {
-                                        [<current_ $type _idx>] = Some(idx as i32);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            ([<$type _tracks>], [<current_ $type _idx>])
-                        }
-                        }
-                    }
-                }
-
-                let (video_tracks, current_video_idx) = handle_stream!(video);
-                let (audio_tracks, current_audio_idx) = handle_stream!(audio);
-                let (subtitle_tracks, current_subtitle_idx) = handle_stream!(subtitle);
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    if let Some(videos) = video_tracks {
-                        bridge.set_video_tracks(Rc::new(VecModel::from(videos)).into());
-                    }
-                    if let Some(audios) = audio_tracks {
-                        bridge.set_audio_tracks(Rc::new(VecModel::from(audios)).into());
-                    }
-                    if let Some(subs) = subtitle_tracks {
-                        bridge.set_subtitle_tracks(Rc::new(VecModel::from(subs)).into());
-                    }
-
-                    bridge.set_current_video_track(current_video_idx.unwrap_or(-1));
-                    bridge.set_current_audio_track(current_audio_idx.unwrap_or(-1));
-                    bridge.set_current_subtitle_track(current_subtitle_idx.unwrap_or(-1));
-                })?;
-
-                if !self.have_media_info && info.number_of_streams() > 0 {
-                    self.media_loaded_successfully(); // TODO: is this the best place to put this?
-
-                    self.ui_weak.upgrade_in_event_loop(|ui| {
-                        ui.invoke_playback_started();
-                        ui.global::<Bridge>().set_app_state(AppState::Playing);
-                    })?;
-
-                    self.current_duration = info.duration();
-                    if info.number_of_video_streams() > 0 {
-                        self.video_stream_available()?;
-                    }
-
-                    debug!("Commands: {:?}", self.on_playing_command_queue);
-                    while let Some(command) = self.on_playing_command_queue.pop() {
-                        match command {
-                            OnFirstPlayingStateChangedCommand::Seek(time) => {
-                                self.player.seek(gst::ClockTime::from_seconds_f64(time))
-                            }
-                            OnFirstPlayingStateChangedCommand::Rate(rate) => {
-                                self.player.set_rate(rate)
-                            }
-                        }
-                    }
-
-                    if info.number_of_video_streams() == 0
-                        && let Some(track) = self.player.current_audio_track()
-                        && let Some(tags) = track.tags()
-                    {
-                        if !self.have_audio_track_cover
-                            && let Some(cover) = tags.get::<gst::tags::Image>()
-                            && let Some(buffer) = cover.get().buffer()
-                            && let Ok(buffer) = buffer.map_readable()
-                        {
-                            self.current_thumbnail_id += 1;
-                            let this_id = self.current_thumbnail_id;
-                            self.image_decode_tx.send((
-                                this_id,
-                                ImageDecodeJob {
-                                    image: EncodedImageData::Vec(buffer.to_vec()),
-                                    format: None,
-                                    typ: ImageDecodeJobType::AudioThumbnail,
-                                },
-                            ))?;
-                            self.pending_thumbnail = Some(this_id);
-                        }
-
-                        if !self.have_media_title
-                            && let Some(title) = tags.get::<gst::tags::Title>()
-                        {
-                            let title = title.get().to_shared_string();
-                            self.ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.global::<Bridge>().set_media_title(title);
-                            })?;
-                            self.have_media_title = true;
-                        }
-
-                        if let Some(artist) = tags.get::<gst::tags::Artist>() {
-                            let artist = artist.get().to_shared_string();
-                            self.ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.global::<Bridge>().set_artist_name(artist);
-                            })?;
-                        }
-                    }
-
-                    self.have_media_info = true;
-                }
-
-                self.current_media = Some(info.to_owned());
-            }
-            gst_play::PlayMessage::VolumeChanged(volume_changed) => {
-                let volume = volume_changed.volume();
-                // info!(volume, "Volume changed");
-
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<Bridge>().set_volume(volume as f32);
-                })?;
-                if self.updates_tx.receiver_count() > 0 {
-                    let update = VolumeUpdateMessage {
-                        generation_time: current_time_millis(),
-                        volume,
-                    };
-
-                    // debug!("Sending update ({update:?})");
-
-                    let msg = ReceiverToSenderMessage::Translatable {
-                        op: Opcode::VolumeUpdate,
-                        msg: TranslatableMessage::VolumeUpdate(update),
-                    };
-                    self.updates_tx
-                        // .send(Arc::new(Packet::from(update).encode()?))?;
-                        .send(Arc::new(msg))?;
-                    self.last_sent_update = Instant::now();
-                }
-
-                self.volume_lock.release();
-            }
-            gst_play::PlayMessage::SeekDone(_) => {
-                self.seek_lock.release();
-                self.notify_updates(true)
-                    .context("Failed to notify about updates")?;
-            }
-            _ => (),
-        }
-
-        Ok(())
-    }
-
     fn handle_operation(&mut self, op: Operation) -> Result<bool> {
         match op {
             Operation::Pause => {
@@ -1377,14 +1051,17 @@ impl Application {
             }
             Operation::Seek(seek_message) => {
                 if self.is_playing() {
-                    let time = seek_message.time;
-                    if !self.seek_lock.is_locked() && time >= 0.0 && time.is_normal() {
-                        self.seek_lock.acquire();
-                        self.player.seek(gst::ClockTime::from_seconds_f64(time));
-                    }
+                    let seconds = seek_message.time;
+                    // if !self.seek_lock.is_locked() && seconds >= 0.0 && seconds.is_normal() {
+                    // self.seek_lock.acquire();
+                    // self.player.seek(gst::ClockTime::from_seconds_f64(time));
+                    // TODO: show errors as warnings in the UI
+                    self.player.seek(seconds);
+                    // }
                 }
             }
             Operation::SetSpeed(set_speed_message) => {
+                // TODO: show errors as warnings in the UI
                 self.player.set_rate(set_speed_message.speed);
             }
             Operation::SetPlaylistItem(msg) => {
@@ -1404,10 +1081,10 @@ impl Application {
                 }
             }
             Operation::SetVolume(set_volume_msg) => {
-                if !self.volume_lock.is_locked() {
-                    self.volume_lock.acquire();
-                    self.player.set_volume(set_volume_msg.volume);
-                }
+                // if !self.volume_lock.is_locked() {
+                //     self.volume_lock.acquire();
+                self.player.set_volume(set_volume_msg.volume);
+                // }
             }
         }
 
@@ -1507,6 +1184,236 @@ impl Application {
         Ok(())
     }
 
+    fn handle_new_player_event(&mut self, event: player::PlayerEvent) -> Result<()> {
+        match event {
+            player::PlayerEvent::EndOfStream => {
+                self.player.end_of_stream_reached();
+
+                debug!("Player reached EOS");
+
+                self.media_ended();
+
+                // TODO: this should be the last message sent regarding the media currently being played
+                if self.updates_tx.receiver_count() > 0
+                    && let Some(play_data) = self.current_play_data.as_ref()
+                {
+                    let event = v3::EventMessage {
+                        generation_time: current_time_millis(),
+                        event: v3::EventObject::MediaItem {
+                            variant: v3::EventType::MediaItemEnd,
+                            item: v3::MediaItem {
+                                container: play_data.container.clone(),
+                                url: play_data.url.clone(),
+                                content: play_data.content.clone(),
+                                time: play_data.time,
+                                volume: play_data.volume,
+                                speed: play_data.speed,
+                                cache: None,
+                                show_duration: None,
+                                headers: None,
+                                metadata: play_data.metadata.clone(),
+                            },
+                        },
+                    };
+                    self.updates_tx
+                        .send(Arc::new(ReceiverToSenderMessage::Event { msg: event }))?;
+                }
+            }
+            player::PlayerEvent::DurationChanged => {
+                self.current_duration = self.player.get_duration();
+            }
+            player::PlayerEvent::Tags(_tags) => {}
+            player::PlayerEvent::VolumeChanged(volume) => {
+                self.player.volume_changed();
+
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.global::<Bridge>().set_volume(volume as f32);
+                })?;
+                if self.updates_tx.receiver_count() > 0 {
+                    let update = VolumeUpdateMessage {
+                        generation_time: current_time_millis(),
+                        volume,
+                    };
+
+                    let msg = ReceiverToSenderMessage::Translatable {
+                        op: Opcode::VolumeUpdate,
+                        msg: TranslatableMessage::VolumeUpdate(update),
+                    };
+                    self.updates_tx.send(Arc::new(msg))?;
+                    self.last_sent_update = Instant::now();
+                }
+            }
+            player::PlayerEvent::StreamCollection(collection) => {
+                self.player.handle_stream_collection(collection);
+                // self.media_loaded_successfully();
+
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_playback_started();
+                    ui.global::<Bridge>().set_app_state(AppState::Playing);
+                })?;
+
+                // self.current_duration = info.duration();
+                // if info.number_of_video_streams() > 0 {
+                //     self.video_stream_available()?;
+                // }
+
+                debug!("Commands: {:?}", self.on_playing_command_queue);
+                while let Some(command) = self.on_playing_command_queue.pop() {
+                    match command {
+                        OnFirstPlayingStateChangedCommand::Seek(time) => {
+                            // self.player.seek(gst::ClockTime::from_seconds_f64(time))
+                            self.player.seek(time);
+                        }
+                        OnFirstPlayingStateChangedCommand::Rate(rate) => {
+                            self.player.set_rate(rate);
+                        }
+                    }
+                }
+
+                self.player.play();
+
+                fn trackify(streams: &[gst::Stream]) -> Vec<UiMediaTrack> {
+                    streams
+                        .iter()
+                        .map(|stream| UiMediaTrack {
+                            name: player::stream_title(stream).to_shared_string(),
+                        })
+                        .collect::<Vec<UiMediaTrack>>()
+                }
+
+                let video_tracks = trackify(&self.player.video_streams);
+                let audio_tracks = trackify(&self.player.audio_streams);
+                let subtitle_tracks = trackify(&self.player.subtitle_streams);
+
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_video_tracks(Rc::new(VecModel::from(video_tracks)).into());
+                    bridge.set_audio_tracks(Rc::new(VecModel::from(audio_tracks)).into());
+                    bridge.set_subtitle_tracks(Rc::new(VecModel::from(subtitle_tracks)).into());
+                })?;
+
+                if !self.have_media_info {
+                    self.media_loaded_successfully();
+                    self.have_media_info = true;
+                }
+            }
+            player::PlayerEvent::AboutToFinish => {}
+            player::PlayerEvent::Buffering(_) => {}
+            player::PlayerEvent::IsLive => {
+                self.player.is_live = true;
+            }
+            player::PlayerEvent::StateChanged {
+                old,
+                current,
+                pending,
+            } => match self.player.state_changed(old, current, pending) {
+                // StateChangeResult::Changed(new_state) => {
+                StateChangeResult::Changed => {
+                    // self.player_state = new_state;
+                    self.notify_updates(true)?;
+                }
+                StateChangeResult::SeekPending => {
+                    debug!("Seek pending");
+                }
+                StateChangeResult::SeekCompleted => {
+                    self.notify_updates(true)?;
+                }
+            },
+            player::PlayerEvent::UriLoaded => {
+                self.player.uri_loaded();
+
+                for command in self.on_uri_loaded_command_queue.iter() {
+                    match command {
+                        OnUriLoadedCommand::Volume(volume) => {
+                            self.player.set_volume(*volume);
+                        }
+                    }
+                }
+            }
+            player::PlayerEvent::QueueSeek(seek) => {
+                self.player.queue_seek(seek);
+            }
+            player::PlayerEvent::StreamsSelected {
+                video,
+                audio,
+                subtitle,
+            } => {
+                let (video_sid, audio_sid, subtitle_sid) = self.player.streams_selected(
+                    video.as_deref(),
+                    audio.as_deref(),
+                    subtitle.as_deref(),
+                );
+
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_current_video_track(video_sid);
+                    bridge.set_current_audio_track(audio_sid);
+                    bridge.set_current_subtitle_track(subtitle_sid);
+                })?;
+
+                if video.is_some() {
+                    self.video_stream_available()?;
+                }
+
+                // TODO: get title from video track if available?
+
+                if video.is_none()
+                    && let Some(audio_sid) = audio
+                    && let Some(track) = self.player.get_stream_from_id(&audio_sid)
+                    && let Some(tags) = track.tags()
+                {
+                    if !self.have_audio_track_cover
+                        && let Some(cover) = tags.get::<gst::tags::Image>()
+                        && let Some(buffer) = cover.get().buffer()
+                        && let Ok(buffer) = buffer.map_readable()
+                    {
+                        self.current_thumbnail_id += 1;
+                        let this_id = self.current_thumbnail_id;
+                        self.image_decode_tx.send((
+                            this_id,
+                            ImageDecodeJob {
+                                image: EncodedImageData::Vec(buffer.to_vec()),
+                                format: None,
+                                typ: ImageDecodeJobType::AudioThumbnail,
+                            },
+                        ))?;
+                        self.pending_thumbnail = Some(this_id);
+                    }
+
+                    if !self.have_media_title
+                        && let Some(title) = tags.get::<gst::tags::Title>()
+                    {
+                        let title = title.get().to_shared_string();
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>().set_media_title(title);
+                        })?;
+                        self.have_media_title = true;
+                    }
+
+                    if let Some(artist) = tags.get::<gst::tags::Artist>() {
+                        let artist = artist.get().to_shared_string();
+                        self.ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>().set_artist_name(artist);
+                        })?;
+                    }
+                }
+            }
+            player::PlayerEvent::RateChanged(new_rate) => {
+                self.player.rate = new_rate;
+                self.notify_updates(true)?;
+            }
+            player::PlayerEvent::Error(msg) => {
+                self.player.stop();
+                self.media_error(msg)?;
+            }
+            player::PlayerEvent::Warning(_warning) => {
+                // TODO:
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
         // NOTE: all player actions are async (right?)
@@ -1517,13 +1424,17 @@ impl Application {
                 })?;
             }
             Event::ResumeOrPause => {
-                let op = match self.player_state {
-                    gst_play::PlayState::Paused => Operation::Resume,
-                    gst_play::PlayState::Playing => Operation::Pause,
+                // let op = match self.player_state {
+                let op = match self.player.player_state {
+                    // gst_play::PlayState::Paused => Operation::Resume,
+                    // gst_play::PlayState::Playing => Operation::Pause,
+                    PlayerState::Paused => Operation::Resume,
+                    PlayerState::Playing => Operation::Pause,
                     _ => {
                         error!(
                             "Cannot resume or pause in player current state: {:?}",
-                            self.player_state
+                            // self.player_state
+                            self.player.player_state
                         );
                         return Ok(false);
                     }
@@ -1542,7 +1453,7 @@ impl Application {
             }
             Event::Quit => return Ok(true),
             Event::ToggleDebug => self.debug_mode = !self.debug_mode,
-            Event::Player(event) => self.handle_player_event(event).await?,
+            // Event::Player(event) => self.handle_player_event(event).await?,
             Event::Op { session_id: id, op } => {
                 debug!(id, ?op, "Operation from sender");
                 return self.handle_operation(op);
@@ -1693,91 +1604,22 @@ impl Application {
                     }
                 }
             }
-            // NOTE: we can't use the new functions until <https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/10647> is widely adopted
             #[allow(deprecated)]
             Event::SelectTrack { id, variant } => {
                 debug!(id, ?variant, "Selecting track");
 
-                match variant {
-                    UiMediaTrackType::Video => {
-                        let Some(stream_id) = self.video_tracks.get(id) else {
-                            error!(id, "No video track found");
-                            return Ok(false);
-                        };
+                let res = match variant {
+                    UiMediaTrackType::Video => self.player.select_video_stream(id),
+                    UiMediaTrackType::Audio => self.player.select_audio_stream(id),
+                    UiMediaTrackType::Subtitle => self.player.select_subtitle_stream(id),
+                };
 
-                        let current_stream = self
-                            .player
-                            .current_video_track()
-                            .map(|s| s.stream_id().to_string())
-                            .unwrap_or("".to_string());
-                        let stream_id = if current_stream == *stream_id.1 {
-                            self.player.set_video_track_enabled(false);
-                            -1
-                        } else {
-                            if let Err(err) = self.player.set_video_track(stream_id.0) {
-                                error!(?err, "Failed to set video track");
-                                return Ok(false);
-                            }
-                            id as i32
-                        };
-
-                        self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_current_video_track(stream_id);
-                        })?;
-                    }
-                    UiMediaTrackType::Audio => {
-                        let Some(stream_id) = self.audio_tracks.get(id) else {
-                            error!(id, "No audio track found");
-                            return Ok(false);
-                        };
-
-                        let current_stream = self
-                            .player
-                            .current_audio_track()
-                            .map(|s| s.stream_id().to_string())
-                            .unwrap_or("".to_string());
-                        let stream_id = if current_stream == *stream_id.1 {
-                            self.player.set_audio_track_enabled(false);
-                            -1
-                        } else {
-                            if let Err(err) = self.player.set_audio_track(stream_id.0) {
-                                error!(?err, "Failed to set audio track");
-                                return Ok(false);
-                            }
-                            id as i32
-                        };
-
-                        self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_current_audio_track(stream_id);
-                        })?;
-                    }
-                    UiMediaTrackType::Subtitle => {
-                        let Some(stream_id) = self.subtitle_tracks.get(id) else {
-                            error!(id, "No subtitle track found");
-                            return Ok(false);
-                        };
-
-                        let current_stream = self
-                            .player
-                            .current_subtitle_track()
-                            .map(|s| s.stream_id().to_string())
-                            .unwrap_or("".to_string());
-                        let stream_id = if current_stream == *stream_id.1 {
-                            self.player.set_subtitle_track_enabled(false);
-                            -1
-                        } else {
-                            if let Err(err) = self.player.set_subtitle_track(stream_id.0) {
-                                error!(?err, "Failed to set subtitle track");
-                                return Ok(false);
-                            }
-                            id as i32
-                        };
-
-                        self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_current_subtitle_track(stream_id);
-                        })?;
-                    }
+                if let Err(err) = res {
+                    error!(?err, id, ?variant, "Failed to select track");
                 }
+            }
+            Event::NewPlayerEvent(event) => {
+                self.handle_new_player_event(event)?;
             }
         }
 
@@ -1793,6 +1635,8 @@ impl Application {
         let dispatch_listener =
             TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 46899)).await?;
 
+        let mut update_interval = tokio::time::interval(Duration::from_millis(200));
+
         let mut session_id: SessionId = 0;
         loop {
             tokio::select! {
@@ -1805,6 +1649,11 @@ impl Application {
                         }
                     } else {
                         break;
+                    }
+                }
+                _ = update_interval.tick() => {
+                    if self.player.player_state == player::PlayerState::Playing {
+                        self.notify_updates(false)?;
                     }
                 }
                 session = dispatch_listener.accept() => {
@@ -1935,6 +1784,8 @@ pub fn run(
     let start = std::time::Instant::now();
 
     gst::init()?;
+
+    debug!(gstreamer_version = %gst::version_string());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2147,10 +1998,7 @@ pub fn run(
     ui.global::<Bridge>().on_select_track({
         let event_tx = event_tx.clone();
         move |id: i32, variant: UiMediaTrackType| {
-            log_if_err!(event_tx.send(Event::SelectTrack {
-                id: id as usize,
-                variant,
-            }));
+            log_if_err!(event_tx.send(Event::SelectTrack { id, variant }));
         }
     });
 
