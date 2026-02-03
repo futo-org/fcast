@@ -43,6 +43,8 @@ mod session;
 // mod small_vec_model; // For later
 #[cfg(target_os = "linux")]
 mod linux_tray;
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+mod mac_win_tray;
 mod user_agent;
 mod video;
 
@@ -322,7 +324,7 @@ impl Application {
 
         let player = player::Player::new(appsink, event_tx.clone())?;
 
-        let headers = Arc::new(Mutex::new(None));
+        let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
         player.playbin.connect("element-setup", false, {
             let headers = Arc::clone(&headers);
@@ -1668,18 +1670,23 @@ impl Application {
         fin_tx: oneshot::Sender<()>,
     ) -> Result<()> {
         // TODO: IPv4 on windows
-        let dispatch_listener =
-            TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), FCAST_TCP_PORT)).await?;
+        let dispatch_listener = TcpListener::bind(SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            FCAST_TCP_PORT,
+        ))
+        .await?;
 
         #[cfg(target_os = "linux")]
         let _tray = {
             use ksni::TrayMethods;
 
-            linux_tray::LinuxSysTray { event_tx: self.event_tx.clone() }
-                .disable_dbus_name(true)
-                .spawn()
-                .await
-                .unwrap()
+            linux_tray::LinuxSysTray {
+                event_tx: self.event_tx.clone(),
+            }
+            .disable_dbus_name(true)
+            .spawn()
+            .await
+            .unwrap()
         };
 
         let mut update_interval = tokio::time::interval(Duration::from_millis(200));
@@ -1933,6 +1940,13 @@ pub fn run(
         }
     })?;
 
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
+    let _tray_icon = {
+        let (tray, ids) = mac_win_tray::create_tray_icon();
+        mac_win_tray::set_event_handler(event_tx.clone(), ids);
+        tray
+    };
+
     runtime.spawn({
         let ui_weak = ui.as_weak();
         let event_tx = event_tx.clone();
@@ -2053,6 +2067,7 @@ pub fn run(
     // TODO: handle command-line options to not show window at startup
     ui.show()?;
 
+    // TODO: quit on app exit if no systray is running
     slint::run_event_loop_until_quit()?;
 
     debug!("Shutting down...");

@@ -47,7 +47,8 @@ impl ksni::Tray for LinuxSysTray {
                     this.toggle_window();
                 }),
                 ..Default::default()
-            }.into(),
+            }
+            .into(),
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Quit".to_owned(),
@@ -55,7 +56,8 @@ impl ksni::Tray for LinuxSysTray {
                     let _ = this.event_tx.send(Event::Tray(TrayEvent::Quit));
                 }),
                 ..Default::default()
-            }.into(),
+            }
+            .into(),
         ]
     }
 }
