@@ -35,14 +35,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(target_os = "android")]
-pub use tracing;
-
 pub use slint;
+pub use tracing;
 mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
+#[cfg(target_os = "linux")]
+mod linux_tray;
 mod user_agent;
 mod video;
 
@@ -80,6 +80,13 @@ pub enum MdnsEvent {
 }
 
 type MediaItemId = u64;
+
+#[cfg(not(target_os = "android"))]
+#[derive(Debug)]
+pub enum TrayEvent {
+    Quit,
+    Toggle,
+}
 
 #[derive(Debug)]
 pub enum Event {
@@ -121,6 +128,8 @@ pub enum Event {
         id: i32,
         variant: UiMediaTrackType,
     },
+    #[cfg(not(target_os = "android"))]
+    Tray(TrayEvent),
 }
 
 #[macro_export]
@@ -1136,7 +1145,7 @@ impl Application {
                 name: device_name,
                 addresses: addrs.to_vec(),
                 services: vec![fcast_protocol::FCastService {
-                    port: 46899,
+                    port: FCAST_TCP_PORT,
                     r#type: 0,
                 }],
             };
@@ -1414,6 +1423,29 @@ impl Application {
         Ok(())
     }
 
+    #[cfg(not(target_os = "android"))]
+    fn handle_tray_event(&mut self, event: TrayEvent) -> Result<bool> {
+        debug!(?event, "Handling tray event");
+
+        match event {
+            TrayEvent::Quit => return Ok(true),
+            TrayEvent::Toggle => {
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    let window = ui.window();
+                    if let Err(err) = if window.is_visible() {
+                        window.hide()
+                    } else {
+                        window.show()
+                    } {
+                        error!(?err, "Failed to toggle window visibility");
+                    }
+                })?;
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
         // NOTE: all player actions are async (right?)
@@ -1621,6 +1653,10 @@ impl Application {
             Event::NewPlayerEvent(event) => {
                 self.handle_new_player_event(event)?;
             }
+            #[cfg(not(target_os = "android"))]
+            Event::Tray(event) => {
+                return self.handle_tray_event(event);
+            }
         }
 
         Ok(false)
@@ -1633,7 +1669,18 @@ impl Application {
     ) -> Result<()> {
         // TODO: IPv4 on windows
         let dispatch_listener =
-            TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 46899)).await?;
+            TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), FCAST_TCP_PORT)).await?;
+
+        #[cfg(target_os = "linux")]
+        let _tray = {
+            use ksni::TrayMethods;
+
+            linux_tray::LinuxSysTray { event_tx: self.event_tx.clone() }
+                .disable_dbus_name(true)
+                .spawn()
+                .await
+                .unwrap()
+        };
 
         let mut update_interval = tokio::time::interval(Duration::from_millis(200));
 
@@ -1723,16 +1770,10 @@ impl Application {
             }
         }
 
+        let _ = slint::quit_event_loop();
+
         Ok(())
     }
-}
-
-#[derive(clap::Parser)]
-#[command(version)]
-struct CliArgs {
-    // Disable animated background. Reduces resource usage
-    // #[arg(short = 'b', long, default_value_t = false)]
-    // no_background: bool,
 }
 
 fn log_level() -> LevelFilter {
@@ -2009,13 +2050,16 @@ pub fn run(
 
     info!(initialized_in = ?start.elapsed());
 
-    ui.run()?;
+    // TODO: handle command-line options to not show window at startup
+    ui.show()?;
+
+    slint::run_event_loop_until_quit()?;
 
     debug!("Shutting down...");
 
     runtime.block_on(async move {
-        event_tx.send(Event::Quit).unwrap();
-        fin_rx.await.unwrap();
+        let _ = event_tx.send(Event::Quit);
+        let _ = fin_rx.await;
     });
 
     Ok(())
