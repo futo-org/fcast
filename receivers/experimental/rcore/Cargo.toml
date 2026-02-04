@@ -9,9 +9,6 @@ gst = { workspace = true, features = [ "v1_26" ] }
 fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
 # common.path = "../common"
 gethostname = "1"
-# slint = { workspace = true, features = ["unstable-wgpu-26", "renderer-femtovg-wgpu"] }
-# slint = { workspace = true, features = ["unstable-wgpu-26"] }
-# slint = { version = "1.14.1", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "std", "raw-window-handle-06" ] }
 anyhow.workspace = true
 futures = "0.3"
 tokio-stream = "0.1"
@@ -22,6 +19,7 @@ fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
+gst-allocators = { package = "gstreamer-allocators", version = "0.24.4" }
 serde_json.workspace = true
 if-addrs = "0.14"
 base64 = "0.22"
@@ -39,7 +37,8 @@ num_cpus = "1"
 rand = "0.9"
 
 [dependencies.slint]
-version = "1.14.1"
+# version = "1.14.1"
+path = "../../../../slint/api/rs/slint"
 default-features = false
 features = [
     "accessibility",
@@ -105,7 +104,8 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 reqwest = { version = "0.13", features = [ "native-tls" ] }
 
 [build-dependencies]
-slint-build.workspace = true
+# slint-build.workspace = true
+slint-build = { path = "../../../../slint/api/rs/build" }
 
 [features]
 # desktop = ["slint/backend-linuxkms"]

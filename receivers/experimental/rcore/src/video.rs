@@ -45,6 +45,20 @@ pub struct Overlay {
     pub y: i32,
 }
 
+pub enum FrameData {
+    Nv12 {
+        y: NonZero<u32>,
+        uv: NonZero<u32>,
+    }
+}
+
+// TODO: color
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub data: FrameData,
+}
+
 // TODO: fork slint to make the skia opengl renderer expose more pixel formats for HDR
 //       (https://github.com/slint-ui/slint/blob/a232973112847680b6e2a5e0f1b29c3107cec37f/internal/renderers/skia/opengl_surface.rs#L146)
 // TODO: get higher bit-depth frames from glsinkbin, possible?
@@ -52,6 +66,7 @@ pub struct Overlay {
 impl SlintOpenGLSink {
     pub fn new() -> Result<Self> {
         let mut caps = gst::Caps::new_empty();
+        // let caps = {
         {
             let caps = caps.get_mut().unwrap();
             for features in [
@@ -63,13 +78,26 @@ impl SlintOpenGLSink {
             ] {
                 let these_caps = gst_video::VideoCapsBuilder::new()
                     .features(features.iter())
-                    .format(gst_video::VideoFormat::Rgba)
+                    // .format(gst_video::VideoFormat::Rgba)
                     .field("texture-target", "2D")
                     .width_range(1..i32::MAX)
                     .height_range(1..i32::MAX)
                     .build();
                 caps.append(these_caps);
             }
+
+                // gst_video::VideoCapsBuilder::new()
+                //     .any_features()
+                // // .features(
+                // //     gst::CapsFeatures::new([
+                // //         gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+                // //         gst::CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+                // //         // gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                // //     ]).iter()
+                // // )
+                //     .width_range(1..i32::MAX)
+                //     .height_range(1..i32::MAX)
+                //     .build()
         }
 
         let appsink = gst_app::AppSink::builder()
@@ -250,7 +278,15 @@ impl SlintOpenGLSink {
     {
         is_eos.store(false, atomic::Ordering::Relaxed);
 
+        // {
+        //     if let Some(buffer_list) = sample.buffer_list() {
+        //         let len = buffer_list.len();
+        //         tracing::debug!(number_of_buffers = len);
+        //     }
+        // }
+
         let mut buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+        // tracing::debug!(number_of_memory= buffer.n_memory());
         let context = match (buffer.n_memory() > 0)
             .then(|| buffer.peek_memory(0))
             .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
@@ -280,6 +316,8 @@ impl SlintOpenGLSink {
             error!("Got invalid caps");
             return Err(gst::FlowError::NotNegotiated);
         };
+
+        // tracing::debug!(video_caps = ?info);
 
         // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/video/gtk4/src/sink/frame.rs?ref_type=heads
         let overlays: SmallVec<[Overlay; 3]> = buffer
@@ -390,25 +428,26 @@ impl SlintOpenGLSink {
         self.appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_preroll({
-                    let next_frame_ref = Arc::clone(&next_frame_ref);
-                    let next_overlays_ref = Arc::clone(&self.next_overlays);
-                    let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
-                    let is_eos = Arc::clone(&is_eos_ref);
+                    // let next_frame_ref = Arc::clone(&next_frame_ref);
+                    // let next_overlays_ref = Arc::clone(&self.next_overlays);
+                    // let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
+                    // let is_eos = Arc::clone(&is_eos_ref);
                     move |appsink| {
-                        let sample = appsink
-                            .pull_preroll()
-                            .map_err(|_| gst::FlowError::Flushing)?;
-                        if !is_eos.load(atomic::Ordering::Relaxed) {
-                            Self::handle_new_sample(
-                                sample,
-                                &next_frame_ref,
-                                &next_overlays_ref,
-                                &next_frame_available_notifier,
-                                &is_eos,
-                            )
-                        } else {
-                            Ok(gst::FlowSuccess::Ok)
-                        }
+                    //     let sample = appsink
+                    //         .pull_preroll()
+                    //         .map_err(|_| gst::FlowError::Flushing)?;
+                    //     if !is_eos.load(atomic::Ordering::Relaxed) {
+                    //         Self::handle_new_sample(
+                    //             sample,
+                    //             &next_frame_ref,
+                    //             &next_overlays_ref,
+                    //             &next_frame_available_notifier,
+                    //             &is_eos,
+                    //         )
+                    //     } else {
+                    //         Ok(gst::FlowSuccess::Ok)
+                    //     }
+                        Ok(gst::FlowSuccess::Ok)
                     }
                 })
                 .new_sample({
@@ -417,6 +456,7 @@ impl SlintOpenGLSink {
                         let sample = appsink
                             .pull_sample()
                             .map_err(|_| gst::FlowError::Flushing)?;
+                        // tracing::debug!(video_caps = ?sample.caps());
                         Self::handle_new_sample(
                             sample,
                             &next_frame_ref,
@@ -424,6 +464,7 @@ impl SlintOpenGLSink {
                             &next_frame_available_notifier,
                             &is_eos,
                         )
+                        // Ok(gst::FlowSuccess::Ok)
                     }
                 })
                 .eos(move |_| {
@@ -436,7 +477,8 @@ impl SlintOpenGLSink {
     }
 
     /// Returns (texture id, [width, height])
-    pub fn fetch_next_frame_as_texture(&self) -> Option<(NonZero<u32>, [u32; 2])> {
+    // pub fn fetch_next_frame_as_texture(&self) -> Option<(NonZero<u32>, [u32; 2])> {
+    pub fn fetch_next_frame_as_texture(&self) -> Option<Frame> {
         if self.is_eos.load(atomic::Ordering::Relaxed) {
             return None;
         }
@@ -452,17 +494,42 @@ impl SlintOpenGLSink {
             }
         }
 
-        self.current_frame
-            .lock()
-            .as_ref()
-            .and_then(|frame| {
-                frame
-                    .texture_id(0)
-                    .ok()
-                    .and_then(|id| id.try_into().ok())
-                    .map(|texture| (frame, texture))
+        self.current_frame.lock().as_ref().and_then(|frame| {
+            tracing::debug!(n_planes = frame.n_planes());
+            tracing::debug!(gl_format_of_buffer = ?frame.format());
+            tracing::debug!(gl_format = ?frame.format_info());
+
+            let (width, height) = (frame.width(), frame.height());
+            let data = match frame.format() {
+                gst_video::VideoFormat::Nv12 => {
+                    FrameData::Nv12 {
+                        y: frame.texture_id(0).unwrap().try_into().unwrap(),
+                        uv: frame.texture_id(1).unwrap().try_into().unwrap(),
+                    }
+                }
+                _ => return None,
+            };
+
+            Some(Frame {
+                width,
+                height,
+                data,
             })
-            .map(|(frame, texture)| (texture, [frame.width(), frame.height()]))
+        })
+
+        // self.current_frame
+        //     .lock()
+        //     .as_ref()
+        //     .and_then(|frame| {
+        //         frame
+        //             .texture_id(0)
+        //             .ok()
+        //             .and_then(|id| id.try_into().ok())
+        //             .map(|texture| (frame, texture))
+        //     })
+        //     .map(|(frame, texture)| (texture, [frame.width(), frame.height()]))
+
+        // None
     }
 
     pub fn fetch_next_overlays(&self) -> Option<Option<SmallVec<[Overlay; 3]>>> {

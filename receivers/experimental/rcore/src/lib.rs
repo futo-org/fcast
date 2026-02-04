@@ -2015,19 +2015,35 @@ pub fn run(
 
                 let bridge = ui.global::<Bridge>();
                 if bridge.get_playing() {
-                    let frame = if let Some((texture_id, size)) =
-                        slint_sink.fetch_next_frame_as_texture()
-                    {
-                        unsafe {
-                            slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                                texture_id,
-                                size.into(),
-                            )
-                            .build()
+                    let frame = if let Some(frame) = slint_sink.fetch_next_frame_as_texture() {
+                        match frame.data {
+                            video::FrameData::Nv12 { y, uv } => {
+                                unsafe {
+                                    slint::Image::skia_opengl_yuva_luva_duba_nv12(
+                                        frame.width,
+                                        frame.height,
+                                        y,
+                                        uv,
+                                    )
+                                }
+                            }
                         }
                     } else {
                         slint::Image::default()
                     };
+                    // let frame = if let Some((texture_id, size)) =
+                    //     slint_sink.fetch_next_frame_as_texture()
+                    // {
+                    //     unsafe {
+                    //         slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
+                    //             texture_id,
+                    //             size.into(),
+                    //         )
+                    //         .build()
+                    //     }
+                    // } else {
+                    //     slint::Image::default()
+                    // };
 
                     bridge.set_video_frame(frame);
 
