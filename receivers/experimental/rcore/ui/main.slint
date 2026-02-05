@@ -136,20 +136,27 @@ export component MainWindow inherits Window {
         capture-key-pressed(event) => Bridge.capture-key-pressed(event);
     }
 
-    if Bridge.app-state == AppState.Idle: IdleView { }
+    // Rectangle {
+    //     x: root.safe-area-insets.left;
+    //     y: root.safe-area-insets.top;
+    //     width: root.width - root.safe-area-insets.right - root.safe-area-insets.left;
+    //     height: root.height - root.safe-area-insets.bottom - root.safe-area-insets.top;
 
-    if Bridge.app-state == AppState.LoadingMedia: LoadingMediaView { }
+        if Bridge.app-state == AppState.Idle: IdleView { }
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
+        if Bridge.app-state == AppState.LoadingMedia: LoadingMediaView { }
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
 
-    if Bridge.is-debugging: DebugOverlay { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
-    error-alert := ErrorAlert {
-        width: min(parent.width * 0.8, 700px);
-        y: parent.height - self.height - 20px;
-    }
+        if Bridge.is-debugging: DebugOverlay { }
+
+        error-alert := ErrorAlert {
+            width: min(parent.width * 0.8, 700px);
+            y: parent.height - self.height - 20px;
+        }
+    // }
 }

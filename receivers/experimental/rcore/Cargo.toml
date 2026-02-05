@@ -75,6 +75,7 @@ tracing-panic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 gst-plugin-rtp = { version = "0.14.4", features = [ "static" ] }
+clap.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"

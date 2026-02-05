@@ -1,9 +1,10 @@
 use crate::{Event, TrayEvent};
 use tokio::sync::mpsc::UnboundedSender;
-use tray_icon::{
-    TrayIcon, TrayIconBuilder, menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem}
-};
 use tracing::error;
+use tray_icon::{
+    TrayIcon, TrayIconBuilder,
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+};
 
 pub struct MenuItemIds {
     pub toggle_window: String,
@@ -30,11 +31,8 @@ pub fn create_tray_icon() -> (TrayIcon, MenuItemIds) {
     let toggle_window = MenuItem::new("Toggle window", true, None);
     let quit = MenuItem::new("Quit", true, None);
 
-    if let Err(err) = menu.append_items(&[
-        &toggle_window,
-        &PredefinedMenuItem::separator(),
-        &quit,
-    ]) {
+    if let Err(err) = menu.append_items(&[&toggle_window, &PredefinedMenuItem::separator(), &quit])
+    {
         error!(?err, "Failed to add items to tray menu");
     }
 
@@ -57,10 +55,13 @@ pub fn create_tray_icon() -> (TrayIcon, MenuItemIds) {
         quit: quit.id().0.clone(),
     };
 
-    (TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("FCast Receiver")
-        .with_icon(icon)
-        .build()
-        .unwrap(), ids)
+    (
+        TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip("FCast Receiver")
+            .with_icon(icon)
+            .build()
+            .unwrap(),
+        ids,
+    )
 }
