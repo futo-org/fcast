@@ -35,14 +35,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(target_os = "android")]
-pub use tracing;
-
+#[cfg(not(target_os = "android"))]
+pub use clap;
 pub use slint;
+pub use tracing;
 mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
+#[cfg(target_os = "linux")]
+mod linux_tray;
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+mod mac_win_tray;
 mod user_agent;
 mod video;
 
@@ -80,6 +84,13 @@ pub enum MdnsEvent {
 }
 
 type MediaItemId = u64;
+
+#[cfg(not(target_os = "android"))]
+#[derive(Debug)]
+pub enum TrayEvent {
+    Quit,
+    Toggle,
+}
 
 #[derive(Debug)]
 pub enum Event {
@@ -121,6 +132,8 @@ pub enum Event {
         id: i32,
         variant: UiMediaTrackType,
     },
+    #[cfg(not(target_os = "android"))]
+    Tray(TrayEvent),
 }
 
 #[macro_export]
@@ -298,6 +311,7 @@ impl Application {
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
+        contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -311,9 +325,9 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, event_tx.clone())?;
+        let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
 
-        let headers = Arc::new(Mutex::new(None));
+        let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
         player.playbin.connect("element-setup", false, {
             let headers = Arc::clone(&headers);
@@ -1136,7 +1150,7 @@ impl Application {
                 name: device_name,
                 addresses: addrs.to_vec(),
                 services: vec![fcast_protocol::FCastService {
-                    port: 46899,
+                    port: FCAST_TCP_PORT,
                     r#type: 0,
                 }],
             };
@@ -1414,6 +1428,29 @@ impl Application {
         Ok(())
     }
 
+    #[cfg(not(target_os = "android"))]
+    fn handle_tray_event(&mut self, event: TrayEvent) -> Result<bool> {
+        debug!(?event, "Handling tray event");
+
+        match event {
+            TrayEvent::Quit => return Ok(true),
+            TrayEvent::Toggle => {
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    let window = ui.window();
+                    if let Err(err) = if window.is_visible() {
+                        window.hide()
+                    } else {
+                        window.show()
+                    } {
+                        error!(?err, "Failed to toggle window visibility");
+                    }
+                })?;
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
         // NOTE: all player actions are async (right?)
@@ -1621,6 +1658,10 @@ impl Application {
             Event::NewPlayerEvent(event) => {
                 self.handle_new_player_event(event)?;
             }
+            #[cfg(not(target_os = "android"))]
+            Event::Tray(event) => {
+                return self.handle_tray_event(event);
+            }
         }
 
         Ok(false)
@@ -1630,10 +1671,34 @@ impl Application {
         mut self,
         mut event_rx: UnboundedReceiver<Event>,
         fin_tx: oneshot::Sender<()>,
+        #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     ) -> Result<()> {
         // TODO: IPv4 on windows
-        let dispatch_listener =
-            TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 46899)).await?;
+        let dispatch_listener = TcpListener::bind(SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            FCAST_TCP_PORT,
+        ))
+        .await?;
+
+        #[cfg(target_os = "linux")]
+        let _tray = if cli_args.no_systray {
+            None
+        } else {
+            use ksni::TrayMethods;
+
+            let tray = linux_tray::LinuxSysTray {
+                event_tx: self.event_tx.clone(),
+            };
+
+            Some(tray.disable_dbus_name(true).spawn().await)
+        };
+
+        #[cfg(not(target_os = "android"))]
+        if cli_args.fullscreen {
+            self.ui_weak.upgrade_in_event_loop(|ui| {
+                ui.window().set_fullscreen(true);
+            })?;
+        }
 
         let mut update_interval = tokio::time::interval(Duration::from_millis(200));
 
@@ -1723,16 +1788,10 @@ impl Application {
             }
         }
 
+        let _ = slint::quit_event_loop();
+
         Ok(())
     }
-}
-
-#[derive(clap::Parser)]
-#[command(version)]
-struct CliArgs {
-    // Disable animated background. Reduces resource usage
-    // #[arg(short = 'b', long, default_value_t = false)]
-    // no_background: bool,
 }
 
 fn log_level() -> LevelFilter {
@@ -1752,10 +1811,35 @@ fn log_level() -> LevelFilter {
     }
 }
 
+#[cfg(not(target_os = "android"))]
+#[derive(clap::Parser)]
+#[command(version)]
+pub struct CliArgs {
+    /// Start minimized to tray
+    #[arg(long, default_value_t = false)]
+    no_main_window: bool,
+    /// Start application in fullscreen
+    #[arg(long, default_value_t = false)]
+    fullscreen: bool,
+    /// Defines the verbosity level of the logger
+    #[arg(long, alias = "log", visible_alias = "log")]
+    loglevel: Option<LevelFilter>,
+    /// Start player in windowed mode
+    #[arg(long, default_value_t = false)]
+    no_fullscreen_player: bool,
+    /// Play videos in the main application window
+    #[arg(long, default_value_t = false)]
+    no_player_window: bool,
+    /// Disable the system tray icon
+    #[arg(long, default_value_t = false)]
+    no_systray: bool,
+}
+
 /// Run the main app.
 ///
 /// Slint and friends are assumed to be initialized by the platform specific target.
 pub fn run(
+    #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
     #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Event>,
 ) -> Result<()> {
@@ -1769,10 +1853,17 @@ pub fn run(
 
     #[cfg(not(target_os = "android"))]
     {
-        use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
-        let fmt_layer = tracing_subscriber::fmt::layer().with_filter(log_level());
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        let log_level = cli_args.loglevel.unwrap_or(log_level());
+        let filter = tracing_subscriber::filter::Targets::new()
+            .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
+            .with_default(log_level);
+        let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
-        tracing_subscriber::registry().with(fmt_layer).init();
+        tracing_subscriber::registry()
+            .with(fmt_layer)
+            .with(filter)
+            .init();
     }
 
     #[cfg(target_os = "android")]
@@ -1802,6 +1893,8 @@ pub fn run(
         );
     }
 
+    let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
+
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
     let (fin_tx, fin_rx) = oneshot::channel::<()>();
 
@@ -1830,20 +1923,37 @@ pub fn run(
     let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
+        let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
+        #[cfg(not(target_os = "android"))]
+        let mut start_fullscreen = Some(cli_args.fullscreen);
+        // TODO: debug to find out why gstreamer breaks after clicking systray (window toggle) on wayland
 
         move |state, graphics_api| {
             if let slint::RenderingState::RenderingSetup = state {
                 debug!("Got graphics API: {graphics_api:?}");
                 let ui_weak = ui_weak.clone();
 
+                #[cfg(not(target_os = "android"))]
+                if let Some(fullscreen) = start_fullscreen.take() {
+                    ui_weak
+                        .upgrade()
+                        .unwrap()
+                        .window()
+                        .set_fullscreen(fullscreen);
+                }
+
                 slint_sink
-                    .connect(graphics_api, move || {
-                        ui_weak
-                            .upgrade_in_event_loop(move |ui| {
-                                ui.window().request_redraw();
-                            })
-                            .unwrap();
-                    })
+                    .connect(
+                        graphics_api,
+                        move || {
+                            ui_weak
+                                .upgrade_in_event_loop(move |ui| {
+                                    ui.window().request_redraw();
+                                })
+                                .unwrap();
+                        },
+                        &gst_gl_contexts,
+                    )
                     .unwrap();
             } else if let slint::RenderingState::BeforeRendering = state {
                 let Some(ui) = ui_weak.upgrade() else {
@@ -1892,6 +2002,17 @@ pub fn run(
         }
     })?;
 
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
+    let _tray_icon = if !cli_args.no_systray {
+        let (tray, ids) = mac_win_tray::create_tray_icon();
+        mac_win_tray::set_event_handler(event_tx.clone(), ids);
+        Some(tray)
+    } else {
+        None
+    };
+
+    #[cfg(not(target_os = "android"))]
+    let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
     runtime.spawn({
         let ui_weak = ui.as_weak();
         let event_tx = event_tx.clone();
@@ -1910,10 +2031,16 @@ pub fn run(
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
+                gst_gl_contexts,
             )
             .await
             .unwrap()
-            .run_event_loop(event_rx, fin_tx)
+            .run_event_loop(
+                event_rx,
+                fin_tx,
+                #[cfg(not(target_os = "android"))]
+                cli_args,
+            )
             .await
             .unwrap();
         }
@@ -2009,13 +2136,24 @@ pub fn run(
 
     info!(initialized_in = ?start.elapsed());
 
+    #[cfg(target_os = "android")]
     ui.run()?;
 
-    debug!("Shutting down...");
+    #[cfg(not(target_os = "android"))]
+    if no_systray {
+        ui.run()?;
+    } else {
+        if !no_main_window {
+            ui.show()?;
+        }
+        slint::run_event_loop_until_quit()?;
+    }
+
+    info!("Shutting down...");
 
     runtime.block_on(async move {
-        event_tx.send(Event::Quit).unwrap();
-        fin_rx.await.unwrap();
+        let _ = event_tx.send(Event::Quit);
+        let _ = fin_rx.await;
     });
 
     Ok(())

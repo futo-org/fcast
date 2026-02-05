@@ -11,14 +11,20 @@ use std::{
 
 use gst::prelude::*;
 use gst_gl::prelude::*;
-use tracing::error;
+use tracing::{debug, error};
 
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
+
+struct GlElements {
+    upload: gst::Element,
+    convert: gst::Element,
+}
 
 // Taken partially from the slint gstreamer example at: https://github.com/slint-ui/slint/blob/2edd97bf8b8dc4dc26b578df6b15ea3297447444/examples/gstreamer-player/egl_integration.rs
 pub struct SlintOpenGLSink {
     appsink: gst_app::AppSink,
-    glsink: gst::Element,
+    gl_elems: GlElements,
+    sinkbin: gst::Bin,
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     next_overlays: Overlays,
     current_frame: Mutex<Option<gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>>>,
@@ -77,29 +83,48 @@ impl SlintOpenGLSink {
             .max_buffers(1u32)
             .build();
 
-        let glsink = gst::ElementFactory::make("glsinkbin")
-            .property("sink", &appsink)
-            .build()?;
+        let bin = gst::Bin::new();
+        let ghost = gst::GhostPad::new(gst::PadDirection::Sink);
+        bin.add_pad(&ghost)?;
+
+        bin.add(&appsink)?;
+
+        let glupload = gst::ElementFactory::make("glupload").build()?;
+        let glconvert = gst::ElementFactory::make("glcolorconvert").build()?;
+
+        bin.add_many([&glupload, &glconvert]).unwrap();
+        ghost
+            .set_target(Some(&glupload.static_pad("sink").unwrap()))
+            .unwrap();
+        gst::Element::link_many([&glupload, &glconvert, appsink.upcast_ref()]).unwrap();
+
+        let gl_elems = GlElements {
+            upload: glupload,
+            convert: glconvert,
+        };
 
         Ok(Self {
             appsink,
-            glsink,
             next_frame: Default::default(),
             current_frame: Default::default(),
             next_overlays: Default::default(),
             gst_gl_context: None,
             is_eos: Arc::new(AtomicBool::new(false)),
+            sinkbin: bin,
+            gl_elems,
         })
     }
 
     pub fn video_sink(&self) -> gst::Element {
-        self.glsink.clone().upcast()
+        self.sinkbin.clone().upcast()
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn get_egl_ctx(
         graphics_api: &slint::GraphicsAPI<'_>,
     ) -> Result<(gst_gl::GLContext, gst_gl::GLDisplay)> {
+        debug!("Creating EGL context");
+
         let egl = match graphics_api {
             slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
                 glutin_egl_sys::egl::Egl::load_with(|symbol| {
@@ -133,6 +158,8 @@ impl SlintOpenGLSink {
     fn get_glx_ctx(
         graphics_api: &slint::GraphicsAPI<'_>,
     ) -> Result<(gst_gl::GLContext, gst_gl::GLDisplay)> {
+        debug!("Creating GLX context");
+
         let glx = match graphics_api {
             slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
                 glutin_glx_sys::glx::Glx::load_with(|symbol| {
@@ -166,6 +193,8 @@ impl SlintOpenGLSink {
     fn get_wgl_ctx() -> Result<(gst_gl::GLContext, gst_gl::GLDisplay)> {
         use anyhow::bail;
 
+        debug!("Creating WGL context");
+
         let platform = gst_gl::GLPlatform::WGL;
         let gl_api = gst_gl::GLAPI::OPENGL3;
         let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
@@ -193,13 +222,14 @@ impl SlintOpenGLSink {
     fn get_macos_gl_ctx() -> Result<(gst_gl::GLContext, gst_gl::GLDisplay)> {
         use anyhow::bail;
 
+        debug!("Creating CGL context");
+
         let platform = gst_gl::GLPlatform::CGL;
         let (gl_api, _, _) = gst_gl::GLContext::current_gl_api(platform);
         let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
 
         if gl_ctx == 0 {
-            // gst::error!(CAT, imp = self, "Failed to get handle from GdkGLContext");
-            bail!("");
+            bail!("Failed to get handle from CGL");
         }
 
         let gst_display = gst_gl::GLDisplay::new();
@@ -323,10 +353,20 @@ impl SlintOpenGLSink {
         &mut self,
         graphics_api: &slint::GraphicsAPI<'_>,
         next_frame_available_notifier: F,
+        contexts: &Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<()>
     where
         F: Fn() + Send + Sync + 'static,
     {
+        debug!("Creating connection between UI and sink");
+
+        if let Some(old_gl_context) = self.gst_gl_context.take() {
+            match old_gl_context.activate(false) {
+                Ok(_) => debug!("Deactivated old GL context"),
+                Err(err) => error!(?err, "Failed to deactivate old GL context"),
+            }
+        }
+
         #[cfg(target_os = "linux")]
         let (gst_gl_context, gst_gl_display) = {
             match is_on_wayland() {
@@ -349,17 +389,21 @@ impl SlintOpenGLSink {
             .fill_info()
             .context("failed to fill GL info for wrapped context")?;
 
-        self.gst_gl_context = Some(gst_gl_context.clone());
+        *contexts.lock().unwrap() = Some((gst_gl_display.clone(), gst_gl_context.clone()));
 
         let display_ctx = gst::Context::new(gst_gl::GL_DISPLAY_CONTEXT_TYPE, true);
         display_ctx.set_gl_display(&gst_gl_display);
-        self.glsink.set_context(&display_ctx);
+        self.gl_elems.upload.set_context(&display_ctx);
+        self.gl_elems.convert.set_context(&display_ctx);
 
         let mut app_ctx = gst::Context::new("gst.gl.app_context", true);
         let app_ctx_mut = app_ctx.get_mut().unwrap();
         let structure = app_ctx_mut.structure_mut();
         structure.set("context", gst_gl_context.clone());
-        self.glsink.set_context(&app_ctx);
+        self.gl_elems.upload.set_context(&app_ctx);
+        self.gl_elems.convert.set_context(&app_ctx);
+
+        self.gst_gl_context = Some(gst_gl_context);
 
         let next_frame_ref = Arc::clone(&self.next_frame);
         let next_frame_available_notifier = Arc::new(next_frame_available_notifier);
@@ -443,14 +487,6 @@ impl SlintOpenGLSink {
             })
             .map(|(frame, texture)| (texture, [frame.width(), frame.height()]))
     }
-
-    // pub fn fetch_next_frame(&self) -> Option<slint::Image> {
-    //     self.fetch_next_frame_as_texture()
-    //         .map(|(texture, size)| unsafe {
-    //             slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(texture, size.into())
-    //                 .build()
-    //         })
-    // }
 
     pub fn fetch_next_overlays(&self) -> Option<Option<SmallVec<[Overlay; 3]>>> {
         if self.is_eos.load(atomic::Ordering::Relaxed) {
