@@ -31,7 +31,9 @@ parking_lot.workspace = true
 image_swizzle = "0.2.0"
 bytes.workspace = true
 # libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] } # TODO
-gst-plugin-reqwest = { rev = "5d4c8c93ab3a84113f1326037e82259c0d77ee25", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
+# Using original for WIP flatpak builds
+gst-plugin-reqwest = { version = "0.14.3", features = [ "static" ] }
+# gst-plugin-reqwest = { rev = "5d4c8c93ab3a84113f1326037e82259c0d77ee25", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
 gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [ "static" ] }
 gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
 gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
