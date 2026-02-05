@@ -53,3 +53,8 @@ lazy_static = "1.5"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[profile.release-dbg]
+inherits = "release"
+debug = "full"
+strip = false
