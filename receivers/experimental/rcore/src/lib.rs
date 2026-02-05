@@ -272,6 +272,7 @@ fn sec_to_string(sec: f64) -> String {
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
+    cli_args: CliArgs,
     event_tx: UnboundedSender<Event>,
     ui_weak: slint::Weak<MainWindow>,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
@@ -311,6 +312,7 @@ impl Application {
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
+        cli_args: CliArgs,
         contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
@@ -483,6 +485,7 @@ impl Application {
         Ok(Self {
             #[cfg(target_os = "android")]
             android_app,
+            cli_args,
             event_tx,
             ui_weak,
             updates_tx,
@@ -1042,8 +1045,25 @@ impl Application {
                     self.cleanup_playback_data()?;
                 }
                 // TODO: notify update? or wait for async state change from player
+
+                if self.cli_args.no_main_window {
+                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                        if ui.window().is_visible() {
+                            ui.hide();
+                        }
+                    })?;
+                }
             }
             Operation::Play(play_message) => {
+                if self.cli_args.no_main_window {
+                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                        if !ui.window().is_visible() {
+                            ui.window().show();
+                            ui.window().request_redraw();
+                        }
+                    })?;
+                }
+
                 self.cleanup_playback_data()?;
 
                 if play_message.container == "application/json" {
@@ -1812,6 +1832,7 @@ fn log_level() -> LevelFilter {
 }
 
 #[cfg(not(target_os = "android"))]
+#[derive(Clone)]
 #[derive(clap::Parser)]
 #[command(version)]
 pub struct CliArgs {
@@ -2031,6 +2052,7 @@ pub fn run(
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
+                cli_args.to_owned(),
                 gst_gl_contexts,
             )
             .await
