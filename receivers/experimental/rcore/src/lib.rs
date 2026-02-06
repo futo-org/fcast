@@ -815,7 +815,7 @@ impl Application {
 
     fn media_warning(&mut self, message: String) -> Result<()> {
         // Ignore false positives because of the video sink not being ready until it has GL contexts set
-        if self.is_playing() {
+        if !self.is_playing() {
             return Ok(());
         }
 
