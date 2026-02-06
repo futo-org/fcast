@@ -64,6 +64,7 @@ export global Bridge {
     in property <int> current-audio-track;
     in property <int> current-subtitle-track;
     in property <string> error-message;
+    in property <string> warning-message;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <bool> playing: false;
@@ -75,6 +76,7 @@ export global Bridge {
     in-out property <UiPlayerVariant> player-variant: UiPlayerVariant.Unknown;
     in-out property <float> playback-rate: 1.0;
     in-out property <bool> is-showing-error-message: false;
+    in-out property <bool> is-showing-warning-message: false;
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
 
@@ -88,6 +90,10 @@ export global Bridge {
     callback hide-cursor-hack();
     callback select-track(id: int, variant: UiMediaTrackType);
     pure callback sec-to-string(sec: int) -> string;
+
+    public pure function should-show-toast-overlay() -> bool {
+        is-showing-error-message || is-showing-warning-message
+    }
 
     public pure function gui-playback-state-to-string(pbstate: GuiPlaybackState) -> string {
         if (pbstate == GuiPlaybackState.Idle) {

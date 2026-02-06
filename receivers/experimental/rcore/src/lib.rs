@@ -777,7 +777,7 @@ impl Application {
     }
 
     fn media_error(&mut self, message: String) -> Result<()> {
-        error!(message, "Media error");
+        error!(msg = message, "Media error");
 
         self.cleanup_playback_data()?;
 
@@ -808,6 +808,23 @@ impl Application {
             let bridge = ui.global::<Bridge>();
             bridge.set_error_message(message.to_shared_string());
             bridge.set_is_showing_error_message(true);
+        })?;
+
+        Ok(())
+    }
+
+    fn media_warning(&mut self, message: String) -> Result<()> {
+        // Ignore false positives because of the video sink not being ready until it has GL contexts set
+        if self.is_playing() {
+            return Ok(());
+        }
+
+        warn!(msg = message, "Media warning");
+
+        self.ui_weak.upgrade_in_event_loop(move |ui| {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_warning_message(message.to_shared_string());
+            bridge.set_is_showing_warning_message(true);
         })?;
 
         Ok(())
@@ -1420,8 +1437,8 @@ impl Application {
                 self.player.stop();
                 self.media_error(msg)?;
             }
-            player::PlayerEvent::Warning(_warning) => {
-                // TODO:
+            player::PlayerEvent::Warning(msg) => {
+                self.media_warning(msg)?;
             }
         }
 

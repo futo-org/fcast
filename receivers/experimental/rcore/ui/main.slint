@@ -22,83 +22,13 @@ import { LoadingMediaView } from "views/loading-media.slint";
 import { VideoPlayerView } from "views/video-player.slint";
 import { ImageView } from "views/image.slint";
 import { AudioPlayerView } from "views/audio-player.slint";
+import { ToastOverlay } from "toast-overlay.slint";
 
 export {
     Bridge,
     GuiPlaybackState,
     AppState,
     UiPlayerVariant,
-}
-
-// TODO: animate in and out transitions
-component ErrorAlert {
-    in property <string> message;
-
-    visible: false;
-
-    public function show() {
-        self.visible = true;
-        timer.counter = 0;
-        timer.running = true;
-    }
-
-    function close() {
-        self.visible = false;
-        timer.running = true;
-    }
-
-    states [
-        hover when ta.has-hover: {
-            im.colorize: #DEDEDE;
-        }
-    ]
-
-    Rectangle {
-        height: hb.preferred-height;
-        background: #FF4131;
-        border-radius: 8px;
-
-        hb := VerticalLayout {
-            spacing: 10px;
-            alignment: space-between;
-
-            Text {
-                color: white;
-                vertical-alignment: center;
-                text <=> message;
-                wrap: word-wrap;
-                font-weight: 800;
-            }
-
-            ta := TouchArea {
-                height: 32px;
-                width: 32px;
-                clicked => {
-                    root.close();
-                }
-                Rectangle {
-                    im := Image {
-                        height: 100%;
-                        // source: @image-url("../../assets/icons/xmark.svg");
-                        colorize: white;
-                        animate colorize { duration: 150ms; }
-                    }
-                }
-            }
-        }
-    }
-
-    timer := Timer {
-        property <int> counter: 0;
-        interval: 1s;
-        running: true;
-        triggered => {
-            counter += 1;
-            if counter >= 4 {
-                root.close();
-            }
-        }
-    }
 }
 
 export component MainWindow inherits Window {
@@ -108,28 +38,13 @@ export component MainWindow inherits Window {
     default-font-size: 15px;
     default-font-weight: 400;
 
+    // TODO: remove the functions below
     public function playback-started() {
         Bridge.playing = true;
-        // playback-control.playback-started();
     }
 
     public function device-connected() {
         Bridge.connected_devices += 1;
-    }
-
-    // public function device-disconnected() {
-    //     Bridge.connected_devices = max(Bridge.connected_devices - 1, 0);
-    // }
-
-    public function playback-stopped-with-error(error: string) {
-        Bridge.playing = false;
-        error-alert.message = error;
-        error-alert.show();
-        // playback-control.playback-stopped();
-    }
-
-    public function update-progress-percent(percent: float) {
-        // playback-control.update-progress-percent(percent);
     }
 
     FocusScope {
@@ -153,10 +68,7 @@ export component MainWindow inherits Window {
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
         if Bridge.is-debugging: DebugOverlay { }
-
-        error-alert := ErrorAlert {
-            width: min(parent.width * 0.8, 700px);
-            y: parent.height - self.height - 20px;
-        }
     // }
+
+    if Bridge.should-show-toast-overlay(): ToastOverlay { }
 }
