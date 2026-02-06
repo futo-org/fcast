@@ -71,6 +71,7 @@ pub enum PlayerEvent {
     RateChanged(f64),
     Error(String),
     Warning(String),
+    UriSet,
 }
 
 #[derive(Debug)]
@@ -79,6 +80,7 @@ enum Job {
     SetUri(String),
     Seek(Seek),
     Quit,
+    UriWasSet,
 }
 
 #[derive(Debug)]
@@ -155,6 +157,7 @@ impl Player {
         let playbin = gst::ElementFactory::make("playbin3")
             .property("video-sink", video_sink)
             .property("audio-filter", scaletempo)
+            // .property("instant-uri", true)
             .build()?;
 
         playbin.connect_notify(Some("volume"), {
@@ -163,6 +166,18 @@ impl Player {
                 let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::VolumeChanged(
                     playbin.property::<f64>("volume"),
                 )));
+            }
+        });
+
+        playbin.connect_notify(Some("uri"), {
+            let event_tx = event_tx.clone();
+            // TODO: track the current uri, and ignore events from old ones?
+            move |playbin, _pspec| {
+                let new_uri = playbin.property::<String>("uri");
+                debug!(new_uri, "URI changed");
+                if !new_uri.is_empty() {
+                    let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriSet));
+                }
             }
         });
 
@@ -175,16 +190,22 @@ impl Player {
         });
 
         let bus = playbin.bus().ok_or(anyhow!("playbin is missing a bus"))?;
-        tokio::spawn({
-            let playbin_weak = playbin.downgrade();
-            let event_tx = event_tx.clone();
-            async move {
-                let mut messages = bus.stream();
-                while let Some(msg) = messages.next().await {
-                    Self::handle_messsage(&playbin_weak, &event_tx, msg, &contexts);
-                }
-            }
+        let playbin_weak = playbin.downgrade();
+        let event_tx_c = event_tx.clone();
+        bus.set_sync_handler(move |_, msg| {
+            Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &contexts);
+            gst::BusSyncReply::Drop
         });
+        // tokio::spawn({
+        //     let playbin_weak = playbin.downgrade();
+        //     let event_tx = event_tx.clone();
+        //     async move {
+        //         let mut messages = bus.stream();
+        //         while let Some(msg) = messages.next().await {
+        //             Self::handle_messsage(&playbin_weak, &event_tx, msg, &contexts);
+        //         }
+        //     }
+        // });
 
         let (work_tx, work_rx) = std::sync::mpsc::channel();
 
@@ -210,9 +231,19 @@ impl Player {
                             playbin.set_property("uri", uri);
                             playbin.set_property("suburi", None::<String>);
 
-                            let _ =
-                                event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriLoaded));
+                            // let _ =
+                                // event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriLoaded));
+                                // event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriSet));
 
+                            // if let Ok(success) = playbin.set_state(gst::State::Paused)
+                            //     && success == gst::StateChangeSuccess::NoPreroll
+                            // {
+                            //     debug!("Pipeline is live");
+                            //     let _ = event_tx
+                            //         .send(crate::Event::NewPlayerEvent(PlayerEvent::IsLive));
+                            // }
+                        }
+                        Job::UriWasSet => {
                             if let Ok(success) = playbin.set_state(gst::State::Paused)
                                 && success == gst::StateChangeSuccess::NoPreroll
                             {
@@ -220,6 +251,9 @@ impl Player {
                                 let _ = event_tx
                                     .send(crate::Event::NewPlayerEvent(PlayerEvent::IsLive));
                             }
+
+                            let _ =
+                                event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriLoaded));
                         }
                         Job::Seek(seek) => {
                             let (_, state, _) = playbin.state(None);
@@ -315,7 +349,7 @@ impl Player {
     fn handle_messsage(
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         event_tx: &UnboundedSender<crate::Event>,
-        msg: gst::Message,
+        msg: &gst::Message,
         contexts: &Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) {
         use gst::MessageView;
@@ -566,7 +600,9 @@ impl Player {
     }
 
     fn set_state_async(&self, state: gst::State) {
-        let _ = self.work_tx.send(Job::SetState(state));
+        if self.current_state != state {
+            let _ = self.work_tx.send(Job::SetState(state));
+        }
     }
 
     pub fn play(&mut self) {
@@ -586,7 +622,8 @@ impl Player {
     }
 
     pub fn stop(&mut self) {
-        self.set_state_async(gst::State::Ready);
+        // self.set_state_async(gst::State::Ready);
+        self.set_state_async(gst::State::Null);
         self.clear_state();
     }
 
@@ -636,6 +673,10 @@ impl Player {
 
     pub fn end_of_stream_reached(&mut self) {
         self.stop();
+    }
+
+    pub fn uri_set(&mut self) {
+        let _ = self.work_tx.send(Job::UriWasSet);
     }
 
     pub fn uri_loaded(&mut self) {
@@ -688,6 +729,9 @@ impl Player {
 
             PlayerState::Playing
         } else if new == gst::State::Ready && old > gst::State::Ready {
+            PlayerState::Stopped
+        } else if new == gst::State::Null {
+            let _ = self.work_tx.send(Job::SetUri("".to_owned()));
             PlayerState::Stopped
         } else {
             PlayerState::Buffering

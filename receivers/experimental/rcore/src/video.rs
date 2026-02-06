@@ -391,17 +391,17 @@ impl SlintOpenGLSink {
 
         *contexts.lock().unwrap() = Some((gst_gl_display.clone(), gst_gl_context.clone()));
 
-        let display_ctx = gst::Context::new(gst_gl::GL_DISPLAY_CONTEXT_TYPE, true);
-        display_ctx.set_gl_display(&gst_gl_display);
-        self.gl_elems.upload.set_context(&display_ctx);
-        self.gl_elems.convert.set_context(&display_ctx);
+        // let display_ctx = gst::Context::new(gst_gl::GL_DISPLAY_CONTEXT_TYPE, true);
+        // display_ctx.set_gl_display(&gst_gl_display);
+        // self.gl_elems.upload.set_context(&display_ctx);
+        // self.gl_elems.convert.set_context(&display_ctx);
 
-        let mut app_ctx = gst::Context::new("gst.gl.app_context", true);
-        let app_ctx_mut = app_ctx.get_mut().unwrap();
-        let structure = app_ctx_mut.structure_mut();
-        structure.set("context", gst_gl_context.clone());
-        self.gl_elems.upload.set_context(&app_ctx);
-        self.gl_elems.convert.set_context(&app_ctx);
+        // let mut app_ctx = gst::Context::new("gst.gl.app_context", true);
+        // let app_ctx_mut = app_ctx.get_mut().unwrap();
+        // let structure = app_ctx_mut.structure_mut();
+        // structure.set("context", gst_gl_context.clone());
+        // self.gl_elems.upload.set_context(&app_ctx);
+        // self.gl_elems.convert.set_context(&app_ctx);
 
         self.gst_gl_context = Some(gst_gl_context);
 

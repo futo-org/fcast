@@ -71,6 +71,8 @@ pub enum DownloadImageError {
     DecodeImage(#[from] image::ImageError),
     #[error("failed to parse URL: {0:?}")]
     InvalidUrl(#[from] url::ParseError),
+    #[error("unsuccessful status={0}")]
+    Unsuccessful(reqwest::StatusCode),
 }
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
@@ -203,6 +205,9 @@ fn image_decode_worker(
     job_rx: std::sync::mpsc::Receiver<(ImageId, ImageDecodeJob)>,
     event_tx: UnboundedSender<Event>,
 ) -> anyhow::Result<()> {
+    let span = debug_span!("image-decoder");
+    let _entered = span.enter();
+
     // libheif_rs::integration::image::register_all_decoding_hooks();
 
     while let Ok((id, job)) = job_rx.recv() {
@@ -542,7 +547,7 @@ impl Application {
         headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(Bytes, ImageFormat), DownloadImageError> {
         let url = url::Url::parse(url)?;
-        debug!(%url, "Trying to download image");
+        debug!(%url, "Starting image download");
         let random_user_agent = user_agent::random_browser_user_agent(url.domain());
         let mut request = client.get(url);
         let mut did_set_user_agent = false;
@@ -556,6 +561,10 @@ impl Application {
         }
 
         let resp = request.send().await?;
+        if !resp.status().is_success() {
+            return Err(DownloadImageError::Unsuccessful(resp.status()));
+        }
+
         let headers = resp.headers();
         let content_type = headers
             .get(reqwest::header::CONTENT_TYPE)
@@ -662,6 +671,10 @@ impl Application {
         self.current_playlist = None;
         self.current_playlist_item_idx = None;
         self.player.stop();
+
+        self.current_thumbnail_id += 1;
+        self.current_image_id += 1;
+        self.current_image_download_id += 1;
 
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
@@ -777,6 +790,10 @@ impl Application {
     }
 
     fn media_error(&mut self, message: String) -> Result<()> {
+        if !self.is_playing() {
+            return Ok(());
+        }
+
         error!(msg = message, "Media error");
 
         self.cleanup_playback_data()?;
@@ -1350,6 +1367,9 @@ impl Application {
                     self.notify_updates(true)?;
                 }
             },
+            player::PlayerEvent::UriSet => {
+                self.player.uri_set();
+            }
             player::PlayerEvent::UriLoaded => {
                 self.player.uri_loaded();
 
