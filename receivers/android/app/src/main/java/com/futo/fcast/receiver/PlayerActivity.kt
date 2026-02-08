@@ -636,7 +636,8 @@ class PlayerActivity : AppCompatActivity() {
             )
         }
 
-        mediaPlayHandler()
+        // handled in PlayerState for Android
+        // mediaPlayHandler()
 
         if (_isPlaylist) {
             _exoPlayer.seekTo(playlistIndex, 0)

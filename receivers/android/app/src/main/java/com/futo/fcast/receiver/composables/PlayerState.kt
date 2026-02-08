@@ -34,8 +34,6 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 
-var lastPlaybackState = Player.STATE_IDLE
-
 @OptIn(UnstableApi::class)
 @Composable
 fun rememberPlayerState(player: Player): PlayerState {
@@ -56,14 +54,6 @@ fun rememberPlayerState(player: Player): PlayerState {
     var selectedPlaybackSpeed by remember { mutableStateOf("1.00") }
 
     val updateState: (events: Player.Events?) -> Unit = {
-        if (it?.contains(Player.EVENT_IS_PLAYING_CHANGED) == true && player.isPlaying) {
-            PlayerActivity.instance?.mediaPlayHandler()
-        } else if (player.playbackState == Player.STATE_ENDED && player.playbackState != lastPlaybackState) {
-            if (abs(currentPosition - duration) < 2000) {
-                PlayerActivity.instance?.mediaEndHandler()
-            }
-        }
-
         currentPosition = player.currentPosition
         duration = player.duration
         bufferedPosition = player.bufferedPosition
@@ -84,17 +74,34 @@ fun rememberPlayerState(player: Player): PlayerState {
         if (thumbnailUrl != null) {
             mediaThumbnail = thumbnailUrl.toUri()
         }
-
-        lastPlaybackState = player.playbackState
     }
 
     val scope = rememberCoroutineScope()
 
     DisposableEffect(player) {
+        var lastHandledMediaId: String? = null;
+
         val listener = object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
                 super.onEvents(player, events)
                 updateState(events)
+
+                if (events.contains(Player.EVENT_IS_PLAYING_CHANGED) && player.isPlaying) {
+                    PlayerActivity.instance?.mediaPlayHandler()
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    val currentMediaId = player.currentMediaItem?.mediaId ?: "default"
+
+                    if (lastHandledMediaId != currentMediaId && abs(player.currentPosition - player.duration) < 2000) {
+                        lastHandledMediaId = currentMediaId
+                        PlayerActivity.instance?.mediaEndHandler()
+                    }
+                } else if (playbackState == Player.STATE_READY && lastHandledMediaId != player.currentMediaItem?.mediaId) {
+                    lastHandledMediaId = null
+                }
             }
 
             override fun onCues(cueGroup: CueGroup) {
