@@ -21,3 +21,9 @@
 #-renamesourcefileattribute SourceFile
 
 -dontobfuscate
+
+# R8 seems to be optimizing out webRTC native code...
+-keep class org.webrtc.** { *; }
+
+-keep class org.jni_zero.** { *; }
+-keep interface org.jni_zero.** { *; }
