@@ -51,7 +51,7 @@ mod user_agent;
 mod video;
 
 use crate::{
-    player::{PlayerState, StateChangeResult},
+    player::PlayerState,
     session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
 
@@ -603,16 +603,16 @@ impl Application {
         let progress_str = sec_to_string(position);
         let duration_str = sec_to_string(duration);
         let progress_percent = (position / duration) as f32;
-        let is_live = self.player.is_live;
+        let is_live = self.player.is_live();
         let playback_state = {
-            match self.player.player_state {
+            match self.player.player_state() {
                 PlayerState::Stopped | PlayerState::Buffering => GuiPlaybackState::Loading,
                 PlayerState::Playing => GuiPlaybackState::Playing,
                 PlayerState::Paused => GuiPlaybackState::Paused,
             }
         };
 
-        let playback_rate = self.player.rate;
+        let playback_rate = self.player.rate();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_progress_label(progress_str.into());
@@ -786,6 +786,19 @@ impl Application {
                     .updates_tx
                     .send(Arc::new(ReceiverToSenderMessage::Event { msg }));
             }
+        }
+    }
+
+    fn current_item_uri(&self) -> Option<&str> {
+        if let Some(play_msg) = self.current_play_data.as_ref() {
+            play_msg.url.as_ref().map(|u| u.as_str())
+        } else if let Some(playlist) = self.current_playlist.as_ref()
+            && let Some(idx) = self.current_playlist_item_idx
+            && let Some(item) = playlist.items.get(idx)
+        {
+            item.url.as_ref().map(|u| u.as_str())
+        } else {
+            None
         }
     }
 
@@ -1346,29 +1359,38 @@ impl Application {
                 }
             }
             player::PlayerEvent::AboutToFinish => {}
-            player::PlayerEvent::Buffering(_) => {}
+            player::PlayerEvent::Buffering(percent) => {
+                if self.player.buffering(percent) {
+                    self.notify_updates(true)?;
+                }
+            }
             player::PlayerEvent::IsLive => {
-                self.player.is_live = true;
+                // self.player.is_live = true;
+                self.player.set_is_live(true);
             }
             player::PlayerEvent::StateChanged {
                 old,
                 current,
                 pending,
             } => match self.player.state_changed(old, current, pending) {
-                // StateChangeResult::Changed(new_state) => {
-                StateChangeResult::Changed => {
-                    // self.player_state = new_state;
+                Some(_) => {
                     self.notify_updates(true)?;
                 }
-                StateChangeResult::SeekPending => {
-                    debug!("Seek pending");
-                }
-                StateChangeResult::SeekCompleted => {
-                    self.notify_updates(true)?;
-                }
+                None => (),
             },
-            player::PlayerEvent::UriSet => {
-                self.player.uri_set();
+            //     StateChangeResult::Changed => {
+            //         // self.player_state = new_state;
+            //         self.notify_updates(true)?;
+            //     }
+            //     StateChangeResult::SeekPending => {
+            //         debug!("Seek pending");
+            //     }
+            //     StateChangeResult::SeekCompleted => {
+            //         self.notify_updates(true)?;
+            //     }
+            //     StateChangeResult::StateChangePending => (),
+            player::PlayerEvent::UriSet(uri) => {
+                self.player.uri_set(uri);
             }
             player::PlayerEvent::UriLoaded => {
                 self.player.uri_loaded();
@@ -1450,12 +1472,17 @@ impl Application {
                 }
             }
             player::PlayerEvent::RateChanged(new_rate) => {
-                self.player.rate = new_rate;
+                self.player.set_rate_changed(new_rate);
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
-                self.player.stop();
-                self.media_error(msg)?;
+                if let Some(player_uri) = self.player.current_uri()
+                    && let Some(current_uri) = self.current_item_uri()
+                    && current_uri == player_uri
+                {
+                    self.player.stop();
+                    self.media_error(msg)?;
+                }
             }
             player::PlayerEvent::Warning(msg) => {
                 self.media_warning(msg)?;
@@ -1499,7 +1526,7 @@ impl Application {
             }
             Event::ResumeOrPause => {
                 // let op = match self.player_state {
-                let op = match self.player.player_state {
+                let op = match self.player.player_state() {
                     // gst_play::PlayState::Paused => Operation::Resume,
                     // gst_play::PlayState::Playing => Operation::Pause,
                     PlayerState::Paused => Operation::Resume,
@@ -1508,7 +1535,7 @@ impl Application {
                         error!(
                             "Cannot resume or pause in player current state: {:?}",
                             // self.player_state
-                            self.player.player_state
+                            self.player.player_state(),
                         );
                         return Ok(false);
                     }
@@ -1754,7 +1781,7 @@ impl Application {
                     }
                 }
                 _ = update_interval.tick() => {
-                    if self.player.player_state == player::PlayerState::Playing {
+                    if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
                     }
                 }

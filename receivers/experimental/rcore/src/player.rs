@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow, bail};
-use futures::StreamExt;
+use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
 use gst_gl::prelude::*;
 use smallvec::SmallVec;
@@ -38,10 +38,465 @@ pub enum PlayerState {
 
 type StreamId = String;
 
-#[derive(Debug, Default)]
+#[derive(Debug, PartialEq, Eq)]
+enum RunningState {
+    Paused,
+    Playing,
+}
+
+impl Into<gst::State> for &mut RunningState {
+    fn into(self) -> gst::State {
+        match self {
+            RunningState::Paused => gst::State::Paused,
+            RunningState::Playing => gst::State::Playing,
+        }
+    }
+}
+
+impl Into<gst::State> for RunningState {
+    fn into(mut self) -> gst::State {
+        (&mut self).into()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum State {
+    Stopped,
+    Loading, // TODO: remove
+    Buffering {
+        percent: i32,
+        target_state: gst::State,
+        pending_seek: Option<Seek>,
+    },
+    ChangingState {
+        target_state: gst::State,
+        pending_seek: Option<Seek>,
+    },
+    SeekAsync {
+        seek: Seek,
+        target_state: gst::State,
+    },
+    Seeking {
+        target_state: gst::State,
+    },
+    Running {
+        state: RunningState,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum StateChangeResult {
+    NewPlaybackState(PlaybackState),
+    Seek(Seek),
+    Waiting,
+    ChangeState(gst::State),
+}
+
+#[derive(Debug, PartialEq)]
+enum BufferingStateResult {
+    Started(gst::State),
+    Buffering,
+    // TODO: should include seek
+    // FinishedWithSeek(Seek),
+    FinishedButWaitingSeek,
+    Finished(Option<gst::State>),
+}
+
+#[derive(Debug)]
+struct StateMachine {
+    current_state: gst::State,
+    state: State,
+    pub is_live: bool,
+    position: Option<gst::ClockTime>,
+    pub rate: f64,
+    pub seekable: bool,
+    pub current_uri: Option<String>,
+}
+
+impl StateMachine {
+    pub fn new() -> Self {
+        Self {
+            current_state: gst::State::Ready,
+            state: State::Stopped,
+            is_live: false,
+            position: None,
+            rate: 1.0,
+            seekable: false,
+            current_uri: None,
+        }
+    }
+
+    fn queue_seek(&mut self, seek: Seek) {
+        // tracing::info!("<<TEST>> sm.queue_seek({seek:?});");
+
+        let target_state = match self.state {
+            State::Buffering { target_state, .. }
+            | State::ChangingState { target_state, .. }
+            | State::SeekAsync { target_state, .. }
+            | State::Seeking { target_state, .. } => target_state,
+            _ => gst::State::Paused,
+        };
+
+        self.state = State::SeekAsync { seek, target_state };
+    }
+
+    #[must_use]
+    fn seek_internal(&mut self, mut seek: Seek, target_state: Option<gst::State>) -> Option<Seek> {
+        // tracing::info!("<<TEST>> assert_eq!(sm.seek_internal({seek:?}, {target_state:?}), TODO);");
+
+        if self.is_live {
+            warn!("Cannot seek when source is live");
+            return None;
+        }
+
+        debug!(?seek, state = ?self.state, current_state = ?self.current_state, "Seek internal called");
+
+        if seek.rate.is_none() {
+            seek.rate = Some(self.rate);
+        }
+
+        let target_state = if let Some(ts) = target_state {
+            ts
+        } else {
+            match self.state {
+                State::Running {
+                    state: RunningState::Playing,
+                } => gst::State::Playing,
+                State::ChangingState { target_state, .. } => target_state,
+                State::SeekAsync { target_state, .. } => target_state,
+                _ => gst::State::Paused,
+            }
+        };
+
+        match &mut self.state {
+            State::SeekAsync { seek: prev_seek, .. } => {
+                warn!("Cannot seek because a seek request is pending");
+                prev_seek.position = seek.position;
+                prev_seek.rate = seek.rate;
+                return None;
+            }
+            State::Seeking {
+                ..
+            } => {
+                warn!("Cannot seek because a seek request is pending");
+                return None;
+            }
+            _ => {
+                self.state = State::Seeking {
+                    target_state,
+                };
+
+                return Some(seek);
+            }
+        }
+    }
+
+    #[must_use]
+    fn set_playback_state(&mut self, state: RunningState) -> Option<gst::State> {
+        // #[rustfmt::skip] tracing::info!("<<TEST>> assert_eq!(sm.set_playback_state(RunningState::{state:?}), TODO);");
+
+        let next_state: gst::State = state.into();
+        match &mut self.state {
+            State::Stopped | State::Loading => todo!(),
+            State::Buffering { target_state, .. } => *target_state = next_state,
+            State::ChangingState {
+                target_state,
+                pending_seek,
+            } => if *target_state != next_state {},
+            State::SeekAsync { target_state, .. } => *target_state = next_state,
+            State::Seeking { target_state, .. } => *target_state = next_state,
+            State::Running { state } => {
+                return Some(next_state);
+            }
+        }
+
+        None
+    }
+
+    #[must_use]
+    fn buffering(&mut self, new_percent: i32) -> BufferingStateResult {
+        // tracing::info!("<<TEST>> assert_eq!(sm.buffering({new_percent}), TODO);");
+
+        match &mut self.state {
+            State::Stopped | State::Loading => {
+                self.state = State::Buffering {
+                    percent: new_percent,
+                    target_state: gst::State::Playing,
+                    pending_seek: None,
+                };
+            }
+            State::SeekAsync { seek, target_state } => {
+                self.state = State::Buffering {
+                    percent: new_percent,
+                    target_state: *target_state,
+                    pending_seek: None,
+                };
+            }
+            State::Buffering {
+                percent,
+                target_state,
+                pending_seek,
+            } => {
+                *percent = new_percent;
+                if new_percent == 100 {
+                    debug!("Buffering completed");
+                    let target = *target_state;
+                    if let Some(_seek) = pending_seek {
+                        self.state = State::Seeking {
+                            target_state: target,
+                        };
+                        return BufferingStateResult::FinishedButWaitingSeek;
+                    }
+
+                    if target != self.current_state {
+                        self.state = State::ChangingState {
+                            target_state: target,
+                            pending_seek: None,
+                        };
+                        return BufferingStateResult::Finished(Some(target));
+                    } else {
+                        match target {
+                            gst::State::VoidPending | gst::State::Null | gst::State::Ready => {
+                                self.state = State::Stopped;
+                            }
+                            gst::State::Paused => {
+                                self.state = State::Running {
+                                    state: RunningState::Paused,
+                                };
+                            }
+                            gst::State::Playing => {
+                                self.state = State::Running {
+                                    state: RunningState::Playing,
+                                };
+                            }
+                        }
+                        return BufferingStateResult::Finished(None);
+                    }
+                }
+                return BufferingStateResult::Buffering;
+            }
+            State::ChangingState {
+                target_state,
+                pending_seek,
+            } => {
+                self.state = State::Buffering {
+                    percent: new_percent,
+                    target_state: *target_state,
+                    // TODO: pending seek
+                    pending_seek: *pending_seek,
+                };
+            }
+            State::Seeking {
+                // position,
+                // rate,
+                target_state,
+            } => {
+                self.state = State::Buffering {
+                    percent: new_percent,
+                    target_state: *target_state,
+                    // pending_seek: None,
+                    // TODO: pending seek
+                    pending_seek: Some(Seek::new(None, None)),
+                };
+            }
+            State::Running { state } => {
+                self.state = State::Buffering {
+                    percent: new_percent,
+                    target_state: state.into(),
+                    pending_seek: None,
+                };
+            }
+        }
+
+        BufferingStateResult::Started(gst::State::Paused)
+    }
+
+    #[must_use]
+    pub fn state_changed(
+        &mut self,
+        _old: gst::State,
+        new: gst::State,
+        pending: gst::State,
+    ) -> StateChangeResult {
+        debug!(?new, ?pending, state = ?self.state, "State changed");
+        // #[rustfmt::skip] tracing::info!("<<TEST>> assert_eq!(sm.state_changed(gs!({_old:?}), gs!({new:?}), gs!({pending:?})), TODO);");
+
+        self.current_state = new;
+
+        match &mut self.state {
+            State::Stopped | State::Loading => {
+                if matches!(pending, gst::State::Ready | gst::State::Null) {
+                    return StateChangeResult::Waiting;
+                }
+
+                match new {
+                    gst::State::Paused => {
+                        self.state = State::Running {
+                            state: RunningState::Paused,
+                        };
+                        return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                    }
+                    gst::State::Playing => {
+                        self.state = State::Running {
+                            state: RunningState::Playing,
+                        };
+                        return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
+                    }
+                    // TODO: idle?
+                    _ => return StateChangeResult::Waiting,
+                }
+            }
+            State::Buffering {
+                // percent,
+                // target_state,
+                pending_seek,
+                ..
+            // } => return StateChangeResult::Waiting,
+            } => {
+                if new == gst::State::Paused && pending == gst::State::VoidPending {
+                    *pending_seek = None;
+                }
+
+                return StateChangeResult::Waiting;
+            }
+            State::ChangingState {
+                target_state,
+                pending_seek,
+            } => {
+                if new == *target_state {
+                    if let Some(seek) = pending_seek.as_ref() {
+                        let seek = *seek;
+                        // TODO: handle seek...
+                        let target_state = *target_state;
+                        if let Some(seek) = self.seek_internal(seek, Some(target_state)) {
+                            return StateChangeResult::Seek(seek);
+                        } else {
+                            todo!()
+                        }
+                    } else {
+                        match new {
+                            gst::State::VoidPending | gst::State::Null | gst::State::Ready => {
+                                self.state = State::Stopped;
+                                return StateChangeResult::NewPlaybackState(PlaybackState::Idle);
+                            }
+                            gst::State::Paused => {
+                                self.state = State::Running {
+                                    state: RunningState::Paused,
+                                };
+                                return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                            }
+                            gst::State::Playing => {
+                                self.state = State::Running {
+                                    state: RunningState::Playing,
+                                };
+                                return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
+                            }
+                        }
+                    }
+                } else if pending == gst::State::VoidPending {
+                    return StateChangeResult::ChangeState(*target_state);
+                }
+
+                // TODO: check if next state is void pending and then send new state change?
+                return StateChangeResult::Waiting;
+            }
+            State::SeekAsync { seek, target_state } => {
+                if new == gst::State::Paused && pending == gst::State::VoidPending {
+                    // self.seek_internal(seek, Some(target_state));
+                    let seek = *seek;
+                    self.state = State::Seeking {
+                        // position: seek.position,
+                        // rate: seek.rate.unwrap_or(self.rate),
+                        // target_state: self.current_state,
+                        target_state: *target_state,
+                    };
+
+                    return StateChangeResult::Seek(seek);
+                }
+
+                return StateChangeResult::Waiting;
+            }
+            State::Seeking {
+                // position,
+                // rate,
+                target_state,
+                ..
+            } => {
+                // TODO: only check this on new = Paused && pending = VoidPending
+                if new == gst::State::Paused && pending == gst::State::VoidPending {
+                    let target = *target_state;
+                    if new != target {
+                        self.state = State::ChangingState {
+                            // target_state: *target_state,
+                            target_state: target,
+                            pending_seek: None,
+                        };
+                        debug!(state = ?self.state, "Seek completed");
+                        return StateChangeResult::ChangeState(target);
+                    } else {
+                        match new {
+                            gst::State::Paused => {
+                                self.state = State::Running { state: RunningState::Paused };
+                                return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                            }
+                            gst::State::Playing => {
+                                self.state = State::Running { state: RunningState::Playing };
+                                return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
+                            }
+                            _ => {
+                                self.state = State::Stopped;
+                                return StateChangeResult::NewPlaybackState(PlaybackState::Idle);
+                            }
+                        }
+                    }
+                } else {
+                }
+
+                return StateChangeResult::Waiting;
+            }
+            State::Running { .. } => match (new, pending) {
+                (gst::State::VoidPending | gst::State::Null | gst::State::Ready, _)
+                    | (_, gst::State::Null) => {
+                    self.state = State::Stopped;
+                    return StateChangeResult::NewPlaybackState(PlaybackState::Idle);
+                }
+                (gst::State::Paused, _) => {
+                    self.state = State::Running {
+                        state: RunningState::Paused,
+                    };
+                    return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                }
+                (gst::State::Playing, _) => {
+                    self.state = State::Running {
+                        state: RunningState::Playing,
+                    };
+                    return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
+                }
+            },
+        }
+    }
+
+    fn clear_state(&mut self) {
+        self.state = State::Stopped;
+        self.is_live = false;
+        // self.player_state =
+        self.position = None;
+        self.rate = 1.0;
+        self.seekable = false;
+        self.current_uri = None;
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Seek {
     pub position: Option<f64>,
     pub rate: Option<f64>,
+}
+
+impl Seek {
+    pub fn new(position: Option<f64>, rate: Option<f64>) -> Self {
+        Self { position, rate }
+    }
 }
 
 #[derive(Debug)]
@@ -71,7 +526,7 @@ pub enum PlayerEvent {
     RateChanged(f64),
     Error(String),
     Warning(String),
-    UriSet,
+    UriSet(String),
 }
 
 #[derive(Debug)]
@@ -81,13 +536,6 @@ enum Job {
     Seek(Seek),
     Quit,
     UriWasSet,
-}
-
-#[derive(Debug)]
-pub enum StateChangeResult {
-    Changed,
-    SeekPending,
-    SeekCompleted,
 }
 
 pub fn stream_title(stream: &gst::Stream) -> String {
@@ -129,22 +577,14 @@ pub struct Player {
     seek_lock: BoolLock,
     volume_lock: BoolLock,
     selection_lock: BoolLock,
-    current_state: gst::State,
-    is_buffering: bool,
-    pub is_live: bool,
-    pub player_state: PlayerState,
-    position: Option<gst::ClockTime>,
     work_tx: std::sync::mpsc::Sender<Job>,
-    pending_seek: Option<Seek>,
-    target_state: Option<gst::State>,
     pub video_streams: SmallVec<[gst::Stream; 3]>,
     pub audio_streams: SmallVec<[gst::Stream; 3]>,
     pub subtitle_streams: SmallVec<[gst::Stream; 3]>,
-    pub rate: f64,
     pub current_video_stream: i32,
     pub current_audio_stream: i32,
     pub current_subtitle_stream: i32,
-    pub seekable: bool,
+    state_machine: StateMachine,
 }
 
 impl Player {
@@ -171,13 +611,10 @@ impl Player {
 
         playbin.connect_notify(Some("uri"), {
             let event_tx = event_tx.clone();
-            // TODO: track the current uri, and ignore events from old ones?
             move |playbin, _pspec| {
                 let new_uri = playbin.property::<String>("uri");
                 debug!(new_uri, "URI changed");
-                if !new_uri.is_empty() {
-                    let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriSet));
-                }
+                let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriSet(new_uri)));
             }
         });
 
@@ -196,16 +633,6 @@ impl Player {
             Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &contexts);
             gst::BusSyncReply::Drop
         });
-        // tokio::spawn({
-        //     let playbin_weak = playbin.downgrade();
-        //     let event_tx = event_tx.clone();
-        //     async move {
-        //         let mut messages = bus.stream();
-        //         while let Some(msg) = messages.next().await {
-        //             Self::handle_messsage(&playbin_weak, &event_tx, msg, &contexts);
-        //         }
-        //     }
-        // });
 
         let (work_tx, work_rx) = std::sync::mpsc::channel();
 
@@ -230,18 +657,6 @@ impl Player {
 
                             playbin.set_property("uri", uri);
                             playbin.set_property("suburi", None::<String>);
-
-                            // let _ =
-                                // event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriLoaded));
-                                // event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriSet));
-
-                            // if let Ok(success) = playbin.set_state(gst::State::Paused)
-                            //     && success == gst::StateChangeSuccess::NoPreroll
-                            // {
-                            //     debug!("Pipeline is live");
-                            //     let _ = event_tx
-                            //         .send(crate::Event::NewPlayerEvent(PlayerEvent::IsLive));
-                            // }
                         }
                         Job::UriWasSet => {
                             if let Ok(success) = playbin.set_state(gst::State::Paused)
@@ -327,22 +742,14 @@ impl Player {
             seek_lock: BoolLock::new(),
             volume_lock: BoolLock::new(),
             selection_lock: BoolLock::new(),
-            current_state: gst::State::Ready,
-            is_buffering: false,
-            is_live: false,
-            position: None,
-            rate: 1.0,
             work_tx,
-            pending_seek: None,
-            target_state: None,
             video_streams: SmallVec::new(),
             audio_streams: SmallVec::new(),
             subtitle_streams: SmallVec::new(),
-            player_state: PlayerState::Stopped,
             current_video_stream: -1,
             current_audio_stream: -1,
             current_subtitle_stream: -1,
-            seekable: true,
+            state_machine: StateMachine::new(),
         })
     }
 
@@ -499,21 +906,14 @@ impl Player {
     }
 
     fn clear_state(&mut self) {
-        self.is_buffering = false;
-        self.is_live = false;
-        self.player_state = PlayerState::Stopped;
         self.video_streams.clear();
         self.audio_streams.clear();
         self.subtitle_streams.clear();
         self.current_video_stream = -1;
         self.current_audio_stream = -1;
         self.current_subtitle_stream = -1;
-        self.position = None;
-        self.pending_seek = None;
-        self.target_state = None;
         self.seek_lock.release();
         self.volume_lock.release();
-        self.seekable = true;
     }
 
     pub fn set_uri(&mut self, uri: &str) {
@@ -521,25 +921,10 @@ impl Player {
         let _ = self.work_tx.send(Job::SetUri(uri.to_string()));
     }
 
-    fn seek_internal(&mut self, mut seek: Seek) {
-        if self.is_live {
-            warn!("Cannot seek when source is live");
-            return;
+    fn seek_internal(&mut self, seek: Seek) {
+        if let Some(seek) = self.state_machine.seek_internal(seek, None) {
+            let _ = self.work_tx.send(Job::Seek(seek));
         }
-
-        if self.seek_lock.is_locked() {
-            warn!("Cannot seek because a seek request is pending");
-            self.pending_seek = Some(seek);
-            return;
-        }
-
-        if seek.rate.is_none() {
-            seek.rate = Some(self.rate);
-        }
-
-        let _ = self.work_tx.send(Job::Seek(seek));
-
-        self.seek_lock.acquire();
     }
 
     pub fn seek(&mut self, seconds: f64) {
@@ -555,26 +940,7 @@ impl Player {
     }
 
     pub fn queue_seek(&mut self, seek: Seek) {
-        debug!(?seek, "queue seek");
-
-        if self.target_state.is_none() {
-            self.target_state = Some(self.current_state);
-        }
-
-        if self.pending_seek.is_none() {
-            self.pending_seek = Some(Seek::default());
-        }
-
-        if let Some(pending) = self.pending_seek.as_mut() {
-            if let Some(pos) = seek.position {
-                pending.position = Some(pos);
-            }
-            if pending.rate.is_none()
-                && let Some(rate) = seek.rate
-            {
-                pending.rate = Some(rate);
-            }
-        }
+        self.state_machine.queue_seek(seek);
     }
 
     pub fn set_volume(&mut self, volume: f64) {
@@ -600,31 +966,30 @@ impl Player {
     }
 
     fn set_state_async(&self, state: gst::State) {
-        if self.current_state != state {
-            let _ = self.work_tx.send(Job::SetState(state));
-        }
+        let _ = self.work_tx.send(Job::SetState(state));
     }
 
     pub fn play(&mut self) {
-        if self.pending_seek.is_some() || self.seek_lock.is_locked() {
-            self.target_state = Some(gst::State::Playing);
-        } else {
-            self.set_state_async(gst::State::Playing);
+        if let Some(state) = self.state_machine.set_playback_state(RunningState::Playing) {
+            self.set_state_async(state);
         }
     }
 
     pub fn pause(&mut self) {
-        if self.pending_seek.is_some() || self.seek_lock.is_locked() {
-            self.target_state = Some(gst::State::Paused);
-        } else {
-            self.set_state_async(gst::State::Paused);
+        if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
+            self.set_state_async(state);
         }
     }
 
     pub fn stop(&mut self) {
-        // self.set_state_async(gst::State::Ready);
-        self.set_state_async(gst::State::Null);
-        self.clear_state();
+        if self.state_machine.current_state != gst::State::Ready
+            && self.state_machine.current_state != gst::State::Null
+        {
+            debug!("Stopping playback");
+            self.set_state_async(gst::State::Null);
+            self.state_machine.clear_state();
+            self.clear_state();
+        }
     }
 
     fn select_streams(&self, video: i32, audio: i32, subtitle: i32) -> Result<()> {
@@ -675,8 +1040,9 @@ impl Player {
         self.stop();
     }
 
-    pub fn uri_set(&mut self) {
+    pub fn uri_set(&mut self, uri: String) {
         let _ = self.work_tx.send(Job::UriWasSet);
+        self.state_machine.current_uri = Some(uri);
     }
 
     pub fn uri_loaded(&mut self) {
@@ -684,62 +1050,48 @@ impl Player {
         self.set_state_async(gst::State::Playing);
     }
 
+    /// Returns `true` if buffering completed
+    pub fn buffering(&mut self, percent: i32) -> bool {
+        match self.state_machine.buffering(percent) {
+            BufferingStateResult::Started(state) => {
+                self.set_state_async(state);
+                false
+            }
+            BufferingStateResult::Buffering => false,
+            // BufferingStateResult::FinishedWithSeek(seek) => {
+            BufferingStateResult::FinishedButWaitingSeek => {
+                // let _ = self.work_tx.send(Job::Seek(seek));
+                debug!(state = ?self.state_machine.state, "Buffering finished with seek");
+                true
+            }
+            BufferingStateResult::Finished(state) => {
+                debug!(state = ?self.state_machine.state, "Buffering finished");
+                if let Some(state) = state {
+                    self.set_state_async(state);
+                }
+                true
+            }
+        }
+    }
+
     pub fn state_changed(
         &mut self,
         old: gst::State,
         new: gst::State,
         pending: gst::State,
-    ) -> StateChangeResult {
-        debug!(?old, ?new, ?pending, "Changed state");
-
-        self.current_state = new;
-
-        let new_state = if new == gst::State::Paused && pending == gst::State::VoidPending {
-            if let Some(seek) = self.pending_seek.take() {
-                self.seek_lock.release();
-                self.seek_internal(seek);
-                return StateChangeResult::SeekPending;
-            } else if self.seek_lock.is_locked() {
-                tracing::info!("Seek completed");
-                if let Some(target_state) = self.target_state.take() {
-                    debug!(
-                        ?target_state,
-                        "Setting state because we have a target state"
-                    );
-                    self.set_state_async(target_state);
-                } else {
-                    self.player_state = PlayerState::Paused;
-                }
-                self.seek_lock.release();
-                return StateChangeResult::SeekCompleted;
+    ) -> Option<PlaybackState> {
+        match self.state_machine.state_changed(old, new, pending) {
+            StateChangeResult::NewPlaybackState(new_state) => return Some(new_state),
+            StateChangeResult::Seek(seek) => {
+                let _ = self.work_tx.send(Job::Seek(seek));
             }
-
-            PlayerState::Paused
-        } else if new == gst::State::Paused && self.seek_lock.is_locked() {
-            return StateChangeResult::SeekPending;
-        } else if new == gst::State::Playing && pending == gst::State::VoidPending {
-            let mut query = gst::query::Seeking::new(gst::Format::Time);
-            if self.playbin.query(&mut query) {
-                use gst::QueryView;
-                if let QueryView::Seeking(seeking) = query.view() {
-                    let (seekable, _, _) = seeking.result();
-                    self.seekable = seekable;
-                }
+            StateChangeResult::Waiting => (),
+            StateChangeResult::ChangeState(state) => {
+                self.set_state_async(state);
             }
+        }
 
-            PlayerState::Playing
-        } else if new == gst::State::Ready && old > gst::State::Ready {
-            PlayerState::Stopped
-        } else if new == gst::State::Null {
-            let _ = self.work_tx.send(Job::SetUri("".to_owned()));
-            PlayerState::Stopped
-        } else {
-            PlayerState::Buffering
-        };
-
-        self.player_state = new_state;
-
-        StateChangeResult::Changed
+        None
     }
 
     fn stream_from_id_in<'a>(
@@ -806,11 +1158,174 @@ impl Player {
             self.current_subtitle_stream,
         )
     }
+
+    pub fn player_state(&self) -> PlayerState {
+        match &self.state_machine.state {
+            State::Stopped | State::Loading => PlayerState::Stopped,
+            State::Buffering { .. }
+            | State::ChangingState { .. }
+            | State::SeekAsync { .. }
+            | State::Seeking { .. } => PlayerState::Buffering, // TODO: ?
+            State::Running { state } => match state {
+                RunningState::Paused => PlayerState::Paused,
+                RunningState::Playing => PlayerState::Playing,
+            },
+        }
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.state_machine.is_live
+    }
+
+    pub fn set_is_live(&mut self, live: bool) {
+        self.state_machine.is_live = live;
+    }
+
+    pub fn rate(&self) -> f64 {
+        self.state_machine.rate
+    }
+
+    pub fn set_rate_changed(&mut self, rate: f64) {
+        self.state_machine.rate = rate;
+    }
+
+    pub fn current_uri(&self) -> Option<&str> {
+        self.state_machine.current_uri.as_ref().map(|u| u.as_str())
+    }
 }
 
 impl Drop for Player {
     fn drop(&mut self) {
         self.set_state_async(gst::State::Null);
         let _ = self.work_tx.send(Job::Quit);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! gs {
+        ($state:ident) => {
+            gst::State::$state
+        };
+    }
+
+    macro_rules! rs {
+        ($state:ident) => {
+            RunningState::$state
+        };
+    }
+
+    macro_rules! ps {
+        ($state:ident) => {
+            PlaybackState::$state
+        };
+    }
+
+    macro_rules! new_ps {
+        ($state:ident) => {
+            StateChangeResult::NewPlaybackState(PlaybackState::$state)
+        };
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn basic_playback() {
+        let mut sm = StateMachine::new();
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
+        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)),);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn basic_playback_2() {
+        let mut sm = StateMachine::new();
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
+        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(Paused)), new_ps!(Playing),);
+
+        // 2nd seek:
+        assert_eq!(sm.seek_internal(Seek::new(Some(60.0), None), None), Some(Seek::new(Some(60.0), Some(1.0))));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
+        sm.queue_seek(Seek::new(Some(60.0), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        sm.queue_seek(Seek::new(Some(60.0), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending),), StateChangeResult::ChangeState(gs!(Playing)),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(Paused)), new_ps!(Playing),);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn basic_playback_3() {
+        let mut sm = StateMachine::new();
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.seek_internal(Seek {position: Some(0.0), rate: None}, None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.buffering(1), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
+        assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        sm.queue_seek(Seek { position: Some(0.0), rate: Some(1.0) });
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(88), BufferingStateResult::Buffering);
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.buffering(89), BufferingStateResult::Buffering);
+        assert_eq!(sm.buffering(100), BufferingStateResult::Finished(Some(gs!(Playing))));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.set_playback_state(rs!(Playing)), Some(gs!(Playing)));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.set_playback_state(rs!(Playing)), Some(gs!(Playing)));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.seek_internal(Seek { position: None, rate: Some(1.25) }, None), Some(Seek { position: None, rate: Some(1.25) }));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.set_playback_state(rs!(Playing)), Some(gs!(Playing)));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
     }
 }
