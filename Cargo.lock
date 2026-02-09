@@ -6879,6 +6879,7 @@ dependencies = [
  "log-panics",
  "parking_lot",
  "rcore",
+ "slint",
  "tokio",
 ]
 

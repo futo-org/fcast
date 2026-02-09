@@ -390,24 +390,6 @@ impl Application {
             }
         });
 
-        #[cfg(target_os = "android")] {
-            let filter = gst::ElementFactory::make("capsfilter")
-                .build()
-                .expect("Failed to create capsfilter");
-
-            let caps = gst::Caps::builder("video/x-raw")
-                .field("colorimetry", gst::List::new([
-                    // &"bt2020", // video source seem to still revert to sRGB
-                    &"bt709",
-                    &"sRGB",
-                    &"bt601"
-                ]))
-                .build();
-
-            filter.set_property("caps", &caps);
-            player_playbin.set_property("video-filter", &filter);
-        }
-
         // let audiosink = {
         //     let sinkbin = gst::Bin::new();
 
