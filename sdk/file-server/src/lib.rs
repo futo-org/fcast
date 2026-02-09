@@ -194,13 +194,12 @@ async fn handle_request(
 
         #[cfg(feature = "headers")]
         if let Some(required_headers) = entry.required_headers {
+            use tracing::warn;
             for (key, expected_value) in required_headers {
                 let expected_value = expected_value.as_bytes();
                 let header = key.to_lowercase();
                 if let Some(actual_value) = headers.get(header) {
                     if expected_value != actual_value.as_bytes() {
-                        use tracing::warn;
-
                         warn!(
                             actual_value = ?actual_value.to_str(),
                             expected_value = ?str::from_utf8(expected_value),
@@ -209,7 +208,7 @@ async fn handle_request(
                         return bad_request();
                     }
                 } else {
-                    debug!(missing_key = key, "Header check failed");
+                    warn!(missing_key = key, "Header check failed");
                     return bad_request();
                 }
             }
@@ -409,6 +408,12 @@ impl FileServer {
     }
 
     #[cfg(feature = "headers")]
+    pub fn clear(&self) {
+        let mut files = self.files.write();
+        files.clear();
+    }
+
+    #[cfg(feature = "headers")]
     pub fn add_file_with_headers(
         &self,
         path: PathBuf,
@@ -446,6 +451,12 @@ impl FileServer {
             port,
             file_id,
         )
+    }
+
+    #[cfg(feature = "headers")]
+    pub fn dump_to_stdout(&self) {
+        let files = self.files.read();
+        println!("File server: {files:#?}");
     }
 }
 

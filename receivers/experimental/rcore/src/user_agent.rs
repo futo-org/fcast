@@ -13,8 +13,8 @@ const SYSTEMS: &[&str] = &[
 
 const PLATFORMS: &[&str] = &[
     "Gecko/20100101",
-    "AppleWebKit/537.36 (KHTML, like Gecho)",
-    "AppleWebKit/605.1.15 (KHTML, like Gecho)",
+    "AppleWebKit/537.36 (KHTML, like Gecko)",
+    "AppleWebKit/605.1.15 (KHTML, like Gecko)",
 ];
 
 const BROWSERS: &[&str] = &[

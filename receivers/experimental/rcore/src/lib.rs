@@ -51,7 +51,7 @@ mod user_agent;
 mod video;
 
 use crate::{
-    player::{PlayerState, StateChangeResult},
+    player::PlayerState,
     session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
 
@@ -71,6 +71,8 @@ pub enum DownloadImageError {
     DecodeImage(#[from] image::ImageError),
     #[error("failed to parse URL: {0:?}")]
     InvalidUrl(#[from] url::ParseError),
+    #[error("unsuccessful status={0}")]
+    Unsuccessful(reqwest::StatusCode),
 }
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
@@ -203,6 +205,9 @@ fn image_decode_worker(
     job_rx: std::sync::mpsc::Receiver<(ImageId, ImageDecodeJob)>,
     event_tx: UnboundedSender<Event>,
 ) -> anyhow::Result<()> {
+    let span = debug_span!("image-decoder");
+    let _entered = span.enter();
+
     // libheif_rs::integration::image::register_all_decoding_hooks();
 
     while let Ok((id, job)) = job_rx.recv() {
@@ -542,7 +547,7 @@ impl Application {
         headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(Bytes, ImageFormat), DownloadImageError> {
         let url = url::Url::parse(url)?;
-        debug!(%url, "Trying to download image");
+        debug!(%url, "Starting image download");
         let random_user_agent = user_agent::random_browser_user_agent(url.domain());
         let mut request = client.get(url);
         let mut did_set_user_agent = false;
@@ -556,6 +561,10 @@ impl Application {
         }
 
         let resp = request.send().await?;
+        if !resp.status().is_success() {
+            return Err(DownloadImageError::Unsuccessful(resp.status()));
+        }
+
         let headers = resp.headers();
         let content_type = headers
             .get(reqwest::header::CONTENT_TYPE)
@@ -594,16 +603,16 @@ impl Application {
         let progress_str = sec_to_string(position);
         let duration_str = sec_to_string(duration);
         let progress_percent = (position / duration) as f32;
-        let is_live = self.player.is_live;
+        let is_live = self.player.is_live();
         let playback_state = {
-            match self.player.player_state {
+            match self.player.player_state() {
                 PlayerState::Stopped | PlayerState::Buffering => GuiPlaybackState::Loading,
                 PlayerState::Playing => GuiPlaybackState::Playing,
                 PlayerState::Paused => GuiPlaybackState::Paused,
             }
         };
 
-        let playback_rate = self.player.rate;
+        let playback_rate = self.player.rate();
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_progress_label(progress_str.into());
@@ -662,6 +671,10 @@ impl Application {
         self.current_playlist = None;
         self.current_playlist_item_idx = None;
         self.player.stop();
+
+        self.current_thumbnail_id += 1;
+        self.current_image_id += 1;
+        self.current_image_download_id += 1;
 
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
@@ -776,7 +789,24 @@ impl Application {
         }
     }
 
+    fn current_item_uri(&self) -> Option<&str> {
+        if let Some(play_msg) = self.current_play_data.as_ref() {
+            play_msg.url.as_deref()
+        } else if let Some(playlist) = self.current_playlist.as_ref()
+            && let Some(idx) = self.current_playlist_item_idx
+            && let Some(item) = playlist.items.get(idx)
+        {
+            item.url.as_deref()
+        } else {
+            None
+        }
+    }
+
     fn media_error(&mut self, message: String) -> Result<()> {
+        if !self.is_playing() {
+            return Ok(());
+        }
+
         error!(msg = message, "Media error");
 
         self.cleanup_playback_data()?;
@@ -1329,27 +1359,27 @@ impl Application {
                 }
             }
             player::PlayerEvent::AboutToFinish => {}
-            player::PlayerEvent::Buffering(_) => {}
+            player::PlayerEvent::Buffering(percent) => {
+                if self.player.buffering(percent) {
+                    self.notify_updates(true)?;
+                }
+            }
             player::PlayerEvent::IsLive => {
-                self.player.is_live = true;
+                // self.player.is_live = true;
+                self.player.set_is_live(true);
             }
             player::PlayerEvent::StateChanged {
                 old,
                 current,
                 pending,
-            } => match self.player.state_changed(old, current, pending) {
-                // StateChangeResult::Changed(new_state) => {
-                StateChangeResult::Changed => {
-                    // self.player_state = new_state;
+            } => {
+                if self.player.state_changed(old, current, pending).is_some() {
                     self.notify_updates(true)?;
                 }
-                StateChangeResult::SeekPending => {
-                    debug!("Seek pending");
-                }
-                StateChangeResult::SeekCompleted => {
-                    self.notify_updates(true)?;
-                }
-            },
+            }
+            player::PlayerEvent::UriSet(uri) => {
+                self.player.uri_set(uri);
+            }
             player::PlayerEvent::UriLoaded => {
                 self.player.uri_loaded();
 
@@ -1430,12 +1460,17 @@ impl Application {
                 }
             }
             player::PlayerEvent::RateChanged(new_rate) => {
-                self.player.rate = new_rate;
+                self.player.set_rate_changed(new_rate);
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
-                self.player.stop();
-                self.media_error(msg)?;
+                if let Some(player_uri) = self.player.current_uri()
+                    && let Some(current_uri) = self.current_item_uri()
+                    && current_uri == player_uri
+                {
+                    self.player.stop();
+                    self.media_error(msg)?;
+                }
             }
             player::PlayerEvent::Warning(msg) => {
                 self.media_warning(msg)?;
@@ -1479,7 +1514,7 @@ impl Application {
             }
             Event::ResumeOrPause => {
                 // let op = match self.player_state {
-                let op = match self.player.player_state {
+                let op = match self.player.player_state() {
                     // gst_play::PlayState::Paused => Operation::Resume,
                     // gst_play::PlayState::Playing => Operation::Pause,
                     PlayerState::Paused => Operation::Resume,
@@ -1488,7 +1523,7 @@ impl Application {
                         error!(
                             "Cannot resume or pause in player current state: {:?}",
                             // self.player_state
-                            self.player.player_state
+                            self.player.player_state(),
                         );
                         return Ok(false);
                     }
@@ -1734,7 +1769,7 @@ impl Application {
                     }
                 }
                 _ = update_interval.tick() => {
-                    if self.player.player_state == player::PlayerState::Playing {
+                    if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
                     }
                 }

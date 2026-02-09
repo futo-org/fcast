@@ -458,7 +458,7 @@ define_test_case!(
             v3::EventSubscribeObject::MediaItemStart
         )),
         Step::SleepMillis(500),
-        serve!("audio/Court_House_Blues_Take_1.mp3", 0, "audio/mp4"),
+        serve!("audio/Court_House_Blues_Take_1.mp3", 0, "audio/mp3"),
         send!(Send::PlayV3 { file_id: 0 }),
         send!(Send::Stop),
     ]
@@ -476,7 +476,7 @@ define_test_case!(
             v3::EventSubscribeObject::MediaItemEnd
         )),
         Step::SleepMillis(500),
-        serve!("audio/Dont_Go_Way_Nobody.mp3", 0, "audio/mp4"),
+        serve!("audio/Dont_Go_Way_Nobody.mp3", 0, "audio/mp3"),
         send!(Send::PlayV3WithBody {
             file_id: 0,
             time: Some(243.0),
