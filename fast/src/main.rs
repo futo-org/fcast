@@ -19,8 +19,7 @@ use anyhow::{Context, anyhow, bail, ensure};
 use clap::{Parser, Subcommand};
 use fast::{Step, TestCase};
 use fcast_protocol::{
-    HEADER_LENGTH, Opcode, PlaybackState, SetVolumeMessage, VersionMessage, v2,
-    v3::{self, EventSubscribeObject, InitialSenderMessage, PlaylistContent},
+    HEADER_LENGTH, Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, VersionMessage, v2, v3::{self, EventSubscribeObject, InitialSenderMessage, PlaylistContent}
 };
 
 #[derive(Subcommand)]
@@ -187,6 +186,15 @@ impl State {
         }
 
         match opcode {
+            Opcode::PlaybackError => {
+                let msg = serde_json::from_str::<PlaybackErrorMessage>(
+                    &body
+                        .clone()
+                        .ok_or(anyhow!("Playback error is missing body"))?,
+                )?;
+
+                bail!("Playback error: {}", msg.message);
+            }
             // TODO: check that it matches what we expect
             Opcode::PlaybackUpdate => {
                 let msg = serde_json::from_str::<v3::PlaybackUpdateMessage>(
@@ -693,12 +701,11 @@ async fn run_test(
     file_server: &FileServer,
     sample_media_path: &PathBuf,
     test: &TestCase,
+    file_urls: &mut HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)>,
 ) -> anyhow::Result<()> {
     let mut stream = TcpStream::connect(receiver).await.unwrap();
     let local_addr = stream.local_addr().unwrap().ip();
     let mut state = State::new(test.steps);
-    let mut file_urls: HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)> =
-        HashMap::new();
     let (reader, mut writer) = stream.split();
     let (sleep_tx, mut sleep_rx) = unbounded_channel::<()>();
     let mut action_queue = VecDeque::new();
@@ -847,19 +854,30 @@ async fn run_tests(receiver: SocketAddr, sample_media_path: PathBuf, tests: Vec<
         for (idx, case) in matched.iter().enumerate() {
             print!("test {} ...", case.name);
             stdout.flush().unwrap();
-            match run_test(&receiver, &file_server, &sample_media_path, case).await {
+
+            let mut file_urls: HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)> =
+                HashMap::new();
+            match run_test(&receiver, &file_server, &sample_media_path, case, &mut file_urls).await {
                 Ok(_) => {
                     println!("\rtest {} ... {GREEN}OK{RESET}", case.name);
                 }
                 Err(err) => {
                     println!("\rtest {} ... {RED}FAILED{RESET}", case.name);
                     println!("Reason: {err:?}");
+
+                    println!("==================== DUMPING STATE ====================");
+                    println!("File urls: {file_urls:#?}");
+                    file_server.dump_to_stdout();
+                    println!("==================== XXXXXXXXXXXXX ====================");
+
                     return;
                 }
             }
 
-            if !(test_idx == tests.len() - 1  && idx == matched.len() - 1) {
-                std::thread::sleep(Duration::from_millis(250));
+            file_server.clear();
+
+            if !(test_idx == tests.len() - 1 && idx == matched.len() - 1) {
+                // std::thread::sleep(Duration::from_millis(1000));
             }
         }
     }

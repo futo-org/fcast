@@ -15,15 +15,10 @@ use tracing::{debug, error};
 
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
 
-struct GlElements {
-    upload: gst::Element,
-    convert: gst::Element,
-}
-
 // Taken partially from the slint gstreamer example at: https://github.com/slint-ui/slint/blob/2edd97bf8b8dc4dc26b578df6b15ea3297447444/examples/gstreamer-player/egl_integration.rs
 pub struct SlintOpenGLSink {
     appsink: gst_app::AppSink,
-    gl_elems: GlElements,
+    // gl_elems: GlElements,
     sinkbin: gst::Bin,
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     next_overlays: Overlays,
@@ -98,11 +93,6 @@ impl SlintOpenGLSink {
             .unwrap();
         gst::Element::link_many([&glupload, &glconvert, appsink.upcast_ref()]).unwrap();
 
-        let gl_elems = GlElements {
-            upload: glupload,
-            convert: glconvert,
-        };
-
         Ok(Self {
             appsink,
             next_frame: Default::default(),
@@ -111,7 +101,6 @@ impl SlintOpenGLSink {
             gst_gl_context: None,
             is_eos: Arc::new(AtomicBool::new(false)),
             sinkbin: bin,
-            gl_elems,
         })
     }
 
@@ -390,18 +379,6 @@ impl SlintOpenGLSink {
             .context("failed to fill GL info for wrapped context")?;
 
         *contexts.lock().unwrap() = Some((gst_gl_display.clone(), gst_gl_context.clone()));
-
-        let display_ctx = gst::Context::new(gst_gl::GL_DISPLAY_CONTEXT_TYPE, true);
-        display_ctx.set_gl_display(&gst_gl_display);
-        self.gl_elems.upload.set_context(&display_ctx);
-        self.gl_elems.convert.set_context(&display_ctx);
-
-        let mut app_ctx = gst::Context::new("gst.gl.app_context", true);
-        let app_ctx_mut = app_ctx.get_mut().unwrap();
-        let structure = app_ctx_mut.structure_mut();
-        structure.set("context", gst_gl_context.clone());
-        self.gl_elems.upload.set_context(&app_ctx);
-        self.gl_elems.convert.set_context(&app_ctx);
 
         self.gst_gl_context = Some(gst_gl_context);
 
