@@ -791,12 +791,12 @@ impl Application {
 
     fn current_item_uri(&self) -> Option<&str> {
         if let Some(play_msg) = self.current_play_data.as_ref() {
-            play_msg.url.as_ref().map(|u| u.as_str())
+            play_msg.url.as_deref()
         } else if let Some(playlist) = self.current_playlist.as_ref()
             && let Some(idx) = self.current_playlist_item_idx
             && let Some(item) = playlist.items.get(idx)
         {
-            item.url.as_ref().map(|u| u.as_str())
+            item.url.as_deref()
         } else {
             None
         }
@@ -1372,23 +1372,11 @@ impl Application {
                 old,
                 current,
                 pending,
-            } => match self.player.state_changed(old, current, pending) {
-                Some(_) => {
+            } => {
+                if self.player.state_changed(old, current, pending).is_some() {
                     self.notify_updates(true)?;
                 }
-                None => (),
-            },
-            //     StateChangeResult::Changed => {
-            //         // self.player_state = new_state;
-            //         self.notify_updates(true)?;
-            //     }
-            //     StateChangeResult::SeekPending => {
-            //         debug!("Seek pending");
-            //     }
-            //     StateChangeResult::SeekCompleted => {
-            //         self.notify_updates(true)?;
-            //     }
-            //     StateChangeResult::StateChangePending => (),
+            }
             player::PlayerEvent::UriSet(uri) => {
                 self.player.uri_set(uri);
             }

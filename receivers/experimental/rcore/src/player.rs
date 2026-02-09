@@ -44,31 +44,30 @@ enum RunningState {
     Playing,
 }
 
-impl Into<gst::State> for &mut RunningState {
-    fn into(self) -> gst::State {
-        match self {
+impl From<&mut RunningState> for gst::State {
+    fn from(value: &mut RunningState) -> Self {
+        match value {
             RunningState::Paused => gst::State::Paused,
             RunningState::Playing => gst::State::Playing,
         }
     }
 }
 
-impl Into<gst::State> for RunningState {
-    fn into(mut self) -> gst::State {
-        (&mut self).into()
+impl From<RunningState> for gst::State {
+    fn from(mut value: RunningState) -> Self {
+        Self::from(&mut value)
     }
 }
 
 #[derive(Debug, PartialEq)]
 enum State {
     Stopped,
-    Loading, // TODO: remove
     Buffering {
         percent: i32,
         target_state: gst::State,
         pending_seek: Option<Seek>,
     },
-    ChangingState {
+    Changing {
         target_state: gst::State,
         pending_seek: Option<Seek>,
     },
@@ -131,7 +130,7 @@ impl StateMachine {
 
         let target_state = match self.state {
             State::Buffering { target_state, .. }
-            | State::ChangingState { target_state, .. }
+            | State::Changing { target_state, .. }
             | State::SeekAsync { target_state, .. }
             | State::Seeking { target_state, .. } => target_state,
             _ => gst::State::Paused,
@@ -162,31 +161,28 @@ impl StateMachine {
                 State::Running {
                     state: RunningState::Playing,
                 } => gst::State::Playing,
-                State::ChangingState { target_state, .. } => target_state,
+                State::Changing { target_state, .. } => target_state,
                 State::SeekAsync { target_state, .. } => target_state,
                 _ => gst::State::Paused,
             }
         };
 
         match &mut self.state {
-            State::SeekAsync { seek: prev_seek, .. } => {
+            State::SeekAsync {
+                seek: prev_seek, ..
+            } => {
                 warn!("Cannot seek because a seek request is pending");
                 prev_seek.position = seek.position;
                 prev_seek.rate = seek.rate;
-                return None;
+                None
             }
-            State::Seeking {
-                ..
-            } => {
+            State::Seeking { .. } => {
                 warn!("Cannot seek because a seek request is pending");
-                return None;
+                None
             }
             _ => {
-                self.state = State::Seeking {
-                    target_state,
-                };
-
-                return Some(seek);
+                self.state = State::Seeking { target_state };
+                Some(seek)
             }
         }
     }
@@ -197,15 +193,17 @@ impl StateMachine {
 
         let next_state: gst::State = state.into();
         match &mut self.state {
-            State::Stopped | State::Loading => todo!(),
+            State::Stopped => {
+                error!("Cannot set playback state when the player is stopped");
+                return None;
+            }
             State::Buffering { target_state, .. } => *target_state = next_state,
-            State::ChangingState {
-                target_state,
-                pending_seek,
-            } => if *target_state != next_state {},
+            State::Changing { target_state, .. } => if *target_state != next_state {},
             State::SeekAsync { target_state, .. } => *target_state = next_state,
             State::Seeking { target_state, .. } => *target_state = next_state,
-            State::Running { state } => {
+            // State::Running { state } => {
+            State::Running { .. } => {
+                // TODO: set change state to ChangingState
                 return Some(next_state);
             }
         }
@@ -218,14 +216,14 @@ impl StateMachine {
         // tracing::info!("<<TEST>> assert_eq!(sm.buffering({new_percent}), TODO);");
 
         match &mut self.state {
-            State::Stopped | State::Loading => {
+            State::Stopped => {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: gst::State::Playing,
                     pending_seek: None,
                 };
             }
-            State::SeekAsync { seek, target_state } => {
+            State::SeekAsync { target_state, .. } => {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: *target_state,
@@ -249,7 +247,7 @@ impl StateMachine {
                     }
 
                     if target != self.current_state {
-                        self.state = State::ChangingState {
+                        self.state = State::Changing {
                             target_state: target,
                             pending_seek: None,
                         };
@@ -275,7 +273,7 @@ impl StateMachine {
                 }
                 return BufferingStateResult::Buffering;
             }
-            State::ChangingState {
+            State::Changing {
                 target_state,
                 pending_seek,
             } => {
@@ -324,7 +322,7 @@ impl StateMachine {
         self.current_state = new;
 
         match &mut self.state {
-            State::Stopped | State::Loading => {
+            State::Stopped => {
                 if matches!(pending, gst::State::Ready | gst::State::Null) {
                     return StateChangeResult::Waiting;
                 }
@@ -334,16 +332,16 @@ impl StateMachine {
                         self.state = State::Running {
                             state: RunningState::Paused,
                         };
-                        return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                        StateChangeResult::NewPlaybackState(PlaybackState::Paused)
                     }
                     gst::State::Playing => {
                         self.state = State::Running {
                             state: RunningState::Playing,
                         };
-                        return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
+                        StateChangeResult::NewPlaybackState(PlaybackState::Playing)
                     }
                     // TODO: idle?
-                    _ => return StateChangeResult::Waiting,
+                    _ => StateChangeResult::Waiting,
                 }
             }
             State::Buffering {
@@ -357,9 +355,9 @@ impl StateMachine {
                     *pending_seek = None;
                 }
 
-                return StateChangeResult::Waiting;
+                StateChangeResult::Waiting
             }
-            State::ChangingState {
+            State::Changing {
                 target_state,
                 pending_seek,
             } => {
@@ -398,7 +396,7 @@ impl StateMachine {
                 }
 
                 // TODO: check if next state is void pending and then send new state change?
-                return StateChangeResult::Waiting;
+                StateChangeResult::Waiting
             }
             State::SeekAsync { seek, target_state } => {
                 if new == gst::State::Paused && pending == gst::State::VoidPending {
@@ -414,7 +412,7 @@ impl StateMachine {
                     return StateChangeResult::Seek(seek);
                 }
 
-                return StateChangeResult::Waiting;
+                StateChangeResult::Waiting
             }
             State::Seeking {
                 // position,
@@ -426,7 +424,7 @@ impl StateMachine {
                 if new == gst::State::Paused && pending == gst::State::VoidPending {
                     let target = *target_state;
                     if new != target {
-                        self.state = State::ChangingState {
+                        self.state = State::Changing {
                             // target_state: *target_state,
                             target_state: target,
                             pending_seek: None,
@@ -449,28 +447,27 @@ impl StateMachine {
                             }
                         }
                     }
-                } else {
                 }
 
-                return StateChangeResult::Waiting;
+                StateChangeResult::Waiting
             }
             State::Running { .. } => match (new, pending) {
                 (gst::State::VoidPending | gst::State::Null | gst::State::Ready, _)
                     | (_, gst::State::Null) => {
                     self.state = State::Stopped;
-                    return StateChangeResult::NewPlaybackState(PlaybackState::Idle);
+                    StateChangeResult::NewPlaybackState(PlaybackState::Idle)
                 }
                 (gst::State::Paused, _) => {
                     self.state = State::Running {
                         state: RunningState::Paused,
                     };
-                    return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                    StateChangeResult::NewPlaybackState(PlaybackState::Paused)
                 }
                 (gst::State::Playing, _) => {
                     self.state = State::Running {
                         state: RunningState::Playing,
                     };
-                    return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
+                    StateChangeResult::NewPlaybackState(PlaybackState::Playing)
                 }
             },
         }
@@ -1161,9 +1158,9 @@ impl Player {
 
     pub fn player_state(&self) -> PlayerState {
         match &self.state_machine.state {
-            State::Stopped | State::Loading => PlayerState::Stopped,
+            State::Stopped => PlayerState::Stopped,
             State::Buffering { .. }
-            | State::ChangingState { .. }
+            | State::Changing { .. }
             | State::SeekAsync { .. }
             | State::Seeking { .. } => PlayerState::Buffering, // TODO: ?
             State::Running { state } => match state {
@@ -1190,7 +1187,7 @@ impl Player {
     }
 
     pub fn current_uri(&self) -> Option<&str> {
-        self.state_machine.current_uri.as_ref().map(|u| u.as_str())
+        self.state_machine.current_uri.as_deref()
     }
 }
 
@@ -1214,12 +1211,6 @@ mod tests {
     macro_rules! rs {
         ($state:ident) => {
             RunningState::$state
-        };
-    }
-
-    macro_rules! ps {
-        ($state:ident) => {
-            PlaybackState::$state
         };
     }
 
