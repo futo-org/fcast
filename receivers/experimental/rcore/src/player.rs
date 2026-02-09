@@ -60,12 +60,18 @@ impl From<RunningState> for gst::State {
 }
 
 #[derive(Debug, PartialEq)]
+enum PendingSeek {
+    Async(Seek),
+    Waiting,
+}
+
+#[derive(Debug, PartialEq)]
 enum State {
     Stopped,
     Buffering {
         percent: i32,
         target_state: gst::State,
-        pending_seek: Option<Seek>,
+        pending_seek: Option<PendingSeek>,
     },
     Changing {
         target_state: gst::State,
@@ -133,6 +139,7 @@ impl StateMachine {
             | State::Changing { target_state, .. }
             | State::SeekAsync { target_state, .. }
             | State::Seeking { target_state, .. } => target_state,
+            // TODO: playling variants?
             _ => gst::State::Paused,
         };
 
@@ -180,6 +187,15 @@ impl StateMachine {
                 warn!("Cannot seek because a seek request is pending");
                 None
             }
+            State::Buffering { pending_seek, .. } if pending_seek.is_some() => {
+                if let Some(pending_seek) = pending_seek.as_mut()
+                    && let PendingSeek::Async(pending_seek) = pending_seek
+                {
+                    pending_seek.position = seek.position;
+                    pending_seek.rate = seek.rate;
+                }
+                None
+            }
             _ => {
                 self.state = State::Seeking { target_state };
                 Some(seek)
@@ -223,11 +239,13 @@ impl StateMachine {
                     pending_seek: None,
                 };
             }
-            State::SeekAsync { target_state, .. } => {
+            State::SeekAsync {
+                seek, target_state, ..
+            } => {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: *target_state,
-                    pending_seek: None,
+                    pending_seek: Some(PendingSeek::Async(*seek)),
                 };
             }
             State::Buffering {
@@ -240,9 +258,19 @@ impl StateMachine {
                     debug!("Buffering completed");
                     let target = *target_state;
                     if let Some(_seek) = pending_seek {
-                        self.state = State::Seeking {
-                            target_state: target,
-                        };
+                        match _seek {
+                            PendingSeek::Async(seek) => {
+                                self.state = State::SeekAsync {
+                                    target_state: target,
+                                    seek: *seek,
+                                };
+                            }
+                            PendingSeek::Waiting => {
+                                self.state = State::Seeking {
+                                    target_state: target,
+                                };
+                            }
+                        }
                         return BufferingStateResult::FinishedButWaitingSeek;
                     }
 
@@ -281,7 +309,11 @@ impl StateMachine {
                     percent: new_percent,
                     target_state: *target_state,
                     // TODO: pending seek
-                    pending_seek: *pending_seek,
+                    pending_seek: if let Some(seek) = pending_seek {
+                        Some(PendingSeek::Async(*seek))
+                    } else {
+                        None
+                    },
                 };
             }
             State::Seeking {
@@ -292,9 +324,7 @@ impl StateMachine {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: *target_state,
-                    // pending_seek: None,
-                    // TODO: pending seek
-                    pending_seek: Some(Seek::new(None, None)),
+                    pending_seek: Some(PendingSeek::Waiting),
                 };
             }
             State::Running { state } => {
@@ -1318,5 +1348,27 @@ mod tests {
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
         assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
         assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn basic_playback_4() {
+        let mut sm = StateMachine::new();
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
+        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
+        assert!(matches!(sm.state, State::SeekAsync { seek: _, target_state: gs!(Playing) }));
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert!(matches!(sm.state, State::Buffering { .. }));
+        assert_eq!(sm.seek_internal(Seek::new(Some(60.0), None), None), None);
+        assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)),);
     }
 }
