@@ -101,8 +101,6 @@ pub enum StateChangeResult {
 enum BufferingStateResult {
     Started(gst::State),
     Buffering,
-    // TODO: should include seek
-    // FinishedWithSeek(Seek),
     FinishedButWaitingSeek,
     Finished(Option<gst::State>),
 }
@@ -217,9 +215,11 @@ impl StateMachine {
             State::Changing { target_state, .. } => if *target_state != next_state {},
             State::SeekAsync { target_state, .. } => *target_state = next_state,
             State::Seeking { target_state, .. } => *target_state = next_state,
-            // State::Running { state } => {
             State::Running { .. } => {
-                // TODO: set change state to ChangingState
+                self.state = State::Changing {
+                    target_state: next_state,
+                    pending_seek: None,
+                };
                 return Some(next_state);
             }
         }
@@ -308,19 +308,10 @@ impl StateMachine {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: *target_state,
-                    // TODO: pending seek
-                    pending_seek: if let Some(seek) = pending_seek {
-                        Some(PendingSeek::Async(*seek))
-                    } else {
-                        None
-                    },
+                    pending_seek: pending_seek.as_mut().map(|seek| PendingSeek::Async(*seek)),
                 };
             }
-            State::Seeking {
-                // position,
-                // rate,
-                target_state,
-            } => {
+            State::Seeking { target_state } => {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: *target_state,
@@ -374,13 +365,7 @@ impl StateMachine {
                     _ => StateChangeResult::Waiting,
                 }
             }
-            State::Buffering {
-                // percent,
-                // target_state,
-                pending_seek,
-                ..
-            // } => return StateChangeResult::Waiting,
-            } => {
+            State::Buffering { pending_seek, .. } => {
                 if new == gst::State::Paused && pending == gst::State::VoidPending {
                     *pending_seek = None;
                 }
@@ -430,12 +415,8 @@ impl StateMachine {
             }
             State::SeekAsync { seek, target_state } => {
                 if new == gst::State::Paused && pending == gst::State::VoidPending {
-                    // self.seek_internal(seek, Some(target_state));
                     let seek = *seek;
                     self.state = State::Seeking {
-                        // position: seek.position,
-                        // rate: seek.rate.unwrap_or(self.rate),
-                        // target_state: self.current_state,
                         target_state: *target_state,
                     };
 
@@ -444,18 +425,11 @@ impl StateMachine {
 
                 StateChangeResult::Waiting
             }
-            State::Seeking {
-                // position,
-                // rate,
-                target_state,
-                ..
-            } => {
-                // TODO: only check this on new = Paused && pending = VoidPending
+            State::Seeking { target_state, .. } => {
                 if new == gst::State::Paused && pending == gst::State::VoidPending {
                     let target = *target_state;
                     if new != target {
                         self.state = State::Changing {
-                            // target_state: *target_state,
                             target_state: target,
                             pending_seek: None,
                         };
@@ -464,11 +438,15 @@ impl StateMachine {
                     } else {
                         match new {
                             gst::State::Paused => {
-                                self.state = State::Running { state: RunningState::Paused };
+                                self.state = State::Running {
+                                    state: RunningState::Paused,
+                                };
                                 return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
                             }
                             gst::State::Playing => {
-                                self.state = State::Running { state: RunningState::Playing };
+                                self.state = State::Running {
+                                    state: RunningState::Playing,
+                                };
                                 return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
                             }
                             _ => {
@@ -483,7 +461,7 @@ impl StateMachine {
             }
             State::Running { .. } => match (new, pending) {
                 (gst::State::VoidPending | gst::State::Null | gst::State::Ready, _)
-                    | (_, gst::State::Null) => {
+                | (_, gst::State::Null) => {
                     self.state = State::Stopped;
                     StateChangeResult::NewPlaybackState(PlaybackState::Idle)
                 }
@@ -506,7 +484,6 @@ impl StateMachine {
     fn clear_state(&mut self) {
         self.state = State::Stopped;
         self.is_live = false;
-        // self.player_state =
         self.position = None;
         self.rate = 1.0;
         self.seekable = false;
