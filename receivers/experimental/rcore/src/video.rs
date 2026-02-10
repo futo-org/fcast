@@ -18,11 +18,18 @@ pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
 // Taken partially from the slint gstreamer example at: https://github.com/slint-ui/slint/blob/2edd97bf8b8dc4dc26b578df6b15ea3297447444/examples/gstreamer-player/egl_integration.rs
 pub struct SlintOpenGLSink {
     appsink: gst_app::AppSink,
+    // appsink: gst::Element,
     // gl_elems: GlElements,
     sinkbin: gst::Bin,
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     next_overlays: Overlays,
-    current_frame: Mutex<Option<gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>>>,
+    // current_frame: Mutex<Option<gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>>>,
+    current_frame: Mutex<
+        Option<(
+            gst_video::VideoInfo,
+            gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>,
+        )>,
+    >,
     gst_gl_context: Option<gst_gl::GLContext>,
     pub is_eos: Arc<AtomicBool>,
 }
@@ -46,17 +53,20 @@ pub struct Overlay {
 }
 
 pub enum FrameData {
-    Nv12 {
-        y: NonZero<u32>,
-        uv: NonZero<u32>,
-    }
+    Nv12 { y: NonZero<u32>, uv: NonZero<u32> },
+    P01010le { y: NonZero<u32>, uv: NonZero<u32> },
 }
 
 // TODO: color
 pub struct Frame {
+    pub external: bool,
     pub width: u32,
     pub height: u32,
+    pub color_range: gst_video::VideoColorRange,
+    pub color_matrix: gst_video::VideoColorMatrix,
+    pub transfer_function: gst_video::VideoTransferFunction,
     pub data: FrameData,
+    // TODO: external OES
 }
 
 // TODO: fork slint to make the skia opengl renderer expose more pixel formats for HDR
@@ -65,61 +75,155 @@ pub struct Frame {
 
 impl SlintOpenGLSink {
     pub fn new() -> Result<Self> {
+        // let mut caps = gst::Caps::new_empty();
+        // // let caps = {
+        // {
+        //     let caps = caps.get_mut().unwrap();
+        //     for features in [
+        //         gst::CapsFeatures::new([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
+        //         gst::CapsFeatures::new([
+        //             gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+        //             gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+        //         ]),
+        //     ] {
+        //         let these_caps = gst_video::VideoCapsBuilder::new()
+        //             .features(features.iter())
+        //             // .format(gst_video::VideoFormat::Nv12)
+        //             // .format_list([gst_video::VideoFormat::Nv12, gst_video::VideoFormat::P01010le])
+        //             // .format(gst_video::VideoFormat::P01010le)
+        //             // .format(gst_video::VideoFormat::Rgba)
+        //             // TODO: can we use OES
+        //             // .field("texture-target", gst::List::new(["2D", "external-oes"]))
+        //             // .field("texture-target", "2D")
+        //             .width_range(1..i32::MAX)
+        //             .height_range(1..i32::MAX)
+        //             .build();
+        //         caps.append(these_caps);
+        //     }
+
+        //     // gst_video::VideoCapsBuilder::new()
+        //     //     .any_features()
+        //     // // .features(
+        //     // //     gst::CapsFeatures::new([
+        //     // //         gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+        //     // //         gst::CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+        //     // //         // gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+        //     // //     ]).iter()
+        //     // // )
+        //     //     .width_range(1..i32::MAX)
+        //     //     .height_range(1..i32::MAX)
+        //     //     .build()
+        // }
+
+        // TODO: try dmabuf import
         let mut caps = gst::Caps::new_empty();
-        // let caps = {
         {
             let caps = caps.get_mut().unwrap();
-            for features in [
-                gst::CapsFeatures::new([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
-                gst::CapsFeatures::new([
-                    gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
-                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
-                ]),
-            ] {
+
+            let features = [
+                Some([gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION]),
+                None
+            ];
+
+            let formats = [
+                gst_video::VideoFormat::Nv12,
+                // TODO: P010_10LE
+            ];
+
+            // [gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
+            // gst::CapsFeatures::new([
+            //     gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+            //     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+            // ]),
+
+            for feature_set in features {
                 let these_caps = gst_video::VideoCapsBuilder::new()
-                    .features(features.iter())
-                    // .format(gst_video::VideoFormat::Rgba)
-                    .field("texture-target", "2D")
+                    // .format_list(formats)
                     .width_range(1..i32::MAX)
-                    .height_range(1..i32::MAX)
-                    .build();
+                    .height_range(1..i32::MAX);
+                let these_caps = if let Some(features) = feature_set {
+                    these_caps.features(features.iter().copied()).build()
+                } else {
+                    these_caps.build()
+                };
+                    // .features(features.iter().copied())
+                    // // .format(gst_video::VideoFormat::Nv12)
+                    // .format_list([gst_video::VideoFormat::Nv12, gst_video::VideoFormat::P01010le])
+                    // // .format(gst_video::VideoFormat::P01010le)
+                    // // .format(gst_video::VideoFormat::Rgba)
+                    // // TODO: can we use OES?
+                    // .field("texture-target", gst::List::new(["2D", "external-oes"]))
+                    // // .field("texture-target", "2D")
+                    // .width_range(1..i32::MAX)
+                    // .height_range(1..i32::MAX)
+                    // .build();
                 caps.append(these_caps);
             }
-
-                // gst_video::VideoCapsBuilder::new()
-                //     .any_features()
-                // // .features(
-                // //     gst::CapsFeatures::new([
-                // //         gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
-                // //         gst::CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
-                // //         // gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
-                // //     ]).iter()
-                // // )
-                //     .width_range(1..i32::MAX)
-                //     .height_range(1..i32::MAX)
-                //     .build()
         }
+
+        // let sink_capsfilter = gst::ElementFactory::make("capsfilter").property("caps", caps).build()?;
 
         let appsink = gst_app::AppSink::builder()
             .caps(&caps)
             .enable_last_sample(false)
             .max_buffers(1u32)
+            .property("emit-signals", true)
             .build();
 
         let bin = gst::Bin::new();
         let ghost = gst::GhostPad::new(gst::PadDirection::Sink);
         bin.add_pad(&ghost)?;
 
+        // let appsink = gst::ElementFactory::make("glimagesink").build()?;
+
         bin.add(&appsink)?;
+        // bin.add(&sink_capsfilter)?;
 
-        let glupload = gst::ElementFactory::make("glupload").build()?;
-        let glconvert = gst::ElementFactory::make("glcolorconvert").build()?;
+        // let glupload = gst::ElementFactory::make("glupload").build()?;
+        // let glconvert = gst::ElementFactory::make("glcolorconvert").build()?;
 
-        bin.add_many([&glupload, &glconvert]).unwrap();
+        // let capsfilter = gst::ElementFactory::make("capsfilter")
+        //     .property(
+        //         "caps",
+        //         {
+        //         }
+
+
+        //         // gst_video::VideoCapsBuilder::new()
+        //         //     .features(
+        //         //         gst::CapsFeatures::new([
+        //         //             gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+        //         //             gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+        //         //         ]).iter()
+        //         //     )
+        //         //     // .format(gst_video::VideoFormat::Nv12)
+        //         //     .format_list([gst_video::VideoFormat::Nv12, gst_video::VideoFormat::P01010le])
+        //         //     // .format(gst_video::VideoFormat::P01010le)
+        //         //     // .format(gst_video::VideoFormat::Rgba)
+        //         //     // TODO: can we use OES
+        //         //     // .field("texture-target", gst::List::new(["2D", "external-oes"]))
+        //         //     .field("texture-target", "2D")
+        //         //     .width_range(1..i32::MAX)
+        //         //     .height_range(1..i32::MAX)
+        //         //     .build(),
+        //     )
+        //     .build()?;
+
+        // bin.add_many([&glupload, &glconvert]).unwrap();
+        // bin.add_many([&glupload, &capsfilter, &glconvert]).unwrap();
+        // bin.add_many([&glupload, &capsfilter]).unwrap();
+        // bin.add_many([&glupload]).unwrap();
+        // ghost
+        //     .set_target(Some(&glupload.static_pad("sink").unwrap()))
+        //     .unwrap();
         ghost
-            .set_target(Some(&glupload.static_pad("sink").unwrap()))
+            .set_target(Some(&appsink.static_pad("sink").unwrap()))
             .unwrap();
-        gst::Element::link_many([&glupload, &glconvert, appsink.upcast_ref()]).unwrap();
+        // gst::Element::link_many([&glupload, &glconvert, appsink.upcast_ref()]).unwrap();
+        // gst::Element::link_many([&glupload, &capsfilter, &glconvert, appsink.upcast_ref()]).unwrap();
+        // gst::Element::link_many([&glupload, &capsfilter, appsink.upcast_ref()]).unwrap();
+        // gst::Element::link_many([&glupload, &capsfilter, &sink_capsfilter, appsink.upcast_ref()]).unwrap();
+        // gst::Element::link_many([&glupload, appsink.upcast_ref()]).unwrap();
 
         Ok(Self {
             appsink,
@@ -276,6 +380,7 @@ impl SlintOpenGLSink {
     where
         F: Fn() + Send + Sync + 'static,
     {
+        // TODO: can this be done just on a new preroll sample?
         is_eos.store(false, atomic::Ordering::Relaxed);
 
         // {
@@ -294,16 +399,19 @@ impl SlintOpenGLSink {
         {
             Some(context) => context.clone(),
             None => {
-                error!("Got non-GL memory");
-                return Err(gst::FlowError::Error);
+                // error!("Got non-GL memory");
+                // return Err(gst::FlowError::Error);
+                return Ok(gst::FlowSuccess::Ok);
             }
         };
 
         // Sync point to ensure that the rendering in this context will be complete by the time the
         // Slint created GL context needs to access the texture.
         if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
+            debug!("Buffer has sync meta");
             meta.set_sync_point(&context);
         } else {
+            tracing::warn!("Buffer has no sync meta");
             let buffer = buffer.make_mut();
             let meta = gst_gl::GLSyncMeta::add(buffer, &context);
             meta.set_sync_point(&context);
@@ -427,27 +535,45 @@ impl SlintOpenGLSink {
 
         self.appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
+                .propose_allocation(|_, allocation| {
+                    allocation.add_allocation_meta::<gst_video::VideoMeta>(None);
+                    debug!("##################### Propose allocation #######################");
+                    // true
+                    false
+                })
                 .new_preroll({
-                    // let next_frame_ref = Arc::clone(&next_frame_ref);
-                    // let next_overlays_ref = Arc::clone(&self.next_overlays);
-                    // let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
-                    // let is_eos = Arc::clone(&is_eos_ref);
+                    let next_frame_ref = Arc::clone(&next_frame_ref);
+                    let next_overlays_ref = Arc::clone(&self.next_overlays);
+                    let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
+                    let is_eos = Arc::clone(&is_eos_ref);
                     move |appsink| {
-                    //     let sample = appsink
-                    //         .pull_preroll()
-                    //         .map_err(|_| gst::FlowError::Flushing)?;
-                    //     if !is_eos.load(atomic::Ordering::Relaxed) {
-                    //         Self::handle_new_sample(
-                    //             sample,
-                    //             &next_frame_ref,
-                    //             &next_overlays_ref,
-                    //             &next_frame_available_notifier,
-                    //             &is_eos,
-                    //         )
-                    //     } else {
-                    //         Ok(gst::FlowSuccess::Ok)
-                    //     }
-                        Ok(gst::FlowSuccess::Ok)
+                        //     let sample = appsink
+                        //         .pull_preroll()
+                        //         .map_err(|_| gst::FlowError::Flushing)?;
+                        //     if !is_eos.load(atomic::Ordering::Relaxed) {
+                        //         Self::handle_new_sample(
+                        //             sample,
+                        //             &next_frame_ref,
+                        //             &next_overlays_ref,
+                        //             &next_frame_available_notifier,
+                        //             &is_eos,
+                        //         )
+                        //     } else {
+                        //         Ok(gst::FlowSuccess::Ok)
+                        //     }
+                        // Ok(gst::FlowSuccess::Ok)
+
+                        let sample = appsink
+                            .pull_sample()
+                            .map_err(|_| gst::FlowError::Flushing)?;
+                        tracing::debug!(video_caps = ?sample.caps());
+                        Self::handle_new_sample(
+                            sample,
+                            &next_frame_ref,
+                            &next_overlays_ref,
+                            &next_frame_available_notifier,
+                            &is_eos,
+                        )
                     }
                 })
                 .new_sample({
@@ -456,7 +582,7 @@ impl SlintOpenGLSink {
                         let sample = appsink
                             .pull_sample()
                             .map_err(|_| gst::FlowError::Flushing)?;
-                        // tracing::debug!(video_caps = ?sample.caps());
+                        tracing::debug!(video_caps = ?sample.caps());
                         Self::handle_new_sample(
                             sample,
                             &next_frame_ref,
@@ -488,34 +614,58 @@ impl SlintOpenGLSink {
             sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
 
             if let Ok(frame) = gst_gl::GLVideoFrame::from_buffer_readable(buffer, &info) {
-                *self.current_frame.lock() = Some(frame);
+                *self.current_frame.lock() = Some((info, frame));
             } else {
                 return None;
             }
         }
 
-        self.current_frame.lock().as_ref().and_then(|frame| {
-            tracing::debug!(n_planes = frame.n_planes());
-            tracing::debug!(gl_format_of_buffer = ?frame.format());
-            tracing::debug!(gl_format = ?frame.format_info());
+        self.current_frame
+            .lock()
+            // .take()
+            .as_ref()
+            .and_then(|(info, frame)| {
+                // tracing::debug!(n_planes = frame.n_planes());
+                let external = match frame.texture_target(0).unwrap() {
+                    gst_gl::GLTextureTarget::_2d => false,
+                    gst_gl::GLTextureTarget::ExternalOes => true,
+                    _ => todo!(),
+                };
+                tracing::debug!(external, video_format = ?info.format(), gl_format_of_buffer = ?frame.format());
+                // tracing::debug!(gl_format = ?frame.format_info());
+                // frame.colorimetry();
 
-            let (width, height) = (frame.width(), frame.height());
-            let data = match frame.format() {
-                gst_video::VideoFormat::Nv12 => {
-                    FrameData::Nv12 {
-                        y: frame.texture_id(0).unwrap().try_into().unwrap(),
-                        uv: frame.texture_id(1).unwrap().try_into().unwrap(),
+                let (width, height) = (frame.width(), frame.height());
+                let data = match frame.format() {
+                    gst_video::VideoFormat::Nv12 => {
+                        FrameData::Nv12 {
+                            // TODO: error handling
+                            y: frame.texture_id(0).unwrap().try_into().unwrap(),
+                            uv: frame.texture_id(1).unwrap().try_into().unwrap(),
+                        }
                     }
-                }
-                _ => return None,
-            };
+                    gst_video::VideoFormat::P01010le => {
+                        FrameData::P01010le {
+                            // TODO: error handling
+                            y: frame.texture_id(0).unwrap().try_into().unwrap(),
+                            uv: frame.texture_id(1).unwrap().try_into().unwrap(),
+                        }
+                    }
+                    _ => return None,
+                };
 
-            Some(Frame {
-                width,
-                height,
-                data,
+                let colorimetry = info.colorimetry();
+
+                Some(Frame {
+                    external,
+                    width,
+                    height,
+                    data,
+                    color_range: colorimetry.range(),
+                    color_matrix: colorimetry.matrix(),
+                    transfer_function: colorimetry.transfer(),
+                })
             })
-        })
 
         // self.current_frame
         //     .lock()

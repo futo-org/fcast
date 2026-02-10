@@ -25,7 +25,7 @@ license = "MIT"
 tokio = { version = "1.46.1", features = [ "full" ] }
 serde = { version = "1.0.219", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.24.2" }
-gst-app = { package = "gstreamer-app", version = "0.24.2" }
+gst-app = { package = "gstreamer-app", version = "0.24.2", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.24.2", features = [ "v1_24" ] }
 serde_json = "1.0"
 thiserror = "2.0"

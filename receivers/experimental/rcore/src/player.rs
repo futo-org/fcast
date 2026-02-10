@@ -600,7 +600,12 @@ impl Player {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
             .property("video-sink", video_sink)
+            // .property("video-sink", gst::ElementFactory::make("glimagesink").build()?)
+            // .property("video-sink", gst::ElementFactory::make("gtk4paintablesink").build()?)
+            // .property("video-sink", gst::ElementFactory::make("waylandsink").build()?)
             .property("audio-filter", scaletempo)
+            .property_from_str("flags", "deinterlace+buffering+soft-volume+text+audio+video")
+            .property("text-sink", gst::ElementFactory::make("fakesink").build()?) // debugging
             // .property("instant-uri", true)
             .build()?;
 
@@ -766,47 +771,47 @@ impl Player {
         use gst::MessageView;
 
         let event = match msg.view() {
-            MessageView::NeedContext(ctx) => {
-                let typ = ctx.context_type();
-                debug!(typ, "Need context");
-                if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
-                    let contexts = contexts.lock().unwrap();
-                    let Some(contexts) = contexts.as_ref() else {
-                        error!("Missing contexts");
-                        return;
-                    };
+            // MessageView::NeedContext(ctx) => {
+            //     let typ = ctx.context_type();
+            //     debug!(typ, "Need context");
+            //     if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
+            //         let contexts = contexts.lock().unwrap();
+            //         let Some(contexts) = contexts.as_ref() else {
+            //             error!("Missing contexts");
+            //             return;
+            //         };
 
-                    if let Some(element) = msg
-                        .src()
-                        .and_then(|source| source.downcast_ref::<gst::Element>())
-                    {
-                        let display_ctx = gst::Context::new(typ, true);
-                        display_ctx.set_gl_display(&contexts.0);
-                        debug!(display_type = ?contexts.0.handle_type());
-                        element.set_context(&display_ctx);
-                    }
-                } else if typ == "gst.gl.app_context" {
-                    let contexts = contexts.lock().unwrap();
-                    let Some(contexts) = contexts.as_ref() else {
-                        error!("Missing contexts");
-                        return;
-                    };
+            //         if let Some(element) = msg
+            //             .src()
+            //             .and_then(|source| source.downcast_ref::<gst::Element>())
+            //         {
+            //             let display_ctx = gst::Context::new(typ, true);
+            //             display_ctx.set_gl_display(&contexts.0);
+            //             debug!(display_type = ?contexts.0.handle_type());
+            //             element.set_context(&display_ctx);
+            //         }
+            //     } else if typ == "gst.gl.app_context" {
+            //         let contexts = contexts.lock().unwrap();
+            //         let Some(contexts) = contexts.as_ref() else {
+            //             error!("Missing contexts");
+            //             return;
+            //         };
 
-                    if let Some(element) = msg
-                        .src()
-                        .and_then(|source| source.downcast_ref::<gst::Element>())
-                    {
-                        let mut app_ctx = gst::Context::new(typ, true);
-                        let app_ctx_mut = app_ctx.get_mut().unwrap();
-                        let structure = app_ctx_mut.structure_mut();
-                        debug!(app_context_display_type = ?contexts.1.display().handle_type());
-                        structure.set("context", &contexts.1);
-                        element.set_context(&app_ctx);
-                    }
-                }
+            //         if let Some(element) = msg
+            //             .src()
+            //             .and_then(|source| source.downcast_ref::<gst::Element>())
+            //         {
+            //             let mut app_ctx = gst::Context::new(typ, true);
+            //             let app_ctx_mut = app_ctx.get_mut().unwrap();
+            //             let structure = app_ctx_mut.structure_mut();
+            //             debug!(app_context_display_type = ?contexts.1.display().handle_type());
+            //             structure.set("context", &contexts.1);
+            //             element.set_context(&app_ctx);
+            //         }
+            //     }
 
-                return;
-            }
+            //     return;
+            // }
             MessageView::Eos(_) => PlayerEvent::EndOfStream,
             MessageView::Error(error) => PlayerEvent::Error(error.error().message().to_string()),
             MessageView::Warning(warning) => {
@@ -980,6 +985,8 @@ impl Player {
     }
 
     pub fn pause(&mut self) {
+        self.playbin.downcast_ref::<gst::Bin>().unwrap().debug_to_dot_file(gst::DebugGraphDetails::all(), "player-pipeline");
+
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
             self.set_state_async(state);
         }
