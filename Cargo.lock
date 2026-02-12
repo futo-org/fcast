@@ -6925,6 +6925,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
+name = "remote-pipeline-dbg"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"

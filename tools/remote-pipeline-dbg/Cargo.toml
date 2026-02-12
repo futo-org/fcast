@@ -1,0 +1,12 @@
+[package]
+name = "remote-pipeline-dbg"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "2a09e4d44b791560dcce328a54018ee092298736", default-features = false, features = [ "renderer-skia", "backend-winit", "std", "compat-1-2" ] }
+image = { version = "0.25", default-features = false, features = [ "png" ] }
+
+[build-dependencies]
+slint-build.workspace = true

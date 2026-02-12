@@ -15,7 +15,7 @@ members = [
     "receivers/experimental/rcore",
     "receivers/experimental/desktop",
     "receivers/experimental/android"
-]
+, "tools/remote-pipeline-dbg"]
 resolver = "2"
 
 [workspace.package]

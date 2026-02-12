@@ -1465,6 +1465,7 @@ impl Application {
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
+                self.player.dump_graph();
                 if let Some(player_uri) = self.player.current_uri()
                     && let Some(current_uri) = self.current_item_uri()
                     && current_uri == player_uri
@@ -1474,6 +1475,7 @@ impl Application {
                 }
             }
             player::PlayerEvent::Warning(msg) => {
+                self.player.dump_graph();
                 self.media_warning(msg)?;
             }
         }
@@ -2018,9 +2020,7 @@ pub fn run(
                 if bridge.get_playing() {
                     let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
                         match frame {
-                            Some(frame) => {
-                                slint::Image::gst_frame(frame.frame, frame.info)
-                            }
+                            Some(frame) => slint::Image::gst_frame(frame.frame, frame.info),
                             None => {
                                 return;
                             }
