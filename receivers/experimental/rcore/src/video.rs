@@ -1,12 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::{
-    num::NonZero,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
+use std::sync::{
+    Arc,
+    atomic::{self, AtomicBool, AtomicU64},
 };
 
 use gst::prelude::*;
@@ -15,6 +12,166 @@ use gst_video::prelude::*;
 use tracing::{debug, error};
 
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
+
+// mod imp {
+//     use gst::{glib, prelude::*, subclass::prelude::*};
+//     use gst_video::{prelude::*, subclass::prelude::*};
+//     use parking_lot::Mutex;
+//     use std::sync::LazyLock;
+
+//     pub static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+//         gst::DebugCategory::new(
+//             "slintimagesink",
+//             gst::DebugColorFlags::empty(),
+//             Some("Slint image sink"),
+//         )
+//     });
+
+//     #[derive(Default)]
+//     struct Settings {
+//         window_width: u32,
+//         window_height: u32,
+//     }
+
+//     #[derive(Default)]
+//     struct Config {
+//         info: Option<gst_video::VideoInfo>,
+//     }
+
+//     #[derive(Default)]
+//     pub struct SlintImageSink {
+//         settings: Mutex<Settings>,
+//         config: Mutex<Config>,
+//     }
+
+//     #[glib::object_subclass]
+//     impl ObjectSubclass for SlintImageSink {
+//         const NAME: &'static str = "SlintImageSink";
+//         type Type = super::SlintImageSink;
+//         type ParentType = gst_video::VideoSink;
+//     }
+
+//     impl ObjectImpl for SlintImageSink {}
+
+//     impl GstObjectImpl for SlintImageSink {}
+
+//     impl ElementImpl for SlintImageSink {
+//         fn pad_templates() -> &'static [gst::PadTemplate] {
+//             static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
+//                 // Those are the supported formats by a gdk::Texture
+//                 let mut caps = gst::Caps::new_empty();
+
+//                 {
+//                     let caps = caps.get_mut().unwrap();
+//                     let features = [
+//                         Some(gst::CapsFeatures::new([
+//                             gst::CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+//                             gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+//                         ])),
+//                         Some(gst::CapsFeatures::new([
+//                             gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+//                         ])),
+//                         None,
+//                     ];
+
+//                     for feature_set in features {
+//                         let mut these_caps = gst_video::video_make_raw_caps(&[
+//                             gst_video::VideoFormat::Nv12,
+//                             gst_video::VideoFormat::P01010le,
+//                             gst_video::VideoFormat::I420,
+//                             // gst_video::VideoFormat::Bgra,
+//                             // gst_video::VideoFormat::Argb,
+//                             // gst_video::VideoFormat::Ayuv,
+//                         ])
+//                         .build();
+
+//                         if let Some(features) = feature_set {
+//                             let c = these_caps.get_mut().unwrap();
+//                             c.set_features_simple(Some(features));
+//                         }
+
+//                         caps.append(these_caps);
+//                     }
+//                 }
+
+//                 vec![
+//                     gst::PadTemplate::new(
+//                         "sink",
+//                         gst::PadDirection::Sink,
+//                         gst::PadPresence::Always,
+//                         &caps,
+//                     )
+//                     .unwrap(),
+//                 ]
+//             });
+
+//             PAD_TEMPLATES.as_ref()
+//         }
+//     }
+
+//     impl BaseSinkImpl for SlintImageSink {
+//         // fn query(&self, query: &mut gst::QueryRef) -> bool {
+//         //     BaseSinkImplExt::parent_query(self, query)
+//         //     gl context
+//         // }
+
+//         // fn event(&self, event: gst::Event) -> bool {
+//         //     self.parent_event(event)
+//         // }
+
+//         fn caps(&self, filter: Option<&gst::Caps>) -> Option<gst::Caps> {
+//             self.parent_caps(filter)
+//         }
+
+//         fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
+//             let info = gst_video::VideoInfo::from_caps(caps)
+//                 .map_err(|_| gst::loggable_error!(CAT, "Invalid caps"))?;
+
+//             let mut config = self.config.lock();
+//             config.info = Some(info);
+
+//             Ok(())
+//         }
+
+//         // https://github.com/sdroege/gst-plugin-rs/blob/e64abc221789a20cacf7c939358fad3fddb18371/video/gtk4/src/sink/imp.rs#L630
+//         fn propose_allocation(
+//             &self,
+//             query: &mut gst::query::Allocation,
+//         ) -> Result<(), gst::LoggableError> {
+//             query.add_allocation_meta::<gst_video::VideoMeta>(None);
+
+//             let overlay_meta = {
+//                 let settings = self.settings.lock();
+//                 if (settings.window_width, settings.window_height) != (0, 0) {
+//                     Some(
+//                         gst::Structure::builder("GstVideoOverlayCompositionMeta")
+//                             .field("width", settings.window_width)
+//                             .field("height", settings.window_height)
+//                             .build(),
+//                     )
+//                 } else {
+//                     None
+//                 }
+//             };
+
+//             query.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(
+//                 overlay_meta.as_deref(),
+//             );
+
+//             Ok(())
+//         }
+//     }
+
+//     impl VideoSinkImpl for SlintImageSink {
+//         fn show_frame(&self, buffer: &gst::Buffer) -> Result<gst::FlowSuccess, gst::FlowError> {
+//             self.parent_show_frame(buffer)
+//         }
+//     }
+// }
+
+// glib::wrapper! {
+//     pub struct SlintImageSink(ObjectSubclass<imp::SlintImageSink>) @extends gst_video::VideoSink, gst_base::BaseSink, gst::Element, gst::Object;
+// }
 
 // Taken partially from the slint gstreamer example at: https://github.com/slint-ui/slint/blob/2edd97bf8b8dc4dc26b578df6b15ea3297447444/examples/gstreamer-player/egl_integration.rs
 pub struct SlintOpenGLSink {
@@ -35,6 +192,7 @@ pub struct SlintOpenGLSink {
     >,
     // gst_gl_context: Option<gst_gl::GLContext>,
     pub is_eos: Arc<AtomicBool>,
+    pub window_size: Arc<AtomicU64>,
 }
 
 // #[cfg(target_os = "linux")]
@@ -106,21 +264,31 @@ impl SlintOpenGLSink {
         {
             let caps = caps.get_mut().unwrap();
             let features = [
-                vec![gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION],
-                vec![],
+                Some(gst::CapsFeatures::new([
+                    gst::CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                ])),
+                Some(gst::CapsFeatures::new([
+                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                ])),
+                None,
             ];
 
             for feature_set in features {
-                caps.append(
-                    gst_video::VideoCapsBuilder::new()
-                        .features(feature_set)
-                        .format_list([
-                            gst_video::VideoFormat::Nv12,
-                            gst_video::VideoFormat::P01010le,
-                            gst_video::VideoFormat::I420,
-                        ])
-                        .build(),
-                );
+                let mut these_caps = gst_video::video_make_raw_caps(&[
+                    gst_video::VideoFormat::Nv12,
+                    gst_video::VideoFormat::P01010le,
+                    gst_video::VideoFormat::I420,
+                    // gst_video::VideoFormat::I42010le, // TODO: using this results in green frames? decoder is dav1d
+                ])
+                .build();
+
+                if let Some(features) = feature_set {
+                    let c = these_caps.get_mut().unwrap();
+                    c.set_features_simple(Some(features));
+                }
+
+                caps.append(these_caps);
             }
         }
 
@@ -242,6 +410,7 @@ impl SlintOpenGLSink {
             next_overlays: Default::default(),
             // gst_gl_context: None,
             is_eos: Arc::new(AtomicBool::new(false)),
+            window_size: Arc::new(AtomicU64::new(0)),
             // sinkbin: bin,
         })
     }
@@ -401,7 +570,7 @@ impl SlintOpenGLSink {
         //     }
         // }
 
-        let mut buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+        let buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
 
         // return Ok(gst::FlowSuccess::Ok);
 
@@ -501,7 +670,7 @@ impl SlintOpenGLSink {
 
     pub fn connect<F>(
         &mut self,
-        graphics_api: &slint::GraphicsAPI<'_>,
+        _graphics_api: &slint::GraphicsAPI<'_>,
         next_frame_available_notifier: F,
         // contexts: &Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<()>
@@ -547,22 +716,38 @@ impl SlintOpenGLSink {
         let next_frame_available_notifier = Arc::new(next_frame_available_notifier);
         let is_eos_ref = Arc::clone(&self.is_eos);
         let next_overlays_ref = Arc::clone(&self.next_overlays);
-
+        let window_size = Arc::clone(&self.window_size);
         self.appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
-                // .propose_allocation(|_, allocation| {
-                //     allocation.add_allocation_meta::<gst_video::VideoMeta>(None);
-                //     debug!("##################### Propose allocation #######################");
-                //     true
-                // })
-                // .new_event(|appsink| {
-                //     if let Ok(obj) = appsink.pull_object() {
-                //         if let Some(event) = obj.downcast_ref::<gst::Event>() {
-                //             debug!(?event, "New event");
-                //         }
-                //     }
-                //     false
-                // })
+                .propose_allocation(move |_, allocation| {
+                    allocation.add_allocation_meta::<gst_video::VideoMeta>(None);
+
+                    let window_size_packed = window_size.load(std::sync::atomic::Ordering::Relaxed);
+                    let width = (window_size_packed >> 32) as u32;
+                    let height = window_size_packed as u32;
+
+                    debug!(
+                        width,
+                        height, "Setting window width and height for overlay meta"
+                    );
+
+                    let overlay_meta = if width > 0 && height > 0 {
+                        Some(
+                            gst::Structure::builder("GstVideoOverlayCompositionMeta")
+                                .field("width", width)
+                                .field("height", height)
+                                .build(),
+                        )
+                    } else {
+                        None
+                    };
+
+                    allocation.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(
+                        overlay_meta.as_deref(),
+                    );
+
+                    true
+                })
                 .new_preroll({
                     let next_frame_ref = Arc::clone(&next_frame_ref);
                     let next_overlays_ref = Arc::clone(&self.next_overlays);
@@ -588,11 +773,9 @@ impl SlintOpenGLSink {
                 .new_sample({
                     let is_eos = Arc::clone(&is_eos_ref);
                     move |appsink| {
-                        // tracing::debug!("New sample available");
                         let sample = appsink
                             .pull_sample()
                             .map_err(|_| gst::FlowError::Flushing)?;
-                        // tracing::debug!(video_caps = ?sample.caps());
                         Self::handle_new_sample(
                             sample,
                             &next_frame_ref,
@@ -636,55 +819,8 @@ impl SlintOpenGLSink {
             self.current_frame
                 .lock()
                 .take()
-                // .as_ref()
-                .and_then(|(info, frame)| {
-                    // tracing::debug!(n_planes = frame.n_planes());
-                    // let external = match frame.texture_target(0).unwrap() {
-                    //     gst_gl::GLTextureTarget::_2d => false,
-                    //     gst_gl::GLTextureTarget::ExternalOes => true,
-                    //     _ => todo!(),
-                    // };
-                    // tracing::debug!(external, video_format = ?info.format(), gl_format_of_buffer = ?frame.format());
-                    // // tracing::debug!(gl_format = ?frame.format_info());
-                    // // frame.colorimetry();
-                    // let external = false;
-
-                    // let (width, height) = (frame.width(), frame.height());
-                    // let data = match frame.format() {
-                    //     gst_video::VideoFormat::Nv12 => {
-                    //         // FrameData::Nv12 {
-                    //         //     y: frame.texture_id(0).unwrap().try_into().unwrap(),
-                    //         //     uv: frame.texture_id(1).unwrap().try_into().unwrap(),
-                    //         // }
-                    //         todo!()
-                    //     }
-                    //     gst_video::VideoFormat::P01010le => {
-                    //         // FrameData::P01010le {
-                    //         //     y: frame.texture_id(0).unwrap().try_into().unwrap(),
-                    //         //     uv: frame.texture_id(1).unwrap().try_into().unwrap(),
-                    //         // }
-                    //         todo!()
-                    //     }
-                    //     _ => return None,
-                    // };
-
-                    Some(Frame { frame, info })
-                }),
+                .and_then(|(info, frame)| Some(Frame { frame, info })),
         )
-
-        // self.current_frame
-        //     .lock()
-        //     .as_ref()
-        //     .and_then(|frame| {
-        //         frame
-        //             .texture_id(0)
-        //             .ok()
-        //             .and_then(|id| id.try_into().ok())
-        //             .map(|texture| (frame, texture))
-        //     })
-        //     .map(|(frame, texture)| (texture, [frame.width(), frame.height()]))
-
-        // None
     }
 
     pub fn fetch_next_overlays(&self) -> Option<Option<SmallVec<[Overlay; 3]>>> {

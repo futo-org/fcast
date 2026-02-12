@@ -1412,7 +1412,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.1.5"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1421,7 +1421,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.1.5"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4095,8 +4095,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-android-activity"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.0",
@@ -4110,8 +4110,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-linuxkms"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "bytemuck",
  "calloop 0.14.3",
@@ -4133,8 +4133,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-qt"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset",
  "cpp",
@@ -4151,8 +4151,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-selector"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "cfg-if",
  "i-slint-backend-android-activity",
@@ -4168,8 +4168,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-winit"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4213,8 +4213,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-common"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "fontique",
  "ttf-parser 0.25.1",
@@ -4222,8 +4222,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-compiler"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -4250,8 +4250,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-core"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "auto_enums",
  "bitflags 2.10.0",
@@ -4298,8 +4298,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-core-macros"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "quote",
  "serde_json",
@@ -4308,8 +4308,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-femtovg"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -4330,8 +4330,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-skia"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -4366,8 +4366,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-software"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "bytemuck",
  "clru",
@@ -6782,6 +6782,7 @@ dependencies = [
  "gstreamer 0.24.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "gstreamer-allocators",
  "gstreamer-app",
+ "gstreamer-base 0.24.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "gstreamer-tag",
  "gstreamer-video",
  "if-addrs",
@@ -7694,11 +7695,10 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slint"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset",
- "fontique",
  "i-slint-backend-android-activity",
  "i-slint-backend-qt",
  "i-slint-backend-selector",
@@ -7717,10 +7717,11 @@ dependencies = [
 
 [[package]]
 name = "slint-build"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "derive_more",
+ "fontique",
  "i-slint-compiler",
  "spin_on",
  "toml_edit 0.24.0+spec-1.1.0",
@@ -7728,8 +7729,8 @@ dependencies = [
 
 [[package]]
 name = "slint-macros"
-version = "1.15.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+version = "1.15.1"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -9116,7 +9117,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.3.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -9127,7 +9128,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.3.0"
-source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=2a09e4d44b791560dcce328a54018ee092298736#2a09e4d44b791560dcce328a54018ee092298736"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "proc-macro2",
  "quote",

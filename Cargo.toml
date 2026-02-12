@@ -27,6 +27,7 @@ serde = { version = "1.0.219", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.24.2" }
 gst-app = { package = "gstreamer-app", version = "0.24.2", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.24.2", features = [ "v1_24" ] }
+gst-base = { package = "gstreamer-base", version = "0.24.2", features = [ "v1_24" ] }
 serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
@@ -38,16 +39,10 @@ tracing-subscriber = "0.3.20"
 tracing-gstreamer = "0.9.0"
 tracing-panic = "0.1.2"
 parking_lot = "0.12.5"
-
-# slint = "1.15.0"
-# slint = { path = "../slint/api/rs/slint" }
-slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "2a09e4d44b791560dcce328a54018ee092298736" }
-# slint-build = "1.15.0"
+# slint = { path = "../slint/api/rs/slint", default-features = false }
+slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "f976d8c7958bddbba14a9f4632b8d3302cea96f6", default-features = false }
 # slint-build = { path = "../slint/api/rs/build" }
-slint-build = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "2a09e4d44b791560dcce328a54018ee092298736" }
-
-# slint = "1.14.1"
-# slint-build = "1.14.1"
+slint-build = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "f976d8c7958bddbba14a9f4632b8d3302cea96f6" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.18.1", features = [ "v4" ] }
 bytes = "1"

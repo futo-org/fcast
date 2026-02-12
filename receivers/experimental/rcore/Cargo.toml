@@ -18,6 +18,7 @@ mdns-sd.workspace = true
 fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
+gst-base.workspace = true
 # gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
 gst-allocators = { package = "gstreamer-allocators", version = "0.24.4" }
 serde_json.workspace = true
@@ -37,11 +38,11 @@ num_cpus = "1"
 rand = "0.9"
 
 [dependencies.slint]
-# version = "1.14.1"
 # path = "../../../../slint/api/rs/slint"
-git = "https://gitlab.futo.org/videostreaming/fcast-slint.git"
-rev = "2a09e4d44b791560dcce328a54018ee092298736"
-default-features = false
+# git = "https://gitlab.futo.org/videostreaming/fcast-slint.git"
+# rev = "cefc48cad0b6425c223577af9b27c88c70cceb7c"
+workspace = true
+# default-features = false
 features = [
     "accessibility",
     "backend-default",
