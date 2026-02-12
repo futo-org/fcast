@@ -17,8 +17,7 @@ fn main() -> anyhow::Result<()> {
 
     if std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent) {
         rcore::slint::BackendSelector::new()
-            // .require_vulkan()
-            // .require_opengl()
+            .require_opengl()
             .select()?;
     }
 

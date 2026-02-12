@@ -46,10 +46,7 @@ features = [
     "accessibility",
     "backend-default",
     "compat-1-2",
-    # "renderer-femtovg",
-    # "renderer-skia-opengl",
-    # "renderer-skia-vulkan",
-    "renderer-skia",
+    "renderer-skia-opengl",
     "std",
     "backend-linuxkms"
 ]
