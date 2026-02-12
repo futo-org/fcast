@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow, bail};
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
-use gst_gl::prelude::*;
+// use gst_gl::prelude::*;
 use smallvec::SmallVec;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, debug_span, error, warn};
@@ -595,16 +595,20 @@ impl Player {
     pub fn new(
         video_sink: gst::Element,
         event_tx: UnboundedSender<crate::Event>,
-        contexts: Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        // contexts: Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
             .property("video-sink", video_sink)
+            // .property("video-sink", gst::ElementFactory::make("fakesink").build()?)
             // .property("video-sink", gst::ElementFactory::make("glimagesink").build()?)
             // .property("video-sink", gst::ElementFactory::make("gtk4paintablesink").build()?)
             // .property("video-sink", gst::ElementFactory::make("waylandsink").build()?)
             .property("audio-filter", scaletempo)
-            .property_from_str("flags", "deinterlace+buffering+soft-volume+text+audio+video")
+            .property_from_str(
+                "flags",
+                "deinterlace+buffering+soft-volume+text+audio+video",
+            )
             .property("text-sink", gst::ElementFactory::make("fakesink").build()?) // debugging
             // .property("instant-uri", true)
             .build()?;
@@ -639,7 +643,8 @@ impl Player {
         let playbin_weak = playbin.downgrade();
         let event_tx_c = event_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &contexts);
+            // Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &contexts);
+            Self::handle_messsage(&playbin_weak, &event_tx_c, msg);
             gst::BusSyncReply::Drop
         });
 
@@ -766,7 +771,7 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         event_tx: &UnboundedSender<crate::Event>,
         msg: &gst::Message,
-        contexts: &Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        // contexts: &Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) {
         use gst::MessageView;
 
@@ -985,7 +990,10 @@ impl Player {
     }
 
     pub fn pause(&mut self) {
-        self.playbin.downcast_ref::<gst::Bin>().unwrap().debug_to_dot_file(gst::DebugGraphDetails::all(), "player-pipeline");
+        self.playbin
+            .downcast_ref::<gst::Bin>()
+            .unwrap()
+            .debug_to_dot_file(gst::DebugGraphDetails::all(), "player-pipeline");
 
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
             self.set_state_async(state);

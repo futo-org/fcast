@@ -11,9 +11,11 @@ tokio.workspace = true
 env_logger.workspace = true
 log.workspace = true
 anyhow.workspace = true
-slint = "1.12.1"
+# slint = "1.12.1"
+slint.workspace = true
 rfd = "0.15.4" # File dialog
 infer = "0.19.0" # MIME type inference
 
 [build-dependencies]
-slint-build = "1.12.1"
+# slint-build = "1.12.1"
+slint-build.workspace = true

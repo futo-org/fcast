@@ -316,7 +316,7 @@ impl Application {
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
-        contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        // contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -330,7 +330,8 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
+        // let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
+        let player = player::Player::new(appsink, event_tx.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -1945,7 +1946,7 @@ pub fn run(
         );
     }
 
-    let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
     let (fin_tx, fin_rx) = oneshot::channel::<()>();
@@ -1975,7 +1976,7 @@ pub fn run(
     let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
-        let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
+        // let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
         // TODO: debug to find out why gstreamer breaks after clicking systray (window toggle) on wayland
@@ -2004,7 +2005,7 @@ pub fn run(
                                 })
                                 .unwrap();
                         },
-                        &gst_gl_contexts,
+                        // &gst_gl_contexts,
                     )
                     .unwrap();
             } else if let slint::RenderingState::BeforeRendering = state {
@@ -2016,49 +2017,73 @@ pub fn run(
                 let bridge = ui.global::<Bridge>();
                 if bridge.get_playing() {
                     let frame = if let Some(frame) = slint_sink.fetch_next_frame_as_texture() {
-                        let planes = match frame.data {
-                            video::FrameData::Nv12 { y, uv } => slint::YuvaPlanes::Nv12 { y, uv },
-                            video::FrameData::P01010le { y, uv } => {
-                                slint::YuvaPlanes::P01010le { y, uv }
+                        match frame {
+                            Some(frame) => {
+                                match frame.data {
+                                    crate::video::FrameData::Gst {
+                                        frame, info
+                                    } => {
+                                        slint::Image::gst_frame(frame, info)
+                                    }
+                                    _ => todo!(),
+                                }
                             }
-                        };
-                        debug!(color_matrix = ?frame.color_matrix);
-                        let transfer = frame.transfer_function;
-                        let color_matrix = match (frame.color_matrix, frame.color_range) {
-                            (
-                                gst_video::VideoColorMatrix::Bt709,
-                                gst_video::VideoColorRange::Range0_255,
-                            ) => slint::ColorMatrix::Rec709_Full,
-                            (gst_video::VideoColorMatrix::Bt709, _) => slint::ColorMatrix::Rec709_Limited,
-                            (gst_video::VideoColorMatrix::Bt601, _) => {
-                                slint::ColorMatrix::Rec601_Limited
+                            None => {
+                                return;
                             }
-                            (gst_video::VideoColorMatrix::Bt2020, gst_video::VideoColorRange::Range0_255) if transfer == gst_video::VideoTransferFunction::Bt202010 => {
-                                slint::ColorMatrix::BT2020_10bit_Full
-                            }
-                            (gst_video::VideoColorMatrix::Bt2020, _) if transfer == gst_video::VideoTransferFunction::Bt202010 => {
-                                slint::ColorMatrix::BT2020_10bit_Limited
-                            }
-                            // (gst_video::VideoColorMatrix::Bt2020, gst_video::VideoColorRange::Range0_255) if transfer == gst_video::VideoTransferFunction::Smpte2084 => {
-                            //     slint::ColorMatrix::SMPTE240_Full
-                            // }
-                            // (gst_video::VideoColorMatrix::Bt2020, _) if transfer == gst_video::VideoTransferFunction::Smpte2084 => {
-                            //     slint::ColorMatrix::SMPTE240_Limited
-                            // }
-                            // _ => todo!("transfer={transfer:?} color_matrix={:?} color_range={:?}", frame.color_matrix, frame.color_range),
-                            // _ => slint::ColorMatrix::Rec709_Full,
-                            _ => slint::ColorMatrix::BT2020_10bit_Full,
-                        };
-
-                        unsafe {
-                            slint::Image::skia_opengl_yuva(
-                                frame.external,
-                                frame.width,
-                                frame.height,
-                                planes,
-                                color_matrix,
-                            )
                         }
+
+                        // let planes = match frame.data {
+                        //     video::FrameData::Nv12 { y, uv } => slint::YuvaPlanes::Nv12 { y, uv },
+                        //     video::FrameData::P01010le { y, uv } => {
+                        //         slint::YuvaPlanes::P01010le { y, uv }
+                        //     }
+                        //     _ => todo!(),
+                        // };
+                        // debug!(color_matrix = ?frame.color_matrix);
+                        // let transfer = frame.transfer_function;
+                        // let color_matrix = match (frame.color_matrix, frame.color_range) {
+                        //     (
+                        //         gst_video::VideoColorMatrix::Bt709,
+                        //         gst_video::VideoColorRange::Range0_255,
+                        //     ) => slint::ColorMatrix::Rec709_Full,
+                        //     (gst_video::VideoColorMatrix::Bt709, _) => {
+                        //         slint::ColorMatrix::Rec709_Limited
+                        //     }
+                        //     (gst_video::VideoColorMatrix::Bt601, _) => {
+                        //         slint::ColorMatrix::Rec601_Limited
+                        //     }
+                        //     (
+                        //         gst_video::VideoColorMatrix::Bt2020,
+                        //         gst_video::VideoColorRange::Range0_255,
+                        //     ) if transfer == gst_video::VideoTransferFunction::Bt202010 => {
+                        //         slint::ColorMatrix::BT2020_10bit_Full
+                        //     }
+                        //     (gst_video::VideoColorMatrix::Bt2020, _)
+                        //         if transfer == gst_video::VideoTransferFunction::Bt202010 =>
+                        //     {
+                        //         slint::ColorMatrix::BT2020_10bit_Limited
+                        //     }
+                        //     // (gst_video::VideoColorMatrix::Bt2020, gst_video::VideoColorRange::Range0_255) if transfer == gst_video::VideoTransferFunction::Smpte2084 => {
+                        //     //     slint::ColorMatrix::SMPTE240_Full
+                        //     // }
+                        //     // (gst_video::VideoColorMatrix::Bt2020, _) if transfer == gst_video::VideoTransferFunction::Smpte2084 => {
+                        //     //     slint::ColorMatrix::SMPTE240_Limited
+                        //     // }
+                        //     // _ => todo!("transfer={transfer:?} color_matrix={:?} color_range={:?}", frame.color_matrix, frame.color_range),
+                        //     // _ => slint::ColorMatrix::Rec709_Full,
+                        //     _ => slint::ColorMatrix::BT2020_10bit_Full,
+                        // };
+
+                        // unsafe {
+                        //     slint::Image::skia_opengl_yuva(
+                        //         frame.external,
+                        //         frame.width,
+                        //         frame.height,
+                        //         planes,
+                        //         color_matrix,
+                        //     )
+                        // }
 
                         // match frame.data {
                         //     video::FrameData::Nv12 { y, uv } => {
@@ -2072,7 +2097,11 @@ pub fn run(
                         //         }
                         //     }
                         // }
+                        // slint::Image::default()
+
+                        // TODO: fetch overlays if they're available even if frame ddid not change
                     } else {
+                        debug!("No frame available");
                         slint::Image::default()
                         // return;
                     };
@@ -2144,7 +2173,7 @@ pub fn run(
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
-                gst_gl_contexts,
+                // gst_gl_contexts,
             )
             .await
             .unwrap()

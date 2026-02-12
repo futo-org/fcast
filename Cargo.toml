@@ -4,14 +4,14 @@ members = [
     "sdk/sender/fcast-sender-sdk",
     "sdk/sender/examples/terminal",
     "senders/terminal",
-    # "sdk/sender/examples/desktop",
+    "sdk/sender/examples/desktop",
     "sdk/common/fcast-protocol",
     "sdk/mirroring_core",
-    # "senders/desktop",
-    # "senders/android",
+    "senders/desktop",
+    "senders/android",
     "fast",
     "sdk/file-server",
-    # "senders/android",
+    "senders/android",
     "receivers/experimental/rcore",
     "receivers/experimental/desktop",
     "receivers/experimental/android"
@@ -38,8 +38,14 @@ tracing-subscriber = "0.3.20"
 tracing-gstreamer = "0.9.0"
 tracing-panic = "0.1.2"
 parking_lot = "0.12.5"
-slint = "1.15.0"
-slint-build = "1.15.0"
+
+# slint = "1.15.0"
+# slint = { path = "../slint/api/rs/slint" }
+slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "2a09e4d44b791560dcce328a54018ee092298736" }
+# slint-build = "1.15.0"
+# slint-build = { path = "../slint/api/rs/build" }
+slint-build = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "2a09e4d44b791560dcce328a54018ee092298736" }
+
 # slint = "1.14.1"
 # slint-build = "1.14.1"
 clap = { version = "4.5", features = ["derive"] }

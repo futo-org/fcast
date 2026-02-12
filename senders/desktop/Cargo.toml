@@ -7,7 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-slint = { version = "1.14.1", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "renderer-software", "std" ] }
+# slint = { path = "../../../slint/api/rs/slint", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "renderer-software", "std" ] }
+slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "2a09e4d44b791560dcce328a54018ee092298736", default-features = false, features = [ "accessibility", "backend-default", "compat-1-2", "renderer-femtovg", "renderer-software", "std" ] }
 anyhow.workspace = true
 tokio.workspace = true
 gst.workspace = true

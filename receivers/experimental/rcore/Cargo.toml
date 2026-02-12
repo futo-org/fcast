@@ -18,7 +18,7 @@ mdns-sd.workspace = true
 fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
-gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
+# gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
 gst-allocators = { package = "gstreamer-allocators", version = "0.24.4" }
 serde_json.workspace = true
 if-addrs = "0.14"
@@ -38,14 +38,18 @@ rand = "0.9"
 
 [dependencies.slint]
 # version = "1.14.1"
-path = "../../../../slint/api/rs/slint"
+# path = "../../../../slint/api/rs/slint"
+git = "https://gitlab.futo.org/videostreaming/fcast-slint.git"
+rev = "2a09e4d44b791560dcce328a54018ee092298736"
 default-features = false
 features = [
     "accessibility",
     "backend-default",
     "compat-1-2",
     # "renderer-femtovg",
-    "renderer-skia-opengl",
+    # "renderer-skia-opengl",
+    # "renderer-skia-vulkan",
+    "renderer-skia",
     "std",
     "backend-linuxkms"
 ]
@@ -80,10 +84,10 @@ clap.workspace = true
 objc2-app-kit = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
-gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
-glutin_egl_sys = { version = "0.7.1" }
-glutin_glx_sys = { version = "0.6.1" }
+# gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+# gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
+# glutin_egl_sys = { version = "0.7.1" }
+# glutin_glx_sys = { version = "0.6.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
 ksni = { version = "0.3", default-features = false, features = ["async-io"] }
@@ -92,8 +96,8 @@ ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 tray-icon = { version = "0.21.3", default-features = false }
 
 [target.'cfg(target_os = "android")'.dependencies]
-gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
-glutin_egl_sys = { version = "0.7.1" }
+# gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+# glutin_egl_sys = { version = "0.7.1" }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
@@ -104,8 +108,8 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 reqwest = { version = "0.13", features = [ "native-tls" ] }
 
 [build-dependencies]
-# slint-build.workspace = true
-slint-build = { path = "../../../../slint/api/rs/build" }
+slint-build.workspace = true
+# slint-build = { path = "../../../../slint/api/rs/build" }
 
 [features]
 # desktop = ["slint/backend-linuxkms"]
