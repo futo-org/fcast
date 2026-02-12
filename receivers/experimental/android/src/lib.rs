@@ -23,8 +23,7 @@ fn android_main(app: slint::android::AndroidApp) {
     slint::android::init(app.clone()).unwrap();
 
     rcore::slint::BackendSelector::new()
-        // .require_opengl_es()
-        // .backend_name("skia".to_owned())
+        .require_opengl_es()
         .select()
         .unwrap();
 
