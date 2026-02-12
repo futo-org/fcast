@@ -2016,108 +2016,18 @@ pub fn run(
 
                 let bridge = ui.global::<Bridge>();
                 if bridge.get_playing() {
-                    let frame = if let Some(frame) = slint_sink.fetch_next_frame_as_texture() {
+                    let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
                         match frame {
                             Some(frame) => {
-                                match frame.data {
-                                    crate::video::FrameData::Gst {
-                                        frame, info
-                                    } => {
-                                        slint::Image::gst_frame(frame, info)
-                                    }
-                                    _ => todo!(),
-                                }
+                                slint::Image::gst_frame(frame.frame, frame.info)
                             }
                             None => {
                                 return;
                             }
                         }
-
-                        // let planes = match frame.data {
-                        //     video::FrameData::Nv12 { y, uv } => slint::YuvaPlanes::Nv12 { y, uv },
-                        //     video::FrameData::P01010le { y, uv } => {
-                        //         slint::YuvaPlanes::P01010le { y, uv }
-                        //     }
-                        //     _ => todo!(),
-                        // };
-                        // debug!(color_matrix = ?frame.color_matrix);
-                        // let transfer = frame.transfer_function;
-                        // let color_matrix = match (frame.color_matrix, frame.color_range) {
-                        //     (
-                        //         gst_video::VideoColorMatrix::Bt709,
-                        //         gst_video::VideoColorRange::Range0_255,
-                        //     ) => slint::ColorMatrix::Rec709_Full,
-                        //     (gst_video::VideoColorMatrix::Bt709, _) => {
-                        //         slint::ColorMatrix::Rec709_Limited
-                        //     }
-                        //     (gst_video::VideoColorMatrix::Bt601, _) => {
-                        //         slint::ColorMatrix::Rec601_Limited
-                        //     }
-                        //     (
-                        //         gst_video::VideoColorMatrix::Bt2020,
-                        //         gst_video::VideoColorRange::Range0_255,
-                        //     ) if transfer == gst_video::VideoTransferFunction::Bt202010 => {
-                        //         slint::ColorMatrix::BT2020_10bit_Full
-                        //     }
-                        //     (gst_video::VideoColorMatrix::Bt2020, _)
-                        //         if transfer == gst_video::VideoTransferFunction::Bt202010 =>
-                        //     {
-                        //         slint::ColorMatrix::BT2020_10bit_Limited
-                        //     }
-                        //     // (gst_video::VideoColorMatrix::Bt2020, gst_video::VideoColorRange::Range0_255) if transfer == gst_video::VideoTransferFunction::Smpte2084 => {
-                        //     //     slint::ColorMatrix::SMPTE240_Full
-                        //     // }
-                        //     // (gst_video::VideoColorMatrix::Bt2020, _) if transfer == gst_video::VideoTransferFunction::Smpte2084 => {
-                        //     //     slint::ColorMatrix::SMPTE240_Limited
-                        //     // }
-                        //     // _ => todo!("transfer={transfer:?} color_matrix={:?} color_range={:?}", frame.color_matrix, frame.color_range),
-                        //     // _ => slint::ColorMatrix::Rec709_Full,
-                        //     _ => slint::ColorMatrix::BT2020_10bit_Full,
-                        // };
-
-                        // unsafe {
-                        //     slint::Image::skia_opengl_yuva(
-                        //         frame.external,
-                        //         frame.width,
-                        //         frame.height,
-                        //         planes,
-                        //         color_matrix,
-                        //     )
-                        // }
-
-                        // match frame.data {
-                        //     video::FrameData::Nv12 { y, uv } => {
-                        //         unsafe {
-                        //             slint::Image::skia_opengl_yuva(
-                        //                 frame.width,
-                        //                 frame.height,
-                        //                 y,
-                        //                 uv,
-                        //             )
-                        //         }
-                        //     }
-                        // }
-                        // slint::Image::default()
-
-                        // TODO: fetch overlays if they're available even if frame ddid not change
                     } else {
-                        debug!("No frame available");
                         slint::Image::default()
-                        // return;
                     };
-                    // let frame = if let Some((texture_id, size)) =
-                    //     slint_sink.fetch_next_frame_as_texture()
-                    // {
-                    //     unsafe {
-                    //         slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                    //             texture_id,
-                    //             size.into(),
-                    //         )
-                    //         .build()
-                    //     }
-                    // } else {
-                    //     slint::Image::default()
-                    // };
 
                     bridge.set_video_frame(frame);
 

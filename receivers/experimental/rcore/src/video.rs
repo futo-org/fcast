@@ -55,26 +55,9 @@ pub struct Overlay {
     pub y: i32,
 }
 
-pub enum FrameData {
-    Nv12 { y: NonZero<u32>, uv: NonZero<u32> },
-    P01010le { y: NonZero<u32>, uv: NonZero<u32> },
-    Gst {
-        frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
-        // frame: gst_video::VideoFrame<gst_video::video_frame::Writable>,
-        info: gst_video::VideoInfo,
-    },
-}
-
-// TODO: color
 pub struct Frame {
-    pub external: bool,
-    pub width: u32,
-    pub height: u32,
-    pub color_range: gst_video::VideoColorRange,
-    pub color_matrix: gst_video::VideoColorMatrix,
-    pub transfer_function: gst_video::VideoTransferFunction,
-    pub data: FrameData,
-    // TODO: external OES
+    pub frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
+    pub info: gst_video::VideoInfo,
 }
 
 impl SlintOpenGLSink {
@@ -119,13 +102,27 @@ impl SlintOpenGLSink {
         //     //     .build()
         // }
 
-        let caps = gst_video::VideoCapsBuilder::new()
-            // .format(gst_video::VideoFormat::Nv12)
-            // .format(gst_video::VideoFormat::I420)
-            .format_list([gst_video::VideoFormat::Nv12, gst_video::VideoFormat::P01010le, gst_video::VideoFormat::I420])
-            // .width_range(1..i32::MAX)
-            // .height_range(1..i32::MAX)
-            .build();
+        let mut caps = gst::Caps::new_empty();
+        {
+            let caps = caps.get_mut().unwrap();
+            let features = [
+                vec![gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION],
+                vec![],
+            ];
+
+            for feature_set in features {
+                caps.append(
+                    gst_video::VideoCapsBuilder::new()
+                        .features(feature_set)
+                        .format_list([
+                            gst_video::VideoFormat::Nv12,
+                            gst_video::VideoFormat::P01010le,
+                            gst_video::VideoFormat::I420,
+                        ])
+                        .build(),
+                );
+            }
+        }
 
         // TODO: try dmabuf import
         // let mut caps = gst::Caps::new_empty();
@@ -446,54 +443,54 @@ impl SlintOpenGLSink {
         // tracing::debug!(video_caps = ?info);
 
         // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/video/gtk4/src/sink/frame.rs?ref_type=heads
-        // let overlays: SmallVec<[Overlay; 3]> = buffer
-        //     .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
-        //     .flat_map(|meta| {
-        //         meta.overlay()
-        //             .iter()
-        //             .filter_map(|rect| {
-        //                 let buffer = rect
-        //                     .pixels_unscaled_argb(gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA);
-        //                 let (x, y, _width, _height) = rect.render_rectangle();
+        let overlays: SmallVec<[Overlay; 3]> = buffer
+            .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
+            .flat_map(|meta| {
+                meta.overlay()
+                    .iter()
+                    .filter_map(|rect| {
+                        let buffer = rect
+                            .pixels_unscaled_argb(gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA);
+                        let (x, y, _width, _height) = rect.render_rectangle();
 
-        //                 let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
+                        let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
 
-        //                 if vmeta.format() != gst_video::VideoFormat::Bgra {
-        //                     return None;
-        //                 }
+                        if vmeta.format() != gst_video::VideoFormat::Bgra {
+                            return None;
+                        }
 
-        //                 let info = gst_video::VideoInfo::builder(
-        //                     vmeta.format(),
-        //                     vmeta.width(),
-        //                     vmeta.height(),
-        //                 )
-        //                 .build()
-        //                 .unwrap();
+                        let info = gst_video::VideoInfo::builder(
+                            vmeta.format(),
+                            vmeta.width(),
+                            vmeta.height(),
+                        )
+                        .build()
+                        .unwrap();
 
-        //                 let frame =
-        //                     gst_video::VideoFrame::from_buffer_readable(buffer, &info).ok()?;
+                        let frame =
+                            gst_video::VideoFrame::from_buffer_readable(buffer, &info).ok()?;
 
-        //                 let Ok(plane) = frame.plane_data(0) else {
-        //                     return None;
-        //                 };
+                        let Ok(plane) = frame.plane_data(0) else {
+                            return None;
+                        };
 
-        //                 let mut pix_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-        //                     frame.width(),
-        //                     frame.height(),
-        //                 );
-        //                 image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
+                        let mut pix_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                            frame.width(),
+                            frame.height(),
+                        );
+                        image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
 
-        //                 Some(Overlay { pix_buffer, x, y })
-        //             })
-        //             .collect::<SmallVec<[_; 3]>>()
-        //     })
-        //     .collect();
+                        Some(Overlay { pix_buffer, x, y })
+                    })
+                    .collect::<SmallVec<[_; 3]>>()
+            })
+            .collect();
 
-        // if !overlays.is_empty() {
-        //     *next_overlays_ref.lock() = Some(Some(overlays));
-        // } else {
-        //     *next_overlays_ref.lock() = None;
-        // }
+        if !overlays.is_empty() {
+            *next_overlays_ref.lock() = Some(Some(overlays));
+        } else {
+            *next_overlays_ref.lock() = None;
+        }
 
         *next_frame_ref.lock() = Some((info, buffer));
 
@@ -614,9 +611,7 @@ impl SlintOpenGLSink {
         Ok(())
     }
 
-    /// Returns (texture id, [width, height])
-    // pub fn fetch_next_frame_as_texture(&self) -> Option<(NonZero<u32>, [u32; 2])> {
-    pub fn fetch_next_frame_as_texture(&self) -> Option<Option<Frame>> {
+    pub fn fetch_next_frame(&self) -> Option<Option<Frame>> {
         if self.is_eos.load(atomic::Ordering::Relaxed) {
             return None;
         }
@@ -637,57 +632,45 @@ impl SlintOpenGLSink {
             // return None;
         }
 
-        Some(self.current_frame
-            .lock()
-            .take()
-            // .as_ref()
-            .and_then(|(info, frame)| {
-                // tracing::debug!(n_planes = frame.n_planes());
-                // let external = match frame.texture_target(0).unwrap() {
-                //     gst_gl::GLTextureTarget::_2d => false,
-                //     gst_gl::GLTextureTarget::ExternalOes => true,
-                //     _ => todo!(),
-                // };
-                // tracing::debug!(external, video_format = ?info.format(), gl_format_of_buffer = ?frame.format());
-                // // tracing::debug!(gl_format = ?frame.format_info());
-                // // frame.colorimetry();
-                let external = false;
+        Some(
+            self.current_frame
+                .lock()
+                .take()
+                // .as_ref()
+                .and_then(|(info, frame)| {
+                    // tracing::debug!(n_planes = frame.n_planes());
+                    // let external = match frame.texture_target(0).unwrap() {
+                    //     gst_gl::GLTextureTarget::_2d => false,
+                    //     gst_gl::GLTextureTarget::ExternalOes => true,
+                    //     _ => todo!(),
+                    // };
+                    // tracing::debug!(external, video_format = ?info.format(), gl_format_of_buffer = ?frame.format());
+                    // // tracing::debug!(gl_format = ?frame.format_info());
+                    // // frame.colorimetry();
+                    // let external = false;
 
-                let (width, height) = (frame.width(), frame.height());
-                // let data = match frame.format() {
-                //     gst_video::VideoFormat::Nv12 => {
-                //         // FrameData::Nv12 {
-                //         //     y: frame.texture_id(0).unwrap().try_into().unwrap(),
-                //         //     uv: frame.texture_id(1).unwrap().try_into().unwrap(),
-                //         // }
-                //         todo!()
-                //     }
-                //     gst_video::VideoFormat::P01010le => {
-                //         // FrameData::P01010le {
-                //         //     y: frame.texture_id(0).unwrap().try_into().unwrap(),
-                //         //     uv: frame.texture_id(1).unwrap().try_into().unwrap(),
-                //         // }
-                //         todo!()
-                //     }
-                //     _ => return None,
-                // };
+                    // let (width, height) = (frame.width(), frame.height());
+                    // let data = match frame.format() {
+                    //     gst_video::VideoFormat::Nv12 => {
+                    //         // FrameData::Nv12 {
+                    //         //     y: frame.texture_id(0).unwrap().try_into().unwrap(),
+                    //         //     uv: frame.texture_id(1).unwrap().try_into().unwrap(),
+                    //         // }
+                    //         todo!()
+                    //     }
+                    //     gst_video::VideoFormat::P01010le => {
+                    //         // FrameData::P01010le {
+                    //         //     y: frame.texture_id(0).unwrap().try_into().unwrap(),
+                    //         //     uv: frame.texture_id(1).unwrap().try_into().unwrap(),
+                    //         // }
+                    //         todo!()
+                    //     }
+                    //     _ => return None,
+                    // };
 
-                let colorimetry = info.colorimetry();
-                let data = FrameData::Gst {
-                    frame,
-                    info,
-                };
-
-                Some(Frame {
-                    external,
-                    width,
-                    height,
-                    data,
-                    color_range: colorimetry.range(),
-                    color_matrix: colorimetry.matrix(),
-                    transfer_function: colorimetry.transfer(),
-                })
-            }))
+                    Some(Frame { frame, info })
+                }),
+        )
 
         // self.current_frame
         //     .lock()

@@ -609,7 +609,7 @@ impl Player {
                 "flags",
                 "deinterlace+buffering+soft-volume+text+audio+video",
             )
-            .property("text-sink", gst::ElementFactory::make("fakesink").build()?) // debugging
+            // .property("text-sink", gst::ElementFactory::make("fakesink").build()?) // debugging
             // .property("instant-uri", true)
             .build()?;
 
@@ -990,10 +990,10 @@ impl Player {
     }
 
     pub fn pause(&mut self) {
-        self.playbin
-            .downcast_ref::<gst::Bin>()
-            .unwrap()
-            .debug_to_dot_file(gst::DebugGraphDetails::all(), "player-pipeline");
+        // self.playbin
+        //     .downcast_ref::<gst::Bin>()
+        //     .unwrap()
+        //     .debug_to_dot_file(gst::DebugGraphDetails::all(), "player-pipeline");
 
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
             self.set_state_async(state);
