@@ -17,3 +17,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap-verbosity-flag = { version = "3", default-features = false, features = [ "tracing" ] }
 futures.workspace = true
+rand.workspace = true
+ctrlc = "3"

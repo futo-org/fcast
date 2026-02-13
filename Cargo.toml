@@ -51,6 +51,7 @@ smol_str = { version = "0.3.4", features = ["serde"] }
 toml_edit = { version = "0.24", features = ["serde"] }
 futures = "0.3.31"
 lazy_static = "1.5"
+rand = "0.10"
 
 [profile.release]
 lto = "thin"

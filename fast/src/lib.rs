@@ -12,8 +12,12 @@ pub enum Send {
     Ping,
     SetVolume(f64),
     Stop,
-    PlayV2 { file_id: u32 },
-    PlayV3 { file_id: u32 },
+    PlayV2 {
+        file_id: u32,
+    },
+    PlayV3 {
+        file_id: u32,
+    },
     PlayV3WithBody {
         file_id: u32,
         time: Option<f64>,
@@ -23,8 +27,12 @@ pub enum Send {
     Pause,
     Resume,
     SubscribeEvent(v3::EventSubscribeObject),
-    PlaylistV3 { items: &'static [PlaylistItem] },
-    SetPlaylistItem { index: u64 },
+    PlaylistV3 {
+        items: &'static [PlaylistItem],
+    },
+    SetPlaylistItem {
+        index: u64,
+    },
     // TODO: test that HTTP request headers are correctly handled by the receiver
 }
 
@@ -418,7 +426,12 @@ define_test_case!(
     &[
         recv!(Receive::Version),
         send!(Send::Version(2)),
-        serve!("video/BigBuckBunny.mp4", 0, "video/mp4", [("User-Agent", "Fake"), ("Custom-Key", "ABC")]),
+        serve!(
+            "video/BigBuckBunny.mp4",
+            0,
+            "video/mp4",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
         send!(Send::PlayV2 { file_id: 0 }),
         Step::SleepMillis(750),
         send!(Send::Stop),
@@ -472,9 +485,7 @@ define_test_case!(
         send!(Send::Initial),
         recv!(Receive::Initial),
         Step::SleepMillis(500),
-        send!(Send::SubscribeEvent(
-            v3::EventSubscribeObject::MediaItemEnd
-        )),
+        send!(Send::SubscribeEvent(v3::EventSubscribeObject::MediaItemEnd)),
         Step::SleepMillis(500),
         serve!("audio/Dont_Go_Way_Nobody.mp3", 0, "audio/mp3"),
         send!(Send::PlayV3WithBody {
@@ -503,10 +514,7 @@ define_test_case!(
         serve!("image/flowers.jpg", 0, "image/jpeg"),
         serve!("image/garden.jpg", 1, "image/jpeg"),
         send!(Send::PlaylistV3 {
-            items: &[
-                PlaylistItem { file_id: 0 },
-                PlaylistItem { file_id: 1 },
-            ]
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 },]
         }),
         Step::SleepMillis(500),
         send!(Send::SetPlaylistItem { index: 1 }),
@@ -525,11 +533,14 @@ define_test_case!(
         send!(Send::SubscribeEvent(
             v3::EventSubscribeObject::MediaItemChanged
         )),
-        serve!("image/flowers.jpg", 0, "image/jpeg", [("User-Agent", "Fake"), ("Custom-Key", "ABC")]),
+        serve!(
+            "image/flowers.jpg",
+            0,
+            "image/jpeg",
+            [("User-Agent", "Fake"), ("Custom-Key", "ABC")]
+        ),
         send!(Send::PlaylistV3 {
-            items: &[
-                PlaylistItem { file_id: 0 },
-            ]
+            items: &[PlaylistItem { file_id: 0 },]
         }),
         send!(Send::Stop),
     ]

@@ -463,8 +463,7 @@ impl InnerDevice {
             return Err(anyhow!(
                 "Payload type {:?} is not implemented",
                 message.payload_type()
-            )
-            .into());
+            ));
         }
         let json_payload = message.payload_utf8();
         match message.namespace.as_str() {
@@ -574,8 +573,7 @@ impl InnerDevice {
                                         } => crate::device::Metadata {
                                             title,
                                             thumbnail_url: images
-                                                .map(|imgs| imgs.get(0).map(|img| img.url.clone()))
-                                                .flatten(),
+                                                .and_then(|imgs| imgs.first().map(|img| img.url.clone())),
                                         },
                                     }),
                                 });

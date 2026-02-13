@@ -1,11 +1,24 @@
+use anyhow::{Context, anyhow, bail, ensure};
+use clap::{Parser, Subcommand};
+use fast::{Step, TestCase};
+use fcast_protocol::{
+    HEADER_LENGTH, Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, VersionMessage,
+    v2,
+    v3::{self, EventSubscribeObject, InitialSenderMessage, PlaylistContent},
+};
 use file_server::FileServer;
 use futures::StreamExt;
-use simply_colored::{GREEN, YELLOW, RED, RESET};
+use rand::prelude::*;
+use simply_colored::{BLUE, GREEN, RED, RESET, YELLOW};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Write,
     net::SocketAddr,
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -14,13 +27,6 @@ use tokio::{
     sync::mpsc::unbounded_channel,
 };
 use tracing::{debug, error, info, instrument, warn};
-
-use anyhow::{Context, anyhow, bail, ensure};
-use clap::{Parser, Subcommand};
-use fast::{Step, TestCase};
-use fcast_protocol::{
-    HEADER_LENGTH, Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, VersionMessage, v2, v3::{self, EventSubscribeObject, InitialSenderMessage, PlaylistContent}
-};
 
 #[derive(Subcommand)]
 enum Command {
@@ -32,6 +38,7 @@ enum Command {
         #[arg(value_delimiter = ' ', num_args = 1..)]
         tests: Vec<String>,
     },
+    Fuzz,
 }
 
 #[derive(Parser)]
@@ -232,29 +239,26 @@ impl State {
 
                 if let Some(expected) = self.expected_volume
                     && expected.1 <= msg.generation_time
+                    && let Some(expected_volume) = self.expected_volume
                 {
-                    if let Some(expected_volume) = self.expected_volume {
-                        if (msg.volume - expected_volume.0).abs() <= 0.001 {
-                            self.expected_volume = None;
-                            self.invalid_volume_updates_received = 0;
-                            info!("Volume correct");
+                    if (msg.volume - expected_volume.0).abs() <= 0.001 {
+                        self.expected_volume = None;
+                        self.invalid_volume_updates_received = 0;
+                        info!("Volume correct");
+                    } else {
+                        self.invalid_volume_updates_received += 1;
+                        if self.invalid_volume_updates_received >= MAX_INVALID_VOLUME_UPDATES {
+                            panic!(
+                                "Invalid volume. expected: {:?} got: {:?}",
+                                expected_volume,
+                                (msg.volume, msg.generation_time)
+                            );
                         } else {
-                            self.invalid_volume_updates_received += 1;
-                            if self.invalid_volume_updates_received >= MAX_INVALID_VOLUME_UPDATES {
-                                panic!(
-                                    "Invalid volume. expected: {:?} got: {:?}",
-                                    expected_volume,
-                                    (msg.volume, msg.generation_time)
-                                );
-                            } else {
-                                warn!(
-                                    "Received invalid volume on retry {}. expected: {:?} got: {}",
-                                    self.invalid_volume_updates_received,
-                                    expected_volume,
-                                    msg.volume
-                                );
-                                return Ok(None);
-                            }
+                            warn!(
+                                "Received invalid volume on retry {}. expected: {:?} got: {}",
+                                self.invalid_volume_updates_received, expected_volume, msg.volume
+                            );
+                            return Ok(None);
                         }
                     }
                 }
@@ -374,10 +378,10 @@ impl State {
                         fast::Send::Version(version) => {
                             let body = VersionMessage { version: *version };
                             self.current_version = *version;
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::Version,
                                 body: serde_json::to_vec(&body)?,
-                            }));
+                            }))
                         }
                         fast::Send::Initial => {
                             let body = InitialSenderMessage {
@@ -385,25 +389,21 @@ impl State {
                                 app_name: Some("test".to_owned()),
                                 app_version: Some("test".to_owned()),
                             };
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::Initial,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
-                        fast::Send::Ping => {
-                            return Ok(Some(Action::WriteSimple(Opcode::Ping)));
-                        }
+                        fast::Send::Ping => Ok(Some(Action::WriteSimple(Opcode::Ping))),
                         fast::Send::SetVolume(volume) => {
                             let body = SetVolumeMessage { volume: *volume };
                             self.expected_volume = Some((*volume, current_time_millis()));
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::SetVolume,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
-                        fast::Send::Stop => {
-                            return Ok(Some(Action::WriteSimple(Opcode::Stop)));
-                        }
+                        fast::Send::Stop => Ok(Some(Action::WriteSimple(Opcode::Stop))),
                         fast::Send::PlayV2 { file_id } => {
                             let (url, mime, headers) = file_urls.get(file_id).unwrap();
                             let body = v2::PlayMessage {
@@ -414,10 +414,10 @@ impl State {
                                 speed: None,
                                 headers: headers.clone(),
                             };
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
                         fast::Send::PlayV3 { file_id } => {
                             let (url, mime, headers) = file_urls.get(file_id).unwrap();
@@ -453,12 +453,17 @@ impl State {
                                 self.expected_media_item_end =
                                     Some(play_message_to_media_item(body.clone()));
                             }
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
-                        fast::Send::PlayV3WithBody { file_id, time, volume, speed } => {
+                        fast::Send::PlayV3WithBody {
+                            file_id,
+                            time,
+                            volume,
+                            speed,
+                        } => {
                             let (url, mime, headers) = file_urls.get(file_id).unwrap();
                             let body = v3::PlayMessage {
                                 container: mime.to_string(),
@@ -492,28 +497,28 @@ impl State {
                                 self.expected_media_item_end =
                                     Some(play_message_to_media_item(body.clone()));
                             }
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
                         fast::Send::Pause => {
                             self.expecting_pause = true;
-                            return Ok(Some(Action::WriteSimple(Opcode::Pause)));
+                            Ok(Some(Action::WriteSimple(Opcode::Pause)))
                         }
                         fast::Send::Resume => {
                             self.expecting_resume = true;
-                            return Ok(Some(Action::WriteSimple(Opcode::Resume)));
+                            Ok(Some(Action::WriteSimple(Opcode::Resume)))
                         }
                         fast::Send::SubscribeEvent(event) => {
                             self.subscriptions.insert(event.clone());
                             let body = v3::SubscribeEventMessage {
                                 event: event.clone(),
                             };
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::SubscribeEvent,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
                         fast::Send::PlaylistV3 { items } => {
                             let items = items
@@ -586,10 +591,10 @@ impl State {
 
                             self.expected_play_update = Some(body.clone());
 
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::Play,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
                         fast::Send::SetPlaylistItem { index } => {
                             let body = v3::SetPlaylistItemMessage { item_index: *index };
@@ -598,30 +603,33 @@ impl State {
                                 .subscriptions
                                 .contains(&v3::EventSubscribeObject::MediaItemStart)
                             {
-                                self.expected_media_item_start =
-                                    Some(self.playlist.as_ref().unwrap().items[*index as usize].clone());
+                                self.expected_media_item_start = Some(
+                                    self.playlist.as_ref().unwrap().items[*index as usize].clone(),
+                                );
                             }
                             if self
                                 .subscriptions
                                 .contains(&v3::EventSubscribeObject::MediaItemChanged)
                             {
-                                self.expected_media_item_changed =
-                                    Some(self.playlist.as_ref().unwrap().items[*index as usize].clone());
+                                self.expected_media_item_changed = Some(
+                                    self.playlist.as_ref().unwrap().items[*index as usize].clone(),
+                                );
                             }
                             if self
                                 .subscriptions
                                 .contains(&v3::EventSubscribeObject::MediaItemEnd)
                             {
-                                self.expected_media_item_end =
-                                    Some(self.playlist.as_ref().unwrap().items[*index as usize].clone());
+                                self.expected_media_item_end = Some(
+                                    self.playlist.as_ref().unwrap().items[*index as usize].clone(),
+                                );
                             }
 
-                            return Ok(Some(Action::WritePacket {
+                            Ok(Some(Action::WritePacket {
                                 op: Opcode::SetPlaylistItem,
                                 body: serde_json::to_vec(&body).unwrap(),
-                            }));
+                            }))
                         }
-                    }
+                    },
                     Step::Receive(receive) => {
                         self.internal = match receive {
                             fast::Receive::Version => InternalState::WaitingForVersion,
@@ -633,24 +641,22 @@ impl State {
                                 InternalState::WaitingForPlaybackUpdate
                             }
                         };
-                        return Ok(Some(Action::WaitForPacket));
+                        Ok(Some(Action::WaitForPacket))
                     }
                     Step::ServeFile {
                         path,
                         id,
                         mime,
                         headers,
-                    } => {
-                        return Ok(Some(Action::ServeFile {
-                            path,
-                            id: *id,
-                            mime,
-                            headers: *headers,
-                        }));
-                    }
+                    } => Ok(Some(Action::ServeFile {
+                        path,
+                        id: *id,
+                        mime,
+                        headers: *headers,
+                    })),
                     Step::SleepMillis(ms) => {
                         self.internal = InternalState::Sleeping;
-                        return Ok(Some(Action::SleepMillis(*ms)));
+                        Ok(Some(Action::SleepMillis(*ms)))
                     }
                 }
             }
@@ -696,7 +702,7 @@ async fn write_simple(
     Ok(())
 }
 
-async fn run_test(
+async fn execute_test(
     receiver: &SocketAddr,
     file_server: &FileServer,
     sample_media_path: &PathBuf,
@@ -709,7 +715,7 @@ async fn run_test(
     let (reader, mut writer) = stream.split();
     let (sleep_tx, mut sleep_rx) = unbounded_channel::<()>();
     let mut action_queue = VecDeque::new();
-    action_queue.push_back(state.next_state(&file_urls)?);
+    action_queue.push_back(state.next_state(file_urls)?);
 
     let packet_stream = futures::stream::unfold(
         (reader, Box::new([0u8; 1000 * 32 - 1])),
@@ -811,7 +817,7 @@ async fn run_test(
             }
 
             if get_next_action {
-                action_queue.push_back(state.next_state(&file_urls)?);
+                action_queue.push_back(state.next_state(file_urls)?);
             }
 
             if handle_action_immediately {
@@ -826,11 +832,11 @@ async fn run_test(
                 if let Some(next_action) = state.received_packet(packet)? {
                     action_queue.push_back(Some(next_action));
                 }
-                action_queue.push_back(state.next_state(&file_urls)?);
+                action_queue.push_back(state.next_state(file_urls)?);
             }
             _ = sleep_rx.recv() => {
                 state.sleep_finished();
-                action_queue.push_back(state.next_state(&file_urls)?);
+                action_queue.push_back(state.next_state(file_urls)?);
             }
         }
     }
@@ -838,12 +844,48 @@ async fn run_test(
     state.finish()
 }
 
+/// Returns `true` on success.
+async fn run_test(
+    case: &TestCase,
+    receiver: &SocketAddr,
+    file_server: &FileServer,
+    sample_media_path: &PathBuf,
+) -> bool {
+    let mut file_urls: HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)> =
+        HashMap::new();
+
+    match execute_test(
+        receiver,
+        file_server,
+        sample_media_path,
+        case,
+        &mut file_urls,
+    )
+    .await
+    {
+        Ok(_) => true,
+        Err(err) => {
+            println!("\rtest {} ... {RED}FAILED{RESET}", case.name);
+            println!("Reason: {err:?}");
+
+            println!("==================== DUMPING STATE ====================");
+            println!("File urls: {file_urls:#?}");
+            file_server.dump_to_stdout();
+            println!("=======================================================");
+            false
+        }
+    }
+}
+
 async fn run_tests(receiver: SocketAddr, sample_media_path: PathBuf, tests: Vec<String>) {
     let file_server = FileServer::new(0).await.unwrap();
     let mut stdout = std::io::stdout();
 
     for (test_idx, target_name) in tests.iter().enumerate() {
-        let matched: Vec<_> = fast::TEST_CASES.iter().filter(|t | t.name.contains(target_name)).collect();
+        let matched: Vec<_> = fast::TEST_CASES
+            .iter()
+            .filter(|t| t.name.contains(target_name))
+            .collect();
 
         if matched.is_empty() {
             println!("test {} ... {YELLOW}SKIPPED{RESET}", target_name);
@@ -855,24 +897,11 @@ async fn run_tests(receiver: SocketAddr, sample_media_path: PathBuf, tests: Vec<
             print!("test {} ...", case.name);
             stdout.flush().unwrap();
 
-            let mut file_urls: HashMap<u32, (String, &'static str, Option<HashMap<String, String>>)> =
-                HashMap::new();
-            match run_test(&receiver, &file_server, &sample_media_path, case, &mut file_urls).await {
-                Ok(_) => {
-                    println!("\rtest {} ... {GREEN}OK{RESET}", case.name);
-                }
-                Err(err) => {
-                    println!("\rtest {} ... {RED}FAILED{RESET}", case.name);
-                    println!("Reason: {err:?}");
-
-                    println!("==================== DUMPING STATE ====================");
-                    println!("File urls: {file_urls:#?}");
-                    file_server.dump_to_stdout();
-                    println!("==================== XXXXXXXXXXXXX ====================");
-
-                    return;
-                }
+            if !run_test(case, &receiver, &file_server, &sample_media_path).await {
+                return;
             }
+
+            println!("\rtest {} ... {GREEN}OK{RESET}", case.name);
 
             file_server.clear();
 
@@ -881,6 +910,57 @@ async fn run_tests(receiver: SocketAddr, sample_media_path: PathBuf, tests: Vec<
             }
         }
     }
+}
+
+async fn fuzz(receiver: SocketAddr, sample_media_path: PathBuf) {
+    let should_run = Arc::new(AtomicBool::new(true));
+    ctrlc::set_handler({
+        let should_run = Arc::clone(&should_run);
+        move || should_run.store(false, Ordering::Relaxed)
+    })
+    .unwrap();
+
+    let file_server = FileServer::new(0).await.unwrap();
+    let mut stdout = std::io::stdout();
+    let mut passed = 0;
+    let mut rng = rand::rng();
+    let mut indices: Vec<usize> = (0..fast::TEST_CASES.len()).collect();
+    let start = std::time::Instant::now();
+    let mut last_status_dump = start;
+    'out: loop {
+        indices.shuffle(&mut rng);
+        for idx in &indices {
+            if !should_run.load(Ordering::Relaxed) {
+                break 'out;
+            }
+
+            if !run_test(
+                &fast::TEST_CASES[*idx],
+                &receiver,
+                &file_server,
+                &sample_media_path,
+            )
+            .await
+            {
+                break 'out;
+            }
+
+            file_server.clear();
+
+            passed += 1;
+
+            if last_status_dump.elapsed() >= std::time::Duration::from_secs(1) {
+                print!(
+                    "\x1B[2K\r[ Elapsed: {BLUE}{:?}{RESET} Tests ran: {GREEN}{passed}{RESET} ]",
+                    start.elapsed()
+                );
+                stdout.flush().unwrap();
+                last_status_dump = std::time::Instant::now();
+            }
+        }
+    }
+
+    println!("\n{passed} test cases ran and passed");
 }
 
 #[tokio::main]
@@ -895,7 +975,18 @@ async fn main() {
     let receiver = SocketAddr::new(cli.host.parse().unwrap(), cli.port);
 
     match cli.command {
-        Command::RunAll => run_tests(receiver, sample_media_path, fast::TEST_CASES.iter().map(|t| t.name.to_string()).collect()).await,
+        Command::RunAll => {
+            run_tests(
+                receiver,
+                sample_media_path,
+                fast::TEST_CASES
+                    .iter()
+                    .map(|t| t.name.to_string())
+                    .collect(),
+            )
+            .await
+        }
         Command::Run { tests } => run_tests(receiver, sample_media_path, tests).await,
+        Command::Fuzz => fuzz(receiver, sample_media_path).await,
     }
 }

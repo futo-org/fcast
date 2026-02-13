@@ -35,7 +35,7 @@ gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [
 gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
 gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
 num_cpus = "1"
-rand = "0.9"
+rand.workspace = true
 
 [dependencies.slint]
 # path = "../../../../slint/api/rs/slint"
