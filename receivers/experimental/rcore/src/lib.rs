@@ -1982,9 +1982,7 @@ pub fn run(
         // let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
-        // TODO: debug to find out why gstreamer breaks after clicking systray (window toggle) on wayland
         let mut prev_size = (0, 0);
-
         move |state, graphics_api| {
             if let slint::RenderingState::RenderingSetup = state {
                 debug!("Got graphics API: {graphics_api:?}");
