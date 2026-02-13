@@ -316,7 +316,7 @@ impl Application {
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
-        contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        // contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -330,7 +330,8 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
+        // let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
+        let player = player::Player::new(appsink, event_tx.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -1464,6 +1465,7 @@ impl Application {
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
+                self.player.dump_graph();
                 if let Some(player_uri) = self.player.current_uri()
                     && let Some(current_uri) = self.current_item_uri()
                     && current_uri == player_uri
@@ -1473,6 +1475,7 @@ impl Application {
                 }
             }
             player::PlayerEvent::Warning(msg) => {
+                self.player.dump_graph();
                 self.media_warning(msg)?;
             }
         }
@@ -1922,6 +1925,7 @@ pub fn run(
     {
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
         gst::log::set_threshold_for_name("gldebug", gst::DebugLevel::None);
+        gst::log::set_threshold_for_name("video-info", gst::DebugLevel::None);
     }
 
     let start = std::time::Instant::now();
@@ -1945,7 +1949,7 @@ pub fn run(
         );
     }
 
-    let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
     let (fin_tx, fin_rx) = oneshot::channel::<()>();
@@ -1975,11 +1979,10 @@ pub fn run(
     let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
-        let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
+        // let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
-        // TODO: debug to find out why gstreamer breaks after clicking systray (window toggle) on wayland
-
+        let mut prev_size = (0, 0);
         move |state, graphics_api| {
             if let slint::RenderingState::RenderingSetup = state {
                 debug!("Got graphics API: {graphics_api:?}");
@@ -2004,7 +2007,7 @@ pub fn run(
                                 })
                                 .unwrap();
                         },
-                        &gst_gl_contexts,
+                        // &gst_gl_contexts,
                     )
                     .unwrap();
             } else if let slint::RenderingState::BeforeRendering = state {
@@ -2013,17 +2016,24 @@ pub fn run(
                     return;
                 };
 
+                let new_size = ui.window().size();
+                let new_size = (new_size.width, new_size.height);
+                if new_size != prev_size {
+                    slint_sink.window_size.store(
+                        ((new_size.0 as u64) << 32) + new_size.1 as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    prev_size = new_size;
+                }
+
                 let bridge = ui.global::<Bridge>();
                 if bridge.get_playing() {
-                    let frame = if let Some((texture_id, size)) =
-                        slint_sink.fetch_next_frame_as_texture()
-                    {
-                        unsafe {
-                            slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                                texture_id,
-                                size.into(),
-                            )
-                            .build()
+                    let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
+                        match frame {
+                            Some(frame) => slint::Image::gst_frame(frame.frame, frame.info),
+                            None => {
+                                return;
+                            }
                         }
                     } else {
                         slint::Image::default()
@@ -2083,7 +2093,7 @@ pub fn run(
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
-                gst_gl_contexts,
+                // gst_gl_contexts,
             )
             .await
             .unwrap()

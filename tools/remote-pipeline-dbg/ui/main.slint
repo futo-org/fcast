@@ -1,0 +1,68 @@
+import { ScrollView, TabWidget } from "std-widgets.slint";
+
+export enum WaitingState {
+    Waiting,
+    Receiving,
+    Decoding,
+}
+
+export global Bridge {
+    in property <image> graph;
+    in property <WaitingState> waiting-state: WaitingState.Waiting;
+}
+
+export component MainWindow inherits Window {
+    title: "Remote pipeline debugger";
+
+    preferred-width: 800px;
+    preferred-height: 500px;
+
+    property <percent> scaling: 100%;
+
+    if Bridge.graph.width == 0: VerticalLayout {
+        alignment: center;
+
+        Text {
+            horizontal-alignment: center;
+
+            states [
+                waiting when Bridge.waiting-state == WaitingState.Waiting: {
+                    text: "Waiting for client to connect...";
+                }
+                receiving when Bridge.waiting-state == WaitingState.Receiving: {
+                    text: "Receiving data from client...";
+                }
+                decoding when Bridge.waiting-state == WaitingState.Decoding: {
+                    text: "Decoding data from client...";
+                }
+            ]
+
+        }
+    }
+
+    if Bridge.graph.width > 0: ScrollView {
+        viewport-width: img.width * img.transform-scale;
+        viewport-height: img.height * img.transform-scale;
+
+        TouchArea {
+            scroll-event(event) => {
+                if !event.modifiers.control {
+                    return reject;
+                }
+
+                if event.delta-y > 0 {
+                    scaling += 3%;
+                } else {
+                    scaling -= 3%;
+                }
+
+                accept
+            }
+        }
+
+        img := Image {
+            source: Bridge.graph;
+            transform-scale: scaling;
+        }
+    }
+}

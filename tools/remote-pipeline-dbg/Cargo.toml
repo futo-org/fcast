@@ -1,0 +1,12 @@
+[package]
+name = "remote-pipeline-dbg"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+slint = { workspace = true, features = [ "renderer-skia", "backend-winit", "std", "compat-1-2" ] }
+image = { version = "0.25", default-features = false, features = [ "png" ] }
+
+[build-dependencies]
+slint-build.workspace = true
