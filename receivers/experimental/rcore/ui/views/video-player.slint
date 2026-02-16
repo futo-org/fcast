@@ -26,22 +26,22 @@ component SecondaryButton inherits Button {
 component PlaybackSettingsMenuItem inherits Rectangle {
     in property <string> label;
     in property <image> icon;
-    in property <bool> enabled <=> i-ta-playback-rate.enabled;
 
     callback clicked;
 
     border-radius: 6px;
 
     states [
-        hover when i-ta-playback-rate.has-hover: {
-            i-playback-rate-text.color: FCastPalette.foreground;
-            i-playback-rate-arrow-icon.colorize: FCastPalette.foreground;
+        hover when i-ta.has-hover: {
+            text.color: FCastPalette.foreground;
+            arrow-icon.colorize: FCastPalette.foreground;
             background: FCastPalette.brand-600;
         }
     ]
 
-    i-ta-playback-rate := TouchArea {
+    i-ta := TouchArea {
         clicked => root.clicked();
+        mouse-cursor: pointer;
     }
 
     HorizontalLayout {
@@ -60,7 +60,7 @@ component PlaybackSettingsMenuItem inherits Rectangle {
             }
         }
 
-        i-playback-rate-text := FText {
+        text := FText {
             text: label;
             color: FCastPalette.neutral-500;
         }
@@ -70,18 +70,13 @@ component PlaybackSettingsMenuItem inherits Rectangle {
         VerticalLayout {
             alignment: center;
 
-            i-playback-rate-arrow-icon := Image {
+            arrow-icon := Image {
                 width: 4.67px;
                 height: 8px;
                 source: Icons.arrow-right;
             }
         }
     }
-}
-
-component SettingsItemDivider inherits Rectangle {
-    height: 1px;
-    background: #FFFFFF0A;
 }
 
 component SettingsPopupBase inherits PopupWindow {
@@ -183,8 +178,21 @@ component PlaybackSettingHeader inherits HorizontalLayout {
 component SettingsTrackList inherits VerticalLayout {
     in property <[UiMediaTrack]> tracks;
     in property <int> selected-id;
+    in property <bool> can-be-disabled: false;
 
     callback clicked(id: int);
+
+    if can-be-disabled: SettingItem {
+        value: "Off";
+        selected: selected-id == -1;
+
+        clicked => clicked(-1);
+    }
+
+    Rectangle {
+        height: 1px;
+        background: #FFFFFF0A;
+    }
 
     for track[id] in tracks: VerticalLayout {
         SettingItem {
@@ -327,9 +335,9 @@ component PlaybackControls inherits Rectangle {
                 alignment: end;
                 spacing: 15px;
 
-                SecondaryButton {
-                    icon: Icons.subtitles;
-                }
+                // SecondaryButton {
+                //     icon: Icons.subtitles;
+                // }
 
                 settings-btn := SecondaryButton {
                     icon: Icons.settings;
@@ -351,10 +359,9 @@ component PlaybackControls inherits Rectangle {
                         padding-top: 10px;
                         spacing: 5px;
 
-                        PlaybackSettingsMenuItem {
+                        if Bridge.video-tracks.length > 0: PlaybackSettingsMenuItem {
                             label: "Video";
                             icon: Icons.settings-video;
-                            enabled: Bridge.video-tracks.length > 0;
 
                             clicked => {
                                 pb-video-popup.show();
@@ -362,12 +369,9 @@ component PlaybackControls inherits Rectangle {
                             }
                         }
 
-                        SettingsItemDivider { }
-
-                        PlaybackSettingsMenuItem {
+                        if Bridge.audio-tracks.length > 0: PlaybackSettingsMenuItem {
                             label: "Audio";
                             icon: Icons.details-audio;
-                            enabled: Bridge.audio-tracks.length > 0;
 
                             clicked => {
                                 pb-audio-popup.show();
@@ -375,20 +379,15 @@ component PlaybackControls inherits Rectangle {
                             }
                         }
 
-                        SettingsItemDivider { }
-
-                        PlaybackSettingsMenuItem {
+                        if Bridge.subtitle-tracks.length > 0: PlaybackSettingsMenuItem {
                             label: "Subtitles";
                             icon: Icons.subtitles;
-                            enabled: Bridge.subtitle-tracks.length > 0;
 
                             clicked => {
                                 pb-subtitle-popup.show();
                                 settings-popup.close();
                             }
                         }
-
-                        SettingsItemDivider { }
 
                         PlaybackSettingsMenuItem {
                             label: "Playback Speed";
@@ -478,6 +477,7 @@ component PlaybackControls inherits Rectangle {
                         SettingsTrackList {
                             tracks: Bridge.subtitle-tracks;
                             selected-id: Bridge.current-subtitle-track;
+                            can-be-disabled: true;
                             clicked(id) => Bridge.select-track(id, UiMediaTrackType.Subtitle);
                         }
                     }

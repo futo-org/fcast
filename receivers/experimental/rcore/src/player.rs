@@ -1190,6 +1190,10 @@ impl Player {
     ) -> (i32, i32, i32) {
         self.selection_lock.release();
 
+        self.current_video_stream = -1;
+        self.current_audio_stream = -1;
+        self.current_subtitle_stream = -1;
+
         if let Some(video) = video_sid {
             self.current_video_stream = Self::find_stream_idx(video, &self.video_streams);
         }
