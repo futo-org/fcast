@@ -954,7 +954,7 @@ impl Application {
 
         *self.current_request_headers.lock() = media_item.headers.clone();
 
-        if container.starts_with("image/") {
+        if container != "image/gif" && container.starts_with("image/") {
             let event_tx = self.event_tx.clone();
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
