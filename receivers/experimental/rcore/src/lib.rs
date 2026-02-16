@@ -737,10 +737,15 @@ impl Application {
         info!("Media loaded successfully");
 
         #[cfg(target_os = "android")]
-        self.android_app.set_window_flags(
-            WindowManagerFlags::KEEP_SCREEN_ON,
-            WindowManagerFlags::empty(),
-        );
+        {
+            let android_app = self.android_app.clone();
+            tokio::task::spawn_blocking(move || {
+                android_app.set_window_flags(
+                    WindowManagerFlags::KEEP_SCREEN_ON,
+                    WindowManagerFlags::empty(),
+                );
+            });
+        }
 
         if self.updates_tx.receiver_count() > 0
             && let Some(play_msg) = self.current_play_data.clone()
@@ -865,10 +870,15 @@ impl Application {
         info!("Media finished");
 
         #[cfg(target_os = "android")]
-        self.android_app.set_window_flags(
-            WindowManagerFlags::empty(),
-            WindowManagerFlags::KEEP_SCREEN_ON,
-        );
+        {
+            let android_app = self.android_app.clone();
+            tokio::task::spawn_blocking(move || {
+                android_app.set_window_flags(
+                    WindowManagerFlags::empty(),
+                    WindowManagerFlags::KEEP_SCREEN_ON,
+                );
+            });
+        }
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
