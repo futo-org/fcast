@@ -1,4 +1,5 @@
 stages:
+  - project
   - buildDockerContainers
   - receiverAndroid
   - receiverExperimental
