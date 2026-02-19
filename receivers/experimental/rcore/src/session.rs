@@ -841,8 +841,6 @@ impl SessionDriver {
     // TODO: instrument this in caller with the id etc.
     pub async fn run(
         mut self,
-        // TODO: this should contain events that are subscribable
-        // updates_rx: Receiver<Arc<Vec<u8>>>,
         mut updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,
         event_tx: &UnboundedSender<Event>,
     ) -> anyhow::Result<()> {

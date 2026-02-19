@@ -7,7 +7,6 @@ edition = "2024"
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
-# common.path = "../common"
 gethostname = "1"
 anyhow.workspace = true
 futures = "0.3"
