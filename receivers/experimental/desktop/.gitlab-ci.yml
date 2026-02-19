@@ -1,0 +1,18 @@
+buildReceiverDesktopLinuxX64:
+  stage: receiverExperimental
+  tags:
+    - fcast
+  script:
+    - cargo build --release --package desktop-receiver
+    - rpmbuild -bb receivers/experimental/desktop/fcast-receiver.spec
+      --define "_topdir $CI_PROJECT_DIR/rpmbuild"
+      --define "_builddir $CI_PROJECT_DIR"
+      --define "_buildrootdir $CI_PROJECT_DIR/rpmbuild/BUILDROOT"
+    - cp rpmbuild/RPMS/*/*.rpm .
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - ./*.rpm
+  when: manual
