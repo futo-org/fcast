@@ -3,6 +3,8 @@ buildReceiverDesktopLinuxX64RPM:
   tags:
     - fcast
   script:
+    - rustup install nightly
+    - rustup default nightly
     - cargo build --release --package desktop-receiver
     - rpmbuild -bb receivers/experimental/desktop/fcast-receiver.spec
       --define "_topdir $CI_PROJECT_DIR/rpmbuild"
