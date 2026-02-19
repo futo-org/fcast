@@ -37,7 +37,7 @@ updateAutoscalerConfig:
     - fcast-autoscaler-host
   script:
     - cp .gitlab-ci-worker-cloud-init.yml "${AUTOSCALER_CLOUD_INIT_PATH}"
-    - sudo systemctl restart gitlab-runner
+    - nohup bash -c 'sleep 5 && sudo systemctl restart gitlab-runner' &
   allow_failure: true
   rules:
     - changes:
