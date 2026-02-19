@@ -2,6 +2,8 @@ buildReceiverDesktopLinuxX64RPM:
   stage: receiverExperimental
   tags:
     - fcast
+  before_script:
+    - cloud-init status --wait
   script:
     - cargo build --release --package desktop-receiver
     - rpmbuild -bb receivers/experimental/desktop/fcast-receiver.spec
