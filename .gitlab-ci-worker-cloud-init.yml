@@ -1,6 +1,7 @@
 #cloud-config
 
 packages:
+  - git
   - clang-devel
   - rust
   - gstreamer1-devel
