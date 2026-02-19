@@ -11,3 +11,4 @@ packages:
   - libdav1d-devel
   - glib2-devel
   - fontconfig-devel
+  - libseat-devel
