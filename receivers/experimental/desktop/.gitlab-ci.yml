@@ -1,4 +1,4 @@
-buildReceiverDesktopLinuxX64:
+buildReceiverDesktopLinuxX64RPM:
   stage: receiverExperimental
   tags:
     - fcast

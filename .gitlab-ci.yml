@@ -1,6 +1,7 @@
 stages:
   - buildDockerContainers
   - receiverAndroid
+  - receiverExperimental
   - buildAndDeployElectron
   - buildWebOSReceiver
   - buildTizenOSReceiver
