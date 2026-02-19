@@ -7,6 +7,6 @@ packages:
   - gstreamer1-plugins-base-devel
   - gstreamer1-plugins-good
   - gstreamer1-plugins-bad-free-devel
-  - gstreamer1-libav
-  - dav1d-devel
+  - gstreamer1-plugin-libav
+  - libdav1d
   - glib2-devel
