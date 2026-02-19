@@ -14,3 +14,4 @@ packages:
   - libseat-devel
   - libxkbcommon-devel
   - libinput-devel
+  - git
