@@ -10,12 +10,13 @@ export component AudioPlayerView inherits Rectangle {
 
     Image {
         image-fit: cover;
-        source: Bridge.blured-audio-track-cover;
+        source: Bridge.blured-audio-track-cover.img;
         width: 100%;
         height: 100%;
+        transform-rotation: Bridge.blured-audio-track-cover.rotation;
     }
 
-    if Bridge.blured-audio-track-cover.width > 0: Rectangle {
+    if Bridge.blured-audio-track-cover.img.width > 0: Rectangle {
         background: Bridge.controls-bg-gradient;
     }
 
@@ -38,16 +39,17 @@ export component AudioPlayerView inherits Rectangle {
                 width: thumbnail-size();
                 height: self.width;
                 border-radius: 4px;
-                background: Bridge.audio-track-cover.width == 0 ? FCastPalette.neutral-1000 : transparent;
+                background: Bridge.audio-track-cover.img.width == 0 ? FCastPalette.neutral-1000 : transparent;
 
-                if Bridge.audio-track-cover.width > 0: Image {
-                    source: Bridge.audio-track-cover;
+                if Bridge.audio-track-cover.img.width > 0: Image {
+                    source: Bridge.audio-track-cover.img;
                     image-fit: contain;
                     width: parent.width;
                     height: parent.height;
+                    transform-rotation: Bridge.audio-track-cover.rotation;
                 }
 
-                if Bridge.audio-track-cover.width == 0: Image {
+                if Bridge.audio-track-cover.img.width == 0: Image {
                     source: @image-url("../music-note.svg");
                     width: parent.width * 50%;
                     height: parent.height * 52%;

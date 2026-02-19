@@ -7,7 +7,7 @@ use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
 };
 use gst::prelude::*;
-use image::ImageFormat;
+use image::{ImageDecoder, ImageFormat};
 use parking_lot::Mutex;
 use session::{SessionDriver, SessionId};
 #[cfg(target_os = "android")]
@@ -95,6 +95,19 @@ pub enum TrayEvent {
 }
 
 #[derive(Debug)]
+pub struct DecodedImage {
+    id: ImageId,
+    pixels: SlintRgba8Pixbuf,
+    orientation: image::metadata::Orientation,
+}
+
+impl DecodedImage {
+    pub fn to_compound(self) -> CompoundImage {
+        CompoundImage::new(self.pixels, self.orientation)
+    }
+}
+
+#[derive(Debug)]
 pub enum Event {
     Quit,
     SessionFinished,
@@ -112,18 +125,9 @@ pub enum Event {
         id: ImageDownloadId,
         res: std::result::Result<(Bytes, ImageFormat), DownloadImageError>,
     },
-    AudioThumbnailAvailable {
-        id: ImageId,
-        preview: SlintRgba8Pixbuf,
-    },
-    AudioThumbnailBlurAvailable {
-        id: ImageId,
-        blured: SlintRgba8Pixbuf,
-    },
-    ImageDecoded {
-        id: ImageId,
-        image: SlintRgba8Pixbuf,
-    },
+    AudioThumbnailAvailable(DecodedImage),
+    AudioThumbnailBlurAvailable(DecodedImage),
+    ImageDecoded(DecodedImage),
     Mdns(MdnsEvent),
     PlaylistDataResult {
         play_message: Option<v3::PlayMessage>,
@@ -151,6 +155,28 @@ const FCAST_TCP_PORT: u16 = 46899;
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(700);
 
 slint::include_modules!();
+
+impl CompoundImage {
+    fn new(
+        pixels: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+        orientation: image::metadata::Orientation,
+    ) -> Self {
+        let rotation = match orientation {
+            image::metadata::Orientation::Rotate90
+            | image::metadata::Orientation::Rotate90FlipH => 90.0,
+            image::metadata::Orientation::Rotate180 => 180.0,
+            image::metadata::Orientation::Rotate270
+            | image::metadata::Orientation::Rotate270FlipH => 270.0,
+            image::metadata::Orientation::FlipHorizontal
+            | image::metadata::Orientation::FlipVertical
+            | image::metadata::Orientation::NoTransforms => 0.0,
+        };
+        Self {
+            img: slint::Image::from_rgba8(pixels),
+            rotation,
+        }
+    }
+}
 
 fn current_time_millis() -> u64 {
     std::time::SystemTime::now()
@@ -211,14 +237,35 @@ fn image_decode_worker(
     // libheif_rs::integration::image::register_all_decoding_hooks();
 
     while let Ok((id, job)) = job_rx.recv() {
-        debug!(?id, "Got job");
+        debug!(?id, ?job.format, "Got job");
 
-        let decode_res = match job.format {
-            Some(format) => image::load_from_memory_with_format(&job.image, format),
-            None => image::load_from_memory(&job.image),
+        let img_data: std::io::Cursor<&[u8]> = std::io::Cursor::new(&job.image);
+        let reader_res = match job.format {
+            Some(format) => image::ImageReader::with_format(img_data, format).into_decoder(),
+            None => match image::ImageReader::new(img_data).with_guessed_format() {
+                Ok(guessed) => guessed.into_decoder(),
+                Err(err) => {
+                    error!(?err, "Failed to guess image format from data");
+                    continue;
+                }
+            },
         };
 
-        let decoded = match decode_res {
+        let (decoded_res, orientation) = match reader_res {
+            Ok(mut decoder) => {
+                let orientation = decoder
+                    .orientation()
+                    .unwrap_or(image::metadata::Orientation::NoTransforms);
+                let image = image::DynamicImage::from_decoder(decoder);
+                (image, orientation)
+            }
+            Err(err) => {
+                error!(?err, "Failed to read image");
+                continue;
+            }
+        };
+
+        let decoded = match decoded_res {
             Ok(img) => img.to_rgba8(),
             Err(err) => {
                 // TODO: should notify about failure
@@ -235,18 +282,24 @@ fn image_decode_worker(
             )
         }
 
+        let img = DecodedImage {
+            id,
+            pixels: to_slint_pixbuf(&decoded),
+            orientation: orientation,
+        };
+
         match job.typ {
             ImageDecodeJobType::AudioThumbnail => {
-                let preview = to_slint_pixbuf(&decoded);
-                event_tx.send(Event::AudioThumbnailAvailable { id, preview })?;
+                event_tx.send(Event::AudioThumbnailAvailable(img))?;
                 let blured = to_slint_pixbuf(&image::imageops::fast_blur(&decoded, 64.0));
-                event_tx.send(Event::AudioThumbnailBlurAvailable { id, blured })?;
+                event_tx.send(Event::AudioThumbnailBlurAvailable(DecodedImage {
+                    id,
+                    pixels: blured,
+                    orientation,
+                }))?;
             }
             ImageDecodeJobType::Regular => {
-                event_tx.send(Event::ImageDecoded {
-                    id,
-                    image: to_slint_pixbuf(&decoded),
-                })?;
+                event_tx.send(Event::ImageDecoded(img))?;
             }
         }
     }
@@ -680,9 +733,9 @@ impl Application {
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_video_frame(slint::Image::default());
-            bridge.set_image_preview(slint::Image::default());
-            bridge.set_audio_track_cover(slint::Image::default());
-            bridge.set_blured_audio_track_cover(slint::Image::default());
+            bridge.set_image_preview(CompoundImage::default());
+            bridge.set_audio_track_cover(CompoundImage::default());
+            bridge.set_blured_audio_track_cover(CompoundImage::default());
             bridge.set_overlays(slint::ModelRc::default());
 
             bridge.set_playing(false);
@@ -1294,7 +1347,43 @@ impl Application {
             player::PlayerEvent::DurationChanged => {
                 self.current_duration = self.player.get_duration();
             }
-            player::PlayerEvent::Tags(_tags) => {}
+            player::PlayerEvent::Tags(tags) => {
+                if !self.have_audio_track_cover
+                    && let Some(cover) = tags.get::<gst::tags::Image>()
+                    && let Some(buffer) = cover.get().buffer()
+                    && let Ok(buffer) = buffer.map_readable()
+                    && self.pending_thumbnail.is_none()
+                {
+                    self.current_thumbnail_id += 1;
+                    let this_id = self.current_thumbnail_id;
+                    self.image_decode_tx.send((
+                        this_id,
+                        ImageDecodeJob {
+                            image: EncodedImageData::Vec(buffer.to_vec()),
+                            format: None,
+                            typ: ImageDecodeJobType::AudioThumbnail,
+                        },
+                    ))?;
+                    self.pending_thumbnail = Some(this_id);
+                }
+
+                if !self.have_media_title
+                    && let Some(title) = tags.get::<gst::tags::Title>()
+                {
+                    let title = title.get().to_shared_string();
+                    self.ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>().set_media_title(title);
+                    })?;
+                    self.have_media_title = true;
+                }
+
+                if let Some(artist) = tags.get::<gst::tags::Artist>() {
+                    let artist = artist.get().to_shared_string();
+                    self.ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>().set_artist_name(artist);
+                    })?;
+                }
+            }
             player::PlayerEvent::VolumeChanged(volume) => {
                 self.player.volume_changed();
 
@@ -1425,49 +1514,6 @@ impl Application {
 
                 if video.is_some() {
                     self.video_stream_available()?;
-                }
-
-                // TODO: get title from video track if available?
-
-                if video.is_none()
-                    && let Some(audio_sid) = audio
-                    && let Some(track) = self.player.get_stream_from_id(&audio_sid)
-                    && let Some(tags) = track.tags()
-                {
-                    if !self.have_audio_track_cover
-                        && let Some(cover) = tags.get::<gst::tags::Image>()
-                        && let Some(buffer) = cover.get().buffer()
-                        && let Ok(buffer) = buffer.map_readable()
-                    {
-                        self.current_thumbnail_id += 1;
-                        let this_id = self.current_thumbnail_id;
-                        self.image_decode_tx.send((
-                            this_id,
-                            ImageDecodeJob {
-                                image: EncodedImageData::Vec(buffer.to_vec()),
-                                format: None,
-                                typ: ImageDecodeJobType::AudioThumbnail,
-                            },
-                        ))?;
-                        self.pending_thumbnail = Some(this_id);
-                    }
-
-                    if !self.have_media_title
-                        && let Some(title) = tags.get::<gst::tags::Title>()
-                    {
-                        let title = title.get().to_shared_string();
-                        self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_media_title(title);
-                        })?;
-                        self.have_media_title = true;
-                    }
-
-                    if let Some(artist) = tags.get::<gst::tags::Artist>() {
-                        let artist = artist.get().to_shared_string();
-                        self.ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.global::<Bridge>().set_artist_name(artist);
-                        })?;
-                    }
                 }
             }
             player::PlayerEvent::RateChanged(new_rate) => {
@@ -1610,39 +1656,38 @@ impl Application {
                     }
                 }
             }
-            Event::AudioThumbnailAvailable { id, preview } => {
+            Event::AudioThumbnailAvailable(img) => {
                 if let Some(pending_thumbnail) = self.pending_thumbnail
-                    && pending_thumbnail == id
+                    && pending_thumbnail == img.id
                 {
                     self.ui_weak.upgrade_in_event_loop(move |ui| {
                         let bridge = ui.global::<Bridge>();
-                        bridge.set_audio_track_cover(slint::Image::from_rgba8(preview));
+                        bridge.set_audio_track_cover(img.to_compound());
                     })?;
                 }
             }
-            Event::AudioThumbnailBlurAvailable { id, blured } => {
+            Event::AudioThumbnailBlurAvailable(img) => {
                 if let Some(pending_thumbnail) = self.pending_thumbnail
-                    && pending_thumbnail == id
+                    && pending_thumbnail == img.id
                 {
                     // NOTE: `AudioThumbnailBlurAvailable` is assumed to *always* be received after `AudioThumbnailAvailable`
                     //       and no other thumbnail results in between.
                     self.pending_thumbnail = None;
                     self.ui_weak.upgrade_in_event_loop(move |ui| {
                         let bridge = ui.global::<Bridge>();
-                        bridge.set_blured_audio_track_cover(slint::Image::from_rgba8(blured));
+                        bridge.set_blured_audio_track_cover(img.to_compound());
                     })?;
                 }
             }
-            Event::ImageDecoded { id, image } => {
-                if id != self.current_image_id {
-                    warn!(id, "Ignoring old image decode result");
+            Event::ImageDecoded(img) => {
+                if img.id != self.current_image_id {
+                    warn!(img.id, "Ignoring old image decode result");
                     return Ok(false);
                 }
 
                 self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let image = slint::Image::from_rgba8(image);
                     let bridge = ui.global::<Bridge>();
-                    bridge.set_image_preview(image);
+                    bridge.set_image_preview(img.to_compound());
                     bridge.set_app_state(AppState::Playing)
                 })?;
 

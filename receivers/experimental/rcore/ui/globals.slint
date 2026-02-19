@@ -39,6 +39,11 @@ export struct UiMediaTrack {
     name: string,
 }
 
+export struct CompoundImage {
+    img: image,
+    rotation: angle,
+}
+
 export global Bridge {
     in property <string> label;
     in property <string> progress-label;
@@ -52,9 +57,9 @@ export global Bridge {
     in property <bool> is-fullscreen;
     in property <image> qr-code;
     in property <image> video-frame;
-    in property <image> image-preview;
-    in property <image> audio-track-cover;
-    in property <image> blured-audio-track-cover;
+    in property <CompoundImage> image-preview;
+    in property <CompoundImage> audio-track-cover;
+    in property <CompoundImage> blured-audio-track-cover;
     in property <string> local-ip-addrs;
     in property <string> device-name;
     in property <[UiMediaTrack]> video-tracks;

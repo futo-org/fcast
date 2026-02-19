@@ -1142,27 +1142,27 @@ impl Player {
         None
     }
 
-    fn stream_from_id_in<'a>(
-        &'a self,
-        id: &str,
-        streams: &'a [gst::Stream],
-    ) -> Option<&'a gst::Stream> {
-        for stream in streams {
-            if let Some(sid) = stream.stream_id()
-                && sid == id
-            {
-                return Some(stream);
-            }
-        }
+    // fn stream_from_id_in<'a>(
+    //     &'a self,
+    //     id: &str,
+    //     streams: &'a [gst::Stream],
+    // ) -> Option<&'a gst::Stream> {
+    //     for stream in streams {
+    //         if let Some(sid) = stream.stream_id()
+    //             && sid == id
+    //         {
+    //             return Some(stream);
+    //         }
+    //     }
 
-        None
-    }
+    //     None
+    // }
 
-    pub fn get_stream_from_id(&self, id: &str) -> Option<&gst::Stream> {
-        self.stream_from_id_in(id, &self.video_streams).or(self
-            .stream_from_id_in(id, &self.audio_streams)
-            .or(self.stream_from_id_in(id, &self.subtitle_streams)))
-    }
+    // pub fn get_stream_from_id(&self, id: &str) -> Option<&gst::Stream> {
+    //     self.stream_from_id_in(id, &self.video_streams).or(self
+    //         .stream_from_id_in(id, &self.audio_streams)
+    //         .or(self.stream_from_id_in(id, &self.subtitle_streams)))
+    // }
 
     pub fn have_media_info(&self) -> bool {
         !self.video_streams.is_empty()
