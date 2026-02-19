@@ -4556,6 +4556,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "image"
 version = "0.25.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5218,13 +5228,13 @@ dependencies = [
 
 [[package]]
 name = "mdns-sd"
-version = "0.17.2"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183d7ebd9fe3815c1635cd039d1ed95f1d315731cc13e6d504e4ae039d527b8d"
+checksum = "8c23fd301a08742925d79fd29bba538c9cb0408d67907905f8f9d4e5cd8bc816"
 dependencies = [
  "fastrand",
  "flume",
- "if-addrs",
+ "if-addrs 0.15.0",
  "log",
  "mio",
  "socket-pktinfo",
@@ -6825,7 +6835,7 @@ dependencies = [
  "gstreamer-base 0.24.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "gstreamer-tag",
  "gstreamer-video",
- "if-addrs",
+ "if-addrs 0.14.0",
  "image",
  "image_swizzle",
  "jni",
