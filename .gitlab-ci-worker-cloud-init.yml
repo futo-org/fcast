@@ -9,3 +9,4 @@ packages:
   - gstreamer1-plugins-bad-free-devel
   - gstreamer1-libav
   - dav1d-devel
+  - glib2-devel
