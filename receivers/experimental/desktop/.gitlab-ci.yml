@@ -3,11 +3,6 @@ buildReceiverDesktopLinuxX64RPM:
   tags:
     - fcast-autoscaler
   script:
-    - echo "=== Debug cloud-init ==="
-    - rpm -q glib2-devel gstreamer1-devel || true
-    - pkg-config --list-all | grep -i glib || true
-    - tail -50 /var/log/cloud-init-output.log || true
-    - echo "=== End debug ==="
     - rustup install nightly
     - rustup default nightly
     - cargo build --release --package desktop-receiver

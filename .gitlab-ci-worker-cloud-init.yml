@@ -10,3 +10,4 @@ packages:
   - gstreamer1-plugin-libav
   - libdav1d
   - glib2-devel
+  - fontconfig-devel
