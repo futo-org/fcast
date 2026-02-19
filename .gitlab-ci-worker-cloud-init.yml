@@ -12,3 +12,5 @@ packages:
   - glib2-devel
   - fontconfig-devel
   - libseat-devel
+  - libxkbcommon-devel
+  - libinput-devel
