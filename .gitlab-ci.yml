@@ -34,10 +34,9 @@ include:
 updateAutoscalerConfig:
   stage: project
   tags:
-    - fcast
+    - fcast-autoscaler
   script:
-    - scp .gitlab-ci-worker-cloud-init.yml
-      "$root@${AUTOSCALER_HOST}:${AUTOSCALER_CLOUD_INIT_PATH}"
+    - cp .gitlab-ci-worker-cloud-init.yml "${AUTOSCALER_CLOUD_INIT_PATH}"
   allow_failure: true
   rules:
     - changes:
