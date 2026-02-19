@@ -7,7 +7,7 @@ buildReceiverDesktopLinuxX64RPM:
     - rustup default nightly
     - cargo install cargo-generate-rpm
     - cargo build --release --package desktop-receiver
-    - cargo generate-rpm --package desktop-receiver
+    - cargo generate-rpm -p receivers/experimental/desktop
     - cp target/generate-rpm/*.rpm .
   artifacts:
     untracked: false
