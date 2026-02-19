@@ -5,12 +5,10 @@ buildReceiverDesktopLinuxX64RPM:
   script:
     - rustup install nightly
     - rustup default nightly
+    - cargo install cargo-generate-rpm
     - cargo build --release --package desktop-receiver
-    - rpmbuild -bb receivers/experimental/desktop/fcast-receiver.spec
-      --define "_topdir $CI_PROJECT_DIR/rpmbuild"
-      --define "_builddir $CI_PROJECT_DIR"
-      --define "_buildrootdir $CI_PROJECT_DIR/rpmbuild/BUILDROOT"
-    - cp rpmbuild/RPMS/*/*.rpm .
+    - cargo generate-rpm --package desktop-receiver
+    - cp target/generate-rpm/*.rpm .
   artifacts:
     untracked: false
     when: on_success
