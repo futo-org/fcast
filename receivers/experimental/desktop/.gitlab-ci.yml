@@ -1,7 +1,7 @@
 buildReceiverDesktopLinuxX64RPM:
   stage: receiverExperimental
   tags:
-    - fcast
+    - fcast-autoscaler
   script:
     - rustup install nightly
     - rustup default nightly
