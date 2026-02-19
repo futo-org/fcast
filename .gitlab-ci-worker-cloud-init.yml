@@ -8,6 +8,6 @@ packages:
   - gstreamer1-plugins-good
   - gstreamer1-plugins-bad-free-devel
   - gstreamer1-plugin-libav
-  - libdav1d
+  - libdav1d-devel
   - glib2-devel
   - fontconfig-devel
