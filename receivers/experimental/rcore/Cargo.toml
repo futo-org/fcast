@@ -47,7 +47,6 @@ features = [
     "compat-1-2",
     "renderer-skia-opengl",
     "std",
-    "backend-linuxkms"
 ]
 
 [dependencies.image]
@@ -112,6 +111,7 @@ slint-build.workspace = true
 default = []
 desktop = []
 systray = ["dep:ksni", "dep:tray-icon"]
+kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 
 # TODO: have a build mode which statically links every rust plugin we use + use fat LTO to check performance gains
