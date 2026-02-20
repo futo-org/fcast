@@ -86,10 +86,10 @@ objc2-app-kit = "0.3.2"
 # glutin_glx_sys = { version = "0.6.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
-ksni = { version = "0.3", default-features = false, features = ["async-io"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-tray-icon = { version = "0.21.3", default-features = false }
+tray-icon = { version = "0.21.3", default-features = false, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
@@ -109,8 +109,9 @@ slint-build.workspace = true
 
 [features]
 # desktop = ["slint/backend-linuxkms"]
-desktop = []
-android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 default = []
+desktop = []
+systray = ["dep:ksni", "dep:tray-icon"]
+android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 
 # TODO: have a build mode which statically links every rust plugin we use + use fat LTO to check performance gains

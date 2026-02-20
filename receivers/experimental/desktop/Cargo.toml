@@ -11,6 +11,10 @@ anyhow.workspace = true
 [target.'cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))'.dependencies]
 tikv-jemallocator = "0.6"
 
+[features]
+default = ["systray"]
+systray = ["rcore/systray"]
+
 [package.metadata.generate-rpm]
 name = "fcast-receiver"
 summary = "FCast Receiver for displaying multimedia content"

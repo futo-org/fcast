@@ -43,7 +43,7 @@ mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
 #[cfg(not(any(target_os = "android", target_os = "linux")))]
 mod mac_win_tray;
@@ -87,7 +87,7 @@ pub enum MdnsEvent {
 
 type MediaItemId = u64;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(feature = "systray")]
 #[derive(Debug)]
 pub enum TrayEvent {
     Quit,
@@ -138,7 +138,7 @@ pub enum Event {
         id: i32,
         variant: UiMediaTrackType,
     },
-    #[cfg(not(target_os = "android"))]
+    #[cfg(feature = "systray")]
     Tray(TrayEvent),
 }
 
@@ -1539,7 +1539,7 @@ impl Application {
         Ok(())
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(feature = "systray")]
     fn handle_tray_event(&mut self, event: TrayEvent) -> Result<bool> {
         debug!(?event, "Handling tray event");
 
@@ -1768,7 +1768,7 @@ impl Application {
             Event::NewPlayerEvent(event) => {
                 self.handle_new_player_event(event)?;
             }
-            #[cfg(not(target_os = "android"))]
+            #[cfg(feature = "systray")]
             Event::Tray(event) => {
                 return self.handle_tray_event(event);
             }
@@ -1790,7 +1790,7 @@ impl Application {
         ))
         .await?;
 
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "systray"))]
         let _tray = if cli_args.no_systray {
             None
         } else {
@@ -2119,7 +2119,7 @@ pub fn run(
         }
     })?;
 
-    #[cfg(not(any(target_os = "android", target_os = "linux")))]
+    #[cfg(all(not(any(target_os = "android", target_os = "linux")), feature = "systray"))]
     let _tray_icon = if !cli_args.no_systray {
         let (tray, ids) = mac_win_tray::create_tray_icon();
         mac_win_tray::set_event_handler(event_tx.clone(), ids);
@@ -2128,6 +2128,7 @@ pub fn run(
         None
     };
 
+    #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
     let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
     runtime.spawn({
@@ -2253,10 +2254,10 @@ pub fn run(
 
     info!(initialized_in = ?start.elapsed());
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", not(feature = "systray")))]
     ui.run()?;
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(feature = "systray")]
     if no_systray {
         ui.run()?;
     } else {
