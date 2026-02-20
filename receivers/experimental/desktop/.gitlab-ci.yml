@@ -1,0 +1,18 @@
+buildReceiverDesktopLinuxX64RPM:
+  stage: receiverExperimental
+  tags:
+    - fcast-autoscaler
+  script:
+    - rustup install nightly
+    - rustup default nightly
+    - cargo install cargo-generate-rpm
+    - cargo build --release --package desktop-receiver
+    - cargo generate-rpm -p receivers/experimental/desktop
+    - cp target/generate-rpm/*.rpm .
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - ./*.rpm
+  when: manual
