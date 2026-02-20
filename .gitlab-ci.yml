@@ -1,6 +1,8 @@
 stages:
+  - project
   - buildDockerContainers
   - receiverAndroid
+  - receiverExperimental
   - buildAndDeployElectron
   - buildWebOSReceiver
   - buildTizenOSReceiver
@@ -21,9 +23,23 @@ include:
   - local: 'docs/.gitlab-ci.yml'
   - local: 'receivers/android/.gitlab-ci.yml'
   - local: 'receivers/electron/.gitlab-ci.yml'
+  - local: 'receivers/experimental/desktop/.gitlab-ci.yml'
   - local: 'receivers/webos/.gitlab-ci.yml'
   - local: 'receivers/tizen/.gitlab-ci.yml'
   - local: 'sdk/sender/.gitlab-ci.yml'
   - local: 'senders/android/.gitlab-ci.yml'
   - local: 'senders/desktop/.gitlab-ci.yml'
   - local: 'website/.gitlab-ci.yml'
+
+updateAutoscalerConfig:
+  stage: project
+  tags:
+    - fcast-autoscaler-host
+  script:
+    - cp .gitlab-ci-worker-cloud-init.yml "${AUTOSCALER_CLOUD_INIT_PATH}"
+    - sudo systemd-run --on-active=5s systemctl restart gitlab-runner
+  allow_failure: true
+  rules:
+    - changes:
+        - .gitlab-ci-worker-cloud-init.yml
+      when: on_success
