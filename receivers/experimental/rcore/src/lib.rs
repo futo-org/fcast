@@ -2252,6 +2252,14 @@ pub fn run(
             sec_to_string(sec as f64).to_shared_string()
         });
 
+    #[cfg(not(target_os = "android"))]
+    let _awake = keepawake::Builder::default()
+        .display(true)
+        .reason("Media playback")
+        .app_name("FCast Receiver")
+        .app_reverse_domain("org.fcast.receiver")
+        .create();
+
     info!(initialized_in = ?start.elapsed());
 
     #[cfg(any(target_os = "android", not(feature = "systray")))]
