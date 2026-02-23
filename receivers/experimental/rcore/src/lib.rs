@@ -47,7 +47,7 @@ mod session;
 // mod small_vec_model; // For later
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(all(not(any(target_os = "android", target_os = "linux")), feature = "systray"))]
 mod mac_win_tray;
 mod user_agent;
 mod video;
