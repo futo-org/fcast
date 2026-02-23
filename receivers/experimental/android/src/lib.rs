@@ -17,7 +17,13 @@ fn android_main(app: slint::android::AndroidApp) {
     log_panics::init();
 
     android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Debug)
+            .with_filter(
+                android_logger::FilterBuilder::new()
+                    .filter_module("tracing_gstreamer::callsite", log::LevelFilter::Off)
+                    .build(),
+            ),
     );
 
     slint::android::init(app.clone()).unwrap();

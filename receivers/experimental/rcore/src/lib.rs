@@ -710,6 +710,14 @@ impl Application {
         Ok(())
     }
 
+    fn clear_image_state(bridge: &Bridge) {
+        bridge.set_video_frame(slint::Image::default());
+        bridge.set_image_preview(CompoundImage::default());
+        bridge.set_audio_track_cover(CompoundImage::default());
+        bridge.set_blured_audio_track_cover(CompoundImage::default());
+        bridge.set_overlays(slint::ModelRc::default());
+    }
+
     fn cleanup_playback_data(&mut self, continue_to_play: bool) -> Result<()> {
         self.current_duration = None;
         self.on_uri_loaded_command_queue.clear();
@@ -735,11 +743,7 @@ impl Application {
         if !continue_to_play {
             self.ui_weak.upgrade_in_event_loop(move |ui| {
                 let bridge = ui.global::<Bridge>();
-                bridge.set_video_frame(slint::Image::default());
-                bridge.set_image_preview(CompoundImage::default());
-                bridge.set_audio_track_cover(CompoundImage::default());
-                bridge.set_blured_audio_track_cover(CompoundImage::default());
-                bridge.set_overlays(slint::ModelRc::default());
+                Self::clear_image_state(&bridge);
 
                 bridge.set_playing(false);
                 bridge.set_playback_position(0.0);
@@ -1430,7 +1434,11 @@ impl Application {
 
                 self.ui_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_playback_started();
-                    ui.global::<Bridge>().set_app_state(AppState::Playing);
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_app_state(AppState::Playing);
+                    Self::clear_image_state(&bridge);
+                    bridge.set_media_title("".to_shared_string());
+                    bridge.set_artist_name("".to_shared_string());
                 })?;
 
                 // self.current_duration = info.duration();
