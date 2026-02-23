@@ -13,6 +13,8 @@ pub enum AndroidReceiverCommand {
     Build {
         #[clap(short, long)]
         release: bool,
+        #[clap(long)]
+        release_lto: bool,
         #[clap(short, long)]
         target: Option<AndroidAbiTarget>,
     },
@@ -130,7 +132,7 @@ impl ReceiverArgs {
                         let ndk_root = sh.var("ANDROID_NDK_ROOT").unwrap();
                         cmd!(sh, "make -f {ndk_root}/build/core/build-local.mk").run()?;
                     }
-                    AndroidReceiverCommand::Build { release, target } => {
+                    AndroidReceiverCommand::Build { release, release_lto, target } => {
                         let out_dir =
                             concat_path(&root_path, "receivers/experimental/android/app/src/main/jniLibs");
 
@@ -168,6 +170,9 @@ impl ReceiverArgs {
                             ];
                             if release {
                                 args.push("--release");
+                                assert!(!release_lto);
+                            } else if release_lto {
+                                args.extend_from_slice(&["--profile", "release-lto"]);
                             }
 
                             cmd!(sh, "cargo ndk {args...}").run()?;

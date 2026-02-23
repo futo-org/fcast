@@ -21,6 +21,7 @@ fn android_main(app: slint::android::AndroidApp) {
             .with_max_level(log::LevelFilter::Debug)
             .with_filter(
                 android_logger::FilterBuilder::new()
+                    .filter_level(log::LevelFilter::Debug)
                     .filter_module("tracing_gstreamer::callsite", log::LevelFilter::Off)
                     .build(),
             ),

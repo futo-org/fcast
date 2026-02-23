@@ -1,9 +1,12 @@
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::rc::Rc;
 
 use anyhow::Result;
-use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
 use xshell::cmd;
 #[cfg(target_os = "windows")]
@@ -157,6 +160,7 @@ fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
     res
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn concat_paths(paths: &[impl AsRef<Utf8Path>]) -> Utf8PathBuf {
     let mut res = Utf8PathBuf::new();
     res.extend(paths);

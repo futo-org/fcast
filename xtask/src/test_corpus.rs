@@ -40,25 +40,25 @@ impl VideoCodec {
     }
 }
 
-enum AudioCodec {
-    Mp3,
-    Opus,
-    Flac,
-    Aac,
-    Wav,
-}
+// enum AudioCodec {
+//     Mp3,
+//     Opus,
+//     Flac,
+//     Aac,
+//     Wav,
+// }
 
-impl AudioCodec {
-    pub fn encoder(&self) -> &'static str {
-        match self {
-            AudioCodec::Mp3 => "lamemp3enc",
-            AudioCodec::Opus => "opusenc",
-            AudioCodec::Flac => "flacenc",
-            AudioCodec::Aac => "fdkaacenc",
-            AudioCodec::Wav => "wavenc",
-        }
-    }
-}
+// impl AudioCodec {
+//     pub fn encoder(&self) -> &'static str {
+//         match self {
+//             AudioCodec::Mp3 => "lamemp3enc",
+//             AudioCodec::Opus => "opusenc",
+//             AudioCodec::Flac => "flacenc",
+//             AudioCodec::Aac => "fdkaacenc",
+//             AudioCodec::Wav => "wavenc",
+//         }
+//     }
+// }
 
 fn run_cmd(sh: &Rc<Shell>, cmd: &str) -> Result<()> {
     cmd!(sh, "sh -c {cmd}").run()?;

@@ -323,13 +323,6 @@ fn sec_to_string(sec: f64) -> String {
     )
 }
 
-// struct PlaylistPlaybackState {
-//     playlist: v3::PlaylistContent,
-//     current_item_idx: usize,
-// }
-
-// TODO: store either single item or playlist etc.
-
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
