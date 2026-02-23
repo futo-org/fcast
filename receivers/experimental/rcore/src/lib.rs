@@ -634,7 +634,7 @@ impl Application {
         Ok((body, format))
     }
 
-    #[tracing::instrument(skip_all)]
+    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all))]
     fn notify_updates(&mut self, force: bool) -> Result<()> {
         if !self.player.have_media_info() {
             return Ok(());
@@ -1928,6 +1928,7 @@ impl Application {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn log_level() -> LevelFilter {
     match std::env::var("FCAST_LOG") {
         Ok(level) => match level.to_ascii_lowercase().as_str() {
