@@ -3,7 +3,7 @@ FROM ghcr.io/rust-lang/rust:nightly-trixie
 RUN apt update && apt install -y build-essential cmake pkg-config automake autoconf libtool \
   libprotobuf-dev protobuf-compiler wget2 openjdk-21-jdk xz-utils curl ninja-build libclang-dev
 
-RUN cargo install cargo-ndk
+RUN cargo install --locked cargo-ndk --git https://github.com/bbqsrc/cargo-ndk --rev 9672f442e3524139f3369720cd8d83c8f29b7303
 
 RUN rustup target add aarch64-linux-android \
     armv7-linux-androideabi \
