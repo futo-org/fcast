@@ -22,7 +22,9 @@ use tokio::{
         oneshot,
     },
 };
-use tracing::{Instrument, debug, debug_span, error, info, level_filters::LevelFilter, warn};
+use tracing::{Instrument, debug, debug_span, error, info, warn};
+#[cfg(not(target_os = "android"))]
+use tracing::level_filters::LevelFilter;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -2000,6 +2002,7 @@ pub fn run(
         let log_level = cli_args.loglevel.unwrap_or(log_level());
         let filter = tracing_subscriber::filter::Targets::new()
             .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
+            .with_target("mdns_sd", LevelFilter::INFO)
             .with_default(log_level);
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);

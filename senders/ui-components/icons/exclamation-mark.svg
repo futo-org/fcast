@@ -11,12 +11,12 @@
 <feOffset dx="0.532451" dy="0.558827"/>
 <feGaussianBlur stdDeviation="1.22656"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.142969 0"/>
-<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_5604_1986"/> -->
 <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
 <feOffset dx="2.29364" dy="2.40725"/>
 <feGaussianBlur stdDeviation="2.3125"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.24375 0"/>
-<feBlend mode="normal" in2="effect1_dropShadow_5604_1986" result="effect2_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="effect1_dropShadow_5604_1986" result="effect2_dropShadow_5604_1986"/> -->
 <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
 <feOffset dx="5.5293" dy="5.8032"/>
 <feGaussianBlur stdDeviation="3.86719"/>
@@ -26,27 +26,27 @@
 <feOffset dx="10.4852" dy="11.0046"/>
 <feGaussianBlur stdDeviation="6.5"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.375 0"/>
-<feBlend mode="normal" in2="effect3_dropShadow_5604_1986" result="effect4_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="effect3_dropShadow_5604_1986" result="effect4_dropShadow_5604_1986"/> -->
 <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
 <feOffset dx="17.4071" dy="18.2693"/>
 <feGaussianBlur stdDeviation="10.8203"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.433594 0"/>
-<feBlend mode="normal" in2="effect4_dropShadow_5604_1986" result="effect5_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="effect4_dropShadow_5604_1986" result="effect5_dropShadow_5604_1986"/> -->
 <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
 <feOffset dx="26.5406" dy="27.8554"/>
 <feGaussianBlur stdDeviation="17.4375"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.50625 0"/>
-<feBlend mode="normal" in2="effect5_dropShadow_5604_1986" result="effect6_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="effect5_dropShadow_5604_1986" result="effect6_dropShadow_5604_1986"/> -->
 <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
 <feOffset dx="38.1317" dy="40.0206"/>
 <feGaussianBlur stdDeviation="26.9609"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.607031 0"/>
-<feBlend mode="normal" in2="effect6_dropShadow_5604_1986" result="effect7_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="effect6_dropShadow_5604_1986" result="effect7_dropShadow_5604_1986"/> -->
 <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
 <feOffset dx="52.4259" dy="55.0229"/>
 <feGaussianBlur stdDeviation="40"/>
 <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.75 0"/>
-<feBlend mode="normal" in2="effect7_dropShadow_5604_1986" result="effect8_dropShadow_5604_1986"/>
+<!-- <feBlend mode="normal" in2="effect7_dropShadow_5604_1986" result="effect8_dropShadow_5604_1986"/> -->
 <feBlend mode="normal" in="SourceGraphic" in2="effect8_dropShadow_5604_1986" result="shape"/>
 </filter>
 <linearGradient id="paint0_linear_5604_1986" x1="17.27" y1="15.0322" x2="10.8865" y2="18.8465" gradientUnits="userSpaceOnUse">

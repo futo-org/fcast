@@ -56,9 +56,15 @@ rand = "0.10"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = true
+strip = "debuginfo"
 
 [profile.release-dbg]
 inherits = "release"
 debug = "full"
 strip = false
+
+[profile.release-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
