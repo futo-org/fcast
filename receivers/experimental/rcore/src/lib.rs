@@ -140,6 +140,7 @@ pub enum Event {
     },
     #[cfg(feature = "systray")]
     Tray(TrayEvent),
+    ShouldSetLoadingStatus(MediaItemId),
 }
 
 #[macro_export]
@@ -360,6 +361,7 @@ struct Application {
     current_playlist_item_idx: Option<usize>,
     device_name: Option<String>,
     current_media_item_id: MediaItemId,
+    is_loading_media: bool,
 }
 
 impl Application {
@@ -482,8 +484,6 @@ impl Application {
 
         let (updates_tx, _) = broadcast::channel(10);
 
-        // TODO: IPv6?
-        // TODO: update addresses when they change on the device, same with qr code
         #[cfg(not(target_os = "android"))]
         let mdns = {
             use if_addrs::get_if_addrs;
@@ -575,6 +575,7 @@ impl Application {
             current_playlist_item_idx: None,
             device_name: None,
             current_media_item_id: 0,
+            is_loading_media: false,
         })
     }
 
@@ -709,7 +710,7 @@ impl Application {
         Ok(())
     }
 
-    fn cleanup_playback_data(&mut self) -> Result<()> {
+    fn cleanup_playback_data(&mut self, continue_to_play: bool) -> Result<()> {
         self.current_duration = None;
         self.on_uri_loaded_command_queue.clear();
         self.on_playing_command_queue.clear();
@@ -725,38 +726,41 @@ impl Application {
         self.current_playlist = None;
         self.current_playlist_item_idx = None;
         self.player.stop();
+        self.is_loading_media = false;
 
         self.current_thumbnail_id += 1;
         self.current_image_id += 1;
         self.current_image_download_id += 1;
 
-        self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let bridge = ui.global::<Bridge>();
-            bridge.set_video_frame(slint::Image::default());
-            bridge.set_image_preview(CompoundImage::default());
-            bridge.set_audio_track_cover(CompoundImage::default());
-            bridge.set_blured_audio_track_cover(CompoundImage::default());
-            bridge.set_overlays(slint::ModelRc::default());
+        if !continue_to_play {
+            self.ui_weak.upgrade_in_event_loop(move |ui| {
+                let bridge = ui.global::<Bridge>();
+                bridge.set_video_frame(slint::Image::default());
+                bridge.set_image_preview(CompoundImage::default());
+                bridge.set_audio_track_cover(CompoundImage::default());
+                bridge.set_blured_audio_track_cover(CompoundImage::default());
+                bridge.set_overlays(slint::ModelRc::default());
 
-            bridge.set_playing(false);
-            bridge.set_playback_position(0.0);
-            bridge.set_label("".to_shared_string());
-            bridge.set_progress_label("".to_shared_string());
-            bridge.set_duration_label("".to_shared_string());
-            bridge.set_duration_seconds(0);
-            bridge.set_app_state(AppState::Idle);
-            bridge.set_playback_state(GuiPlaybackState::Idle);
-            bridge.set_media_title("".to_shared_string());
-            bridge.set_artist_name("".to_shared_string());
+                bridge.set_playing(false);
+                bridge.set_playback_position(0.0);
+                bridge.set_label("".to_shared_string());
+                bridge.set_progress_label("".to_shared_string());
+                bridge.set_duration_label("".to_shared_string());
+                bridge.set_duration_seconds(0);
+                bridge.set_app_state(AppState::Idle);
+                bridge.set_playback_state(GuiPlaybackState::Idle);
+                bridge.set_media_title("".to_shared_string());
+                bridge.set_artist_name("".to_shared_string());
 
-            bridge.set_video_tracks(slint::ModelRc::default());
-            bridge.set_audio_tracks(slint::ModelRc::default());
-            bridge.set_subtitle_tracks(slint::ModelRc::default());
+                bridge.set_video_tracks(slint::ModelRc::default());
+                bridge.set_audio_tracks(slint::ModelRc::default());
+                bridge.set_subtitle_tracks(slint::ModelRc::default());
 
-            bridge.set_current_video_track(-1);
-            bridge.set_current_audio_track(-1);
-            bridge.set_current_subtitle_track(-1);
-        })?;
+                bridge.set_current_video_track(-1);
+                bridge.set_current_audio_track(-1);
+                bridge.set_current_subtitle_track(-1);
+            })?;
+        }
 
         Ok(())
     }
@@ -781,6 +785,8 @@ impl Application {
     }
 
     fn media_loaded_successfully(&mut self) {
+        self.is_loading_media = false;
+
         if !self.is_playing() {
             debug!("Ignoring old media loaded succesfully event");
             return;
@@ -868,7 +874,7 @@ impl Application {
 
         error!(msg = message, "Media error");
 
-        self.cleanup_playback_data()?;
+        self.cleanup_playback_data(false)?;
 
         if self.updates_tx.receiver_count() > 0 {
             let update = v3::PlaybackUpdateMessage {
@@ -1017,12 +1023,14 @@ impl Application {
 
         *self.current_request_headers.lock() = media_item.headers.clone();
 
+        let mut is_image = false;
         if container != "image/gif" && container.starts_with("image/") {
             let event_tx = self.event_tx.clone();
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
             let client = self.http_client.clone();
             let headers = self.current_request_headers.lock().clone();
+            is_image = true;
             tokio::spawn(async move {
                 let res = Self::download_image(&client, &url, headers)
                     .instrument(debug_span!("download_image", id))
@@ -1054,9 +1062,9 @@ impl Application {
         self.ui_weak.upgrade_in_event_loop(move |ui| {
             let bridge = ui.global::<Bridge>();
             bridge.set_player_variant(player_variant);
-            // TODO: I think we should wait at least 500ms before setting this.
-            //       Reasoning: if e.g. images take some time to decode we might flash the screen for no reason...
-            bridge.set_app_state(AppState::LoadingMedia);
+            if !is_image {
+                bridge.set_app_state(AppState::LoadingMedia);
+            }
             if let Some(title) = media_title {
                 bridge.set_media_title(title);
             }
@@ -1066,6 +1074,18 @@ impl Application {
             .store(true, atomic::Ordering::Relaxed);
 
         self.current_media_item_id += 1;
+
+        if is_image {
+            tokio::spawn({
+                let id = self.current_media_item_id;
+                let event_tx = self.event_tx.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let _ = event_tx.send(Event::ShouldSetLoadingStatus(id));
+                }
+            });
+        }
+        self.is_loading_media = true;
 
         Ok(())
     }
@@ -1150,12 +1170,12 @@ impl Application {
                     self.ui_weak.upgrade_in_event_loop(|ui| {
                         ui.global::<Bridge>().set_app_state(AppState::Idle);
                     })?;
-                    self.cleanup_playback_data()?;
+                    self.cleanup_playback_data(false)?;
                 }
                 // TODO: notify update? or wait for async state change from player
             }
             Operation::Play(play_message) => {
-                self.cleanup_playback_data()?;
+                self.cleanup_playback_data(true)?;
 
                 if play_message.container == "application/json" {
                     self.handle_playlist_play_request(&play_message)?;
@@ -1601,7 +1621,6 @@ impl Application {
             }
             Event::Quit => return Ok(true),
             Event::ToggleDebug => self.debug_mode = !self.debug_mode,
-            // Event::Player(event) => self.handle_player_event(event).await?,
             Event::Op { session_id: id, op } => {
                 debug!(id, ?op, "Operation from sender");
                 return self.handle_operation(op);
@@ -1772,6 +1791,11 @@ impl Application {
             Event::Tray(event) => {
                 return self.handle_tray_event(event);
             }
+            Event::ShouldSetLoadingStatus(id) => if id == self.current_media_item_id && self.is_loading_media {
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.global::<Bridge>().set_app_state(AppState::LoadingMedia);
+                })?;
+            },
         }
 
         Ok(false)
