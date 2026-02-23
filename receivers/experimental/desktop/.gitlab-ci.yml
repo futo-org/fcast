@@ -3,8 +3,8 @@ buildReceiverDesktopLinuxX64RPM:
   tags:
     - fcast-autoscaler
   script:
-    - rustup install nightly
-    - rustup default nightly
+    - rustup install nightly-2026-01-15
+    - rustup default nightly-2026-01-15
     - cargo install cargo-generate-rpm
     - cargo build --release --package desktop-receiver
     - cargo generate-rpm -p receivers/experimental/desktop
