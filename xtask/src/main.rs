@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
 use xtask::{
-    android, csharp, kotlin, mdns, receiver, sender,
+    android, csharp, kotlin, mdns, receiver, sender, sh,
     swift::{self, SwiftArgs, SwiftCommand},
-    test_corpus,
+    test_corpus, workspace,
 };
 
 #[derive(Subcommand)]
@@ -18,6 +18,7 @@ enum Command {
     TestCorpus(test_corpus::TestCorpusArgs),
     Mdns(mdns::MdnsArgs),
     Receiver(receiver::ReceiverArgs),
+    Test,
 }
 
 #[derive(Parser)]
@@ -47,5 +48,12 @@ fn main() {
         Command::TestCorpus(cmd) => cmd.run().unwrap(),
         Command::Mdns(cmd) => cmd.run().unwrap(),
         Command::Receiver(cmd) => cmd.run().unwrap(),
+        Command::Test => {
+            let sh = sh();
+            let root_path = workspace::root_path().unwrap();
+            let _p = sh.push_dir(root_path.clone());
+
+            cmd!(sh, "cargo test --all-features --workspace --exclude receiver-android --exclude android-sender").run().unwrap();
+        }
     }
 }
