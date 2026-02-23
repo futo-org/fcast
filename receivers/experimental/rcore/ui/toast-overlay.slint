@@ -1,4 +1,5 @@
 import {
+    Icons,
     FText,
 } from "../../../../senders/ui-components/std-widgets.slint";
 import {
@@ -32,7 +33,7 @@ component Toast inherits Rectangle {
                 height: t.height;
 
                 t := Image {
-                    source: @image-url("warning-triangle.svg");
+                    source: Icons.warning-triangle;
 
                     states [
                         error when variant == ToastVariant.Error: {
@@ -45,7 +46,7 @@ component Toast inherits Rectangle {
                 }
 
                 Image {
-                    source: @image-url("exclamation-mark.svg");
+                    source: Icons.exclamation-mark;
                     width: 35px;
                 }
             }

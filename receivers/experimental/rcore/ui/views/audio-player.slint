@@ -1,4 +1,4 @@
-import { FText } from "../../../../../senders/ui-components/std-widgets.slint";
+import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge } from "../globals.slint";
 import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub } from "../common.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
@@ -50,7 +50,7 @@ export component AudioPlayerView inherits Rectangle {
                 }
 
                 if Bridge.audio-track-cover.img.width == 0: Image {
-                    source: @image-url("../music-note.svg");
+                    source: Icons.music-note;
                     width: parent.width * 50%;
                     height: parent.height * 52%;
                 }

@@ -29,10 +29,11 @@ endif
 GSTREAMER_NDK_BUILD_PATH  := $(GSTREAMER_ROOT)/share/gst-android/ndk-build/
 include $(GSTREAMER_NDK_BUILD_PATH)/plugins.mk
 
-CORE := coreelements coretracers adder app audioconvert audiomixer audiorate audioresample gio pbtypes rawparse typefindfunctions videoconvertscale videorate volume autodetect videofilter insertbin mse switchbin fallbackswitch gopbuffer livesync rstracers streamgrouper threadshare
+CORE := coreelements coretracers adder app audioconvert audiomixer audiorate audioresample gio pbtypes rawparse typefindfunctions videoconvertscale videorate volume autodetect videofilter insertbin mse rstracers threadshare
 EFFECTS := audiofx deinterlace
-GSTREAMER_PLUGINS_NET_NO_RSWEBRTC := tcp rtsp rtp rtpmanager udp dtls rist rtpmanagerbad rtponvif sctp sdpelem srtp srt webrtc nice mpegtslive quinn rsonvif raptorq rsrtp rsrtsp
-CODECS := subparse ogg vorbis opus adaptivedemux2 alaw amrnb amrwbdec apetag audioparsers auparse avi flac flv flxdec icydemux id3demux isomp4 matroska mpg123 mulaw multipart png taglib vpx wavpack wavparse y4m assrender codecalpha codectimestamper dash dvbsuboverlay dvdspu hls ivfparse openh264 opusparse smoothstreaming videoparsersbad rsaudioparsers dav1d rsclosedcaption ffv1 gif isobmff androidmedia
+GSTREAMER_PLUGINS_NET_NO_RSWEBRTC := tcp rtsp rtp rtpmanager udp dtls rist rtpmanagerbad rtponvif sctp sdpelem srtp srt webrtc nice mpegtslive rsonvif raptorq rsrtp rsrtsp
+# CODECS := subparse ogg vorbis opus adaptivedemux2 apetag audioparsers auparse avi flac flv id3demux isomp4 matroska mpg123 multipart taglib vpx wavpack wavparse assrender codecalpha codectimestamper dash dvbsuboverlay dvdspu hls openh264 opusparse smoothstreaming videoparsersbad rsaudioparsers dav1d rsclosedcaption isobmff androidmedia
+CODECS := subparse ogg vorbis opus adaptivedemux2 apetag audioparsers auparse avi flac flv id3demux isomp4 matroska mpg123 multipart taglib vpx wavpack wavparse assrender codecalpha codectimestamper dash dvbsuboverlay dvdspu hls openh264 opusparse smoothstreaming videoparsersbad rsaudioparsers dav1d rsclosedcaption isobmff
 CODECS_RESTRICTED := mpegtsdemux dvdsub libav
 GSTREAMER_PLUGINS := $(CORE) $(CODECS) $(GSTREAMER_PLUGINS_NET_NO_RSWEBRTC) $(GSTREAMER_PLUGINS_PLAYBACK) $(CODECS_RESTRICTED) $(GSTREAMER_PLUGINS_SYS) $(EFFECTS)
 

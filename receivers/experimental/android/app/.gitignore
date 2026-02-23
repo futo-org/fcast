@@ -3,5 +3,5 @@
 /obj
 /libs
 /src/assets
-/src/main/java/org/freedesktop
+/src/main/java/org/freedesktop/gstreamer/androidmedia
 /gst-android-build
