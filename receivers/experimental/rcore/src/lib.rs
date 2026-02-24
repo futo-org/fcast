@@ -326,6 +326,18 @@ fn sec_to_string(sec: f64) -> String {
     )
 }
 
+#[derive(PartialEq, Eq)]
+enum PreservePlaylist {
+    Yes,
+    No,
+}
+
+#[derive(PartialEq, Eq)]
+enum ContinueToPlay {
+    Yes,
+    No,
+}
+
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
@@ -716,7 +728,11 @@ impl Application {
         bridge.set_overlays(slint::ModelRc::default());
     }
 
-    fn cleanup_playback_data(&mut self, continue_to_play: bool) -> Result<()> {
+    fn cleanup_playback_data(
+        &mut self,
+        continue_to_play: ContinueToPlay,
+        preserve_playlist: PreservePlaylist,
+    ) -> Result<()> {
         self.current_duration = None;
         self.on_uri_loaded_command_queue.clear();
         self.on_playing_command_queue.clear();
@@ -729,8 +745,10 @@ impl Application {
         self.have_media_title = false;
         self.last_position_updated = -1.0;
         *self.current_request_headers.lock() = None;
-        self.current_playlist = None;
-        self.current_playlist_item_idx = None;
+        if preserve_playlist == PreservePlaylist::No {
+            self.current_playlist = None;
+            self.current_playlist_item_idx = None;
+        }
         self.player.stop();
         self.is_loading_media = false;
 
@@ -738,7 +756,7 @@ impl Application {
         self.current_image_id += 1;
         self.current_image_download_id += 1;
 
-        if !continue_to_play {
+        if continue_to_play == ContinueToPlay::No {
             self.ui_weak.upgrade_in_event_loop(move |ui| {
                 let bridge = ui.global::<Bridge>();
                 Self::clear_image_state(&bridge);
@@ -783,6 +801,7 @@ impl Application {
     }
 
     fn is_playing(&self) -> bool {
+        debug!(?self.current_play_data, ?self.current_playlist);
         self.current_play_data.is_some() || self.current_playlist.is_some()
     }
 
@@ -876,7 +895,7 @@ impl Application {
 
         error!(msg = message, "Media error");
 
-        self.cleanup_playback_data(false)?;
+        self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No)?;
 
         if self.updates_tx.receiver_count() > 0 {
             let update = v3::PlaybackUpdateMessage {
@@ -974,16 +993,8 @@ impl Application {
 
         self.on_playing_command_queue.clear();
 
-        // Player states
-        //  * Loading media
-        //  * Image
-        //  * Audio only
-        //  * Video+audio
-
         let container = media_item.container.as_str();
         let player_variant = if container.starts_with("image/") {
-            self.cleanup_playback_data(true)?;
-            // TODO: use gst-plugin-gif::gifdec for GIFs
             UiPlayerVariant::Image
         } else if container.starts_with("audio/") {
             UiPlayerVariant::Audio
@@ -1000,9 +1011,11 @@ impl Application {
         };
 
         match player_variant {
-            UiPlayerVariant::Image => self.cleanup_playback_data(true)?,
+            UiPlayerVariant::Image => {
+                self.cleanup_playback_data(ContinueToPlay::Yes, PreservePlaylist::Yes)?
+            }
             UiPlayerVariant::Unknown | UiPlayerVariant::Audio | UiPlayerVariant::Video => {
-                self.cleanup_playback_data(false)?
+                self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?
             }
         }
 
@@ -1179,7 +1192,7 @@ impl Application {
                     self.ui_weak.upgrade_in_event_loop(|ui| {
                         ui.global::<Bridge>().set_app_state(AppState::Idle);
                     })?;
-                    self.cleanup_playback_data(false)?;
+                    self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No)?;
                 }
                 // TODO: notify update? or wait for async state change from player
             }
