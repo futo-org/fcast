@@ -2497,10 +2497,14 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
     }
 
-    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(log_level());
+    let fmt_layer = tracing_subscriber::fmt::layer();
     let tracing_events: Arc<parking_lot::Mutex<std::collections::VecDeque<String>>> =
         Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
-    let vec_layer = VecLayer::new(Arc::clone(&tracing_events)).with_filter(LevelFilter::DEBUG);
+    let filter = tracing_subscriber::filter::Targets::new()
+        .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
+        .with_target("mdns_sd", LevelFilter::INFO)
+        .with_default(log_level());
+    let vec_layer = VecLayer::new(Arc::clone(&tracing_events));
 
     let prev_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -2511,6 +2515,7 @@ fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(fmt_layer)
         .with(vec_layer)
+        .with(filter)
         .init();
 
     #[cfg(target_os = "linux")]
