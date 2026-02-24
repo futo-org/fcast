@@ -801,7 +801,6 @@ impl Application {
     }
 
     fn is_playing(&self) -> bool {
-        debug!(?self.current_play_data, ?self.current_playlist);
         self.current_play_data.is_some() || self.current_playlist.is_some()
     }
 
