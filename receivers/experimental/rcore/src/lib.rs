@@ -22,9 +22,9 @@ use tokio::{
         oneshot,
     },
 };
-use tracing::{Instrument, debug, debug_span, error, info, warn};
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
+use tracing::{Instrument, debug, debug_span, error, info, warn};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -47,7 +47,10 @@ mod session;
 // mod small_vec_model; // For later
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
-#[cfg(all(not(any(target_os = "android", target_os = "linux")), feature = "systray"))]
+#[cfg(all(
+    not(any(target_os = "android", target_os = "linux")),
+    feature = "systray"
+))]
 mod mac_win_tray;
 mod user_agent;
 mod video;
@@ -979,6 +982,7 @@ impl Application {
 
         let container = media_item.container.as_str();
         let player_variant = if container.starts_with("image/") {
+            self.cleanup_playback_data(true)?;
             // TODO: use gst-plugin-gif::gifdec for GIFs
             UiPlayerVariant::Image
         } else if container.starts_with("audio/") {
@@ -991,10 +995,16 @@ impl Application {
         {
             // Video streams are audio only until proven otherwise
             UiPlayerVariant::Audio
-            // UiPlayerVariant::Video
         } else {
             UiPlayerVariant::Unknown
         };
+
+        match player_variant {
+            UiPlayerVariant::Image => self.cleanup_playback_data(true)?,
+            UiPlayerVariant::Unknown | UiPlayerVariant::Audio | UiPlayerVariant::Video => {
+                self.cleanup_playback_data(false)?
+            }
+        }
 
         let mut media_title = None;
         if let Some(v3::MetadataObject::Generic {
@@ -1174,8 +1184,6 @@ impl Application {
                 // TODO: notify update? or wait for async state change from player
             }
             Operation::Play(play_message) => {
-                self.cleanup_playback_data(true)?;
-
                 if play_message.container == "application/json" {
                     self.handle_playlist_play_request(&play_message)?;
                 } else {
@@ -1431,9 +1439,6 @@ impl Application {
                     ui.invoke_playback_started();
                     let bridge = ui.global::<Bridge>();
                     bridge.set_app_state(AppState::Playing);
-                    Self::clear_image_state(&bridge);
-                    bridge.set_media_title("".to_shared_string());
-                    bridge.set_artist_name("".to_shared_string());
                 })?;
 
                 // self.current_duration = info.duration();
@@ -1794,11 +1799,13 @@ impl Application {
             Event::Tray(event) => {
                 return self.handle_tray_event(event);
             }
-            Event::ShouldSetLoadingStatus(id) => if id == self.current_media_item_id && self.is_loading_media {
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<Bridge>().set_app_state(AppState::LoadingMedia);
-                })?;
-            },
+            Event::ShouldSetLoadingStatus(id) => {
+                if id == self.current_media_item_id && self.is_loading_media {
+                    self.ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>().set_app_state(AppState::LoadingMedia);
+                    })?;
+                }
+            }
         }
 
         Ok(false)
@@ -2148,7 +2155,10 @@ pub fn run(
         }
     })?;
 
-    #[cfg(all(not(any(target_os = "android", target_os = "linux")), feature = "systray"))]
+    #[cfg(all(
+        not(any(target_os = "android", target_os = "linux")),
+        feature = "systray"
+    ))]
     let _tray_icon = if !cli_args.no_systray {
         let (tray, ids) = mac_win_tray::create_tray_icon();
         mac_win_tray::set_event_handler(event_tx.clone(), ids);
