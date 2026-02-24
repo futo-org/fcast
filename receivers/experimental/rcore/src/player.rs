@@ -979,6 +979,13 @@ impl Player {
         });
     }
 
+    pub fn seek_and_set_rate(&mut self, seconds: f64, rate: f64) {
+        self.seek_internal(Seek {
+            position: Some(seconds),
+            rate: Some(rate),
+        });
+    }
+
     fn set_state_async(&self, state: gst::State) {
         let _ = self.work_tx.send(Job::SetState(state));
     }

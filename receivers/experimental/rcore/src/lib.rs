@@ -199,8 +199,10 @@ enum OnUriLoadedCommand {
 #[derive(Debug)]
 // TODO: rename and merge with OnUriLoadedCommand
 enum OnFirstPlayingStateChangedCommand {
-    Seek(f64),
-    Rate(f64),
+    Seek {
+        position: f64,
+        rate: f64,
+    }
 }
 
 enum ImageDecodeJobType {
@@ -1066,15 +1068,11 @@ impl Application {
                     .push(OnUriLoadedCommand::Volume(volume));
             }
 
-            if let Some(rate) = media_item.speed {
-                self.on_playing_command_queue
-                    .push(OnFirstPlayingStateChangedCommand::Rate(rate));
-            }
             if !is_for_sure_live {
+                let position = media_item.time.unwrap_or(0.0);
+                let rate = media_item.speed.unwrap_or(1.0);
                 self.on_playing_command_queue
-                    .push(OnFirstPlayingStateChangedCommand::Seek(
-                        media_item.time.unwrap_or(0.0),
-                    ));
+                    .push(OnFirstPlayingStateChangedCommand::Seek { position, rate, });
             }
         }
 
@@ -1460,14 +1458,9 @@ impl Application {
 
                 debug!("Commands: {:?}", self.on_playing_command_queue);
                 while let Some(command) = self.on_playing_command_queue.pop() {
-                    match command {
-                        OnFirstPlayingStateChangedCommand::Seek(time) => {
-                            // self.player.seek(gst::ClockTime::from_seconds_f64(time))
-                            self.player.seek(time);
-                        }
-                        OnFirstPlayingStateChangedCommand::Rate(rate) => {
-                            self.player.set_rate(rate);
-                        }
+                    #[allow(irrefutable_let_patterns)]
+                    if let OnFirstPlayingStateChangedCommand::Seek { position, rate } = command {
+                        self.player.seek_and_set_rate(position, rate);
                     }
                 }
 
