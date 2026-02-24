@@ -68,6 +68,7 @@ enum PendingSeek {
 #[derive(Debug, PartialEq)]
 enum State {
     Stopped,
+    PendingUriChange,
     Buffering {
         percent: i32,
         target_state: gst::State,
@@ -108,7 +109,7 @@ enum BufferingStateResult {
 #[derive(Debug)]
 struct StateMachine {
     current_state: gst::State,
-    state: State,
+    pub state: State,
     pub is_live: bool,
     position: Option<gst::ClockTime>,
     pub rate: f64,
@@ -150,6 +151,9 @@ impl StateMachine {
 
         if self.is_live {
             warn!("Cannot seek when source is live");
+            return None;
+        } else if self.state == State::Stopped {
+            warn!("Cannot seek when not playing");
             return None;
         }
 
@@ -211,6 +215,7 @@ impl StateMachine {
                 error!("Cannot set playback state when the player is stopped");
                 return None;
             }
+            State::PendingUriChange => (),
             State::Buffering { target_state, .. } => *target_state = next_state,
             State::Changing { target_state, .. } => if *target_state != next_state {},
             State::SeekAsync { target_state, .. } => *target_state = next_state,
@@ -232,7 +237,7 @@ impl StateMachine {
         // tracing::info!("<<TEST>> assert_eq!(sm.buffering({new_percent}), TODO);");
 
         match &mut self.state {
-            State::Stopped => {
+            State::Stopped | State::PendingUriChange => {
                 self.state = State::Buffering {
                     percent: new_percent,
                     target_state: gst::State::Playing,
@@ -343,7 +348,7 @@ impl StateMachine {
         self.current_state = new;
 
         match &mut self.state {
-            State::Stopped => {
+            State::Stopped | State::PendingUriChange => {
                 if matches!(pending, gst::State::Ready | gst::State::Null) {
                     return StateChangeResult::Waiting;
                 }
@@ -932,7 +937,9 @@ impl Player {
 
     pub fn set_uri(&mut self, uri: &str) {
         self.clear_state();
+        self.state_machine.clear_state();
         let _ = self.work_tx.send(Job::SetUri(uri.to_string()));
+        self.state_machine.state = State::PendingUriChange;
     }
 
     fn seek_internal(&mut self, seek: Seek) {
@@ -1221,7 +1228,8 @@ impl Player {
     pub fn player_state(&self) -> PlayerState {
         match &self.state_machine.state {
             State::Stopped => PlayerState::Stopped,
-            State::Buffering { .. }
+            State::PendingUriChange
+            | State::Buffering { .. }
             | State::Changing { .. }
             | State::SeekAsync { .. }
             | State::Seeking { .. } => PlayerState::Buffering, // TODO: ?
@@ -1286,6 +1294,7 @@ mod tests {
     #[rustfmt::skip]
     fn basic_playback() {
         let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
         assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
@@ -1306,6 +1315,7 @@ mod tests {
     #[rustfmt::skip]
     fn basic_playback_2() {
         let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
         assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
@@ -1345,6 +1355,7 @@ mod tests {
     #[rustfmt::skip]
     fn basic_playback_3() {
         let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
         assert_eq!(sm.seek_internal(Seek {position: Some(0.0), rate: None}, None), Some(Seek::new(Some(0.0), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
@@ -1386,6 +1397,7 @@ mod tests {
     #[rustfmt::skip]
     fn basic_playback_4() {
         let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
         assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
