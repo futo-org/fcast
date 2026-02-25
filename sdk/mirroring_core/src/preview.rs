@@ -62,8 +62,8 @@ fn make_capture_src(src: VideoSource) -> Result<(gst::Element, Option<ExtraVideo
             None,
         ),
         #[cfg(target_os = "windows")]
-        VideoSource::D3d11Monitor { handle, .. } => (
-            gst::ElementFactory::make("d3d11screencapturesrc")
+        VideoSource::D3d12Monitor { handle, .. } => (
+            gst::ElementFactory::make("d3d12screencapturesrc")
                 .property("show-cursor", true)
                 .property("monitor-handle", handle)
                 .build()?,

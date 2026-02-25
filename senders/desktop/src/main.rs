@@ -541,14 +541,14 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
                     FetchEvent::Fetch => {
                         use gst::prelude::*;
                         let Some(dev_provider) =
-                            gst::DeviceProviderFactory::by_name("d3d11screencapturedeviceprovider")
+                            gst::DeviceProviderFactory::by_name("d3d12screencapturedeviceprovider")
                         else {
-                            error!("Failed to create `d3d11screencapturedeviceprovider`");
+                            error!("Failed to create `d3d12screencapturedeviceprovider`");
                             continue;
                         };
 
                         if let Err(err) = dev_provider.start() {
-                            error!("Failed to start d3d11 device provider: {err}");
+                            error!("Failed to start d3d12 device provider: {err}");
                             continue;
                         }
                         let devs = dev_provider.devices();
@@ -571,7 +571,7 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
                                     continue;
                                 }
                             };
-                            converted_devs.push((idx, VideoSource::D3d11Monitor { name, handle }));
+                            converted_devs.push((idx, VideoSource::D3d12Monitor { name, handle }));
                         }
 
                         event_tx

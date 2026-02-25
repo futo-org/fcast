@@ -15,7 +15,7 @@ use xshell::Shell;
 use crate::{sh, workspace, AndroidAbiTarget};
 
 #[cfg(target_os = "windows")]
-const GSTREAMER_BASE_LIBS: [&'static str; 19] = [
+const GSTREAMER_BASE_LIBS: [&'static str; 20] = [
     "gstbase",
     "gstnet",
     "gstreamer",
@@ -29,6 +29,7 @@ const GSTREAMER_BASE_LIBS: [&'static str; 19] = [
     "gstwebrtc",
     "gstwebrtcnice",
     "gstd3d11",
+    "gstd3d12",
     "gstd3dshader",
     "gstaudio",
     "gsttag",
@@ -74,7 +75,7 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 13] = [
 ];
 
 #[cfg(target_os = "windows")]
-const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 1] = ["gstd3d11"];
+const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 2] = ["gstd3d11", "gstd3d12"];
 
 #[cfg(target_os = "macos")]
 const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = ["gstapplemedia"];
