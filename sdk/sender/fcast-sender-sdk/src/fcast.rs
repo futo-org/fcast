@@ -225,7 +225,9 @@ impl InnerDevice {
 
         writer.write_all(&header).await?;
 
-        debug!("Sent {} bytes with opcode: {op:?}", header.len());
+        if op != Opcode::Pong {
+            debug!("Sent {} bytes with opcode: {op:?}", header.len());
+        }
 
         Ok(())
     }
@@ -367,7 +369,9 @@ impl InnerDevice {
 
                 match read_packet(&mut reader, &mut body_buf).await {
                     Ok((op, json)) => {
-                        debug!("Received packet with opcode: {op:?}, body: {json:?}");
+                        if op != Opcode::Ping {
+                            debug!("Received packet with opcode: {op:?}, body: {json:?}");
+                        }
                         Some(((op, json), (reader, body_buf)))
                     }
                     Err(err) => {
