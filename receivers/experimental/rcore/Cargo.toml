@@ -33,7 +33,7 @@ gst-plugin-reqwest = { rev = "5d4c8c93ab3a84113f1326037e82259c0d77ee25", git = "
 gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [ "static" ] }
 gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
 gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
-num_cpus = "1"
+num_cpus.workspace = true
 rand.workspace = true
 
 [dependencies.slint]

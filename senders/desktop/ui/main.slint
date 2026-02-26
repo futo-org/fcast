@@ -1194,7 +1194,8 @@ component PlaybackControls inherits Rectangle {
                 hide-thumb: true;
                 value <=> Bridge.playback-position;
                 maximum: Bridge.track-duration;
-                thumb-color: FCastPalette.foreground;
+                thumb-color: black.transparentize(85%);
+                thumb-border-color: FCastPalette.foreground;
 
                 changed(new-time) => {
                     Bridge.seek(new-time, false);

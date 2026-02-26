@@ -36,7 +36,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    runtime::Runtime,
     sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel},
 };
 use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
@@ -683,7 +682,7 @@ impl Application {
                         tx_sink.shutdown();
                     }
 
-                    video_source_fetcher_tx.send(FetchEvent::Quit).await?;
+                    let _ = video_source_fetcher_tx.send(FetchEvent::Quit).await;
                 }
                 SessionSpecificState::YtDlp {
                     mut fetcher_quit_tx,
@@ -2474,6 +2473,13 @@ impl<S: tracing::Subscriber> Layer<S> for VecLayer {
     }
 }
 
+fn create_log_filter(default: LevelFilter) -> tracing_subscriber::filter::Targets {
+    tracing_subscriber::filter::Targets::new()
+        .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
+        .with_target("mdns_sd", LevelFilter::INFO)
+        .with_default(default)
+}
+
 fn main() -> Result<()> {
     let init_start = std::time::Instant::now();
 
@@ -2497,14 +2503,11 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
     }
 
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(create_log_filter(log_level()));
     let tracing_events: Arc<parking_lot::Mutex<std::collections::VecDeque<String>>> =
         Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
-    let filter = tracing_subscriber::filter::Targets::new()
-        .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
-        .with_target("mdns_sd", LevelFilter::INFO)
-        .with_default(log_level());
-    let vec_layer = VecLayer::new(Arc::clone(&tracing_events));
+    let vec_layer = VecLayer::new(Arc::clone(&tracing_events))
+        .with_filter(create_log_filter(LevelFilter::DEBUG));
 
     let prev_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -2515,7 +2518,6 @@ fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(fmt_layer)
         .with(vec_layer)
-        .with(filter)
         .init();
 
     #[cfg(target_os = "linux")]
@@ -2526,7 +2528,11 @@ fn main() -> Result<()> {
         );
     }
 
-    let runtime = Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(num_cpus::get().min(4))
+        .thread_name("main-async-worker")
+        .build()?;
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 

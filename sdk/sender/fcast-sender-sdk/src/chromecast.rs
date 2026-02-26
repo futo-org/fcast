@@ -572,8 +572,9 @@ impl InnerDevice {
                                             ..
                                         } => crate::device::Metadata {
                                             title,
-                                            thumbnail_url: images
-                                                .and_then(|imgs| imgs.first().map(|img| img.url.clone())),
+                                            thumbnail_url: images.and_then(|imgs| {
+                                                imgs.first().map(|img| img.url.clone())
+                                            }),
                                         },
                                     }),
                                 });

@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-sender"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "ashpd 0.12.1",
@@ -1958,6 +1958,7 @@ dependencies = [
  "gstreamer-video",
  "image",
  "mcore",
+ "num_cpus",
  "objc2-core-graphics",
  "osakit",
  "parking_lot",
