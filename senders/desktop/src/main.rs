@@ -682,7 +682,7 @@ impl Application {
                         tx_sink.shutdown();
                     }
 
-                    video_source_fetcher_tx.send(FetchEvent::Quit).await?;
+                    let _ = video_source_fetcher_tx.send(FetchEvent::Quit).await;
                 }
                 SessionSpecificState::YtDlp {
                     mut fetcher_quit_tx,
