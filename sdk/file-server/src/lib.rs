@@ -440,14 +440,14 @@ impl FileServer {
     //     debug!(?path, ?id, "Removed file");
     // }
 
-    pub fn get_url(&self, local_addr: &fcast_sender_sdk::IpAddr, file_id: &Uuid) -> String {
-        let port = match local_addr {
-            fcast_sender_sdk::IpAddr::V4 { .. } => self.bound_ports.ipv4,
-            fcast_sender_sdk::IpAddr::V6 { .. } => self.bound_ports.ipv6,
+    pub fn get_url(&self, local_addr: &std::net::IpAddr, file_id: &Uuid) -> String {
+        let (port, addr_str) = match local_addr {
+            std::net::IpAddr::V4(addr) => (self.bound_ports.ipv4, addr.to_string()),
+            std::net::IpAddr::V6(addr) => (self.bound_ports.ipv6, format!("[{addr}]")),
         };
         format!(
             "http://{}:{}/{}",
-            fcast_sender_sdk::url_format_ip_addr(local_addr),
+            addr_str,
             port,
             file_id,
         )

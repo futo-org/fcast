@@ -797,7 +797,6 @@ async fn execute_test(
                             file_server.add_file(file_path, mime)
                         }
                     };
-                    // let file_id = file_server.add_file(file_path, mime);
                     let url = file_server.get_url(&(local_addr.into()), &file_id);
                     let _ = file_urls.insert(id, (url, mime, required_headers));
                 }

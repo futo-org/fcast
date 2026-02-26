@@ -16,11 +16,6 @@ hyper = "1.7.0"
 hyper-util = { version = "0.1.17", features = [ "server-auto", "tokio" ] }
 http-body-util = "0.1.3"
 
-[dependencies.fcast-sender-sdk]
-path = "../../sdk/sender/fcast-sender-sdk"
-default-features = false
-features = [ "fcast", "chromecast", "discovery" ]
-
 [features]
 default = []
 headers = []

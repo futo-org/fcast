@@ -2451,7 +2451,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
- "fcast-sender-sdk",
  "http-body-util",
  "http-range",
  "hyper",
