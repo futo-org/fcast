@@ -646,7 +646,7 @@ impl SenderArgs {
                 cmd!(sh, "cargo build --profile release-lto --package desktop-sender").run()?;
 
                 let binary_path =
-                    concat_paths(&[root_path.as_str(), "target", "release", "desktop-sender"]);
+                    concat_paths(&[root_path.as_str(), "target", "release-lto", "desktop-sender"]);
 
                 std::fs::copy(&binary_path, build_dir_root.join("fcast-sender"))?;
 
