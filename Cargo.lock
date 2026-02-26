@@ -1958,6 +1958,7 @@ dependencies = [
  "gstreamer-video",
  "image",
  "mcore",
+ "num_cpus",
  "objc2-core-graphics",
  "osakit",
  "parking_lot",

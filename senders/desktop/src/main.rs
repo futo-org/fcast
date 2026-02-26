@@ -36,7 +36,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    runtime::Runtime,
     sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel},
 };
 use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
@@ -2526,7 +2525,11 @@ fn main() -> Result<()> {
         );
     }
 
-    let runtime = Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(num_cpus::get().min(4))
+        .thread_name("main-async-worker")
+        .build()?;
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
