@@ -63,6 +63,42 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_setMdnsDeviceNa
 
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getDeviceNameRaopHash<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    name: jni::objects::JString,
+) -> jni::sys::jstring {
+    let name = env.get_string(&name).unwrap();
+    let name = name.to_str().unwrap();
+    let hash = rcore::device_name_hash(&name);
+    let hash_str = rcore::hash_to_string(&hash);
+    let event_tx = EVENT_TX.lock();
+    if let Some(event_tx) = event_tx.as_ref() {
+        let _ = event_tx.send(rcore::Event::Raop(rcore::RaopEvent::ConfigAvailable(
+            rcore::Configuration { hw_addr: hash },
+        )));
+    }
+
+    env.new_string(hash_str).unwrap().into_raw()
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttribs<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    attrs: jni::objects::JObject,
+) {
+    let attrs = env.get_map(&attrs).unwrap();
+    for (k, v) in rcore::txt_properties() {
+        let k = env.new_string(k).unwrap();
+        let v = env.new_string(v).unwrap();
+        attrs.put(&mut env, &k, &v).unwrap();
+    }
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEvent<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,

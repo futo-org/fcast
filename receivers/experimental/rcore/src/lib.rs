@@ -52,6 +52,7 @@ mod linux_tray;
     feature = "systray"
 ))]
 mod mac_win_tray;
+mod raop;
 mod user_agent;
 mod video;
 
@@ -59,6 +60,8 @@ use crate::{
     player::PlayerState,
     session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
+
+pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadImageError {
@@ -91,6 +94,7 @@ pub enum MdnsEvent {
 }
 
 type MediaItemId = u64;
+pub type EventSender = UnboundedSender<Event>;
 
 #[cfg(feature = "systray")]
 #[derive(Debug)]
@@ -113,13 +117,26 @@ impl DecodedImage {
 }
 
 #[derive(Debug)]
+pub enum RaopEvent {
+    ConfigAvailable(raop::Configuration),
+    SenderConnected(tokio::net::TcpStream),
+    SenderDisconnected,
+    CoverArtSet(Vec<u8>),
+    CoverArtRemoved,
+    MetadataSet(raop::RaopMetadata),
+    ProgressUpdate {
+        position_sec: u64,
+        duration_sec: u64,
+    },
+}
+
+#[derive(Debug)]
 pub enum Event {
     Quit,
     SessionFinished,
     ResumeOrPause,
     SeekPercent(f32),
     ToggleDebug,
-    // Player(gst::Message),
     NewPlayerEvent(player::PlayerEvent),
     Op {
         /// The UI also sends operations with session_id == 0
@@ -146,6 +163,7 @@ pub enum Event {
     #[cfg(feature = "systray")]
     Tray(TrayEvent),
     ShouldSetLoadingStatus(MediaItemId),
+    Raop(RaopEvent),
 }
 
 #[macro_export]
@@ -199,10 +217,7 @@ enum OnUriLoadedCommand {
 #[derive(Debug)]
 // TODO: rename and merge with OnUriLoadedCommand
 enum OnFirstPlayingStateChangedCommand {
-    Seek {
-        position: f64,
-        rate: f64,
-    }
+    Seek { position: f64, rate: f64 },
 }
 
 enum ImageDecodeJobType {
@@ -237,7 +252,7 @@ pub type ImageDownloadId = u32;
 
 fn image_decode_worker(
     job_rx: std::sync::mpsc::Receiver<(ImageId, ImageDecodeJob)>,
-    event_tx: UnboundedSender<Event>,
+    event_tx: EventSender,
 ) -> anyhow::Result<()> {
     let span = debug_span!("image-decoder");
     let _entered = span.enter();
@@ -293,7 +308,7 @@ fn image_decode_worker(
         let img = DecodedImage {
             id,
             pixels: to_slint_pixbuf(&decoded),
-            orientation: orientation,
+            orientation,
         };
 
         match job.typ {
@@ -340,10 +355,14 @@ enum ContinueToPlay {
     No,
 }
 
+struct RaopServer {
+    config: raop::Configuration,
+}
+
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
-    event_tx: UnboundedSender<Event>,
+    event_tx: EventSender,
     ui_weak: slint::Weak<MainWindow>,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     #[cfg(not(target_os = "android"))]
@@ -374,12 +393,14 @@ struct Application {
     device_name: Option<String>,
     current_media_item_id: MediaItemId,
     is_loading_media: bool,
+    active_raop_session: bool,
+    raop_server: Option<RaopServer>,
 }
 
 impl Application {
     pub async fn new(
         appsink: gst::Element,
-        event_tx: UnboundedSender<Event>,
+        event_tx: EventSender,
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
@@ -463,37 +484,6 @@ impl Application {
             }
         });
 
-        // let audiosink = {
-        //     let sinkbin = gst::Bin::new();
-
-        //     let pitch = gst::ElementFactory::make("pitch").build()?;
-        //     let convert = gst::ElementFactory::make("audioconvert").build()?;
-        //     let resample = gst::ElementFactory::make("audioresample").build()?;
-        //     let sink = gst::ElementFactory::make("autoaudiosink").build()?;
-
-        //     let elems = [&pitch, &convert, &resample, &sink];
-        //     sinkbin.add_many(&elems)?;
-        //     gst::Element::link_many(&elems)?;
-
-        //     let ghost = gst::GhostPad::with_target(&pitch.static_pad("sink").unwrap()).unwrap();
-        //     sinkbin.add_pad(&ghost).unwrap();
-
-        //     sinkbin
-        // };
-        // player_playbin.set_property("audio-sink", audiosink);
-
-        // tokio::spawn({
-        //     let player_bus = player.message_bus();
-        //     let event_tx = event_tx.clone();
-        //     async move {
-        //         let mut messages = player_bus.stream();
-
-        //         while let Some(msg) = messages.next().await {
-        //             let _ = event_tx.send(Event::Player(msg));
-        //         }
-        //     }
-        // });
-
         let (updates_tx, _) = broadcast::channel(10);
 
         #[cfg(not(target_os = "android"))]
@@ -522,6 +512,11 @@ impl Application {
             .enable_addr_auto();
 
             daemon.register(service)?;
+
+            let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
+            daemon.register(raop_service).unwrap();
+
+            event_tx.send(Event::Raop(RaopEvent::ConfigAvailable(raop_config)))?;
 
             let monitor = daemon.monitor()?;
             let event_tx = event_tx.clone();
@@ -588,6 +583,8 @@ impl Application {
             device_name: None,
             current_media_item_id: 0,
             is_loading_media: false,
+            active_raop_session: false,
+            raop_server: None,
         })
     }
 
@@ -1018,6 +1015,7 @@ impl Application {
             UiPlayerVariant::Unknown | UiPlayerVariant::Audio | UiPlayerVariant::Video => {
                 self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?
             }
+            UiPlayerVariant::Raop => (),
         }
 
         let mut media_title = None;
@@ -1072,7 +1070,7 @@ impl Application {
                 let position = media_item.time.unwrap_or(0.0);
                 let rate = media_item.speed.unwrap_or(1.0);
                 self.on_playing_command_queue
-                    .push(OnFirstPlayingStateChangedCommand::Seek { position, rate, });
+                    .push(OnFirstPlayingStateChangedCommand::Seek { position, rate });
             }
         }
 
@@ -1595,6 +1593,126 @@ impl Application {
         Ok(false)
     }
 
+    #[tracing::instrument(skip_all)]
+    fn handle_raop_event(&mut self, event: RaopEvent) -> Result<bool> {
+        match event {
+            RaopEvent::ConfigAvailable(config) => {
+                if self.raop_server.is_none() {
+                    info!(?config, "Starting raop server");
+
+                    let event_tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        // IpV4 only
+                        let listener = tokio::net::TcpListener::bind("0.0.0.0:33505")
+                            .await
+                            .unwrap();
+
+                        loop {
+                            let (stream, _) = listener.accept().await.unwrap();
+                            let _ = event_tx.send(Event::Raop(RaopEvent::SenderConnected(stream)));
+                        }
+                    });
+                    self.raop_server = Some(RaopServer { config });
+                }
+            }
+            RaopEvent::SenderConnected(stream) => {
+                if self.active_raop_session {
+                    debug!("Rejecting sender");
+                    return Ok(false);
+                }
+
+                let Some(server) = self.raop_server.as_ref() else {
+                    error!("No server is running");
+                    return Ok(false);
+                };
+
+                let config = server.config.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    raop::handle_sender(stream, config, event_tx.clone()).await;
+                    let _ = event_tx.send(Event::Raop(RaopEvent::SenderDisconnected));
+                });
+
+                debug!("Session started");
+                self.active_raop_session = true;
+
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_app_state(AppState::Playing);
+                    bridge.set_player_variant(UiPlayerVariant::Raop);
+                })?;
+            }
+            RaopEvent::SenderDisconnected => {
+                debug!("Session ended");
+                self.active_raop_session = false;
+                // TODO: Can we use clear playback state func?
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_app_state(AppState::Idle);
+                    bridge.set_player_variant(UiPlayerVariant::Unknown);
+                    bridge.set_audio_track_cover(CompoundImage::default());
+                    bridge.set_blured_audio_track_cover(CompoundImage::default());
+
+                    bridge.set_progress_label(slint::SharedString::default());
+                    bridge.set_duration_label(slint::SharedString::default());
+                    bridge.set_playback_position(0.0);
+                })?;
+            }
+            RaopEvent::CoverArtSet(data) => {
+                self.current_thumbnail_id += 1;
+                let this_id = self.current_thumbnail_id;
+                self.image_decode_tx.send((
+                    this_id,
+                    ImageDecodeJob {
+                        image: EncodedImageData::Vec(data),
+                        format: None,
+                        typ: ImageDecodeJobType::AudioThumbnail,
+                    },
+                ))?;
+                self.pending_thumbnail = Some(this_id);
+            }
+            RaopEvent::CoverArtRemoved => {
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_audio_track_cover(CompoundImage::default());
+                    bridge.set_blured_audio_track_cover(CompoundImage::default());
+                })?;
+            }
+            RaopEvent::MetadataSet(mut metadata) => {
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    if let Some(title) = metadata.title.take() {
+                        bridge.set_media_title(title.to_shared_string());
+                    } else {
+                        bridge.set_media_title(slint::SharedString::default());
+                    }
+                    if let Some(artist) = metadata.artist.take() {
+                        bridge.set_artist_name(artist.to_shared_string());
+                    } else {
+                        bridge.set_artist_name(slint::SharedString::default());
+                    }
+                })?;
+            }
+            RaopEvent::ProgressUpdate {
+                position_sec,
+                duration_sec,
+            } => {
+                let progress_str = sec_to_string(position_sec as f64);
+                let duration_str = sec_to_string(duration_sec as f64);
+                let progress_percent = position_sec as f32 / duration_sec as f32;
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_progress_label(progress_str.into());
+                    bridge.set_duration_label(duration_str.into());
+                    bridge.set_playback_position(progress_percent);
+                    // bridge.set_duration_seconds(duration as i32);
+                })?;
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
         // NOTE: all player actions are async (right?)
@@ -1811,6 +1929,7 @@ impl Application {
                     })?;
                 }
             }
+            Event::Raop(event) => return self.handle_raop_event(event),
         }
 
         Ok(false)

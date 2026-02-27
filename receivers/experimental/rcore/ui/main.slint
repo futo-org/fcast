@@ -22,6 +22,7 @@ import { LoadingMediaView } from "views/loading-media.slint";
 import { VideoPlayerView } from "views/video-player.slint";
 import { ImageView } from "views/image.slint";
 import { AudioPlayerView } from "views/audio-player.slint";
+import { RaopView } from "views/raop.slint";
 import { ToastOverlay } from "toast-overlay.slint";
 
 export {
@@ -51,24 +52,27 @@ export component MainWindow inherits Window {
         capture-key-pressed(event) => Bridge.capture-key-pressed(event);
     }
 
+    // TODO:
     // Rectangle {
     //     x: root.safe-area-insets.left;
     //     y: root.safe-area-insets.top;
     //     width: root.width - root.safe-area-insets.right - root.safe-area-insets.left;
     //     height: root.height - root.safe-area-insets.bottom - root.safe-area-insets.top;
-
-        if Bridge.app-state == AppState.Idle: IdleView { }
-
-        if Bridge.app-state == AppState.LoadingMedia: LoadingMediaView { }
-
-        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
-
-        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
-
-        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
-
-        if Bridge.is-debugging: DebugOverlay { }
     // }
+
+    if Bridge.app-state == AppState.Idle: IdleView { }
+
+    if Bridge.app-state == AppState.LoadingMedia: LoadingMediaView { }
+
+    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
+
+    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
+
+    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
+
+    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
+
+    if Bridge.is-debugging: DebugOverlay { }
 
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
 }

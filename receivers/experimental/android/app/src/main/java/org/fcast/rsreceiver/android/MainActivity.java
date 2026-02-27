@@ -11,31 +11,42 @@ import android.net.NetworkRequest;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.app.NativeActivity;
 import android.os.PowerManager;
 import android.util.Log;
-import android.view.Window;
-import android.view.WindowInsets;
-import android.view.WindowInsetsController;
-import android.view.WindowManager;
-
 import androidx.annotation.NonNull;
-
 import org.freedesktop.gstreamer.GStreamer;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-public class MainActivity extends NativeActivity implements NsdManager.RegistrationListener {
+class DummyNsdRegistrationListener implements NsdManager.RegistrationListener {
+
+    @Override
+    public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) { }
+
+    @Override
+    public void onUnregistrationFailed(NsdServiceInfo serviceInfo, int errorCode) { }
+
+    @Override
+    public void onServiceRegistered(NsdServiceInfo serviceInfo) { }
+
+    @Override
+    public void onServiceUnregistered(NsdServiceInfo serviceInfo) { }
+}
+
+public class MainActivity extends NativeActivity {
     NsdManager nsdManager = null;
     WifiManager wifiManager = null;
     WifiManager.WifiLock wifiLock = null;
     PowerManager powerManager = null;
     PowerManager.WakeLock cpuWakeLock = null;
     ConnectivityManager connectivityManager = null;
+    DummyNsdRegistrationListener fcastNsdReg = new DummyNsdRegistrationListener();
+    DummyNsdRegistrationListener raopNsdReg = new DummyNsdRegistrationListener();
 
     void networkEvent(boolean available, @NonNull Network network) {
         if (connectivityManager == null) {
@@ -62,6 +73,8 @@ public class MainActivity extends NativeActivity implements NsdManager.Registrat
 
     native void nativeNetworkEvent(boolean available, List<ByteBuffer> addrs);
     native void setMdnsDeviceName(String name);
+    native String getDeviceNameRaopHash(String name);
+    native void getRaopTxtAttribs(Map<String, String> attrs);
 
     class NetworkCallbackHandler extends ConnectivityManager.NetworkCallback {
         @Override
@@ -93,7 +106,8 @@ public class MainActivity extends NativeActivity implements NsdManager.Registrat
         }
 
         nsdManager = (NsdManager) this.getSystemService(Context.NSD_SERVICE);
-        NsdServiceInfo serviceInfo = new NsdServiceInfo();
+        NsdServiceInfo fcastServiceInfo = new NsdServiceInfo();
+        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
 
         String modelName;
         if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
@@ -102,11 +116,23 @@ public class MainActivity extends NativeActivity implements NsdManager.Registrat
             modelName = android.os.Build.MODEL;
         }
         String serviceName = "FCast-" + android.os.Build.MANUFACTURER + "-" + modelName;
+
         setMdnsDeviceName(serviceName);
-        serviceInfo.setServiceName(serviceName);
-        serviceInfo.setServiceType("_fcast._tcp");
-        serviceInfo.setPort(46899);
-        nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, this);
+        fcastServiceInfo.setServiceName(serviceName);
+        fcastServiceInfo.setServiceType("_fcast._tcp");
+        fcastServiceInfo.setPort(46899);
+        nsdManager.registerService(fcastServiceInfo, NsdManager.PROTOCOL_DNS_SD, fcastNsdReg);
+
+        String raopHash = getDeviceNameRaopHash(serviceName);
+        raopServiceInfo.setServiceName(raopHash + "@" + serviceName);
+        raopServiceInfo.setServiceType("_raop._tcp");
+        raopServiceInfo.setPort(33505);
+        Map<String, String> raopAttrs = new HashMap<>();
+        getRaopTxtAttribs(raopAttrs);
+        for (Map.Entry<String, String> a : raopAttrs.entrySet()) {
+            raopServiceInfo.setAttribute(a.getKey(), a.getValue());
+        }
+        nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopNsdReg);
 
         connectivityManager = (ConnectivityManager) this.getSystemService(Context.CONNECTIVITY_SERVICE);
         NetworkRequest networkRequest = new NetworkRequest.Builder()
@@ -140,19 +166,8 @@ public class MainActivity extends NativeActivity implements NsdManager.Registrat
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        nsdManager.unregisterService(this);
+        nsdManager.unregisterService(fcastNsdReg);
+        nsdManager.unregisterService(raopNsdReg);
         wifiLock.release();
     }
-
-    @Override
-    public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) { }
-
-    @Override
-    public void onUnregistrationFailed(NsdServiceInfo serviceInfo, int errorCode) { }
-
-    @Override
-    public void onServiceRegistered(NsdServiceInfo serviceInfo) { }
-
-    @Override
-    public void onServiceUnregistered(NsdServiceInfo serviceInfo) { }
 }
