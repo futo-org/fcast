@@ -10,20 +10,14 @@ buildReceiverDesktopLinuxX64RPM:
     - cargo generate-rpm -p receivers/experimental/desktop
     - cp target/generate-rpm/*.rpm .
     - RPM_FILE=$(ls *.rpm | head -1)
-    - |
-      # Delete previous package version if it exists
-      EXISTING=$(curl --silent --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages?package_name=fcast-receiver-desktop&package_type=generic" \
-        | python3 -c "import sys,json; [print(p['id']) for p in json.load(sys.stdin)]" 2>/dev/null)
-      for PKG_ID in $EXISTING; do
-        curl --silent --request DELETE --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/${PKG_ID}"
-      done
-    - |
-      # Upload to package registry
-      curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-        --upload-file "$RPM_FILE" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/fcast-receiver-desktop/${CI_COMMIT_SHORT_SHA}/${RPM_FILE}"
+    - PKG_NAME=fcast-receiver-desktop
+    - PKG_API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages"
+    - 'AUTH="JOB-TOKEN: $CI_JOB_TOKEN"'
+    - 'curl -s -H "$AUTH" "$PKG_API?package_name=$PKG_NAME&package_type=generic"
+        | python3 -c "import sys,json; [print(p[''id'']) for p in json.load(sys.stdin)]" 2>/dev/null
+        | xargs -I{} curl -s --request DELETE -H "$AUTH" "$PKG_API/{}"'
+    - 'curl -H "$AUTH" --upload-file "$RPM_FILE"
+        "$PKG_API/generic/$PKG_NAME/$CI_COMMIT_SHORT_SHA/$RPM_FILE"'
   artifacts:
     untracked: false
     when: on_success
