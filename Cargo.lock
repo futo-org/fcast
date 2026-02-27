@@ -3204,10 +3204,10 @@ dependencies = [
 [[package]]
 name = "gst-plugin-reqwest"
 version = "0.14.4"
-source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=e36ce7642fe936ee082fa9ea9b04c3d8ef2c851d#e36ce7642fe936ee082fa9ea9b04c3d8ef2c851d"
+source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=ed20fcd7a6794003f7fb52febcefda6965221d7e#ed20fcd7a6794003f7fb52febcefda6965221d7e"
 dependencies = [
  "futures",
- "gst-plugin-version-helper 0.8.3 (git+https://github.com/MAlba124/gst-plugins-rs.git?rev=e36ce7642fe936ee082fa9ea9b04c3d8ef2c851d)",
+ "gst-plugin-version-helper",
  "gstreamer",
  "gstreamer-base",
  "headers",
@@ -3232,7 +3232,7 @@ dependencies = [
  "futures",
  "gio 0.21.5",
  "glib 0.21.5",
- "gst-plugin-version-helper 0.8.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gst-plugin-version-helper",
  "gstreamer",
  "gstreamer-audio",
  "gstreamer-base",
@@ -3263,15 +3263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gst-plugin-version-helper"
-version = "0.8.3"
-source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=e36ce7642fe936ee082fa9ea9b04c3d8ef2c851d#e36ce7642fe936ee082fa9ea9b04c3d8ef2c851d"
-dependencies = [
- "chrono",
- "toml_edit 0.24.0+spec-1.1.0",
-]
-
-[[package]]
 name = "gst-plugin-webrtc"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3283,7 +3274,7 @@ dependencies = [
  "chrono",
  "fastrand",
  "futures",
- "gst-plugin-version-helper 0.8.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gst-plugin-version-helper",
  "gst-plugin-webrtc-signalling",
  "gst-plugin-webrtc-signalling-protocol",
  "gstreamer",
@@ -3363,7 +3354,7 @@ dependencies = [
  "async-recursion",
  "bytes",
  "futures",
- "gst-plugin-version-helper 0.8.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gst-plugin-version-helper",
  "gstreamer",
  "gstreamer-sdp",
  "gstreamer-webrtc",
