@@ -4640,9 +4640,9 @@ dependencies = [
 
 [[package]]
 name = "image_swizzle"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f08f1780c115078f8770073cb17cdf43d34a28020ddec7bd2065145eb17c6394"
+checksum = "1f0b4ca70fba5d4987acb89071ddaa6960caebbd285248c8dce39e568993e447"
 dependencies = [
  "rustversion",
 ]
@@ -7043,6 +7043,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "parking_lot",
  "rand 0.10.0",
+ "remote-pipeline-dbg",
  "reqwest 0.13.2",
  "rsa",
  "rtp-types",
@@ -7183,7 +7184,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "remote-pipeline-dbg"
 version = "0.1.0"
 dependencies = [
- "image",
+ "image_swizzle",
  "slint",
  "slint-build",
 ]

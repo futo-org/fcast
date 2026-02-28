@@ -26,7 +26,7 @@ base64 = "0.22"
 bitflags = "2.10"
 smallvec.workspace = true
 parking_lot.workspace = true
-image_swizzle = "0.2.0"
+image_swizzle.workspace = true
 bytes.workspace = true
 # libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] } # TODO
 gst-plugin-reqwest = { rev = "ed20fcd7a6794003f7fb52febcefda6965221d7e", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
@@ -35,6 +35,7 @@ gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
 gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
+remote-pipeline-dbg = { path = "../../../tools/remote-pipeline-dbg", default-features = false, features = ["client"] }
 
 # RAOP
 rtsp-types = "0.1"

@@ -1552,7 +1552,7 @@ impl Application {
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
-                self.player.dump_graph();
+                self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
                 if let Some(player_uri) = self.player.current_uri()
                     && let Some(current_uri) = self.current_item_uri()
                     && current_uri == player_uri
@@ -1562,7 +1562,8 @@ impl Application {
                 }
             }
             player::PlayerEvent::Warning(msg) => {
-                self.player.dump_graph();
+                self.player
+                    .dump_graph(remote_pipeline_dbg::Trigger::Warning);
                 self.media_warning(msg)?;
             }
         }

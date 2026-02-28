@@ -1003,8 +1003,8 @@ impl Player {
         }
     }
 
-    pub fn dump_graph(&self) {
-        use std::io::Write;
+    pub fn dump_graph(&self, trigger: remote_pipeline_dbg::Trigger) {
+        use remote_pipeline_dbg::{PipelineSource, post_graph};
 
         let Some(bin) = self.playbin.downcast_ref::<gst::Bin>() else {
             // Unreachable
@@ -1014,29 +1014,13 @@ impl Player {
 
         let graph = bin.debug_to_dot_data(gst::DebugGraphDetails::all());
 
-        fn post(graph: &[u8]) -> anyhow::Result<()> {
-            #[cfg(target_os = "android")]
-            let sockaddr = option_env!("PIPELINE_DBG_HOST").unwrap_or("127.0.0.1:3000");
-            #[cfg(not(target_os = "android"))]
-            let sockaddr =
-                std::env::var("PIPELINE_DBG_HOST").unwrap_or("127.0.0.1:3000".to_owned());
-
-            let mut stream = std::net::TcpStream::connect(sockaddr)?;
-            let len_buf = (graph.len() as u32).to_le_bytes();
-            stream.write_all(&len_buf)?;
-            stream.write_all(graph)?;
-            stream.shutdown(std::net::Shutdown::Both)?;
-
-            Ok(())
-        }
-
-        if let Err(err) = post(graph.as_bytes()) {
+        if let Err(err) = post_graph(graph.as_bytes(), PipelineSource::MainPlayer, trigger) {
             error!(?err, "Failed to post graph data");
         }
     }
 
     pub fn pause(&mut self) {
-        self.dump_graph();
+        self.dump_graph(remote_pipeline_dbg::Trigger::Pause);
 
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
             self.set_state_async(state);

@@ -1,16 +1,18 @@
+#[cfg(feature = "gui")]
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     process::{Command, Stdio},
 };
 
+#[cfg(feature = "gui")]
 slint::include_modules!();
 
+#[cfg(feature = "gui")]
 fn run(ui_weak: slint::Weak<MainWindow>) {
     let listener = TcpListener::bind("0.0.0.0:3000").unwrap();
-    let mut data_buf: Vec<u8> = Vec::new();
     for stream in listener.incoming() {
-        let mut stream = match stream {
+        let stream = match stream {
             Ok(s) => s,
             Err(err) => {
                 eprintln!("Failed to accept stream: {err:?}");
@@ -27,15 +29,10 @@ fn run(ui_weak: slint::Weak<MainWindow>) {
             })
             .unwrap();
 
-        let mut length_buf = [0u8; 4];
-        stream.read_exact(&mut length_buf).unwrap();
-        let data_len = u32::from_le_bytes(length_buf) as usize;
-        data_buf.resize(data_len, 0);
-        stream.read_exact(&mut data_buf).unwrap();
+        let (data_buf, source, trigger) = remote_pipeline_dbg::read_graph(stream).unwrap();
 
         let mut graphviz = Command::new("dot")
-            // TODO: decoding the png is super slow, need to find a different lossless format graphviz can output
-            .arg("-Tpng")
+            .arg("-Tgd")
             .stdout(Stdio::piped())
             .stdin(Stdio::piped())
             .spawn()
@@ -50,18 +47,24 @@ fn run(ui_weak: slint::Weak<MainWindow>) {
             })
             .unwrap();
 
-        let png = graphviz.wait_with_output().unwrap().stdout;
-        let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
-            .unwrap()
-            .into_rgb8();
-        let buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::clone_from_slice(
-            img.as_raw(),
-            img.width(),
-            img.height(),
+        let mut image_data = graphviz.wait_with_output().unwrap().stdout;
+
+        let width = u16::from_be_bytes([image_data[2], image_data[3]]);
+        let height = u16::from_be_bytes([image_data[4], image_data[5]]);
+        let argb = &mut image_data[11..];
+        println!("Got image width={width} height={height}");
+        assert_eq!(argb.len(), width as usize * height as usize * 4);
+        image_swizzle::argb_to_rgba_inplace(argb);
+        image_swizzle::rgb0_to_bgrx_inplace(argb);
+
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            argb,
+            width as u32,
+            height as u32,
         );
         ui_weak
             .upgrade_in_event_loop(|ui| {
-                let img = slint::Image::from_rgb8(buffer);
+                let img = slint::Image::from_rgba8(buffer);
                 ui.global::<Bridge>().set_graph(img);
                 ui.global::<Bridge>()
                     .set_waiting_state(WaitingState::Waiting);
@@ -70,6 +73,7 @@ fn run(ui_weak: slint::Weak<MainWindow>) {
     }
 }
 
+#[cfg(feature = "gui")]
 fn main() {
     slint::BackendSelector::new()
         .backend_name("skia".to_owned())
