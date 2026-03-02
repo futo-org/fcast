@@ -1006,6 +1006,8 @@ impl Player {
     pub fn dump_graph(&self, trigger: remote_pipeline_dbg::Trigger) {
         use remote_pipeline_dbg::{PipelineSource, post_graph};
 
+        debug!(?trigger, "Dumping pipeline graph");
+
         let Some(bin) = self.playbin.downcast_ref::<gst::Bin>() else {
             // Unreachable
             error!("Playbin is not a bin");

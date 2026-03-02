@@ -114,6 +114,24 @@ fn main() {
         model.remove(idx as usize);
     });
 
+    bridge.on_dump_remote(|addr: slint::SharedString| {
+        use std::str::FromStr;
+
+        let Ok(addr) = std::net::SocketAddr::from_str(addr.as_str()) else {
+            eprintln!("Invalid address");
+            return;
+        };
+
+        let Ok(mut stream) = std::net::TcpStream::connect(addr) else {
+            eprintln!("Failed to connect");
+            return;
+        };
+
+        if stream.write_all(&[0xFF]).is_err() {
+            eprintln!("Failed to write payload");
+        }
+    });
+
     let ui_weak = ui.as_weak();
     std::thread::spawn(move || {
         run(ui_weak);

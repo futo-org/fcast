@@ -2,6 +2,7 @@
 use std::io::Write;
 use std::{io::Read, net::TcpStream};
 
+#[derive(Debug)]
 #[repr(u8)]
 pub enum PipelineSource {
     MainPlayer = 0,
@@ -29,11 +30,13 @@ impl ToString for PipelineSource {
 }
 
 // TODO: add manual trigger
+#[derive(Debug)]
 #[repr(u8)]
 pub enum Trigger {
     Pause = 0,
     Warning = 1,
     Error = 2,
+    Manual = 3,
 }
 
 impl Trigger {
@@ -42,6 +45,7 @@ impl Trigger {
             0 => Self::Pause,
             1 => Self::Warning,
             2 => Self::Error,
+            3 => Self::Manual,
             _ => unreachable!(),
         }
     }
@@ -53,6 +57,7 @@ impl ToString for Trigger {
             Trigger::Pause => "Pause",
             Trigger::Warning => "Warning",
             Trigger::Error => "Error",
+            Trigger::Manual => "Manual",
         }
         .to_string()
     }

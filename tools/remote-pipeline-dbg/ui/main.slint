@@ -1,4 +1,4 @@
-import { ScrollView, TabWidget, Palette } from "std-widgets.slint";
+import { ScrollView, TabWidget, Palette, LineEdit, Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
 import { Icons } from "../../../senders/ui-components/std-widgets.slint";
 
 export enum WaitingState {
@@ -21,6 +21,7 @@ export global Bridge {
     in-out property <int> selected-dump: -1;
 
     pure callback remove-element(dumps: [UiGraphDump], idx: int);
+    callback dump-remote(addr: string);
 }
 
 component TabEntry inherits Rectangle {
@@ -114,8 +115,21 @@ export component MainWindow inherits Window {
             }
         }
 
-        if Bridge.selected-dump == -1: VerticalLayout {
+        if Bridge.selected-dump == -1: VerticalBox {
             alignment: center;
+
+            HorizontalBox {
+                alignment: center;
+
+                remote-addr := LineEdit {
+                    text: "127.0.0.1:46897";
+                }
+
+                Button {
+                    text: "Dump";
+                    clicked => Bridge.dump-remote(remote-addr.text);
+                }
+            }
 
             Text {
                 horizontal-alignment: center;
