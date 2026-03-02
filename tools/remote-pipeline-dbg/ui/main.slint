@@ -1,4 +1,5 @@
-import { ScrollView, TabWidget } from "std-widgets.slint";
+import { ScrollView, TabWidget, Palette, LineEdit, Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { Icons } from "../../../senders/ui-components/std-widgets.slint";
 
 export enum WaitingState {
     Waiting,
@@ -6,9 +7,70 @@ export enum WaitingState {
     Decoding,
 }
 
+export struct UiGraphDump {
+    title: string,
+    client: string,
+    pipeline: string,
+    trigger: string,
+    graph: image,
+}
+
 export global Bridge {
-    in property <image> graph;
     in property <WaitingState> waiting-state: WaitingState.Waiting;
+    in property <[UiGraphDump]> dumps;
+    in-out property <int> selected-dump: -1;
+
+    pure callback remove-element(dumps: [UiGraphDump], idx: int);
+    callback dump-remote(addr: string);
+}
+
+component TabEntry inherits Rectangle {
+    in property <string> title <=> txt.text;
+    in property <bool> selected;
+
+    background: ta.has-hover
+        ? (selected ? Palette.selection-background.transparentize(50%) : Palette.background)
+        : selected ? Palette.selection-background : Palette.alternate-background;
+    width: hl.preferred-width + 10px;
+
+    callback select();
+    callback close();
+
+    ta := TouchArea {
+        clicked => select();
+
+        mouse-cursor: pointer;
+    }
+
+    hl := HorizontalLayout {
+        HorizontalLayout {
+            padding: 5px;
+
+            txt := Text {
+                vertical-alignment: center;
+            }
+
+            if title != "Start": Rectangle {
+                background: close-ta.has-hover ? red : transparent;
+
+                close-ta := TouchArea {
+                    mouse-cursor: pointer;
+
+                    clicked => close();
+                }
+
+                Image {
+                    source: Icons.close;
+                    colorize: Palette.foreground;
+                }
+            }
+        }
+
+        Rectangle {
+            width: 2px;
+            background: Palette.foreground.transparentize(80%);
+        }
+    }
 }
 
 export component MainWindow inherits Window {
@@ -19,50 +81,135 @@ export component MainWindow inherits Window {
 
     property <percent> scaling: 100%;
 
-    if Bridge.graph.width == 0: VerticalLayout {
-        alignment: center;
+    VerticalLayout {
+        ScrollView {
+            height: 35px;
 
-        Text {
-            horizontal-alignment: center;
+            HorizontalLayout {
+                TabEntry {
+                    title: "Start";
+                    selected: Bridge.selected-dump == -1;
 
-            states [
-                waiting when Bridge.waiting-state == WaitingState.Waiting: {
-                    text: "Waiting for client to connect...";
-                }
-                receiving when Bridge.waiting-state == WaitingState.Receiving: {
-                    text: "Receiving data from client...";
-                }
-                decoding when Bridge.waiting-state == WaitingState.Decoding: {
-                    text: "Decoding data from client...";
-                }
-            ]
-
-        }
-    }
-
-    if Bridge.graph.width > 0: ScrollView {
-        viewport-width: img.width * img.transform-scale;
-        viewport-height: img.height * img.transform-scale;
-
-        TouchArea {
-            scroll-event(event) => {
-                if !event.modifiers.control {
-                    return reject;
+                    select => {
+                        Bridge.selected-dump = -1;
+                    }
                 }
 
-                if event.delta-y > 0 {
-                    scaling += 3%;
-                } else {
-                    scaling -= 3%;
-                }
+                for dump[idx] in Bridge.dumps: TabEntry {
+                    title: dump.title;
+                    selected: Bridge.selected-dump == idx;
 
-                accept
+                    select => {
+                        Bridge.selected-dump = idx;
+                    }
+
+                    close => {
+                        Bridge.remove-element(Bridge.dumps, idx);
+                        if Bridge.selected-dump == idx {
+                            Bridge.selected-dump = idx - 1;
+                        } else if Bridge.selected-dump > idx {
+                            Bridge.selected-dump -= 1;
+                        }
+                    }
+                }
             }
         }
 
-        img := Image {
-            source: Bridge.graph;
-            transform-scale: scaling;
+        if Bridge.selected-dump == -1: VerticalBox {
+            alignment: center;
+
+            HorizontalBox {
+                alignment: center;
+
+                remote-addr := LineEdit {
+                    text: "127.0.0.1:46897";
+                }
+
+                Button {
+                    text: "Dump";
+                    clicked => Bridge.dump-remote(remote-addr.text);
+                }
+            }
+
+            Text {
+                horizontal-alignment: center;
+
+                states [
+                    waiting when Bridge.waiting-state == WaitingState.Waiting: {
+                        text: "Waiting for a client to connect...";
+                    }
+                    receiving when Bridge.waiting-state == WaitingState.Receiving: {
+                        text: "Receiving data from client...";
+                    }
+                    decoding when Bridge.waiting-state == WaitingState.Decoding: {
+                        text: "Decoding data from client...";
+                    }
+                ]
+
+            }
+        }
+
+        if Bridge.selected-dump >= 0: VerticalLayout {
+            HorizontalLayout {
+                alignment: center;
+
+                padding: 5px;
+                spacing: 10px;
+
+                Text {
+                    text: "Client: " + Bridge.dumps[Bridge.selected-dump].client;
+                }
+
+                Text {
+                    text: "Pipeline: " + Bridge.dumps[Bridge.selected-dump].pipeline;
+                }
+
+                Text {
+                    text: "Trigger: " + Bridge.dumps[Bridge.selected-dump].trigger;
+                }
+            }
+
+            scroll := ScrollView {
+                viewport-width: img.width * img.transform-scale;
+                viewport-height: img.height * img.transform-scale;
+
+                TouchArea {
+                    scroll-event(event) => {
+                        if !event.modifiers.control {
+                            return reject;
+                        }
+
+                        let old-scale = scaling;
+                        scaling += event.delta-y > 0 ? 5% : -5%;
+                        scroll.viewport-x = (self.mouse-x + scroll.viewport-x) - (self.mouse-x * (scaling / old-scale));
+                        scroll.viewport-y = (self.mouse-y + scroll.viewport-y) - (self.mouse-y * (scaling / old-scale));
+
+                        accept
+                    }
+
+                    // https://github.com/slint-ui/slint/discussions/2235#discussioncomment-4992466
+                    property<length> drag-start-x;
+                    property<length> drag-start-y;
+
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down
+                            && e.button == PointerEventButton.left) {
+                            self.drag-start-x = scroll.viewport-x;
+                            self.drag-start-y = scroll.viewport-y;
+                        }
+                    }
+
+                    moved => {
+                        scroll.viewport-x += (self.mouse-x - self.pressed-x);
+                        scroll.viewport-y += (self.mouse-y - self.pressed-y);
+                    }
+                }
+
+                img := Image {
+                    source: Bridge.dumps[Bridge.selected-dump].graph;
+                    transform-scale: scaling;
+                }
+            }
         }
     }
 }

@@ -15,12 +15,11 @@ use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
 use smallvec::SmallVec;
 use tokio::{
-    net::TcpListener,
-    sync::{
+    io::AsyncReadExt, net::TcpListener, sync::{
         broadcast,
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
-    },
+    }
 };
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
@@ -164,6 +163,7 @@ pub enum Event {
     Tray(TrayEvent),
     ShouldSetLoadingStatus(MediaItemId),
     Raop(RaopEvent),
+    DumpPipeline,
 }
 
 #[macro_export]
@@ -545,6 +545,21 @@ impl Application {
                     }
                 }
             })?;
+
+        tokio::spawn({
+            let event_tx = event_tx.clone();
+            async move {
+            let listener = tokio::net::TcpListener::bind("[::]:46897").await.unwrap();
+            loop {
+                let (mut stream, addr) = listener.accept().await.unwrap();
+                debug!(?addr, "Got connection");
+
+                let mut buf = [0u8; 1];
+                if let Ok(_) = stream.read_exact(&mut buf).await && buf[0] == 0xFF {
+                    let _ = event_tx.send(Event::DumpPipeline);
+                }
+            }
+        }.instrument(debug_span!("pipeline-dbg-listener"))});
 
         Ok(Self {
             #[cfg(target_os = "android")]
@@ -1552,7 +1567,7 @@ impl Application {
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
-                self.player.dump_graph();
+                self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
                 if let Some(player_uri) = self.player.current_uri()
                     && let Some(current_uri) = self.current_item_uri()
                     && current_uri == player_uri
@@ -1562,7 +1577,8 @@ impl Application {
                 }
             }
             player::PlayerEvent::Warning(msg) => {
-                self.player.dump_graph();
+                self.player
+                    .dump_graph(remote_pipeline_dbg::Trigger::Warning);
                 self.media_warning(msg)?;
             }
         }
@@ -1930,6 +1946,9 @@ impl Application {
                 }
             }
             Event::Raop(event) => return self.handle_raop_event(event),
+            Event::DumpPipeline => {
+                self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);
+            }
         }
 
         Ok(false)

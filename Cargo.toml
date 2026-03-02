@@ -14,8 +14,9 @@ members = [
     "senders/android",
     "receivers/experimental/rcore",
     "receivers/experimental/desktop",
-    "receivers/experimental/android"
-, "tools/remote-pipeline-dbg"]
+    "receivers/experimental/android",
+    "tools/remote-pipeline-dbg",
+]
 resolver = "2"
 
 [workspace.package]
@@ -53,6 +54,7 @@ futures = "0.3.31"
 lazy_static = "1.5"
 rand = "0.10"
 num_cpus = "1"
+image_swizzle = "0.3.0"
 
 [profile.release]
 lto = "thin"

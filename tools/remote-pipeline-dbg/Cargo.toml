@@ -5,8 +5,14 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-slint = { workspace = true, features = [ "renderer-skia", "backend-winit", "std", "compat-1-2" ] }
-image = { version = "0.25", default-features = false, features = [ "png" ] }
+slint = { workspace = true, features = [ "renderer-skia", "backend-winit", "std", "compat-1-2" ], optional = true }
+image_swizzle = { workspace = true, optional = true }
+chrono = { version = "0.4", optional = true }
 
 [build-dependencies]
 slint-build.workspace = true
+
+[features]
+default = ["gui"]
+gui = ["dep:slint", "dep:image_swizzle", "dep:chrono"]
+client = []
