@@ -47,7 +47,8 @@ Copyright &copy; 2025 FUTO
 nav = [
   {"Overview" = [
     "index.md",
-    "overview/faq.md"
+    "overview/faq.md",
+    "overview/trademark-policy.md"
   ]},
   {"Receiver" = [
     "receiver/index.md",

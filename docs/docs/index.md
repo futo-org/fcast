@@ -43,6 +43,10 @@ A "receiver", in this context, is a software implementation running on various p
     - [**Grayjay**](https://github.com/futo-org/grayjay-android) is a player that exposes multiple video websites as sources in the app.
     - [**Terminal**](https://github.com/futo-org/fcast/tree/master/senders/terminal) sender allows you use the FCast protocol over the command line interface.
 
+## Third-Party Implementations
+
+We encourage developers to build their own FCast-compatible receivers and senders. If you are building a third-party application, please review our [Trademark Policy](overview/trademark-policy.md) for guidance on naming, logo usage, and attribution.
+
 ## Contributing
 
 We welcome all contributions. Please read our [CONTRIBUTING.md](https://github.com/futo-org/fcast/blob/master/CONTRIBUTING.md) before submitting any pull requests.
