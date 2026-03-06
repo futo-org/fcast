@@ -36,6 +36,7 @@ gst-tag = { package = "gstreamer-tag", version = "0.24.4" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
 remote-pipeline-dbg = { path = "../../../tools/remote-pipeline-dbg", default-features = false, features = ["client"] }
+tracing-tracy = { version = "=0.11.2", optional = true }
 
 # RAOP
 rtsp-types = "0.1"
@@ -131,5 +132,6 @@ desktop = []
 systray = ["dep:ksni", "dep:tray-icon"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
+tracy = ["dep:tracing-tracy"]
 
 # TODO: have a build mode which statically links every rust plugin we use + use fat LTO to check performance gains

@@ -2155,10 +2155,13 @@ pub fn run(
             .with_default(log_level);
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
-        tracing_subscriber::registry()
+        let registry = tracing_subscriber::registry()
             .with(fmt_layer)
-            .with(filter)
-            .init();
+            .with(filter);
+        #[cfg(feature = "tracy")]
+        let registry = registry
+            .with(tracing_tracy::TracyLayer::default());
+        registry.init();
     }
 
     #[cfg(target_os = "android")]

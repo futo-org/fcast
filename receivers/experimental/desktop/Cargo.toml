@@ -15,6 +15,7 @@ tikv-jemallocator = "0.6"
 default = ["systray"]
 systray = ["rcore/systray"]
 kms-backend = ["rcore/kms-backend"]
+tracy = ["rcore/tracy"]
 
 [package.metadata.generate-rpm]
 name = "fcast-receiver"
