@@ -670,7 +670,7 @@ impl SlintOpenGLSink {
 
     pub fn connect<F>(
         &mut self,
-        _graphics_api: &slint::GraphicsAPI<'_>,
+        // _graphics_api: &slint::GraphicsAPI<'_>,
         next_frame_available_notifier: F,
         // contexts: &Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<()>

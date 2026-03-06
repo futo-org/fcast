@@ -1057,8 +1057,7 @@ impl Application {
             let client = self.http_client.clone();
             let headers = self.current_request_headers.lock().clone();
             tokio::spawn(async move {
-                let res = Self::download_image(&client, &url, headers)
-                    .await;
+                let res = Self::download_image(&client, &url, headers).await;
                 let _ = event_tx.send(Event::ImageDownloadResult { id: this_id, res });
             });
         }
@@ -1074,8 +1073,7 @@ impl Application {
             let headers = self.current_request_headers.lock().clone();
             is_image = true;
             tokio::spawn(async move {
-                let res = Self::download_image(&client, &url, headers)
-                    .await;
+                let res = Self::download_image(&client, &url, headers).await;
                 let _ = event_tx.send(Event::ImageDownloadResult { id, res });
             });
         } else {
@@ -2153,12 +2151,9 @@ pub fn run(
             .with_default(log_level);
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
-        let registry = tracing_subscriber::registry()
-            .with(fmt_layer)
-            .with(filter);
+        let registry = tracing_subscriber::registry().with(fmt_layer).with(filter);
         #[cfg(feature = "tracy")]
-        let registry = registry
-            .with(tracing_tracy::TracyLayer::default());
+        let registry = registry.with(tracing_tracy::TracyLayer::default());
         registry.init();
     }
 
@@ -2170,10 +2165,6 @@ pub fn run(
     }
 
     let start = std::time::Instant::now();
-
-    gst::init()?;
-
-    debug!(gstreamer_version = %gst::version_string());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2209,8 +2200,7 @@ pub fn run(
         }
     });
 
-    let mut slint_sink = video::SlintOpenGLSink::new()?;
-    let slint_appsink = slint_sink.video_sink();
+    let slint_sink_mutex = Arc::new(parking_lot::Mutex::new(None::<video::SlintOpenGLSink>));
 
     let ui = MainWindow::new()?;
 
@@ -2219,13 +2209,14 @@ pub fn run(
     #[cfg(debug_assertions)]
     bridge.set_is_debugging(true);
 
-    let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
         // let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
         let mut prev_size = (0, 0);
+        let mut slint_sink = None;
+        let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         move |state, graphics_api| {
             if let slint::RenderingState::RenderingSetup = state {
                 debug!("Got graphics API: {graphics_api:?}");
@@ -2239,21 +2230,12 @@ pub fn run(
                         .window()
                         .set_fullscreen(fullscreen);
                 }
-
-                slint_sink
-                    .connect(
-                        graphics_api,
-                        move || {
-                            ui_weak
-                                .upgrade_in_event_loop(move |ui| {
-                                    ui.window().request_redraw();
-                                })
-                                .unwrap();
-                        },
-                        // &gst_gl_contexts,
-                    )
-                    .unwrap();
             } else if let slint::RenderingState::BeforeRendering = state {
+                let Some(slint_sink) = slint_sink.as_ref() else {
+                    slint_sink = slint_sink_mutex.lock().take();
+                    return;
+                };
+
                 let Some(ui) = ui_weak.upgrade() else {
                     error!("Failed to upgrade ui");
                     return;
@@ -2325,7 +2307,29 @@ pub fn run(
     runtime.spawn({
         let ui_weak = ui.as_weak();
         let event_tx = event_tx.clone();
+        let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         async move {
+            gst::init().unwrap();
+            debug!(gstreamer_version = %gst::version_string());
+
+            let mut slint_sink = video::SlintOpenGLSink::new().unwrap();
+            let slint_appsink = slint_sink.video_sink();
+            let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
+
+            slint_sink
+                .connect({
+                    let ui_weak = ui_weak.clone();
+                    move || {
+                    ui_weak
+                        .upgrade_in_event_loop(move |ui| {
+                            ui.window().request_redraw();
+                        })
+                        .unwrap();
+                }})
+                .unwrap();
+
+            *slint_sink_mutex.lock() = Some(slint_sink);
+
             fcastwhepsrcbin::plugin_init().unwrap();
             gstreqwest::plugin_register_static().unwrap();
             gstwebrtchttp::plugin_register_static().unwrap();

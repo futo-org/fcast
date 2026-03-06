@@ -6,7 +6,7 @@ use gst::{glib::object::ObjectExt, prelude::*};
 // use gst_gl::prelude::*;
 use smallvec::SmallVec;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, debug_span, error, warn, instrument};
+use tracing::{debug, debug_span, error, instrument, warn};
 
 struct BoolLock(bool);
 
