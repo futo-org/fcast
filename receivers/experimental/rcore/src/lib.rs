@@ -2214,8 +2214,10 @@ pub fn run(
 
     let ui = MainWindow::new()?;
 
+    let bridge = ui.global::<Bridge>();
+
     #[cfg(debug_assertions)]
-    ui.global::<Bridge>().set_is_debugging(true);
+    bridge.set_is_debugging(true);
 
     let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
     ui.window().set_rendering_notifier({
@@ -2353,21 +2355,21 @@ pub fn run(
         }
     });
 
-    ui.global::<Bridge>().on_resume_or_pause({
+    bridge.on_resume_or_pause({
         let event_tx = event_tx.clone();
         move || {
             log_if_err!(event_tx.send(Event::ResumeOrPause));
         }
     });
 
-    ui.global::<Bridge>().on_seek_to_percent({
+    bridge.on_seek_to_percent({
         let event_tx = event_tx.clone();
         move |percent| {
             log_if_err!(event_tx.send(Event::SeekPercent(percent)));
         }
     });
 
-    ui.global::<Bridge>().on_toggle_fullscreen({
+    bridge.on_toggle_fullscreen({
         let ui_weak = ui.as_weak();
         move || {
             let ui = ui_weak
@@ -2379,7 +2381,7 @@ pub fn run(
         }
     });
 
-    ui.global::<Bridge>().on_set_volume({
+    bridge.on_set_volume({
         let event_tx = event_tx.clone();
         move |volume| {
             log_if_err!(event_tx.send(Event::Op {
@@ -2391,18 +2393,18 @@ pub fn run(
         }
     });
 
-    ui.global::<Bridge>().on_force_quit(move || {
+    bridge.on_force_quit(move || {
         log_if_err!(slint::quit_event_loop());
     });
 
-    ui.global::<Bridge>().on_debug_toggled({
+    bridge.on_debug_toggled({
         let event_tx = event_tx.clone();
         move || {
             log_if_err!(event_tx.send(Event::ToggleDebug));
         }
     });
 
-    ui.global::<Bridge>().on_change_playback_rate({
+    bridge.on_change_playback_rate({
         let event_tx = event_tx.clone();
         move |new_rate: f32| {
             log_if_err!(event_tx.send(Event::Op {
@@ -2414,7 +2416,7 @@ pub fn run(
         }
     });
 
-    ui.global::<Bridge>().on_hide_cursor_hack({
+    bridge.on_hide_cursor_hack({
         let ui_weak = ui.as_weak();
         move || {
             let ui = ui_weak
@@ -2429,17 +2431,16 @@ pub fn run(
         }
     });
 
-    ui.global::<Bridge>().on_select_track({
+    bridge.on_select_track({
         let event_tx = event_tx.clone();
         move |id: i32, variant: UiMediaTrackType| {
             log_if_err!(event_tx.send(Event::SelectTrack { id, variant }));
         }
     });
 
-    ui.global::<Bridge>()
-        .on_sec_to_string(|sec: i32| -> slint::SharedString {
-            sec_to_string(sec as f64).to_shared_string()
-        });
+    bridge.on_sec_to_string(|sec: i32| -> slint::SharedString {
+        sec_to_string(sec as f64).to_shared_string()
+    });
 
     #[cfg(not(target_os = "android"))]
     let _awake = keepawake::Builder::default()
