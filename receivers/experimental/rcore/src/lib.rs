@@ -25,7 +25,7 @@ use tokio::{
 };
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
-use tracing::{Instrument, debug, debug_span, error, info, warn};
+use tracing::{Instrument, debug, debug_span, error, info, instrument, warn};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -626,13 +626,14 @@ impl Application {
         header_map
     }
 
+    #[cfg_attr(not(target_os = "android"), instrument(skip_all, fields(url = url)))]
     async fn download_image(
         client: &reqwest::Client,
         url: &str,
         headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(Bytes, ImageFormat), DownloadImageError> {
         let url = url::Url::parse(url)?;
-        debug!(%url, "Starting image download");
+        debug!("Starting image download");
         let random_user_agent = user_agent::random_browser_user_agent(url.domain());
         let mut request = client.get(url);
         let mut did_set_user_agent = false;
@@ -1057,7 +1058,6 @@ impl Application {
             let headers = self.current_request_headers.lock().clone();
             tokio::spawn(async move {
                 let res = Self::download_image(&client, &url, headers)
-                    .instrument(debug_span!("download_image", this_id))
                     .await;
                 let _ = event_tx.send(Event::ImageDownloadResult { id: this_id, res });
             });
@@ -1075,7 +1075,6 @@ impl Application {
             is_image = true;
             tokio::spawn(async move {
                 let res = Self::download_image(&client, &url, headers)
-                    .instrument(debug_span!("download_image", id))
                     .await;
                 let _ = event_tx.send(Event::ImageDownloadResult { id, res });
             });
@@ -2027,7 +2026,6 @@ impl Application {
                             if let Err(err) =
                                 SessionDriver::new(stream, id)
                                 .run(updates_rx, &event_tx)
-                                .instrument(tracing::debug_span!("session", id))
                                 .await
                             {
                                 error!("Session exited with error: {err}");

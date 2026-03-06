@@ -18,7 +18,7 @@ use tokio::{
     sync::{broadcast::Receiver, mpsc::UnboundedSender},
 };
 use tokio_stream::StreamExt;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, instrument, trace};
 
 pub type SessionId = u64;
 
@@ -724,6 +724,7 @@ impl SessionDriver {
     }
 
     /// Returns true if the session should end.
+    #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
     async fn handle_state_result(
         id: SessionId,
         tcp_stream_tx: &mut WriteHalf<'_>,
@@ -838,13 +839,13 @@ impl SessionDriver {
         Ok((header.opcode, body_string))
     }
 
-    // TODO: instrument this in caller with the id etc.
+    #[cfg_attr(not(target_os = "android"), instrument(name = "session", skip_all, fields(id = self.id)))]
     pub async fn run(
         mut self,
         mut updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,
         event_tx: &UnboundedSender<Event>,
     ) -> anyhow::Result<()> {
-        debug!("id={} Session was started", self.id);
+        debug!("Session was started");
 
         let (tcp_stream_rx, mut tcp_stream_tx) = self.stream.split();
 
@@ -878,7 +879,7 @@ impl SessionDriver {
                         break;
                     };
 
-                    trace!("id={} Got packet: {packet:?}", self.id);
+                    trace!(?packet, "Got packet");
 
                     let opcode = packet.0;
                     let body = packet.1.as_ref();

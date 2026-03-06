@@ -6,7 +6,7 @@ use gst::{glib::object::ObjectExt, prelude::*};
 // use gst_gl::prelude::*;
 use smallvec::SmallVec;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, debug_span, error, warn};
+use tracing::{debug, debug_span, error, warn, instrument};
 
 struct BoolLock(bool);
 
@@ -146,6 +146,7 @@ impl StateMachine {
     }
 
     #[must_use]
+    #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
     fn seek_internal(&mut self, mut seek: Seek, target_state: Option<gst::State>) -> Option<Seek> {
         // tracing::info!("<<TEST>> assert_eq!(sm.seek_internal({seek:?}, {target_state:?}), TODO);");
 
@@ -157,7 +158,7 @@ impl StateMachine {
             return None;
         }
 
-        debug!(?seek, state = ?self.state, current_state = ?self.current_state, "Seek internal called");
+        debug!(?seek, state = ?self.state, current_state = ?self.current_state);
 
         if seek.rate.is_none() {
             seek.rate = Some(self.rate);
@@ -336,6 +337,7 @@ impl StateMachine {
     }
 
     #[must_use]
+    #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
     pub fn state_changed(
         &mut self,
         _old: gst::State,
@@ -661,7 +663,7 @@ impl Player {
             let playbin = playbin.clone();
             let event_tx = event_tx.clone();
             move || {
-                let span = debug_span!("player-work-thread");
+                let span = debug_span!("player");
                 let _entered = span.enter();
 
                 while let Ok(job) = work_rx.recv() {
@@ -1182,6 +1184,7 @@ impl Player {
         -1
     }
 
+    #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
     pub fn streams_selected(
         &mut self,
         video_sid: Option<&str>,
@@ -1189,6 +1192,8 @@ impl Player {
         subtitle_sid: Option<&str>,
     ) -> (i32, i32, i32) {
         self.selection_lock.release();
+
+        debug!(?video_sid, ?audio_sid, ?subtitle_sid);
 
         self.current_video_stream = -1;
         self.current_audio_stream = -1;
