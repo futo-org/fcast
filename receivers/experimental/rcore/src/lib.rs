@@ -15,11 +15,13 @@ use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
 use smallvec::SmallVec;
 use tokio::{
-    io::AsyncReadExt, net::TcpListener, sync::{
+    io::AsyncReadExt,
+    net::TcpListener,
+    sync::{
         broadcast,
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
-    }
+    },
 };
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
@@ -549,17 +551,21 @@ impl Application {
         tokio::spawn({
             let event_tx = event_tx.clone();
             async move {
-            let listener = tokio::net::TcpListener::bind("[::]:46897").await.unwrap();
-            loop {
-                let (mut stream, addr) = listener.accept().await.unwrap();
-                debug!(?addr, "Got connection");
+                let listener = tokio::net::TcpListener::bind("[::]:46897").await.unwrap();
+                loop {
+                    let (mut stream, addr) = listener.accept().await.unwrap();
+                    debug!(?addr, "Got connection");
 
-                let mut buf = [0u8; 1];
-                if let Ok(_) = stream.read_exact(&mut buf).await && buf[0] == 0xFF {
-                    let _ = event_tx.send(Event::DumpPipeline);
+                    let mut buf = [0u8; 1];
+                    if let Ok(_) = stream.read_exact(&mut buf).await
+                        && buf[0] == 0xFF
+                    {
+                        let _ = event_tx.send(Event::DumpPipeline);
+                    }
                 }
             }
-        }.instrument(debug_span!("pipeline-dbg-listener"))});
+            .instrument(debug_span!("pipeline-dbg-listener"))
+        });
 
         Ok(Self {
             #[cfg(target_os = "android")]

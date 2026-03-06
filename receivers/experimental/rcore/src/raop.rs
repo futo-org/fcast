@@ -36,10 +36,9 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt::Debug,
     net::{IpAddr, SocketAddr},
-    // ops::Range,
     str,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
@@ -75,6 +74,10 @@ const RTP_RESENT_DATA_PAYLOAD_TYPE: u8 = 86;
 const RTP_TIMING_PAYLOAD_TYPE: u8 = 83;
 
 const SAMPLING_RATE: u64 = 44100;
+const LATENCY_IN_SAMPLES: u64 = SAMPLING_RATE;
+
+// NTP epoch - UNIX epoch
+const NTP_OFFSET: Duration = Duration::from_secs(2208988800);
 
 mod alacdec_imp {
     use std::sync::LazyLock;
@@ -364,6 +367,32 @@ impl Connection {
     }
 }
 
+const NO_SSRC_HEADER_SIZE: usize = 8;
+
+#[allow(unused)]
+struct NoSsrcRtpHeader {
+    payload_type: u8,
+    sequence_number: u16,
+    timestamp: u32,
+}
+
+impl NoSsrcRtpHeader {
+    fn parse(buf: &[u8]) -> Self {
+        assert!(buf.len() >= NO_SSRC_HEADER_SIZE);
+
+        let payload_type = buf[1] & 0b01111111;
+        let sequence_number = u16::from_be_bytes([buf[2], buf[3]]);
+        let timestamp = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+
+        Self {
+            payload_type,
+            sequence_number,
+            timestamp,
+        }
+    }
+}
+
+#[allow(unused)]
 #[derive(Debug)]
 struct ControlReceiver {
     player_tx: mpsc::Sender<Command>,
@@ -372,7 +401,7 @@ struct ControlReceiver {
 }
 
 impl ControlReceiver {
-    #[instrument(skip(self))]
+    #[instrument(name = "control_receiver", skip(self))]
     async fn run(&mut self) -> Result<()> {
         let mut buf = [0; 4 * 1024];
         while !self.shutdown.is_shutdown() {
@@ -396,37 +425,20 @@ impl ControlReceiver {
                 }
             };
 
-            match rtp_types::RtpPacket::parse(&buf[..length]) {
-                Ok(packet) if packet.payload_type() == RTP_SYNC_PAYLOAD_TYPE => {
-                    // TODO: handle syncing
-                    // let seq = reader.sequence_number();
-                    // let time = Time {
-                    //     sec: u32::from_be_bytes(buf[8..12].try_into().unwrap()),
-                    //     frac: u32::from_be_bytes(buf[12..16].try_into().unwrap()),
-                    // };
-                    // let timestamp = u32::from_be_bytes(buf[16..20].try_into().unwrap());
-                    // debug!("{:?} - {:?}-{:?}", seq, time, timestamp);
-                }
-                Ok(packet) if packet.payload_type() == RTP_RESENT_DATA_PAYLOAD_TYPE => {
-                    // rtp reader expects `SSRC` field atm and interprets original seq as `SSRC`
-                    // pull out seq + audio packet data directly from our buffer
-                    let seq = (buf[6] as u16) << 8 | (buf[7] as u16);
-                    let payload = buf[16..length].to_vec();
+            if length < NO_SSRC_HEADER_SIZE + 8 + 4 {
+                anyhow::bail!("Received invalid packet");
+            }
 
-                    self.player_tx
-                        .send(Command::PutPacket {
-                            seq,
-                            packet: payload,
-                            timestamp: packet.timestamp(),
-                        })
-                        .await?
+            let header = NoSsrcRtpHeader::parse(&buf[..length]);
+
+            match header.payload_type {
+                RTP_SYNC_PAYLOAD_TYPE => {
+                    // let time = duration_from_ntp(&buf[8..16]);
+                    // let timestamp = u32::from_be_bytes(buf[16..20].try_into().unwrap());
+                    // debug!("{:?} - {:?}-{:?}", header.sequence_number, time, timestamp);
                 }
-                Ok(packet) => {
-                    trace!(pay_type = packet.payload_type(), "unknown payload type");
-                }
-                Err(err) => {
-                    debug!(?err);
-                }
+                RTP_RESENT_DATA_PAYLOAD_TYPE => (),
+                payload_type => trace!(payload_type, "received packet with unknown payload type"),
             }
         }
 
@@ -434,43 +446,38 @@ impl ControlReceiver {
     }
 }
 
-#[allow(unused)]
-#[derive(Debug)]
-struct Time {
-    sec: u32,
-    frac: u32,
-}
+fn duration_from_ntp(buf: &[u8]) -> Duration {
+    assert_eq!(buf.len(), 8);
 
-#[allow(unused)]
-#[derive(Debug)]
-struct TimingSender {
-    player_tx: mpsc::Sender<Command>,
-    socket: Arc<UdpSocket>,
-    shutdown: Shutdown,
-}
-
-impl TimingSender {
-    #[instrument(skip(self))]
-    async fn run(&mut self) -> Result<()> {
-        while !self.shutdown.is_shutdown() {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(3)) => {
-                  let message = [0x80, 0xd2, 0x0, 0x07, 0x0, 0x0, 0x0, 0x0,
-                                    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-                                    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-                                    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-                                ];
-
-                  let _ = self.socket.send(&message).await;
-                },
-                _ = self.shutdown.recv() => {
-                    return Ok(());
-                }
-            };
-        }
-
-        Ok(())
+    macro_rules! u32_from_be {
+        ($buf:expr, $start_idx:expr) => {
+            u32::from_be_bytes([
+                $buf[$start_idx],
+                $buf[$start_idx + 1],
+                $buf[$start_idx + 2],
+                $buf[$start_idx + 3],
+            ])
+        };
     }
+
+    Duration::new(u32_from_be!(buf, 0) as u64, u32_from_be!(buf, 4))
+}
+
+fn ntp_duration_now() -> Duration {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        + NTP_OFFSET
+}
+
+fn ntp_time_now() -> [u8; 8] {
+    let now = ntp_duration_now();
+    let secs = (now.as_secs() as u32).to_be_bytes();
+    let nanos = now.subsec_nanos().to_be_bytes();
+
+    [
+        secs[0], secs[1], secs[2], secs[3], nanos[0], nanos[1], nanos[2], nanos[3],
+    ]
 }
 
 #[derive(Debug)]
@@ -530,65 +537,66 @@ impl ServerReceiver {
 
 #[allow(unused)]
 #[derive(Debug)]
-struct TimingReceiver {
+struct TimingManager {
     player_tx: mpsc::Sender<Command>,
     socket: Arc<UdpSocket>,
     shutdown: Shutdown,
 }
 
-impl TimingReceiver {
-    #[instrument(skip(self))]
+impl TimingManager {
+    #[instrument(name = "timing_manager", skip(self))]
     async fn run(&mut self) -> Result<()> {
-        let mut buf = [0; 32];
+        let mut recv_buf = [0; 32];
+        let mut send_interval = tokio::time::interval(Duration::from_secs(3));
+
+        // let mut base_local = None;
+        // let mut base_remote = None;
+
         while !self.shutdown.is_shutdown() {
-            let length = tokio::select! {
-                result = self.socket.recv_from(&mut buf) => {
-                  match result {
-                      Ok((length, _)) => {
-                        if length == 0 {
-                          return Ok(());
-                        } else {
-                          length
-                        }
-                      },
-                      Err(e) => {
-                        return Err(e.into());
-                      },
-                  }
-                },
-                _ = self.shutdown.recv() => {
-                    return Ok(());
-                }
-            };
+            tokio::select! {
+                result = self.socket.recv_from(&mut recv_buf) => {
+                    let (length, _) = result?;
+                    if length == 0 {
+                        return Ok(());
+                    }
 
-            if length != 32 {
-                continue;
-            }
-
-            match rtp_types::RtpPacket::parse(&buf[..length]) {
-                Ok(packet) => {
-                    if packet.payload_type() != RTP_TIMING_PAYLOAD_TYPE {
+                    if length != 32 {
                         continue;
                     }
 
-                    // let seq = reader.sequence_number();
-                    // rtp reader expects `SSRC` field atm and interprets half of the first timestamp as `SSRC`
-                    // pull out timestamp data directly from our buffer
-                    // let origin = Time {
-                    //     sec: u32::from_be_bytes(buf[8..12].try_into().unwrap()),
-                    //     frac: u32::from_be_bytes(buf[12..16].try_into().unwrap()),
-                    // };
-                    // let receive = Time {
-                    //     sec: u32::from_be_bytes(buf[16..20].try_into().unwrap()),
-                    //     frac: u32::from_be_bytes(buf[20..24].try_into().unwrap()),
-                    // };
-                    // let transmit = Time {
-                    //     sec: u32::from_be_bytes(buf[24..28].try_into().unwrap()),
-                    //     frac: u32::from_be_bytes(buf[28..32].try_into().unwrap()),
-                    // };
+                    let header = NoSsrcRtpHeader::parse(&recv_buf[..32]);
+                    if header.payload_type == RTP_TIMING_PAYLOAD_TYPE {
+                        let _origin = duration_from_ntp(&recv_buf[8..16]);
+                        let _receive = duration_from_ntp(&recv_buf[16..24]);
+                        let _transmit = duration_from_ntp(&recv_buf[24..32]);
+                        let _now = ntp_duration_now();
+
+                        // let (_base_local, _base_remote) = {
+                        //     let l = base_local.unwrap_or(origin);
+                        //     base_local = Some(l);
+                        //     let r = base_remote.unwrap_or(receive);
+                        //     base_remote = Some(r);
+                        //     (l, r)
+                        // };
+
+                        // debug!(?origin, ?receive, ?transmit, diff = ?(now - origin));
+                    }
                 }
-                Err(err) => {
-                    debug!(?err);
+                _ = send_interval.tick() => {
+                    let now = ntp_time_now();
+
+                    let message = [
+                        0x80, 0xd2, 0x0, 0x07, 0x0, 0x0, 0x0, 0x0,
+                        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+                        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+                        // 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+                        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7],
+                    ];
+
+                  let _ = self.socket.send(&message).await;
+                }
+                _ = self.shutdown.recv() => {
+                    return Ok(());
                 }
             }
         }
@@ -596,56 +604,6 @@ impl TimingReceiver {
         Ok(())
     }
 }
-
-// #[derive(Debug)]
-// enum ControlSenderCommand {
-//     MissingSeqs { seqs: Range<u16> },
-// }
-
-// // TODO: use this fully
-// #[derive(Debug)]
-// struct ControlSender {
-//     control_server_rx: mpsc::Receiver<ControlSenderCommand>,
-//     socket: Arc<UdpSocket>,
-//     shutdown: Shutdown,
-// }
-
-// impl ControlSender {
-//     #[instrument(skip(self))]
-//     async fn run(&mut self) -> Result<()> {
-//         while !self.shutdown.is_shutdown() {
-//             let maybe_request = tokio::select! {
-//               res = self.control_server_rx.recv() => {
-//                 res
-//               },
-//                 _ = self.shutdown.recv() => {
-//                     return Ok(());
-//                 }
-//             };
-
-//             let request = match maybe_request {
-//                 Some(request) => request,
-//                 None => return Ok(()),
-//             };
-
-//             match request {
-//                 ControlSenderCommand::MissingSeqs { seqs } => {
-//                     let message = [
-//                         [0x80, (0x55 | 0x80)],
-//                         1_u16.to_be_bytes(),
-//                         seqs.start.to_be_bytes(),
-//                         (seqs.end - seqs.start).to_be_bytes(),
-//                     ]
-//                     .concat();
-
-//                     let _ = self.socket.send(&message).await;
-//                 }
-//             }
-//         }
-
-//         Ok(())
-//     }
-// }
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -825,30 +783,25 @@ impl Player {
                     let _ = resp.send(Ok(()));
                 }
                 Command::Setup { payload, resp } => {
-                    let c_sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-                    let t_sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-                    let s_sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+                    let control_sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+                    let timing_sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+                    let server_sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
 
-                    let c_addr = SocketAddr::new(payload.ip, payload.control_port);
-                    let t_addr = SocketAddr::new(payload.ip, payload.timing_port);
+                    let control_addr = SocketAddr::new(payload.ip, payload.control_port);
+                    let timing_addr = SocketAddr::new(payload.ip, payload.timing_port);
 
-                    c_sock.connect(c_addr).await?;
-                    t_sock.connect(t_addr).await?;
+                    control_sock.connect(control_addr).await?;
+                    timing_sock.connect(timing_addr).await?;
 
-                    let c_port = c_sock.local_addr()?.port();
-                    let t_port = t_sock.local_addr()?.port();
-                    let s_port = s_sock.local_addr()?.port();
+                    let control_port = control_sock.local_addr()?.port();
+                    let timing_port = timing_sock.local_addr()?.port();
+                    let s_port = server_sock.local_addr()?.port();
 
                     let (notify_shutdown_sender, _) = broadcast::channel(1);
                     _notify_shutdown = Some(notify_shutdown_sender.clone());
-                    let mut timing_sender = TimingSender {
-                        socket: t_sock.clone(),
-                        player_tx: self.player_tx.clone(),
-                        shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
-                    };
 
-                    let mut timing_receiver = TimingReceiver {
-                        socket: t_sock.clone(),
+                    let mut timing_server = TimingManager {
+                        socket: timing_sock.clone(),
                         player_tx: self.player_tx.clone(),
                         shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
                     };
@@ -864,25 +817,19 @@ impl Player {
                     // control_tx = Some(control_server_tx);
 
                     let mut control_receiver = ControlReceiver {
-                        socket: c_sock.clone(),
+                        socket: control_sock.clone(),
                         player_tx: self.player_tx.clone(),
                         shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
                     };
 
                     let mut server_receiver = ServerReceiver {
-                        socket: s_sock.clone(),
+                        socket: server_sock.clone(),
                         player_tx: self.player_tx.clone(),
                         shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
                     };
 
                     tokio::spawn(async move {
-                        if let Err(err) = timing_sender.run().await {
-                            error!(cause = ?err, "connection error");
-                        }
-                    });
-
-                    tokio::spawn(async move {
-                        if let Err(err) = timing_receiver.run().await {
+                        if let Err(err) = timing_server.run().await {
                             error!(cause = ?err, "connection error");
                         }
                     });
@@ -908,8 +855,8 @@ impl Player {
                     });
 
                     let _ = resp.send(Ok(SetupResponse {
-                        control_port: c_port,
-                        timing_port: t_port,
+                        control_port,
+                        timing_port,
                         server_port: s_port,
                     }));
                 }
@@ -939,7 +886,10 @@ impl Player {
                                     rtp_time as f64 / SAMPLING_RATE as f64,
                                 );
 
-                                let pts = real_rtp_time + gst::ClockTime::from_mseconds(500);
+                                let pts = real_rtp_time
+                                    + gst::ClockTime::from_seconds_f64(
+                                        LATENCY_IN_SAMPLES as f64 / SAMPLING_RATE as f64,
+                                    );
 
                                 let mut buffer = gst::Buffer::with_size(packet.len()).unwrap();
                                 {
@@ -1002,17 +952,25 @@ impl Player {
                     packet,
                     timestamp,
                 } => match (&encryption, &cipher) {
-                    (Some(enc), Some(ci)) => {
+                    (Some(enc), Some(cipher)) => {
+                        fn is_no_data_packet(packet: &[u8]) -> bool {
+                            packet.len() == 16 && packet[12..16] == [0x00, 0x68, 0x34, 0x00]
+                        }
+
+                        let len = packet.len();
+                        if packet.len() <= 12 || is_no_data_packet(&packet) {
+                            continue;
+                        }
+
                         let iv = GenericArray::from_slice(&enc.aesiv);
                         let mut buffer = packet.clone();
                         buffer.extend_from_slice(&[0; 16]);
-                        let len = packet.len();
                         let aeslen = len & !0xf;
 
-                        let be = (16 * (len / 16)) + 16;
-                        let decrypter = Aes128CbcDec::inner_iv_init(ci.clone(), iv);
-                        let mut result = decrypter
-                            .decrypt_padded_vec_mut::<ZeroPadding>(&buffer[..be])
+                        let buffer_end = (16 * (len / 16)) + 16;
+                        let decryptor = Aes128CbcDec::inner_iv_init(cipher.clone(), iv);
+                        let mut result = decryptor
+                            .decrypt_padded_vec_mut::<ZeroPadding>(&buffer[..buffer_end])
                             .unwrap();
 
                         result[aeslen..len].copy_from_slice(&packet[aeslen..len]);
@@ -1327,6 +1285,7 @@ impl Handler {
                     .first()
                     .ok_or_else(|| anyhow::anyhow!("missing media description"))?;
 
+                // fmtp = format parameter
                 let fmtp = media
                     .get_first_attribute_value("fmtp")?
                     .map({
@@ -1396,9 +1355,8 @@ impl Handler {
                 Ok(())
             }
             Method::Record => {
-                // let rtp_header = request.header(&headers::RTP_INFO);
                 let response_builder = Response::builder(Version::V1_0, StatusCode::Ok)
-                    .header(AUDIO_LATENCY.clone(), "22050");
+                    .header(AUDIO_LATENCY.clone(), LATENCY_IN_SAMPLES.to_string());
                 let response = self.add_default_headers(request, response_builder)?.empty();
 
                 {
