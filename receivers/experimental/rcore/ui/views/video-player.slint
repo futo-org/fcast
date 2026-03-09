@@ -3,6 +3,7 @@ import {
     FText,
     ScrollView,
     Button,
+    Slider,
 } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge, UiMediaTrack, GuiPlaybackState, UiMediaTrackType, } from "../globals.slint";
 import {
@@ -583,6 +584,42 @@ export component VideoPlayerView inherits Rectangle {
         height: overlay.img.height * 1px;
 
         source: overlay.img;
+    }
+
+    volume-preview := HorizontalLayout {
+        visible: Bridge.volume-set-at > 0;
+
+        Rectangle {}
+
+        VerticalLayout {
+            padding: 45px;
+            alignment: center;
+            spacing: 15px;
+
+            Slider {
+                maximum: 1.0;
+                minimum: 0.0;
+                value: Bridge.volume;
+                height: parent.height * 40%;
+                orientation: vertical;
+                rail-color: #FFFFFF33;
+                hide-thumb: true;
+            }
+
+            Image {
+                source: Icons.volume-high-detailed;
+                colorize: white;
+            }
+        }
+    }
+
+    Timer {
+        running: Bridge.volume-set-at > 0;
+        interval: 250ms;
+
+        triggered => {
+            Bridge.volume-set-at -= 0.25;
+        }
     }
 
     TouchArea {
