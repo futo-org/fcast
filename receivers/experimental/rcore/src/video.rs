@@ -3,7 +3,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::sync::{
     Arc,
-    atomic::{self, AtomicBool, AtomicU64},
+    atomic::{self, AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use gst::prelude::*;
@@ -193,6 +193,8 @@ pub struct SlintOpenGLSink {
     // gst_gl_context: Option<gst_gl::GLContext>,
     pub is_eos: Arc<AtomicBool>,
     pub window_size: Arc<AtomicU64>,
+    pub window_width: Arc<AtomicU32>,
+    pub window_height: Arc<AtomicU32>,
 }
 
 // #[cfg(target_os = "linux")]
@@ -411,6 +413,8 @@ impl SlintOpenGLSink {
             // gst_gl_context: None,
             is_eos: Arc::new(AtomicBool::new(false)),
             window_size: Arc::new(AtomicU64::new(0)),
+            window_width: Arc::new(AtomicU32::new(0)),
+            window_height: Arc::new(AtomicU32::new(0)),
             // sinkbin: bin,
         })
     }
@@ -717,15 +721,15 @@ impl SlintOpenGLSink {
         let is_eos_ref = Arc::clone(&self.is_eos);
         let next_overlays_ref = Arc::clone(&self.next_overlays);
         let window_size = Arc::clone(&self.window_size);
+        let window_width = Arc::clone(&self.window_width);
+        let window_height = Arc::clone(&self.window_height);
         self.appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .propose_allocation(move |_, allocation| {
                     allocation.add_allocation_meta::<gst_video::VideoMeta>(None);
 
-                    let window_size_packed = window_size.load(std::sync::atomic::Ordering::Relaxed);
-                    let width = (window_size_packed >> 32) as u32;
-                    let height = window_size_packed as u32;
-
+                    let width = window_width.load(Ordering::Relaxed);
+                    let height = window_height.load(Ordering::Relaxed);
                     debug!(
                         width,
                         height, "Setting window width and height for overlay meta"

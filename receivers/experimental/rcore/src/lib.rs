@@ -33,7 +33,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{self, AtomicBool},
+        atomic::{self, AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -2244,9 +2244,13 @@ pub fn run(
                 let new_size = ui.window().size();
                 let new_size = (new_size.width, new_size.height);
                 if new_size != prev_size {
-                    slint_sink.window_size.store(
-                        ((new_size.0 as u64) << 32) + new_size.1 as u64,
-                        std::sync::atomic::Ordering::Relaxed,
+                    slint_sink.window_width.store(
+                        new_size.0,
+                        Ordering::Relaxed,
+                    );
+                    slint_sink.window_height.store(
+                        new_size.1,
+                        Ordering::Relaxed,
                     );
                     prev_size = new_size;
                 }
