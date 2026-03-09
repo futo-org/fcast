@@ -1448,7 +1448,9 @@ impl Application {
                 self.player.volume_changed();
 
                 self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<Bridge>().set_volume(volume as f32);
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_volume(volume as f32);
+                    bridge.set_volume_set_at(1.0);
                 })?;
                 if self.updates_tx.receiver_count() > 0 {
                     let update = VolumeUpdateMessage {
