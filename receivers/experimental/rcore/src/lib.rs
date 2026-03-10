@@ -800,6 +800,9 @@ impl Application {
                 bridge.set_current_video_track(-1);
                 bridge.set_current_audio_track(-1);
                 bridge.set_current_subtitle_track(-1);
+
+                bridge.set_playlist_idx(0);
+                bridge.set_playlist_length(0);
             })?;
         }
 
@@ -1253,6 +1256,9 @@ impl Application {
                     }
 
                     self.current_playlist_item_idx = Some(new_index);
+                    self.ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>().set_playlist_idx(new_index as i32);
+                    })?;
                 }
                 {
                     error!("Cannot set playlist item when no playlist is loaded");
@@ -1884,6 +1890,7 @@ impl Application {
                     Some(idx) => idx as usize,
                     None => 0,
                 };
+                let length = playlist.items.len();
 
                 let Some(start_item) = playlist.items.get(start_idx) else {
                     error!(
@@ -1898,6 +1905,12 @@ impl Application {
 
                 self.current_playlist = Some(playlist);
                 self.current_playlist_item_idx = Some(start_idx);
+
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_playlist_idx(start_idx as i32);
+                    bridge.set_playlist_length(length as i32);
+                })?;
             }
             Event::MediaItemFinish(id) => {
                 if self.current_playlist_item_idx.is_none() || id != self.current_media_item_id {
@@ -2244,14 +2257,10 @@ pub fn run(
                 let new_size = ui.window().size();
                 let new_size = (new_size.width, new_size.height);
                 if new_size != prev_size {
-                    slint_sink.window_width.store(
-                        new_size.0,
-                        Ordering::Relaxed,
-                    );
-                    slint_sink.window_height.store(
-                        new_size.1,
-                        Ordering::Relaxed,
-                    );
+                    slint_sink.window_width.store(new_size.0, Ordering::Relaxed);
+                    slint_sink
+                        .window_height
+                        .store(new_size.1, Ordering::Relaxed);
                     prev_size = new_size;
                 }
 
@@ -2324,12 +2333,13 @@ pub fn run(
                 .connect({
                     let ui_weak = ui_weak.clone();
                     move || {
-                    ui_weak
-                        .upgrade_in_event_loop(move |ui| {
-                            ui.window().request_redraw();
-                        })
-                        .unwrap();
-                }})
+                        ui_weak
+                            .upgrade_in_event_loop(move |ui| {
+                                ui.window().request_redraw();
+                            })
+                            .unwrap();
+                    }
+                })
                 .unwrap();
 
             *slint_sink_mutex.lock() = Some(slint_sink);
@@ -2443,6 +2453,18 @@ pub fn run(
         let event_tx = event_tx.clone();
         move |id: i32, variant: UiMediaTrackType| {
             log_if_err!(event_tx.send(Event::SelectTrack { id, variant }));
+        }
+    });
+
+    bridge.on_select_playlist_item({
+        let event_tx = event_tx.clone();
+        move |idx: i32| {
+            log_if_err!(event_tx.send(Event::Op {
+                session_id: 0,
+                op: Operation::SetPlaylistItem(v3::SetPlaylistItemMessage {
+                    item_index: idx as u64
+                }),
+            }));
         }
     });
 
