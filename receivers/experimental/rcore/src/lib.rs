@@ -2165,6 +2165,7 @@ impl GraphicsContext {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn get_egl_ctx(api: &slint::GraphicsAPI<'_>) -> Result<glutin_egl_sys::egl::Egl> {
         Ok(match api {
             slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
@@ -2190,6 +2191,7 @@ impl GraphicsContext {
         })
     }
 
+    #[allow(unused)]
     fn from_slint(api: &slint::GraphicsAPI<'_>) -> Result<Self> {
         #[cfg(target_os = "linux")]
         match Self::is_on_wayland() {
@@ -2368,7 +2370,7 @@ pub fn run(
                         }
                     }
                     #[cfg(target_os = "windows")]
-                    Wgl => {
+                    GraphicsContext::Wgl => {
                         let platform = gst_gl::GLPlatform::WGL;
                         let gl_api = gst_gl::GLAPI::OPENGL3;
                         let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
@@ -2392,7 +2394,7 @@ pub fn run(
                         }
                     }
                     #[cfg(target_os = "macos")]
-                    Cgl => {
+                    GraphicsContext::Cgl => {
                         debug!("Creating CGL context");
 
                         let platform = gst_gl::GLPlatform::CGL;
@@ -2400,7 +2402,7 @@ pub fn run(
                         let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
 
                         if gl_ctx == 0 {
-                            bail!("Failed to get handle from CGL");
+                            panic!("Failed to get handle from CGL");
                         }
 
                         let gst_display = gst_gl::GLDisplay::new();
@@ -2410,8 +2412,7 @@ pub fn run(
 
                             let wrapped_context = match wrapped_context {
                                 None => {
-                                    // gst::error!(CAT, imp = self, "Failed to create wrapped GL context");
-                                    bail!("");
+                                    panic!("Failed to create wrapped GL context");
                                 }
                                 Some(wrapped_context) => wrapped_context,
                             };
