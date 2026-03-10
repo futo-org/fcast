@@ -1,5 +1,6 @@
 use anyhow::Result;
 use gst::prelude::*;
+use tracing::instrument;
 
 pub enum GraphicsContext {
     None,
@@ -68,6 +69,7 @@ impl GraphicsContext {
         return Ok(Self::Cgl);
     }
 
+    #[instrument(skip_all)]
     pub fn get_gst_contexts(&self) -> Option<(gst_gl::GLContext, gst_gl::GLDisplay)> {
         match &self {
             #[cfg(target_os = "linux")]
@@ -144,8 +146,6 @@ impl GraphicsContext {
             }
             #[cfg(target_os = "macos")]
             GraphicsContext::Cgl => {
-                debug!("Creating CGL context");
-
                 let platform = gst_gl::GLPlatform::CGL;
                 let (gl_api, _, _) = gst_gl::GLContext::current_gl_api(platform);
                 let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
