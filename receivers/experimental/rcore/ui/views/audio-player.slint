@@ -1,7 +1,23 @@
-import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
+import { Icons, FText, Button } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge } from "../globals.slint";
 import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub } from "../common.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+
+component PlaylistControlButton inherits Button {
+    in property <bool> previous: false;
+
+    width: 48px;
+    height: 48px;
+    icon: Icons.playlist-next;
+    icon-rotation: previous ? 180deg : 0deg;
+    colorize-icon: true;
+    icon-size: 15px;
+    background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.1) 6.7%, rgba(20, 20, 20, 0.1) 92.77%);
+
+    clicked => {
+        Bridge.select-playlist-item(Bridge.playlist-idx + (previous ? -1 : 1));
+    }
+}
 
 export component AudioPlayerView inherits Rectangle {
     background: FCastPalette.neutral-1100;
@@ -85,8 +101,25 @@ export component AudioPlayerView inherits Rectangle {
 
         HorizontalLayout {
             alignment: center;
+            spacing: 30px;
+
+            VerticalLayout {
+                visible: Bridge.playlist-idx != 0 && Bridge.playlist-length != 0;
+                alignment: center;
+
+                PlaylistControlButton {
+                    previous: true;
+                }
+            }
 
             MasterButton { }
+
+            VerticalLayout {
+                visible: Bridge.playlist-idx < Bridge.playlist-length - 1;
+                alignment: center;
+
+                PlaylistControlButton { }
+            }
         }
     }
 }
