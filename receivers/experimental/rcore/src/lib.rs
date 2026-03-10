@@ -47,6 +47,7 @@ mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
+mod graphics;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
 #[cfg(all(
@@ -57,13 +58,13 @@ mod mac_win_tray;
 mod raop;
 mod user_agent;
 mod video;
-mod graphics;
 
 use crate::{
     player::PlayerState,
     session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
 
+use graphics::GraphicsContext;
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 #[derive(Debug, thiserror::Error)]
@@ -159,7 +160,6 @@ pub enum Event {
     },
     MediaItemFinish(MediaItemId),
     SelectTrack {
-        // id: usize,
         id: i32,
         variant: UiMediaTrackType,
     },
@@ -423,7 +423,6 @@ impl Application {
         }
 
         let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
-        // let player = player::Player::new(appsink, event_tx.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -2140,76 +2139,6 @@ pub struct CliArgs {
     no_systray: bool,
 }
 
-enum GraphicsContext {
-    None,
-    #[cfg(target_os = "linux")]
-    Egl(glutin_egl_sys::egl::Egl),
-    #[cfg(target_os = "linux")]
-    Glx(glutin_glx_sys::glx::Glx),
-    #[cfg(target_os = "windows")]
-    Wgl,
-    #[cfg(target_os = "macos")]
-    Cgl,
-    Initialized,
-}
-
-impl GraphicsContext {
-    #[cfg(target_os = "linux")]
-    fn is_on_wayland() -> Result<bool> {
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            Ok(true)
-        } else if std::env::var("DISPLAY").is_ok() {
-            Ok(false)
-        } else {
-            anyhow::bail!("Unsupported platform")
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_egl_ctx(api: &slint::GraphicsAPI<'_>) -> Result<glutin_egl_sys::egl::Egl> {
-        Ok(match api {
-            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                glutin_egl_sys::egl::Egl::load_with(|symbol| {
-                    get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                })
-            }
-            _ => anyhow::bail!("Unsupported graphics API"),
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_glx_ctx(
-        api: &slint::GraphicsAPI<'_>,
-    ) -> Result<glutin_glx_sys::glx::Glx> {
-        Ok(match api {
-            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                glutin_glx_sys::glx::Glx::load_with(|symbol| {
-                    get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                })
-            }
-            _ => anyhow::bail!("Unsupported graphics API"),
-        })
-    }
-
-    #[allow(unused)]
-    fn from_slint(api: &slint::GraphicsAPI<'_>) -> Result<Self> {
-        #[cfg(target_os = "linux")]
-        match Self::is_on_wayland() {
-            // NOTE: If error: assume KMS
-            Ok(true) | Err(_) => {
-                return Ok(Self::Egl(Self::get_egl_ctx(api)?));
-            }
-            Ok(false) => return Ok(Self::Glx(Self::get_glx_ctx(api)?)),
-        }
-        #[cfg(target_os = "android")]
-        return Ok(Self::Egl(Self::get_egl_ctx(api)?));
-        #[cfg(target_os = "windows")]
-        return Ok(Self::Wgl);
-        #[cfg(target_os = "macos")]
-        return Ok(Self::Cgl);
-    }
-}
-
 /// Run the main app.
 ///
 /// Slint and friends are assumed to be initialized by the platform specific target.
@@ -2309,8 +2238,6 @@ pub fn run(
                 let ui_weak = ui_weak.clone();
 
                 graphics_context = GraphicsContext::from_slint(graphics_api).unwrap();
-                // if let Some(slint_sink) = slint_sink.as_mut() {
-                // }
 
                 #[cfg(not(target_os = "android"))]
                 if let Some(fullscreen) = start_fullscreen.take() {
@@ -2326,112 +2253,14 @@ pub fn run(
                     return;
                 };
 
-                let res: Option<(gst_gl::GLContext, gst_gl::GLDisplay)> = match &graphics_context {
-                    #[cfg(target_os = "linux")]
-                    GraphicsContext::Egl(egl) => {
-                        let platform = gst_gl::GLPlatform::EGL;
-
-                        unsafe {
-                            let egl_display = egl.GetCurrentDisplay();
-                            let display = gst_gl_egl::GLDisplayEGL::with_egl_display(egl_display as usize).unwrap();
-                            let native_context = egl.GetCurrentContext();
-
-                            Some((
-                                gst_gl::GLContext::new_wrapped(
-                                    &display,
-                                    native_context as _,
-                                    platform,
-                                    gst_gl::GLContext::current_gl_api(platform).0,
-                                )
-                                .ok_or(anyhow::anyhow!("unable to create wrapped GL context")).unwrap(),
-                                display.upcast(),
-                            ))
-                        }
-                    }
-                    #[cfg(target_os = "linux")]
-                    GraphicsContext::Glx(glx) => {
-                        let platform = gst_gl::GLPlatform::GLX;
-
-                        unsafe {
-                            let glx_display = glx.GetCurrentDisplay();
-                            let display = gst_gl_x11::GLDisplayX11::with_display(glx_display as usize).unwrap();
-                            let native_context = glx.GetCurrentContext();
-
-                            Some((
-                                gst_gl::GLContext::new_wrapped(
-                                    &display,
-                                    native_context as _,
-                                    platform,
-                                    gst_gl::GLContext::current_gl_api(platform).0,
-                                )
-                                .ok_or(anyhow::anyhow!("unable to create wrapped GL context")).unwrap(),
-                                display.upcast(),
-                            ))
-                        }
-                    }
-                    #[cfg(target_os = "windows")]
-                    GraphicsContext::Wgl => {
-                        let platform = gst_gl::GLPlatform::WGL;
-                        let gl_api = gst_gl::GLAPI::OPENGL3;
-                        let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
-
-                        if gl_ctx == 0 {
-                            bail!("Failed to create GL context");
-                        }
-
-                        let Some(gst_display) = gst_gl::GLDisplay::with_type(gst_gl::GLDisplayType::WIN32) else {
-                            bail!("Failed to create GLDisplay of type WIN32");
-                        };
-
-                        gst_display.filter_gl_api(gl_api);
-
-                        unsafe {
-                            Some((
-                                gst_gl::GLContext::new_wrapped(&gst_display, gl_ctx, platform, gl_api)
-                                    .ok_or(anyhow::anyhow!("unable to create wrapped GL context")).unwrap(),
-                                gst_display,
-                            ))
-                        }
-                    }
-                    #[cfg(target_os = "macos")]
-                    GraphicsContext::Cgl => {
-                        debug!("Creating CGL context");
-
-                        let platform = gst_gl::GLPlatform::CGL;
-                        let (gl_api, _, _) = gst_gl::GLContext::current_gl_api(platform);
-                        let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
-
-                        if gl_ctx == 0 {
-                            panic!("Failed to get handle from CGL");
-                        }
-
-                        let gst_display = gst_gl::GLDisplay::new();
-                        unsafe {
-                            let wrapped_context =
-                                gst_gl::GLContext::new_wrapped(&gst_display, gl_ctx, platform, gl_api);
-
-                            let wrapped_context = match wrapped_context {
-                                None => {
-                                    panic!("Failed to create wrapped GL context");
-                                }
-                                Some(wrapped_context) => wrapped_context,
-                            };
-
-                            Some((wrapped_context, gst_display))
-                        }
-                    }
-                    _ => None,
-                };
-
-                if let Some((gst_gl_context, gst_gl_display)) = res {
+                if let Some((gst_gl_context, gst_gl_display)) = graphics_context.get_gst_contexts()
+                {
                     gst_gl_context
                         .activate(true)
-                        // .context("could not activate GStreamer GL context")
-                        .unwrap();
+                        .expect("could not activate GStreamer GL context");
                     gst_gl_context
                         .fill_info()
-                        // .context("failed to fill GL info for wrapped context")
-                        .unwrap();
+                        .expect("failed to fill GL info for wrapped context");
 
                     slint_sink.gst_gl_context = Some(gst_gl_context.clone());
 
@@ -2439,19 +2268,6 @@ pub fn run(
                 }
 
                 graphics_context = GraphicsContext::Initialized;
-
-                // slint_sink
-                //     .connect({
-                //         let ui_weak = ui_weak.clone();
-                //         move || {
-                //             ui_weak
-                //                 .upgrade_in_event_loop(move |ui| {
-                //                     ui.window().request_redraw();
-                //                 })
-                //                 .unwrap();
-                //         }
-                //     })
-                //     .unwrap();
 
                 let Some(ui) = ui_weak.upgrade() else {
                     error!("Failed to upgrade ui");
@@ -2471,22 +2287,14 @@ pub fn run(
                 let bridge = ui.global::<Bridge>();
                 if bridge.get_playing() {
                     let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
-                        // match frame {
-                        //     Some(frame) => slint::Image::gst_frame(frame.frame, frame.info),
-                        //     None => {
-                        //         return;
-                        //     }
-                        // }
                         match frame {
-                            Some(frame) => {
-                                unsafe {
-                                    slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                                        frame.tex_id,
-                                        (frame.width, frame.height).into()
-                                    )
-                                    .build()
-                                }
-                            }
+                            Some(frame) => unsafe {
+                                slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
+                                    frame.tex_id,
+                                    (frame.width, frame.height).into(),
+                                )
+                                .build()
+                            },
                             None => return,
                         }
                     } else {

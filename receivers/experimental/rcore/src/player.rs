@@ -3,9 +3,9 @@ use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
 use gst_gl::prelude::*;
 use smallvec::SmallVec;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, debug_span, error, instrument, warn};
-use std::sync::{Arc, Mutex};
 
 struct BoolLock(bool);
 
