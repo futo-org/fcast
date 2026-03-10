@@ -71,6 +71,8 @@ export global Bridge {
     in property <int> current-subtitle-track;
     in property <string> error-message;
     in property <string> warning-message;
+    in property <int> playlist-idx;
+    in property <int> playlist-length;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <bool> playing: false;
@@ -95,6 +97,7 @@ export global Bridge {
     callback change-playback-rate(rate: float);
     callback hide-cursor-hack();
     callback select-track(id: int, variant: UiMediaTrackType);
+    callback select-playlist-item(idx: int);
     pure callback sec-to-string(sec: int) -> string;
 
     public pure function should-show-toast-overlay() -> bool {
