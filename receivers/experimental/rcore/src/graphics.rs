@@ -1,6 +1,8 @@
 use anyhow::Result;
-use gst::prelude::*;
 use tracing::instrument;
+
+#[cfg(target_os = "linux")]
+use gst::prelude::*;
 
 pub enum GraphicsContext {
     None,
