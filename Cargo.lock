@@ -3621,6 +3621,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-gl"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26f98bf53e5a0eb2216c43b7d83da8bcd79670a1e1f83fda8ae15e84a7a55dd1"
+dependencies = [
+ "glib 0.21.5",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-gl-sys",
+ "gstreamer-video",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-gl-egl"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92cfddf07ebfb03b3fbafc41e73e26e7c3baedb4d0b72fc6757f1c30e9902004"
+dependencies = [
+ "glib 0.21.5",
+ "gstreamer",
+ "gstreamer-gl",
+ "gstreamer-gl-egl-sys",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-gl-egl-sys"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "650e7bb5eb5ad08cef20b45f805d474884590fba88da75296dd917a5ee06cb13"
+dependencies = [
+ "glib-sys 0.21.5",
+ "gstreamer-gl-sys",
+ "libc",
+ "system-deps 7.0.7",
+]
+
+[[package]]
+name = "gstreamer-gl-sys"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "091e9ffaeb2a062b5dbf4e86bb6fcac7240f57bd3f8f3d386d7fa337c1d8a4fc"
+dependencies = [
+ "glib-sys 0.21.5",
+ "gobject-sys 0.21.5",
+ "gstreamer-base-sys",
+ "gstreamer-sys",
+ "gstreamer-video-sys",
+ "libc",
+ "system-deps 7.0.7",
+]
+
+[[package]]
+name = "gstreamer-gl-x11"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9645ab71dd251b938b35edccdef57cf40b111a4cdd6539639be8268a17d57a83"
+dependencies = [
+ "glib 0.21.5",
+ "gstreamer",
+ "gstreamer-gl",
+ "gstreamer-gl-x11-sys",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-gl-x11-sys"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd0737643063dcffa283a3f4dfe38d67567eab832dfe32373179b0f168b366d3"
+dependencies = [
+ "glib-sys 0.21.5",
+ "gstreamer-gl-sys",
+ "libc",
+ "system-deps 7.0.7",
+]
+
+[[package]]
 name = "gstreamer-net"
 version = "0.24.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7046,6 +7125,8 @@ dependencies = [
  "fcast-protocol",
  "futures",
  "gethostname",
+ "glutin_egl_sys",
+ "glutin_glx_sys",
  "gst-plugin-reqwest",
  "gst-plugin-rtp",
  "gst-plugin-webrtc",
@@ -7055,6 +7136,9 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
+ "gstreamer-gl",
+ "gstreamer-gl-egl",
+ "gstreamer-gl-x11",
  "gstreamer-tag",
  "gstreamer-video",
  "if-addrs 0.14.0",

@@ -18,7 +18,7 @@ fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-base.workspace = true
-# gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
+gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
 gst-allocators = { package = "gstreamer-allocators", version = "0.24.4" }
 serde_json.workspace = true
 if-addrs = "0.14"
@@ -98,10 +98,10 @@ keepawake = "0.6"
 objc2-app-kit = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
-# gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
-# glutin_egl_sys = { version = "0.7.1" }
-# glutin_glx_sys = { version = "0.6.1" }
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.24.0" }
+glutin_egl_sys = { version = "0.7.1" }
+glutin_glx_sys = { version = "0.6.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
 ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
@@ -110,8 +110,8 @@ ksni = { version = "0.3", default-features = false, features = ["async-io"], opt
 tray-icon = { version = "0.21.3", default-features = false, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-# gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
-# glutin_egl_sys = { version = "0.7.1" }
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.24.0" }
+glutin_egl_sys = { version = "0.7.1" }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }

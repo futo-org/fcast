@@ -1,6 +1,6 @@
 #[cfg(feature = "client")]
 use std::io::Write;
-use std::{io::Read, net::TcpStream};
+use std::{fmt::Display, io::Read, net::TcpStream};
 
 #[derive(Debug)]
 #[repr(u8)]
@@ -19,13 +19,12 @@ impl PipelineSource {
     }
 }
 
-impl ToString for PipelineSource {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for PipelineSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f,  "{}", match self {
             PipelineSource::MainPlayer => "Main player",
             PipelineSource::RaopPlayer => "RAOP player",
-        }
-        .to_string()
+        })
     }
 }
 
@@ -51,15 +50,14 @@ impl Trigger {
     }
 }
 
-impl ToString for Trigger {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for Trigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
             Trigger::Pause => "Pause",
             Trigger::Warning => "Warning",
             Trigger::Error => "Error",
             Trigger::Manual => "Manual",
-        }
-        .to_string()
+        })
     }
 }
 
@@ -92,8 +90,7 @@ pub fn read_graph(mut stream: TcpStream) -> std::io::Result<(Vec<u8>, PipelineSo
     let mut length_buf = [0u8; 4];
     stream.read_exact(&mut length_buf)?;
     let data_len = u32::from_le_bytes(length_buf) as usize;
-    let mut data_buf: Vec<u8> = Vec::with_capacity(data_len);
-    data_buf.resize(data_len, 0);
+    let mut data_buf = vec![0u8; data_len];
     stream.read_exact(&mut data_buf)?;
 
     Ok((data_buf, source, trigger))

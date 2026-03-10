@@ -1,10 +1,9 @@
-// use std::sync::{Arc, Mutex};
-
 use anyhow::{Result, anyhow, bail};
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
-// use gst_gl::prelude::*;
+use gst_gl::prelude::*;
 use smallvec::SmallVec;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, debug_span, error, instrument, warn};
 
@@ -602,7 +601,7 @@ impl Player {
     pub fn new(
         video_sink: gst::Element,
         event_tx: UnboundedSender<crate::Event>,
-        // contexts: Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        contexts: Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
@@ -650,8 +649,8 @@ impl Player {
         let playbin_weak = playbin.downgrade();
         let event_tx_c = event_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            // Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &contexts);
-            Self::handle_messsage(&playbin_weak, &event_tx_c, msg);
+            Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &contexts);
+            // Self::handle_messsage(&playbin_weak, &event_tx_c, msg);
             gst::BusSyncReply::Drop
         });
 
@@ -778,52 +777,52 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         event_tx: &UnboundedSender<crate::Event>,
         msg: &gst::Message,
-        // contexts: &Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        contexts: &Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) {
         use gst::MessageView;
 
         let event = match msg.view() {
-            // MessageView::NeedContext(ctx) => {
-            //     let typ = ctx.context_type();
-            //     debug!(typ, "Need context");
-            //     if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
-            //         let contexts = contexts.lock().unwrap();
-            //         let Some(contexts) = contexts.as_ref() else {
-            //             error!("Missing contexts");
-            //             return;
-            //         };
+            MessageView::NeedContext(ctx) => {
+                let typ = ctx.context_type();
+                debug!(typ, "Need context");
+                if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
+                    let contexts = contexts.lock().unwrap();
+                    let Some(contexts) = contexts.as_ref() else {
+                        error!("Missing contexts");
+                        return;
+                    };
 
-            //         if let Some(element) = msg
-            //             .src()
-            //             .and_then(|source| source.downcast_ref::<gst::Element>())
-            //         {
-            //             let display_ctx = gst::Context::new(typ, true);
-            //             display_ctx.set_gl_display(&contexts.0);
-            //             debug!(display_type = ?contexts.0.handle_type());
-            //             element.set_context(&display_ctx);
-            //         }
-            //     } else if typ == "gst.gl.app_context" {
-            //         let contexts = contexts.lock().unwrap();
-            //         let Some(contexts) = contexts.as_ref() else {
-            //             error!("Missing contexts");
-            //             return;
-            //         };
+                    if let Some(element) = msg
+                        .src()
+                        .and_then(|source| source.downcast_ref::<gst::Element>())
+                    {
+                        let display_ctx = gst::Context::new(typ, true);
+                        display_ctx.set_gl_display(&contexts.0);
+                        debug!(display_type = ?contexts.0.handle_type());
+                        element.set_context(&display_ctx);
+                    }
+                } else if typ == "gst.gl.app_context" {
+                    let contexts = contexts.lock().unwrap();
+                    let Some(contexts) = contexts.as_ref() else {
+                        error!("Missing contexts");
+                        return;
+                    };
 
-            //         if let Some(element) = msg
-            //             .src()
-            //             .and_then(|source| source.downcast_ref::<gst::Element>())
-            //         {
-            //             let mut app_ctx = gst::Context::new(typ, true);
-            //             let app_ctx_mut = app_ctx.get_mut().unwrap();
-            //             let structure = app_ctx_mut.structure_mut();
-            //             debug!(app_context_display_type = ?contexts.1.display().handle_type());
-            //             structure.set("context", &contexts.1);
-            //             element.set_context(&app_ctx);
-            //         }
-            //     }
+                    if let Some(element) = msg
+                        .src()
+                        .and_then(|source| source.downcast_ref::<gst::Element>())
+                    {
+                        let mut app_ctx = gst::Context::new(typ, true);
+                        let app_ctx_mut = app_ctx.get_mut().unwrap();
+                        let structure = app_ctx_mut.structure_mut();
+                        debug!(app_context_display_type = ?contexts.1.display().handle_type());
+                        structure.set("context", &contexts.1);
+                        element.set_context(&app_ctx);
+                    }
+                }
 
-            //     return;
-            // }
+                return;
+            }
             MessageView::Eos(_) => PlayerEvent::EndOfStream,
             MessageView::Error(error) => PlayerEvent::Error(error.error().message().to_string()),
             MessageView::Warning(warning) => {

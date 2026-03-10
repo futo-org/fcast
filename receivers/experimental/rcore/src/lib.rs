@@ -7,6 +7,7 @@ use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
 };
 use gst::prelude::*;
+use gst_gl::prelude::*;
 use image::{ImageDecoder, ImageFormat};
 use parking_lot::Mutex;
 use session::{SessionDriver, SessionId};
@@ -46,6 +47,7 @@ mod fcastwhepsrcbin;
 mod player;
 mod session;
 // mod small_vec_model; // For later
+mod graphics;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
 #[cfg(all(
@@ -62,6 +64,7 @@ use crate::{
     session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
 
+use graphics::GraphicsContext;
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 #[derive(Debug, thiserror::Error)]
@@ -157,7 +160,6 @@ pub enum Event {
     },
     MediaItemFinish(MediaItemId),
     SelectTrack {
-        // id: usize,
         id: i32,
         variant: UiMediaTrackType,
     },
@@ -406,7 +408,7 @@ impl Application {
         ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
-        // contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -420,8 +422,7 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        // let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
-        let player = player::Player::new(appsink, event_tx.clone())?;
+        let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -2194,7 +2195,7 @@ pub fn run(
         );
     }
 
-    // let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
     let (fin_tx, fin_rx) = oneshot::channel::<()>();
@@ -2224,16 +2225,19 @@ pub fn run(
 
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
-        // let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
+        let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
         let mut prev_size = (0, 0);
         let mut slint_sink = None;
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
+        let mut graphics_context = GraphicsContext::None;
         move |state, graphics_api| {
             if let slint::RenderingState::RenderingSetup = state {
                 debug!("Got graphics API: {graphics_api:?}");
                 let ui_weak = ui_weak.clone();
+
+                graphics_context = GraphicsContext::from_slint(graphics_api).unwrap();
 
                 #[cfg(not(target_os = "android"))]
                 if let Some(fullscreen) = start_fullscreen.take() {
@@ -2244,10 +2248,26 @@ pub fn run(
                         .set_fullscreen(fullscreen);
                 }
             } else if let slint::RenderingState::BeforeRendering = state {
-                let Some(slint_sink) = slint_sink.as_ref() else {
+                let Some(slint_sink) = slint_sink.as_mut() else {
                     slint_sink = slint_sink_mutex.lock().take();
                     return;
                 };
+
+                if let Some((gst_gl_context, gst_gl_display)) = graphics_context.get_gst_contexts()
+                {
+                    gst_gl_context
+                        .activate(true)
+                        .expect("could not activate GStreamer GL context");
+                    gst_gl_context
+                        .fill_info()
+                        .expect("failed to fill GL info for wrapped context");
+
+                    slint_sink.gst_gl_context = Some(gst_gl_context.clone());
+
+                    *gst_gl_contexts.lock().unwrap() = Some((gst_gl_display, gst_gl_context));
+                }
+
+                graphics_context = GraphicsContext::Initialized;
 
                 let Some(ui) = ui_weak.upgrade() else {
                     error!("Failed to upgrade ui");
@@ -2268,10 +2288,14 @@ pub fn run(
                 if bridge.get_playing() {
                     let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
                         match frame {
-                            Some(frame) => slint::Image::gst_frame(frame.frame, frame.info),
-                            None => {
-                                return;
-                            }
+                            Some(frame) => unsafe {
+                                slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
+                                    frame.tex_id,
+                                    (frame.width, frame.height).into(),
+                                )
+                                .build()
+                            },
+                            None => return,
                         }
                     } else {
                         slint::Image::default()
@@ -2358,7 +2382,7 @@ pub fn run(
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
-                // gst_gl_contexts,
+                gst_gl_contexts,
             )
             .await
             .unwrap()
