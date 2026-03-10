@@ -4,6 +4,7 @@ use tracing::instrument;
 #[cfg(target_os = "linux")]
 use gst::prelude::*;
 
+#[allow(clippy::large_enum_variant)]
 pub enum GraphicsContext {
     None,
     #[cfg(target_os = "linux")]
@@ -58,10 +59,8 @@ impl GraphicsContext {
         #[cfg(target_os = "linux")]
         match Self::is_on_wayland() {
             // NOTE: If error: assume KMS
-            Ok(true) | Err(_) => {
-                return Ok(Self::Egl(Self::get_egl_ctx(api)?));
-            }
-            Ok(false) => return Ok(Self::Glx(Self::get_glx_ctx(api)?)),
+            Ok(true) | Err(_) => Ok(Self::Egl(Self::get_egl_ctx(api)?)),
+            Ok(false) => Ok(Self::Glx(Self::get_glx_ctx(api)?)),
         }
         #[cfg(target_os = "android")]
         return Ok(Self::Egl(Self::get_egl_ctx(api)?));

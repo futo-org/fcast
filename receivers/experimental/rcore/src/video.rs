@@ -302,8 +302,8 @@ impl SlintOpenGLSink {
             }
         }
 
-        Some(self.current_frame.lock().take().and_then(|(_info, frame)| {
-            Some(Frame {
+        Some(self.current_frame.lock().take().map(|(_info, frame)| {
+            Frame {
                 tex_id: frame
                     .texture_id(0)
                     .ok()
@@ -311,7 +311,7 @@ impl SlintOpenGLSink {
                     .unwrap(),
                 width: frame.width(),
                 height: frame.height(),
-            })
+            }
         }))
     }
 
