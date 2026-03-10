@@ -115,7 +115,7 @@ export component AudioPlayerView inherits Rectangle {
             MasterButton { }
 
             VerticalLayout {
-                visible: Bridge.playlist-idx < Bridge.playlist-length;
+                visible: Bridge.playlist-idx < Bridge.playlist-length - 1;
                 alignment: center;
 
                 PlaylistControlButton { }

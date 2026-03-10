@@ -801,8 +801,10 @@ impl Application {
                 bridge.set_current_audio_track(-1);
                 bridge.set_current_subtitle_track(-1);
 
-                bridge.set_playlist_idx(0);
-                bridge.set_playlist_length(0);
+                if preserve_playlist == PreservePlaylist::No {
+                    bridge.set_playlist_idx(0);
+                    bridge.set_playlist_length(0);
+                }
             })?;
         }
 
@@ -1019,15 +1021,13 @@ impl Application {
         let container = media_item.container.as_str();
         let player_variant = if container.starts_with("image/") {
             UiPlayerVariant::Image
-        } else if container.starts_with("audio/") {
-            UiPlayerVariant::Audio
-        } else if container.starts_with("video/")
+        } else if container.starts_with("audio/")
+            // Video streams are audio only until proven otherwise
+            || container.starts_with("video/")
             || container == "application/x-whep"
             || container == "application/dash+xml"
             || container == "application/vnd.apple.mpegurl"
-            || container == "audio/mpegurl"
         {
-            // Video streams are audio only until proven otherwise
             UiPlayerVariant::Audio
         } else {
             UiPlayerVariant::Unknown
