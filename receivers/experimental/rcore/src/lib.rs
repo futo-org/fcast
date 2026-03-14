@@ -46,6 +46,7 @@ pub use tracing;
 mod fcastwhepsrcbin;
 mod player;
 mod session;
+mod fcasttextoverlay;
 mod graphics;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
@@ -437,6 +438,7 @@ impl Application {
 
                 let name = elem.factory()?.name();
                 // TODO: should check for http clients and include headers
+                debug!(%name, "element setup");
                 match name.as_str() {
                     "rtspsrc" => elem.set_property("latency", 25u32),
                     "webrtcbin" => elem.set_property("latency", 25u32),
@@ -481,6 +483,9 @@ impl Application {
                                 user_agent::random_browser_user_agent(None),
                             );
                         }
+                    }
+                    "textoverlay" => {
+                        elem.set_property("shaded-background", true);
                     }
                     _ => (),
                 }
@@ -2371,6 +2376,7 @@ pub fn run(
             *slint_sink_mutex.lock() = Some(slint_sink);
 
             fcastwhepsrcbin::plugin_init().unwrap();
+            fcasttextoverlay::plugin_init().unwrap();
             gstreqwest::plugin_register_static().unwrap();
             gstwebrtchttp::plugin_register_static().unwrap();
             gstrswebrtc::plugin_register_static().unwrap();
