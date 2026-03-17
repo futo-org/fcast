@@ -268,7 +268,7 @@ dependencies = [
  "futures-core",
  "gstreamer 0.25.1",
  "gstreamer-app",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "jni 0.21.1",
  "lazy_static",
  "log",
@@ -1007,6 +1007,26 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags 2.11.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.2",
+ "shlex",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
@@ -1565,8 +1585,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91fcde4ca1211b5a94b573083c472ee19e86b19a441913f66e1cc5c41daf0255"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1575,8 +1594,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5387f5bbc9e9e6c96436ea125afa12614cebf8ac67f49abc08c1e7a891466c90"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2139,7 +2157,7 @@ dependencies = [
  "gst-plugin-rtp",
  "gstreamer 0.25.1",
  "gstreamer-app",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "image",
  "mcore",
  "mimalloc",
@@ -2640,6 +2658,16 @@ dependencies = [
  "ttf-parser 0.25.1",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "fhs-receiver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bindgen 0.71.1",
+ "rcore",
+ "tikv-jemallocator",
 ]
 
 [[package]]
@@ -3536,8 +3564,8 @@ dependencies = [
  "dav1d",
  "gst-plugin-version-helper",
  "gstreamer 0.25.1",
- "gstreamer-base",
- "gstreamer-video",
+ "gstreamer-base 0.25.0",
+ "gstreamer-video 0.25.0",
  "num_cpus",
 ]
 
@@ -3549,7 +3577,7 @@ dependencies = [
  "futures",
  "gst-plugin-version-helper",
  "gstreamer 0.25.1",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "headers",
  "mime",
  "reqwest 0.13.2",
@@ -3575,10 +3603,10 @@ dependencies = [
  "gst-plugin-version-helper",
  "gstreamer 0.25.1",
  "gstreamer-audio",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "gstreamer-net",
  "gstreamer-rtp",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "hex",
  "log",
  "rand 0.10.0",
@@ -3620,13 +3648,13 @@ dependencies = [
  "gstreamer 0.25.1",
  "gstreamer-app",
  "gstreamer-audio",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "gstreamer-net",
  "gstreamer-pbutils",
  "gstreamer-rtp",
  "gstreamer-sdp",
  "gstreamer-utils",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "gstreamer-webrtc",
  "http",
  "human_bytes",
@@ -3793,7 +3821,7 @@ dependencies = [
  "glib 0.22.3",
  "gstreamer 0.25.1",
  "gstreamer-app-sys",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "libc",
 ]
 
@@ -3804,7 +3832,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a74a8211e5d7df2f45b612c284ddf56b92bdf4e879e8ed72e7c46dd0842e158"
 dependencies = [
  "glib-sys 0.22.3",
- "gstreamer-base-sys",
+ "gstreamer-base-sys 0.25.0",
  "gstreamer-sys 0.25.0",
  "libc",
  "system-deps 7.0.8",
@@ -3820,7 +3848,7 @@ dependencies = [
  "glib 0.22.3",
  "gstreamer 0.25.1",
  "gstreamer-audio-sys",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "libc",
  "serde",
  "smallvec",
@@ -3834,10 +3862,24 @@ checksum = "b5111bd07d0e22cc66ec9b4b4ef5408beefb148af19944fbe4602983a043f34c"
 dependencies = [
  "glib-sys 0.22.3",
  "gobject-sys 0.22.0",
- "gstreamer-base-sys",
+ "gstreamer-base-sys 0.25.0",
  "gstreamer-sys 0.25.0",
  "libc",
  "system-deps 7.0.8",
+]
+
+[[package]]
+name = "gstreamer-base"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9375f9a12120a8ee17b765c816c9b23861ce258def77b0ee40a05acb00c74972"
+dependencies = [
+ "atomic_refcell",
+ "cfg-if",
+ "glib 0.21.5",
+ "gstreamer 0.24.5",
+ "gstreamer-base-sys 0.24.5",
+ "libc",
 ]
 
 [[package]]
@@ -3850,8 +3892,21 @@ dependencies = [
  "cfg-if",
  "glib 0.22.3",
  "gstreamer 0.25.1",
- "gstreamer-base-sys",
+ "gstreamer-base-sys 0.25.0",
  "libc",
+]
+
+[[package]]
+name = "gstreamer-base-sys"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b844f3559b6ab0379b4b771261643783ae4e0ffa71d5f5f46e33b7acf66b752"
+dependencies = [
+ "glib-sys 0.21.5",
+ "gobject-sys 0.21.5",
+ "gstreamer-sys 0.24.5",
+ "libc",
+ "system-deps 7.0.8",
 ]
 
 [[package]]
@@ -3875,9 +3930,9 @@ checksum = "94f83397da547ce27d7b912980ecb21c99c6aedee4015765355fe66cdf0bd9b9"
 dependencies = [
  "glib 0.22.3",
  "gstreamer 0.25.1",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "gstreamer-gl-sys",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "libc",
 ]
 
@@ -3914,9 +3969,9 @@ checksum = "9c57ba9f4e0f2d852d480049b9eae4f69f0abe450eece4d96494da0b4857b04e"
 dependencies = [
  "glib-sys 0.22.3",
  "gobject-sys 0.22.0",
- "gstreamer-base-sys",
+ "gstreamer-base-sys 0.25.0",
  "gstreamer-sys 0.25.0",
- "gstreamer-video-sys",
+ "gstreamer-video-sys 0.25.0",
  "libc",
  "system-deps 7.0.8",
 ]
@@ -3981,7 +4036,7 @@ dependencies = [
  "gstreamer 0.25.1",
  "gstreamer-audio",
  "gstreamer-pbutils-sys",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "libc",
  "thiserror 2.0.18",
 ]
@@ -3996,7 +4051,7 @@ dependencies = [
  "gobject-sys 0.22.0",
  "gstreamer-audio-sys",
  "gstreamer-sys 0.25.0",
- "gstreamer-video-sys",
+ "gstreamer-video-sys 0.25.0",
  "libc",
  "system-deps 7.0.8",
 ]
@@ -4020,7 +4075,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adf8df32469d863ce4375a978233a40efec206c5256bf0c14ee42bb745d8a793"
 dependencies = [
  "glib-sys 0.22.3",
- "gstreamer-base-sys",
+ "gstreamer-base-sys 0.25.0",
  "gstreamer-sys 0.25.0",
  "libc",
  "system-deps 7.0.8",
@@ -4108,7 +4163,23 @@ checksum = "7e81a18c2f314d567e11e4187ca60c6feb116fe85f23553e92a6d8f38c205998"
 dependencies = [
  "gstreamer 0.25.1",
  "gstreamer-app",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-video"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72d9ba5295b206563a990a087c6541d57f650dcd4be4ca8a5a149a758e8df8a0"
+dependencies = [
+ "cfg-if",
+ "futures-channel",
+ "glib 0.21.5",
+ "gstreamer 0.24.5",
+ "gstreamer-base 0.24.5",
+ "gstreamer-video-sys 0.24.5",
+ "libc",
  "thiserror 2.0.18",
 ]
 
@@ -4122,11 +4193,25 @@ dependencies = [
  "futures-channel",
  "glib 0.22.3",
  "gstreamer 0.25.1",
- "gstreamer-base",
- "gstreamer-video-sys",
+ "gstreamer-base 0.25.0",
+ "gstreamer-video-sys 0.25.0",
  "libc",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-video-sys"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20236fa412d7a50e59aa234b46828a99e3e5f06c4f80d271a49ecd2a1d3bfcbe"
+dependencies = [
+ "glib-sys 0.21.5",
+ "gobject-sys 0.21.5",
+ "gstreamer-base-sys 0.24.5",
+ "gstreamer-sys 0.24.5",
+ "libc",
+ "system-deps 7.0.8",
 ]
 
 [[package]]
@@ -4137,7 +4222,7 @@ checksum = "458f82631a5063057c10583a57ba0fbce689e67122cfdb5eddbeaa43eb812e75"
 dependencies = [
  "glib-sys 0.22.3",
  "gobject-sys 0.22.0",
- "gstreamer-base-sys",
+ "gstreamer-base-sys 0.25.0",
  "gstreamer-sys 0.25.0",
  "libc",
  "system-deps 7.0.8",
@@ -4511,8 +4596,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e96c2ccc34adf9194dade4093f1a191a241d33d8da06765c15cf67e0d28bbcc9"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -4527,8 +4611,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b8827952ecfbbf76c8cb5bc3388ca9124c34f2b4fe5dffcfe57800d2a484885"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "bytemuck",
  "calloop 0.14.4",
@@ -4551,8 +4634,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-qt"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9d5db3221f453439ec5ad9b6ac3bb8d2b4825b2f8734f0cde4b67d7336c3da"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset",
  "cpp",
@@ -4570,8 +4652,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5a7e591a7257096e1f3da1bbb9ad6a140c307d0eee74f008a0b412fdb20dec"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "cfg-if",
  "i-slint-backend-android-activity",
@@ -4587,8 +4668,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbf4789191740f939c9563b8850379122d7b5c1ceb09f9297b50ad53e408787"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4633,8 +4713,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7659797fd28d4df3ed275ff95bf730bdf4a88d253f07e1ee8d0032d70138c3a"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "fontique",
  "ttf-parser 0.25.1",
@@ -4643,8 +4722,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a6f358d0d5389869d67cd6ab6f5acf98fe31827264a696593e9687213cff682"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -4672,8 +4750,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a95591ff85f8e2ff11c8d26ea8429768c2b77866e0c7e7fd49348f23ad108b5c"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "auto_enums",
  "bitflags 2.11.0",
@@ -4683,6 +4760,7 @@ dependencies = [
  "const-field-offset",
  "derive_more",
  "euclid",
+ "gstreamer-video 0.24.5",
  "htmlparser",
  "i-slint-common",
  "i-slint-core-macros",
@@ -4720,8 +4798,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc5f2f71682787dd5c6299555c0de635009eb269bbc54d6198e0d225b69fae4"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "quote",
  "serde_json",
@@ -4731,8 +4808,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb6eccda447999bc6222988500b841b64c953988986af182334e7ba9a30f0edd"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -4754,8 +4830,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a64546232c0370f291e65fc92a4f4fc777ea78d5f48467873cb968b1de52e9ab"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -4764,6 +4839,7 @@ dependencies = [
  "derive_more",
  "glow 0.16.0",
  "glutin",
+ "gstreamer-video 0.24.5",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
@@ -4790,8 +4866,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a59be6c34935c4f8e41aa67a63518d5c59219c8eeb1d07af420bed8334fa31d7"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "bytemuck",
  "clru",
@@ -5958,7 +6033,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-pbutils",
  "gstreamer-sdp",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "gstreamer-webrtc",
  "http-body-util",
  "hyper",
@@ -7841,12 +7916,12 @@ dependencies = [
  "gstreamer-allocators",
  "gstreamer-app",
  "gstreamer-audio",
- "gstreamer-base",
+ "gstreamer-base 0.25.0",
  "gstreamer-gl",
  "gstreamer-gl-egl",
  "gstreamer-gl-x11",
  "gstreamer-tag",
- "gstreamer-video",
+ "gstreamer-video 0.25.0",
  "hayro-jpeg2000",
  "if-addrs 0.14.0",
  "image",
@@ -8823,7 +8898,7 @@ version = "0.90.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f6f96e00735f14a781aac8a6870c862b8cc831df6d8e4ad77ab78e11411b9af"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
  "flate2",
  "heck 0.5.0",
@@ -8874,8 +8949,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d25b87d458205e79efb30545cae083aec2ccb1b192c46a55ae6d54403cdacb33"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
@@ -8897,8 +8971,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "064ef470cc8ab046319db94d0727f080fbd05322d07d774eb6de607d97defb8d"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "derive_more",
  "fontique",
@@ -8910,8 +8983,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ecc09bbc42c780d5b7ed7d41f7573dfd67343e11cdac27c07b88a8f933958e6"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -9445,6 +9517,26 @@ dependencies = [
  "quick-error",
  "weezl",
  "zune-jpeg",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
@@ -10362,8 +10454,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "753be81c38dff787d177b5939af1fa16f72f0d0d21a6b7d74ae56e29cd26f2a6"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -10374,8 +10465,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cfcf6171aa2b0f85718ca5888ca32f6edf61d1849f8e4b3786ad890e5b68f68"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=f976d8c7958bddbba14a9f4632b8d3302cea96f6#f976d8c7958bddbba14a9f4632b8d3302cea96f6"
 dependencies = [
  "proc-macro2",
  "quote",
