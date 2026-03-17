@@ -1,0 +1,39 @@
+[package]
+name = "fhs-receiver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rcore = { path = "../rcore", features = ["desktop"] }
+# env_logger.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+bindgen = "0.71.0"
+
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dependencies]
+tikv-jemallocator = "0.6"
+
+[features]
+default = ["systray"]
+systray = ["rcore/systray"]
+kms-backend = ["rcore/kms-backend"]
+tracy = ["rcore/tracy"]
+
+[package.metadata.generate-rpm]
+name = "fcast-receiver"
+summary = "FCast Receiver for displaying multimedia content"
+license = "GPL-3.0"
+url = "https://fcast.org/"
+assets = [
+    { source = "target/release/fhs-receiver", dest = "/usr/bin/fcast-receiver", mode = "755" },
+    { source = ".flatpak/org.fcast.Receiver.desktop", dest = "/usr/share/applications/org.fcast.Receiver.fhs", mode = "644" },
+    { source = ".flatpak/org.fcast.Receiver.metainfo.xml", dest = "/usr/share/metainfo/org.fcast.Receiver.metainfo.xml", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+gstreamer1 = "*"
+gstreamer1-plugins-base = "*"
+gstreamer1-plugins-good = "*"
+gstreamer1-plugins-bad-free = "*"
+gstreamer1-libav = "*"

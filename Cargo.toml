@@ -15,6 +15,7 @@ members = [
     "receivers/experimental/rcore",
     "receivers/experimental/desktop",
     "receivers/experimental/android",
+    "receivers/experimental/fhs",
     "tools/remote-pipeline-dbg",
     "crates/app-updater",
     "sdk/common/google-cast-protocol",
