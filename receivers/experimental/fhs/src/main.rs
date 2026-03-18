@@ -11,6 +11,7 @@ use std::{
     num::NonZeroU32,
     ptr::null,
     rc::{Rc, Weak},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -168,16 +169,43 @@ impl slint::platform::WindowAdapter for FiatLuxWindowAdapter {
     }
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
+struct LoopProxy {
+    sender: mpsc::Sender<Job>,
+}
+
+impl slint::platform::EventLoopProxy for LoopProxy {
+    fn quit_event_loop(&self) -> Result<(), rcore::slint::EventLoopError> {
+        // TODO:
+        return Ok(());
+    }
+
+    fn invoke_from_event_loop(
+        &self,
+        event: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), rcore::slint::EventLoopError> {
+        self.sender
+            .send(event)
+            .map_err(|_| rcore::slint::EventLoopError::EventLoopTerminated)
+    }
+}
+
 struct FiatLuxPlatform {
     window: Rc<FiatLuxWindowAdapter>,
     timer: Instant,
+    sender: mpsc::Sender<Job>,
+    receiver: mpsc::Receiver<Job>,
 }
 
 impl FiatLuxPlatform {
     pub fn new() -> Result<Self> {
+        let (sender, receiver) = mpsc::channel::<Job>();
         Ok(Self {
             window: FiatLuxWindowAdapter::new()?,
             timer: Instant::now(),
+            sender: sender,
+            receiver: receiver,
         })
     }
 }
@@ -186,7 +214,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
     fn create_window_adapter(
         &self,
     ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
-        println!("create window adapter!");
         Ok(self.window.clone())
     }
 
@@ -203,22 +230,32 @@ impl slint::platform::Platform for FiatLuxPlatform {
         loop {
             slint::platform::update_timers_and_animations();
 
+            while let Ok(job) = self.receiver.try_recv() {
+                job();
+            }
+
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
             });
+
+            if !self.window.window.has_active_animations() {
+                std::thread::sleep(
+                    slint::platform::duration_until_next_timer_update()
+                        .unwrap_or_else(|| Duration::new(0, 0)),
+                );
+            }
         }
+    }
+
+    fn new_event_loop_proxy(&self) -> Option<Box<dyn slint::platform::EventLoopProxy>> {
+        Some(Box::new(LoopProxy {
+            sender: self.sender.clone(),
+        }))
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let args = rcore::CliArgs::parse();
-
-    slint::platform::set_platform(Box::new(FiatLuxPlatform::new()?)).unwrap();
-    // if std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent) {
-    //     rcore::slint::BackendSelector::new()
-    //         .require_opengl()
-    //         .select()?;
-    // }
-
+    slint::platform::set_platform(Box::new(FiatLuxPlatform::new()?))?;
     rcore::run(args)
 }
