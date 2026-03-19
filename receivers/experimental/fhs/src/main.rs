@@ -70,6 +70,7 @@ struct FiatLuxWindowAdapter {
     size: Cell<slint::PhysicalSize>,
     client: fiatlux::Client,
     fl_window: fiatlux::Window,
+    render_buffer: UnsafeCell<fiatlux::fl_RenderBuffer>,
 }
 
 impl FiatLuxWindowAdapter {
@@ -111,6 +112,7 @@ impl FiatLuxWindowAdapter {
             size: Default::default(),
             client: client,
             fl_window: fl_window,
+            render_buffer: UnsafeCell::new(render_buffer),
         }))
     }
 
@@ -125,18 +127,6 @@ impl FiatLuxWindowAdapter {
             false
         }
     }
-
-    // pub async fn draw_async_if_needed(
-    //     &self,
-    //     render_callback: impl AsyncFnOnce(&femtovg_renderer::FemtoVGRenderer),
-    // ) -> bool {
-    //     if self.needs_redraw.replace(false) {
-    //         render_callback(&self.renderer).await;
-    //         true
-    //     } else {
-    //         false
-    //     }
-    // }
 
     pub fn set_size(&self, size: impl Into<slint::WindowSize>) {
         self.window.set_size(size);
@@ -169,10 +159,18 @@ impl slint::platform::WindowAdapter for FiatLuxWindowAdapter {
     }
 }
 
+impl Drop for FiatLuxWindowAdapter {
+    fn drop(&mut self) {
+        unsafe {
+            fiatlux::fl_egl_destroy_window_framebuffer(self.render_buffer.get());
+        }
+    }
+}
+
 type Job = Box<dyn FnOnce() + Send>;
 
 struct LoopProxy {
-    sender: mpsc::Sender<Job>,
+    job_sender: mpsc::Sender<Job>,
 }
 
 impl slint::platform::EventLoopProxy for LoopProxy {
@@ -185,7 +183,7 @@ impl slint::platform::EventLoopProxy for LoopProxy {
         &self,
         event: Box<dyn FnOnce() + Send>,
     ) -> Result<(), rcore::slint::EventLoopError> {
-        self.sender
+        self.job_sender
             .send(event)
             .map_err(|_| rcore::slint::EventLoopError::EventLoopTerminated)
     }
@@ -194,18 +192,18 @@ impl slint::platform::EventLoopProxy for LoopProxy {
 struct FiatLuxPlatform {
     window: Rc<FiatLuxWindowAdapter>,
     timer: Instant,
-    sender: mpsc::Sender<Job>,
-    receiver: mpsc::Receiver<Job>,
+    job_sender: mpsc::Sender<Job>,
+    job_receiver: mpsc::Receiver<Job>,
 }
 
 impl FiatLuxPlatform {
     pub fn new() -> Result<Self> {
-        let (sender, receiver) = mpsc::channel::<Job>();
+        let (job_sender, job_receiver) = mpsc::channel::<Job>();
         Ok(Self {
             window: FiatLuxWindowAdapter::new()?,
             timer: Instant::now(),
-            sender: sender,
-            receiver: receiver,
+            job_sender: job_sender,
+            job_receiver: job_receiver,
         })
     }
 }
@@ -230,13 +228,38 @@ impl slint::platform::Platform for FiatLuxPlatform {
         loop {
             slint::platform::update_timers_and_animations();
 
-            while let Ok(job) = self.receiver.try_recv() {
+            while let Ok(job) = self.job_receiver.try_recv() {
                 job();
+            }
+
+            loop {
+                unsafe {
+                    let mut poll_event_res = fiatlux::fl_poll_event_result_fl_poll_event_success;
+                    let event = match fiatlux::fl_poll_events(
+                        self.window.client.client,
+                        0.0,
+                        &mut poll_event_res,
+                    )
+                    .as_mut()
+                    {
+                        Some(e) => e,
+                        None => break,
+                    };
+
+                    fiatlux::fl_free_event(event);
+                }
             }
 
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
             });
+
+            unsafe {
+                fiatlux::fl_egl_window_framebuffer_present_framebuffer_wait_for_vsync(
+                    self.window.render_buffer.get(),
+                    3.0,
+                );
+            }
 
             if !self.window.window.has_active_animations() {
                 std::thread::sleep(
@@ -249,7 +272,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn slint::platform::EventLoopProxy>> {
         Some(Box::new(LoopProxy {
-            sender: self.sender.clone(),
+            job_sender: self.job_sender.clone(),
         }))
     }
 }
