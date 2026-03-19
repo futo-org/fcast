@@ -72,6 +72,7 @@ nav = [
   {"Protocol" = [
     "protocol/index.md",
     "protocol/v4-draft.md",
+    "protocol/v4.md",
     "protocol/v3.md",
     "protocol/v2.md",
     "protocol/v1.md"

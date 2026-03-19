@@ -25,7 +25,7 @@ The sender can also serve as the media source itself, proxying streams or local 
 
 The protocol is organized into the following areas, each covered in detail in the version specification:
 
-- **Discovery**: Finding receivers on the local network via mDNS or QR code
+- **Connecting**: Finding receivers on the local network via mDNS, connecting via QR codes and direct IP
 - **Session Management**: Establishing connections, connection liveness, and error signaling
 - **Playback Control**: Play, pause, seek, volume, speed, and more
 - **Queue Management**: Media item playlists and modification
