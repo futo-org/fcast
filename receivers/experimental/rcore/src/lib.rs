@@ -2329,6 +2329,17 @@ pub fn run(
                         bridge.set_overlays(slint::ModelRc::default());
                     }
                 }
+
+                let subtitles = slint_sink.fetch_next_subtitles();
+                if let Some(subtitles) = subtitles {
+                    let subtitles: Option<VecModel<slint::SharedString>> = subtitles
+                        .map(|subs| subs.into_iter().map(|s| s.to_shared_string()).collect());
+                    if let Some(subs) = subtitles {
+                        bridge.set_subtitles(Rc::new(subs).into());
+                    }
+                } else {
+                    bridge.set_subtitles(slint::ModelRc::default());
+                }
             }
         }
     })?;

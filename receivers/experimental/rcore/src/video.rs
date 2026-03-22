@@ -14,13 +14,17 @@ use gst::prelude::*;
 use gst_video::prelude::*;
 use tracing::{debug, error};
 
+use crate::fcasttextoverlay::meta_imp::TextFormat;
+
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
+pub type Subtitles = Arc<Mutex<Option<Option<SmallVec<[String; 3]>>>>>;
 
 pub struct SlintOpenGLSink {
     appsink: gst_app::AppSink,
     sinkbin: gst::Element,
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     next_overlays: Overlays,
+    next_subtitles: Subtitles,
     current_frame: Mutex<
         Option<(
             gst_video::VideoInfo,
@@ -57,6 +61,10 @@ impl SlintOpenGLSink {
                     gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
                     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
                 ]),
+                gst::CapsFeatures::new([
+                    gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+                    crate::fcasttextoverlay::CAPS_FEATURE_FCAST_TEXT_OVERLAY,
+                ]),
             ] {
                 let these_caps = gst_video::VideoCapsBuilder::new()
                     .features(features.iter())
@@ -86,6 +94,7 @@ impl SlintOpenGLSink {
             next_frame: Default::default(),
             current_frame: Default::default(),
             next_overlays: Default::default(),
+            next_subtitles: Default::default(),
             gst_gl_context: None,
             is_eos: Arc::new(AtomicBool::new(false)),
             window_width: Arc::new(AtomicU32::new(0)),
@@ -102,6 +111,7 @@ impl SlintOpenGLSink {
         sample: gst::Sample,
         next_frame_ref: &Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
         next_overlays_ref: &Overlays,
+        next_subtitles_ref: &Subtitles,
         next_frame_available_notifier: &Arc<F>,
         is_eos: &Arc<AtomicBool>,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
@@ -157,6 +167,7 @@ impl SlintOpenGLSink {
 
                         let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
 
+                        tracing::debug!(overlay_format = ?vmeta.format());
                         if vmeta.format() != gst_video::VideoFormat::Bgra {
                             return None;
                         }
@@ -194,6 +205,17 @@ impl SlintOpenGLSink {
             *next_overlays_ref.lock() = None;
         }
 
+        if let Some(meta) = buffer.meta::<crate::fcasttextoverlay::FCastVideoTextOverlayMeta>() {
+            let (format, text) = meta.get();
+            match format {
+                TextFormat::Utf8 => (),
+                TextFormat::PangoMarkup => (), // TODO: parse
+            }
+            *next_subtitles_ref.lock() = Some(Some(smallvec::smallvec![text.to_owned(),]));
+        } else {
+            *next_subtitles_ref.lock() = None;
+        }
+
         *next_frame_ref.lock() = Some((info, buffer));
 
         next_frame_available_notifier();
@@ -211,6 +233,7 @@ impl SlintOpenGLSink {
         let next_frame_available_notifier = Arc::new(next_frame_available_notifier);
         let is_eos_ref = Arc::clone(&self.is_eos);
         let next_overlays_ref = Arc::clone(&self.next_overlays);
+        let next_subtitles_ref = Arc::clone(&self.next_subtitles);
         let window_width = Arc::clone(&self.window_width);
         let window_height = Arc::clone(&self.window_height);
         self.appsink.set_callbacks(
@@ -245,6 +268,7 @@ impl SlintOpenGLSink {
                 .new_preroll({
                     let next_frame_ref = Arc::clone(&next_frame_ref);
                     let next_overlays_ref = Arc::clone(&self.next_overlays);
+                    let next_subtitles_ref = Arc::clone(&self.next_subtitles);
                     let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
                     let is_eos = Arc::clone(&is_eos_ref);
                     move |appsink| {
@@ -256,6 +280,7 @@ impl SlintOpenGLSink {
                                 sample,
                                 &next_frame_ref,
                                 &next_overlays_ref,
+                                &next_subtitles_ref,
                                 &next_frame_available_notifier,
                                 &is_eos,
                             )
@@ -274,6 +299,7 @@ impl SlintOpenGLSink {
                             sample,
                             &next_frame_ref,
                             &next_overlays_ref,
+                            &next_subtitles_ref,
                             &next_frame_available_notifier,
                             &is_eos,
                         )
@@ -324,5 +350,13 @@ impl SlintOpenGLSink {
             .lock()
             .as_mut()
             .map(|overlays| overlays.take())
+    }
+
+    pub fn fetch_next_subtitles(&self) -> Option<Option<SmallVec<[String; 3]>>> {
+        if self.is_eos.load(atomic::Ordering::Relaxed) {
+            return None;
+        }
+
+        self.next_subtitles.lock().as_mut().map(|subs| subs.take())
     }
 }
