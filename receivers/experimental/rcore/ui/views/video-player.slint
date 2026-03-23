@@ -607,8 +607,19 @@ export component VideoPlayerView inherits Rectangle {
             }
 
             Image {
-                source: Icons.volume-high-detailed;
                 colorize: white;
+
+                states [
+                    high when Bridge.volume > 50%: {
+                        source: Icons.volume-high;
+                    }
+                    muted when Bridge.volume == 0%: {
+                        source: Icons.volume-muted;
+                    }
+                    low when Bridge.volume < 50%: {
+                        source: Icons.volume-low;
+                    }
+                ]
             }
         }
     }
