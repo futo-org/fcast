@@ -468,7 +468,10 @@ mod imp {
                 match self.wait_for_text_buf(&buffer, start, end) {
                     WaitForTextResult::Have(text_buf) => {
                         if let Some(text_buf) = text_buf {
-                            let buffer_mut = buffer.get_mut().unwrap();
+                            let Some(buffer_mut) = buffer.get_mut() else {
+                                gst::debug!(CAT, imp = self, "received invalid video frame buffer");
+                                break;
+                            };
 
                             let text_read = text_buf.map_readable().unwrap();
                             let format = if self.state.lock().have_pango_markup {
