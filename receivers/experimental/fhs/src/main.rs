@@ -250,6 +250,12 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             }
 
+            if self.window.needs_redraw.get() {
+                unsafe {
+                    fiatlux::fl_inhibit_idle(self.window.client.client);
+                }
+            }
+
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
             });
