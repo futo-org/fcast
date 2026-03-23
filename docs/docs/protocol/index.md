@@ -35,38 +35,47 @@ The protocol is organized into the following areas, each covered in detail in th
 
 ### [Version 4](v4.md)
 
-Summary: TODO
+Backwards compatible update that simplifies the message structure while adding new capabilities. Uses the same port and header format as v2/v3 with version negotiation fallback.
 
-temp changes
-
-- protocol overhaul simplification (compatibility broken, using new port)
-- removed event system (replicated at sdk level)
-- changed packet structure format
-- replaced playlist with queue
-- other enhancements (device capabilities, metadata improvements)
+- Unified `SetPlayback` replaces Pause, Resume, Stop, Seek, SetVolume, SetSpeed, SetPlaylistItem
+- Unified `StateUpdate` replaces PlaybackUpdate, VolumeUpdate, PlayUpdate
+- Generic bidirectional `Error` message replaces PlaybackError
+- Bidirectional `Queue` message with multi-sender synchronization
+- Queue pagination for large playlists
+- Queue-level defaults for headers, volume, speed, show duration
+- Device capabilities negotiation (media, display, playback)
+- Typed metadata categories (Generic, Video, Music)
+- External subtitle support on media items and during playback
+- Track selection (video, audio, subtitle) with track reporting
+- New playback states: Buffering, Ended
+- Repeat and shuffle modes
+- Removed event subscription system (replicated at SDK level)
 
 ??? note "Changelog"
 
-    **Breaking Changes**
+    **New Opcodes**
 
-    - TODO
+    - 20: `Play`
+    - 21: `SetPlayback`
+    - 22: `StateUpdate`
+    - 23: `Queue`
+    - 24: `Error`
 
-    **New Features**
+    **Extended Messages**
 
-    - TODO
+    - `InitialReceiverMessage`: Added `capabilities` field
 
-    **Message Changes**
+    **Deprecated Opcodes (not used in v4 sessions)**
 
-    - TODO
+    - 0-5: None, Play, Pause, Resume, Stop, Seek
+    - 7-10: VolumeUpdate, SetVolume, PlaybackError, SetSpeed
+    - 15-19: PlayUpdate, SetPlaylistItem, SubscribeEvent, UnsubscribeEvent, EventMessage
 
-### Previous Versions (Deprecated)
-
-!!! warning
-    Versions 1-3 are deprecated. Support may be removed in later releases. New implementations should target Version 4.
+### Previous Versions
 
 - [Version 3](v3.md)
 - [Version 2](v2.md)
-- [Version 1](v1.md)
+- [Version 1](v1.md) (deprecated)
 
 ??? note "Changelog"
 
