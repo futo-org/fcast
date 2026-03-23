@@ -511,7 +511,6 @@ mod imp {
             self.src_pad.push(buffer)
         }
 
-        // TODO: try to just proxy the src pad peer caps
         fn video_sink_query(
             &self,
             pad: &gst::Pad,
@@ -519,49 +518,15 @@ mod imp {
             query: &mut gst::QueryRef,
         ) -> bool {
             if let gst::QueryViewMut::Caps(q) = query.view_mut() {
-                let overlay_filter = if let Some(filter) = q.filter() {
-                    let sw_caps = gst_video::VideoCapsBuilder::new()
-                        .features([gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION])
-                        .build();
-
-                    Some(sw_caps.intersect(filter))
+                let peer_caps = pad.peer_query_caps(None);
+                let result_caps = if peer_caps.is_any() {
+                    pad.pad_template_caps()
                 } else {
-                    None
+                    peer_caps
                 };
-                let peer_caps = pad.peer_query_caps(overlay_filter.as_ref());
-                let result_caps;
-                if peer_caps.is_any() {
-                    result_caps = Some(pad.pad_template_caps());
-                } else {
-                    let sw_caps = gst_video::VideoCapsBuilder::new().any_features().build();
-                    let mut new_caps = gst::Caps::new_empty();
-                    let new_caps_mut = new_caps.get_mut().unwrap();
-                    for (idx, caps) in sw_caps.iter().enumerate() {
-                        let Some(features) = sw_caps.features(idx) else {
-                            continue;
-                        };
-                        let simple_caps = gst::Caps::builder_full()
-                            .structure_with_features(caps.to_owned(), features.to_owned())
-                            .build();
-                        let filtered_caps;
-                        filtered_caps = simple_caps.to_owned();
-
-                        new_caps_mut.append(filtered_caps);
-                    }
-
-                    // TODO: find a way to not manually having to add this
-                    new_caps_mut.append(
-                        gst_video::VideoCapsBuilder::new()
-                            .features(["memory:DMABuf"])
-                            .format(gst_video::VideoFormat::DmaDrm)
-                            .build(),
-                    );
-
-                    result_caps = Some(new_caps);
-                }
 
                 gst::debug!(CAT, obj = pad, "returning {result_caps:?}");
-                q.set_result(&result_caps);
+                q.set_result(&Some(result_caps));
 
                 true
             } else {
