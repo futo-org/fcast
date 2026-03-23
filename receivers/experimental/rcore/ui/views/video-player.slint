@@ -3,7 +3,6 @@ import {
     FText,
     ScrollView,
     Button,
-    Slider,
 } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge, UiMediaTrack, GuiPlaybackState, UiMediaTrackType, } from "../globals.slint";
 import {
@@ -11,6 +10,7 @@ import {
     ProgressLabels,
     MasterButton,
     ScrubbyMcScrub,
+    VolumePreview,
 } from "../common.slint";
 import {
     FCastPalette,
@@ -586,51 +586,9 @@ export component VideoPlayerView inherits Rectangle {
         source: overlay.img;
     }
 
-    volume-preview := HorizontalLayout {
-        visible: Bridge.volume-set-at > 0;
-
-        Rectangle {}
-
-        VerticalLayout {
-            padding: 45px;
-            alignment: center;
-            spacing: 15px;
-
-            Slider {
-                maximum: 1.0;
-                minimum: 0.0;
-                value: Bridge.volume;
-                height: parent.height * 40%;
-                orientation: vertical;
-                rail-color: #FFFFFF33;
-                hide-thumb: true;
-            }
-
-            Image {
-                colorize: white;
-
-                states [
-                    high when Bridge.volume > 50%: {
-                        source: Icons.volume-high;
-                    }
-                    muted when Bridge.volume == 0%: {
-                        source: Icons.volume-muted;
-                    }
-                    low when Bridge.volume < 50%: {
-                        source: Icons.volume-low;
-                    }
-                ]
-            }
-        }
-    }
-
-    Timer {
-        running: Bridge.volume-set-at > 0;
-        interval: 250ms;
-
-        triggered => {
-            Bridge.volume-set-at -= 0.25;
-        }
+    VolumePreview {
+        width: 100%;
+        height: 100%;
     }
 
     TouchArea {
