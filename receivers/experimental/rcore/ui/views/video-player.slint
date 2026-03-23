@@ -10,6 +10,7 @@ import {
     ProgressLabels,
     MasterButton,
     ScrubbyMcScrub,
+    VolumePreview,
 } from "../common.slint";
 import {
     FCastPalette,
@@ -583,6 +584,11 @@ export component VideoPlayerView inherits Rectangle {
         height: overlay.img.height * 1px;
 
         source: overlay.img;
+    }
+
+    VolumePreview {
+        width: 100%;
+        height: 100%;
     }
 
     TouchArea {
