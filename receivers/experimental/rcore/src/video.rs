@@ -167,7 +167,6 @@ impl SlintOpenGLSink {
 
                         let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
 
-                        tracing::debug!(overlay_format = ?vmeta.format());
                         if vmeta.format() != gst_video::VideoFormat::Bgra {
                             return None;
                         }
