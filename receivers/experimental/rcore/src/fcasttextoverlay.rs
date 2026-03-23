@@ -430,7 +430,8 @@ mod imp {
             let (Some(clip_start), Some(clip_end)) =
                 (generic_to_time(clip_start), generic_to_time(clip_end))
             else {
-                todo!();
+                gst::error!(CAT, imp = self, "clip_start or clip_end are not in clock format");
+                return Err(gst::FlowError::Error);
             };
 
             if clip_start != start || end.map(|end| clip_end != end).unwrap_or(false) {

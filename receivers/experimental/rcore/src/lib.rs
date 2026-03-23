@@ -482,9 +482,6 @@ impl Application {
                             );
                         }
                     }
-                    "textoverlay" => {
-                        elem.set_property("shaded-background", true);
-                    }
                     _ => (),
                 }
 
