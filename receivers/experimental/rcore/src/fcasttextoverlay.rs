@@ -186,6 +186,7 @@ mod imp {
         text_buffer_running_time_end: Option<gst::ClockTime>,
         text_linked: bool,
         have_pango_markup: bool,
+        info: Option<gst_video::VideoInfo>,
     }
 
     enum WaitForTextResult {
@@ -246,6 +247,13 @@ mod imp {
 
                     gst::debug!(CAT, imp = self, "Using caps {:?}", overlay_caps);
 
+                    match gst_video::VideoInfo::from_caps(&overlay_caps) {
+                        Ok(info) => state.info = Some(info),
+                        Err(err) => {
+                            gst::warning!(CAT, imp = self, "caps have no video info {err:?}")
+                        }
+                    }
+
                     return true;
                 }
                 EventView::Segment(seg) => {
@@ -253,7 +261,11 @@ mod imp {
                     if seg.format() == gst::Format::Time {
                         state.segment = seg.clone();
                     } else {
-                        // TODO: log
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "received non-time newsegment event on video input"
+                        );
                     }
                 }
                 EventView::Eos(_) => {
@@ -385,7 +397,7 @@ mod imp {
             mut buffer: gst::Buffer,
         ) -> Result<gst::FlowSuccess, gst::FlowError> {
             let start = buffer.pts();
-            let end = match (start, buffer.duration()) {
+            let mut end = match (start, buffer.duration()) {
                 (Some(start), Some(duration)) => Some(start + duration),
                 _ => gst::ClockTime::NONE,
             };
@@ -435,7 +447,16 @@ mod imp {
             }
 
             if end.is_none() {
-                // TODO
+                if let Some(info) = state.info.as_ref() {
+                    end = Some(
+                        start
+                            + gst::ClockTime::from_seconds_f64(
+                                info.fps().numer() as f64 / info.fps().denom() as f64,
+                            ),
+                    );
+                } else {
+                    end = Some(start + gst::ClockTime::from_seconds(1));
+                }
             }
 
             let _ = self.obj().sync_values(start);
@@ -455,9 +476,16 @@ mod imp {
                                 super::meta_imp::TextFormat::Utf8
                             };
 
-                            let text = str::from_utf8(text_read.as_slice()).unwrap().to_owned();
-
-                            FCastVideoTextOverlayMeta::add(buffer_mut, format, text);
+                            match str::from_utf8(text_read.as_slice()) {
+                                Ok(text) => FCastVideoTextOverlayMeta::add(
+                                    buffer_mut,
+                                    format,
+                                    text.to_owned(),
+                                ),
+                                Err(err) => {
+                                    gst::warning!(CAT, imp = self, "Invalid text input: {err}")
+                                }
+                            }
                         }
                         break;
                     }
@@ -499,20 +527,7 @@ mod imp {
                 } else {
                     None
                 };
-
-                tracing::debug!(?overlay_filter);
                 let peer_caps = pad.peer_query_caps(overlay_filter.as_ref());
-                if let Some(peer) = pad.peer() {
-                    gst::debug!(
-                        CAT,
-                        obj = pad,
-                        "peer_name {} peer_parent_name {}",
-                        peer.name(),
-                        peer.parent().unwrap().name()
-                    );
-                }
-                gst::debug!(CAT, obj = pad, "peer caps {peer_caps:?}");
-
                 let result_caps;
                 if peer_caps.is_any() {
                     result_caps = Some(pad.pad_template_caps());
@@ -583,7 +598,11 @@ mod imp {
                     if seg.format() == gst::Format::Time {
                         state.text_segment = seg.clone();
                     } else {
-                        // TODO: log
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "received non-time newsegment event on text input"
+                        );
                     }
 
                     self.state_cvar.notify_all();
@@ -645,18 +664,17 @@ mod imp {
             }
 
             let Some(text_start) = buffer.pts() else {
-                // TODO: log
+                gst::warning!(CAT, imp = self, "buffer is missing timestamp");
                 return Ok(gst::FlowSuccess::Ok);
             };
 
             let Some(stop) = buffer.duration().map(|duration| text_start + duration) else {
-                // TODO: log
+                gst::warning!(CAT, imp = self, "buffer is missing duration");
                 return Ok(gst::FlowSuccess::Ok);
             };
 
             if let Some((clip_start, clip_end)) = state.text_segment.clip(text_start, stop) {
                 let buffer_mut = buffer.make_mut();
-                // TODO: log errors
                 match clip_start {
                     gst::GenericFormattedValue::Time(clip_start) => {
                         buffer_mut.set_pts(clip_start);
@@ -707,14 +725,6 @@ mod imp {
                     state.text_buffer_running_time_end =
                         generic_to_time(state.text_segment.to_running_time(text_end));
                 }
-
-                gst::debug!(
-                    CAT,
-                    imp = self,
-                    "start: {:?} end: {:?}",
-                    state.text_buffer_running_time,
-                    state.text_buffer_running_time_end
-                );
 
                 state.text_buffer = Some(buffer);
 
