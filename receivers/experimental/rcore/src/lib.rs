@@ -437,8 +437,6 @@ impl Application {
                 };
 
                 let name = elem.factory()?.name();
-                // TODO: should check for http clients and include headers
-                debug!(%name, "element setup");
                 match name.as_str() {
                     "rtspsrc" => elem.set_property("latency", 25u32),
                     "webrtcbin" => elem.set_property("latency", 25u32),

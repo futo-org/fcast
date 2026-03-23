@@ -207,11 +207,18 @@ impl SlintOpenGLSink {
 
         if let Some(meta) = buffer.meta::<crate::fcasttextoverlay::FCastVideoTextOverlayMeta>() {
             let (format, text) = meta.get();
-            match format {
-                TextFormat::Utf8 => (),
-                TextFormat::PangoMarkup => (), // TODO: parse
+
+            fn split_subs(subs: &str) -> Option<Option<SmallVec<[String; 3]>>> {
+                Some(Some(subs.lines().map(String::from).collect()))
             }
-            *next_subtitles_ref.lock() = Some(Some(smallvec::smallvec![text.to_owned(),]));
+
+            match format {
+                TextFormat::Utf8 => *next_subtitles_ref.lock() = split_subs(&text),
+                TextFormat::PangoMarkup => match pango::parse_markup(&text, '\0') {
+                    Ok((_, text, _)) => *next_subtitles_ref.lock() = split_subs(&text),
+                    Err(err) => error!(?err, "Failed to parse subtitles as pango markup"),
+                },
+            }
         } else {
             *next_subtitles_ref.lock() = None;
         }
