@@ -473,7 +473,10 @@ mod imp {
                                 break;
                             };
 
-                            let text_read = text_buf.map_readable().unwrap();
+                            let Ok(text_read) = text_buf.map_readable() else {
+                                gst::warning!(CAT, imp = self, "text buffer is invalid");
+                                break;
+                            };
                             let format = if self.state.lock().have_pango_markup {
                                 super::meta_imp::TextFormat::PangoMarkup
                             } else {
