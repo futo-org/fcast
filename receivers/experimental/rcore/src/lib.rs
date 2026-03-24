@@ -61,6 +61,7 @@ mod user_agent;
 mod video;
 
 use crate::{
+    gui::{GuiController, ToastType},
     player::PlayerState,
     session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
@@ -403,10 +404,12 @@ struct Application {
     is_loading_media: bool,
     active_raop_session: bool,
     raop_server: Option<RaopServer>,
+    gui: GuiController,
 }
 
 impl Application {
     pub async fn new(
+        gui: GuiController,
         appsink: gst::Element,
         event_tx: EventSender,
         ui_weak: slint::Weak<MainWindow>,
@@ -610,6 +613,7 @@ impl Application {
             is_loading_media: false,
             active_raop_session: false,
             raop_server: None,
+            gui,
         })
     }
 
@@ -690,9 +694,6 @@ impl Application {
             }
         };
         let duration = duration.seconds_f64();
-        let progress_str = sec_to_string(position);
-        let duration_str = sec_to_string(duration);
-        let progress_percent = (position / duration) as f32;
         let is_live = self.player.is_live();
         let playback_state = {
             match self.player.player_state() {
@@ -701,20 +702,13 @@ impl Application {
                 PlayerState::Paused => GuiPlaybackState::Paused,
             }
         };
-
         let playback_rate = self.player.rate();
-        self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let bridge = ui.global::<Bridge>();
-            bridge.set_progress_label(progress_str.into());
-            bridge.set_duration_label(duration_str.into());
-            if !bridge.get_is_scrubbing_position() {
-                bridge.set_playback_position(progress_percent);
-            }
-            bridge.set_playback_state(playback_state);
-            bridge.set_is_live(is_live);
-            bridge.set_playback_rate(playback_rate as f32);
-            bridge.set_duration_seconds(duration as i32);
-        })?;
+
+        self.gui.set_playback_state(playback_state);
+        self.gui.set_is_live(is_live);
+        self.gui.set_playback_rate(playback_rate as f32);
+        self.gui
+            .update_playback_progress(position as f32, duration as f32);
 
         if self.updates_tx.receiver_count() > 0
             && (self.last_sent_update.elapsed() >= SENDER_UPDATE_INTERVAL || force)
@@ -743,14 +737,6 @@ impl Application {
         }
 
         Ok(())
-    }
-
-    fn clear_image_state(bridge: &Bridge) {
-        bridge.set_video_frame(slint::Image::default());
-        bridge.set_image_preview(CompoundImage::default());
-        bridge.set_audio_track_cover(CompoundImage::default());
-        bridge.set_blured_audio_track_cover(CompoundImage::default());
-        bridge.set_overlays(slint::ModelRc::default());
     }
 
     fn cleanup_playback_data(
@@ -782,34 +768,24 @@ impl Application {
         self.current_image_download_id += 1;
 
         if continue_to_play == ContinueToPlay::No {
+            // TODO:
             self.ui_weak.upgrade_in_event_loop(move |ui| {
                 let bridge = ui.global::<Bridge>();
-                Self::clear_image_state(&bridge);
-
                 bridge.set_playing(false);
-                bridge.set_playback_position(0.0);
-                bridge.set_label("".to_shared_string());
-                bridge.set_progress_label("".to_shared_string());
-                bridge.set_duration_label("".to_shared_string());
-                bridge.set_duration_seconds(0);
-                bridge.set_app_state(AppState::Idle);
-                bridge.set_playback_state(GuiPlaybackState::Idle);
                 bridge.set_media_title("".to_shared_string());
                 bridge.set_artist_name("".to_shared_string());
-
-                bridge.set_video_tracks(slint::ModelRc::default());
-                bridge.set_audio_tracks(slint::ModelRc::default());
-                bridge.set_subtitle_tracks(slint::ModelRc::default());
-
-                bridge.set_current_video_track(-1);
-                bridge.set_current_audio_track(-1);
-                bridge.set_current_subtitle_track(-1);
-
-                if preserve_playlist == PreservePlaylist::No {
-                    bridge.set_playlist_idx(0);
-                    bridge.set_playlist_length(0);
-                }
             })?;
+
+            self.gui.clear_images();
+            self.gui.update_playback_progress(0.0, 0.0);
+            self.gui.set_app_state(AppState::Idle);
+            self.gui.set_playback_state(GuiPlaybackState::Idle);
+            self.gui.clear_tracks();
+            self.gui.set_track_ids(-1, -1, -1);
+
+            if preserve_playlist == PreservePlaylist::No {
+                self.gui.update_playlist(0, 0);
+            }
         }
 
         Ok(())
@@ -949,11 +925,7 @@ impl Application {
                 )));
         }
 
-        self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let bridge = ui.global::<Bridge>();
-            bridge.set_error_message(message.to_shared_string());
-            bridge.set_is_showing_error_message(true);
-        })?;
+        self.gui.show_toast(ToastType::Error, message);
 
         Ok(())
     }
@@ -966,11 +938,7 @@ impl Application {
 
         warn!(msg = message, "Media warning");
 
-        self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let bridge = ui.global::<Bridge>();
-            bridge.set_warning_message(message.to_shared_string());
-            bridge.set_is_showing_warning_message(true);
-        })?;
+        self.gui.show_toast(ToastType::Warning, message);
 
         Ok(())
     }
@@ -1054,7 +1022,7 @@ impl Application {
             ..
         }) = media_item.metadata.as_ref()
         {
-            media_title = title.as_ref().map(|title| title.to_shared_string());
+            media_title = title.as_ref().map(|title| title.clone());
             self.have_audio_track_cover = true;
             let event_tx = self.event_tx.clone();
             self.current_image_download_id += 1;
@@ -1084,7 +1052,6 @@ impl Application {
                 let _ = event_tx.send(Event::ImageDownloadResult { id, res });
             });
         } else {
-            // self.player.set_uri(Some(&url));
             self.player.set_uri(&url);
             if let Some(volume) = media_item.volume {
                 self.on_uri_loaded_command_queue
@@ -1101,16 +1068,13 @@ impl Application {
 
         self.have_media_title = media_title.is_some();
 
-        self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let bridge = ui.global::<Bridge>();
-            bridge.set_player_variant(player_variant);
-            if !is_image {
-                bridge.set_app_state(AppState::LoadingMedia);
-            }
-            if let Some(title) = media_title {
-                bridge.set_media_title(title);
-            }
-        })?;
+        self.gui.set_player_type(player_variant);
+        if !is_image {
+            self.gui.set_app_state(AppState::LoadingMedia);
+        }
+        if let Some(title) = media_title {
+            self.gui.set_media_title(title);
+        }
 
         self.video_sink_is_eos
             .store(true, atomic::Ordering::Relaxed);
@@ -1186,10 +1150,7 @@ impl Application {
 
         debug!("Video stream available");
 
-        self.ui_weak.upgrade_in_event_loop(move |ui| {
-            let bridge = ui.global::<Bridge>();
-            bridge.set_player_variant(UiPlayerVariant::Video);
-        })?;
+        self.gui.set_player_type(UiPlayerVariant::Video);
 
         Ok(())
     }
@@ -1209,9 +1170,7 @@ impl Application {
             Operation::Stop => {
                 if self.is_playing() {
                     self.player.stop();
-                    self.ui_weak.upgrade_in_event_loop(|ui| {
-                        ui.global::<Bridge>().set_app_state(AppState::Idle);
-                    })?;
+                    self.gui.set_app_state(AppState::Idle);
                     self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No)?;
                 }
                 // TODO: notify update? or wait for async state change from player
@@ -1260,9 +1219,7 @@ impl Application {
                     }
 
                     self.current_playlist_item_idx = Some(new_index);
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.global::<Bridge>().set_playlist_idx(new_index as i32);
-                    })?;
+                    self.gui.set_playlist_index(new_index as i32);
                 }
                 {
                     error!("Cannot set playlist item when no playlist is loaded");
@@ -1271,11 +1228,7 @@ impl Application {
             Operation::SetVolume(msg) => {
                 let volume = msg.volume;
                 self.player.set_volume(volume);
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_volume(volume as f32);
-                    bridge.set_volume_set_at(1.0);
-                })?;
+                self.gui.set_volume(volume as f32);
             }
         }
 
@@ -1285,11 +1238,8 @@ impl Application {
     fn handle_mdns_event(&mut self, event: MdnsEvent) -> Result<()> {
         match event {
             MdnsEvent::NameSet(device_name) => {
-                let device_name_shared = device_name.to_shared_string();
-                self.device_name = Some(device_name);
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<Bridge>().set_device_name(device_name_shared);
-                })?;
+                self.device_name = Some(device_name.clone());
+                self.gui.set_local_device_name(device_name);
             }
             MdnsEvent::IpAdded(addr) => {
                 let _ = self.current_addresses.insert(addr);
@@ -1350,8 +1300,7 @@ impl Application {
             //     .to_str(&qrcode);
 
             let dims = qrcode.size as u32;
-            let mut pixbuf: slint::SharedPixelBuffer<slint::Rgb8Pixel> =
-                slint::SharedPixelBuffer::new(dims, dims);
+            let mut pixbuf: gui::QrCodeImage = slint::SharedPixelBuffer::new(dims, dims);
             let pixbuf_pixels = pixbuf.make_mut_slice();
             for (idx, module) in qrcode.data[0..pixbuf_pixels.len()].iter().enumerate() {
                 if *module == fast_qr::Module::LIGHT {
@@ -1361,15 +1310,7 @@ impl Application {
                 }
             }
 
-            self.ui_weak.upgrade_in_event_loop(move |ui| {
-                let bridge = ui.global::<Bridge>();
-                bridge.set_qr_code(slint::Image::from_rgb8(pixbuf));
-                bridge.set_local_ip_addrs(ips_string.to_shared_string());
-
-                // if let Ok(qr) = slint::Image::load_from_svg_data(qr_svg.as_bytes()) {
-                //     ui.global::<Bridge>().set_qr_code(qr);
-                // }
-            })?;
+            self.gui.set_connection_details(pixbuf, ips_string);
         }
 
         Ok(())
@@ -1433,21 +1374,23 @@ impl Application {
                     self.pending_thumbnail = Some(this_id);
                 }
 
-                if !self.have_media_title
+                let title = if !self.have_media_title
                     && let Some(title) = tags.get::<gst::tags::Title>()
                 {
-                    let title = title.get().to_shared_string();
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.global::<Bridge>().set_media_title(title);
-                    })?;
                     self.have_media_title = true;
-                }
+                    Some(title.get().to_owned())
+                } else {
+                    None
+                };
 
-                if let Some(artist) = tags.get::<gst::tags::Artist>() {
-                    let artist = artist.get().to_shared_string();
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.global::<Bridge>().set_artist_name(artist);
-                    })?;
+                let artist = if let Some(artist) = tags.get::<gst::tags::Artist>() {
+                    Some(artist.get().to_owned())
+                } else {
+                    None
+                };
+
+                if title.is_some() || artist.is_some() {
+                    self.gui.update_audio_metadata(title, artist);
                 }
             }
             player::PlayerEvent::VolumeChanged(volume) => {
@@ -1471,11 +1414,8 @@ impl Application {
                 self.player.handle_stream_collection(collection);
                 // self.media_loaded_successfully();
 
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.invoke_playback_started();
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_app_state(AppState::Playing);
-                })?;
+                self.gui.playback_started();
+                self.gui.set_app_state(AppState::Playing);
 
                 // self.current_duration = info.duration();
                 // if info.number_of_video_streams() > 0 {
@@ -1501,16 +1441,11 @@ impl Application {
                         .collect::<Vec<UiMediaTrack>>()
                 }
 
-                let video_tracks = trackify(&self.player.video_streams);
-                let audio_tracks = trackify(&self.player.audio_streams);
-                let subtitle_tracks = trackify(&self.player.subtitle_streams);
-
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_video_tracks(Rc::new(VecModel::from(video_tracks)).into());
-                    bridge.set_audio_tracks(Rc::new(VecModel::from(audio_tracks)).into());
-                    bridge.set_subtitle_tracks(Rc::new(VecModel::from(subtitle_tracks)).into());
-                })?;
+                self.gui.set_tracks(
+                    trackify(&self.player.video_streams),
+                    trackify(&self.player.audio_streams),
+                    trackify(&self.player.subtitle_streams),
+                );
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -1524,7 +1459,6 @@ impl Application {
                 }
             }
             player::PlayerEvent::IsLive => {
-                // self.player.is_live = true;
                 self.player.set_is_live(true);
             }
             player::PlayerEvent::StateChanged {
@@ -1563,14 +1497,7 @@ impl Application {
                     audio.as_deref(),
                     subtitle.as_deref(),
                 );
-
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_current_video_track(video_sid);
-                    bridge.set_current_audio_track(audio_sid);
-                    bridge.set_current_subtitle_track(subtitle_sid);
-                })?;
-
+                self.gui.set_track_ids(video_sid, audio_sid, subtitle_sid);
                 if video.is_some() {
                     self.video_stream_available()?;
                 }
@@ -1605,18 +1532,7 @@ impl Application {
 
         match event {
             TrayEvent::Quit => return Ok(true),
-            TrayEvent::Toggle => {
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    let window = ui.window();
-                    if let Err(err) = if window.is_visible() {
-                        window.hide()
-                    } else {
-                        window.show()
-                    } {
-                        error!(?err, "Failed to toggle window visibility");
-                    }
-                })?;
-            }
+            TrayEvent::Toggle => self.gui.toggle_window(),
         }
 
         Ok(false)
@@ -1665,27 +1581,15 @@ impl Application {
                 debug!("Session started");
                 self.active_raop_session = true;
 
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_app_state(AppState::Playing);
-                    bridge.set_player_variant(UiPlayerVariant::Raop);
-                })?;
+                self.gui.set_app_state(AppState::Playing);
+                self.gui.set_player_type(UiPlayerVariant::Raop);
             }
             RaopEvent::SenderDisconnected => {
                 debug!("Session ended");
                 self.active_raop_session = false;
-                // TODO: Can we use clear playback state func?
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_app_state(AppState::Idle);
-                    bridge.set_player_variant(UiPlayerVariant::Unknown);
-                    bridge.set_audio_track_cover(CompoundImage::default());
-                    bridge.set_blured_audio_track_cover(CompoundImage::default());
-
-                    bridge.set_progress_label(slint::SharedString::default());
-                    bridge.set_duration_label(slint::SharedString::default());
-                    bridge.set_playback_position(0.0);
-                })?;
+                self.gui.set_app_state(AppState::Idle);
+                self.gui.set_player_type(UiPlayerVariant::Unknown);
+                self.gui.clear_common_playback_state();
             }
             RaopEvent::CoverArtSet(data) => {
                 self.current_thumbnail_id += 1;
@@ -1700,43 +1604,16 @@ impl Application {
                 ))?;
                 self.pending_thumbnail = Some(this_id);
             }
-            RaopEvent::CoverArtRemoved => {
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_audio_track_cover(CompoundImage::default());
-                    bridge.set_blured_audio_track_cover(CompoundImage::default());
-                })?;
-            }
-            RaopEvent::MetadataSet(mut metadata) => {
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    if let Some(title) = metadata.title.take() {
-                        bridge.set_media_title(title.to_shared_string());
-                    } else {
-                        bridge.set_media_title(slint::SharedString::default());
-                    }
-                    if let Some(artist) = metadata.artist.take() {
-                        bridge.set_artist_name(artist.to_shared_string());
-                    } else {
-                        bridge.set_artist_name(slint::SharedString::default());
-                    }
-                })?;
-            }
+            RaopEvent::CoverArtRemoved => self.gui.clear_audio_covers(),
+            RaopEvent::MetadataSet(metadata) => self
+                .gui
+                .update_audio_metadata(metadata.title, metadata.artist),
             RaopEvent::ProgressUpdate {
                 position_sec,
                 duration_sec,
-            } => {
-                let progress_str = sec_to_string(position_sec as f64);
-                let duration_str = sec_to_string(duration_sec as f64);
-                let progress_percent = position_sec as f32 / duration_sec as f32;
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_progress_label(progress_str.into());
-                    bridge.set_duration_label(duration_str.into());
-                    bridge.set_playback_position(progress_percent);
-                    // bridge.set_duration_seconds(duration as i32);
-                })?;
-            }
+            } => self
+                .gui
+                .update_playback_progress(position_sec as f32, duration_sec as f32),
         }
 
         Ok(false)
@@ -1747,9 +1624,10 @@ impl Application {
         // NOTE: all player actions are async (right?)
         match event {
             Event::SessionFinished => {
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.global::<Bridge>().invoke_device_disconnected();
-                })?;
+                // self.ui_weak.upgrade_in_event_loop(|ui| {
+                //     ui.global::<Bridge>().invoke_device_disconnected();
+                // })?;
+                self.gui.device_disconnected();
             }
             Event::ResumeOrPause => {
                 // let op = match self.player_state {
@@ -1839,10 +1717,7 @@ impl Application {
                 if let Some(pending_thumbnail) = self.pending_thumbnail
                     && pending_thumbnail == img.id
                 {
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let bridge = ui.global::<Bridge>();
-                        bridge.set_audio_track_cover(img.to_compound());
-                    })?;
+                    self.gui.set_audio_track_cover(img);
                 }
             }
             Event::AudioThumbnailBlurAvailable(img) => {
@@ -1852,10 +1727,7 @@ impl Application {
                     // NOTE: `AudioThumbnailBlurAvailable` is assumed to *always* be received after `AudioThumbnailAvailable`
                     //       and no other thumbnail results in between.
                     self.pending_thumbnail = None;
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        let bridge = ui.global::<Bridge>();
-                        bridge.set_blured_audio_track_cover(img.to_compound());
-                    })?;
+                    self.gui.set_blured_audio_track_cover(img);
                 }
             }
             Event::ImageDecoded(img) => {
@@ -1864,11 +1736,8 @@ impl Application {
                     return Ok(false);
                 }
 
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_image_preview(img.to_compound());
-                    bridge.set_app_state(AppState::Playing)
-                })?;
+                self.gui.set_image_preview(img);
+                self.gui.set_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();
             }
@@ -1910,11 +1779,7 @@ impl Application {
                 self.current_playlist = Some(playlist);
                 self.current_playlist_item_idx = Some(start_idx);
 
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    let bridge = ui.global::<Bridge>();
-                    bridge.set_playlist_idx(start_idx as i32);
-                    bridge.set_playlist_length(length as i32);
-                })?;
+                self.gui.update_playlist(start_idx as i32, length as i32);
             }
             Event::MediaItemFinish(id) => {
                 if self.current_playlist_item_idx.is_none() || id != self.current_media_item_id {
@@ -1960,9 +1825,7 @@ impl Application {
             }
             Event::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.global::<Bridge>().set_app_state(AppState::LoadingMedia);
-                    })?;
+                    self.gui.set_app_state(AppState::LoadingMedia);
                 }
             }
             Event::Raop(event) => return self.handle_raop_event(event),
@@ -2002,9 +1865,7 @@ impl Application {
 
         #[cfg(not(target_os = "android"))]
         if cli_args.fullscreen {
-            self.ui_weak.upgrade_in_event_loop(|ui| {
-                ui.window().set_fullscreen(true);
-            })?;
+            self.gui.set_fullscreen(true);
         }
 
         let mut update_interval = tokio::time::interval(Duration::from_millis(200));
@@ -2052,9 +1913,7 @@ impl Application {
                         }
                     });
 
-                    self.ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.invoke_device_connected();
-                    })?;
+                    self.gui.device_connected();
 
                     session_id += 1;
                 }
@@ -2352,6 +2211,12 @@ pub fn run(
         None
     };
 
+    let (gui_tx, gui_rx) = mpsc::unbounded_channel::<gui::UpdateGuiCommand>();
+
+    gui::spawn_command_handler(ui.as_weak(), gui_rx);
+
+    let gui = GuiController::new(gui_tx);
+
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
     let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
@@ -2391,6 +2256,7 @@ pub fn run(
             gstrsrtp::plugin_register_static().unwrap();
 
             Application::new(
+                gui,
                 slint_appsink,
                 event_tx,
                 ui_weak,

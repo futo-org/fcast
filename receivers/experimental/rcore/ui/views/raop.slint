@@ -77,7 +77,7 @@ export component RaopView inherits Rectangle {
             height: 20px;
         }
 
-        if Bridge.playback-position > 0.0: ScrubbyMcScrub { }
+        if Bridge.progress-secs > 0.0: ScrubbyMcScrub { }
     }
 
     VolumePreview {

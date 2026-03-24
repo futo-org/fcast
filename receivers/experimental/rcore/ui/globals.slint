@@ -51,10 +51,8 @@ export enum UiMode {
 }
 
 export global Bridge {
-    in property <string> label;
-    in property <string> progress-label;
-    in property <string> duration-label;
-    in property <int> duration-seconds;
+    in property <float> progress-secs;
+    in property <float> duration-secs;
     in property <AppState> app-state: AppState.Idle;
     in property <[UiSubOverlay]> overlays;
     in property <[string]> subtitles;
@@ -86,7 +84,6 @@ export global Bridge {
     in-out property <float> volume: 1.0;
     in-out property <bool> is-debugging: false;
     in-out property <int> connected_devices: 0;
-    in-out property <float> playback-position: 0.0;
     in-out property <bool> is-scrubbing-position: false;
     in-out property <UiPlayerVariant> player-variant: UiPlayerVariant.Unknown;
     in-out property <float> playback-rate: 1.0;
@@ -107,6 +104,7 @@ export global Bridge {
     callback select-track(id: int, variant: UiMediaTrackType);
     callback select-playlist-item(idx: int);
     pure callback sec-to-string(sec: int) -> string;
+    pure callback sec-float-to-string(sec: float) -> string;
 
     public pure function should-show-toast-overlay() -> bool {
         is-showing-error-message || is-showing-warning-message
