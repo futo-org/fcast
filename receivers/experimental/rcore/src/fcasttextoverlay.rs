@@ -370,9 +370,10 @@ mod imp {
                                 wait_for_text_buf = false;
                             }
 
-                            if wait_for_text_buf
-                                && let Some(text_position_running_time) = text_position_running_time
-                                && vid_running_time < text_position_running_time
+                            if let Some(text_position_running_time) = text_position_running_time
+                                // Deadlocks when text position is 0?
+                                && (text_position_running_time == gst::ClockTime::from_seconds(0)
+                                    || vid_running_time < text_position_running_time)
                             {
                                 wait_for_text_buf = false;
                             }
@@ -380,11 +381,8 @@ mod imp {
                     }
 
                     if wait_for_text_buf {
-                        WaitForTextResult::Have(None)
-
-                        // TODO: propperly wait for text buffer
-                        // self.state_cvar.wait(&mut state);
-                        // WaitForTextResult::Waiting
+                        self.state_cvar.wait(&mut state);
+                        WaitForTextResult::Waiting
                     } else {
                         WaitForTextResult::Have(None)
                     }
@@ -430,7 +428,11 @@ mod imp {
             let (Some(clip_start), Some(clip_end)) =
                 (generic_to_time(clip_start), generic_to_time(clip_end))
             else {
-                gst::error!(CAT, imp = self, "clip_start or clip_end are not in clock format");
+                gst::error!(
+                    CAT,
+                    imp = self,
+                    "clip_start or clip_end are not in clock format"
+                );
                 return Err(gst::FlowError::Error);
             };
 
@@ -568,6 +570,7 @@ mod imp {
                 EventView::Segment(seg) => {
                     let seg = seg.segment();
                     if seg.format() == gst::Format::Time {
+                        gst::info!(CAT, imp = self, "new text segment {seg:?}");
                         state.text_segment = seg.clone();
                     } else {
                         gst::warning!(
@@ -578,6 +581,8 @@ mod imp {
                     }
 
                     self.state_cvar.notify_all();
+
+                    execute_default = false;
                 }
                 EventView::Gap(gap) => {
                     let (mut start, duration) = gap.get();
@@ -621,7 +626,7 @@ mod imp {
             &self,
             mut buffer: gst::Buffer,
         ) -> Result<gst::FlowSuccess, gst::FlowError> {
-            gst::debug!(CAT, imp = self, "text sink chain {buffer:?}");
+            gst::log!(CAT, imp = self, "text sink chain {buffer:?}");
 
             let mut state = self.state.lock();
 
@@ -640,7 +645,10 @@ mod imp {
                 return Ok(gst::FlowSuccess::Ok);
             };
 
-            let Some(stop) = buffer.duration().map(|duration| text_start + duration) else {
+            let Some(stop) = buffer
+                .duration()
+                .map(|duration| text_start.saturating_add(duration))
+            else {
                 gst::warning!(CAT, imp = self, "buffer is missing duration");
                 return Ok(gst::FlowSuccess::Ok);
             };
@@ -673,16 +681,16 @@ mod imp {
                 }
 
                 while state.text_buffer.is_some() {
-                    gst::debug!(
+                    gst::log!(
                         CAT,
                         imp = self,
                         "Pad has buffer queued, waiting {:?}",
                         state.text_buffer
                     );
                     self.state_cvar.wait(&mut state);
-                    gst::debug!(CAT, imp = self, "Pad resuming");
+                    gst::log!(CAT, imp = self, "Pad resuming");
                     if state.text_flushing {
-                        gst::debug!(CAT, imp = self, "text flushing");
+                        gst::log!(CAT, imp = self, "text flushing");
                         return Err(gst::FlowError::Flushing);
                     }
                 }
