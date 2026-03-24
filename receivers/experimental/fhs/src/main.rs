@@ -11,7 +11,11 @@ use std::{
     num::NonZeroU32,
     ptr::null,
     rc::{Rc, Weak},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -171,12 +175,16 @@ type Job = Box<dyn FnOnce() + Send>;
 
 struct LoopProxy {
     job_sender: mpsc::Sender<Job>,
+    quit_event_loop: Arc<AtomicBool>,
 }
 
 impl slint::platform::EventLoopProxy for LoopProxy {
     fn quit_event_loop(&self) -> Result<(), rcore::slint::EventLoopError> {
-        // TODO:
-        return Ok(());
+        self.quit_event_loop.store(true, Ordering::Relaxed);
+        // Wake up the event loop by sending an empty job
+        self.job_sender
+            .send(Box::new(move || {}))
+            .map_err(|_| rcore::slint::EventLoopError::EventLoopTerminated)
     }
 
     fn invoke_from_event_loop(
@@ -194,6 +202,7 @@ struct FiatLuxPlatform {
     timer: Instant,
     job_sender: mpsc::Sender<Job>,
     job_receiver: mpsc::Receiver<Job>,
+    quit_event_loop: Arc<AtomicBool>,
 }
 
 impl FiatLuxPlatform {
@@ -204,6 +213,7 @@ impl FiatLuxPlatform {
             timer: Instant::now(),
             job_sender: job_sender,
             job_receiver: job_receiver,
+            quit_event_loop: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -226,10 +236,20 @@ impl slint::platform::Platform for FiatLuxPlatform {
         ));
 
         loop {
+            unsafe {
+                if !fiatlux::fl_is_connected_to_server(self.window.client.client) {
+                    self.quit_event_loop.store(true, Ordering::Relaxed);
+                }
+            }
+
             slint::platform::update_timers_and_animations();
 
             while let Ok(job) = self.job_receiver.try_recv() {
                 job();
+            }
+
+            if self.quit_event_loop.load(Ordering::Relaxed) {
+                break;
             }
 
             loop {
@@ -274,11 +294,14 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 );
             }
         }
+
+        return Ok(());
     }
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn slint::platform::EventLoopProxy>> {
         Some(Box::new(LoopProxy {
             job_sender: self.job_sender.clone(),
+            quit_event_loop: self.quit_event_loop.clone(),
         }))
     }
 }
