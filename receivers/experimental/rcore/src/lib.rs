@@ -1374,23 +1374,15 @@ impl Application {
                     self.pending_thumbnail = Some(this_id);
                 }
 
-                let title = if !self.have_media_title
+                if !self.have_media_title
                     && let Some(title) = tags.get::<gst::tags::Title>()
                 {
                     self.have_media_title = true;
-                    Some(title.get().to_owned())
-                } else {
-                    None
-                };
+                    self.gui.set_media_title(title.get().to_owned());
+                }
 
-                let artist = if let Some(artist) = tags.get::<gst::tags::Artist>() {
-                    Some(artist.get().to_owned())
-                } else {
-                    None
-                };
-
-                if title.is_some() || artist.is_some() {
-                    self.gui.update_audio_metadata(title, artist);
+                if let Some(artist) = tags.get::<gst::tags::Artist>() {
+                    self.gui.set_artist_name(artist.get().to_owned());
                 }
             }
             player::PlayerEvent::VolumeChanged(volume) => {
@@ -1605,9 +1597,14 @@ impl Application {
                 self.pending_thumbnail = Some(this_id);
             }
             RaopEvent::CoverArtRemoved => self.gui.clear_audio_covers(),
-            RaopEvent::MetadataSet(metadata) => self
-                .gui
-                .update_audio_metadata(metadata.title, metadata.artist),
+            RaopEvent::MetadataSet(metadata) => {
+                if let Some(title) = metadata.title {
+                    self.gui.set_media_title(title);
+                }
+                if let Some(name) = metadata.artist {
+                    self.gui.set_artist_name(name);
+                }
+            }
             RaopEvent::ProgressUpdate {
                 position_sec,
                 duration_sec,

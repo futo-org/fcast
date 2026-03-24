@@ -171,11 +171,7 @@ pub enum UpdateGuiCommand {
         duration_s: Seconds,
     },
     SetMediaTitle(String),
-    UpdateAudioMetadata {
-        // TODO: should be tri-state so things can be kept unchanged and not just reset?
-        title: Option<String>,
-        artist_name: Option<String>,
-    },
+    SetArtistName(String),
     ClearAudioCovers,
     ClearCommonPlaybackState,
     SetPlayerType(UiPlayerVariant),
@@ -283,8 +279,8 @@ impl GuiController {
         self.send(UpdateGuiCommand::SetMediaTitle(title));
     }
 
-    pub fn update_audio_metadata(&self, title: Option<String>, artist_name: Option<String>) {
-        self.send(UpdateGuiCommand::UpdateAudioMetadata { title, artist_name });
+    pub fn set_artist_name(&self, name: String) {
+        self.send(UpdateGuiCommand::SetArtistName(name));
     }
 
     pub fn clear_audio_covers(&self) {
@@ -386,11 +382,6 @@ impl GuiController {
     }
 }
 
-fn maybe_default_str(s: Option<String>) -> slint::SharedString {
-    s.map(|s| s.to_shared_string())
-        .unwrap_or(slint::SharedString::default())
-}
-
 fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
     if !bridge.get_is_scrubbing_position() {
         bridge.set_progress_secs(prog_sec);
@@ -430,10 +421,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
             set_playback_progress(&bridge, progress_s, duration_s);
         }
         UpdateGuiCommand::SetMediaTitle(title) => bridge.set_media_title(title.to_shared_string()),
-        UpdateGuiCommand::UpdateAudioMetadata { title, artist_name } => {
-            bridge.set_media_title(maybe_default_str(title));
-            bridge.set_artist_name(maybe_default_str(artist_name));
-        }
+        UpdateGuiCommand::SetArtistName(name) => bridge.set_artist_name(name.to_shared_string()),
         UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge),
         UpdateGuiCommand::ClearCommonPlaybackState => {
             clear_audio_covers(&bridge);
@@ -525,7 +513,7 @@ pub fn spawn_command_handler(
                     && let Some(ui) = ui_weak.upgrade()
                 {
                     // Ignore frequently sent updates to reduce log size
-                    if matches!(cmd, UpdateGuiCommand::UpdatePlaybackProgress { .. }) {
+                    if !matches!(cmd, UpdateGuiCommand::UpdatePlaybackProgress { .. }) {
                         debug!(?cmd, "received command");
                     }
                     handle_command(ui, cmd);
