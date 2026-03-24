@@ -3,7 +3,7 @@ use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
 use gst_gl::prelude::*;
 use smallvec::SmallVec;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, debug_span, error, instrument, warn};
 
@@ -541,7 +541,10 @@ pub enum PlayerEvent {
 
 #[derive(Debug)]
 enum Job {
-    SetState(gst::State),
+    SetState {
+        target_state: gst::State,
+        feedback: Option<oneshot::Sender<()>>,
+    },
     SetUri(String),
     Seek(Seek),
     Quit,
@@ -601,7 +604,7 @@ impl Player {
     pub fn new(
         video_sink: gst::Element,
         event_tx: UnboundedSender<crate::Event>,
-        contexts: Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        contexts: Arc<parking_lot::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
@@ -669,8 +672,14 @@ impl Player {
                     debug!(?job, "Got job");
 
                     match job {
-                        Job::SetState(state) => {
-                            let _ = playbin.set_state(state);
+                        Job::SetState {
+                            target_state,
+                            feedback,
+                        } => {
+                            let _ = playbin.set_state(target_state);
+                            if let Some(feedback) = feedback {
+                                debug!(res = ?feedback.send(()), "Sent state change feedback signal");
+                            }
                         }
                         Job::SetUri(uri) => {
                             playbin.set_state(gst::State::Ready).unwrap();
@@ -751,11 +760,14 @@ impl Player {
                     }
                 }
 
-                debug!("Work thread finished");
+                debug!("Player thread finished");
             }
         });
 
-        work_tx.send(Job::SetState(gst::State::Ready))?;
+        work_tx.send(Job::SetState {
+            target_state: gst::State::Ready,
+            feedback: None,
+        })?;
 
         Ok(Self {
             playbin,
@@ -777,7 +789,7 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         event_tx: &UnboundedSender<crate::Event>,
         msg: &gst::Message,
-        contexts: &Arc<Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        contexts: &Arc<parking_lot::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
     ) {
         use gst::MessageView;
 
@@ -785,36 +797,24 @@ impl Player {
             MessageView::NeedContext(ctx) => {
                 let typ = ctx.context_type();
                 debug!(typ, "Need context");
-                if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
-                    let contexts = contexts.lock().unwrap();
+                if let Some(element) = msg
+                    .src()
+                    .and_then(|source| source.downcast_ref::<gst::Element>())
+                {
+                    let contexts = contexts.lock();
                     let Some(contexts) = contexts.as_ref() else {
                         error!("Missing contexts");
                         return;
                     };
 
-                    if let Some(element) = msg
-                        .src()
-                        .and_then(|source| source.downcast_ref::<gst::Element>())
-                    {
+                    if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
                         let display_ctx = gst::Context::new(typ, true);
                         display_ctx.set_gl_display(&contexts.0);
                         debug!(display_type = ?contexts.0.handle_type());
                         element.set_context(&display_ctx);
-                    }
-                } else if typ == "gst.gl.app_context" {
-                    let contexts = contexts.lock().unwrap();
-                    let Some(contexts) = contexts.as_ref() else {
-                        error!("Missing contexts");
-                        return;
-                    };
-
-                    if let Some(element) = msg
-                        .src()
-                        .and_then(|source| source.downcast_ref::<gst::Element>())
-                    {
+                    } else if typ == "gst.gl.app_context" {
                         let mut app_ctx = gst::Context::new(typ, true);
-                        let app_ctx_mut = app_ctx.get_mut().unwrap();
-                        let structure = app_ctx_mut.structure_mut();
+                        let structure = app_ctx.get_mut().unwrap().structure_mut();
                         debug!(app_context_display_type = ?contexts.1.display().handle_type());
                         structure.set("context", &contexts.1);
                         element.set_context(&app_ctx);
@@ -994,8 +994,22 @@ impl Player {
         });
     }
 
-    fn set_state_async(&self, state: gst::State) {
-        let _ = self.work_tx.send(Job::SetState(state));
+    fn set_state_async(&self, target_state: gst::State) {
+        let _ = self.work_tx.send(Job::SetState {
+            target_state,
+            feedback: None,
+        });
+    }
+
+    fn set_state_async_with_feedback(
+        &self,
+        target_state: gst::State,
+        feedback: oneshot::Sender<()>,
+    ) {
+        let _ = self.work_tx.send(Job::SetState {
+            target_state,
+            feedback: Some(feedback),
+        });
     }
 
     pub fn play(&mut self) {
@@ -1028,15 +1042,35 @@ impl Player {
         }
     }
 
-    pub fn stop(&mut self) {
-        if self.state_machine.current_state != gst::State::Ready
-            && self.state_machine.current_state != gst::State::Null
-        {
-            debug!("Stopping playback");
-            self.set_state_async(gst::State::Null);
+    fn go_to_stopped_state(&mut self, null: Option<oneshot::Sender<()>>) {
+        let target = if null.is_some() {
+            gst::State::Null
+        } else {
+            gst::State::Ready
+        };
+
+        if target == gst::State::Ready && self.state_machine.current_state == gst::State::Null {
+            return;
+        }
+
+        if self.state_machine.current_state != target {
+            match null {
+                Some(feedback) => self.set_state_async_with_feedback(target, feedback),
+                None => self.set_state_async(target),
+            }
             self.state_machine.clear_state();
             self.clear_state();
         }
+    }
+
+    pub fn stop(&mut self) {
+        debug!("Stopping playback");
+        self.go_to_stopped_state(None)
+    }
+
+    pub fn shutdown(&mut self, feedback: oneshot::Sender<()>) {
+        debug!("Shutting down player");
+        self.go_to_stopped_state(Some(feedback));
     }
 
     fn select_streams(&self, video: i32, audio: i32, subtitle: i32) -> Result<()> {

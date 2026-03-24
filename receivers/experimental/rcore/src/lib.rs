@@ -21,7 +21,6 @@ use tokio::{
     sync::{
         broadcast,
         mpsc::{self, UnboundedReceiver, UnboundedSender},
-        oneshot,
     },
 };
 #[cfg(not(target_os = "android"))]
@@ -180,6 +179,7 @@ pub enum Event {
     DumpPipeline,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     AppUpdate(AppUpdateEvent),
+    GuiWindowClosed(oneshot::Sender<()>),
 }
 
 #[macro_export]
@@ -427,7 +427,9 @@ impl Application {
         event_tx: EventSender,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
-        contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
+        contexts: std::sync::Arc<
+            parking_lot::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>,
+        >,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -1936,6 +1938,10 @@ impl Application {
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Event::AppUpdate(event) => return self.handle_app_update_event(event),
+            Event::GuiWindowClosed(feedback) => {
+                let _ = self.handle_operation(Operation::Stop);
+                self.player.shutdown(feedback);
+            }
         }
 
         Ok(false)
@@ -1944,7 +1950,7 @@ impl Application {
     pub async fn run_event_loop(
         mut self,
         mut event_rx: UnboundedReceiver<Event>,
-        fin_tx: oneshot::Sender<()>,
+        fin_tx: tokio::sync::oneshot::Sender<()>,
         #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     ) -> Result<()> {
         // TODO: IPv4 on windows
@@ -2177,10 +2183,12 @@ pub fn run(
         );
     }
 
-    let gst_gl_contexts = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let gst_gl_contexts = std::sync::Arc::new(parking_lot::Mutex::new(
+        None::<(gst_gl::GLDisplay, gst_gl::GLContext)>,
+    ));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
-    let (fin_tx, fin_rx) = oneshot::channel::<()>();
+    let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
 
     #[cfg(target_os = "android")]
     runtime.spawn({
@@ -2214,8 +2222,9 @@ pub fn run(
         let mut slint_sink = None;
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         let mut graphics_context = GraphicsContext::None;
-        move |state, graphics_api| {
-            if let slint::RenderingState::RenderingSetup = state {
+        let event_tx = event_tx.clone();
+        move |state, graphics_api| match state {
+            slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
                 let ui_weak = ui_weak.clone();
 
@@ -2229,7 +2238,8 @@ pub fn run(
                         .window()
                         .set_fullscreen(fullscreen);
                 }
-            } else if let slint::RenderingState::BeforeRendering = state {
+            }
+            slint::RenderingState::BeforeRendering => {
                 let Some(slint_sink) = slint_sink.as_mut() else {
                     slint_sink = slint_sink_mutex.lock().take();
                     return;
@@ -2246,7 +2256,7 @@ pub fn run(
 
                     slint_sink.gst_gl_context = Some(gst_gl_context.clone());
 
-                    *gst_gl_contexts.lock().unwrap() = Some((gst_gl_display, gst_gl_context));
+                    *gst_gl_contexts.lock() = Some((gst_gl_display, gst_gl_context));
                 }
 
                 graphics_context = GraphicsContext::Initialized;
@@ -2316,6 +2326,30 @@ pub fn run(
                     bridge.set_subtitles(slint::ModelRc::default());
                 }
             }
+            slint::RenderingState::RenderingTeardown => {
+                let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
+
+                match event_tx.send(Event::GuiWindowClosed(feedback_tx)) {
+                    Ok(_) => {
+                        match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
+                            Ok(_) => debug!("Player shutdown successfully"),
+                            Err(err) => {
+                                error!(?err, "Failed to receive feedback of player shutdown")
+                            }
+                        }
+                    }
+                    Err(err) => error!(?err, "Failed to send window closed event"),
+                }
+
+                if let Some((_display, gl_context)) = gst_gl_contexts.lock().take() {
+                    let _ = gl_context.activate(false);
+                }
+
+                if let Some(sink) = slint_sink.as_mut() {
+                    sink.release_state();
+                }
+            }
+            _ => (),
         }
     })?;
 

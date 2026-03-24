@@ -18,6 +18,7 @@ use crate::fcasttextoverlay::meta_imp::TextFormat;
 
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
 pub type Subtitles = Arc<Mutex<Option<Option<SmallVec<[String; 3]>>>>>;
+type GlVideoFrame = gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>;
 
 pub struct SlintOpenGLSink {
     appsink: gst_app::AppSink,
@@ -25,12 +26,8 @@ pub struct SlintOpenGLSink {
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     next_overlays: Overlays,
     next_subtitles: Subtitles,
-    current_frame: Mutex<
-        Option<(
-            gst_video::VideoInfo,
-            gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>,
-        )>,
-    >,
+    current_frame: Mutex<Option<(gst_video::VideoInfo, GlVideoFrame)>>,
+    old_frame: Mutex<Option<GlVideoFrame>>,
     pub gst_gl_context: Option<gst_gl::GLContext>,
     pub is_eos: Arc<AtomicBool>,
     pub window_width: Arc<AtomicU32>,
@@ -93,6 +90,7 @@ impl SlintOpenGLSink {
             appsink,
             next_frame: Default::default(),
             current_frame: Default::default(),
+            old_frame: Default::default(),
             next_overlays: Default::default(),
             next_subtitles: Default::default(),
             gst_gl_context: None,
@@ -335,7 +333,7 @@ impl SlintOpenGLSink {
         }
 
         Some(self.current_frame.lock().take().map(|(_info, frame)| {
-            Frame {
+            let new = Frame {
                 tex_id: frame
                     .texture_id(0)
                     .ok()
@@ -343,7 +341,9 @@ impl SlintOpenGLSink {
                     .unwrap(),
                 width: frame.width(),
                 height: frame.height(),
-            }
+            };
+            *self.old_frame.lock() = Some(frame);
+            new
         }))
     }
 
@@ -364,5 +364,14 @@ impl SlintOpenGLSink {
         }
 
         self.next_subtitles.lock().as_mut().map(|subs| subs.take())
+    }
+
+    pub fn release_state(&mut self) {
+        debug!("Releasing state");
+        self.next_frame.lock().take();
+        self.current_frame.lock().take();
+        self.old_frame.lock().take();
+        self.next_overlays.lock().take();
+        self.gst_gl_context.take();
     }
 }
