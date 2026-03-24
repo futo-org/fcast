@@ -188,7 +188,6 @@ pub enum UpdateGuiCommand {
         audio: i32,
         subtitle: i32,
     },
-    PlaybackStarted,
     SetConnectionDetails {
         qr_code: IgnoredDebug<QrCodeImage>,
         addrs: String,
@@ -329,10 +328,6 @@ impl GuiController {
         });
     }
 
-    pub fn playback_started(&self) {
-        self.send(UpdateGuiCommand::PlaybackStarted);
-    }
-
     pub fn set_connection_details(&self, qr_code: QrCodeImage, addrs: String) {
         self.send(UpdateGuiCommand::SetConnectionDetails {
             qr_code: qr_code.into(),
@@ -466,7 +461,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
             bridge.set_current_audio_track(audio);
             bridge.set_current_subtitle_track(subtitle);
         }
-        UpdateGuiCommand::PlaybackStarted => ui.invoke_playback_started(),
         UpdateGuiCommand::SetConnectionDetails { qr_code, addrs } => {
             bridge.set_qr_code(slint::Image::from_rgb8(qr_code.0));
             bridge.set_local_ip_addrs(addrs.to_shared_string());

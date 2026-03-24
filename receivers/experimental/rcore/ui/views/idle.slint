@@ -80,14 +80,13 @@ export component IdleView inherits Rectangle {
                 VerticalLayout {
                     padding: 10px;
                     spacing: 10px;
-
-                    visible: !Bridge.playing;
+                    visible: !Bridge.is-playing();
                     alignment: center;
+
                     Text {
                         font-size: 28px;
                         text: "Idle. Ready to cast";
                         font-weight: 600;
-                        // horizontal-alignment: center;
                         font-family: "Outfit Semibold";
                         overflow: elide;
                         color: @linear-gradient(180deg, #FFFFFF 17.11%, #B4B4B4 78.95%);
@@ -97,7 +96,6 @@ export component IdleView inherits Rectangle {
                         font-size: 12pt;
                         text: "Stream to this device by opening your FCast sender app and selecting this device from the Cast menu, or scan the QR code for instant setup.";
                         wrap: word-wrap;
-                        // horizontal-alignment: center;
                         color: FCastPalette.opacity-light-500;
                     }
 

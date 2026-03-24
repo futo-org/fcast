@@ -372,7 +372,6 @@ struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
     event_tx: EventSender,
-    ui_weak: slint::Weak<MainWindow>,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     #[cfg(not(target_os = "android"))]
     mdns: mdns_sd::ServiceDaemon,
@@ -412,7 +411,6 @@ impl Application {
         gui: GuiController,
         appsink: gst::Element,
         event_tx: EventSender,
-        ui_weak: slint::Weak<MainWindow>,
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
         contexts: std::sync::Arc<std::sync::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>>,
@@ -578,7 +576,6 @@ impl Application {
             #[cfg(target_os = "android")]
             android_app,
             event_tx,
-            ui_weak,
             updates_tx,
             #[cfg(not(target_os = "android"))]
             mdns,
@@ -768,14 +765,8 @@ impl Application {
         self.current_image_download_id += 1;
 
         if continue_to_play == ContinueToPlay::No {
-            // TODO:
-            self.ui_weak.upgrade_in_event_loop(move |ui| {
-                let bridge = ui.global::<Bridge>();
-                bridge.set_playing(false);
-                bridge.set_media_title("".to_shared_string());
-                bridge.set_artist_name("".to_shared_string());
-            })?;
-
+            self.gui.set_media_title("".to_owned());
+            self.gui.set_artist_name("".to_owned());
             self.gui.clear_images();
             self.gui.update_playback_progress(0.0, 0.0);
             self.gui.set_app_state(AppState::Idle);
@@ -1406,7 +1397,6 @@ impl Application {
                 self.player.handle_stream_collection(collection);
                 // self.media_loaded_successfully();
 
-                self.gui.playback_started();
                 self.gui.set_app_state(AppState::Playing);
 
                 // self.current_duration = info.duration();
@@ -1621,9 +1611,6 @@ impl Application {
         // NOTE: all player actions are async (right?)
         match event {
             Event::SessionFinished => {
-                // self.ui_weak.upgrade_in_event_loop(|ui| {
-                //     ui.global::<Bridge>().invoke_device_disconnected();
-                // })?;
                 self.gui.device_disconnected();
             }
             Event::ResumeOrPause => {
@@ -2144,7 +2131,7 @@ pub fn run(
                 }
 
                 let bridge = ui.global::<Bridge>();
-                if bridge.get_playing() {
+                if bridge.invoke_is_playing() {
                     let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
                         match frame {
                             Some(frame) => unsafe {
@@ -2256,7 +2243,6 @@ pub fn run(
                 gui,
                 slint_appsink,
                 event_tx,
-                ui_weak,
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,

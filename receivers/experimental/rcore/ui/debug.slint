@@ -23,7 +23,6 @@ export component DebugOverlay inherits Rectangle {
             OutlinedText {
                 text: "Connected devices: " + Bridge.connected_devices //
                 + "  Volume: " + Bridge.volume //
-                + "  Is playing: " + (Bridge.playing ? "true" : "false") //
                 + "  Playback state: " + Bridge.gui-playback-state-to-string(Bridge.playback-state) //
                 + "  Is live: " + (Bridge.is-live ? "true" : "false");
                 wrap: word-wrap;

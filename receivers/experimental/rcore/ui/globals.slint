@@ -80,7 +80,6 @@ export global Bridge {
     in property <UiMode> ui-mode: UiMode.Full;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
-    in-out property <bool> playing: false;
     in-out property <float> volume: 1.0;
     in-out property <bool> is-debugging: false;
     in-out property <int> connected_devices: 0;
@@ -126,6 +125,10 @@ export global Bridge {
         return "Invalid";
     }
 
+    public pure function is-playing() -> bool {
+        playback-state != GuiPlaybackState.Idle && playback-state != GuiPlaybackState.Loading
+    }
+
     public function toggle-debug-mode() {
         is-debugging = !is-debugging;
         debug-toggled();
@@ -145,10 +148,10 @@ export global Bridge {
         } else if event.text == "f" {
             toggle-fullscreen();
             return accept;
-        } else if Bridge.playing && event.text == Key.Space {
+        } else if Bridge.is-playing() && event.text == Key.Space {
             resume-or-pause();
             return accept;
-        } else if Bridge.playing && (event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Return) {
+        } else if Bridge.is-playing() && (event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Return) {
             // TODO: do something
         }
         reject
