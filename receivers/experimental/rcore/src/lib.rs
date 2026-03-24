@@ -48,6 +48,7 @@ mod player;
 mod session;
 mod fcasttextoverlay;
 mod graphics;
+mod gui;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
 #[cfg(all(
@@ -174,7 +175,7 @@ pub enum Event {
 macro_rules! log_if_err {
     ($res:expr) => {
         if let Err(err) = $res {
-            error!("{err}");
+            tracing::error!("{err}");
         }
     };
 }
@@ -2411,104 +2412,7 @@ pub fn run(
         }
     });
 
-    bridge.on_resume_or_pause({
-        let event_tx = event_tx.clone();
-        move || {
-            log_if_err!(event_tx.send(Event::ResumeOrPause));
-        }
-    });
-
-    bridge.on_seek_to_percent({
-        let event_tx = event_tx.clone();
-        move |percent| {
-            log_if_err!(event_tx.send(Event::SeekPercent(percent)));
-        }
-    });
-
-    bridge.on_toggle_fullscreen({
-        let ui_weak = ui.as_weak();
-        move || {
-            let ui = ui_weak
-                .upgrade()
-                .expect("callbacks always get called from the event loop");
-            let is_fullscreen = !ui.window().is_fullscreen();
-            ui.window().set_fullscreen(is_fullscreen);
-            ui.global::<Bridge>().set_is_fullscreen(is_fullscreen);
-        }
-    });
-
-    bridge.on_set_volume({
-        let event_tx = event_tx.clone();
-        move |volume| {
-            log_if_err!(event_tx.send(Event::Op {
-                session_id: 0,
-                op: Operation::SetVolume(SetVolumeMessage {
-                    volume: volume as f64,
-                })
-            }));
-        }
-    });
-
-    bridge.on_force_quit(move || {
-        log_if_err!(slint::quit_event_loop());
-    });
-
-    bridge.on_debug_toggled({
-        let event_tx = event_tx.clone();
-        move || {
-            log_if_err!(event_tx.send(Event::ToggleDebug));
-        }
-    });
-
-    bridge.on_change_playback_rate({
-        let event_tx = event_tx.clone();
-        move |new_rate: f32| {
-            log_if_err!(event_tx.send(Event::Op {
-                session_id: 0,
-                op: Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
-                    speed: new_rate as f64
-                }),
-            }));
-        }
-    });
-
-    bridge.on_hide_cursor_hack({
-        let ui_weak = ui.as_weak();
-        move || {
-            let ui = ui_weak
-                .upgrade()
-                .expect("callbacks are always called from the event loop");
-            let _ = ui
-                .window()
-                .try_dispatch_event(slint::platform::WindowEvent::PointerReleased {
-                    position: slint::LogicalPosition::new(0.0, 0.0),
-                    button: slint::platform::PointerEventButton::Other,
-                });
-        }
-    });
-
-    bridge.on_select_track({
-        let event_tx = event_tx.clone();
-        move |id: i32, variant: UiMediaTrackType| {
-            log_if_err!(event_tx.send(Event::SelectTrack { id, variant }));
-        }
-    });
-
-    bridge.on_select_playlist_item({
-        let event_tx = event_tx.clone();
-        move |idx: i32| {
-            log_if_err!(event_tx.send(Event::Op {
-                session_id: 0,
-                op: Operation::SetPlaylistItem(v3::SetPlaylistItemMessage {
-                    item_index: idx as u64
-                }),
-            }));
-        }
-    });
-
-    bridge.on_sec_to_string(|sec: i32| -> slint::SharedString {
-        sec_to_string(sec as f64).to_shared_string()
-    });
+    gui::register_callbacks(&ui, &bridge, event_tx.clone());
 
     #[cfg(not(target_os = "android"))]
     let _awake = keepawake::Builder::default()
