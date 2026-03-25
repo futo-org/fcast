@@ -13,8 +13,9 @@ buildReceiverFhsLinuxX64RPM:
     - VERSION=$(grep '^version' receivers/experimental/fhs/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - ENDPOINT="--endpoint-url $FHS_R2_ENDPOINT"
     - BUCKET="s3://$FHS_R2_BUCKET"
-    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/latest/${RPM_FILE}" $ENDPOINT
-    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/${VERSION}/${RPM_FILE}" $ENDPOINT
+    - ARCH=$(rpm -qp --queryformat '%{ARCH}' "$RPM_FILE")
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/${RPM_FILE}" $ENDPOINT
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver-latest.${ARCH}.rpm" $ENDPOINT
   artifacts:
     untracked: false
     when: on_success
