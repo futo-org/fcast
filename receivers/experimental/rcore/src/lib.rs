@@ -261,7 +261,8 @@ fn image_decode_worker(
     let span = debug_span!("image-decoder");
     let _entered = span.enter();
 
-    // libheif_rs::integration::image::register_all_decoding_hooks();
+    #[cfg(feature = "desktop")]
+    libheif_rs::integration::image::register_all_decoding_hooks();
 
     while let Ok((id, job)) = job_rx.recv() {
         debug!(?id, ?job.format, "Got job");

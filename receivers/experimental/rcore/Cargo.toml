@@ -28,7 +28,7 @@ smallvec.workspace = true
 parking_lot.workspace = true
 image_swizzle.workspace = true
 bytes.workspace = true
-# libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] } # TODO
+libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 gst-plugin-reqwest = { rev = "ed20fcd7a6794003f7fb52febcefda6965221d7e", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
 gst-plugin-webrtc = { version = "0.14.4", default-features = false, features = [ "static" ] }
 gst-plugin-webrtchttp = { version = "0.14.4", features = [ "static" ] }
@@ -128,7 +128,7 @@ slint-build.workspace = true
 [features]
 # desktop = ["slint/backend-linuxkms"]
 default = []
-desktop = []
+desktop = ["dep:libheif-rs"]
 systray = ["dep:ksni", "dep:tray-icon"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
