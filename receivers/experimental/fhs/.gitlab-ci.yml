@@ -3,7 +3,7 @@ buildReceiverFhsLinuxX64RPM:
   tags:
     - fcast-autoscaler
   script:
-    - dnf install -y libheif-devel libdrm-devel zig
+    - dnf install -y libheif-devel libdrm-devel zig awscli2
     - git config --global url."https://oauth2:${FHS_GH_PAT}@github.com/".insteadOf "git@github.com:"
     - rm -rf /tmp/fiatlux-client
     - git clone --recursive https://oauth2:${FHS_GH_PAT}@github.com/futo-org/fhs-fiatlux-client.git /tmp/fiatlux-client
