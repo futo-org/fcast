@@ -3,6 +3,7 @@ buildReceiverFhsLinuxX64RPM:
   tags:
     - fcast-autoscaler
   script:
+    - dnf install -y libheif-devel
     - rustup install nightly-2026-01-15
     - rustup default nightly-2026-01-15
     - cargo install cargo-generate-rpm
