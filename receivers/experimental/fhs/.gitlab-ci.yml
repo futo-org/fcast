@@ -1,0 +1,24 @@
+buildReceiverFhsLinuxX64RPM:
+  stage: receiverExperimental
+  tags:
+    - fcast-autoscaler
+  script:
+    - rustup install nightly-2026-01-15
+    - rustup default nightly-2026-01-15
+    - cargo install cargo-generate-rpm
+    - cargo build --release --package fhs-receiver
+    - cargo generate-rpm -p receivers/experimental/fhs
+    - cp target/generate-rpm/*.rpm .
+    - RPM_FILE=$(ls *.rpm | head -1)
+    - VERSION=$(grep '^version' receivers/experimental/fhs/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    - ENDPOINT="--endpoint-url $FHS_R2_ENDPOINT"
+    - BUCKET="s3://$FHS_R2_BUCKET"
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/latest/${RPM_FILE}" $ENDPOINT
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/${VERSION}/${RPM_FILE}" $ENDPOINT
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - ./*.rpm
+  when: manual
