@@ -11,6 +11,7 @@ import {
     MasterButton,
     ScrubbyMcScrub,
     VolumePreview,
+    SubtitleView
 } from "../common.slint";
 import {
     FCastPalette,
@@ -521,6 +522,143 @@ component PlaybackControls inherits Rectangle {
             }
         }
 
+        if Bridge.subtitles.length > 0: SubtitleView { }
+
+        ScrubbyMcScrub { }
+
+        if Bridge.ui-mode == UiMode.Full: Rectangle {
+            height: 5px;
+        }
+
+        if Bridge.ui-mode == UiMode.Full: ButtonControls { }
+    }
+
+    tim := Timer {
+        property <int> counter;
+        interval: 500ms;
+        running: true;
+        triggered => {
+            counter += 1;
+            // mouse cursor in root root
+            // Wait 500ms * 4 before hiding the bar
+            if counter >= 4 {
+                parent.close();
+                Bridge.hide-cursor-hack();
+
+                // TODO: don't close if user is hovering widgets
+
+                // if fullscreen-btn.is-engaged || volume-btn.is-engaged {
+                //     parent.show();
+                // } else {
+                //     parent.close();
+                // }
+            }
+        }
+    }
+}
+
+component PlaybackControls inherits Rectangle {
+    out property <MouseCursor> suggested-cursor: default;
+
+    property <bool> is-changing-volume: false;
+
+    background: Bridge.controls-bg-gradient;
+
+    public function show() {
+        root.visible = true;
+        tim.counter = 0;
+        tim.running = true;
+        suggested-cursor = MouseCursor.default;
+    }
+
+    public function close() {
+        root.visible = false;
+        tim.running = false;
+        suggested-cursor = MouseCursor.none;
+    }
+
+    public function playback-started() {
+        show();
+    }
+
+    public function playback-stopped() {
+        show();
+    }
+
+    main-vlayout := VerticalLayout {
+        padding: 58px;
+        padding-top: 20px;
+        padding-bottom: 20px;
+        spacing: 5px;
+
+        if Bridge.ui-mode == UiMode.Full: HorizontalLayout {
+            Rectangle { }
+
+            SecondaryButton {
+                // icon-size: 18px;
+                // width: 45px;
+                // height: 45px;
+
+                icon: Bridge.is-fullscreen ? Icons.minimize : Icons.maximize;
+
+                clicked => Bridge.toggle-fullscreen();
+            }
+        }
+
+        Rectangle { }
+
+        HorizontalLayout {
+            padding: 10px;
+            padding-bottom: 15px;
+
+            FText {
+                text: Bridge.media-title;
+                width: 50%;
+                wrap: word-wrap;
+                overflow: elide;
+                font-size: 24px;
+                max-height: 5px;
+                font-weight: 500;
+                color: FCastPalette.neutral-100;
+            }
+
+            Rectangle { /* Spacer */ }
+
+            if Bridge.is-live: VerticalLayout {
+                Rectangle { }
+
+                Rectangle {
+                    background: #FB2C2C;
+                    border-radius: 3.3px;
+                    width: i-hl.preferred-width;
+
+                    i-hl := HorizontalLayout {
+                        padding: 12px;
+                        padding-top: 6px;
+                        padding-bottom: self.padding-top;
+                        spacing: 6px;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 5px;
+                                background: FCastPalette.foreground;
+                            }
+                        }
+
+                        FText {
+                            text: "LIVE";
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
         ScrubbyMcScrub { }
 
         if Bridge.ui-mode == UiMode.Full: Rectangle {
@@ -588,30 +726,12 @@ export component VideoPlayerView inherits Rectangle {
         source: overlay.img;
     }
 
-    if Bridge.subtitles.length > 0: VerticalLayout {
+    if !playback-control.visible && Bridge.subtitles.length > 0: VerticalLayout {
         padding: 30px;
 
         Rectangle {}
 
-        VerticalLayout {
-            alignment: center;
-
-            for sub in Bridge.subtitles: Rectangle {
-                width: Math.min(txt.preferred-width + 10px * 2, parent.width);
-                height: txt.preferred-height + 5px * 2;
-                x: parent.width / 2 - self.width / 2;
-                background: black.transparentize(50%);
-
-                txt := FText {
-                    width: parent.width;
-                    font-size: 30px;
-                    text: sub;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                }
-            }
-        }
+        SubtitleView { }
     }
 
     VolumePreview {
