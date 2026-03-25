@@ -21,8 +21,8 @@ buildReceiverFhsLinuxX64RPM:
     - ARCH=$(rpm -qp --queryformat '%{ARCH}' "$RPM_FILE")
     - export AWS_ACCESS_KEY_ID=$FHS_R2_ACCESS_KEY_ID
     - export AWS_SECRET_ACCESS_KEY=$FHS_R2_SECRET_ACCESS_KEY
-    - aws s3 cp "$RPM_FILE" "${BUCKET}/${RPM_FILE}" $ENDPOINT
-    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver-latest.${ARCH}.rpm" $ENDPOINT
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/${RPM_FILE}" $ENDPOINT
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/fcast-receiver-latest.${ARCH}.rpm" $ENDPOINT
   artifacts:
     untracked: false
     when: on_success
