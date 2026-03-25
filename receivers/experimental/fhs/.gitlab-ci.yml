@@ -4,8 +4,9 @@ buildReceiverFhsLinuxX64RPM:
     - fcast-autoscaler
   script:
     - dnf install -y libheif-devel libdrm-devel zig
-    - git clone https://oauth2:${FHS_GH_PAT}@github.com/futo-org/fhs-fiatlux-client.git /tmp/fiatlux-client
-    - cd /tmp/fiatlux-client && zig build install -Ddistribute=true && cd -
+    - git clone --recursive https://oauth2:${FHS_GH_PAT}@github.com/futo-org/fhs-fiatlux-client.git /tmp/fiatlux-client
+    - cd /tmp/fiatlux-client && zig build install -Ddistribute=true
+    - cd $CI_PROJECT_DIR
     - rustup install nightly-2026-01-15
     - rustup default nightly-2026-01-15
     - cargo install cargo-generate-rpm
