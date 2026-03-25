@@ -263,6 +263,8 @@ fn image_decode_worker(
 
     #[cfg(feature = "desktop")]
     libheif_rs::integration::image::register_all_decoding_hooks();
+    hayro_jpeg2000::integration::register_decoding_hook();
+    jxl_oxide::integration::register_image_decoding_hook();
 
     while let Ok((id, job)) = job_rx.recv() {
         debug!(?id, ?job.format, "Got job");
