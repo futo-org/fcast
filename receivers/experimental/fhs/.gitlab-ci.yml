@@ -4,8 +4,8 @@ buildReceiverFhsLinuxX64RPM:
     - fcast-autoscaler
   script:
     - dnf install -y libheif-devel libdrm-devel
-    - curl -L https://ziglang.org/download/0.15.2/zig-linux-x86_64-0.15.2.tar.xz | tar -xJ -C /usr/local
-    - export PATH="/usr/local/zig-linux-x86_64-0.15.2:$PATH"
+    - curl -L https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ -C /usr/local
+    - export PATH="/usr/local/zig-x86_64-linux-0.15.2:$PATH"
     - git clone https://oauth2:${FHS_GH_PAT}@github.com/futo-org/fhs-fiatlux-client.git /tmp/fiatlux-client
     - cd /tmp/fiatlux-client && zig build install -Ddistribute=true && cd -
     - rustup install nightly-2026-01-15
