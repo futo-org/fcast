@@ -261,7 +261,7 @@ fn image_decode_worker(
     let span = debug_span!("image-decoder");
     let _entered = span.enter();
 
-    #[cfg(feature = "desktop")]
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
     libheif_rs::integration::image::register_all_decoding_hooks();
     hayro_jpeg2000::integration::register_decoding_hook();
     jxl_oxide::integration::register_image_decoding_hook();

@@ -3,6 +3,8 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::rc::Rc;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use crate::concat_paths;
 use anyhow::Result;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use camino::Utf8Path;
@@ -12,7 +14,7 @@ use xshell::cmd;
 #[cfg(target_os = "windows")]
 use xshell::Shell;
 
-use crate::{sh, workspace, AndroidAbiTarget};
+use crate::{sh, workspace, AndroidAbiTarget, BuildMacosInstallerArgs};
 
 #[cfg(target_os = "windows")]
 const GSTREAMER_BASE_LIBS: [&'static str; 20] = [
@@ -90,7 +92,7 @@ struct ProductTemplate {
 
 #[cfg(target_os = "macos")]
 #[derive(askama::Template)]
-#[template(path = "Info.plist.askama")]
+#[template(path = "sender.Info.plist.askama")]
 struct InfoPlistTemplate {
     version: String,
 }
@@ -120,18 +122,6 @@ pub struct AndroidSenderArgs {
     pub gstreamer_root_override: Option<String>,
 }
 
-#[derive(Args)]
-pub struct BuildMacosInstallerArgs {
-    #[clap(long, default_value = "false")]
-    pub sign: bool,
-    #[clap(long)]
-    pub p12_file: Option<String>,
-    #[clap(long)]
-    pub p12_password_file: Option<String>,
-    #[clap(long)]
-    pub api_key_file: Option<String>,
-}
-
 #[derive(Subcommand)]
 pub enum SenderCommand {
     Android(AndroidSenderArgs),
@@ -158,13 +148,6 @@ fn get_sender_version() -> String {
 fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
     let mut res = a.clone();
     res.push(b);
-    res
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn concat_paths(paths: &[impl AsRef<Utf8Path>]) -> Utf8PathBuf {
-    let mut res = Utf8PathBuf::new();
-    res.extend(paths);
     res
 }
 
@@ -624,12 +607,6 @@ impl SenderArgs {
                         .collect()
                 }
 
-                let gstreamer_root =
-                    Utf8PathBuf::from("/Library/Frameworks/GStreamer.framework/Versions/1.0");
-                assert!(gstreamer_root.exists(), "GStreamer is not installed");
-                println!("GStreamer root is: {gstreamer_root:?}");
-                let gstreamer_root_libs = gstreamer_root.join("lib");
-
                 let path_to_dmg_dir = root_path.join("target").join("fcast-sender-dmg");
                 let app_top_level = path_to_dmg_dir.join("FCast Sender.app");
                 let build_dir_root = app_top_level.join("Contents").join("MacOS");
@@ -643,198 +620,36 @@ impl SenderArgs {
                 let library_target_directory = build_dir_root.join("lib");
                 sh.create_dir(&library_target_directory)?;
 
-                cmd!(sh, "cargo build --profile release-lto --package desktop-sender").run()?;
+                cmd!(
+                    sh,
+                    "cargo build --profile release-lto --package desktop-sender"
+                )
+                .run()?;
 
-                let binary_path =
-                    concat_paths(&[root_path.as_str(), "target", "release-lto", "desktop-sender"]);
+                let binary_path = concat_paths(&[
+                    root_path.as_str(),
+                    "target",
+                    "release-lto",
+                    "desktop-sender",
+                ]);
 
                 std::fs::copy(&binary_path, build_dir_root.join("fcast-sender"))?;
 
-                fn is_macos_system_library(path: &str) -> bool {
-                    path.starts_with("/usr/lib/")
-                        || path.starts_with("/System/Library/")
-                        || path.contains(".asan.")
-                }
-
-                use std::collections::HashSet;
-
                 use askama::Template;
 
-                fn find_non_system_dependencies_with_otool(
-                    binary_path: &Utf8PathBuf,
-                ) -> HashSet<Utf8PathBuf> {
-                    let binary_path = binary_path.as_str();
-                    let mut cmd = Command::new("/usr/bin/otool");
-                    cmd.arg("-L").arg(&binary_path);
-                    let output = cmd.stdout(std::process::Stdio::piped()).spawn().unwrap();
-
-                    let stdout = output.stdout.expect("failed to capture otool stdout");
-                    use std::io::{BufRead, BufReader};
-                    let reader = BufReader::new(stdout);
-
-                    let mut result = HashSet::new();
-
-                    for line in reader.lines() {
-                        let line = line.unwrap();
-                        if !line.starts_with('\t') {
-                            continue;
-                        }
-                        if let Some((dep, _)) = line[1..].split_once(char::is_whitespace) {
-                            let dependency = dep.to_string();
-                            if !is_macos_system_library(&dependency)
-                                && !dependency.contains("librustc-stable_rt")
-                            {
-                                result.insert(Utf8PathBuf::from(dependency));
-                            }
-                        } else {
-                            let dependency = line[1..].to_string();
-                            if !is_macos_system_library(&dependency)
-                                && !dependency.contains("librustc-stable_rt")
-                            {
-                                result.insert(Utf8PathBuf::from(dependency));
-                            }
-                        }
-                    }
-
-                    result
-                }
-
-                println!("############### Finding libraries ###############");
+                let binary_dependencies = crate::find_libraries(&binary_path, plugins());
 
                 let relative_path = Utf8PathBuf::from("lib/");
-                let mut binary_dependencies = find_non_system_dependencies_with_otool(&binary_path);
-                for dep in plugins() {
-                    let dep_path = gstreamer_root_libs.join("gstreamer-1.0").join(dep);
-                    assert!(dep_path.exists(), "Missing plugin `{dep_path}`");
-                    println!("Found `{dep_path}`");
-                    binary_dependencies.insert(dep_path);
-                }
-
-                pub fn rewrite_dependencies_to_be_relative(
-                    binary: &Utf8PathBuf,
-                    dependency_lines: &HashSet<Utf8PathBuf>,
-                    relative_path: &Utf8PathBuf,
-                ) {
-                    for dep in dependency_lines {
-                        if is_macos_system_library(dep.as_str()) || dep.starts_with("@rpath/") {
-                            continue;
-                        }
-
-                        let basename = Utf8Path::new(dep)
-                            .file_name()
-                            .unwrap_or_else(|| dep.as_str());
-
-                        let new_path = Utf8PathBuf::from("@executable_path")
-                            .join(relative_path)
-                            .join(basename);
-
-                        let status = Command::new("install_name_tool")
-                            .arg("-change")
-                            .arg(dep)
-                            .arg(new_path.as_str())
-                            .arg(binary.as_str())
-                            .status()
-                            .unwrap();
-
-                        if !status.success() {
-                            panic!(
-                                "{:?} install_name_tool exited with return value {:?}",
-                                [
-                                    "install_name_tool",
-                                    "-change",
-                                    dep.as_str(),
-                                    new_path.as_str(),
-                                    binary.as_str()
-                                ],
-                                status.code(),
-                            );
-                        }
-                    }
-                }
 
                 println!("############### Rewriting dependencies to be relative ###############");
-                rewrite_dependencies_to_be_relative(
+
+                crate::rewrite_dependencies_to_be_relative(
                     &binary_path,
                     &binary_dependencies,
                     &relative_path,
                 );
 
-                pub fn make_rpath_path_absolute(
-                    dylib_path_from_otool: &str,
-                    rpath: &Utf8Path,
-                ) -> Utf8PathBuf {
-                    if !dylib_path_from_otool.starts_with("@rpath/") {
-                        return Utf8PathBuf::from(dylib_path_from_otool);
-                    }
-
-                    let path_relative_to_rpath = &dylib_path_from_otool["@rpath/".len()..];
-                    let candidates = ["", "..", "gstreamer-1.0"];
-
-                    for relative_directory in &candidates {
-                        let mut full = Utf8PathBuf::from(rpath);
-                        if !relative_directory.is_empty() {
-                            full.push(relative_directory);
-                        }
-                        full.push(path_relative_to_rpath);
-
-                        if full.exists() {
-                            let normalized = std::fs::canonicalize(&full)
-                                .map(|p| Utf8PathBuf::try_from(p).unwrap())
-                                .unwrap_or(full);
-                            return normalized;
-                        }
-                    }
-
-                    panic!(
-                        "Unable to satisfy rpath dependency: {}",
-                        dylib_path_from_otool
-                    );
-                }
-
-                println!("############### Processing dependencies ###############");
-
-                let mut pending_to_be_copied: HashSet<Utf8PathBuf> = binary_dependencies.clone();
-                let mut already_copied: HashSet<Utf8PathBuf> = HashSet::new();
-                while !pending_to_be_copied.is_empty() {
-                    let checking: HashSet<Utf8PathBuf> = pending_to_be_copied.drain().collect();
-
-                    for otool_dependency in checking {
-                        already_copied.insert(otool_dependency.clone());
-
-                        let original_dylib_path = make_rpath_path_absolute(
-                            otool_dependency.as_str(),
-                            &gstreamer_root_libs,
-                        );
-                        let transitive_dependencies = HashSet::from_iter(
-                            find_non_system_dependencies_with_otool(&original_dylib_path)
-                                .into_iter(),
-                        );
-
-                        let new_dylib_path = library_target_directory.join(
-                            Utf8Path::new(&original_dylib_path)
-                                .file_name()
-                                .unwrap_or(original_dylib_path.as_str()),
-                        );
-
-                        if !new_dylib_path.exists() {
-                            std::fs::copy(&original_dylib_path, &new_dylib_path)?;
-                            rewrite_dependencies_to_be_relative(
-                                &new_dylib_path,
-                                &transitive_dependencies,
-                                &relative_path,
-                            );
-                            if !new_dylib_path.ends_with("libMoltenVK.dylib") {
-                                cmd!(sh, "strip -x {new_dylib_path}").run()?;
-                            }
-                        }
-
-                        let mut to_queue = transitive_dependencies;
-                        for seen in &already_copied {
-                            to_queue.remove(seen);
-                        }
-                        pending_to_be_copied.extend(to_queue);
-                    }
-                }
+                crate::process_dependencies(&sh, binary_dependencies, library_target_directory);
 
                 println!("############### Writing resources ###############");
 
@@ -856,42 +671,25 @@ impl SenderArgs {
                     info_plist,
                 )?;
                 let applications_link_path = path_to_dmg_dir.join("Applications");
-                // std::os::unix::fs::symlink(
-                //     Utf8PathBuf::from("/Applications"),
-                //     path_to_dmg_dir.join("Applications"),
-                // )?;
 
                 let path_to_dmg = root_path
                     .join("target")
                     .join(format!("fcast-sender-{sender_version}-macos-aarch64.dmg"));
                 sh.remove_path(&path_to_dmg)?;
 
-                if sign {
-                    println!("############### Signing ###############");
-                    let p12_file = p12_file.unwrap();
-                    let p12_password_file = p12_password_file.unwrap();
-                    cmd!(sh, "rcodesign sign --p12-file {p12_file} --p12-password-file {p12_password_file} --code-signature-flags runtime {app_top_level}/Contents/MacOS/fcast-sender").run()?;
-                    cmd!(sh, "rcodesign sign --p12-file {p12_file} --p12-password-file {p12_password_file} {app_top_level}").run()?;
-                }
-
-                println!("############### Creating tarball ###############");
-
-                cmd!(sh, "tar -czf target/fcast-sender-{sender_version}-macos-aarch64.tar.gz -C {path_to_dmg_dir} 'FCast Sender.app'").run()?;
-
-                println!("############### Creating dmg ###############");
-
-                std::os::unix::fs::symlink(
-                    Utf8PathBuf::from("/Applications"),
+                crate::create_package(
+                    &sh,
+                    crate::AppType::Sender,
+                    sender_version,
+                    app_top_level,
                     applications_link_path,
-                )?;
-
-                cmd!(sh, "hdiutil create -volname FCastSender -megabytes 250 {path_to_dmg} -srcfolder {path_to_dmg_dir}").run()?;
-
-                if sign {
-                    println!("############### Notarizing ###############");
-                    let api_key_file = api_key_file.unwrap();
-                    cmd!(sh, "rcodesign notary-submit --api-key-file {api_key_file} --wait {path_to_dmg}").run()?;
-                }
+                    path_to_dmg,
+                    path_to_dmg_dir,
+                    sign,
+                    p12_file,
+                    p12_password_file,
+                    api_key_file,
+                );
             }
         }
 
