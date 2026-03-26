@@ -1,6 +1,6 @@
-import { Icons, FText, Button } from "../../../../../senders/ui-components/std-widgets.slint";
+import { Icons, FText, Button, } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge } from "../globals.slint";
-import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub } from "../common.slint";
+import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub, VolumePreview } from "../common.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
 
 component PlaylistControlButton inherits Button {
@@ -121,5 +121,10 @@ export component AudioPlayerView inherits Rectangle {
                 PlaylistControlButton { }
             }
         }
+    }
+
+    VolumePreview {
+        width: 100%;
+        height: 100%;
     }
 }

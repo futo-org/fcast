@@ -1,7 +1,7 @@
 import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge } from "../globals.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
-import { ScrubbyMcScrub } from "../common.slint";
+import { ScrubbyMcScrub, VolumePreview } from "../common.slint";
 
 export component RaopView inherits Rectangle {
     background: FCastPalette.neutral-1100;
@@ -78,5 +78,10 @@ export component RaopView inherits Rectangle {
         }
 
         if Bridge.playback-position > 0.0: ScrubbyMcScrub { }
+    }
+
+    VolumePreview {
+        width: 100%;
+        height: 100%;
     }
 }

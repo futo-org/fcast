@@ -261,7 +261,10 @@ fn image_decode_worker(
     let span = debug_span!("image-decoder");
     let _entered = span.enter();
 
-    // libheif_rs::integration::image::register_all_decoding_hooks();
+    #[cfg(feature = "desktop")]
+    libheif_rs::integration::image::register_all_decoding_hooks();
+    hayro_jpeg2000::integration::register_decoding_hook();
+    jxl_oxide::integration::register_image_decoding_hook();
 
     while let Ok((id, job)) = job_rx.recv() {
         debug!(?id, ?job.format, "Got job");
@@ -1265,11 +1268,14 @@ impl Application {
                     error!("Cannot set playlist item when no playlist is loaded");
                 }
             }
-            Operation::SetVolume(set_volume_msg) => {
-                // if !self.volume_lock.is_locked() {
-                //     self.volume_lock.acquire();
-                self.player.set_volume(set_volume_msg.volume);
-                // }
+            Operation::SetVolume(msg) => {
+                let volume = msg.volume;
+                self.player.set_volume(volume);
+                self.ui_weak.upgrade_in_event_loop(move |ui| {
+                    let bridge = ui.global::<Bridge>();
+                    bridge.set_volume(volume as f32);
+                    bridge.set_volume_set_at(1.0);
+                })?;
             }
         }
 
@@ -1447,9 +1453,6 @@ impl Application {
             player::PlayerEvent::VolumeChanged(volume) => {
                 self.player.volume_changed();
 
-                self.ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<Bridge>().set_volume(volume as f32);
-                })?;
                 if self.updates_tx.receiver_count() > 0 {
                     let update = VolumeUpdateMessage {
                         generation_time: current_time_millis(),

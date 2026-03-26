@@ -1023,8 +1023,6 @@ impl Player {
     }
 
     pub fn pause(&mut self) {
-        self.dump_graph(remote_pipeline_dbg::Trigger::Pause);
-
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
             self.set_state_async(state);
         }
