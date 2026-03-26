@@ -44,6 +44,10 @@ oneshot = { version = "0.2", features = ["std"] }
 ctrlc.workspace = true
 libplacebo.path = "../../../crates/libplacebo"
 
+hayro-jpeg2000 = "0.3"
+jxl-oxide = { version = "0.12", features = ["image"] }
+libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
+
 # RAOP
 rtsp-types = "0.1"
 sdp-types = "0.1"
