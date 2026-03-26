@@ -11,7 +11,7 @@ pub const RECEIVER_NAMESPACE: &str = "urn:x-cast:com.google.cast.receiver";
 pub const MEDIA_NAMESPACE: &str = "urn:x-cast:com.google.cast.media";
 pub const CONNECTION_NAMESPACE: &str = "urn:x-cast:com.google.cast.tp.connection";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Volume {
     /// Current stream volume level as a value between 0.0 and 1.0 where 1.0 is
     /// the maximum volume.
@@ -20,7 +20,7 @@ pub struct Volume {
     pub muted: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum StreamType {
     #[serde(rename = "NONE")]
     None,
@@ -30,12 +30,12 @@ pub enum StreamType {
     Live,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Image {
     pub url: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Metadata {
     Generic {
         title: Option<String>,
@@ -153,7 +153,7 @@ impl<'de> Deserialize<'de> for Metadata {
 }
 
 /// <https://developers.google.com/cast/docs/media/messages#MediaInformation>
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MediaInformation {
     /// Service-specific identifier of the content currently loaded by the media
     /// player. This is a free form string and is specific to the
@@ -172,7 +172,7 @@ pub struct MediaInformation {
     pub duration: Option<f64>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum IdleReason {
     /// A sender requested to stop playback using the STOP command
     #[serde(rename = "CANCELLED")]
@@ -189,7 +189,7 @@ pub enum IdleReason {
     Error,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub enum PlayerState {
     /// Player has not been loaded yet
     #[serde(rename = "IDLE")]
@@ -210,7 +210,7 @@ pub enum PlayerState {
 /// session.
 ///
 /// <https://developers.google.com/cast/docs/media/messages#MediaStatus>
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MediaStatus {
     /// Unique ID for the playback of this specific session. This ID is set by
     /// the receiver at LOAD and can be used to identify a specific instance
@@ -380,7 +380,9 @@ pub mod namespaces {
         #[serde(rename = "CONNECT")]
         Connect {
             #[serde(rename = "connType")]
-            conn_type: u64,
+            conn_type: Option<u64>,
+            #[serde(rename = "requestId")]
+            request_id: Option<u64>,
         },
         #[serde(rename = "CLOSE")]
         Close,
@@ -540,7 +542,7 @@ pub mod namespaces {
         Stop {
             /// ID of the media session for the content to be stopped
             #[serde(rename = "mediaSessionId")]
-            media_session_id: String,
+            media_session_id: Option<String>,
             /// ID of the request, to correlate request and response
             #[serde(rename = "requestId")]
             request_id: u64,

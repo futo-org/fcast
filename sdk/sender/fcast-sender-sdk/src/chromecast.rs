@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Result};
 use futures::StreamExt;
-use googlecast_protocol::{
+use google_cast_protocol::{
     self as protocol, namespaces, prost::Message, protos, MediaInformation, PlayerState, QueueItem,
     QueueRepeatMode, StreamType, CONNECTION_NAMESPACE, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE,
     RECEIVER_NAMESPACE,
@@ -34,7 +34,8 @@ use crate::{
         DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, MediaItem,
         Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
     },
-    googlecast_protocol, utils, IpAddr,
+    // googlecast_protocol, utils, IpAddr,
+    utils, IpAddr,
 };
 
 const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
@@ -502,7 +503,7 @@ impl InnerDevice {
                                     self.transport_id = Some(application.transport_id);
 
                                     self.send_media_channel_message(
-                                        namespaces::Connection::Connect { conn_type: 0 },
+                                        namespaces::Connection::Connect { conn_type: Some(0) },
                                     )
                                     .await?;
 
@@ -566,7 +567,7 @@ impl InnerDevice {
                                     speed: None,
                                     show_duration: media.duration,
                                     metadata: media.metadata.map(|meta| match meta {
-                                        googlecast_protocol::Metadata::Generic {
+                                        google_cast_protocol::Metadata::Generic {
                                             title,
                                             images,
                                             ..
@@ -599,7 +600,7 @@ impl InnerDevice {
                             self.current_player_state = stat.player_state;
                             if let Some(idle_reason) = stat.idle_reason {
                                 match idle_reason {
-                                    googlecast_protocol::IdleReason::Finished
+                                    google_cast_protocol::IdleReason::Finished
                                         if self
                                             .subscriptions
                                             .contains(&EventSubscription::MediaItemEnd) =>
@@ -689,7 +690,7 @@ impl InnerDevice {
         self.send_channel_message(
             "sender-0",
             "receiver-0",
-            namespaces::Connection::Connect { conn_type: 0 },
+            namespaces::Connection::Connect { conn_type: Some(0) },
         )
         .await?;
 

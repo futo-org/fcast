@@ -44,6 +44,9 @@ pub use slint;
 pub use tracing;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
+mod player;
+mod session;
+mod gcast;
 mod graphics;
 mod gui;
 #[cfg(all(target_os = "linux", feature = "systray"))]
@@ -192,6 +195,7 @@ macro_rules! log_if_err {
 }
 
 const FCAST_TCP_PORT: u16 = 46899;
+const GCAST_TCP_PORT: u16 = 8009;
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(700);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
@@ -418,6 +422,7 @@ struct Application {
     gui: GuiController,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     update: Option<app_updater::Release>,
+    gcast_tx: UnboundedSender<gcast::StatusUpdate>,
 }
 
 impl Application {
@@ -533,6 +538,24 @@ impl Application {
 
             daemon.register(service)?;
 
+            let gcast_props = HashMap::from([
+                ("fn".to_owned(), "My FCast Receiver".to_owned()),
+                ("ca".to_owned(), "1".to_owned()), // Has display
+            ]);
+
+            let gcast_service = mdns_sd::ServiceInfo::new(
+                "_googlecast._tcp.local.",
+                &device_name,
+                &format!("{device_name}.local."),
+                (), // Auto
+                GCAST_TCP_PORT,
+                gcast_props,
+                // None::<std::collections::HashMap<String, String>>,
+            )?
+            .enable_addr_auto();
+
+            daemon.register(gcast_service)?;
+
             let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
             daemon.register(raop_service).unwrap();
 
@@ -553,6 +576,10 @@ impl Application {
 
             daemon
         };
+
+        let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
+
+        tokio::spawn(gcast::run_server(event_tx.clone(), gcast_rx));
 
         let (image_decode_tx, image_decode_rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
@@ -647,6 +674,7 @@ impl Application {
             gui,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             update: None,
+            gcast_tx,
         })
     }
 
@@ -727,6 +755,13 @@ impl Application {
             }
         };
         let duration = duration.seconds_f64();
+
+        let _ = self.gcast_tx.send(gcast::StatusUpdate::Duration(duration));
+        let _ = self.gcast_tx.send(gcast::StatusUpdate::Position(position));
+        let _ = self
+            .gcast_tx
+            .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
+
         let is_live = self.player.is_live();
         let playback_state = {
             match self.player.player_state() {
@@ -1430,6 +1465,8 @@ impl Application {
                     self.updates_tx.send(Arc::new(msg))?;
                     self.last_sent_update = Instant::now();
                 }
+
+                let _ = self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
             }
             player::PlayerEvent::StreamCollection(collection) => {
                 self.player.handle_stream_collection(collection);
@@ -2149,6 +2186,8 @@ pub fn run(
         let filter = tracing_subscriber::filter::Targets::new()
             .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
             .with_target("mdns_sd", LevelFilter::INFO)
+            .with_target("hyper_util", LevelFilter::INFO)
+            .with_target("h2", LevelFilter::INFO)
             .with_default(log_level);
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
