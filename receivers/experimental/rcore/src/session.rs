@@ -378,10 +378,13 @@ macro_rules! err_json {
 
 macro_rules! option_err_json {
     ($t:ty, $body:expr) => {
-        serde_json::from_str::<$t>($body)
-            .map_err(|_| StateError::InvalidJson)
-            .map_err(|err| Some(err))
-            .ok()?
+        match serde_json::from_str::<$t>($body) {
+            Ok(obj) => obj,
+            Err(err) => {
+                error!(?err, "Failed to decode json object");
+                return Some(Err(StateError::InvalidJson));
+            }
+        }
     };
 }
 
@@ -455,7 +458,7 @@ impl State {
         body: Option<&str>,
     ) -> Option<Result<Action, StateError>> {
         Some(Ok(match opcode {
-            Opcode::None => todo!(),
+            Opcode::None => Action::None,
             Opcode::Play => {
                 let msg = option_err_json!(v3::PlayMessage, option_err_body!(body));
                 Action::Op(Operation::Play(msg))
@@ -525,8 +528,6 @@ impl State {
         if !matches!(v2_res, Err(StateError::IllegalOpcode(_))) {
             return v2_res;
         }
-
-        debug!(?opcode);
 
         Ok(match opcode {
             Opcode::Initial => {
