@@ -74,3 +74,30 @@ sender_sdk_csharp_task:
 
   binary_artifacts:
     path: target/*-apple-darwin/release/libfcast_sender_sdk.dylib
+
+desktop_receiver_task:
+  name: buildReceiverMacosArm64
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+  buildReceiverMac_script:
+    - brew install rustup-init wget
+    - rustup-init -y
+    - rustup target add aarch64-apple-darwin
+    - rustup default nightly
+    - source $HOME/.cargo/env
+
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+
+    # Download and install gstreamer
+    - wget -q "https://gstreamer.freedesktop.org/data/pkg/osx/1.28.1/gstreamer-1.0-1.28.1-universal.pkg" -O /tmp/gst-1.0-1.28.1-universal.pkg
+    - wget -q "https://gstreamer.freedesktop.org/data/pkg/osx/1.28.1/gstreamer-1.0-devel-1.28.1-universal.pkg" -O /tmp/gst-1.0-devel-1.28.1-universal.pkg
+    - sudo installer -pkg /tmp/gst-1.0-1.28.1-universal.pkg -target /
+    - sudo installer -pkg /tmp/gst-1.0-devel-1.28.1-universal.pkg -target /
+    - export PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig
+    - export PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/bin:$PATH
+    - export DYLD_LIBRARY_PATH=/Library/Frameworks/GStreamer.framework/Libraries:$DYLD_LIBRARY_PATH
+
+    - cargo install apple-codesign
+    - cargo xtask receiver build-macos-installer --sign --p12-file=./.secure_files/Certificates.p12 --p12-password-file=./.secure_files/p12_certs_password --api-key-file=./.secure_files/notary_key.json
+  binary_artifacts:
+    path: target/fcast-receiver-*.*
