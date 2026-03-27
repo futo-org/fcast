@@ -42,7 +42,7 @@ tracing-gstreamer = "0.9.0"
 tracing-panic = "0.1.2"
 parking_lot = "0.12.5"
 # slint = { path = "../slint/api/rs/slint", default-features = false }
-slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "f976d8c7958bddbba14a9f4632b8d3302cea96f6", default-features = false, features = ["renderer-femtovg"] }
+slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "f976d8c7958bddbba14a9f4632b8d3302cea96f6", default-features = false }
 # slint-build = { path = "../slint/api/rs/build" }
 slint-build = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "f976d8c7958bddbba14a9f4632b8d3302cea96f6" }
 clap = { version = "4.5", features = ["derive"] }
