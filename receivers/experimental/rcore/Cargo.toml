@@ -39,7 +39,6 @@ tracing-tracy = { version = "=0.11.2", optional = true }
 
 hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
-libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 
 # RAOP
 rtsp-types = "0.1"
@@ -108,6 +107,8 @@ glutin_glx_sys = { version = "0.6.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
 ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
+# TODO: add this to all targets once linking is figured out
+libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = { version = "0.21.3", default-features = false, optional = true }
