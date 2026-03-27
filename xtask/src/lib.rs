@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 #[cfg(target_os = "macos")]
 use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(target_os = "macos")]
 use clap::Args;
 use xshell::Shell;
 

@@ -14,7 +14,10 @@ use xshell::cmd;
 #[cfg(target_os = "windows")]
 use xshell::Shell;
 
-use crate::{sh, workspace, AndroidAbiTarget, BuildMacosInstallerArgs};
+use crate::{sh, workspace, AndroidAbiTarget};
+
+#[cfg(target_os = "macos")]
+use crate::BuildMacosInstallerArgs;
 
 #[cfg(target_os = "windows")]
 const GSTREAMER_BASE_LIBS: [&'static str; 20] = [

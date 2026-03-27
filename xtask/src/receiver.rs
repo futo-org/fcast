@@ -1,11 +1,13 @@
 use anyhow::Result;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
 use xshell::cmd;
+#[cfg(target_os = "macos")]
+use camino::Utf8Path;
 
 #[cfg(target_os = "macos")]
-use crate::BuildMacosInstallerArgs;
-use crate::{concat_paths, sh, workspace, AndroidAbiTarget};
+use crate::{concat_paths, BuildMacosInstallerArgs};
+use crate::{sh, workspace, AndroidAbiTarget};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 42] = [
@@ -257,6 +259,7 @@ impl ReceiverArgs {
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
             ReceiverCommand::BuildMacosInstaller(BuildMacosInstallerArgs {
                 sign,
                 p12_file,
