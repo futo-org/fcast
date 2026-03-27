@@ -112,8 +112,8 @@ fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn get_receiver_version() -> String {
-    let sender_toml = std::fs::read_to_string("receivers/experimental/desktop/Cargo.toml").unwrap();
-    let doc = sender_toml.parse::<toml_edit::DocumentMut>().unwrap();
+    let receiver_toml = std::fs::read_to_string("receivers/experimental/desktop/Cargo.toml").unwrap();
+    let doc = receiver_toml.parse::<toml_edit::DocumentMut>().unwrap();
     doc["package"]["version"].as_str().unwrap().to_string()
 }
 
@@ -295,7 +295,7 @@ impl ReceiverArgs {
                     "desktop-receiver",
                 ]);
 
-                std::fs::copy(&binary_path, build_dir_root.join("fcast-sender"))?;
+                std::fs::copy(&binary_path, build_dir_root.join("fcast-receiver"))?;
 
                 use askama::Template;
 
