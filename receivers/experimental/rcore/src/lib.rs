@@ -1014,7 +1014,12 @@ impl Application {
             });
         }
 
-        self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)
+        // Special case for when there's a google cast sender connected
+        if self.updates_tx.receiver_count() == 0 {
+            self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?;
+        }
+
+        Ok(())
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
