@@ -21,6 +21,7 @@ use crate::EventSender;
 
 const MAX_MSG_SIZE: usize = 1000 * 64;
 const MEDIA_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const RECEIVER_ID: &str = "CC1AD845";
 
 use google_cast_protocol::MediaStatus;
 
@@ -93,7 +94,7 @@ async fn send_status(
 ) -> Result<()> {
     let status = google_cast_protocol::Status {
         applications: Some(vec![Application {
-            app_id: "CC1AD845".to_owned(),
+            app_id: RECEIVER_ID.to_owned(),
             app_type: Some("WEB".to_owned()),
             display_name: Some("Default Media Receiver".to_owned()),
             icon_url: Some("".to_owned()),
@@ -105,7 +106,7 @@ async fn send_status(
             session_id: MEDIA_ID.to_owned(),
             status_text: Some("Default Media Receiver".to_owned()),
             transport_id: MEDIA_ID.to_owned(),
-            universal_app_id: Some("CC1AD845".to_owned()),
+            universal_app_id: Some(RECEIVER_ID.to_owned()),
         }]),
         volume: VolumeStatus {
             control_type: "attenuation".to_owned(),
@@ -193,12 +194,12 @@ async fn handle_message(
                 return Ok(EndSession::Yes);
             }
             namespaces::Receiver::Launch { app_id, request_id } => {
-                if app_id == "CC1AD845" {
+                if app_id == RECEIVER_ID {
                     debug!("Launching default receiver");
                     send_status(writer, "receiver-0", &message.source_id, request_id).await?;
                     state.has_launched = true;
                 } else {
-                    todo!();
+                    error!(app_id, "Sender tried to launch an unsupported app");
                 }
             }
             namespaces::Receiver::GetStatus { request_id } => {
