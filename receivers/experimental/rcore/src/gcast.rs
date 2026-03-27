@@ -24,6 +24,7 @@ const MEDIA_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 
 use google_cast_protocol::MediaStatus;
 
+#[derive(Debug)]
 pub enum StatusUpdate {
     Volume(f64),
     Position(f64),
@@ -232,6 +233,8 @@ async fn handle_message(
                     })?;
                     let mut status = state.media_status.write();
                     status.media = Some(media);
+                    status.player_state = google_cast_protocol::PlayerState::Buffering;
+                    status.idle_reason = None;
                 }
                 namespaces::Media::Seek { current_time, .. } => {
                     if let Some(time) = current_time {
@@ -441,7 +444,7 @@ pub async fn run_server(
                             crate::player::PlayerState::Playing => (google_cast_protocol::PlayerState::Playing, None),
                             crate::player::PlayerState::Buffering => (google_cast_protocol::PlayerState::Buffering, None),
                             crate::player::PlayerState::Stopped => (
-                                google_cast_protocol::PlayerState::Buffering,
+                                google_cast_protocol::PlayerState::Idle,
                                 Some(google_cast_protocol::IdleReason::Finished)
                             ),
                         };

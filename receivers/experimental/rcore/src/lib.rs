@@ -44,8 +44,6 @@ pub use slint;
 pub use tracing;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
-mod player;
-mod session;
 mod gcast;
 mod graphics;
 mod gui;
@@ -758,9 +756,6 @@ impl Application {
 
         let _ = self.gcast_tx.send(gcast::StatusUpdate::Duration(duration));
         let _ = self.gcast_tx.send(gcast::StatusUpdate::Position(position));
-        let _ = self
-            .gcast_tx
-            .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
 
         let is_live = self.player.is_live();
         let playback_state = {
@@ -1005,7 +1000,7 @@ impl Application {
         Ok(())
     }
 
-    fn media_ended(&mut self) {
+    fn media_ended(&mut self) -> Result<()> {
         info!("Media finished");
 
         #[cfg(target_os = "android")]
@@ -1018,6 +1013,8 @@ impl Application {
                 );
             });
         }
+
+        self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
@@ -1387,7 +1384,7 @@ impl Application {
 
                 debug!("Player reached EOS");
 
-                self.media_ended();
+                self.media_ended()?;
 
                 // TODO: this should be the last message sent regarding the media currently being played
                 if self.updates_tx.receiver_count() > 0
@@ -1526,6 +1523,10 @@ impl Application {
                 if self.player.state_changed(old, current, pending).is_some() {
                     self.notify_updates(true)?;
                 }
+
+                let _ = self
+                    .gcast_tx
+                    .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
             }
             player::PlayerEvent::UriSet(uri) => {
                 self.player.uri_set(uri);

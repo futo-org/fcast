@@ -172,7 +172,7 @@ pub struct MediaInformation {
     pub duration: Option<f64>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleReason {
     /// A sender requested to stop playback using the STOP command
     #[serde(rename = "CANCELLED")]
@@ -189,7 +189,7 @@ pub enum IdleReason {
     Error,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PlayerState {
     /// Player has not been loaded yet
     #[serde(rename = "IDLE")]
