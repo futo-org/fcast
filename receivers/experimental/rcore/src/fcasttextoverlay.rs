@@ -228,7 +228,7 @@ mod imp {
                 EventView::StreamStart(_) => {
                     state.video_flushing = false;
                     state.video_eos = false;
-                    state.segment = gst::Segment::new();
+                    state.segment.reset_with_format(gst::Format::Time);
                 }
                 EventView::Caps(caps_event) => {
                     self.src_pad.check_reconfigure();
@@ -278,7 +278,7 @@ mod imp {
                 EventView::FlushStop(_) => {
                     state.video_flushing = false;
                     state.video_eos = false;
-                    state.segment = gst::Segment::new();
+                    state.segment.reset_with_format(gst::Format::Time);
                 }
                 _ => (),
             }
@@ -381,6 +381,7 @@ mod imp {
                     }
 
                     if wait_for_text_buf {
+                        gst::debug!(CAT, imp = self, "Waiting for text buffer");
                         self.state_cvar.wait(&mut state);
                         WaitForTextResult::Waiting
                     } else {
@@ -425,6 +426,10 @@ mod imp {
             let Some(start) = start else {
                 return Err(gst::FlowError::Error);
             };
+
+            if end.is_none() && Some(start) < generic_to_time(state.segment.start()) {
+                return out_of_segment(self);
+            }
 
             let Some((clip_start, clip_end)) = state.segment.clip(start, end) else {
                 return out_of_segment(self);
@@ -561,7 +566,7 @@ mod imp {
                 EventView::StreamStart(_) => {
                     state.text_flushing = false;
                     state.text_eos = false;
-                    state.segment = gst::Segment::new();
+                    state.text_segment.reset_with_format(gst::Format::Time);
                     state.text_buffer = None;
                 }
                 EventView::Caps(caps_event) => {
@@ -601,8 +606,9 @@ mod imp {
                     execute_default = false;
                 }
                 EventView::Eos(_) => {
-                    state.text_eos = false;
+                    state.text_eos = true;
                     execute_default = false;
+                    self.state_cvar.notify_all();
                 }
                 EventView::FlushStart(_) => {
                     state.text_flushing = true;
@@ -612,7 +618,7 @@ mod imp {
                 EventView::FlushStop(_) => {
                     state.text_flushing = false;
                     state.text_eos = false;
-                    state.segment = gst::Segment::new();
+                    state.text_segment.reset_with_format(gst::Format::Time);
                     execute_default = false;
                     state.text_buffer = None;
                 }
@@ -752,10 +758,7 @@ mod imp {
             _parent: Option<&gst::Object>,
             query: &mut gst::QueryRef,
         ) -> bool {
-            tracing::debug!(?query, "video sink query (before)");
-            let res = self.video_sink_pad.peer_query(query);
-            tracing::debug!(?query, "video sink query (after)");
-            res
+            self.video_sink_pad.peer_query(query)
         }
     }
 
