@@ -500,7 +500,7 @@ pub mod namespaces {
         Seek {
             /// ID of the media session where the position of the stream is set
             #[serde(rename = "mediaSessionId")]
-            media_session_id: String,
+            media_session_id: serde_json::Value,
             /// ID of the request, to correlate request and response
             #[serde(rename = "requestId")]
             request_id: u64,
@@ -515,7 +515,7 @@ pub mod namespaces {
         #[serde(rename = "PLAY")]
         Resume {
             #[serde(rename = "mediaSessionId")]
-            media_session_id: String,
+            media_session_id: serde_json::Value,
             #[serde(rename = "requestId")]
             request_id: u64,
         },
@@ -526,8 +526,10 @@ pub mod namespaces {
         #[serde(rename = "PAUSE")]
         Pause {
             /// ID of the media session to be paused
+            ///
+            /// Type seems to either be an integer or a string depending on the sender implementation.
             #[serde(rename = "mediaSessionId")]
-            media_session_id: String,
+            media_session_id: serde_json::Value,
             /// ID of the request, to use to correlate request/response
             #[serde(rename = "requestId")]
             request_id: u64,
@@ -542,7 +544,7 @@ pub mod namespaces {
         Stop {
             /// ID of the media session for the content to be stopped
             #[serde(rename = "mediaSessionId")]
-            media_session_id: Option<String>,
+            media_session_id: Option<serde_json::Value>,
             /// ID of the request, to correlate request and response
             #[serde(rename = "requestId")]
             request_id: u64,

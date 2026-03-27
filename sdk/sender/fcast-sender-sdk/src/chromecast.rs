@@ -277,7 +277,7 @@ impl InnerDevice {
     async fn stop_playback(&mut self) -> anyhow::Result<()> {
         let request_id = self.request_id.inc();
         self.send_media_channel_message(namespaces::Media::Stop {
-            media_session_id: self.media_session_id.to_string(),
+            media_session_id: Some(json::Value::String(self.media_session_id.to_string())),
             request_id,
         })
         .await
@@ -402,7 +402,7 @@ impl InnerDevice {
             Command::Seek(time_seconds) => {
                 let request_id = self.request_id.inc();
                 self.send_media_channel_message(namespaces::Media::Seek {
-                    media_session_id: self.media_session_id.to_string(),
+                    media_session_id: json::Value::String(self.media_session_id.to_string()),
                     request_id,
                     current_time: Some(time_seconds),
                 })
@@ -412,7 +412,7 @@ impl InnerDevice {
             Command::PausePlayback => {
                 let request_id = self.request_id.inc();
                 self.send_media_channel_message(namespaces::Media::Pause {
-                    media_session_id: self.media_session_id.to_string(),
+                    media_session_id: json::Value::String(self.media_session_id.to_string()),
                     request_id,
                 })
                 .await?;
@@ -420,7 +420,7 @@ impl InnerDevice {
             Command::ResumePlayback => {
                 let request_id = self.request_id.inc();
                 self.send_media_channel_message(namespaces::Media::Resume {
-                    media_session_id: self.media_session_id.to_string(),
+                    media_session_id: json::Value::String(self.media_session_id.to_string()),
                     request_id,
                 })
                 .await?;
@@ -503,7 +503,7 @@ impl InnerDevice {
                                     self.transport_id = Some(application.transport_id);
 
                                     self.send_media_channel_message(
-                                        namespaces::Connection::Connect { conn_type: Some(0) },
+                                        namespaces::Connection::Connect { conn_type: Some(0), request_id: None },
                                     )
                                     .await?;
 
@@ -690,7 +690,7 @@ impl InnerDevice {
         self.send_channel_message(
             "sender-0",
             "receiver-0",
-            namespaces::Connection::Connect { conn_type: Some(0) },
+            namespaces::Connection::Connect { conn_type: Some(0), request_id: None },
         )
         .await?;
 
