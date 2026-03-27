@@ -266,6 +266,23 @@ impl slint::platform::Platform for FiatLuxPlatform {
                         None => break,
                     };
 
+                    const WINDOW_RESIZED: u8 =
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
+                    match event.header.event_type {
+                        WINDOW_RESIZED => {
+                            fiatlux::fl_egl_window_framebuffer_resize(
+                                self.window.render_buffer.get(),
+                                event.window_resized.width,
+                                event.window_resized.height,
+                            );
+                            self.window.set_size(slint::PhysicalSize::new(
+                                event.window_resized.width,
+                                event.window_resized.height,
+                            ));
+                        }
+                        _ => {}
+                    }
+
                     fiatlux::fl_free_event(event);
                 }
             }
