@@ -4379,7 +4379,6 @@ dependencies = [
  "i-slint-core",
  "i-slint-core-macros",
  "i-slint-renderer-femtovg",
- "i-slint-renderer-skia",
 ]
 
 [[package]]

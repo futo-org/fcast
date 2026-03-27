@@ -65,7 +65,7 @@ features = [
     "accessibility",
     "backend-winit",
     "compat-1-2",
-    "renderer-skia-opengl",
+    "renderer-femtovg",
     "std",
 ]
 
