@@ -46,7 +46,6 @@ pub use tracing;
 mod fcastwhepsrcbin;
 mod player;
 mod session;
-// mod small_vec_model; // For later
 mod graphics;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
