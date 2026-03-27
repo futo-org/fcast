@@ -11,11 +11,14 @@ use clap::Args;
 use xshell::Shell;
 
 pub mod android;
+#[cfg(feature = "uniffi")]
 pub mod csharp;
+#[cfg(feature = "uniffi")]
 pub mod kotlin;
 pub mod mdns;
 pub mod receiver;
 pub mod sender;
+#[cfg(feature = "uniffi")]
 pub mod swift;
 #[allow(unused_imports)]
 pub mod test_corpus;
