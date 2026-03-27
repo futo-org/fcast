@@ -417,6 +417,11 @@ mod imp {
                 return out_of_segment(self);
             }
 
+            if state.segment.format() == gst::Format::Undefined {
+                gst::debug!(CAT, imp = self, "Segment has undefined format");
+                return Ok(gst::FlowSuccess::Ok);
+            }
+
             let Some(start) = start else {
                 return Err(gst::FlowError::Error);
             };
