@@ -1,8 +1,69 @@
-use anyhow::Result;
-use tracing::instrument;
+use std::{sync::Arc, time::Duration};
 
-#[cfg(target_os = "linux")]
-use gst::prelude::*;
+use anyhow::Result;
+use gst_gl::{GLDisplay, prelude::*};
+use parking_lot::{Condvar, Mutex};
+use tracing::{debug, error, instrument};
+
+#[derive(Clone)]
+pub struct GlContext {
+    pub contexts: Arc<Mutex<Option<(GLDisplay, gst_gl::GLContext)>>>,
+    cvar: Arc<Condvar>,
+}
+
+impl GlContext {
+    pub fn new() -> Self {
+        Self {
+            contexts: Default::default(),
+            cvar: Arc::new(Condvar::new()),
+        }
+    }
+
+    pub fn set_contexts(&self, display: GLDisplay, context: gst_gl::GLContext) {
+        *self.contexts.lock() = Some((display, context));
+        self.cvar.notify_all();
+    }
+
+    pub fn deactivate_and_clear(&self) {
+        if let Some((_display, gl_context)) = self.contexts.lock().take() {
+            let _ = gl_context.activate(false);
+        }
+    }
+
+    #[instrument(skip_all)]
+    pub fn handle_need_context_msg(&self, typ: &str, element: &gst::Element) {
+        if typ != *gst_gl::GL_DISPLAY_CONTEXT_TYPE && typ != "gst.gl.app_context" {
+            return;
+        }
+
+        let max_retries = 3;
+        for i in 0..max_retries {
+            let mut contexts = self.contexts.lock();
+            match contexts.as_ref() {
+                Some((display, context)) => {
+                    debug!(typ, "Providing context");
+                    if typ == *gst_gl::GL_DISPLAY_CONTEXT_TYPE {
+                        let display_ctx = gst::Context::new(typ, true);
+                        display_ctx.set_gl_display(display);
+                        element.set_context(&display_ctx);
+                    } else if typ == "gst.gl.app_context" {
+                        let mut app_ctx = gst::Context::new(typ, true);
+                        let structure = app_ctx.get_mut().unwrap().structure_mut();
+                        debug!(app_context_display_type = ?context.display().handle_type());
+                        structure.set("context", &context);
+                        element.set_context(&app_ctx);
+                    }
+                }
+                None if i < max_retries - 1 => {
+                    debug!("Context not available yet, waiting");
+                    self.cvar
+                        .wait_for(&mut contexts, Duration::from_millis(300));
+                }
+                _ => error!("No context available, maximum wait time reached"),
+            }
+        }
+    }
+}
 
 #[allow(clippy::large_enum_variant)]
 pub enum GraphicsContext {
@@ -71,7 +132,7 @@ impl GraphicsContext {
     }
 
     #[instrument(skip_all)]
-    pub fn get_gst_contexts(&self) -> Option<(gst_gl::GLContext, gst_gl::GLDisplay)> {
+    pub fn get_gst_contexts(&self) -> Option<(gst_gl::GLContext, GLDisplay)> {
         match &self {
             #[cfg(target_os = "linux")]
             GraphicsContext::Egl(egl) => {
@@ -129,8 +190,7 @@ impl GraphicsContext {
                     bail!("Failed to create GL context");
                 }
 
-                let Some(gst_display) = gst_gl::GLDisplay::with_type(gst_gl::GLDisplayType::WIN32)
-                else {
+                let Some(gst_display) = GLDisplay::with_type(gst_gl::GLDisplayType::WIN32) else {
                     bail!("Failed to create GLDisplay of type WIN32");
                 };
 
@@ -155,7 +215,7 @@ impl GraphicsContext {
                     panic!("Failed to get handle from CGL");
                 }
 
-                let gst_display = gst_gl::GLDisplay::new();
+                let gst_display = GLDisplay::new();
                 unsafe {
                     let wrapped_context =
                         gst_gl::GLContext::new_wrapped(&gst_display, gl_ctx, platform, gl_api);

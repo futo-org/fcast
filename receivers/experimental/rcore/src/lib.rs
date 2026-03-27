@@ -426,10 +426,7 @@ impl Application {
         appsink: gst::Element,
         event_tx: EventSender,
         video_sink_is_eos: Arc<AtomicBool>,
-        #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
-        contexts: std::sync::Arc<
-            parking_lot::Mutex<Option<(gst_gl::GLDisplay, gst_gl::GLContext)>>,
-        >,
+        gl_context: graphics::GlContext,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -443,7 +440,7 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, event_tx.clone(), contexts)?;
+        let player = player::Player::new(appsink, event_tx.clone(), gl_context)?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -989,6 +986,10 @@ impl Application {
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
+        self.ui_weak.upgrade_in_event_loop(|ui| {
+            let _ = ui.window().show();
+        })?;
+
         let mut url = if let Some(url) = media_item.url.clone() {
             url
         } else {
@@ -2183,9 +2184,7 @@ pub fn run(
         );
     }
 
-    let gst_gl_contexts = std::sync::Arc::new(parking_lot::Mutex::new(
-        None::<(gst_gl::GLDisplay, gst_gl::GLContext)>,
-    ));
+    let gst_gl_contexts = graphics::GlContext::new();
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
     let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
@@ -2215,7 +2214,7 @@ pub fn run(
 
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
-        let gst_gl_contexts = std::sync::Arc::clone(&gst_gl_contexts);
+        let gst_gl_contexts = gst_gl_contexts.clone();
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
         let mut prev_size = (0, 0);
@@ -2256,7 +2255,7 @@ pub fn run(
 
                     slint_sink.gst_gl_context = Some(gst_gl_context.clone());
 
-                    *gst_gl_contexts.lock() = Some((gst_gl_display, gst_gl_context));
+                    gst_gl_contexts.set_contexts(gst_gl_display, gst_gl_context);
                 }
 
                 graphics_context = GraphicsContext::Initialized;
@@ -2330,20 +2329,16 @@ pub fn run(
                 let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
 
                 match event_tx.send(Event::GuiWindowClosed(feedback_tx)) {
-                    Ok(_) => {
-                        match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
-                            Ok(_) => debug!("Player shutdown successfully"),
-                            Err(err) => {
-                                error!(?err, "Failed to receive feedback of player shutdown")
-                            }
+                    Ok(_) => match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
+                        Ok(_) => debug!("Player shutdown successfully"),
+                        Err(err) => {
+                            error!(?err, "Failed to receive feedback of player shutdown")
                         }
-                    }
+                    },
                     Err(err) => error!(?err, "Failed to send window closed event"),
                 }
 
-                if let Some((_display, gl_context)) = gst_gl_contexts.lock().take() {
-                    let _ = gl_context.activate(false);
-                }
+                gst_gl_contexts.deactivate_and_clear();
 
                 if let Some(sink) = slint_sink.as_mut() {
                     sink.release_state();
