@@ -112,30 +112,53 @@ export component VolumePreview {
             alignment: center;
             spacing: 15px;
 
-            Slider {
-                maximum: 1.0;
-                minimum: 0.0;
-                value: Bridge.volume;
-                height: parent.height * 40%;
-                orientation: vertical;
-                rail-color: #FFFFFF33;
-                hide-thumb: true;
-            }
+            Rectangle {
+                border-radius: self.width / 2;
+                background: #00000080;
+                height: root.height * 40%;
+                border-width: 1px;
+                width: bar.preferred-width + 26px * 2;
 
-            Image {
-                colorize: white;
+                vl := VerticalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    alignment: space-between;
 
-                states [
-                    high when Bridge.volume > 50%: {
-                        source: Icons.volume-high;
+                    bar := Slider {
+                        maximum: 1.0;
+                        minimum: 0.0;
+                        value: Bridge.volume;
+                        height: parent.height - icon-rect.height - 15px;
+                        orientation: vertical;
+                        rail-color: #FFFFFF33;
+                        hide-thumb: true;
                     }
-                    muted when Bridge.volume == 0%: {
-                        source: Icons.volume-muted;
+
+                    icon-rect := Rectangle {
+                        width: parent.width;
+                        height: vol-img.height + 15px;
+
+                        vol-img := Image {
+                            colorize: FCastPalette.neutral-100;
+                            width: 25px;
+                            height: 23px;
+                            x: parent.width / 2 - self.width / 2;
+                            y: parent.height / 2 - self.height / 2;
+
+                            states [
+                                high when Bridge.volume > 50%: {
+                                    source: Icons.volume-high;
+                                }
+                                muted when Bridge.volume == 0%: {
+                                    source: Icons.volume-muted;
+                                }
+                                low when Bridge.volume < 50%: {
+                                    source: Icons.volume-low;
+                                }
+                            ]
+                        }
                     }
-                    low when Bridge.volume < 50%: {
-                        source: Icons.volume-low;
-                    }
-                ]
+                }
             }
         }
     }
