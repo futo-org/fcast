@@ -50,6 +50,15 @@ export enum UiMode {
     Full,
 }
 
+export enum UiUpdaterState {
+    None,
+    ShowingDialog,
+    Downloading,
+    DownloadFailed,
+    InstallFailed,
+    InstallSuccessful,
+}
+
 export global Bridge {
     in property <float> progress-secs;
     in property <float> duration-secs;
@@ -78,6 +87,8 @@ export global Bridge {
     in property <int> playlist-idx;
     in property <int> playlist-length;
     in property <UiMode> ui-mode: UiMode.Full;
+    in property <int> update-download-progress;
+    in property <string> updater-error-msg;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <float> volume: 1.0;
@@ -89,6 +100,7 @@ export global Bridge {
     in-out property <bool> is-showing-error-message: false;
     in-out property <bool> is-showing-warning-message: false;
     in-out property <float> volume-set-at: 0.0;
+    in-out property <UiUpdaterState> updater-state: UiUpdaterState.None;
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
 
@@ -102,6 +114,8 @@ export global Bridge {
     callback hide-cursor-hack();
     callback select-track(id: int, variant: UiMediaTrackType);
     callback select-playlist-item(idx: int);
+    callback perform-app-update();
+    callback restart-app();
     pure callback sec-to-string(sec: int) -> string;
     pure callback sec-float-to-string(sec: float) -> string;
 

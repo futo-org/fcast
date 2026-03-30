@@ -1,13 +1,13 @@
 // Techniques from: https://github.com/tauri-apps/plugins-workspace/blob/v2/plugins/updater/src/updater.rs
 
-use std::path::PathBuf;
+mod starting_binary;
 
 use anyhow::{Result, anyhow};
+use serde::Deserialize;
+use tracing::{debug, error, info};
 use bytes::Bytes;
-use mcore::Release;
-use tracing::{debug, info};
+use std::path::PathBuf;
 
-const BASE_URL: &str = "http://dl.fcast.org/sender/desktop";
 #[cfg(target_os = "macos")]
 const OS_SPECIFIC_PATH: &str = "/macos-aarch64";
 #[cfg(target_os = "windows")]
@@ -15,6 +15,12 @@ const OS_SPECIFIC_PATH: &str = "/win-x64";
 
 type MainThreadClosure = Box<dyn FnOnce() + Send + Sync + 'static>;
 type RunOnMainThread = Box<dyn Fn(MainThreadClosure) -> bool + Send + Sync + 'static>;
+
+#[derive(Debug, Deserialize)]
+pub struct Release {
+    pub version: String,
+    pub file: String,
+}
 
 fn str_to_version(s: &str) -> Option<u32> {
     let mut segments = s.split('.');
@@ -24,8 +30,8 @@ fn str_to_version(s: &str) -> Option<u32> {
     Some(u32::from_be_bytes([0, major, minor, patch]))
 }
 
-pub async fn check_for_update() -> Result<Option<Release>> {
-    let latest_release = reqwest::get(BASE_URL.to_owned() + OS_SPECIFIC_PATH + "/latest.json")
+pub async fn check_for_update(base_url: &str, pkg_version: &str) -> Result<Option<Release>> {
+    let latest_release = reqwest::get(base_url.to_owned() + OS_SPECIFIC_PATH + "/latest.json")
         .await?
         .json::<Release>()
         .await?;
@@ -35,7 +41,7 @@ pub async fn check_for_update() -> Result<Option<Release>> {
     let latest_version =
         str_to_version(&latest_release.version).ok_or(anyhow!("Invalid version"))?;
     let current_version =
-        str_to_version(env!("CARGO_PKG_VERSION")).ok_or(anyhow!("Invalid version"))?;
+        str_to_version(pkg_version).ok_or(anyhow!("Invalid version"))?;
 
     debug!(latest_version, current_version);
 
@@ -46,11 +52,15 @@ pub async fn check_for_update() -> Result<Option<Release>> {
     })
 }
 
-pub async fn download_update<F>(update: &Release, on_progress_update: F) -> Result<Bytes>
+pub async fn download_update<F>(
+    base_url: &str,
+    update: &Release,
+    on_progress_update: F,
+) -> Result<Bytes>
 where
     F: Fn(u64, u64) + 'static,
 {
-    let url = BASE_URL.to_owned() + OS_SPECIFIC_PATH + "/" + &update.file;
+    let url = base_url.to_owned() + OS_SPECIFIC_PATH + "/" + &update.file;
 
     let mut request = reqwest::get(url).await?;
 
@@ -67,6 +77,8 @@ where
 
 #[cfg(target_os = "macos")]
 pub async fn install_update(
+    // "FCast Sender.app" or "FCast Receiver.app"
+    app_extract_name: &str,
     installer_file: Bytes,
     run_on_main_thread: RunOnMainThread,
 ) -> Result<()> {
@@ -76,11 +88,11 @@ pub async fn install_update(
     let mut extracted_files: Vec<PathBuf> = Vec::new();
 
     let tmp_backup_dir = tempfile::Builder::new()
-        .prefix("fcast_sender_current_app")
+        .prefix("fcast_current_app")
         .tempdir()?;
 
     let tmp_extract_dir = tempfile::Builder::new()
-        .prefix("fcast_sender_updated_app")
+        .prefix("fcast_updated_app")
         .tempdir()?;
 
     let decoder = GzDecoder::new(cursor);
@@ -107,10 +119,11 @@ pub async fn install_update(
 
     debug!("Extracted update");
 
-    let extract_path = "/Applications/FCast Sender.app";
+    // let extract_path = "/Applications/FCast Sender.app";
+    let extract_path = format!("/Applications/{app_extract_name}");
 
     // Try to move the current app to backup
-    let move_result = std::fs::rename(extract_path, tmp_backup_dir.path().join("current_app"));
+    let move_result = std::fs::rename(&extract_path, tmp_backup_dir.path().join("current_app"));
     let need_authorization = if let Err(err) = move_result {
         if err.kind() == std::io::ErrorKind::PermissionDenied {
             true
@@ -147,11 +160,11 @@ pub async fn install_update(
         }
     } else {
         // Remove existing directory if it exists
-        if PathBuf::from(extract_path).exists() {
-            std::fs::remove_dir_all(extract_path)?;
+        if PathBuf::from(&extract_path).exists() {
+            std::fs::remove_dir_all(&extract_path)?;
         }
         // Move the new app to the target path
-        std::fs::rename(tmp_extract_dir.path(), extract_path)?;
+        std::fs::rename(tmp_extract_dir.path(), &extract_path)?;
     }
 
     let _ = std::process::Command::new("touch")
@@ -178,7 +191,7 @@ pub async fn install_update(
     fn write_to_temp(bytes: &Bytes) -> Result<(PathBuf, tempfile::TempPath)> {
         use std::io::Write;
         let mut temp_file = tempfile::Builder::new()
-            .prefix("fcast-sender-installer")
+            .prefix("fcast-installer")
             .suffix(".msi")
             .tempfile()?;
 
@@ -230,6 +243,21 @@ pub async fn install_update(
             SW_SHOW,
         )
     };
+
+    std::process::exit(0);
+}
+
+pub fn restart_application() -> ! {
+    use std::process::Command;
+
+    if let Ok(path) = starting_binary::STARTING_BINARY.cloned() {
+        // NOTE: for updates; the new exe is expected to be named the same as the current one
+        if let Err(err) = Command::new(path).spawn() {
+            error!(?err, "failed to restart app");
+        }
+    } else {
+        error!("Executable path not found, app will not be restarted");
+    }
 
     std::process::exit(0);
 }
