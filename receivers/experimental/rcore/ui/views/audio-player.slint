@@ -1,5 +1,5 @@
 import { Icons, FText, Button, } from "../../../../../senders/ui-components/std-widgets.slint";
-import { Bridge } from "../globals.slint";
+import { Bridge, UiMode } from "../globals.slint";
 import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub, VolumePreview } from "../common.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
 
@@ -99,7 +99,7 @@ export component AudioPlayerView inherits Rectangle {
 
         ScrubbyMcScrub { }
 
-        HorizontalLayout {
+        if Bridge.ui-mode == UiMode.Full: HorizontalLayout {
             alignment: center;
             spacing: 30px;
 

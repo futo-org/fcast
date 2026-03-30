@@ -4,7 +4,7 @@ import {
     ScrollView,
     Button,
 } from "../../../../../senders/ui-components/std-widgets.slint";
-import { Bridge, UiMediaTrack, GuiPlaybackState, UiMediaTrackType, } from "../globals.slint";
+import { Bridge, UiMediaTrack, GuiPlaybackState, UiMediaTrackType, UiMode, } from "../globals.slint";
 import {
     PositionScrubber,
     ProgressLabels,
@@ -210,115 +210,7 @@ component SettingsTrackList inherits VerticalLayout {
     }
 }
 
-component PlaybackControls inherits Rectangle {
-    out property <MouseCursor> suggested-cursor: default;
-
-    property <bool> is-changing-volume: false;
-
-    background: Bridge.controls-bg-gradient;
-
-    public function show() {
-        root.visible = true;
-        tim.counter = 0;
-        tim.running = true;
-        suggested-cursor = MouseCursor.default;
-    }
-
-    public function close() {
-        root.visible = false;
-        tim.running = false;
-        suggested-cursor = MouseCursor.none;
-    }
-
-    public function playback-started() {
-        show();
-    }
-
-    public function playback-stopped() {
-        show();
-    }
-
-    main-vlayout := VerticalLayout {
-        padding: 58px;
-        padding-top: 20px;
-        padding-bottom: 20px;
-        spacing: 5px;
-
-        HorizontalLayout {
-            Rectangle { }
-
-            SecondaryButton {
-                // icon-size: 18px;
-                // width: 45px;
-                // height: 45px;
-
-                icon: Bridge.is-fullscreen ? Icons.minimize : Icons.maximize;
-
-                clicked => Bridge.toggle-fullscreen();
-            }
-        }
-
-        Rectangle { }
-
-        HorizontalLayout {
-            padding: 10px;
-            padding-bottom: 15px;
-
-            FText {
-                text: Bridge.media-title;
-                width: 50%;
-                wrap: word-wrap;
-                overflow: elide;
-                font-size: 24px;
-                max-height: 5px;
-                font-weight: 500;
-                color: FCastPalette.neutral-100;
-            }
-
-            Rectangle { /* Spacer */ }
-
-            if Bridge.is-live: VerticalLayout {
-                Rectangle { }
-
-                Rectangle {
-                    background: #FB2C2C;
-                    border-radius: 3.3px;
-                    width: i-hl.preferred-width;
-
-                    i-hl := HorizontalLayout {
-                        padding: 12px;
-                        padding-top: 6px;
-                        padding-bottom: self.padding-top;
-                        spacing: 6px;
-
-                        VerticalLayout {
-                            alignment: center;
-
-                            Rectangle {
-                                width: 8px;
-                                height: 8px;
-                                border-radius: 5px;
-                                background: FCastPalette.foreground;
-                            }
-                        }
-
-                        FText {
-                            text: "LIVE";
-                            font-weight: 500;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-        }
-
-        ScrubbyMcScrub { }
-
-        Rectangle {
-            height: 5px;
-        }
-
-        HorizontalLayout {
+component ButtonControls inherits HorizontalLayout {
             alignment: space-between;
 
             Rectangle {
@@ -525,7 +417,117 @@ component PlaybackControls inherits Rectangle {
                     }
                 }
             }
+}
+
+component PlaybackControls inherits Rectangle {
+    out property <MouseCursor> suggested-cursor: default;
+
+    property <bool> is-changing-volume: false;
+
+    background: Bridge.controls-bg-gradient;
+
+    public function show() {
+        root.visible = true;
+        tim.counter = 0;
+        tim.running = true;
+        suggested-cursor = MouseCursor.default;
+    }
+
+    public function close() {
+        root.visible = false;
+        tim.running = false;
+        suggested-cursor = MouseCursor.none;
+    }
+
+    public function playback-started() {
+        show();
+    }
+
+    public function playback-stopped() {
+        show();
+    }
+
+    main-vlayout := VerticalLayout {
+        padding: 58px;
+        padding-top: 20px;
+        padding-bottom: 20px;
+        spacing: 5px;
+
+        if Bridge.ui-mode == UiMode.Full: HorizontalLayout {
+            Rectangle { }
+
+            SecondaryButton {
+                // icon-size: 18px;
+                // width: 45px;
+                // height: 45px;
+
+                icon: Bridge.is-fullscreen ? Icons.minimize : Icons.maximize;
+
+                clicked => Bridge.toggle-fullscreen();
+            }
         }
+
+        Rectangle { }
+
+        HorizontalLayout {
+            padding: 10px;
+            padding-bottom: 15px;
+
+            FText {
+                text: Bridge.media-title;
+                width: 50%;
+                wrap: word-wrap;
+                overflow: elide;
+                font-size: 24px;
+                max-height: 5px;
+                font-weight: 500;
+                color: FCastPalette.neutral-100;
+            }
+
+            Rectangle { /* Spacer */ }
+
+            if Bridge.is-live: VerticalLayout {
+                Rectangle { }
+
+                Rectangle {
+                    background: #FB2C2C;
+                    border-radius: 3.3px;
+                    width: i-hl.preferred-width;
+
+                    i-hl := HorizontalLayout {
+                        padding: 12px;
+                        padding-top: 6px;
+                        padding-bottom: self.padding-top;
+                        spacing: 6px;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 5px;
+                                background: FCastPalette.foreground;
+                            }
+                        }
+
+                        FText {
+                            text: "LIVE";
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        ScrubbyMcScrub { }
+
+        if Bridge.ui-mode == UiMode.Full: Rectangle {
+            height: 5px;
+        }
+
+        if Bridge.ui-mode == UiMode.Full: ButtonControls { }
     }
 
     tim := Timer {
