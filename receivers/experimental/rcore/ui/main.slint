@@ -39,11 +39,6 @@ export component MainWindow inherits Window {
     default-font-size: 15px;
     default-font-weight: 400;
 
-    // TODO: remove the functions below
-    public function playback-started() {
-        Bridge.playing = true;
-    }
-
     public function device-connected() {
         Bridge.connected_devices += 1;
     }
