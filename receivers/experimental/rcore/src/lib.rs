@@ -56,7 +56,9 @@ mod linux_tray;
     feature = "systray"
 ))]
 mod mac_win_tray;
+mod player;
 mod raop;
+mod session;
 mod user_agent;
 mod video;
 
@@ -136,6 +138,14 @@ pub enum RaopEvent {
     },
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Debug)]
+pub enum AppUpdateEvent {
+    UpdateAvailable(app_updater::Release),
+    UpdateApplication,
+    RestartApp,
+}
+
 #[derive(Debug)]
 pub enum Event {
     Quit,
@@ -170,6 +180,8 @@ pub enum Event {
     ShouldSetLoadingStatus(MediaItemId),
     Raop(RaopEvent),
     DumpPipeline,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    AppUpdate(AppUpdateEvent),
 }
 
 #[macro_export]
@@ -183,6 +195,8 @@ macro_rules! log_if_err {
 
 const FCAST_TCP_PORT: u16 = 46899;
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(700);
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
 
 slint::include_modules!();
 
@@ -404,6 +418,8 @@ struct Application {
     active_raop_session: bool,
     raop_server: Option<RaopServer>,
     gui: GuiController,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    update: Option<app_updater::Release>,
 }
 
 impl Application {
@@ -572,6 +588,27 @@ impl Application {
             .instrument(debug_span!("pipeline-dbg-listener"))
         });
 
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        tokio::spawn({
+            let event_tx = event_tx.clone();
+            async move {
+                match app_updater::check_for_update(UPDATER_BASE_URL, env!("CARGO_PKG_VERSION"))
+                    .instrument(tracing::debug_span!("check_for_updates"))
+                    .await
+                {
+                    Ok(release) => {
+                        if let Some(release) = release {
+                            let _ = event_tx
+                                .send(Event::AppUpdate(AppUpdateEvent::UpdateAvailable(release)));
+                        }
+                    }
+                    Err(err) => {
+                        error!(?err, "Failed to check for update");
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             #[cfg(target_os = "android")]
             android_app,
@@ -611,6 +648,8 @@ impl Application {
             active_raop_session: false,
             raop_server: None,
             gui,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            update: None,
         })
     }
 
@@ -1606,6 +1645,94 @@ impl Application {
         Ok(false)
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn handle_app_update_event(&mut self, event: AppUpdateEvent) -> Result<bool> {
+        match event {
+            AppUpdateEvent::UpdateAvailable(release) => {
+                self.update = Some(release);
+                self.ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.global::<Bridge>()
+                        .set_updater_state(UiUpdaterState::ShowingDialog);
+                })?;
+            }
+            AppUpdateEvent::UpdateApplication => {
+                let Some(update) = self.update.take() else {
+                    error!("User want's to update but no updates available");
+                    return Ok(false);
+                };
+
+                let ui_weak = self.ui_weak.clone();
+                tokio::spawn(async move {
+                    let res = app_updater::download_update(UPDATER_BASE_URL, &update, {
+                        let ui_weak = ui_weak.clone();
+                        move |progress, total| {
+                            let progress_percent = if total == 0 {
+                                0.0
+                            } else {
+                                progress as f64 / total as f64
+                            } * 100.0;
+
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.global::<Bridge>()
+                                    .set_update_download_progress(progress_percent as i32);
+                            });
+                        }
+                    })
+                    .await;
+
+                    let update_file = match res {
+                        Ok(update) => update,
+                        Err(err) => {
+                            let error_msg = err.to_shared_string();
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                let bridge = ui.global::<Bridge>();
+                                bridge.set_updater_state(UiUpdaterState::DownloadFailed);
+                                bridge.set_updater_error_msg(error_msg);
+                            });
+                            return;
+                        }
+                    };
+
+                    if let Err(err) = app_updater::install_update(
+                        #[cfg(target_os = "macos")]
+                        "FCast Receiver.app",
+                        update_file,
+                        Box::new(|closure| {
+                            slint::invoke_from_event_loop(move || {
+                                (closure)();
+                            })
+                            .is_err()
+                        }),
+                    )
+                    .await
+                    {
+                        error!(?err, "Failed to install update");
+                        let error_msg = err.to_shared_string();
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            let bridge = ui.global::<Bridge>();
+                            bridge.set_updater_state(UiUpdaterState::InstallFailed);
+                            bridge.set_updater_error_msg(error_msg);
+                        });
+                        return;
+                    }
+
+                    debug!(?update, "Successfully updated");
+
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>()
+                            .set_updater_state(UiUpdaterState::InstallSuccessful);
+                    });
+                });
+            }
+            AppUpdateEvent::RestartApp => {
+                debug!("Restarting app...");
+                app_updater::restart_application();
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
         // NOTE: all player actions are async (right?)
@@ -1816,6 +1943,8 @@ impl Application {
             Event::DumpPipeline => {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);
             }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Event::AppUpdate(event) => return self.handle_app_update_event(event),
         }
 
         Ok(false)
@@ -2001,6 +2130,21 @@ pub fn run(
     }));
     tracing_gstreamer::integrate_events();
     gst::log::remove_default_log_function();
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut plugin_dir = std::env::current_exe()?;
+        plugin_dir.pop();
+        unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut plugin_dir = std::env::current_exe()?;
+        plugin_dir.pop();
+        plugin_dir.push("lib");
+        unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
+    }
 
     #[cfg(not(target_os = "android"))]
     {

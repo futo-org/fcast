@@ -105,6 +105,22 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedS
         }
     });
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    bridge.on_perform_app_update({
+        let event_tx = event_tx.clone();
+        move || {
+            log_if_err!(event_tx.send(Event::AppUpdate(AppUpdateEvent::UpdateApplication),));
+        }
+    });
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    bridge.on_restart_app({
+        let event_tx = event_tx.clone();
+        move || {
+            log_if_err!(event_tx.send(Event::AppUpdate(AppUpdateEvent::RestartApp),));
+        }
+    });
+
     bridge.on_sec_to_string(|sec: i32| -> slint::SharedString {
         crate::sec_to_string(sec as f64).to_shared_string()
     });

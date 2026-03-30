@@ -125,6 +125,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 reqwest = { version = "0.13", features = [ "native-tls" ] }
+app-updater = { path = "../../../crates/app-updater"}
 
 [build-dependencies]
 slint-build.workspace = true

@@ -1,6 +1,6 @@
-import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
+import { Icons, FText, Button } from "../../../../../senders/ui-components/std-widgets.slint";
 import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
-import { Bridge } from "../globals.slint";
+import { Bridge, UiUpdaterState } from "../globals.slint";
 
 component ReceiverInfoEntry inherits HorizontalLayout {
     in property <image> icon <=> i-icon.source;
@@ -35,6 +35,11 @@ component ReceiverInfoEntry inherits HorizontalLayout {
     }
 
     Rectangle {}
+}
+
+component IdleText inherits FText {
+    color: @linear-gradient(180deg, #FFFFFF 17.11%, #B4B4B4 78.95%);
+    wrap: word-wrap;
 }
 
 export component IdleView inherits Rectangle {
@@ -83,13 +88,13 @@ export component IdleView inherits Rectangle {
                     visible: !Bridge.is-playing();
                     alignment: center;
 
-                    Text {
+                    IdleText {
                         font-size: 28px;
                         text: "Idle. Ready to cast";
                         font-weight: 600;
                         font-family: "Outfit Semibold";
                         overflow: elide;
-                        color: @linear-gradient(180deg, #FFFFFF 17.11%, #B4B4B4 78.95%);
+                        // color: @linear-gradient(180deg, #FFFFFF 17.11%, #B4B4B4 78.95%);
                     }
 
                     if root.height > 380px: Text {
@@ -128,6 +133,78 @@ export component IdleView inherits Rectangle {
                                 icon-height: 14px;
                                 key: "Local IP Address";
                                 value: Bridge.local-ip-addrs;
+                            }
+                        }
+                    }
+
+                    if Bridge.updater-state == UiUpdaterState.ShowingDialog: VerticalLayout {
+                        IdleText {
+                            text: "An update is available. Do you want to update now?";
+                        }
+
+                        HorizontalLayout {
+                            padding-top: 5px;
+                            spacing: 5px;
+
+                            Button {
+                                text: "Yes";
+
+                                clicked => Bridge.perform-app-update();
+                            }
+
+                            Button {
+                                text: "No";
+
+                                clicked => {
+                                    Bridge.updater-state = UiUpdaterState.None;
+                                }
+                            }
+                        }
+                    }
+
+                    if Bridge.updater-state == UiUpdaterState.Downloading: VerticalLayout {
+                        IdleText {
+                            text: "Downloading update...";
+                        }
+
+                        IdleText {
+                            horizontal-alignment: center;
+                            text: Bridge.update-download-progress + "%";
+                        }
+                    }
+
+                    if Bridge.updater-state == UiUpdaterState.DownloadFailed: VerticalLayout {
+                        IdleText {
+                            text: "Failed to download update: " + Bridge.updater-error-msg;
+                        }
+                    }
+
+                    if Bridge.updater-state == UiUpdaterState.InstallFailed: VerticalLayout {
+                        IdleText {
+                            text: "Failed to install update: " + Bridge.updater-error-msg;
+                        }
+                    }
+
+                    if Bridge.updater-state == UiUpdaterState.InstallSuccessful: VerticalLayout {
+                        IdleText {
+                            text: "Installed update successfully. Do you want to restart the app now?";
+                        }
+
+                        HorizontalLayout {
+                            padding-top: 5px;
+                            spacing: 5px;
+                            Button {
+                                text: "Yes";
+
+                                clicked => Bridge.restart-app();
+                            }
+
+                            Button {
+                                text: "No";
+
+                                clicked => {
+                                    Bridge.updater-state = UiUpdaterState.None;
+                                }
                             }
                         }
                     }
