@@ -986,9 +986,7 @@ impl Application {
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
-        self.ui_weak.upgrade_in_event_loop(|ui| {
-            let _ = ui.window().show();
-        })?;
+        self.gui.set_window_visibility(true);
 
         let mut url = if let Some(url) = media_item.url.clone() {
             url

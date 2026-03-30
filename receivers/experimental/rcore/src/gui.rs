@@ -225,6 +225,7 @@ pub enum UpdateGuiCommand {
     SetUpdateDownloadProgress(i32),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     SetUpdaterError(slint::SharedString),
+    SetWindowVisibility(bool),
     QuitLoop,
 }
 
@@ -404,6 +405,10 @@ impl GuiController {
         self.send(UpdateGuiCommand::SetUpdateState(state));
     }
 
+    pub fn set_window_visibility(&self, visible: bool) {
+        self.send(UpdateGuiCommand::SetWindowVisibility(visible));
+    }
+
     pub fn quit_loop(&mut self) {
         self.send(UpdateGuiCommand::QuitLoop);
     }
@@ -533,6 +538,16 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err),
+        UpdateGuiCommand::SetWindowVisibility(visible) => {
+            let window = ui.window();
+            if let Err(err) = if visible {
+                window.show()
+            } else {
+                window.hide()
+            } {
+                error!(?err, visible, "Failed to set window visibility");
+            }
+        }
         UpdateGuiCommand::QuitLoop => (),
     }
 }
