@@ -607,9 +607,7 @@ export component VideoPlayerView inherits Rectangle {
     TouchArea {
         width: 100%;
         height: 100%;
-
-        visible: Bridge.playing;
-
+        visible: Bridge.is-playing();
         mouse-cursor: self.visible && !playback-control.visible ? none : default;
 
         FocusScope {

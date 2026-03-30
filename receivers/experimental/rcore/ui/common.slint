@@ -4,20 +4,14 @@ import { FCastPalette } from "../../../../senders/ui-components/styling.slint";
 
 export component PositionScrubber inherits Slider {
     hide-thumb: true;
-    maximum: 1.0;
+    maximum: Bridge.duration-secs;
     minimum: 0.0;
-    value <=> Bridge.playback-position;
-    enabled: false;
+    value <=> Bridge.progress-secs;
     rail-color: #FFFFFF33;
     track-color: Bridge.is-live ? FCastPalette.negative-800 : FCastPalette.foreground;
     thumb-color: black.transparentize(85%);
     thumb-border-color: FCastPalette.foreground;
-
-    states [
-        enabled when Bridge.playback-state != GuiPlaybackState.Loading: {
-            enabled: true;
-        }
-    ]
+    enabled: Bridge.playback-state != GuiPlaybackState.Loading;
 }
 
 export component ProgressLabelBox inherits Rectangle {
@@ -39,13 +33,13 @@ export component ProgressLabels inherits HorizontalLayout {
     padding-right: self.padding-left;
 
     ProgressLabelBox {
-        text: Bridge.progress-label;
+        text: Bridge.sec-float-to-string(Bridge.progress-secs);
     }
 
     Rectangle {}
 
     if !Bridge.is-live: ProgressLabelBox {
-        text: Bridge.duration-label;
+        text: Bridge.sec-float-to-string(Bridge.duration-secs);
     }
 }
 
@@ -54,9 +48,15 @@ export component ScrubbyMcScrub {
         spacing: 8px;
 
         scrubber := PositionScrubber {
+            changed(_) => {
+                Bridge.is-scrubbing-position = true;
+            }
+
             released(position) => {
                 Bridge.is-scrubbing-position = false;
-                Bridge.seek-to-percent(position);
+                if position <= Bridge.duration-secs && Bridge.duration-secs != 0.0 {
+                    Bridge.seek-to-percent(position / Bridge.duration-secs);
+                }
             }
         }
 
@@ -73,7 +73,7 @@ export component ScrubbyMcScrub {
         height: plb.height;
 
         plb := ProgressLabelBox {
-            text: Bridge.sec-to-string(Bridge.duration-seconds * scrubber.mouse-x / scrubber.width);
+            text: Bridge.sec-to-string(Bridge.duration-secs * scrubber.mouse-x / scrubber.width);
         }
     }
 }
