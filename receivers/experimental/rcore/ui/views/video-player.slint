@@ -11,6 +11,7 @@ import {
     MasterButton,
     ScrubbyMcScrub,
     VolumePreview,
+    SubtitleView
 } from "../common.slint";
 import {
     FCastPalette,
@@ -469,6 +470,8 @@ component PlaybackControls inherits Rectangle {
 
         Rectangle { }
 
+        if Bridge.subtitles.length > 0: SubtitleView { }
+
         HorizontalLayout {
             padding: 10px;
             padding-bottom: 15px;
@@ -586,6 +589,14 @@ export component VideoPlayerView inherits Rectangle {
         height: overlay.img.height * 1px;
 
         source: overlay.img;
+    }
+
+    if !playback-control.visible && Bridge.subtitles.length > 0: VerticalLayout {
+        padding: 30px;
+
+        Rectangle {}
+
+        SubtitleView { }
     }
 
     VolumePreview {

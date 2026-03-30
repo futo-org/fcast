@@ -46,6 +46,7 @@ pub use tracing;
 mod fcastwhepsrcbin;
 mod player;
 mod session;
+mod fcasttextoverlay;
 mod graphics;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
@@ -436,7 +437,6 @@ impl Application {
                 };
 
                 let name = elem.factory()?.name();
-                // TODO: should check for http clients and include headers
                 match name.as_str() {
                     "rtspsrc" => elem.set_property("latency", 25u32),
                     "webrtcbin" => elem.set_property("latency", 25u32),
@@ -2324,6 +2324,17 @@ pub fn run(
                         bridge.set_overlays(slint::ModelRc::default());
                     }
                 }
+
+                let subtitles = slint_sink.fetch_next_subtitles();
+                if let Some(subtitles) = subtitles {
+                    let subtitles: Option<VecModel<slint::SharedString>> = subtitles
+                        .map(|subs| subs.into_iter().map(|s| s.to_shared_string()).collect());
+                    if let Some(subs) = subtitles {
+                        bridge.set_subtitles(Rc::new(subs).into());
+                    }
+                } else {
+                    bridge.set_subtitles(slint::ModelRc::default());
+                }
             }
         }
     })?;
@@ -2371,6 +2382,7 @@ pub fn run(
             *slint_sink_mutex.lock() = Some(slint_sink);
 
             fcastwhepsrcbin::plugin_init().unwrap();
+            fcasttextoverlay::plugin_init().unwrap();
             gstreqwest::plugin_register_static().unwrap();
             gstwebrtchttp::plugin_register_static().unwrap();
             gstrswebrtc::plugin_register_static().unwrap();
