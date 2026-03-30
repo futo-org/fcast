@@ -1904,9 +1904,10 @@ impl Application {
             }
         }
 
-        self.player.stop();
-
         debug!("Quitting");
+
+        self.player.stop();
+        self.gui.quit_loop();
 
         if fin_tx.send(()).is_err() {
             bail!("Failed to send fin");

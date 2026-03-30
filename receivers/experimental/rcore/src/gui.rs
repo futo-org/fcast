@@ -203,6 +203,7 @@ pub enum UpdateGuiCommand {
     ClearImageState,
     SetIsLive(bool),
     SetPlaybackRate(f32),
+    QuitLoop,
 }
 
 pub struct GuiController {
@@ -375,6 +376,10 @@ impl GuiController {
             self.playback_rate = rate;
         }
     }
+
+    pub fn quit_loop(&mut self) {
+        self.send(UpdateGuiCommand::QuitLoop);
+    }
 }
 
 fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
@@ -493,6 +498,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         }
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
+        UpdateGuiCommand::QuitLoop => (),
     }
 }
 
@@ -510,6 +516,9 @@ pub fn spawn_command_handler(
                     if !matches!(cmd, UpdateGuiCommand::UpdatePlaybackProgress { .. }) {
                         debug!(?cmd, "received command");
                     }
+                    if matches!(cmd, UpdateGuiCommand::QuitLoop) {
+                        break;
+                    }
                     handle_command(ui, cmd);
                 } else {
                     debug!("Stopping");
@@ -517,7 +526,6 @@ pub fn spawn_command_handler(
                 }
             }
         }
-        .instrument(tracing::debug_span!("gui_cmd_handler")),
     )
     .expect("Failed to spawn GUI command handler");
 }
