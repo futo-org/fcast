@@ -16,6 +16,7 @@ members = [
     "receivers/experimental/desktop",
     "receivers/experimental/android",
     "tools/remote-pipeline-dbg",
+    "crates/app-updater",
 ]
 resolver = "2"
 

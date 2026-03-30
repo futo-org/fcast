@@ -164,13 +164,6 @@ pub enum RootDirType {
     Music,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[derive(Debug, Deserialize)]
-pub struct Release {
-    pub version: String,
-    pub file: String,
-}
-
 #[derive(Debug)]
 pub enum Event {
     // Common
@@ -264,7 +257,7 @@ pub enum Event {
         allow_ipv6: bool,
     },
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    UpdateAvailable(Release),
+    UpdateAvailable(app_updater::Release),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     UpdateApplication,
     #[cfg(not(target_os = "android"))]

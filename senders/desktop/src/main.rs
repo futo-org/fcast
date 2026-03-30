@@ -63,6 +63,8 @@ const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
 const MIN_TIME_BETWEEN_VOLUME_CHANGES: Duration = Duration::from_millis(75);
 const DEFAULT_FILE_SERVER_PORT: u16 = 0;
 const DEFAULT_MIRRORING_SERVER_PORT: u16 = 0;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const UPDATER_BASE_URL: &str = "http://dl.fcast.org/sender/desktop";
 
 pub type ProducerId = String;
 
@@ -171,22 +173,6 @@ async fn process_files(
     }
 
     Ok(())
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn restart_application() -> ! {
-    use std::process::Command;
-
-    if let Ok(path) = desktop_sender::starting_binary::STARTING_BINARY.cloned() {
-        // NOTE: for updates; the new exe is expected to be named the same as the current one
-        if let Err(err) = Command::new(path).spawn() {
-            error!(?err, "failed to restart app");
-        }
-    } else {
-        error!("Executable path not found, app will not be restarted");
-    }
-
-    std::process::exit(0);
 }
 
 type DirectoryId = i32;
@@ -478,7 +464,7 @@ struct Application {
     session_state: Option<SessionState>,
     settings: Settings,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    update: Option<mcore::Release>,
+    update: Option<app_updater::Release>,
 }
 
 async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<FetchEvent> {
@@ -2021,7 +2007,9 @@ impl Application {
 
                 let ui_weak = self.ui_weak.clone();
                 tokio::spawn(async move {
-                    let res = desktop_sender::updater::download_update(&update, {
+                    let res = app_updater::download_update(
+                        UPDATER_BASE_URL,
+                        &update, {
                         let ui_weak = ui_weak.clone();
                         move |progress, total| {
                             let progress_percent = if total == 0 {
@@ -2056,7 +2044,9 @@ impl Application {
                             .set_updater_state(UiUpdaterState::Installing);
                     });
 
-                    if let Err(err) = desktop_sender::updater::install_update(
+                    if let Err(err) = app_updater::install_update(
+                        #[cfg(target_os = "macos")]
+                        "FCast Sender.app",
                         update_file,
                         Box::new(|closure| {
                             slint::invoke_from_event_loop(move || {
@@ -2088,7 +2078,7 @@ impl Application {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Event::RestartApplication => {
                 let _ = self.end_session(true);
-                restart_application();
+                app_updater::restart_application();
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             Event::RestartApplication => (),
@@ -2315,7 +2305,7 @@ impl Application {
         tokio::spawn({
             let event_tx = self.event_tx.clone();
             async move {
-                match desktop_sender::updater::check_for_update()
+                match app_updater::check_for_update(UPDATER_BASE_URL, env!("CARGO_PKG_VERSION"))
                     .instrument(tracing::debug_span!("check_for_updates"))
                     .await
                 {

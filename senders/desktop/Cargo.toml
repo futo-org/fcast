@@ -53,9 +53,6 @@ reqwest = { version = "0.13", default-features = false, features = [ "charset", 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = "0.3.2"
 core-foundation = "0.10.1"
-flate2 = "1.1.5"
-tar = "0.4.44"
-osakit = { version = "0.3", features = ["full"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enable-ansi-support = "0.3.1"
@@ -69,6 +66,5 @@ windows-sys = { version = "0.60.0", features = [
 tikv-jemallocator = "0.6"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+app-updater = { path = "../../crates/app-updater"}
 reqwest = { version = "0.13", features = [ "native-tls", "json" ] }
-ctor = "0.2"
-tempfile = "3.24.0"

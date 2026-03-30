@@ -378,6 +378,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "app-updater"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "ctor",
+ "flate2",
+ "osakit",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2051,17 +2068,16 @@ name = "desktop-sender"
 version = "0.0.3"
 dependencies = [
  "anyhow",
+ "app-updater",
  "ashpd 0.12.3",
  "bytes",
  "clap",
  "core-foundation 0.10.1",
- "ctor",
  "directories",
  "enable-ansi-support",
  "fcast-protocol",
  "fcast-sender-sdk",
  "file-server",
- "flate2",
  "flume",
  "futures",
  "gst-plugin-rtp",
@@ -2072,7 +2088,6 @@ dependencies = [
  "mcore",
  "num_cpus",
  "objc2-core-graphics",
- "osakit",
  "parking_lot",
  "reqwest 0.13.2",
  "rustls",
@@ -2080,8 +2095,6 @@ dependencies = [
  "slint",
  "slint-build",
  "smallvec",
- "tar",
- "tempfile",
  "tikv-jemallocator",
  "tokio",
  "toml_edit 0.24.1+spec-1.1.0",
@@ -5724,6 +5737,7 @@ name = "mcore"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-updater",
  "bytes",
  "fcast-protocol",
  "fcast-sender-sdk",
@@ -7500,6 +7514,7 @@ dependencies = [
  "aes",
  "alac",
  "anyhow",
+ "app-updater",
  "base64",
  "bitflags 2.11.0",
  "byte-slice-cast",
