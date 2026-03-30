@@ -7,7 +7,7 @@ use crate::{
 use fcast_protocol::v3;
 use slint::{ComponentHandle, ToSharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::{Instrument, debug, error};
+use tracing::{debug, error};
 
 pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedSender<Event>) {
     bridge.on_resume_or_pause({
@@ -109,7 +109,7 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedS
     bridge.on_perform_app_update({
         let event_tx = event_tx.clone();
         move || {
-            log_if_err!(event_tx.send(Event::AppUpdate(AppUpdateEvent::UpdateApplication),));
+            log_if_err!(event_tx.send(Event::AppUpdate(crate::AppUpdateEvent::UpdateApplication),));
         }
     });
 
@@ -117,7 +117,7 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedS
     bridge.on_restart_app({
         let event_tx = event_tx.clone();
         move || {
-            log_if_err!(event_tx.send(Event::AppUpdate(AppUpdateEvent::RestartApp),));
+            log_if_err!(event_tx.send(Event::AppUpdate(crate::AppUpdateEvent::RestartApp),));
         }
     });
 
@@ -219,11 +219,17 @@ pub enum UpdateGuiCommand {
     ClearImageState,
     SetIsLive(bool),
     SetPlaybackRate(f32),
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    SetUpdateState(crate::UiUpdaterState),
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    SetUpdateDownloadProgress(i32),
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    SetUpdaterError(slint::SharedString),
     QuitLoop,
 }
 
 pub struct GuiController {
-    tx: UnboundedSender<UpdateGuiCommand>,
+    pub tx: UnboundedSender<UpdateGuiCommand>,
     playback_state: GuiPlaybackState,
     playback_rate: f32,
     is_live: bool,
@@ -393,6 +399,11 @@ impl GuiController {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub fn set_updater_state(&self, state: crate::UiUpdaterState) {
+        self.send(UpdateGuiCommand::SetUpdateState(state));
+    }
+
     pub fn quit_loop(&mut self) {
         self.send(UpdateGuiCommand::QuitLoop);
     }
@@ -514,6 +525,14 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         }
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        UpdateGuiCommand::SetUpdateState(state) => bridge.set_updater_state(state),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        UpdateGuiCommand::SetUpdateDownloadProgress(progress) => {
+            bridge.set_update_download_progress(progress)
+        }
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err),
         UpdateGuiCommand::QuitLoop => (),
     }
 }
@@ -522,26 +541,24 @@ pub fn spawn_command_handler(
     ui_weak: slint::Weak<MainWindow>,
     mut cmd_rx: UnboundedReceiver<UpdateGuiCommand>,
 ) {
-    slint::spawn_local(
-        async move {
-            loop {
-                if let Some(cmd) = cmd_rx.recv().await
-                    && let Some(ui) = ui_weak.upgrade()
-                {
-                    // Ignore frequently sent updates to reduce log size
-                    if !matches!(cmd, UpdateGuiCommand::UpdatePlaybackProgress { .. }) {
-                        debug!(?cmd, "received command");
-                    }
-                    if matches!(cmd, UpdateGuiCommand::QuitLoop) {
-                        break;
-                    }
-                    handle_command(ui, cmd);
-                } else {
-                    debug!("Stopping");
+    slint::spawn_local(async move {
+        loop {
+            if let Some(cmd) = cmd_rx.recv().await
+                && let Some(ui) = ui_weak.upgrade()
+            {
+                // Ignore frequently sent updates to reduce log size
+                if !matches!(cmd, UpdateGuiCommand::UpdatePlaybackProgress { .. }) {
+                    debug!(?cmd, "received command");
+                }
+                if matches!(cmd, UpdateGuiCommand::QuitLoop) {
                     break;
                 }
+                handle_command(ui, cmd);
+            } else {
+                debug!("Stopping");
+                break;
             }
         }
-    )
+    })
     .expect("Failed to spawn GUI command handler");
 }

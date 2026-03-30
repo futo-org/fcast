@@ -43,10 +43,8 @@ use std::{
 pub use clap;
 pub use slint;
 pub use tracing;
-mod fcastwhepsrcbin;
-mod player;
-mod session;
 mod fcasttextoverlay;
+mod fcastwhepsrcbin;
 mod graphics;
 mod gui;
 #[cfg(all(target_os = "linux", feature = "systray"))]
@@ -1650,10 +1648,7 @@ impl Application {
         match event {
             AppUpdateEvent::UpdateAvailable(release) => {
                 self.update = Some(release);
-                self.ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.global::<Bridge>()
-                        .set_updater_state(UiUpdaterState::ShowingDialog);
-                })?;
+                self.gui.set_updater_state(UiUpdaterState::ShowingDialog);
             }
             AppUpdateEvent::UpdateApplication => {
                 let Some(update) = self.update.take() else {
@@ -1661,10 +1656,10 @@ impl Application {
                     return Ok(false);
                 };
 
-                let ui_weak = self.ui_weak.clone();
+                let gui_tx = self.gui.tx.clone();
                 tokio::spawn(async move {
                     let res = app_updater::download_update(UPDATER_BASE_URL, &update, {
-                        let ui_weak = ui_weak.clone();
+                        let gui_tx = gui_tx.clone();
                         move |progress, total| {
                             let progress_percent = if total == 0 {
                                 0.0
@@ -1672,10 +1667,9 @@ impl Application {
                                 progress as f64 / total as f64
                             } * 100.0;
 
-                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.global::<Bridge>()
-                                    .set_update_download_progress(progress_percent as i32);
-                            });
+                            let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateDownloadProgress(
+                                progress_percent as i32,
+                            ));
                         }
                     })
                     .await;
@@ -1684,11 +1678,10 @@ impl Application {
                         Ok(update) => update,
                         Err(err) => {
                             let error_msg = err.to_shared_string();
-                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                                let bridge = ui.global::<Bridge>();
-                                bridge.set_updater_state(UiUpdaterState::DownloadFailed);
-                                bridge.set_updater_error_msg(error_msg);
-                            });
+                            let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
+                                UiUpdaterState::DownloadFailed,
+                            ));
+                            let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
                             return;
                         }
                     };
@@ -1708,20 +1701,18 @@ impl Application {
                     {
                         error!(?err, "Failed to install update");
                         let error_msg = err.to_shared_string();
-                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                            let bridge = ui.global::<Bridge>();
-                            bridge.set_updater_state(UiUpdaterState::InstallFailed);
-                            bridge.set_updater_error_msg(error_msg);
-                        });
+                        let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
+                            UiUpdaterState::InstallFailed,
+                        ));
+                        let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
                         return;
                     }
 
                     debug!(?update, "Successfully updated");
 
-                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.global::<Bridge>()
-                            .set_updater_state(UiUpdaterState::InstallSuccessful);
-                    });
+                    let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
+                        UiUpdaterState::InstallSuccessful,
+                    ));
                 });
             }
             AppUpdateEvent::RestartApp => {
