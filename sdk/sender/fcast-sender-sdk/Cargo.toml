@@ -30,7 +30,8 @@ uuid = { version = "1.17.0", features = ["v4"], optional = true }
 # Chromecast
 rustls-pki-types = { version = "1.12.0", optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ], optional = true }
-prost = { version = "0.14.1", optional = true }
+# prost = { version = "0.14.1", optional = true }
+google-cast-protocol = { path = "../../common/google-cast-protocol", optional = true }
 
 # FCast
 fcast-protocol = { path = "../../common/fcast-protocol", version = "0.1.3", optional = true }
@@ -46,12 +47,13 @@ log-panics = { version = "2.1.0", features = ["with-backtrace"], optional = true
 cfg_aliases = "0.2.1"
 
 # Chromecast
-prost-build = { version = "0.14.1", optional = true }
+# prost-build = { version = "0.14.1", optional = true }
 
 [features]
 default = ["fcast", "chromecast", "http-file-server", "uniffi", "logging", "discovery"]
 fcast = ["dep:fcast-protocol", "dep:serde", "dep:serde_json", "dep:base64"]
-chromecast = ["dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:prost", "dep:prost-build"]
+# chromecast = ["dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:prost", "dep:prost-build"]
+chromecast = ["dep:serde", "dep:serde_json", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:google-cast-protocol"]
 http-file-server = ["dep:uuid", "dep:libc", "dep:http-range"]
 uniffi = ["dep:uniffi"]
 logging = ["dep:env_logger", "dep:log-panics", "dep:android_logger"]
