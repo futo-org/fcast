@@ -6617,6 +6617,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "oneshot"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe21416a02c693fb9f980befcb230ecc70b0b3d1cc4abf88b9675c4c1457f0c"
+
+[[package]]
 name = "openssl"
 version = "0.10.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7556,6 +7562,7 @@ dependencies = [
  "nom 7.1.3",
  "num_cpus",
  "objc2-app-kit 0.3.2",
+ "oneshot",
  "pango 0.22.0",
  "parking_lot",
  "rand 0.10.0",
