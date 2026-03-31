@@ -17,6 +17,7 @@ members = [
     "receivers/experimental/android",
     "tools/remote-pipeline-dbg",
     "crates/app-updater",
+    "sdk/common/google-cast-protocol",
 ]
 resolver = "2"
 
