@@ -3,6 +3,7 @@
 use anyhow::{Result, bail};
 use base64::Engine;
 use bytes::Bytes;
+use fcast::{SessionDriver, SessionId};
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
 };
@@ -10,7 +11,6 @@ use gst::prelude::*;
 use gst_gl::prelude::*;
 use image::{ImageDecoder, ImageFormat};
 use parking_lot::Mutex;
-use session::{SessionDriver, SessionId};
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
@@ -42,6 +42,7 @@ use std::{
 pub use clap;
 pub use slint;
 pub use tracing;
+mod fcast;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod gcast;
@@ -56,14 +57,13 @@ mod linux_tray;
 mod mac_win_tray;
 mod player;
 mod raop;
-mod session;
 mod user_agent;
 mod video;
 
 use crate::{
+    fcast::{Operation, ReceiverToSenderMessage, TranslatableMessage},
     gui::{GuiController, ToastType},
     player::PlayerState,
-    session::{Operation, ReceiverToSenderMessage, TranslatableMessage},
 };
 
 use graphics::GraphicsContext;
@@ -513,7 +513,11 @@ impl Application {
         let mdns = {
             use if_addrs::get_if_addrs;
 
-            let device_name = format!("FCast-{}", gethostname::gethostname().to_string_lossy());
+            let host_name = gethostname::gethostname();
+            let host_name = host_name.to_string_lossy();
+            let device_name = format!("FCast-{host_name}");
+            // Avoid naming confusion
+            let gcast_device_name = format!("Chromecast-{host_name}");
             let _ = event_tx.send(Event::Mdns(MdnsEvent::NameSet(device_name.clone())));
 
             if let Ok(ifaces) = get_if_addrs() {
@@ -537,18 +541,17 @@ impl Application {
             daemon.register(service)?;
 
             let gcast_props = HashMap::from([
-                ("fn".to_owned(), "My FCast Receiver".to_owned()),
+                ("fn".to_owned(), gcast_device_name.clone()),
                 ("ca".to_owned(), "1".to_owned()), // Has display
             ]);
 
             let gcast_service = mdns_sd::ServiceInfo::new(
                 "_googlecast._tcp.local.",
-                &device_name,
-                &format!("{device_name}.local."),
+                &gcast::get_host_name(&gcast_device_name),
+                &format!("{}.local.", uuid::Uuid::new_v4()),
                 (), // Auto
                 GCAST_TCP_PORT,
                 gcast_props,
-                // None::<std::collections::HashMap<String, String>>,
             )?
             .enable_addr_auto();
 

@@ -12,7 +12,7 @@ use serde_json as json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::UnboundedReceiver,
+    sync::{broadcast, mpsc::UnboundedReceiver},
 };
 use tokio_rustls::{TlsAcceptor, rustls, server::TlsStream};
 use tracing::{debug, error, instrument, warn};
@@ -24,6 +24,32 @@ const MEDIA_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const RECEIVER_ID: &str = "CC1AD845";
 
 use google_cast_protocol::MediaStatus;
+
+fn nibble_to_char(nibble: u8) -> char {
+    let chars = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
+    if (nibble as usize) < chars.len() {
+        chars[nibble as usize]
+    } else {
+        'x'
+    }
+}
+
+pub fn get_host_name(device_name: &str) -> String {
+    use md5::Digest;
+    let device_name_hash = md5::Md5::digest(&device_name);
+
+    let mut hex = String::with_capacity(device_name_hash.len() * 2);
+    for byte in device_name_hash {
+        hex.extend(&[
+            nibble_to_char(byte >> 4),
+            nibble_to_char(byte & 0x0F),
+        ]);
+    }
+
+    format!("Chromecast-{hex}")
+}
 
 #[derive(Debug)]
 pub enum StatusUpdate {
@@ -37,6 +63,7 @@ struct State {
     pub event_tx: EventSender,
     pub has_launched: bool,
     pub media_status: Arc<RwLock<MediaStatus>>,
+    pub player_state: google_cast_protocol::PlayerState,
 }
 
 impl State {
@@ -45,6 +72,7 @@ impl State {
             event_tx,
             has_launched: false,
             media_status,
+            player_state: google_cast_protocol::PlayerState::Idle,
         }
     }
 }
@@ -234,8 +262,8 @@ async fn handle_message(
                     })?;
                     let mut status = state.media_status.write();
                     status.media = Some(media);
-                    status.player_state = google_cast_protocol::PlayerState::Buffering;
-                    status.idle_reason = None;
+                    // status.player_state = google_cast_protocol::PlayerState::Buffering;
+                    // status.idle_reason = None;
                 }
                 namespaces::Media::Seek { current_time, .. } => {
                     if let Some(time) = current_time {
@@ -318,6 +346,7 @@ async fn run_session(
     event_tx: EventSender,
     media_status: Arc<RwLock<MediaStatus>>,
     stream: TlsStream<TcpStream>,
+    mut state_change_rx: broadcast::Receiver<()>,
 ) -> Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);
 
@@ -373,6 +402,22 @@ async fn run_session(
                     break;
                 }
             }
+            _ = state_change_rx.recv() => {
+                let new_state = state.media_status.read().player_state;
+                if new_state != state.player_state {
+                    let status = state.media_status.read().clone();
+                    write_channel_message(
+                        &mut writer,
+                        MEDIA_ID,
+                        "*",
+                        namespaces::Media::Status {
+                            request_id: 0,
+                            status: vec![status],
+                        },
+                    )
+                    .await?;
+                }
+            }
         }
     }
 
@@ -396,9 +441,10 @@ pub async fn run_server(
         .with_no_client_auth()
         .with_single_cert(vec![cert.der().to_owned()], key_pair.into())?;
     let acceptor = TlsAcceptor::from(Arc::new(config));
+    let (state_change_tx, _) = broadcast::channel::<()>(8);
 
     let media_status = Arc::new(RwLock::new(google_cast_protocol::MediaStatus {
-        media_session_id: 0,
+        media_session_id: 1337,
         media: None,
         playback_rate: 1.0,
         player_state: google_cast_protocol::PlayerState::Idle,
@@ -418,10 +464,11 @@ pub async fn run_server(
                 let acceptor = acceptor.clone();
                 let event_tx = event_tx.clone();
                 let media_status = Arc::clone(&media_status);
+                let state_change_rx = state_change_tx.subscribe();
                 tokio::spawn(async move {
                     match acceptor.accept(stream).await {
                         Ok(stream) => {
-                            if let Err(err) = run_session(event_tx, media_status, stream).await {
+                            if let Err(err) = run_session(event_tx, media_status, stream, state_change_rx).await {
                                 debug!(?err, "Session ended with error");
                             }
                         }
@@ -452,6 +499,9 @@ pub async fn run_server(
                         };
                         status.player_state = state;
                         status.idle_reason = idle_reason;
+                        if state_change_tx.receiver_count() > 0 {
+                            let _ = state_change_tx.send(());
+                        }
                     }
                 }
             }
