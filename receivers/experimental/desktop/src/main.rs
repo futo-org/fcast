@@ -1,16 +1,8 @@
 use rcore::clap::Parser;
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_arch = "aarch64", target_os = "linux")
-)))]
-use tikv_jemallocator::Jemalloc;
+use mimalloc::MiMalloc;
 
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_arch = "aarch64", target_os = "linux")
-)))]
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> anyhow::Result<()> {
     let args = rcore::CliArgs::parse();
