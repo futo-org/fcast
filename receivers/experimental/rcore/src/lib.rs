@@ -2401,6 +2401,7 @@ pub fn run(
             gstrswebrtc::plugin_register_static().unwrap();
             #[cfg(not(target_os = "android"))]
             gstrsrtp::plugin_register_static().unwrap();
+            gstdav1d::plugin_register_static().unwrap();
 
             Application::new(
                 gui,

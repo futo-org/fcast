@@ -1944,6 +1944,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dav1d"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ee89cb860616069c67520dcd66cacdb900b57c799f634a0eb6d91f6e2a82b61"
+dependencies = [
+ "av-data",
+ "bitflags 2.11.0",
+ "dav1d-sys",
+ "static_assertions",
+]
+
+[[package]]
 name = "dav1d-sys"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3468,6 +3480,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-dav1d"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fee4d853d1a7b253a6771e63dac20c43bce86ea27486f8672e65a0f7c0e0bcd6"
+dependencies = [
+ "dav1d 0.11.1",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-video",
+ "num_cpus",
+]
+
+[[package]]
 name = "gst-plugin-reqwest"
 version = "0.14.4"
 source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=ed20fcd7a6794003f7fb52febcefda6965221d7e#ed20fcd7a6794003f7fb52febcefda6965221d7e"
@@ -4862,7 +4888,7 @@ dependencies = [
  "bytemuck",
  "byteorder-lite",
  "color_quant",
- "dav1d",
+ "dav1d 0.10.4",
  "exr",
  "gif",
  "image-webp",
@@ -7533,6 +7559,7 @@ dependencies = [
  "gethostname",
  "glutin_egl_sys",
  "glutin_glx_sys",
+ "gst-plugin-dav1d",
  "gst-plugin-reqwest",
  "gst-plugin-rtp",
  "gst-plugin-webrtc",
