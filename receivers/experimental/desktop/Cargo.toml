@@ -7,7 +7,7 @@ edition = "2024"
 rcore = { path = "../rcore", features = ["desktop"] }
 # env_logger.workspace = true
 anyhow.workspace = true
-mimalloc = "0.1"
+mimalloc = { version = "0.1", features = ["v3"] }
 
 [features]
 default = ["systray"]
