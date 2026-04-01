@@ -2423,6 +2423,8 @@ pub fn run(
             gst::init().unwrap();
             debug!(gstreamer_version = %gst::version_string());
 
+            gst::rust_allocator().clone().set_default();
+
             let mut slint_sink = video::SlintOpenGLSink::new().unwrap();
             let slint_appsink = slint_sink.video_sink();
             let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);

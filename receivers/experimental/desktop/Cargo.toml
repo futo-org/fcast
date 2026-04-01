@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 rcore = { path = "../rcore", features = ["desktop"] }
-# env_logger.workspace = true
 anyhow.workspace = true
 mimalloc = { version = "0.1", features = ["v3"] }
 
