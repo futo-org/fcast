@@ -29,7 +29,7 @@ use tracing::{Instrument, debug, debug_span, error, info, instrument, warn};
 
 use std::{
     collections::{HashMap, HashSet},
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     rc::Rc,
     sync::{
         Arc,
@@ -633,6 +633,7 @@ impl Application {
                 loop {
                     let (mut stream, addr) = listener.accept().await.unwrap();
                     debug!(?addr, "Got connection");
+
 
                     let mut buf = [0u8; 1];
                     if let Ok(_) = stream.read_exact(&mut buf).await
@@ -2062,12 +2063,39 @@ impl Application {
         mut event_rx: UnboundedReceiver<Event>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
-        // TODO: IPv4 on windows
-        let dispatch_listener = TcpListener::bind(SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-            FCAST_TCP_PORT,
-        ))
-        .await?;
+        async fn create_listener(addr: std::net::IpAddr) -> std::io::Result<TcpListener> {
+            TcpListener::bind(SocketAddr::new(
+                addr,
+                FCAST_TCP_PORT,
+            ))
+            .await
+        }
+
+        #[cfg(target_os = "windows")]
+        let ipv4_stream = futures::stream::unfold(
+            create_listener(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)).await?,
+            |listener| async move {
+                Some((listener.accept().await, listener))
+            },
+        );
+        let ipv6_stream = futures::stream::unfold(
+            create_listener(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)).await?,
+            |listener| async move {
+                Some((listener.accept().await, listener))
+            },
+        );
+
+        #[cfg(target_os = "windows")]
+        tokio::pin!(ipv4_stream);
+        tokio::pin!(ipv6_stream);
+
+        #[cfg(target_os = "windows")]
+        let listener_stream = futures::stream::select(ipv4_stream, ipv6_stream);
+        #[cfg(not(target_os = "windows"))]
+        let listener_stream = ipv6_stream;
+
+        #[cfg(target_os = "windows")]
+        tokio::pin!(listener_stream);
 
         #[cfg(all(target_os = "linux", feature = "systray"))]
         let _tray = if self.cli_args.no_systray {
@@ -2089,6 +2117,8 @@ impl Application {
 
         let mut update_interval = tokio::time::interval(Duration::from_millis(200));
 
+        use futures::stream::StreamExt;
+
         let mut session_id: SessionId = 0;
         loop {
             tokio::select! {
@@ -2108,7 +2138,7 @@ impl Application {
                         self.notify_updates(false)?;
                     }
                 }
-                session = dispatch_listener.accept() => {
+                session = listener_stream.select_next_some() => {
                     let (stream, _) = session?;
 
                     debug!("New connection id={session_id}");
