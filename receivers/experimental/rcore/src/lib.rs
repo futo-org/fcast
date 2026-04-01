@@ -634,7 +634,6 @@ impl Application {
                     let (mut stream, addr) = listener.accept().await.unwrap();
                     debug!(?addr, "Got connection");
 
-
                     let mut buf = [0u8; 1];
                     if let Ok(_) = stream.read_exact(&mut buf).await
                         && buf[0] == 0xFF
@@ -2063,27 +2062,18 @@ impl Application {
         mut event_rx: UnboundedReceiver<Event>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
-        async fn create_listener(addr: std::net::IpAddr) -> std::io::Result<TcpListener> {
-            TcpListener::bind(SocketAddr::new(
-                addr,
-                FCAST_TCP_PORT,
-            ))
-            .await
+        macro_rules! listener_stream {
+            ($addr:expr) => {
+                futures::stream::unfold(
+                    TcpListener::bind(SocketAddr::new($addr, FCAST_TCP_PORT)).await?,
+                    |listener| async move { Some((listener.accept().await, listener)) },
+                )
+            }
         }
 
         #[cfg(target_os = "windows")]
-        let ipv4_stream = futures::stream::unfold(
-            create_listener(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)).await?,
-            |listener| async move {
-                Some((listener.accept().await, listener))
-            },
-        );
-        let ipv6_stream = futures::stream::unfold(
-            create_listener(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)).await?,
-            |listener| async move {
-                Some((listener.accept().await, listener))
-            },
-        );
+        let ipv4_stream = listener_stream!(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let ipv6_stream = listener_stream!(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED));
 
         #[cfg(target_os = "windows")]
         tokio::pin!(ipv4_stream);
@@ -2092,7 +2082,7 @@ impl Application {
         #[cfg(target_os = "windows")]
         let listener_stream = futures::stream::select(ipv4_stream, ipv6_stream);
         #[cfg(not(target_os = "windows"))]
-        let listener_stream = ipv6_stream;
+        let mut listener_stream = ipv6_stream;
 
         #[cfg(target_os = "windows")]
         tokio::pin!(listener_stream);
