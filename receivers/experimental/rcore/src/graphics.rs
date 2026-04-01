@@ -92,7 +92,7 @@ pub enum GraphicsContext {
 }
 
 impl GraphicsContext {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn is_on_wayland() -> Result<bool> {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             Ok(true)
@@ -103,42 +103,22 @@ impl GraphicsContext {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn get_egl_ctx(api: &slint::GraphicsAPI<'_>) -> Result<glutin_egl_sys::egl::Egl> {
-        Ok(match api {
-            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                glutin_egl_sys::egl::Egl::load_with(|symbol| {
-                    get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                })
-            }
-            _ => anyhow::bail!("Unsupported graphics API"),
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_glx_ctx(api: &slint::GraphicsAPI<'_>) -> Result<glutin_glx_sys::glx::Glx> {
-        Ok(match api {
-            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                glutin_glx_sys::glx::Glx::load_with(|symbol| {
-                    get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                })
-            }
-            _ => anyhow::bail!("Unsupported graphics API"),
-        })
-    }
-
     #[allow(unused)]
     pub fn from_slint(api: &slint::GraphicsAPI<'_>) -> Result<Self> {
         match api {
             slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 match Self::is_on_wayland() {
-                    // NOTE: If error: assume KMS
-                    Ok(true) | Err(_) => Ok(Self::Egl(Self::get_egl_ctx(api)?)),
-                    Ok(false) => Ok(Self::Glx(Self::get_glx_ctx(api)?)),
+                    // NOTE: If error: assume KMS or Android
+                    Ok(true) | Err(_) => {
+                        Ok(Self::Egl(glutin_egl_sys::egl::Egl::load_with(|symbol| {
+                            get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                        })))
+                    }
+                    Ok(false) => Ok(Self::Glx(glutin_glx_sys::glx::Glx::load_with(|symbol| {
+                        get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                    }))),
                 }
-                #[cfg(target_os = "android")]
-                return Ok(Self::Egl(Self::get_egl_ctx(api)?));
                 #[cfg(target_os = "windows")]
                 {
                     use glow::HasContext;

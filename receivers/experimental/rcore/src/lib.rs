@@ -2068,7 +2068,7 @@ impl Application {
                     TcpListener::bind(SocketAddr::new($addr, FCAST_TCP_PORT)).await?,
                     |listener| async move { Some((listener.accept().await, listener)) },
                 )
-            }
+            };
         }
 
         #[cfg(target_os = "windows")]
