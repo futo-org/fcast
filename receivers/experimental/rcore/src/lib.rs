@@ -2317,6 +2317,14 @@ pub fn run(
         );
     }
 
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default() {
+        error!(
+            ?err,
+            "Failed to register aws_lc_rs as rustls default crypto provider"
+        );
+    }
+
     let gst_gl_contexts = graphics::GlContext::new();
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
