@@ -3,7 +3,7 @@
 build_electron_receiver_task:
   name: buildReceiverMac
   macos_instance:
-    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+    image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
   buildReceiverMac_script:
     # Local
     # - source .secure_files/.env
@@ -36,7 +36,7 @@ build_electron_receiver_task:
 desktop_sender_task:
   name: buildSenderMacosArm64
   macos_instance:
-    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+    image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
   buildReceiverMac_script:
     - brew install rustup-init protobuf wget
     - rustup-init -y
@@ -62,7 +62,7 @@ desktop_sender_task:
 sender_sdk_csharp_task:
   name: crossCompileForDarwinCSharp
   macos_instance:
-    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+    image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
   buildSenderSdkDarwin_script:
     - brew install rustup-init protobuf
     - rustup-init -y
@@ -78,7 +78,7 @@ sender_sdk_csharp_task:
 desktop_receiver_task:
   name: buildReceiverMacosArm64
   macos_instance:
-    image: ghcr.io/cirruslabs/macos-ventura-xcode:14.3.1
+    image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
   buildReceiverMac_script:
     - brew install rustup-init wget
     - rustup-init -y
