@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package Name="FCast Receiver"
+             Version="{{ version }}"
+             Manufacturer="FUTO"
+             UpgradeCode="52857d1c-7b82-42c9-932a-4f59cd5c54b1"
+             Compressed="yes">
+
+        <Icon Id="fcast_ico.exe" SourceFile="fcast.ico"/>
+        <Property Id="ARPPRODUCTICON" Value="fcast_ico.exe" />
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <StandardDirectory Id="ProgramFiles64Folder">
+            <Directory Id="INSTALLFOLDER" Name="FCastReceiver">
+                <Component Id="MainExecutableComponent" Guid="75316f20-f4d3-4da3-9520-f3196560f983">
+                    <File Id="MainExecutable" Source="fcast-receiver.exe" KeyPath="yes"/>
+                </Component>
+
+                <Component Id="DependencyFiles" Guid="8f3cd1df-6e69-461b-a29a-3fd1f827cc7a">
+                    {{ dll_components }}
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Directory Id="ApplicationProgramsFolder" Name="FCast Receiver">
+                <Component Id="StartMenuShortcutComponent" Guid="d144c26e-eed3-4a82-8f96-863fb707857f">
+                    <Shortcut Id="StartMenuShortcut"
+                              Name="FCast Receiver"
+                              Description="Launch FCast Receiver"
+                              Target="[INSTALLFOLDER]fcast-receiver.exe"
+                              WorkingDirectory="INSTALLFOLDER"
+                              Icon="fcast_ico.exe"/>
+                    <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
+                    <RegistryValue Root="HKCU"
+                                   Key="Software\FUTO\FCastReceiver"
+                                   Name="installed"
+                                   Type="integer"
+                                   Value="1"
+                                   KeyPath="yes"/>
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <Feature Id="MainFeature">
+            <ComponentRef Id="MainExecutableComponent"/>
+            <ComponentRef Id="DependencyFiles"/>
+            <ComponentRef Id="StartMenuShortcutComponent"/>
+        </Feature>
+    </Package>
+</Wix>

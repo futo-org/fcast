@@ -85,14 +85,14 @@ pub enum GraphicsContext {
     #[cfg(target_os = "linux")]
     Glx(glutin_glx_sys::glx::Glx),
     #[cfg(target_os = "windows")]
-    Wgl,
+    Wgl(u32),
     #[cfg(target_os = "macos")]
     Cgl,
     Initialized,
 }
 
 impl GraphicsContext {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn is_on_wayland() -> Result<bool> {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             Ok(true)
@@ -103,44 +103,36 @@ impl GraphicsContext {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn get_egl_ctx(api: &slint::GraphicsAPI<'_>) -> Result<glutin_egl_sys::egl::Egl> {
-        Ok(match api {
-            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                glutin_egl_sys::egl::Egl::load_with(|symbol| {
-                    get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                })
-            }
-            _ => anyhow::bail!("Unsupported graphics API"),
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_glx_ctx(api: &slint::GraphicsAPI<'_>) -> Result<glutin_glx_sys::glx::Glx> {
-        Ok(match api {
-            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                glutin_glx_sys::glx::Glx::load_with(|symbol| {
-                    get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                })
-            }
-            _ => anyhow::bail!("Unsupported graphics API"),
-        })
-    }
-
     #[allow(unused)]
     pub fn from_slint(api: &slint::GraphicsAPI<'_>) -> Result<Self> {
-        #[cfg(target_os = "linux")]
-        match Self::is_on_wayland() {
-            // NOTE: If error: assume KMS
-            Ok(true) | Err(_) => Ok(Self::Egl(Self::get_egl_ctx(api)?)),
-            Ok(false) => Ok(Self::Glx(Self::get_glx_ctx(api)?)),
+        match api {
+            slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                match Self::is_on_wayland() {
+                    // NOTE: If error: assume KMS or Android
+                    Ok(true) | Err(_) => {
+                        Ok(Self::Egl(glutin_egl_sys::egl::Egl::load_with(|symbol| {
+                            get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                        })))
+                    }
+                    Ok(false) => Ok(Self::Glx(glutin_glx_sys::glx::Glx::load_with(|symbol| {
+                        get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                    }))),
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    use glow::HasContext;
+                    let gl = unsafe {
+                        glow::Context::from_loader_function_cstr(|s| get_proc_address(s))
+                    };
+                    tracing::debug!(wgl_version = ?gl.version());
+                    return Ok(Self::Wgl(gl.version().major));
+                }
+                #[cfg(target_os = "macos")]
+                return Ok(Self::Cgl);
+            }
+            _ => panic!("Unsupported graphics API"),
         }
-        #[cfg(target_os = "android")]
-        return Ok(Self::Egl(Self::get_egl_ctx(api)?));
-        #[cfg(target_os = "windows")]
-        return Ok(Self::Wgl);
-        #[cfg(target_os = "macos")]
-        return Ok(Self::Cgl);
     }
 
     #[instrument(skip_all)]
@@ -193,17 +185,21 @@ impl GraphicsContext {
                 }
             }
             #[cfg(target_os = "windows")]
-            GraphicsContext::Wgl => {
+            GraphicsContext::Wgl(major_version) => {
                 let platform = gst_gl::GLPlatform::WGL;
-                let gl_api = gst_gl::GLAPI::OPENGL3;
+                let gl_api = if *major_version >= 3 {
+                    gst_gl::GLAPI::OPENGL3
+                } else {
+                    gst_gl::GLAPI::OPENGL
+                };
                 let gl_ctx = gst_gl::GLContext::current_gl_context(platform);
 
                 if gl_ctx == 0 {
-                    bail!("Failed to create GL context");
+                    panic!("Failed to create GL context");
                 }
 
                 let Some(gst_display) = GLDisplay::with_type(gst_gl::GLDisplayType::WIN32) else {
-                    bail!("Failed to create GLDisplay of type WIN32");
+                    panic!("Failed to create GLDisplay of type WIN32");
                 };
 
                 gst_display.filter_gl_api(gl_api);

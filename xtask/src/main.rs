@@ -1,9 +1,6 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
-use xtask::{
-    android,  mdns, receiver, sender, sh,
-    test_corpus, workspace,
-};
+use xtask::{android, mdns, receiver, sender, sh, test_corpus, workspace};
 #[cfg(feature = "uniffi")]
 use xtask::{
     csharp, kotlin,

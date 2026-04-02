@@ -1,12 +1,14 @@
 use anyhow::Result;
+#[cfg(target_os = "macos")]
+use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
 use xshell::cmd;
-#[cfg(target_os = "macos")]
-use camino::Utf8Path;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use crate::concat_paths;
 #[cfg(target_os = "macos")]
-use crate::{concat_paths, BuildMacosInstallerArgs};
+use crate::BuildMacosInstallerArgs;
 use crate::{sh, workspace, AndroidAbiTarget};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -59,11 +61,62 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 42] = [
 const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 3] =
     ["gstapplemedia", "gstosxaudio", "gstosxvideo"];
 
+#[cfg(target_os = "windows")]
+const GSTREAMER_BASE_LIBS: [&'static str; 20] = [
+    "gstbase",
+    "gstnet",
+    "gstreamer",
+    "gstapp",
+    "gstpbutils",
+    "gstrtp",
+    "gstrtsp",
+    "gstsctp",
+    "gstsdp",
+    "gstvideo",
+    "gstwebrtc",
+    "gstwebrtcnice",
+    "gstd3d11",
+    "gstd3d12",
+    "gstd3dshader",
+    "gstaudio",
+    "gsttag",
+    "gstdxva",
+    "gstcodecs",
+    "gstcodecparsers",
+];
+
+#[cfg(target_os = "windows")]
+const GSTREAMER_WIN_DEPENDENCY_LIBS: [&'static str; 15] = [
+    "bz2.dll",
+    "ffi-7.dll",
+    "gio-2.0-0.dll",
+    "glib-2.0-0.dll",
+    "gmodule-2.0-0.dll",
+    "gobject-2.0-0.dll",
+    "intl-8.dll",
+    "libcrypto-3-x64.dll",
+    "libssl-3-x64.dll",
+    "libwinpthread-1.dll",
+    "nice-10.dll",
+    "orc-0.4-0.dll",
+    "pcre2-8-0.dll",
+    "z-1.dll",
+    "srtp2-1.dll",
+];
+
 #[cfg(target_os = "macos")]
 #[derive(askama::Template)]
 #[template(path = "receiver.Info.plist.askama")]
 struct InfoPlistTemplate {
     version: String,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(askama::Template)]
+#[template(path = "receiver.Product.wxs.askama", escape = "none")]
+struct ProductTemplate {
+    version: String,
+    dll_components: String,
 }
 
 #[derive(Subcommand)]
@@ -96,6 +149,8 @@ pub struct AndroidReceiverArgs {
 #[derive(Subcommand)]
 pub enum ReceiverCommand {
     Android(AndroidReceiverArgs),
+    #[cfg(target_os = "windows")]
+    BuildWindowsInstaller,
     #[cfg(target_os = "macos")]
     BuildMacosInstaller(BuildMacosInstallerArgs),
 }
@@ -114,7 +169,8 @@ fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn get_receiver_version() -> String {
-    let receiver_toml = std::fs::read_to_string("receivers/experimental/desktop/Cargo.toml").unwrap();
+    let receiver_toml =
+        std::fs::read_to_string("receivers/experimental/desktop/Cargo.toml").unwrap();
     let doc = receiver_toml.parse::<toml_edit::DocumentMut>().unwrap();
     doc["package"]["version"].as_str().unwrap().to_string()
 }
@@ -257,6 +313,90 @@ impl ReceiverArgs {
                             cmd!(sh, "cargo ndk {args...}").run()?;
                         }
                     }
+                }
+            }
+            #[cfg(target_os = "windows")]
+            ReceiverCommand::BuildWindowsInstaller => {
+                let gst_root = crate::get_gst_root(&sh);
+
+                // cmd!(sh, "cargo build --release-lto --package desktop-sender").run()?;
+                cmd!(sh, "cargo build --package desktop-receiver").run()?;
+
+                let build_dir_root = crate::setup_build_dir(&sh, &root_path);
+
+                let mut files_to_copy = Vec::new();
+                files_to_copy.push((
+                    concat_paths(&[
+                        root_path.as_str(),
+                        // TODO: change path
+                        "target",
+                        "debug",
+                        "desktop-receiver.exe",
+                    ]),
+                    "fcast-receiver.exe".to_string(),
+                ));
+
+                fn dlls() -> Vec<String> {
+                    let mut dlls: Vec<String> = GSTREAMER_WIN_DEPENDENCY_LIBS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
+                    // for lib in GSTREAMER_PLUGIN_LIBS_COMMON {
+                    for lib in GSTREAMER_BASE_LIBS {
+                        dlls.push(format!("{lib}-1.0-0.dll"));
+                    }
+                    dlls
+                }
+
+                fn plugins() -> Vec<String> {
+                    GSTREAMER_PLUGIN_LIBS_COMMON
+                        .iter()
+                        // .chain(GSTREAMER_PLUGIN_LIBS_WIN.iter())
+                        .map(|s| format!("{s}.dll"))
+                        .collect()
+                }
+
+                files_to_copy.extend(crate::find_dlls(&gst_root, dlls()));
+                files_to_copy.extend(crate::find_plugins(&gst_root, plugins()));
+                files_to_copy.extend(crate::find_msvc_redists(&sh));
+                files_to_copy.extend(crate::find_c_runtime(
+                    crate::find_windows_sdk_installation_path(),
+                ));
+                files_to_copy.push(("senders/extra/fcast.ico".into(), "fcast.ico".to_owned()));
+
+                let mut dll_components = String::new();
+
+                for (src, dst) in files_to_copy {
+                    let dst = concat_path(&build_dir_root, &dst);
+                    sh.copy_file(&src, &dst)?;
+                    println!("Copied `{src}` to `{dst}`");
+
+                    if dst.extension() == Some("dll") {
+                        dll_components += &format!(r#"<File Source="{dst}" />"#);
+                        dll_components += "\n";
+                    }
+                }
+
+                use askama::Template;
+
+                let receiver_version = get_receiver_version();
+                let product_wxs = ProductTemplate {
+                    version: receiver_version.clone(),
+                    dll_components,
+                }
+                .render()?;
+
+                sh.write_file(
+                    concat_path(&build_dir_root, &"FCastReceiverInstaller.wxs"),
+                    product_wxs,
+                )?;
+
+                println!("############### Building installer ###############");
+
+                {
+                    let output = format!("FCastReceiver-{receiver_version}-win64-installer.msi");
+                    let _win_build_p = sh.push_dir(&build_dir_root);
+                    cmd!(sh, "wix build -out {output} .\\FCastReceiverInstaller.wxs").run()?;
                 }
             }
             #[cfg(target_os = "macos")]
