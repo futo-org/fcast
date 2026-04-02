@@ -16,7 +16,6 @@ import {
     AppState,
     UiPlayerVariant,
 } from "globals.slint";
-import { DebugOverlay } from "debug.slint";
 import { IdleView } from "views/idle.slint";
 import { LoadingMediaView } from "views/loading-media.slint";
 import { VideoPlayerView } from "views/video-player.slint";
@@ -66,8 +65,6 @@ export component MainWindow inherits Window {
     if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
     if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
-
-    if Bridge.is-debugging: DebugOverlay { }
 
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
 }
