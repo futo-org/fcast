@@ -55,7 +55,7 @@ variables:
   # Build auth header for Proxmox API
   - export PROXMOX_AUTH="PVEAPIToken=${PROXMOX_USER}!${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
 
-provision_windows_vm:
+provision_windows_vm_1:
   stage: receiverExperimental
   image: alpine:latest
   when: manual
@@ -156,7 +156,7 @@ buil_receiver_for_win_x64:
     - proxmoxshell
   when: manual
   needs:
-    - job: provision_windows_vm
+    - job: provision_windows_vm_1
       artifacts: true
   script:
     # Wait for SSH to be ready
@@ -219,7 +219,7 @@ cleanup_vm:
   tags:
     - proxmoxshell
   needs:
-    - job: provision_windows_vm
+    - job: provision_windows_vm_1
       artifacts: true
     - job: buil_receiver_for_win_x64
   when: manual
