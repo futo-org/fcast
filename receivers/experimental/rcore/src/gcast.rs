@@ -42,10 +42,7 @@ pub fn get_host_name(device_name: &str) -> String {
 
     let mut hex = String::with_capacity(device_name_hash.len() * 2);
     for byte in device_name_hash {
-        hex.extend(&[
-            nibble_to_char(byte >> 4),
-            nibble_to_char(byte & 0x0F),
-        ]);
+        hex.extend(&[nibble_to_char(byte >> 4), nibble_to_char(byte & 0x0F)]);
     }
 
     format!("Chromecast-{hex}")

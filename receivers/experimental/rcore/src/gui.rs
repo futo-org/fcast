@@ -228,7 +228,10 @@ pub enum UpdateGuiCommand {
     SetUpdateDownloadProgress(i32),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     SetUpdaterError(slint::SharedString),
-    SetWindowVisibility { visible: bool, prev_tx: oneshot::Sender<bool> },
+    SetWindowVisibility {
+        visible: bool,
+        prev_tx: oneshot::Sender<bool>,
+    },
     QuitLoop,
 }
 
@@ -266,7 +269,10 @@ impl GuiController {
     /// Returns the the previous window fulscreen state.
     pub fn set_fullscreen(&self, fullscreen: bool) -> bool {
         let (prev_tx, prev_rx) = oneshot::channel();
-        self.send(UpdateGuiCommand::SetFullscreen { fullscreen, prev_tx });
+        self.send(UpdateGuiCommand::SetFullscreen {
+            fullscreen,
+            prev_tx,
+        });
         match prev_rx.recv() {
             Ok(p) => p,
             Err(err) => {
@@ -453,7 +459,10 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
     match cmd {
         UpdateGuiCommand::DeviceConnected => ui.invoke_device_connected(),
         UpdateGuiCommand::DeviceDisconnected => bridge.invoke_device_disconnected(),
-        UpdateGuiCommand::SetFullscreen { fullscreen, prev_tx } => {
+        UpdateGuiCommand::SetFullscreen {
+            fullscreen,
+            prev_tx,
+        } => {
             let window = ui.window();
             let _ = prev_tx.send(window.is_fullscreen());
             window.set_fullscreen(fullscreen);

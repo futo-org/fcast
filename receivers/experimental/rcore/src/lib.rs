@@ -382,6 +382,18 @@ struct RaopServer {
     config: raop::Configuration,
 }
 
+struct GCastUpdateSender(Option<UnboundedSender<gcast::StatusUpdate>>);
+
+impl GCastUpdateSender {
+    fn send(&self, update: gcast::StatusUpdate) {
+        if let Some(tx) = self.0.as_ref() {
+            if let Err(err) = tx.send(update) {
+                error!(?err, "Failed to send GCast update");
+            }
+        }
+    }
+}
+
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
@@ -420,7 +432,7 @@ struct Application {
     gui: GuiController,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     update: Option<app_updater::Release>,
-    gcast_tx: UnboundedSender<gcast::StatusUpdate>,
+    gcast_tx: GCastUpdateSender,
     #[cfg(not(target_os = "android"))]
     cli_args: CliArgs,
     window_visible_before_playing: Option<bool>,
@@ -435,8 +447,7 @@ impl Application {
         event_tx: EventSender,
         video_sink_is_eos: Arc<AtomicBool>,
         gl_context: graphics::GlContext,
-        #[cfg(not(target_os = "android"))]
-        cli_args: CliArgs,
+        #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -547,27 +558,31 @@ impl Application {
 
             daemon.register(service)?;
 
-            let gcast_props = HashMap::from([
-                ("fn".to_owned(), gcast_device_name.clone()),
-                ("ca".to_owned(), "1".to_owned()), // Has display
-            ]);
+            if !cli_args.no_google_cast {
+                let gcast_props = HashMap::from([
+                    ("fn".to_owned(), gcast_device_name.clone()),
+                    ("ca".to_owned(), "1".to_owned()), // Has display
+                ]);
 
-            let gcast_service = mdns_sd::ServiceInfo::new(
-                "_googlecast._tcp.local.",
-                &gcast::get_host_name(&gcast_device_name),
-                &format!("{}.local.", uuid::Uuid::new_v4()),
-                (), // Auto
-                GCAST_TCP_PORT,
-                gcast_props,
-            )?
-            .enable_addr_auto();
+                let gcast_service = mdns_sd::ServiceInfo::new(
+                    "_googlecast._tcp.local.",
+                    &gcast::get_host_name(&gcast_device_name),
+                    &format!("{}.local.", uuid::Uuid::new_v4()),
+                    (), // Auto
+                    GCAST_TCP_PORT,
+                    gcast_props,
+                )?
+                .enable_addr_auto();
 
-            daemon.register(gcast_service)?;
+                daemon.register(gcast_service)?;
+            }
 
-            let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
-            daemon.register(raop_service).unwrap();
+            if !cli_args.no_raop {
+                let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
+                daemon.register(raop_service).unwrap();
 
-            event_tx.send(Event::Raop(RaopEvent::ConfigAvailable(raop_config)))?;
+                event_tx.send(Event::Raop(RaopEvent::ConfigAvailable(raop_config)))?;
+            }
 
             let monitor = daemon.monitor()?;
             let event_tx = event_tx.clone();
@@ -585,9 +600,19 @@ impl Application {
             daemon
         };
 
-        let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
+        let run_gcast = if cfg!(not(target_os = "android")) {
+            !cli_args.no_google_cast
+        } else {
+            true
+        };
 
-        tokio::spawn(gcast::run_server(event_tx.clone(), gcast_rx));
+        let gcast_tx = if run_gcast {
+            let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
+            tokio::spawn(gcast::run_server(event_tx.clone(), gcast_rx));
+            GCastUpdateSender(Some(gcast_tx))
+        } else {
+            GCastUpdateSender(None)
+        };
 
         let (image_decode_tx, image_decode_rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
@@ -1107,8 +1132,12 @@ impl Application {
         if !self.cli_args.no_fullscreen_player {
             // If the window was hidden, it takes some time before it can be fullscreened.
             if self.window_visible_before_playing == Some(false) {
-                debug!("Waiting for GL contexts to become available before setting window fullscreen");
-                let available = self.gl_context.try_wait_available(Duration::from_millis(200));
+                debug!(
+                    "Waiting for GL contexts to become available before setting window fullscreen"
+                );
+                let available = self
+                    .gl_context
+                    .try_wait_available(Duration::from_millis(200));
                 debug!(available, "Finished waiting");
             }
             self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
@@ -1638,7 +1667,13 @@ impl Application {
     fn handle_raop_event(&mut self, event: RaopEvent) -> Result<bool> {
         match event {
             RaopEvent::ConfigAvailable(config) => {
-                if self.raop_server.is_none() {
+                let run_raop = if cfg!(not(target_os = "android")) {
+                    !self.cli_args.no_raop
+                } else {
+                    true
+                };
+
+                if run_raop && self.raop_server.is_none() {
                     info!(?config, "Starting raop server");
 
                     let event_tx = self.event_tx.clone();
@@ -2181,6 +2216,12 @@ pub struct CliArgs {
     /// Disable the system tray icon
     #[arg(long, default_value_t = false)]
     no_systray: bool,
+    /// Disable the RAOP receiver
+    #[arg(long, default_value_t = false)]
+    no_raop: bool,
+    /// Disable the Google Cast receiver
+    #[arg(long, default_value_t = false)]
+    no_google_cast: bool,
 }
 
 /// Run the main app.
@@ -2492,10 +2533,7 @@ pub fn run(
             )
             .await
             .unwrap()
-            .run_event_loop(
-                event_rx,
-                fin_tx,
-            )
+            .run_event_loop(event_rx, fin_tx)
             .await
             .unwrap();
         }
