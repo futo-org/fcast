@@ -1,12 +1,12 @@
 mod fiatlux;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use rcore::{
     clap::Parser,
     slint::{self, platform::femtovg_renderer},
 };
 use std::{
-    cell::{Cell, UnsafeCell},
+    cell::Cell,
     ffi::CString,
     num::NonZeroU32,
     ptr::null,
@@ -28,20 +28,20 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 struct FiatLuxGlContext {
     gc: fiatlux::GraphicsContext,
-    render_buffer: UnsafeCell<fiatlux::fl_RenderBuffer>,
+    render_buffer: *mut fiatlux::fl_RenderBuffer,
 }
 
 unsafe impl femtovg_renderer::OpenGLInterface for FiatLuxGlContext {
     fn ensure_current(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         unsafe {
-            fiatlux::fl_egl_window_framebuffer_make_context_active(self.render_buffer.get());
+            fiatlux::fl_egl_window_framebuffer_make_context_active(self.render_buffer);
         }
         Ok(())
     }
 
     fn swap_buffers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         unsafe {
-            fiatlux::fl_egl_window_framebuffer_swap(self.render_buffer.get());
+            fiatlux::fl_egl_window_framebuffer_swap(self.render_buffer);
         }
         Ok(())
     }
@@ -74,7 +74,7 @@ struct FiatLuxWindowAdapter {
     size: Cell<slint::PhysicalSize>,
     client: fiatlux::Client,
     fl_window: fiatlux::Window,
-    render_buffer: UnsafeCell<fiatlux::fl_RenderBuffer>,
+    render_buffer: *mut fiatlux::fl_RenderBuffer,
 }
 
 impl FiatLuxWindowAdapter {
@@ -88,8 +88,7 @@ impl FiatLuxWindowAdapter {
             fiatlux::Window::new(&client, window_identifier.as_ptr(), window_title.as_ptr())?;
 
         let render_buffer = unsafe {
-            let mut render_buffer: fiatlux::fl_RenderBuffer = std::mem::zeroed();
-            let window_fb_created = fiatlux::fl_egl_create_window_framebuffer(
+            fiatlux::fl_egl_create_window_framebuffer(
                 fiatlux::fl_graphics_context_get_egl(gc.gc),
                 client.client,
                 fiatlux::fl_graphics_context_get_egl_config(gc.gc),
@@ -97,26 +96,23 @@ impl FiatLuxWindowAdapter {
                 fl_window.window_id,
                 fl_window.width,
                 fl_window.height,
-                &mut render_buffer,
-            );
-            if !window_fb_created {
-                return Err(anyhow!("Failed to create window framebuffer"));
-            }
-            render_buffer
+            )
+            .as_mut()
+            .expect("Failed to create window framebuffer")
         };
 
         Ok(Rc::new_cyclic(|w: &Weak<Self>| Self {
             window: slint::Window::new(w.clone()),
             renderer: femtovg_renderer::FemtoVGRenderer::new(FiatLuxGlContext {
                 gc: gc,
-                render_buffer: UnsafeCell::new(render_buffer),
+                render_buffer: render_buffer,
             })
             .unwrap(),
             needs_redraw: Default::default(),
             size: Default::default(),
             client: client,
             fl_window: fl_window,
-            render_buffer: UnsafeCell::new(render_buffer),
+            render_buffer: render_buffer,
         }))
     }
 
@@ -166,7 +162,7 @@ impl slint::platform::WindowAdapter for FiatLuxWindowAdapter {
 impl Drop for FiatLuxWindowAdapter {
     fn drop(&mut self) {
         unsafe {
-            fiatlux::fl_egl_destroy_window_framebuffer(self.render_buffer.get());
+            fiatlux::fl_egl_destroy_window_framebuffer(self.render_buffer);
         }
     }
 }
@@ -271,7 +267,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
                     match event.header.event_type {
                         WINDOW_RESIZED => {
                             fiatlux::fl_egl_window_framebuffer_resize(
-                                self.window.render_buffer.get(),
+                                self.window.render_buffer,
                                 event.window_resized.width,
                                 event.window_resized.height,
                             );
@@ -299,7 +295,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
             unsafe {
                 fiatlux::fl_egl_window_framebuffer_present_framebuffer_wait_for_vsync(
-                    self.window.render_buffer.get(),
+                    self.window.render_buffer,
                     3.0,
                 );
             }
