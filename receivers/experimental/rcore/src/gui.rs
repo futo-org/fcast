@@ -172,7 +172,10 @@ pub enum ToastType {
 pub enum UpdateGuiCommand {
     DeviceConnected,
     DeviceDisconnected,
-    SetFullscreen(bool),
+    SetFullscreen {
+        fullscreen: bool,
+        prev_tx: oneshot::Sender<bool>,
+    },
     SetAppState(crate::AppState),
     UpdatePlaylist {
         start_idx: i32,
@@ -225,7 +228,7 @@ pub enum UpdateGuiCommand {
     SetUpdateDownloadProgress(i32),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     SetUpdaterError(slint::SharedString),
-    SetWindowVisibility(bool),
+    SetWindowVisibility { visible: bool, prev_tx: oneshot::Sender<bool> },
     QuitLoop,
 }
 
@@ -260,8 +263,17 @@ impl GuiController {
         self.send(UpdateGuiCommand::DeviceDisconnected);
     }
 
-    pub fn set_fullscreen(&self, fullscreen: bool) {
-        self.send(UpdateGuiCommand::SetFullscreen(fullscreen));
+    /// Returns the the previous window fulscreen state.
+    pub fn set_fullscreen(&self, fullscreen: bool) -> bool {
+        let (prev_tx, prev_rx) = oneshot::channel();
+        self.send(UpdateGuiCommand::SetFullscreen { fullscreen, prev_tx });
+        match prev_rx.recv() {
+            Ok(p) => p,
+            Err(err) => {
+                error!(?err, "Failed to receive previous window fullscreen state");
+                false
+            }
+        }
     }
 
     pub fn set_app_state(&self, state: crate::AppState) {
@@ -405,8 +417,17 @@ impl GuiController {
         self.send(UpdateGuiCommand::SetUpdateState(state));
     }
 
-    pub fn set_window_visibility(&self, visible: bool) {
-        self.send(UpdateGuiCommand::SetWindowVisibility(visible));
+    /// Returns the the previous window visibility state.
+    pub fn set_window_visibility(&self, visible: bool) -> bool {
+        let (prev_tx, prev_rx) = oneshot::channel();
+        self.send(UpdateGuiCommand::SetWindowVisibility { visible, prev_tx });
+        match prev_rx.recv() {
+            Ok(p) => p,
+            Err(err) => {
+                error!(?err, "Failed to receive previous window visibility state");
+                false
+            }
+        }
     }
 
     pub fn quit_loop(&mut self) {
@@ -432,7 +453,11 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
     match cmd {
         UpdateGuiCommand::DeviceConnected => ui.invoke_device_connected(),
         UpdateGuiCommand::DeviceDisconnected => bridge.invoke_device_disconnected(),
-        UpdateGuiCommand::SetFullscreen(fullscreen) => ui.window().set_fullscreen(fullscreen),
+        UpdateGuiCommand::SetFullscreen { fullscreen, prev_tx } => {
+            let window = ui.window();
+            let _ = prev_tx.send(window.is_fullscreen());
+            window.set_fullscreen(fullscreen);
+        }
         UpdateGuiCommand::SetAppState(state) => bridge.set_app_state(state),
         UpdateGuiCommand::UpdatePlaylist { start_idx, length } => {
             bridge.set_playlist_idx(start_idx);
@@ -538,13 +563,15 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err),
-        UpdateGuiCommand::SetWindowVisibility(visible) => {
+        UpdateGuiCommand::SetWindowVisibility { visible, prev_tx } => {
             let window = ui.window();
-            if let Err(err) = if visible {
+            let _ = prev_tx.send(window.is_visible());
+            let res = if visible {
                 window.show()
             } else {
                 window.hide()
-            } {
+            };
+            if let Err(err) = res {
                 error!(?err, visible, "Failed to set window visibility");
             }
         }

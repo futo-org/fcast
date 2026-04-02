@@ -30,6 +30,18 @@ impl GlContext {
         }
     }
 
+    /// Tries for up to `timeout` to wait for the contexts to become available.
+    ///
+    /// Returns wheter the contexts are available or not.
+    pub fn try_wait_available(&self, timeout: Duration) -> bool {
+        let mut contexts = self.contexts.lock();
+        if contexts.is_some() {
+            return true;
+        }
+        self.cvar.wait_for(&mut contexts, timeout);
+        contexts.is_some()
+    }
+
     #[instrument(skip_all)]
     pub fn handle_need_context_msg(&self, typ: &str, element: &gst::Element) {
         if typ != *gst_gl::GL_DISPLAY_CONTEXT_TYPE && typ != "gst.gl.app_context" {

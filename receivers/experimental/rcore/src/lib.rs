@@ -421,6 +421,11 @@ struct Application {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     update: Option<app_updater::Release>,
     gcast_tx: UnboundedSender<gcast::StatusUpdate>,
+    #[cfg(not(target_os = "android"))]
+    cli_args: CliArgs,
+    window_visible_before_playing: Option<bool>,
+    window_fullscreen_before_playing: Option<bool>,
+    gl_context: graphics::GlContext,
 }
 
 impl Application {
@@ -430,6 +435,8 @@ impl Application {
         event_tx: EventSender,
         video_sink_is_eos: Arc<AtomicBool>,
         gl_context: graphics::GlContext,
+        #[cfg(not(target_os = "android"))]
+        cli_args: CliArgs,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -443,7 +450,7 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, event_tx.clone(), gl_context)?;
+        let player = player::Player::new(appsink, event_tx.clone(), gl_context.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -676,6 +683,11 @@ impl Application {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             update: None,
             gcast_tx,
+            #[cfg(not(target_os = "android"))]
+            cli_args,
+            window_visible_before_playing: None,
+            window_fullscreen_before_playing: None,
+            gl_context,
         })
     }
 
@@ -845,6 +857,14 @@ impl Application {
 
             if preserve_playlist == PreservePlaylist::No {
                 self.gui.update_playlist(0, 0);
+            }
+
+            if let Some(fullscreen) = self.window_fullscreen_before_playing.take() {
+                self.gui.set_fullscreen(fullscreen);
+            }
+
+            if let Some(visible) = self.window_visible_before_playing.take() {
+                self.gui.set_window_visibility(visible);
             }
         }
 
@@ -1026,8 +1046,6 @@ impl Application {
     }
 
     fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
-        self.gui.set_window_visibility(true);
-
         let mut url = if let Some(url) = media_item.url.clone() {
             url
         } else {
@@ -1082,6 +1100,18 @@ impl Application {
                 self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?
             }
             UiPlayerVariant::Raop => (),
+        }
+
+        self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
+        #[cfg(not(target_os = "android"))]
+        if !self.cli_args.no_fullscreen_player {
+            // If the window was hidden, it takes some time before it can be fullscreened.
+            if self.window_visible_before_playing == Some(false) {
+                debug!("Waiting for GL contexts to become available before setting window fullscreen");
+                let available = self.gl_context.try_wait_available(Duration::from_millis(200));
+                debug!(available, "Finished waiting");
+            }
+            self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
         }
 
         let mut media_title = None;
@@ -1996,7 +2026,6 @@ impl Application {
         mut self,
         mut event_rx: UnboundedReceiver<Event>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
-        #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     ) -> Result<()> {
         // TODO: IPv4 on windows
         let dispatch_listener = TcpListener::bind(SocketAddr::new(
@@ -2006,7 +2035,7 @@ impl Application {
         .await?;
 
         #[cfg(all(target_os = "linux", feature = "systray"))]
-        let _tray = if cli_args.no_systray {
+        let _tray = if self.cli_args.no_systray {
             None
         } else {
             use ksni::TrayMethods;
@@ -2019,7 +2048,7 @@ impl Application {
         };
 
         #[cfg(not(target_os = "android"))]
-        if cli_args.fullscreen {
+        if self.cli_args.fullscreen {
             self.gui.set_fullscreen(true);
         }
 
@@ -2149,9 +2178,6 @@ pub struct CliArgs {
     /// Start player in windowed mode
     #[arg(long, default_value_t = false)]
     no_fullscreen_player: bool,
-    /// Play videos in the main application window
-    #[arg(long, default_value_t = false)]
-    no_player_window: bool,
     /// Disable the system tray icon
     #[arg(long, default_value_t = false)]
     no_systray: bool,
@@ -2461,14 +2487,14 @@ pub fn run(
                 #[cfg(target_os = "android")]
                 android_app,
                 gst_gl_contexts,
+                #[cfg(not(target_os = "android"))]
+                cli_args,
             )
             .await
             .unwrap()
             .run_event_loop(
                 event_rx,
                 fin_tx,
-                #[cfg(not(target_os = "android"))]
-                cli_args,
             )
             .await
             .unwrap();

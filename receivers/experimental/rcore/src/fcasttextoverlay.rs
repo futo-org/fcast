@@ -219,7 +219,7 @@ mod imp {
             parent: Option<&gst::Object>,
             event: gst::Event,
         ) -> bool {
-            tracing::debug!(?event, "video sink event");
+            gst::debug!(CAT, imp = self, "video sink event {event:?}");
 
             let execute_default = true;
 
@@ -758,6 +758,7 @@ mod imp {
             _parent: Option<&gst::Object>,
             query: &mut gst::QueryRef,
         ) -> bool {
+            gst::debug!(CAT, imp = self, "src query {query:?}");
             self.video_sink_pad.peer_query(query)
         }
     }
@@ -837,7 +838,6 @@ mod imp {
                     )
                 })
                 .query_function(|pad, parent, query| {
-                    tracing::debug!(?query, "src query");
                     FCastTextOverlay::catch_panic_pad_function(
                         parent,
                         || false,
