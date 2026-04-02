@@ -213,7 +213,7 @@ buil_receiver_for_win_x64:
     paths:
       - ./*.msi
 
-cleanup_vm:
+cleanup_vm_1:
   stage: receiverExperimental
   image: alpine:latest
   tags:
