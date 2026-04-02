@@ -87,7 +87,7 @@ const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = ["gstapplemedia"];
 
 #[cfg(target_os = "windows")]
 #[derive(askama::Template)]
-#[template(path = "Product.wxs.askama", escape = "none")]
+#[template(path = "sender.Product.wxs.askama", escape = "none")]
 struct ProductTemplate {
     version: String,
     dll_components: String,
@@ -296,29 +296,11 @@ impl SenderArgs {
 
                 use askama::Template;
 
-                let gstreamer_root = Utf8PathBuf::from(
-                    sh.var("GSTREAMER_1_0_ROOT_MSVC_X86_64")
-                        .expect("GStreamer not found"),
-                );
-                assert!(
-                    gstreamer_root.exists(),
-                    "GStreamer installation is likely broken"
-                );
-                println!("GStreamer root is: {gstreamer_root:?}");
+                let gst_root = crate::get_gst_root(&sh);
 
                 cmd!(sh, "cargo build --release --package desktop-sender").run()?;
 
-                let build_dir_root = {
-                    let mut p = root_path.clone();
-                    p.extend(["target", "win-build"]);
-                    p
-                };
-
-                if sh.remove_path(&build_dir_root).is_ok() {
-                    println!("Removed old build dir at `{build_dir_root:?}`")
-                }
-
-                sh.create_dir(&build_dir_root)?;
+                let build_dir_root = crate::setup_build_dir(&sh, &root_path);
 
                 let mut files_to_copy = Vec::new();
                 files_to_copy.push((
@@ -350,216 +332,12 @@ impl SenderArgs {
                         .collect()
                 }
 
-                println!("############### Finding DLLs ###############");
-                for dll in dlls() {
-                    let mut dll_path = gstreamer_root.clone();
-                    dll_path.extend(["bin", &dll]);
-                    assert!(
-                        dll_path.exists(),
-                        "DLL `{dll}` is missing full-path={dll_path:?}"
-                    );
-                    println!("Required library found: `{dll}`");
-                    files_to_copy.push((dll_path, dll));
-                }
-
-                println!("############### Finding plugins ###############");
-                for plugin in plugins() {
-                    let mut plugin_path = gstreamer_root.clone();
-                    plugin_path.extend(["lib", "gstreamer-1.0", &plugin]);
-                    assert!(
-                        plugin_path.exists(),
-                        "Plugin `{plugin}` is missing full-path={plugin_path:?}"
-                    );
-                    println!("Required plugin found: `{plugin}`");
-                    files_to_copy.push((plugin_path, plugin));
-                }
-
-                fn find_vswhere(paths: &[Utf8PathBuf]) -> Option<Utf8PathBuf> {
-                    for path in paths {
-                        let vswhere = concat_paths(&[
-                            path.as_str(),
-                            "Microsoft Visual Studio",
-                            "Installer",
-                            "vswhere.exe",
-                        ]);
-                        if vswhere.exists() {
-                            return Some(vswhere);
-                        }
-                    }
-
-                    None
-                }
-
-                fn get_msvc_installations(sh: &Rc<Shell>) -> Vec<(String, Utf8PathBuf)> {
-                    let program_files = Utf8PathBuf::from(
-                        sh.var("POGRAMFILES")
-                            .unwrap_or("C:\\Program Files".to_string()),
-                    );
-                    let program_files_x86 = Utf8PathBuf::from(
-                        sh.var("ProgramFiles(x86)")
-                            .unwrap_or("C:\\Program Files (x86)".to_string()),
-                    );
-
-                    let vswhere = find_vswhere(&[program_files, program_files_x86])
-                        .expect("Could not find vswhere.exe");
-
-                    let output = Command::new(vswhere)
-                        .arg("-format")
-                        .arg("json")
-                        .arg("-products")
-                        .arg("*")
-                        .arg("-requires")
-                        .arg("Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
-                        .arg("-requires")
-                        .arg("Microsoft.VisualStudio.Component.Windows*SDK.*")
-                        .arg("-utf8")
-                        .output()
-                        .expect("Failed to execute vswhere command");
-
-                    use serde_json::Value;
-
-                    let output_str = String::from_utf8_lossy(&output.stdout);
-                    let installations: Value =
-                        serde_json::from_str(&output_str).unwrap_or(Value::Null);
-
-                    let mut msvcs = Vec::new();
-                    if let Value::Array(installs) = installations {
-                        for install in installs {
-                            if let Value::Object(install_obj) = install {
-                                let installed_version = install_obj["installationVersion"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .split('.')
-                                    .next()
-                                    .unwrap_or("");
-                                let installed_version = format!("{}.0", installed_version);
-
-                                if &installed_version != "17.0" && &installed_version != "18.0" {
-                                    continue;
-                                }
-
-                                let installation_path = install_obj["installationPath"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string();
-                                let vc_install_path =
-                                    Utf8PathBuf::from(&installation_path).join("VC");
-
-                                msvcs.push((installation_path, vc_install_path));
-                            }
-                        }
-                    }
-
-                    msvcs
-                }
-
-                fn find_msvc_redist_dirs(sh: &Rc<Shell>) -> Vec<Utf8PathBuf> {
-                    let installations = get_msvc_installations(&sh);
-                    let mut results = Vec::new();
-                    for (_, installation) in installations {
-                        let redist_dir = installation.join("Redist").join("MSVC");
-                        if !redist_dir.is_dir() {
-                            continue;
-                        }
-
-                        let subdirectories = std::fs::read_dir(&redist_dir)
-                            .expect("Failed to read redist directory")
-                            .filter_map(Result::ok)
-                            .collect::<Vec<_>>();
-
-                        for entry in subdirectories.iter().rev() {
-                            let redist_path = entry.path();
-                            for redist_version in
-                                ["VC141", "VC142", "VC143", "VC145", "VC150", "VC160"].iter()
-                            {
-                                let path1 =
-                                    redist_path.join(format!("Microsoft.{}.CRT", redist_version));
-                                let path2 = redist_path
-                                    .join("onecore")
-                                    .join("x64")
-                                    .join(format!("Microsoft.{}.CRT", redist_version));
-
-                                for path in vec![path1, path2] {
-                                    if path.is_dir() {
-                                        results.push(Utf8PathBuf::try_from(path).unwrap());
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    results
-                }
-
-                let redist_dirs = find_msvc_redist_dirs(&sh);
-                let mut did_find_redists = false;
-                for redist_dir in redist_dirs {
-                    let maybe_msvcp = redist_dir.join("msvcp140.dll");
-                    let maybe_vcruntime = redist_dir.join("vcruntime140.dll");
-                    let maybe_vcruntime_1 = redist_dir.join("vcruntime140_1.dll");
-                    if maybe_msvcp.exists()
-                        && maybe_vcruntime.exists()
-                        && maybe_vcruntime_1.exists()
-                    {
-                        files_to_copy.push((maybe_msvcp, "msvcp140.dll".to_owned()));
-                        files_to_copy.push((maybe_vcruntime, "vcruntime140.dll".to_owned()));
-                        files_to_copy.push((maybe_vcruntime_1, "vcruntime140_1.dll".to_owned()));
-                        did_find_redists = true;
-                        break;
-                    }
-                }
-
-                assert!(did_find_redists, "Couldn't find MSVC redistributables");
-
-                fn find_windows_sdk_installation_path() -> Utf8PathBuf {
-                    use winreg::{enums::*, RegKey};
-                    let key_path = r"SOFTWARE\Wow6432Node\Microsoft\Microsoft SDKs\Windows\v10.0";
-                    let hkml = RegKey::predef(HKEY_LOCAL_MACHINE);
-                    let key = hkml.open_subkey(key_path).unwrap();
-                    let installation_folder: String = key.get_value("InstallationFolder").unwrap();
-                    Utf8PathBuf::from(installation_folder)
-                }
-
-                fn find_c_runtime(
-                    windows_sdk_dir: Utf8PathBuf,
-                ) -> Vec<(Utf8PathBuf, &'static str)> {
-                    use std::ffi::OsStr;
-                    let crt_dlls = ["api-ms-win-crt-runtime-l1-1-0.dll"];
-                    let mut paths = Vec::new();
-                    for dll_name in crt_dlls {
-                        for entry in walkdir::WalkDir::new(&windows_sdk_dir)
-                            .into_iter()
-                            .filter_map(Result::ok)
-                        {
-                            if entry.file_type().is_file()
-                                && entry.file_name() == OsStr::new(dll_name)
-                            {
-                                let path = entry.path();
-                                if path
-                                    .parent()
-                                    .map_or(false, |parent| parent.ends_with("x64"))
-                                {
-                                    paths.push((
-                                        Utf8PathBuf::from(Utf8Path::from_path(path).unwrap()),
-                                        dll_name,
-                                    ));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    assert_eq!(paths.len(), crt_dlls.len(), "One or more CRT librarie(s) was not found (expected: {crt_dlls:?}, got: {paths:?})");
-
-                    paths
-                }
-
-                let windows_sdk_dir = find_windows_sdk_installation_path();
-                let windows_crt_dlls = find_c_runtime(windows_sdk_dir);
-                for (src, dst) in windows_crt_dlls {
-                    files_to_copy.push((src, dst.to_owned()));
-                }
-
+                files_to_copy.extend(crate::find_dlls(&gst_root, dlls()));
+                files_to_copy.extend(crate::find_plugins(&gst_root, plugins()));
+                files_to_copy.extend(crate::find_msvc_redists(&sh));
+                files_to_copy.extend(crate::find_c_runtime(
+                    crate::find_windows_sdk_installation_path(),
+                ));
                 files_to_copy.push(("senders/extra/fcast.ico".into(), "fcast.ico".to_owned()));
 
                 let mut dll_components = String::new();

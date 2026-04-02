@@ -390,6 +390,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tracing",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2164,7 +2165,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webbrowser",
- "windows-sys 0.60.2",
  "winresource",
  "xcb",
 ]
@@ -2645,7 +2645,7 @@ dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
  "fnv",
- "glow",
+ "glow 0.16.0",
  "image",
  "imgref",
  "itertools 0.14.0",
@@ -3417,6 +3417,18 @@ name = "glow"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "glow"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5"
 dependencies = [
  "js-sys",
  "slotmap",
@@ -4716,7 +4728,7 @@ dependencies = [
  "const-field-offset",
  "derive_more",
  "femtovg",
- "glow",
+ "glow 0.16.0",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
@@ -4739,7 +4751,7 @@ dependencies = [
  "cfg_aliases",
  "const-field-offset",
  "derive_more",
- "glow",
+ "glow 0.16.0",
  "glutin",
  "gstreamer-video",
  "i-slint-common",
@@ -7819,6 +7831,7 @@ dependencies = [
  "fcast-protocol",
  "futures",
  "gethostname",
+ "glow 0.17.0",
  "glutin_egl_sys",
  "glutin_glx_sys",
  "google-cast-protocol",

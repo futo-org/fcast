@@ -18,9 +18,8 @@ fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-base.workspace = true
-gst-gl = { package = "gstreamer-gl", version = "0.24.2" }
-gst-allocators = { package = "gstreamer-allocators", version = "0.24.4" }
 serde.workspace = true
+gst-gl = { package = "gstreamer-gl", version = "0.24.2", features = ["v1_20"] }
 serde_json.workspace = true
 if-addrs = "0.14"
 base64 = "0.22"
@@ -60,9 +59,7 @@ byte-slice-cast = "1"
 rtp-types = "0.1"
 
 # Google Cast
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 rustls-pki-types = "1.12.0"
-rustls = "0.23.37"
 google-cast-protocol = { path = "../../../sdk/common/google-cast-protocol" }
 rcgen = "0.14.7"
 uuid.workspace = true
@@ -107,6 +104,12 @@ gst-plugin-rtp = { version = "0.14.4", features = [ "static" ] }
 clap.workspace = true
 keepawake = "0.6"
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+gst-allocators = { package = "gstreamer-allocators", version = "0.24.4" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+glow = "0.17.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"
 
@@ -120,6 +123,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "charset", 
 ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = { version = "0.21.3", default-features = false, optional = true }
@@ -136,6 +140,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 reqwest = { version = "0.13", features = [ "native-tls" ] }
 app-updater = { path = "../../../crates/app-updater"}
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
 
 [build-dependencies]
 slint-build.workspace = true

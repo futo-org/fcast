@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -425,7 +426,30 @@ pub async fn run_server(
     event_tx: EventSender,
     mut status_rx: UnboundedReceiver<StatusUpdate>,
 ) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind("[::]:8009").await?;
+    macro_rules! listener_stream {
+        ($addr:expr) => {
+            futures::stream::unfold(
+                tokio::net::TcpListener::bind(std::net::SocketAddr::new($addr, 8009)).await?,
+                |listener| async move { Some((listener.accept().await, listener)) },
+            )
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    let ipv4_stream = listener_stream!(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    let ipv6_stream = listener_stream!(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED));
+
+    #[cfg(target_os = "windows")]
+    tokio::pin!(ipv4_stream);
+    tokio::pin!(ipv6_stream);
+
+    #[cfg(target_os = "windows")]
+    let listener_stream = futures::stream::select(ipv4_stream, ipv6_stream);
+    #[cfg(not(target_os = "windows"))]
+    let mut listener_stream = ipv6_stream;
+
+    #[cfg(target_os = "windows")]
+    tokio::pin!(listener_stream);
 
     let mut params: CertificateParams = Default::default();
     params.not_before = date_time_ymd(1975, 1, 1);
@@ -456,7 +480,7 @@ pub async fn run_server(
 
     loop {
         tokio::select! {
-            res = listener.accept() => {
+            res = listener_stream.select_next_some() => {
                 let (stream, _addr) = res?;
                 let acceptor = acceptor.clone();
                 let event_tx = event_tx.clone();

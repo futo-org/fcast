@@ -177,7 +177,7 @@ pub async fn install_update(
 #[cfg(target_os = "windows")]
 pub async fn install_update(
     installer_file: Bytes,
-    run_on_main_thread: RunOnMainThread,
+    _run_on_main_thread: RunOnMainThread,
 ) -> Result<()> {
     use std::{
         ffi::{OsStr, OsString},

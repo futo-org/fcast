@@ -29,7 +29,7 @@ use tracing::{Instrument, debug, debug_span, error, info, instrument, warn};
 
 use std::{
     collections::{HashMap, HashSet},
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     rc::Rc,
     sync::{
         Arc,
@@ -2062,12 +2062,30 @@ impl Application {
         mut event_rx: UnboundedReceiver<Event>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
-        // TODO: IPv4 on windows
-        let dispatch_listener = TcpListener::bind(SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-            FCAST_TCP_PORT,
-        ))
-        .await?;
+        macro_rules! listener_stream {
+            ($addr:expr) => {
+                futures::stream::unfold(
+                    TcpListener::bind(SocketAddr::new($addr, FCAST_TCP_PORT)).await?,
+                    |listener| async move { Some((listener.accept().await, listener)) },
+                )
+            };
+        }
+
+        #[cfg(target_os = "windows")]
+        let ipv4_stream = listener_stream!(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let ipv6_stream = listener_stream!(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED));
+
+        #[cfg(target_os = "windows")]
+        tokio::pin!(ipv4_stream);
+        tokio::pin!(ipv6_stream);
+
+        #[cfg(target_os = "windows")]
+        let listener_stream = futures::stream::select(ipv4_stream, ipv6_stream);
+        #[cfg(not(target_os = "windows"))]
+        let mut listener_stream = ipv6_stream;
+
+        #[cfg(target_os = "windows")]
+        tokio::pin!(listener_stream);
 
         #[cfg(all(target_os = "linux", feature = "systray"))]
         let _tray = if self.cli_args.no_systray {
@@ -2089,6 +2107,8 @@ impl Application {
 
         let mut update_interval = tokio::time::interval(Duration::from_millis(200));
 
+        use futures::stream::StreamExt;
+
         let mut session_id: SessionId = 0;
         loop {
             tokio::select! {
@@ -2108,7 +2128,7 @@ impl Application {
                         self.notify_updates(false)?;
                     }
                 }
-                session = dispatch_listener.accept() => {
+                session = listener_stream.select_next_some() => {
                     let (stream, _) = session?;
 
                     debug!("New connection id={session_id}");
@@ -2294,6 +2314,14 @@ pub fn run(
         error!(
             ?err,
             "Failed to register ring as rustls default crypto provider"
+        );
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default() {
+        error!(
+            ?err,
+            "Failed to register aws_lc_rs as rustls default crypto provider"
         );
     }
 
