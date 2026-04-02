@@ -4,7 +4,6 @@ Platform common dependencies:
 
  * [Rust](https://rust-lang.org/) and [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
  * [GStreamer](https://gstreamer.freedesktop.org/download/)
- * [protoc](https://protobuf.dev/installation/)
 
 ## Macos
 

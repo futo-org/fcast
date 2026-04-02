@@ -2,7 +2,7 @@
 
 #### Project setup
 
-Make sure you've installed [rustup] and [protoc].
+Make sure you've installed [rustup].
 
 Create a new flutter project:
 
@@ -288,6 +288,5 @@ class _MyHomePageState extends State<MyHomePage> {
 ```
 
 [rustup]: https://rustup.rs/
-[protoc]: https://protobuf.dev/installation/
 [Automatic Discovery]: ../../receiver/#automatic-discovery-mdns
 [Big Buck Bunny]: https://en.wikipedia.org/wiki/Big_Buck_Bunny

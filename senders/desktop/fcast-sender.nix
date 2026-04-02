@@ -19,7 +19,6 @@
   wayland,
   gst_all_1,
   pkg-config,
-  protobuf,
   libGL,
 }:
 
@@ -40,7 +39,6 @@ rustPlatform.buildRustPackage rec {
     pkg-config
     rustPlatform.cargoSetupHook
     wrapGAppsHook3
-    protobuf
   ];
 
   buildInputs = [

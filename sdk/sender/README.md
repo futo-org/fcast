@@ -4,7 +4,6 @@
 
 * [Rust](https://www.rust-lang.org/)
 * [Cargo](https://doc.rust-lang.org/cargo/)
-* [protoc](https://protobuf.dev/installation/)
 
 ## Android
 

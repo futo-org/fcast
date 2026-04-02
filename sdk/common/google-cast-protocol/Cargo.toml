@@ -10,4 +10,5 @@ serde_json.workspace = true
 prost = "0.14.1"
 
 [build-dependencies]
+protox = "0.9.1"
 prost-build = { version = "0.14.1" }

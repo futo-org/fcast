@@ -5,6 +5,5 @@
 FROM rust:bullseye
 
 RUN apt update && apt upgrade -y
-RUN apt install -y protobuf-compiler
 
 RUN rustup target add x86_64-unknown-linux-gnu
