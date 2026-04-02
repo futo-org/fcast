@@ -62,7 +62,7 @@ impl GlContext {
                         let mut app_ctx = gst::Context::new(typ, true);
                         let structure = app_ctx.get_mut().unwrap().structure_mut();
                         debug!(app_context_display_type = ?context.display().handle_type());
-                        structure.set("context", &context);
+                        structure.set("context", context);
                         element.set_context(&app_ctx);
                     }
                 }

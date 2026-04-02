@@ -386,10 +386,10 @@ struct GCastUpdateSender(Option<UnboundedSender<gcast::StatusUpdate>>);
 
 impl GCastUpdateSender {
     fn send(&self, update: gcast::StatusUpdate) {
-        if let Some(tx) = self.0.as_ref() {
-            if let Err(err) = tx.send(update) {
-                error!(?err, "Failed to send GCast update");
-            }
+        if let Some(tx) = self.0.as_ref()
+            && let Err(err) = tx.send(update)
+        {
+            error!(?err, "Failed to send GCast update");
         }
     }
 }
@@ -794,8 +794,8 @@ impl Application {
         };
         let duration = duration.seconds_f64();
 
-        let _ = self.gcast_tx.send(gcast::StatusUpdate::Duration(duration));
-        let _ = self.gcast_tx.send(gcast::StatusUpdate::Position(position));
+        self.gcast_tx.send(gcast::StatusUpdate::Duration(duration));
+        self.gcast_tx.send(gcast::StatusUpdate::Position(position));
 
         let is_live = self.player.is_live();
         let playback_state = {
@@ -1150,7 +1150,7 @@ impl Application {
             ..
         }) = media_item.metadata.as_ref()
         {
-            media_title = title.as_ref().map(|title| title.clone());
+            media_title = title.clone();
             self.have_audio_track_cover = true;
             let event_tx = self.event_tx.clone();
             self.current_image_download_id += 1;
@@ -1530,7 +1530,7 @@ impl Application {
                     self.last_sent_update = Instant::now();
                 }
 
-                let _ = self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
+                self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
             }
             player::PlayerEvent::StreamCollection(collection) => {
                 self.player.handle_stream_collection(collection);
@@ -1591,8 +1591,7 @@ impl Application {
                     self.notify_updates(true)?;
                 }
 
-                let _ = self
-                    .gcast_tx
+                self.gcast_tx
                     .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
             }
             player::PlayerEvent::UriSet(uri) => {
@@ -2318,7 +2317,8 @@ pub fn run(
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default() {
+    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default()
+    {
         error!(
             ?err,
             "Failed to register aws_lc_rs as rustls default crypto provider"

@@ -139,7 +139,7 @@ impl FCastVideoTextOverlayMeta {
         }
     }
 
-    pub fn get<'a>(&'a self) -> (meta_imp::TextFormat, &'a str) {
+    pub fn get(&self) -> (meta_imp::TextFormat, &str) {
         (self.0.format, &self.0.text)
     }
 }
@@ -242,9 +242,6 @@ mod imp {
                     self.src_pad
                         .push_event(gst::event::Caps::new(&overlay_caps));
 
-                    let mut query = gst::query::Allocation::new(Some(&overlay_caps), false);
-                    if !self.src_pad.peer_query(query.query_mut()) {}
-
                     gst::debug!(CAT, imp = self, "Using caps {:?}", overlay_caps);
 
                     match gst_video::VideoInfo::from_caps(&overlay_caps) {
@@ -338,12 +335,12 @@ mod imp {
                         state.text_buffer = None;
                         drop(state);
                         self.state_cvar.notify_all();
-                        return WaitForTextResult::Waiting;
+                        WaitForTextResult::Waiting
                     } else if vid_running_time_end <= Some(text_running_time) {
                         gst::debug!(CAT, imp = self, "text in future",);
-                        return WaitForTextResult::Have(None);
+                        WaitForTextResult::Have(None)
                     } else {
-                        return WaitForTextResult::Have(Some(text_buf.clone()));
+                        WaitForTextResult::Have(Some(text_buf.clone()))
                     }
                 }
                 None => {
@@ -571,10 +568,10 @@ mod imp {
                 }
                 EventView::Caps(caps_event) => {
                     let caps = caps_event.caps();
-                    if let Some(structure) = caps.structure(0) {
-                        if let Ok(format) = structure.get::<&str>("format") {
-                            state.have_pango_markup = format == "pango-markup";
-                        }
+                    if let Some(structure) = caps.structure(0)
+                        && let Ok(format) = structure.get::<&str>("format")
+                    {
+                        state.have_pango_markup = format == "pango-markup";
                     }
                 }
                 EventView::Segment(seg) => {

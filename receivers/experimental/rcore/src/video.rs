@@ -210,8 +210,8 @@ impl SlintOpenGLSink {
             }
 
             match format {
-                TextFormat::Utf8 => *next_subtitles_ref.lock() = split_subs(&text),
-                TextFormat::PangoMarkup => match pango::parse_markup(&text, '\0') {
+                TextFormat::Utf8 => *next_subtitles_ref.lock() = split_subs(text),
+                TextFormat::PangoMarkup => match pango::parse_markup(text, '\0') {
                     Ok((_, text, _)) => *next_subtitles_ref.lock() = split_subs(&text),
                     Err(err) => error!(?err, "Failed to parse subtitles as pango markup"),
                 },

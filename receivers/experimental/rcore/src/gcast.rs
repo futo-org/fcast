@@ -1,5 +1,4 @@
-use std::net::IpAddr;
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
@@ -39,7 +38,7 @@ fn nibble_to_char(nibble: u8) -> char {
 
 pub fn get_host_name(device_name: &str) -> String {
     use md5::Digest;
-    let device_name_hash = md5::Md5::digest(&device_name);
+    let device_name_hash = md5::Md5::digest(device_name);
 
     let mut hex = String::with_capacity(device_name_hash.len() * 2);
     for byte in device_name_hash {
@@ -263,13 +262,14 @@ async fn handle_message(
                     // status.player_state = google_cast_protocol::PlayerState::Buffering;
                     // status.idle_reason = None;
                 }
-                namespaces::Media::Seek { current_time, .. } => {
-                    if let Some(time) = current_time {
-                        state.event_tx.send(crate::Event::Op {
-                            session_id: 0,
-                            op: crate::Operation::Seek(fcast_protocol::SeekMessage { time }),
-                        })?;
-                    }
+                namespaces::Media::Seek {
+                    current_time: Some(time),
+                    ..
+                } => {
+                    state.event_tx.send(crate::Event::Op {
+                        session_id: 0,
+                        op: crate::Operation::Seek(fcast_protocol::SeekMessage { time }),
+                    })?;
                 }
                 namespaces::Media::Resume { .. } => {
                     state.event_tx.send(crate::Event::Op {
