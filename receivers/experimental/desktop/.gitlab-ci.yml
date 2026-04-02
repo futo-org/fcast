@@ -149,7 +149,7 @@ provision_windows_vm:
     reports:
       dotenv: provision.env
 
-builReceiverForWinX64:
+buil_receiver_for_win_x64:
   stage: receiverExperimental
   image: alpine:latest
   tags:
@@ -198,7 +198,7 @@ builReceiverForWinX64:
 
         rustup install nightly
 
-        git clone --depth=1 -b master "https://gitlab.futo.org/videostreaming/fcast.git"
+        git clone --depth=1 -b "$CI_COMMIT_REF_NAME" "https://gitlab.futo.org/videostreaming/fcast.git"
         cd fcast
 
         cargo xtask receiver build-windows-installer
@@ -221,7 +221,7 @@ cleanup_vm:
   needs:
     - job: provision_windows_vm
       artifacts: true
-    - job: builReceiverForWinX64
+    - job: buil_receiver_for_win_x64
   when: manual
   before_script:
     - *proxmox_auth
