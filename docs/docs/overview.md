@@ -1,14 +1,7 @@
-#
-
-<div align="center">
-  <p>
-  <a href="https://fcast.org/">
-  <img src="images/ic_banner.svg" width="600" style="margin-top: -80px;">
-  </a>
-  </p>
-  <h4> Open source protocol for multimedia content streaming</h4>
-</div>
-
+<figure markdown="span">
+    ![](https://fcast.org/images/ic_banner.svg){width="600"}
+    <h4>Open source protocol for multimedia content streaming</h4>
+</figure>
 
 ## What is FCast?
 

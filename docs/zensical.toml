@@ -46,7 +46,7 @@ Copyright &copy; 2025 FUTO
 # Read more: https://zensical.org/docs/setup/navigation/
 nav = [
   {"Overview" = [
-    "index.md",
+    "overview.md",
     "overview/faq.md",
     "overview/trademark-policy.md"
   ]},
