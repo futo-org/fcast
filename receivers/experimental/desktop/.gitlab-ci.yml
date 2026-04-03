@@ -196,6 +196,7 @@ build_receiver_for_win_x64:
         \$env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
 
         rustup install nightly
+        rustup default nightly
 
         git clone --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
         cd fcast
