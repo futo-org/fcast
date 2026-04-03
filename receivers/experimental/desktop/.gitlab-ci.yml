@@ -183,15 +183,11 @@ build_receiver_for_win_x64:
         winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         $env:PATH += ";C:\Program Files\CMake\bin"
 
-        winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
-        $env:PATH += ";C:\Program Files\CMake\bin"
-
-        git clone "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
+        git clone --depth=1 "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
         cd fcast-receiver-windows-build-deps
         Start-Process 'gstreamer-1.0-msvc-x86_64-1.28.1.exe' -ArgumentList '/VERYSILENT /D=C:"Program Files\gstreamer"' -Wait
         cd ..
 
-        $env:PATH += ";$PWD\fcast-build-deps\protoc-33.2\bin"
         $env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
         $env:PATH += ";C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
         $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
