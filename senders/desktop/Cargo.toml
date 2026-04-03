@@ -34,6 +34,7 @@ image = { version = "0.25", default-features = false, features = [ "png", "jpeg"
 url = "2"
 file-server = { path = "../../sdk/file-server" }
 num_cpus.workspace = true
+mimalloc.workspace = true
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"
@@ -56,9 +57,6 @@ core-foundation = "0.10.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enable-ansi-support = "0.3.1"
-
-[target.'cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))'.dependencies]
-tikv-jemallocator = "0.6"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 app-updater = { path = "../../crates/app-updater"}

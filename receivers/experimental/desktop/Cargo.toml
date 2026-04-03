@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 rcore = { path = "../rcore", features = ["desktop"] }
 anyhow.workspace = true
-mimalloc = { version = "0.1", features = ["v3"] }
+mimalloc.workspace = true
 
 [features]
 default = ["systray"]

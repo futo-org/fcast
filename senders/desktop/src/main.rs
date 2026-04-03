@@ -42,21 +42,12 @@ use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
     Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
+use mimalloc::MiMalloc;
 
 use desktop_sender::slint_generated::*;
 
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_arch = "aarch64", target_os = "linux")
-)))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_arch = "aarch64", target_os = "linux")
-)))]
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: MiMalloc = MiMalloc;
 
 const MAX_VEC_LOG_ENTRIES: usize = 1500;
 const MIN_TIME_BETWEEN_SEEKS: Duration = Duration::from_millis(200);
@@ -2275,6 +2266,7 @@ impl Application {
         gst::log::remove_default_log_function();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
         gst::init()?;
+        gst::rust_allocator().clone().set_default();
         gstrsrtp::plugin_register_static()?;
 
         self.load_settings()

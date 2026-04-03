@@ -57,6 +57,7 @@ lazy_static = "1.5"
 rand = "0.10"
 num_cpus = "1"
 image_swizzle = "0.3.0"
+mimalloc = { version = "0.1", features = ["v3"] }
 
 [profile.release]
 lto = "thin"
