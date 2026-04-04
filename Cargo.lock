@@ -2107,6 +2107,7 @@ dependencies = [
  "anyhow",
  "env_logger",
  "fcast-sender-sdk",
+ "file-server",
  "infer",
  "log",
  "rfd",
@@ -2577,6 +2578,8 @@ dependencies = [
  "ctrlc",
  "env_logger",
  "fcast-sender-sdk",
+ "file-server",
+ "tokio",
 ]
 
 [[package]]
@@ -2602,8 +2605,6 @@ dependencies = [
  "fcast-protocol",
  "futures",
  "google-cast-protocol",
- "http-range",
- "libc",
  "log",
  "log-panics",
  "mdns-sd",
@@ -2615,7 +2616,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "uniffi",
- "uuid",
 ]
 
 [[package]]
@@ -2678,6 +2678,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "parking_lot",
+ "smol_str 0.3.6",
  "tokio",
  "tracing",
  "uuid",

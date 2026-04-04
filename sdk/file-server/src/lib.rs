@@ -140,16 +140,16 @@ fn bad_request() -> Result<Response<FileBody>, hyper::http::Error> {
 #[derive(Debug, Clone)]
 struct FileEntry {
     path: PathBuf,
-    content_type: &'static str,
+    content_type: smol_str::SmolStr,
     #[cfg(feature = "headers")]
     required_headers: Option<HashMap<String, String>>,
 }
 
 impl FileEntry {
-    pub fn new(path: PathBuf, content_type: &'static str) -> Self {
+    pub fn new(path: PathBuf, content_type: &str) -> Self {
         Self {
             path,
-            content_type,
+            content_type: smol_str::SmolStr::from(content_type),
             #[cfg(feature = "headers")]
             required_headers: None,
         }
@@ -241,7 +241,7 @@ async fn handle_request(
 
                 Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_TYPE, content_type)
+                    .header(header::CONTENT_TYPE, content_type.as_str())
                     .header(header::CONTENT_RANGE, bytes_range_str)
                     .header(header::CONTENT_LENGTH, range.length)
                     .header(header::ACCEPT_RANGES, "bytes")
@@ -257,7 +257,7 @@ async fn handle_request(
         }
         None => Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_TYPE, content_type.as_str())
             .header(header::CONTENT_LENGTH, file_len)
             .header(header::ACCEPT_RANGES, "bytes")
             .body(FileBody::Full {
@@ -399,7 +399,7 @@ impl FileServer {
         })
     }
 
-    pub fn add_file(&self, path: PathBuf, content_type: &'static str) -> Uuid {
+    pub fn add_file(&self, path: PathBuf, content_type: &str) -> Uuid {
         let id = Uuid::new_v4();
         let mut files = self.files.write();
         debug!(?id, ?path, "Adding file");
@@ -427,7 +427,7 @@ impl FileServer {
             id,
             FileEntry {
                 path,
-                content_type,
+                content_type: smol_str::SmolStr::from(content_type),
                 required_headers: Some(required_headers),
             },
         );

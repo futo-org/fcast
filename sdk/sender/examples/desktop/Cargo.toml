@@ -6,14 +6,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "chromecast", "http-file-server", "logging", "discovery"] }
+fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "chromecast", "logging", "discovery"] }
 tokio.workspace = true
 env_logger.workspace = true
 log.workspace = true
 anyhow.workspace = true
-slint.workspace = true
+slint = { workspace = true, features = [ "backend-default", "compat-1-2", "renderer-femtovg", "renderer-software", "std" ] }
 rfd = "0.15.4" # File dialog
 infer = "0.19.0" # MIME type inference
+file-server.path = "../../../file-server"
 
 [build-dependencies]
 slint-build.workspace = true

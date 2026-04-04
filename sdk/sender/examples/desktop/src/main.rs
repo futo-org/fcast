@@ -6,8 +6,7 @@ use fcast_sender_sdk::{
         CastingDevice, DeviceConnectionState, DeviceEventHandler, DeviceFeature, DeviceInfo,
         EventSubscription, KeyEvent, LoadRequest, MediaEvent, PlaybackState, ProtocolType, Source,
     },
-    file_server::FileServer,
-    url_format_ip_addr, DeviceDiscovererEventHandler, IpAddr,
+    DeviceDiscovererEventHandler, IpAddr,
 };
 use log::{debug, error};
 use rfd::{AsyncFileDialog, FileHandle};
@@ -16,6 +15,7 @@ use tokio::{
     runtime::Runtime,
     sync::mpsc::{channel, Receiver, Sender},
 };
+use file_server::FileServer;
 
 slint::include_modules!();
 
@@ -172,7 +172,7 @@ impl App {
         let discovery_event_handler = DiscoveryEventHandler::new(event_tx.clone());
         cast_context.start_discovery(Arc::new(discovery_event_handler));
 
-        let file_server = cast_context.start_file_server(None);
+        let file_server = FileServer::new(0).await?;
 
         Ok(Self {
             ui_weak,
@@ -395,38 +395,25 @@ impl App {
                         error!("Unsupported media type {matcher_type:?}");
                         continue;
                     }
-                    let file = match std::fs::File::open(handle.path()) {
-                        Ok(file) => file,
-                        Err(err) => {
-                            error!("Failed to open file {handle:?}: {err}");
-                            continue;
+                    let content_type = media_type.mime_type().to_string();
+                    let entry = self.file_server.add_file(handle.path().into(), &content_type);
+                    match active_device.as_ref() {
+                        Some(active_device) => {
+                            let url = self.file_server.get_url(&(&local_adddress).into(), &entry);
+                            active_device
+                                .load(LoadRequest::Url {
+                                    content_type,
+                                    url,
+                                    resume_position: None,
+                                    speed: None,
+                                    volume: None,
+                                    metadata: None,
+                                    request_headers: None,
+                                })
+                                .unwrap();
                         }
+                        None => error!("Not connected"),
                     };
-                    match self.file_server.serve_rs_file(file) {
-                        Ok(entry) => match active_device.as_ref() {
-                            Some(active_device) => {
-                                let url = format!(
-                                    "http://{}:{}/{}",
-                                    url_format_ip_addr(&local_adddress),
-                                    entry.port,
-                                    entry.location,
-                                );
-                                active_device
-                                    .load(LoadRequest::Url {
-                                        content_type: media_type.mime_type().to_string(),
-                                        url,
-                                        resume_position: None,
-                                        speed: None,
-                                        volume: None,
-                                        metadata: None,
-                                        request_headers: None,
-                                    })
-                                    .unwrap();
-                            }
-                            None => error!("Not connected"),
-                        },
-                        Err(err) => error!("Failed to serve file: {err}"),
-                    }
                 }
                 Event::ChangeVolume(new_volume) => {
                     if let Some(active_device) = active_device.as_ref() {

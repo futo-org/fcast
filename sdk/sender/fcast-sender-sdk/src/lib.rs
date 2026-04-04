@@ -12,7 +12,6 @@
 //! ## Features
 //!
 //! + Automatic discovery of devices on the network via [mDNS]
-//! + HTTP file server for easy casting of local media files
 //!
 //! ## Example usage
 //!
@@ -120,20 +119,13 @@
 
 #[cfg(feature = "chromecast")]
 pub mod chromecast;
-#[cfg(any(feature = "http-file-server", any_protocol))]
+#[cfg(any_protocol)]
 pub mod context;
 #[cfg(all(any_protocol, feature = "discovery"))]
 pub mod discovery;
 #[cfg(feature = "fcast")]
 pub mod fcast;
-// #[cfg(feature = "chromecast")]
-// pub(crate) mod googlecast_protocol;
-#[cfg(feature = "http-file-server")]
-pub(crate) mod http;
 pub(crate) mod utils;
-
-#[cfg(feature = "http-file-server")]
-pub mod file_server;
 
 /// Event handler for device discovery.
 #[cfg(all(any_protocol, feature = "discovery_types"))]
@@ -153,7 +145,7 @@ pub trait DeviceDiscovererEventHandler: Send + Sync {
 #[cfg(all(feature = "discovery", any_protocol))]
 use std::future::Future;
 
-#[cfg(any(feature = "http-file-server", any_protocol))]
+#[cfg(any_protocol)]
 use tokio::runtime;
 #[cfg(any_protocol)]
 pub mod device;
@@ -163,7 +155,7 @@ use std::str::FromStr;
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
 
-#[cfg(any(feature = "discovery", feature = "http-file-server", any_protocol))]
+#[cfg(any(feature = "discovery", any_protocol))]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
 #[derive(thiserror::Error, Debug)]
@@ -172,13 +164,13 @@ pub enum AsyncRuntimeError {
     FailedToBuild(#[from] std::io::Error),
 }
 
-#[cfg(any(feature = "http-file-server", any_protocol))]
+#[cfg(any_protocol)]
 pub(crate) enum AsyncRuntime {
     Handle(runtime::Handle),
     Runtime(runtime::Runtime),
 }
 
-#[cfg(any(feature = "http-file-server", any_protocol))]
+#[cfg(any_protocol)]
 impl AsyncRuntime {
     pub fn new(threads: Option<usize>, name: &str) -> Result<Self, AsyncRuntimeError> {
         Ok(match runtime::Handle::try_current() {

@@ -8,7 +8,6 @@ use fcast_sender_sdk::{
 };
 use std::{
     collections::HashMap,
-    fs::File,
     io::Read,
     net::IpAddr,
     sync::{
@@ -169,7 +168,8 @@ impl DeviceEventHandler for EventHandler {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     let app = TerminalSender::parse();
@@ -275,25 +275,10 @@ fn main() {
 
             if file.is_some() || url.is_some() {
                 let url = if let Some(file_path) = file {
-                    let file = File::open(file_path).unwrap();
-                    let server = context.start_file_server(file_server_port);
-                    let mut retries = 0;
-                    while !server.is_running() {
-                        if retries >= 10 {
-                            panic!("Failed to serve file");
-                        }
-                        retries += 1;
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    let entry = server.serve_rs_file(file).unwrap();
+                    let server = file_server::FileServer::new(file_server_port.unwrap_or(0)).await.unwrap();
+                    let file_id = server.add_file(file_path.into(), &mime_type);
+                    let url = server.get_url(&(&local_addr).into(), &file_id);
                     file_server = server;
-                    let url = format!(
-                        "http://{}:{}/{}",
-                        fcast_sender_sdk::url_format_ip_addr(&local_addr),
-                        entry.port,
-                        entry.location,
-                    );
-
                     quit.store(false, Ordering::SeqCst);
                     let quit = Arc::clone(&quit);
                     ctrlc::set_handler(move || {
