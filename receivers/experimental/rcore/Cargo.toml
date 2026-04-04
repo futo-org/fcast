@@ -41,6 +41,7 @@ pango = { version = "0.22.0", features = ["v1_44"] }
 hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }
+ctrlc.workspace = true
 
 # RAOP
 rtsp-types = "0.1"

@@ -2579,6 +2579,12 @@ pub fn run(
 
     info!(initialized_in = ?start.elapsed());
 
+    #[cfg(not(target_os = "android"))]
+    let _ = ctrlc::set_handler(|| {
+        debug!("Got Ctrl+C");
+        let _ = slint::quit_event_loop();
+    });
+
     #[cfg(any(target_os = "android", not(feature = "systray")))]
     ui.run()?;
 

@@ -7828,6 +7828,7 @@ dependencies = [
  "bytes",
  "cbc",
  "clap",
+ "ctrlc",
  "fast_qr",
  "fcast-protocol",
  "futures",
