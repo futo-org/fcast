@@ -9,7 +9,7 @@ members = [
     "sdk/mirroring_core",
     "senders/desktop",
     "senders/android",
-    "fast",
+    "tools/fast",
     "sdk/file-server",
     "senders/android",
     "receivers/experimental/rcore",
