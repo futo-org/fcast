@@ -886,6 +886,8 @@ impl Application {
 
             if let Some(fullscreen) = self.window_fullscreen_before_playing.take() {
                 self.gui.set_fullscreen(fullscreen);
+                // https://github.com/slint-ui/slint/issues/11267
+                std::thread::sleep(std::time::Duration::from_millis(75));
             }
 
             if let Some(visible) = self.window_visible_before_playing.take() {
