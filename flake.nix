@@ -11,6 +11,7 @@
         in {
           packages = {
             fcast-sender = pkgs.callPackage ./senders/desktop/fcast-sender.nix { };
+            fcast-receiver = pkgs.callPackage ./receivers/experimental/desktop/fcast-receiver.nix { };
           };
         }
       );
