@@ -13,6 +13,7 @@ default = ["systray"]
 systray = ["rcore/systray"]
 kms-backend = ["rcore/kms-backend"]
 tracy = ["rcore/tracy"]
+static-gst-plugins = ["rcore/static-gst-plugins"]
 
 [package.metadata.generate-rpm]
 name = "fcast-receiver"

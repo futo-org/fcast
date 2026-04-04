@@ -10,20 +10,20 @@ fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-feature
 parking_lot.workspace = true
 gst.workspace = true
 gst-video.workspace = true
-gst-pbutils = { package = "gstreamer-pbutils", version = "0.24.2", optional = true }
+gst-pbutils = { package = "gstreamer-pbutils", version = "0.25", optional = true }
 gst-app.workspace = true
-gst_rs_webrtc = { package = "gst-plugin-webrtc", version = "0.14.3", default-features = false, features = ["static"] }
-gst_webrtc = { package = "gstreamer-webrtc", version = "0.24.2" }
-gst_sdp = { package = "gstreamer-sdp", version = "0.24.2" }
-bytes = "1.10.1"
-hyper = "1.7.0"
-hyper-util = { version = "0.1.17", features = [ "server-auto", "tokio" ] }
+gst_rs_webrtc = { package = "gst-plugin-webrtc", version = "0.15", default-features = false, features = ["static"] }
+gst_webrtc = { package = "gstreamer-webrtc", version = "0.25" }
+gst_sdp = { package = "gstreamer-sdp", version = "0.25" }
+bytes.workspace = true
+hyper.workspace = true
+hyper-util = { workspace = true, features = [ "server-auto", "tokio" ] }
 http-body-util = "0.1.3"
 uuid.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-futures = "0.3"
+futures.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 serde = { workspace = true, features = ["derive"] }

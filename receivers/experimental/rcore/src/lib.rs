@@ -1,5 +1,3 @@
-#![feature(ip)]
-
 use anyhow::{Result, bail};
 use base64::Engine;
 use bytes::Bytes;
@@ -2544,11 +2542,15 @@ pub fn run(
             fcastwhepsrcbin::plugin_init().unwrap();
             fcasttextoverlay::plugin_init().unwrap();
             gstreqwest::plugin_register_static().unwrap();
-            gstwebrtchttp::plugin_register_static().unwrap();
-            gstrswebrtc::plugin_register_static().unwrap();
-            #[cfg(not(target_os = "android"))]
-            gstrsrtp::plugin_register_static().unwrap();
-            gstdav1d::plugin_register_static().unwrap();
+
+            #[cfg(feature = "static-gst-plugins")]
+            {
+                gstwebrtchttp::plugin_register_static().unwrap();
+                gstrswebrtc::plugin_register_static().unwrap();
+                #[cfg(not(target_os = "android"))]
+                gstrsrtp::plugin_register_static().unwrap();
+                gstdav1d::plugin_register_static().unwrap();
+            }
 
             Application::new(
                 gui,
