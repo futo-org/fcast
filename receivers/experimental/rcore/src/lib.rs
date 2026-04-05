@@ -2518,7 +2518,8 @@ pub fn run(
             gst::init().unwrap();
             debug!(gstreamer_version = %gst::version_string());
 
-            gst::rust_allocator().clone().set_default();
+            // TODO: investigate why certain files leads to crashes when this is added
+            // gst::rust_allocator().clone().set_default();
 
             let mut slint_sink = video::SlintOpenGLSink::new().unwrap();
             let slint_appsink = slint_sink.video_sink();
