@@ -2,3 +2,6 @@
 xtask = "run -p xtask --"
 utask = "run -p xtask --features uniffi --"
 fast = "run -p fast --"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
