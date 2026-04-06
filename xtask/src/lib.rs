@@ -198,13 +198,21 @@ pub fn make_rpath_path_absolute(dylib_path_from_otool: &str, rpath: &Utf8Path) -
 }
 
 #[cfg(target_os = "macos")]
-pub fn find_libraries(binary_path: &Utf8PathBuf, plugins: Vec<String>) -> HashSet<Utf8PathBuf> {
+pub fn find_libraries(
+    binary_path: &Utf8PathBuf,
+    plugins: Vec<String>,
+    extras: &[&str],
+) -> HashSet<Utf8PathBuf> {
     println!("############### Finding libraries ###############");
 
     let gstreamer_root_libs = crate::get_gstreamer_root_libs();
     let mut binary_dependencies = crate::find_non_system_dependencies_with_otool(&binary_path);
-    for dep in plugins {
-        let dep_path = gstreamer_root_libs.join("gstreamer-1.0").join(dep);
+    for dep in plugins
+        .into_iter()
+        .map(|p| Utf8PathBuf::from("gstreamer-1.0").join(p))
+        .chain(extras.iter().map(|e| Utf8PathBuf::from(e)))
+    {
+        let dep_path = gstreamer_root_libs.join(dep);
         assert!(dep_path.exists(), "Missing plugin `{dep_path}`");
         println!("Found `{dep_path}`");
         binary_dependencies.insert(dep_path);
@@ -217,6 +225,7 @@ pub fn process_dependencies(
     sh: &Rc<xshell::Shell>,
     binary_dependencies: HashSet<Utf8PathBuf>,
     library_target_directory: Utf8PathBuf,
+    extras: &[&str],
 ) {
     use xshell::cmd;
 
@@ -245,7 +254,14 @@ pub fn process_dependencies(
             );
 
             if !new_dylib_path.exists() {
-                std::fs::copy(&original_dylib_path, &new_dylib_path).unwrap();
+                // NOTE: if we ever build for x86_64, then it should be arm that gets removed
+                cmd!(
+                    sh,
+                    "lipo -remove x86_64 -o {new_dylib_path} {original_dylib_path}"
+                )
+                .run()
+                .unwrap();
+                assert!(new_dylib_path.exists());
                 crate::rewrite_dependencies_to_be_relative(
                     &new_dylib_path,
                     &transitive_dependencies,
@@ -262,6 +278,26 @@ pub fn process_dependencies(
             }
             pending_to_be_copied.extend(to_queue);
         }
+    }
+
+    let gst_root = gstreamer_root_libs.clone();
+    for extra in extras {
+        let original_dylib_path = gst_root.join(extra);
+        let new_dylib_path = library_target_directory.join(Utf8Path::new(extra));
+
+        // Ensure all sub dirs exists because `lipo` is lazy
+        let mut new_dylib_path_dir = new_dylib_path.clone();
+        new_dylib_path_dir.pop();
+        sh.create_dir(new_dylib_path_dir).unwrap();
+
+        cmd!(
+            sh,
+            "lipo -remove x86_64 -o {new_dylib_path} {original_dylib_path}"
+        )
+        .run()
+        .unwrap();
+        assert!(new_dylib_path.exists());
+        cmd!(sh, "strip -x {new_dylib_path}").run().unwrap();
     }
 }
 

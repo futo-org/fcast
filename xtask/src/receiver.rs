@@ -12,11 +12,13 @@ use crate::BuildMacosInstallerArgs;
 use crate::{sh, workspace, AndroidAbiTarget};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 42] = [
+const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 46] = [
     "gstrtsp",
     "gstisobmff",
+    "gstsoup",
     "gstadaptivedemux2",
     "gstdvdsub",
+    "gstdvdspu",
     "gstsubparse",
     "gstassrender",
     "gstcoreelements",
@@ -55,6 +57,8 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 42] = [
     "gstwebrtc",
     "gstlibav",
     "gstflac",
+    "gstsrtp",
+    "gstmpegtsdemux",
 ];
 
 #[cfg(target_os = "macos")]
@@ -427,7 +431,7 @@ impl ReceiverArgs {
 
                 cmd!(
                     sh,
-                    "cargo build --profile release-lto --package desktop-receiver"
+                    "cargo build --profile release-lto --package desktop-receiver --features static-gst-plugins"
                 )
                 .run()?;
 
@@ -442,7 +446,8 @@ impl ReceiverArgs {
 
                 use askama::Template;
 
-                let binary_dependencies = crate::find_libraries(&binary_path, plugins());
+                let binary_dependencies =
+                    crate::find_libraries(&binary_path, plugins(), &["libsoup-3.0.dylib"]);
                 let relative_path = Utf8PathBuf::from("lib/");
 
                 println!("############### Rewriting dependencies to be relative ###############");
@@ -452,7 +457,14 @@ impl ReceiverArgs {
                     &binary_dependencies,
                     &relative_path,
                 );
-                crate::process_dependencies(&sh, binary_dependencies, library_target_directory);
+
+                let extras = ["gio/modules/libgioopenssl.so"];
+                crate::process_dependencies(
+                    &sh,
+                    binary_dependencies,
+                    library_target_directory,
+                    &extras,
+                );
 
                 println!("############### Writing resources ###############");
 
@@ -463,7 +475,11 @@ impl ReceiverArgs {
                 .render()?;
                 sh.create_dir(app_top_level.join("Contents").join("Resources"))?;
                 sh.copy_file(
-                    root_path.join("senders").join("extra").join("fcast.icns"),
+                    root_path
+                        .join("receivers")
+                        .join("experimental")
+                        .join("extra")
+                        .join("fcast.icns"),
                     app_top_level
                         .join("Contents")
                         .join("Resources")

@@ -418,7 +418,7 @@ impl SenderArgs {
 
                 use askama::Template;
 
-                let binary_dependencies = crate::find_libraries(&binary_path, plugins());
+                let binary_dependencies = crate::find_libraries(&binary_path, plugins(), &[]);
 
                 let relative_path = Utf8PathBuf::from("lib/");
 
@@ -430,7 +430,12 @@ impl SenderArgs {
                     &relative_path,
                 );
 
-                crate::process_dependencies(&sh, binary_dependencies, library_target_directory);
+                crate::process_dependencies(
+                    &sh,
+                    binary_dependencies,
+                    library_target_directory,
+                    &[],
+                );
 
                 println!("############### Writing resources ###############");
 
