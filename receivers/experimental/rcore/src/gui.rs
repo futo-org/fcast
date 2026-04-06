@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use crate::{
-    Bridge, CompoundImage, DecodedImage, Event, GuiPlaybackState, MainWindow, Operation,
-    SetVolumeMessage, UiMediaTrack, UiMediaTrackType, UiPlayerVariant, log_if_err,
+    Bridge, CompoundImage, Event, GuiPlaybackState, MainWindow, Operation, SetVolumeMessage,
+    UiMediaTrack, UiMediaTrackType, UiPlayerVariant, image::DecodedImage, log_if_err,
 };
 use fcast_protocol::v3;
 use slint::{ComponentHandle, ToSharedString, VecModel};
@@ -473,7 +473,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
             bridge.set_playlist_idx(length);
         }
         UpdateGuiCommand::SetImage { typ, img } => {
-            let img = img.0.to_compound();
+            let img = img.0.into_compound();
             match typ {
                 ImageType::Preview => bridge.set_image_preview(img),
                 ImageType::AudioTrackCover => bridge.set_audio_track_cover(img),
