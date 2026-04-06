@@ -941,7 +941,7 @@ impl Application {
         *self.current_request_headers.lock() = media_item.headers.clone();
 
         let mut is_image = false;
-        if container != "image/gif" && container.starts_with("image/") {
+        if container.starts_with("image/") {
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
             let headers = self.current_request_headers.lock().clone();
@@ -1662,6 +1662,17 @@ impl Application {
                 }
 
                 self.gui.set_image_preview(img);
+                self.gui.set_app_state(AppState::Playing);
+
+                self.media_loaded_successfully();
+            }
+            image::Event::DecodedAnimation { id, frames } => {
+                if id != self.current_image_id {
+                    warn!(id, "Ignoring old image decode result");
+                    return Ok(false);
+                }
+
+                self.gui.set_animation(frames);
                 self.gui.set_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();

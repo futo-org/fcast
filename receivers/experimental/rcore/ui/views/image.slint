@@ -1,15 +1,34 @@
 import { Bridge } from "../globals.slint";
 
+component Animation inherits Rectangle {
+    Image {
+        source: Bridge.animation-frames[Bridge.current-animation-frame].img;
+        image-fit: contain;
+        width: 100%;
+        height: 100%;
+    }
+
+    Timer {
+        interval: Bridge.animation-frames[Bridge.current-animation-frame].delay;
+
+        triggered => {
+            Bridge.current-animation-frame = Math.mod(Bridge.current-animation-frame + 1, Bridge.animation-frames.length);
+        }
+    }
+}
+
 export component ImageView inherits Rectangle {
     width: 100%;
     height: 100%;
     background: black;
 
-    Image {
+    if Bridge.image-preview.img.width > 0: Image {
         source: Bridge.image-preview.img;
         image-fit: contain;
         width: 100%;
         height: 100%;
         transform-rotation: Bridge.image-preview.rotation;
     }
+
+    if Bridge.animation-frames.length > 0: Animation { }
 }
