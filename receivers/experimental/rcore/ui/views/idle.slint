@@ -1,5 +1,11 @@
-import { Icons, FText, Button } from "../../../../../senders/ui-components/std-widgets.slint";
-import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+import {
+    Icons,
+    FText,
+    Button,
+} from "../../../../../senders/ui-components/std-widgets.slint";
+import {
+    FCastPalette,
+} from "../../../../../senders/ui-components/styling.slint";
 import { Bridge, UiUpdaterState } from "../globals.slint";
 
 component ReceiverInfoEntry inherits HorizontalLayout {
@@ -15,8 +21,7 @@ component ReceiverInfoEntry inherits HorizontalLayout {
     VerticalLayout {
         alignment: center;
 
-        i-icon := Image {
-        }
+        i-icon := Image { }
     }
 
     VerticalLayout {
@@ -34,7 +39,7 @@ component ReceiverInfoEntry inherits HorizontalLayout {
         }
     }
 
-    Rectangle {}
+    Rectangle { }
 }
 
 component IdleText inherits FText {

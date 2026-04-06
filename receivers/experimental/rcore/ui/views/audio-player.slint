@@ -1,7 +1,19 @@
-import { Icons, FText, Button, } from "../../../../../senders/ui-components/std-widgets.slint";
+import {
+    Icons,
+    FText,
+    Button,
+} from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge, UiMode } from "../globals.slint";
-import { PositionScrubber, ProgressLabels, MasterButton, ScrubbyMcScrub, VolumePreview } from "../common.slint";
-import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+import {
+    PositionScrubber,
+    ProgressLabels,
+    MasterButton,
+    ScrubbyMcScrub,
+    VolumePreview,
+} from "../common.slint";
+import {
+    FCastPalette,
+} from "../../../../../senders/ui-components/styling.slint";
 
 component PlaylistControlButton inherits Button {
     in property <bool> previous: false;
@@ -22,7 +34,7 @@ component PlaylistControlButton inherits Button {
 export component AudioPlayerView inherits Rectangle {
     background: FCastPalette.neutral-1100;
 
-    property <bool> small-mode: root.height <= (500px +  (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
+    property <bool> small-mode: root.height <= (500px + (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
 
     Image {
         image-fit: cover;

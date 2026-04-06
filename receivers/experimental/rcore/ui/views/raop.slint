@@ -1,12 +1,17 @@
-import { Icons, FText } from "../../../../../senders/ui-components/std-widgets.slint";
+import {
+    Icons,
+    FText,
+} from "../../../../../senders/ui-components/std-widgets.slint";
 import { Bridge } from "../globals.slint";
-import { FCastPalette } from "../../../../../senders/ui-components/styling.slint";
+import {
+    FCastPalette,
+} from "../../../../../senders/ui-components/styling.slint";
 import { ScrubbyMcScrub, VolumePreview } from "../common.slint";
 
 export component RaopView inherits Rectangle {
     background: FCastPalette.neutral-1100;
 
-    property <bool> small-mode: root.height <= (500px +  (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
+    property <bool> small-mode: root.height <= (500px + (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
 
     Image {
         image-fit: cover;
