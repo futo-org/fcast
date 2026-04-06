@@ -101,6 +101,10 @@ impl FiatLuxWindowAdapter {
             .expect("Failed to create window framebuffer")
         };
 
+        unsafe {
+            fiatlux::fl_egl_window_framebuffer_make_context_active(render_buffer);
+        }
+
         Ok(Rc::new_cyclic(|w: &Weak<Self>| Self {
             window: slint::Window::new(w.clone()),
             renderer: femtovg_renderer::FemtoVGRenderer::new(FiatLuxGlContext {
@@ -300,11 +304,14 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 );
             }
 
-            if !self.window.window.has_active_animations() {
-                std::thread::sleep(
-                    slint::platform::duration_until_next_timer_update()
-                        .unwrap_or_else(|| Duration::new(0, 0)),
-                );
+            let time_until_next_timer = slint::platform::duration_until_next_timer_update()
+                .unwrap_or_else(|| Duration::new(0, 0));
+            let time_until_next_timer_secs = time_until_next_timer.as_secs_f64();
+            if !self.window.window.has_active_animations()
+                && time_until_next_timer_secs > 0.000001
+                && time_until_next_timer_secs < 0.2
+            {
+                std::thread::sleep(time_until_next_timer);
             }
         }
 
