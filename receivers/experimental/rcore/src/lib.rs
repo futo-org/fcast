@@ -122,13 +122,6 @@ pub enum Event {
         op: Operation,
     },
     Image(image::Event),
-    // ImageDownloadResult {
-    //     id: ImageDownloadId,
-    //     res: std::result::Result<(Bytes, ImageFormat), image::DownloadImageError>,
-    // },
-    // AudioThumbnailAvailable(DecodedImage),
-    // AudioThumbnailBlurAvailable(DecodedImage),
-    // ImageDecoded(DecodedImage),
     Mdns(MdnsEvent),
     PlaylistDataResult {
         play_message: Option<v3::PlayMessage>,
@@ -1099,16 +1092,10 @@ impl Application {
             Operation::Seek(seek_message) => {
                 if self.is_playing() {
                     let seconds = seek_message.time;
-                    // if !self.seek_lock.is_locked() && seconds >= 0.0 && seconds.is_normal() {
-                    // self.seek_lock.acquire();
-                    // self.player.seek(gst::ClockTime::from_seconds_f64(time));
-                    // TODO: show errors as warnings in the UI
                     self.player.seek(seconds);
-                    // }
                 }
             }
             Operation::SetSpeed(set_speed_message) => {
-                // TODO: show errors as warnings in the UI
                 self.player.set_rate(set_speed_message.speed);
             }
             Operation::SetPlaylistItem(msg) => {
@@ -1194,14 +1181,6 @@ impl Application {
             );
 
             let qrcode = fast_qr::QRBuilder::new(device_url.as_bytes()).build()?;
-            // use fast_qr::convert::Builder;
-            // let qr_svg = fast_qr::convert::svg::SvgBuilder::default()
-            //     .shape(fast_qr::convert::Shape::Circle)
-            //     .module_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0xFF]))
-            //     .background_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0x00]))
-            //     .margin(1)
-            //     .to_str(&qrcode);
-
             let dims = qrcode.size as u32;
             let mut pixbuf: gui::QrCodeImage = slint::SharedPixelBuffer::new(dims, dims);
             let pixbuf_pixels = pixbuf.make_mut_slice();
@@ -1614,7 +1593,6 @@ impl Application {
                 debug!(id, "Got image download result");
 
                 if Some(id) == self.pending_thumbnail_download {
-                    // Somewhere it goes wrong decoding?
                     match res {
                         Ok((encoded_image, format)) => {
                             self.pending_thumbnail_download = None;
@@ -1695,22 +1673,17 @@ impl Application {
 
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
-        // NOTE: all player actions are async (right?)
         match event {
             Event::SessionFinished => {
                 self.gui.device_disconnected();
             }
             Event::ResumeOrPause => {
-                // let op = match self.player_state {
                 let op = match self.player.player_state() {
-                    // gst_play::PlayState::Paused => Operation::Resume,
-                    // gst_play::PlayState::Playing => Operation::Pause,
                     PlayerState::Paused => Operation::Resume,
                     PlayerState::Playing => Operation::Pause,
                     _ => {
                         error!(
                             "Cannot resume or pause in player current state: {:?}",
-                            // self.player_state
                             self.player.player_state(),
                         );
                         return Ok(false);
@@ -2064,6 +2037,7 @@ pub fn run(
             .with_target("mdns_sd", LevelFilter::INFO)
             .with_target("hyper_util", LevelFilter::INFO)
             .with_target("h2", LevelFilter::INFO)
+            .with_target("winit", LevelFilter::INFO)
             .with_default(log_level);
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
