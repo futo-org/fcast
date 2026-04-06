@@ -584,10 +584,8 @@ export component VideoPlayerView inherits Rectangle {
     for overlay in Bridge.overlays: Image {
         x: frame-x() + (overlay.x * scale() / 1px);
         y: frame-y() + (overlay.y * scale() / 1px);
-
-        width: overlay.img.width * 1px;
-        height: overlay.img.height * 1px;
-
+        width: overlay.img.width * 1px * scale() / 1px;
+        height: overlay.img.height * 1px * scale() / 1px;
         source: overlay.img;
     }
 

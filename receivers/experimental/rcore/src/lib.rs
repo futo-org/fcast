@@ -2414,6 +2414,9 @@ pub fn run(
                         .window_height
                         .store(new_size.1, Ordering::Relaxed);
                     prev_size = new_size;
+                    if let Some(sink_pad) = slint_sink.appsink.static_pad("sink") {
+                        sink_pad.push_event(gst::event::Reconfigure::builder().build());
+                    }
                 }
 
                 let bridge = ui.global::<Bridge>();

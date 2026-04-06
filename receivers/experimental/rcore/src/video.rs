@@ -21,7 +21,7 @@ pub type Subtitles = Arc<Mutex<Option<Option<SmallVec<[String; 3]>>>>>;
 type GlVideoFrame = gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>;
 
 pub struct SlintOpenGLSink {
-    appsink: gst_app::AppSink,
+    pub appsink: gst_app::AppSink,
     sinkbin: gst::Element,
     next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
     next_overlays: Overlays,
