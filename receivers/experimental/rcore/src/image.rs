@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use imagelib::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata};
+use imagelib::{
+    AnimationDecoder, DynamicImage, ImageFormat, ImageReader,
+    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
+    metadata,
+};
 use tracing::{debug, debug_span, error, info};
 
 use crate::{CompoundImage, EventSender, SlintRgba8Pixbuf};
@@ -62,6 +66,7 @@ impl DecodedImage {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum ImageDecodeJobType {
     AudioThumbnail,
     Regular,
@@ -97,14 +102,14 @@ impl From<Bytes> for EncodedImageData {
 
 pub struct ImageDecodeJob {
     pub image: EncodedImageData,
-    pub format: Option<ImageFormat>,
+    pub format: Option<ExtendedImageFormat>,
     pub typ: ImageDecodeJobType,
 }
 
 impl ImageDecodeJob {
     pub fn new(
         image: impl Into<EncodedImageData>,
-        format: ImageFormat,
+        format: ExtendedImageFormat,
         typ: ImageDecodeJobType,
     ) -> Self {
         Self {
@@ -124,14 +129,213 @@ impl ImageDecodeJob {
 }
 
 #[derive(Debug)]
+pub struct AnimationFrame {
+    pub image: SlintRgba8Pixbuf,
+    pub delay_ms: i64,
+}
+
+#[derive(Debug)]
 pub enum Event {
     DownloadResult {
         id: ImageDownloadId,
-        res: std::result::Result<(Bytes, ImageFormat), DownloadImageError>,
+        res: std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError>,
     },
     AudioThumbnailAvailable(DecodedImage),
     AudioThumbnailBlurAvailable(DecodedImage),
     Decoded(DecodedImage),
+    DecodedAnimation {
+        id: ImageId,
+        frames: Vec<AnimationFrame>,
+    },
+}
+
+struct DecoderContext<'a> {
+    event_tx: &'a EventSender,
+    job_id: ImageId,
+    job_type: ImageDecodeJobType,
+}
+
+impl<'a> DecoderContext<'a> {
+    fn new(event_tx: &'a EventSender, job_id: ImageId, job_type: ImageDecodeJobType) -> Self {
+        Self {
+            event_tx,
+            job_id,
+            job_type,
+        }
+    }
+
+    fn to_slint_pixbuf(img: &imagelib::RgbaImage) -> SlintRgba8Pixbuf {
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+        )
+    }
+
+    fn handle_animation<'b>(&self, decoder: impl AnimationDecoder<'b>) -> anyhow::Result<()> {
+        let mut slint_frames = Vec::new();
+        for frame in decoder.into_frames() {
+            let Ok(frame) = frame else {
+                break;
+            };
+
+            let delay = frame.delay();
+            let (num, denom) = delay.numer_denom_ms();
+            let delay_ms = (num as f64 / denom as f64) as i64;
+            slint_frames.push(AnimationFrame {
+                image: Self::to_slint_pixbuf(&frame.into_buffer()),
+                delay_ms,
+            });
+        }
+
+        self.event_tx
+            .send(crate::Event::Image(Event::DecodedAnimation {
+                id: self.job_id,
+                frames: slint_frames,
+            }))?;
+
+        Ok(())
+    }
+
+    fn handle_still(&self, mut decoder: impl imagelib::ImageDecoder) -> anyhow::Result<()> {
+        let orientation = decoder
+            .orientation()
+            .unwrap_or(metadata::Orientation::NoTransforms);
+        let image = DynamicImage::from_decoder(decoder);
+
+        let decoded = match image {
+            Ok(img) => img.to_rgba8(),
+            Err(err) => {
+                // TODO: should notify about failure
+                error!(?err, "Failed to decode image");
+                return Ok(());
+            }
+        };
+
+        let img = DecodedImage {
+            id: self.job_id,
+            pixels: Self::to_slint_pixbuf(&decoded),
+            orientation,
+        };
+
+        match self.job_type {
+            ImageDecodeJobType::AudioThumbnail => {
+                self.event_tx
+                    .send(crate::Event::Image(Event::AudioThumbnailAvailable(img)))?;
+                let blured = Self::to_slint_pixbuf(&imagelib::imageops::fast_blur(&decoded, 64.0));
+                self.event_tx
+                    .send(crate::Event::Image(Event::AudioThumbnailBlurAvailable(
+                        DecodedImage {
+                            id: self.job_id,
+                            pixels: blured,
+                            orientation,
+                        },
+                    )))?;
+            }
+            ImageDecodeJobType::Regular => {
+                self.event_tx
+                    .send(crate::Event::Image(Event::Decoded(img)))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn decode(self, job: ImageDecodeJob) -> anyhow::Result<()> {
+        let format = if let Some(format) = job.format {
+            format
+        } else {
+            match imagelib::guess_format(&job.image) {
+                Ok(format) => ExtendedImageFormat::ImageLib(format),
+                Err(err) => {
+                    error!(?err, "Could not guess image format");
+                    return Ok(());
+                }
+            }
+        };
+
+        let img_data: std::io::Cursor<&[u8]> = std::io::Cursor::new(&job.image);
+
+        macro_rules! non_fatal {
+            ($res:expr, $format:expr) => {
+                match $res {
+                    Ok(d) => d,
+                    Err(err) => {
+                        error!(?err, format = $format, "Failed to create decoder");
+                        return Ok(());
+                    }
+                }
+            };
+        }
+
+        match format {
+            ExtendedImageFormat::ImageLib(format) => match format {
+                ImageFormat::Png => {
+                    let decoder = non_fatal!(PngDecoder::new(img_data), "PNG");
+                    if decoder.is_apng().unwrap_or(false) {
+                        self.handle_animation(non_fatal!(decoder.apng(), "APNG"))?;
+                    } else {
+                        self.handle_still(decoder)?;
+                    }
+                }
+                ImageFormat::Gif => {
+                    let decoder = non_fatal!(GifDecoder::new(img_data), "GIF");
+                    self.handle_animation(decoder)?;
+                }
+                ImageFormat::WebP => {
+                    let decoder = non_fatal!(WebPDecoder::new(img_data), "WebP");
+                    if decoder.has_animation() {
+                        self.handle_animation(decoder)?;
+                    } else {
+                        self.handle_still(decoder)?;
+                    }
+                }
+                _ => {
+                    let decoder = match ImageReader::with_format(img_data, format).into_decoder() {
+                        Ok(d) => d,
+                        Err(err) => {
+                            error!(?err, "Failed to read image");
+                            return Ok(());
+                        }
+                    };
+                    self.handle_still(decoder)?;
+                }
+            },
+            ExtendedImageFormat::JpegXl => {
+                // TODO: handle animations
+                // let image = jxl_oxide::JxlImage::builder().read(img_data).unwrap();
+                // let header = image.image_header();
+                // if let Some(anim) = &header.metadata.animation {
+                // } else {
+                // }
+                let decoder =
+                    non_fatal!(jxl_oxide::integration::JxlDecoder::new(img_data), "JPEG XL");
+                self.handle_still(decoder)?;
+            }
+            ExtendedImageFormat::Jpeg2000 => {
+                let decoder = non_fatal!(
+                    hayro_jpeg2000::Image::new(
+                        &job.image,
+                        &hayro_jpeg2000::DecodeSettings {
+                            resolve_palette_indices: true,
+                            strict: false,
+                            target_resolution: None,
+                        },
+                    ),
+                    "JPEG 2000"
+                );
+                self.handle_still(decoder)?;
+            }
+            #[cfg(all(feature = "desktop", target_os = "linux"))]
+            ExtendedImageFormat::Heif => {
+                let reader = non_fatal!(ImageReader::new(img_data).with_guessed_format(), "HEIF");
+                let decoder = non_fatal!(reader.into_decoder(), "HEIF");
+                self.handle_still(decoder)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub struct Decoder {
@@ -139,7 +343,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(event_tx: crate::EventSender) -> std::io::Result<Self> {
+    pub fn new(event_tx: EventSender) -> std::io::Result<Self> {
         let (job_tx, job_rx) = std::sync::mpsc::channel();
 
         std::thread::Builder::new()
@@ -171,78 +375,22 @@ impl Decoder {
 
         while let Ok((id, job)) = job_rx.recv() {
             debug!(?id, ?job.format, "Got job");
-
-            let img_data: std::io::Cursor<&[u8]> = std::io::Cursor::new(&job.image);
-            let reader_res = match job.format {
-                Some(format) => ImageReader::with_format(img_data, format).into_decoder(),
-                None => match ImageReader::new(img_data).with_guessed_format() {
-                    Ok(guessed) => guessed.into_decoder(),
-                    Err(err) => {
-                        error!(?err, "Failed to guess image format from data");
-                        continue;
-                    }
-                },
-            };
-
-            let (decoded_res, orientation) = match reader_res {
-                Ok(mut decoder) => {
-                    let orientation = decoder
-                        .orientation()
-                        .unwrap_or(metadata::Orientation::NoTransforms);
-                    let image = DynamicImage::from_decoder(decoder);
-                    (image, orientation)
-                }
-                Err(err) => {
-                    error!(?err, "Failed to read image");
-                    continue;
-                }
-            };
-
-            let decoded = match decoded_res {
-                Ok(img) => img.to_rgba8(),
-                Err(err) => {
-                    // TODO: should notify about failure
-                    error!(?err, "Failed to decode image");
-                    continue;
-                }
-            };
-
-            fn to_slint_pixbuf(img: &imagelib::RgbaImage) -> SlintRgba8Pixbuf {
-                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                    img.as_raw(),
-                    img.width(),
-                    img.height(),
-                )
-            }
-
-            let img = DecodedImage {
-                id,
-                pixels: to_slint_pixbuf(&decoded),
-                orientation,
-            };
-
-            match job.typ {
-                ImageDecodeJobType::AudioThumbnail => {
-                    event_tx.send(crate::Event::Image(Event::AudioThumbnailAvailable(img)))?;
-                    let blured = to_slint_pixbuf(&imagelib::imageops::fast_blur(&decoded, 64.0));
-                    event_tx.send(crate::Event::Image(Event::AudioThumbnailBlurAvailable(
-                        DecodedImage {
-                            id,
-                            pixels: blured,
-                            orientation,
-                        },
-                    )))?;
-                }
-                ImageDecodeJobType::Regular => {
-                    event_tx.send(crate::Event::Image(Event::Decoded(img)))?;
-                }
-            }
+            DecoderContext::new(&event_tx, id, job.typ).decode(job)?;
         }
 
         info!("Image decoding worker finished");
 
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub enum ExtendedImageFormat {
+    ImageLib(ImageFormat),
+    JpegXl,
+    Jpeg2000,
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    Heif,
 }
 
 pub struct Downloader {
@@ -260,7 +408,7 @@ impl Downloader {
         client: &reqwest::Client,
         url: &str,
         headers: Option<HashMap<String, String>>,
-    ) -> std::result::Result<(Bytes, ImageFormat), DownloadImageError> {
+    ) -> std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError> {
         let url = url::Url::parse(url)?;
         debug!("Starting image download");
         let random_user_agent = crate::user_agent::random_browser_user_agent(url.domain());
@@ -286,9 +434,22 @@ impl Downloader {
             .ok_or(DownloadImageError::MissingContentType)?
             .to_str()
             .map_err(|_| DownloadImageError::ContentTypeIsNotString)?;
-        let format = ImageFormat::from_mime_type(content_type).ok_or(
-            DownloadImageError::UnsupportedContentType(content_type.to_string()),
-        )?;
+        let format = match ImageFormat::from_mime_type(content_type) {
+            Some(f) => ExtendedImageFormat::ImageLib(f),
+            None => match content_type {
+                "image/jxl" => ExtendedImageFormat::JpegXl,
+                "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
+                    ExtendedImageFormat::Jpeg2000
+                }
+                #[cfg(all(feature = "desktop", target_os = "linux"))]
+                "image/heif" | "image/heic" => ExtendedImageFormat::Heif,
+                _ => {
+                    return Err(DownloadImageError::UnsupportedContentType(
+                        content_type.to_string(),
+                    ));
+                }
+            },
+        };
 
         let body = resp.bytes().await?;
         Ok((body, format))

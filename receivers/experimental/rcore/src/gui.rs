@@ -232,6 +232,9 @@ pub enum UpdateGuiCommand {
         visible: bool,
         prev_tx: oneshot::Sender<bool>,
     },
+    SetAnimation {
+        frames: IgnoredDebug<Vec<crate::image::AnimationFrame>>,
+    },
     QuitLoop,
 }
 
@@ -436,6 +439,12 @@ impl GuiController {
         }
     }
 
+    pub fn set_animation(&self, frames: Vec<crate::image::AnimationFrame>) {
+        self.send(UpdateGuiCommand::SetAnimation {
+            frames: frames.into(),
+        });
+    }
+
     pub fn quit_loop(&mut self) {
         self.send(UpdateGuiCommand::QuitLoop);
     }
@@ -473,6 +482,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
             bridge.set_playlist_idx(length);
         }
         UpdateGuiCommand::SetImage { typ, img } => {
+            bridge.set_animation_frames(slint::ModelRc::default());
             let img = img.0.into_compound();
             match typ {
                 ImageType::Preview => bridge.set_image_preview(img),
@@ -561,6 +571,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
             bridge.set_audio_track_cover(CompoundImage::default());
             bridge.set_blured_audio_track_cover(CompoundImage::default());
             bridge.set_overlays(slint::ModelRc::default());
+            bridge.set_animation_frames(slint::ModelRc::default());
         }
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
@@ -583,6 +594,19 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
             if let Err(err) = res {
                 error!(?err, visible, "Failed to set window visibility");
             }
+        }
+        UpdateGuiCommand::SetAnimation { frames } => {
+            bridge.set_image_preview(CompoundImage::default());
+            bridge.set_animation_frames(
+                Rc::new(slint::VecModel::from_iter(frames.0.into_iter().map(
+                    |frame| crate::UiAnimationFrame {
+                        img: slint::Image::from_rgba8(frame.image),
+                        delay: frame.delay_ms,
+                    },
+                )))
+                .into(),
+            );
+            bridge.set_current_animation_frame(0);
         }
         UpdateGuiCommand::QuitLoop => (),
     }

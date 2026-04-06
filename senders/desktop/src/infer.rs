@@ -132,6 +132,19 @@ pub fn is_avif(len: usize, buf: InferenceBuffer) -> bool {
     false
 }
 
+pub fn is_heif(_len: usize, buf: InferenceBuffer) -> bool {
+    if &buf[4..8] != b"ftyp" {
+        return false;
+    }
+
+    let brand = &buf[8..12];
+
+    brand == b"heic"
+        || brand == b"heix"
+        || brand == b"heim"
+        || brand == b"heis"
+}
+
 // IsISOBMFF checks whether the given buffer represents ISO Base Media File Format data
 fn is_isobmff(len: usize, buf: InferenceBuffer) -> bool {
     if len < 16 {
@@ -304,6 +317,7 @@ matcher_map!(
     ("image/vnd.microsoft.icon", is_ico),
     ("image/avif", is_avif),
     ("image/jxl", is_jxl),
+    ("image/heif", is_heif),
     // Video
     ("video/mp4", is_mp4),
     ("video/x-m4v", is_m4v),
