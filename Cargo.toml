@@ -62,7 +62,7 @@ hyper = "1.7.0"
 hyper-util = "0.1.17"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "debuginfo"
 
@@ -70,9 +70,3 @@ strip = "debuginfo"
 inherits = "release"
 debug = "full"
 strip = false
-
-[profile.release-lto]
-inherits = "release"
-lto = "fat"
-codegen-units = 1
-strip = "debuginfo"

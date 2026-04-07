@@ -131,8 +131,6 @@ pub enum AndroidReceiverCommand {
     Build {
         #[clap(short, long)]
         release: bool,
-        #[clap(long)]
-        release_lto: bool,
         #[clap(short, long)]
         target: Option<AndroidAbiTarget>,
     },
@@ -267,7 +265,6 @@ impl ReceiverArgs {
                     }
                     AndroidReceiverCommand::Build {
                         release,
-                        release_lto,
                         target,
                     } => {
                         let out_dir = concat_path(
@@ -309,9 +306,6 @@ impl ReceiverArgs {
                             ];
                             if release {
                                 args.push("--release");
-                                assert!(!release_lto);
-                            } else if release_lto {
-                                args.extend_from_slice(&["--profile", "release-lto"]);
                             }
 
                             cmd!(sh, "cargo ndk {args...}").run()?;
@@ -323,7 +317,7 @@ impl ReceiverArgs {
             ReceiverCommand::BuildWindowsInstaller => {
                 let gst_root = crate::get_gst_root(&sh);
 
-                // cmd!(sh, "cargo build --release-lto --package desktop-sender").run()?;
+                // cmd!(sh, "cargo build --release --package desktop-sender").run()?;
                 cmd!(sh, "cargo build --package desktop-receiver").run()?;
 
                 let build_dir_root = crate::setup_build_dir(&sh, &root_path);
@@ -334,6 +328,7 @@ impl ReceiverArgs {
                         root_path.as_str(),
                         // TODO: change path
                         "target",
+                        // "release",
                         "debug",
                         "desktop-receiver.exe",
                     ]),
@@ -431,14 +426,14 @@ impl ReceiverArgs {
 
                 cmd!(
                     sh,
-                    "cargo build --profile release-lto --package desktop-receiver --features static-gst-plugins"
+                    "cargo build --release --package desktop-receiver --features static-gst-plugins"
                 )
                 .run()?;
 
                 let binary_path = concat_paths(&[
                     root_path.as_str(),
                     "target",
-                    "release-lto",
+                    "release",
                     "desktop-receiver",
                 ]);
 

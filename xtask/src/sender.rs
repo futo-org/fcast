@@ -403,14 +403,14 @@ impl SenderArgs {
 
                 cmd!(
                     sh,
-                    "cargo build --profile release-lto --package desktop-sender"
+                    "cargo build --release --package desktop-sender"
                 )
                 .run()?;
 
                 let binary_path = concat_paths(&[
                     root_path.as_str(),
                     "target",
-                    "release-lto",
+                    "release",
                     "desktop-sender",
                 ]);
 
