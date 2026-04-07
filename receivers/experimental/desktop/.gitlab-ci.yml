@@ -3,6 +3,11 @@ buildReceiverDesktopLinuxX64RPM:
   tags:
     - fcast-autoscaler
   script:
+    - dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
+      gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
+      gstreamer1-plugin-libav libdav1d-devel glib2-devel
+      fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel
+      libheif-devel
     - rustup install nightly-2026-01-15
     - rustup default nightly-2026-01-15
     - cargo install cargo-generate-rpm
