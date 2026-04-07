@@ -40,9 +40,6 @@ unsafe impl femtovg_renderer::OpenGLInterface for FiatLuxGlContext {
     }
 
     fn swap_buffers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        unsafe {
-            fiatlux::fl_egl_window_framebuffer_swap(self.render_buffer);
-        }
         Ok(())
     }
 
@@ -236,13 +233,15 @@ impl slint::platform::Platform for FiatLuxPlatform {
         ));
 
         loop {
+            if self.window.window.has_active_animations() {
+                slint::platform::update_timers_and_animations();
+            }
+
             unsafe {
                 if !fiatlux::fl_is_connected_to_server(self.window.client.client) {
                     self.quit_event_loop.store(true, Ordering::Relaxed);
                 }
             }
-
-            slint::platform::update_timers_and_animations();
 
             while let Ok(job) = self.job_receiver.try_recv() {
                 job();
@@ -287,31 +286,19 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             }
 
-            if self.window.needs_redraw.get() {
+            self.window.draw_if_needed(|renderer| {
+                renderer.render().unwrap();
                 unsafe {
                     fiatlux::fl_inhibit_idle(self.window.client.client);
                 }
-            }
-
-            self.window.draw_if_needed(|renderer| {
-                renderer.render().unwrap();
             });
 
             unsafe {
+                fiatlux::fl_egl_window_framebuffer_swap(self.window.render_buffer);
                 fiatlux::fl_egl_window_framebuffer_present_framebuffer_wait_for_vsync(
                     self.window.render_buffer,
                     3.0,
                 );
-            }
-
-            let time_until_next_timer = slint::platform::duration_until_next_timer_update()
-                .unwrap_or_else(|| Duration::new(0, 0));
-            let time_until_next_timer_secs = time_until_next_timer.as_secs_f64();
-            if !self.window.window.has_active_animations()
-                && time_until_next_timer_secs > 0.000001
-                && time_until_next_timer_secs < 0.2
-            {
-                std::thread::sleep(time_until_next_timer);
             }
         }
 
