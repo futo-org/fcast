@@ -36,6 +36,7 @@
     - if: '$CI_COMMIT_BRANCH == "fhs"'
       when: on_success
     - when: manual
+      allow_failure: true
 
 buildReceiverFhsLinuxX64RPM:
   extends: .buildReceiverFhsLinuxRPM
