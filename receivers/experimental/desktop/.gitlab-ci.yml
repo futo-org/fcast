@@ -1,36 +1,3 @@
-buildReceiverDesktopLinuxX64RPM:
-  stage: receiverExperimental
-  tags:
-    - fcast-autoscaler
-  script:
-    - dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
-      gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
-      gstreamer1-plugin-libav libdav1d-devel glib2-devel
-      fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel
-      libheif-devel pango-devel
-    - rustup install nightly-2026-01-15
-    - rustup default nightly-2026-01-15
-    - cargo install cargo-generate-rpm
-    - cargo build --release --package desktop-receiver
-    - cargo generate-rpm -p receivers/experimental/desktop
-    - cp target/generate-rpm/*.rpm .
-    - RPM_FILE=$(ls *.rpm | head -1)
-    - PKG_NAME=fcast-receiver-desktop
-    - PKG_API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages"
-    - 'AUTH="JOB-TOKEN: $CI_JOB_TOKEN"'
-    - 'curl -s -H "$AUTH" "$PKG_API?package_name=$PKG_NAME&package_type=generic"
-        | python3 -c "import sys,json; [print(p[''id'']) for p in json.load(sys.stdin)]" 2>/dev/null
-        | xargs -I{} curl -s --request DELETE -H "$AUTH" "$PKG_API/{}"'
-    - 'curl -H "$AUTH" --upload-file "$RPM_FILE"
-        "$PKG_API/generic/$PKG_NAME/$CI_COMMIT_SHORT_SHA/$RPM_FILE"'
-  artifacts:
-    untracked: false
-    when: on_success
-    access: all
-    paths:
-      - ./*.rpm
-  when: manual
-
 buildReceiverDesktopMacosAarch64:
   stage: receiverExperimental
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
