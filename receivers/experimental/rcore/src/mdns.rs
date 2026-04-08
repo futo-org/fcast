@@ -4,11 +4,11 @@ use anyhow::Result;
 use if_addrs::get_if_addrs;
 use mdns_sd::ServiceDaemon;
 
-use crate::{Event, FCAST_TCP_PORT, GCAST_TCP_PORT, MdnsEvent, RaopEvent, gcast, raop};
+use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 
 /// Must be called from a tokio context.
 pub fn start_daemon(
-    event_tx: &crate::EventSender,
+    msg_tx: &crate::MessageSender,
     cli_args: &crate::CliArgs,
 ) -> Result<ServiceDaemon> {
     let host_name = gethostname::gethostname();
@@ -16,11 +16,12 @@ pub fn start_daemon(
     let device_name = format!("FCast-{host_name}");
     // Avoid naming confusion
     let gcast_device_name = format!("Chromecast-{host_name}");
-    let _ = event_tx.send(Event::Mdns(MdnsEvent::NameSet(device_name.clone())));
+    msg_tx.mdns(Mdns::NameSet(device_name.clone()));
 
     if let Ok(ifaces) = get_if_addrs() {
-        let event = MdnsEvent::SetIps(ifaces.into_iter().map(|iface| iface.addr.ip()).collect());
-        let _ = event_tx.send(Event::Mdns(event));
+        msg_tx.mdns(Mdns::SetIps(
+            ifaces.into_iter().map(|iface| iface.addr.ip()).collect(),
+        ));
     }
 
     let daemon = mdns_sd::ServiceDaemon::new()?;
@@ -59,20 +60,19 @@ pub fn start_daemon(
     if !cli_args.no_raop {
         let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
         daemon.register(raop_service).unwrap();
-
-        event_tx.send(Event::Raop(RaopEvent::ConfigAvailable(raop_config)))?;
+        msg_tx.raop(Raop::ConfigAvailable(raop_config));
     }
 
     let monitor = daemon.monitor()?;
-    let event_tx = event_tx.clone();
+    let msg_tx = msg_tx.clone();
     tokio::spawn(async move {
-        while let Ok(event) = monitor.recv_async().await {
-            let event = match event {
-                mdns_sd::DaemonEvent::IpAdd(addr) => MdnsEvent::IpAdded(addr),
-                mdns_sd::DaemonEvent::IpDel(addr) => MdnsEvent::IpRemoved(addr),
+        while let Ok(msg) = monitor.recv_async().await {
+            let event = match msg {
+                mdns_sd::DaemonEvent::IpAdd(addr) => Mdns::IpAdded(addr),
+                mdns_sd::DaemonEvent::IpDel(addr) => Mdns::IpRemoved(addr),
                 _ => continue,
             };
-            let _ = event_tx.send(Event::Mdns(event));
+            msg_tx.mdns(event);
         }
     });
 

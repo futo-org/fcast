@@ -56,6 +56,7 @@ mod logging;
 mod mac_win_tray;
 #[cfg(not(target_os = "android"))]
 mod mdns;
+mod message;
 mod player;
 mod raop;
 mod user_agent;
@@ -72,78 +73,11 @@ pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
-#[derive(Debug)]
-pub enum MdnsEvent {
-    NameSet(String),
-    IpAdded(IpAddr),
-    IpRemoved(IpAddr),
-    SetIps(Vec<IpAddr>),
-}
+use message::{Mdns, Message, Raop, Tray};
 
 type MediaItemId = u64;
-pub type EventSender = UnboundedSender<Event>;
-
-#[cfg(feature = "systray")]
-#[derive(Debug)]
-pub enum TrayEvent {
-    Quit,
-    Toggle,
-}
-
-#[derive(Debug)]
-pub enum RaopEvent {
-    ConfigAvailable(raop::Configuration),
-    SenderConnected(tokio::net::TcpStream),
-    SenderDisconnected,
-    CoverArtSet(Vec<u8>),
-    CoverArtRemoved,
-    MetadataSet(raop::RaopMetadata),
-    ProgressUpdate {
-        position_sec: u64,
-        duration_sec: u64,
-    },
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[derive(Debug)]
-pub enum AppUpdateEvent {
-    UpdateAvailable(app_updater::Release),
-    UpdateApplication,
-    RestartApp,
-}
-
-#[derive(Debug)]
-pub enum Event {
-    Quit,
-    SessionFinished,
-    ResumeOrPause,
-    SeekPercent(f32),
-    ToggleDebug,
-    NewPlayerEvent(player::PlayerEvent),
-    Op {
-        /// The UI also sends operations with session_id == 0
-        session_id: SessionId,
-        op: Operation,
-    },
-    Image(image::Event),
-    Mdns(MdnsEvent),
-    PlaylistDataResult {
-        play_message: Option<v3::PlayMessage>,
-    },
-    MediaItemFinish(MediaItemId),
-    SelectTrack {
-        id: i32,
-        variant: UiMediaTrackType,
-    },
-    #[cfg(feature = "systray")]
-    Tray(TrayEvent),
-    ShouldSetLoadingStatus(MediaItemId),
-    Raop(RaopEvent),
-    DumpPipeline,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    AppUpdate(AppUpdateEvent),
-    GuiWindowClosed(oneshot::Sender<()>),
-}
+// pub type MessageSender = UnboundedSender<Message>;
+pub use message::MessageSender;
 
 #[macro_export]
 macro_rules! log_if_err {
@@ -239,7 +173,7 @@ fn map_to_header_map(headers: &HashMap<String, String>) -> reqwest::header::Head
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
-    event_tx: EventSender,
+    msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     #[cfg(not(target_os = "android"))]
     mdns: mdns_sd::ServiceDaemon,
@@ -287,7 +221,7 @@ impl Application {
     pub async fn new(
         gui: GuiController,
         appsink: gst::Element,
-        event_tx: EventSender,
+        msg_tx: MessageSender,
         video_sink_is_eos: Arc<AtomicBool>,
         gl_context: graphics::GlContext,
         #[cfg(not(target_os = "android"))] cli_args: CliArgs,
@@ -304,7 +238,7 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, event_tx.clone(), gl_context.clone())?;
+        let player = player::Player::new(appsink, msg_tx.clone(), gl_context.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -371,7 +305,7 @@ impl Application {
         let (updates_tx, _) = broadcast::channel(10);
 
         #[cfg(not(target_os = "android"))]
-        let mdns = mdns::start_daemon(&event_tx, &cli_args)?;
+        let mdns = mdns::start_daemon(&msg_tx, &cli_args)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
             !cli_args.no_google_cast
@@ -381,14 +315,14 @@ impl Application {
 
         let gcast_tx = if run_gcast {
             let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
-            tokio::spawn(gcast::run_server(event_tx.clone(), gcast_rx));
+            tokio::spawn(gcast::run_server(msg_tx.clone(), gcast_rx));
             GCastUpdateSender(Some(gcast_tx))
         } else {
             GCastUpdateSender(None)
         };
 
         tokio::spawn({
-            let event_tx = event_tx.clone();
+            let msg_tx = msg_tx.clone();
             async move {
                 let listener = tokio::net::TcpListener::bind("[::]:46897").await.unwrap();
                 loop {
@@ -399,7 +333,7 @@ impl Application {
                     if let Ok(_) = stream.read_exact(&mut buf).await
                         && buf[0] == 0xFF
                     {
-                        let _ = event_tx.send(Event::DumpPipeline);
+                        msg_tx.send(Message::DumpPipeline);
                     }
                 }
             }
@@ -408,7 +342,7 @@ impl Application {
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         tokio::spawn({
-            let event_tx = event_tx.clone();
+            let msg_tx = msg_tx.clone();
             async move {
                 match app_updater::check_for_update(UPDATER_BASE_URL, env!("CARGO_PKG_VERSION"))
                     .instrument(tracing::debug_span!("check_for_updates"))
@@ -416,8 +350,7 @@ impl Application {
                 {
                     Ok(release) => {
                         if let Some(release) = release {
-                            let _ = event_tx
-                                .send(Event::AppUpdate(AppUpdateEvent::UpdateAvailable(release)));
+                            msg_tx.app_update(message::AppUpdate::UpdateAvailable(release));
                         }
                     }
                     Err(err) => {
@@ -427,14 +360,14 @@ impl Application {
             }
         });
 
-        let image_decoder = image::Decoder::new(event_tx.clone())?;
+        let image_decoder = image::Decoder::new(msg_tx.clone())?;
         let http_client = reqwest::Client::new();
-        let image_downloader = image::Downloader::new(event_tx.clone(), http_client.clone());
+        let image_downloader = image::Downloader::new(msg_tx.clone(), http_client.clone());
 
         Ok(Self {
             #[cfg(target_os = "android")]
             android_app,
-            event_tx,
+            msg_tx,
             updates_tx,
             #[cfg(not(target_os = "android"))]
             mdns,
@@ -673,11 +606,11 @@ impl Application {
             };
 
             if let Some(show_duration) = item.show_duration {
-                let event_tx = self.event_tx.clone();
+                let msg_tx = self.msg_tx.clone();
                 let id = self.current_media_item_id;
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
-                    let _ = event_tx.send(Event::MediaItemFinish(id));
+                    msg_tx.send(Message::MediaItemFinish(id));
                 });
             }
 
@@ -914,10 +847,10 @@ impl Application {
         if is_image {
             tokio::spawn({
                 let id = self.current_media_item_id;
-                let event_tx = self.event_tx.clone();
+                let msg_tx = self.msg_tx.clone();
                 async move {
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    let _ = event_tx.send(Event::ShouldSetLoadingStatus(id));
+                    msg_tx.send(Message::ShouldSetLoadingStatus(id));
                 }
             });
         }
@@ -930,7 +863,7 @@ impl Application {
         if let Some(url) = play_message.url.as_ref() {
             let url = url.clone();
             let mut play_message = play_message.clone();
-            let event_tx = self.event_tx.clone();
+            let msg_tx = self.msg_tx.clone();
             let client = self.http_client.clone();
             tokio::spawn(async move {
                 let mut request = client.get(url);
@@ -953,14 +886,14 @@ impl Application {
                     }
                 }
 
-                let _ = event_tx.send(Event::PlaylistDataResult {
+                msg_tx.send(Message::PlaylistDataResult {
                     play_message: result,
                 });
             });
         } else if play_message.content.is_some() {
-            self.event_tx.send(Event::PlaylistDataResult {
+            self.msg_tx.send(Message::PlaylistDataResult {
                 play_message: Some(play_message.clone()),
-            })?;
+            });
         } else {
             bail!("No playlist available");
         }
@@ -1059,19 +992,19 @@ impl Application {
         Ok(false)
     }
 
-    fn handle_mdns_event(&mut self, event: MdnsEvent) -> Result<()> {
+    fn handle_mdns_event(&mut self, event: Mdns) -> Result<()> {
         match event {
-            MdnsEvent::NameSet(device_name) => {
+            Mdns::NameSet(device_name) => {
                 self.device_name = Some(device_name.clone());
                 self.gui.set_local_device_name(device_name);
             }
-            MdnsEvent::IpAdded(addr) => {
+            Mdns::IpAdded(addr) => {
                 let _ = self.current_addresses.insert(addr);
             }
-            MdnsEvent::IpRemoved(addr) => {
+            Mdns::IpRemoved(addr) => {
                 let _ = self.current_addresses.remove(&addr);
             }
-            MdnsEvent::SetIps(addrs) => {
+            Mdns::SetIps(addrs) => {
                 self.current_addresses.clear();
                 for addr in addrs {
                     let _ = self.current_addresses.insert(addr);
@@ -1338,21 +1271,21 @@ impl Application {
     }
 
     #[cfg(feature = "systray")]
-    fn handle_tray_event(&mut self, event: TrayEvent) -> Result<bool> {
+    fn handle_tray_event(&mut self, event: Tray) -> Result<bool> {
         debug!(?event, "Handling tray event");
 
         match event {
-            TrayEvent::Quit => return Ok(true),
-            TrayEvent::Toggle => self.gui.toggle_window(),
+            Tray::Quit => return Ok(true),
+            Tray::Toggle => self.gui.toggle_window(),
         }
 
         Ok(false)
     }
 
     #[tracing::instrument(skip_all)]
-    fn handle_raop_event(&mut self, event: RaopEvent) -> Result<bool> {
+    fn handle_raop_event(&mut self, event: Raop) -> Result<bool> {
         match event {
-            RaopEvent::ConfigAvailable(config) => {
+            Raop::ConfigAvailable(config) => {
                 let run_raop = if cfg!(not(target_os = "android")) {
                     !self.cli_args.no_raop
                 } else {
@@ -1362,7 +1295,7 @@ impl Application {
                 if run_raop && self.raop_server.is_none() {
                     info!(?config, "Starting raop server");
 
-                    let event_tx = self.event_tx.clone();
+                    let msg_tx = self.msg_tx.clone();
                     tokio::spawn(async move {
                         // IpV4 only
                         let listener = tokio::net::TcpListener::bind("0.0.0.0:33505")
@@ -1371,13 +1304,13 @@ impl Application {
 
                         loop {
                             let (stream, _) = listener.accept().await.unwrap();
-                            let _ = event_tx.send(Event::Raop(RaopEvent::SenderConnected(stream)));
+                            msg_tx.raop(Raop::SenderConnected(stream));
                         }
                     });
                     self.raop_server = Some(RaopServer { config });
                 }
             }
-            RaopEvent::SenderConnected(stream) => {
+            Raop::SenderConnected(stream) => {
                 if self.active_raop_session {
                     debug!("Rejecting sender");
                     return Ok(false);
@@ -1389,10 +1322,10 @@ impl Application {
                 };
 
                 let config = server.config.clone();
-                let event_tx = self.event_tx.clone();
+                let msg_tx = self.msg_tx.clone();
                 tokio::spawn(async move {
-                    raop::handle_sender(stream, config, event_tx.clone()).await;
-                    let _ = event_tx.send(Event::Raop(RaopEvent::SenderDisconnected));
+                    raop::handle_sender(stream, config, msg_tx.clone()).await;
+                    msg_tx.raop(Raop::SenderDisconnected);
                 });
 
                 debug!("Session started");
@@ -1401,14 +1334,14 @@ impl Application {
                 self.gui.set_app_state(AppState::Playing);
                 self.gui.set_player_type(UiPlayerVariant::Raop);
             }
-            RaopEvent::SenderDisconnected => {
+            Raop::SenderDisconnected => {
                 debug!("Session ended");
                 self.active_raop_session = false;
                 self.gui.set_app_state(AppState::Idle);
                 self.gui.set_player_type(UiPlayerVariant::Unknown);
                 self.gui.clear_common_playback_state();
             }
-            RaopEvent::CoverArtSet(data) => {
+            Raop::CoverArtSet(data) => {
                 self.current_thumbnail_id += 1;
                 let this_id = self.current_thumbnail_id;
                 self.image_decoder.queue_job(
@@ -1420,8 +1353,8 @@ impl Application {
                 );
                 self.pending_thumbnail = Some(this_id);
             }
-            RaopEvent::CoverArtRemoved => self.gui.clear_audio_covers(),
-            RaopEvent::MetadataSet(metadata) => {
+            Raop::CoverArtRemoved => self.gui.clear_audio_covers(),
+            Raop::MetadataSet(metadata) => {
                 if let Some(title) = metadata.title {
                     self.gui.set_media_title(title);
                 }
@@ -1429,7 +1362,7 @@ impl Application {
                     self.gui.set_artist_name(name);
                 }
             }
-            RaopEvent::ProgressUpdate {
+            Raop::ProgressUpdate {
                 position_sec,
                 duration_sec,
             } => self
@@ -1441,13 +1374,13 @@ impl Application {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn handle_app_update_event(&mut self, event: AppUpdateEvent) -> Result<bool> {
+    fn handle_app_update_event(&mut self, event: message::AppUpdate) -> Result<bool> {
         match event {
-            AppUpdateEvent::UpdateAvailable(release) => {
+            message::AppUpdate::UpdateAvailable(release) => {
                 self.update = Some(release);
                 self.gui.set_updater_state(UiUpdaterState::ShowingDialog);
             }
-            AppUpdateEvent::UpdateApplication => {
+            message::AppUpdate::UpdateApplication => {
                 let Some(update) = self.update.take() else {
                     error!("User want's to update but no updates available");
                     return Ok(false);
@@ -1512,7 +1445,7 @@ impl Application {
                     ));
                 });
             }
-            AppUpdateEvent::RestartApp => {
+            message::AppUpdate::RestartApp => {
                 debug!("Restarting app...");
                 app_updater::restart_application();
             }
@@ -1617,12 +1550,12 @@ impl Application {
     }
 
     /// Returns `true` if the event loop should exit
-    async fn handle_event(&mut self, event: Event) -> Result<bool> {
+    async fn handle_event(&mut self, event: Message) -> Result<bool> {
         match event {
-            Event::SessionFinished => {
+            Message::SessionFinished => {
                 self.gui.device_disconnected();
             }
-            Event::ResumeOrPause => {
+            Message::ResumeOrPause => {
                 let op = match self.player.player_state() {
                     PlayerState::Paused => Operation::Resume,
                     PlayerState::Playing => Operation::Pause,
@@ -1637,7 +1570,7 @@ impl Application {
 
                 return self.handle_operation(op);
             }
-            Event::SeekPercent(percent) => {
+            Message::SeekPercent(percent) => {
                 debug!("SeekPercent({percent})");
                 if let Some(duration) = self.current_duration {
                     let seconds = percent as f64 * duration.seconds_f64();
@@ -1646,18 +1579,18 @@ impl Application {
                     }));
                 }
             }
-            Event::Quit => return Ok(true),
-            Event::ToggleDebug => self.debug_mode = !self.debug_mode,
-            Event::Op { session_id: id, op } => {
+            Message::Quit => return Ok(true),
+            Message::ToggleDebug => self.debug_mode = !self.debug_mode,
+            Message::Op { session_id: id, op } => {
                 debug!(id, ?op, "Operation from sender");
                 return self.handle_operation(op);
             }
-            Event::Image(event) => return self.handle_image_event(event),
-            Event::Mdns(event) => {
+            Message::Image(event) => return self.handle_image_event(event),
+            Message::Mdns(event) => {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;
             }
-            Event::PlaylistDataResult { play_message } => {
+            Message::PlaylistDataResult { play_message } => {
                 let Some(play_message) = play_message else {
                     error!("Playlist failed to laod");
                     return Ok(false);
@@ -1693,7 +1626,7 @@ impl Application {
 
                 self.gui.update_playlist(start_idx as i32, length as i32);
             }
-            Event::MediaItemFinish(id) => {
+            Message::MediaItemFinish(id) => {
                 if self.current_playlist_item_idx.is_none() || id != self.current_media_item_id {
                     debug!(id, "Ignoring media item finish event");
                     return Ok(false);
@@ -1715,7 +1648,7 @@ impl Application {
                 }
             }
             #[allow(deprecated)]
-            Event::SelectTrack { id, variant } => {
+            Message::SelectTrack { id, variant } => {
                 debug!(id, ?variant, "Selecting track");
 
                 let res = match variant {
@@ -1728,25 +1661,25 @@ impl Application {
                     error!(?err, id, ?variant, "Failed to select track");
                 }
             }
-            Event::NewPlayerEvent(event) => {
+            Message::NewPlayerEvent(event) => {
                 self.handle_new_player_event(event)?;
             }
             #[cfg(feature = "systray")]
-            Event::Tray(event) => {
+            Message::Tray(event) => {
                 return self.handle_tray_event(event);
             }
-            Event::ShouldSetLoadingStatus(id) => {
+            Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
                     self.gui.set_app_state(AppState::LoadingMedia);
                 }
             }
-            Event::Raop(event) => return self.handle_raop_event(event),
-            Event::DumpPipeline => {
+            Message::Raop(event) => return self.handle_raop_event(event),
+            Message::DumpPipeline => {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            Event::AppUpdate(event) => return self.handle_app_update_event(event),
-            Event::GuiWindowClosed(feedback) => {
+            Message::AppUpdate(event) => return self.handle_app_update_event(event),
+            Message::GuiWindowClosed(feedback) => {
                 let _ = self.handle_operation(Operation::Stop);
                 self.player.shutdown(feedback);
             }
@@ -1757,7 +1690,7 @@ impl Application {
 
     pub async fn run_event_loop(
         mut self,
-        mut event_rx: UnboundedReceiver<Event>,
+        mut event_rx: UnboundedReceiver<Message>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
         macro_rules! listener_stream {
@@ -1792,7 +1725,7 @@ impl Application {
             use ksni::TrayMethods;
 
             let tray = linux_tray::LinuxSysTray {
-                event_tx: self.event_tx.clone(),
+                msg_tx: self.msg_tx.clone(),
             };
 
             Some(tray.disable_dbus_name(true).spawn().await)
@@ -1833,20 +1766,18 @@ impl Application {
 
                     tokio::spawn({
                         let id = session_id;
-                        let event_tx = self.event_tx.clone();
+                        let msg_tx = self.msg_tx.clone();
                         let updates_rx = self.updates_tx.subscribe();
                         async move {
                             if let Err(err) =
                                 SessionDriver::new(stream, id)
-                                .run(updates_rx, &event_tx)
+                                .run(updates_rx, &msg_tx)
                                 .await
                             {
                                 error!("Session exited with error: {err}");
                             }
 
-                            if let Err(err) = event_tx.send(Event::SessionFinished) {
-                                error!("Failed to send SessionFinished: {err}");
-                            }
+                            msg_tx.send(Message::SessionFinished);
                         }
                     });
 
@@ -1930,7 +1861,7 @@ pub struct CliArgs {
 pub fn run(
     #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
-    #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Event>,
+    #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Message>,
 ) -> Result<()> {
     logging::init(cli_args.loglevel);
 
@@ -1962,17 +1893,16 @@ pub fn run(
 
     let gst_gl_contexts = graphics::GlContext::new();
 
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
+    let (msg_tx, event_rx) = mpsc::unbounded_channel::<Message>();
+    let msg_tx = MessageSender::new(msg_tx);
     let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
 
     #[cfg(target_os = "android")]
     runtime.spawn({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         async move {
             while let Some(event) = platform_event_rx.recv().await {
-                if event_tx.send(event).is_err() {
-                    break;
-                }
+                msg_tx.send(event);
             }
 
             debug!("Platform event proxy finished");
@@ -1997,7 +1927,7 @@ pub fn run(
         let mut slint_sink = None;
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         let mut graphics_context = GraphicsContext::None;
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
@@ -2107,14 +2037,12 @@ pub fn run(
             slint::RenderingState::RenderingTeardown => {
                 let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
 
-                match event_tx.send(Event::GuiWindowClosed(feedback_tx)) {
-                    Ok(_) => match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
-                        Ok(_) => debug!("Player shutdown successfully"),
-                        Err(err) => {
-                            error!(?err, "Failed to receive feedback of player shutdown")
-                        }
-                    },
-                    Err(err) => error!(?err, "Failed to send window closed event"),
+                msg_tx.send(Message::GuiWindowClosed(feedback_tx));
+                match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
+                    Ok(_) => debug!("Player shutdown successfully"),
+                    Err(err) => {
+                        error!(?err, "Failed to receive feedback of player shutdown")
+                    }
                 }
 
                 gst_gl_contexts.deactivate_and_clear();
@@ -2133,7 +2061,7 @@ pub fn run(
     ))]
     let _tray_icon = if !cli_args.no_systray {
         let (tray, ids) = mac_win_tray::create_tray_icon();
-        mac_win_tray::set_event_handler(event_tx.clone(), ids);
+        mac_win_tray::set_event_handler(msg_tx.clone(), ids);
         Some(tray)
     } else {
         None
@@ -2150,7 +2078,7 @@ pub fn run(
     let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
     runtime.spawn({
         let ui_weak = ui.as_weak();
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         async move {
             gstreamer::init_and_load_plugins();
@@ -2176,7 +2104,7 @@ pub fn run(
             Application::new(
                 gui,
                 slint_appsink,
-                event_tx,
+                msg_tx,
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
@@ -2192,7 +2120,7 @@ pub fn run(
         }
     });
 
-    gui::register_callbacks(&ui, &bridge, event_tx.clone());
+    gui::register_callbacks(&ui, &bridge, msg_tx.clone());
 
     #[cfg(not(target_os = "android"))]
     let _awake = keepawake::Builder::default()
@@ -2226,7 +2154,7 @@ pub fn run(
     info!("Shutting down...");
 
     runtime.block_on(async move {
-        let _ = event_tx.send(Event::Quit);
+        msg_tx.send(Message::Quit);
         let _ = fin_rx.await;
     });
 

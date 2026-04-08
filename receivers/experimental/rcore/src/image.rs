@@ -8,7 +8,7 @@ use imagelib::{
 };
 use tracing::{debug, debug_span, error, info};
 
-use crate::{CompoundImage, EventSender, SlintRgba8Pixbuf};
+use crate::{CompoundImage, MessageSender, SlintRgba8Pixbuf};
 
 pub type ImageId = u32;
 pub type ImageDownloadId = u32;
@@ -150,15 +150,15 @@ pub enum Event {
 }
 
 struct DecoderContext<'a> {
-    event_tx: &'a EventSender,
+    msg_tx: &'a MessageSender,
     job_id: ImageId,
     job_type: ImageDecodeJobType,
 }
 
 impl<'a> DecoderContext<'a> {
-    fn new(event_tx: &'a EventSender, job_id: ImageId, job_type: ImageDecodeJobType) -> Self {
+    fn new(msg_tx: &'a MessageSender, job_id: ImageId, job_type: ImageDecodeJobType) -> Self {
         Self {
-            event_tx,
+            msg_tx,
             job_id,
             job_type,
         }
@@ -188,11 +188,10 @@ impl<'a> DecoderContext<'a> {
             });
         }
 
-        self.event_tx
-            .send(crate::Event::Image(Event::DecodedAnimation {
-                id: self.job_id,
-                frames: slint_frames,
-            }))?;
+        self.msg_tx.image(Event::DecodedAnimation {
+            id: self.job_id,
+            frames: slint_frames,
+        });
 
         Ok(())
     }
@@ -220,21 +219,17 @@ impl<'a> DecoderContext<'a> {
 
         match self.job_type {
             ImageDecodeJobType::AudioThumbnail => {
-                self.event_tx
-                    .send(crate::Event::Image(Event::AudioThumbnailAvailable(img)))?;
+                self.msg_tx.image(Event::AudioThumbnailAvailable(img));
                 let blured = Self::to_slint_pixbuf(&imagelib::imageops::fast_blur(&decoded, 64.0));
-                self.event_tx
-                    .send(crate::Event::Image(Event::AudioThumbnailBlurAvailable(
-                        DecodedImage {
-                            id: self.job_id,
-                            pixels: blured,
-                            orientation,
-                        },
-                    )))?;
+                self.msg_tx
+                    .image(Event::AudioThumbnailBlurAvailable(DecodedImage {
+                        id: self.job_id,
+                        pixels: blured,
+                        orientation,
+                    }));
             }
             ImageDecodeJobType::Regular => {
-                self.event_tx
-                    .send(crate::Event::Image(Event::Decoded(img)))?;
+                self.msg_tx.image(Event::Decoded(img));
             }
         }
 
@@ -343,13 +338,13 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(event_tx: EventSender) -> std::io::Result<Self> {
+    pub fn new(msg_tx: MessageSender) -> std::io::Result<Self> {
         let (job_tx, job_rx) = std::sync::mpsc::channel();
 
         std::thread::Builder::new()
             .name("image-decoder".to_owned())
             .spawn(move || {
-                if let Err(err) = Self::image_decode_worker(job_rx, event_tx) {
+                if let Err(err) = Self::image_decode_worker(job_rx, msg_tx) {
                     error!(?err, "Image decode worker failed");
                 }
             })?;
@@ -363,7 +358,7 @@ impl Decoder {
 
     fn image_decode_worker(
         job_rx: std::sync::mpsc::Receiver<(ImageId, ImageDecodeJob)>,
-        event_tx: EventSender,
+        msg_tx: MessageSender,
     ) -> anyhow::Result<()> {
         let span = debug_span!("image-decoder");
         let _entered = span.enter();
@@ -375,7 +370,7 @@ impl Decoder {
 
         while let Ok((id, job)) = job_rx.recv() {
             debug!(?id, ?job.format, "Got job");
-            DecoderContext::new(&event_tx, id, job.typ).decode(job)?;
+            DecoderContext::new(&msg_tx, id, job.typ).decode(job)?;
         }
 
         info!("Image decoding worker finished");
@@ -394,13 +389,13 @@ pub enum ExtendedImageFormat {
 }
 
 pub struct Downloader {
-    event_tx: crate::EventSender,
+    msg_tx: crate::MessageSender,
     client: reqwest::Client,
 }
 
 impl Downloader {
-    pub fn new(event_tx: crate::EventSender, client: reqwest::Client) -> Self {
-        Self { event_tx, client }
+    pub fn new(msg_tx: crate::MessageSender, client: reqwest::Client) -> Self {
+        Self { msg_tx, client }
     }
 
     #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = url)))]
@@ -457,10 +452,10 @@ impl Downloader {
 
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
         let client = self.client.clone();
-        let tx = self.event_tx.clone();
+        let tx = self.msg_tx.clone();
         tokio::spawn(async move {
             let res = Self::download_image(&client, &url, headers).await;
-            let _ = tx.send(crate::Event::Image(Event::DownloadResult { id, res }));
+            let _ = tx.send(crate::Message::Image(Event::DownloadResult { id, res }));
         });
     }
 }

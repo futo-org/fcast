@@ -17,7 +17,7 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, rustls, server::TlsStream};
 use tracing::{debug, error, instrument, warn};
 
-use crate::EventSender;
+use crate::MessageSender;
 
 const MAX_MSG_SIZE: usize = 1000 * 64;
 const MEDIA_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -57,16 +57,16 @@ pub enum StatusUpdate {
 }
 
 struct State {
-    pub event_tx: EventSender,
+    pub msg_tx: MessageSender,
     pub has_launched: bool,
     pub media_status: Arc<RwLock<MediaStatus>>,
     pub player_state: google_cast_protocol::PlayerState,
 }
 
 impl State {
-    pub fn new(event_tx: EventSender, media_status: Arc<RwLock<MediaStatus>>) -> Self {
+    pub fn new(msg_tx: MessageSender, media_status: Arc<RwLock<MediaStatus>>) -> Self {
         Self {
-            event_tx,
+            msg_tx,
             has_launched: false,
             media_status,
             player_state: google_cast_protocol::PlayerState::Idle,
@@ -199,9 +199,9 @@ async fn handle_message(
         HEARTBEAT_NAMESPACE => {}
         RECEIVER_NAMESPACE => match json::from_str::<namespaces::Receiver>(json_payload)? {
             namespaces::Receiver::SetVolume { volume, .. } => {
-                state.event_tx.send(crate::Event::Op {
-                    session_id: 0,
-                    op: crate::Operation::SetVolume(fcast_protocol::SetVolumeMessage {
+                state.msg_tx.operation(
+                    0,
+                    crate::Operation::SetVolume(fcast_protocol::SetVolumeMessage {
                         volume: volume.level.unwrap_or(
                             volume
                                 .muted
@@ -209,13 +209,10 @@ async fn handle_message(
                                 .unwrap_or(0.0),
                         ),
                     }),
-                })?;
+                );
             }
             namespaces::Receiver::StopSession { .. } => {
-                state.event_tx.send(crate::Event::Op {
-                    session_id: 0,
-                    op: crate::Operation::Stop,
-                })?;
+                state.msg_tx.operation(0, crate::Operation::Stop);
                 return Ok(EndSession::Yes);
             }
             namespaces::Receiver::Launch { app_id, request_id } => {
@@ -244,9 +241,9 @@ async fn handle_message(
                     playback_rate,
                     ..
                 } => {
-                    state.event_tx.send(crate::Event::Op {
-                        session_id: 0,
-                        op: crate::Operation::Play(fcast_protocol::v3::PlayMessage {
+                    state.msg_tx.operation(
+                        0,
+                        crate::Operation::Play(fcast_protocol::v3::PlayMessage {
                             container: media.content_type.clone(),
                             url: Some(media.content_id.clone()),
                             content: None,
@@ -256,7 +253,7 @@ async fn handle_message(
                             headers: None,
                             metadata: None,
                         }),
-                    })?;
+                    );
                     let mut status = state.media_status.write();
                     status.media = Some(media);
                     // status.player_state = google_cast_protocol::PlayerState::Buffering;
@@ -266,28 +263,19 @@ async fn handle_message(
                     current_time: Some(time),
                     ..
                 } => {
-                    state.event_tx.send(crate::Event::Op {
-                        session_id: 0,
-                        op: crate::Operation::Seek(fcast_protocol::SeekMessage { time }),
-                    })?;
+                    state.msg_tx.operation(
+                        0,
+                        crate::Operation::Seek(fcast_protocol::SeekMessage { time }),
+                    );
                 }
                 namespaces::Media::Resume { .. } => {
-                    state.event_tx.send(crate::Event::Op {
-                        session_id: 0,
-                        op: crate::Operation::Resume,
-                    })?;
+                    state.msg_tx.operation(0, crate::Operation::Resume);
                 }
                 namespaces::Media::Pause { .. } => {
-                    state.event_tx.send(crate::Event::Op {
-                        session_id: 0,
-                        op: crate::Operation::Pause,
-                    })?;
+                    state.msg_tx.operation(0, crate::Operation::Pause);
                 }
                 namespaces::Media::Stop { .. } => {
-                    state.event_tx.send(crate::Event::Op {
-                        session_id: 0,
-                        op: crate::Operation::Stop,
-                    })?;
+                    state.msg_tx.operation(0, crate::Operation::Stop);
                     let mut status = state.media_status.write();
                     status.media = None;
                 }
@@ -305,12 +293,12 @@ async fn handle_message(
                     .await?;
                 }
                 namespaces::Media::SetPlaybackRate { playback_rate, .. } => {
-                    state.event_tx.send(crate::Event::Op {
-                        session_id: 0,
-                        op: crate::Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
+                    state.msg_tx.operation(
+                        0,
+                        crate::Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
                             speed: playback_rate,
                         }),
-                    })?;
+                    );
                 }
                 // TODO: implement support for these
                 // namespaces::Media::QueueLoad { request_id, items, repeat_mode, start_index, queue_type } => todo!(),
@@ -341,7 +329,7 @@ async fn handle_message(
 
 #[instrument(skip_all, name = "gcast_session")]
 async fn run_session(
-    event_tx: EventSender,
+    msg_tx: MessageSender,
     media_status: Arc<RwLock<MediaStatus>>,
     stream: TlsStream<TcpStream>,
     mut state_change_rx: broadcast::Receiver<()>,
@@ -385,7 +373,7 @@ async fn run_session(
 
     tokio::pin!(packet_stream);
 
-    let mut state = State::new(event_tx, media_status);
+    let mut state = State::new(msg_tx, media_status);
 
     loop {
         tokio::select! {
@@ -423,7 +411,7 @@ async fn run_session(
 }
 
 pub async fn run_server(
-    event_tx: EventSender,
+    msg_tx: MessageSender,
     mut status_rx: UnboundedReceiver<StatusUpdate>,
 ) -> anyhow::Result<()> {
     macro_rules! listener_stream {
@@ -483,13 +471,13 @@ pub async fn run_server(
             res = listener_stream.select_next_some() => {
                 let (stream, _addr) = res?;
                 let acceptor = acceptor.clone();
-                let event_tx = event_tx.clone();
+                let msg_tx = msg_tx.clone();
                 let media_status = Arc::clone(&media_status);
                 let state_change_rx = state_change_tx.subscribe();
                 tokio::spawn(async move {
                     match acceptor.accept(stream).await {
                         Ok(stream) => {
-                            if let Err(err) = run_session(event_tx, media_status, stream, state_change_rx).await {
+                            if let Err(err) = run_session(msg_tx, media_status, stream, state_change_rx).await {
                                 debug!(?err, "Session ended with error");
                             }
                         }

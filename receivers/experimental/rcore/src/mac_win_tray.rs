@@ -1,27 +1,27 @@
-use crate::{Event, TrayEvent};
-use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 
+use crate::{MessageSender, message::Tray};
+
 pub struct MenuItemIds {
     pub toggle_window: String,
     pub quit: String,
 }
 
-pub fn set_event_handler(event_tx: UnboundedSender<Event>, ids: MenuItemIds) {
+pub fn set_event_handler(msg_tx: MessageSender, ids: MenuItemIds) {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        let event = if event.id.0 == ids.toggle_window {
-            TrayEvent::Toggle
+        let msg = if event.id.0 == ids.toggle_window {
+            Tray::Toggle
         } else if event.id.0 == ids.quit {
-            TrayEvent::Quit
+            Tray::Quit
         } else {
             return;
         };
 
-        let _ = event_tx.send(Event::Tray(event));
+        msg_tx.tray(msg);
     }));
 }
 

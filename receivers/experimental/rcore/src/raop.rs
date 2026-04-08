@@ -50,6 +50,8 @@ use tokio::{
 };
 use tracing::{debug, error, instrument, trace, warn};
 
+use crate::MessageSender;
+
 lazy_static::lazy_static! {
     static ref PRIVATE_KEY: RsaPrivateKey = RsaPrivateKey::from_pkcs1_pem(
         r#"-----BEGIN RSA PRIVATE KEY-----
@@ -715,7 +717,7 @@ struct Player {
     player_rx: mpsc::Receiver<Command>,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
-    event_tx: crate::EventSender,
+    msg_tx: MessageSender,
 }
 
 impl Player {
@@ -763,13 +765,13 @@ impl Player {
         pipeline.add_many(elems)?;
         gst::Element::link_many(elems)?;
 
-        fn send_progress_update(event_tx: &crate::EventSender, curr: u64, end: u64) {
+        fn send_progress_update(msg_tx: &MessageSender, curr: u64, end: u64) {
             let position_sec = curr / SAMPLING_RATE;
             let duration_sec = end / SAMPLING_RATE;
-            let _ = event_tx.send(crate::Event::Raop(crate::RaopEvent::ProgressUpdate {
+            msg_tx.raop(crate::Raop::ProgressUpdate {
                 position_sec,
                 duration_sec,
-            }));
+            });
         }
 
         while !self.shutdown.is_shutdown() {
@@ -968,7 +970,7 @@ impl Player {
                     let _ = resp.send(Ok(()));
                 }
                 Command::SetProgress { start, curr, end } => {
-                    send_progress_update(&self.event_tx, curr - start, end - start);
+                    send_progress_update(&self.msg_tx, curr - start, end - start);
                     time_start = start;
                     position = curr;
                     duration = end;
@@ -1010,7 +1012,7 @@ impl Player {
                         if duration > 0 && diff >= SAMPLING_RATE {
                             position += diff;
                             send_progress_update(
-                                &self.event_tx,
+                                &self.msg_tx,
                                 position - time_start,
                                 duration - time_start,
                             );
@@ -1063,7 +1065,7 @@ struct Handler {
     player_tx: mpsc::Sender<Command>,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
-    event_tx: crate::EventSender,
+    msg_tx: MessageSender,
 }
 
 impl Handler {
@@ -1265,9 +1267,7 @@ impl Handler {
                     }
                     Some("application/x-dmap-tagged") => {
                         if let Ok(metadata) = RaopMetadata::parse_from_dmap(request.body()) {
-                            let _ = self
-                                .event_tx
-                                .send(crate::Event::Raop(crate::RaopEvent::MetadataSet(metadata)));
+                            self.msg_tx.raop(crate::Raop::MetadataSet(metadata));
                         }
 
                         self.add_default_headers(
@@ -1279,15 +1279,11 @@ impl Handler {
                     Some(ctype) if ctype.starts_with("image") => {
                         match ctype {
                             "image/none" => {
-                                let _ = self
-                                    .event_tx
-                                    .send(crate::Event::Raop(crate::RaopEvent::CoverArtRemoved));
+                                self.msg_tx.raop(crate::Raop::CoverArtRemoved);
                             }
                             _ => {
                                 let data = request.body().to_vec();
-                                let _ = self
-                                    .event_tx
-                                    .send(crate::Event::Raop(crate::RaopEvent::CoverArtSet(data)));
+                                self.msg_tx.raop(crate::Raop::CoverArtSet(data));
                             }
                         }
 
@@ -1562,7 +1558,7 @@ pub fn service_info(device_name: String) -> Result<(ServiceInfo, Configuration)>
 pub async fn handle_sender(
     stream: tokio::net::TcpStream,
     config: Configuration,
-    event_tx: crate::EventSender,
+    msg_tx: MessageSender,
 ) {
     use tokio::sync::{broadcast, mpsc};
 
@@ -1575,7 +1571,7 @@ pub async fn handle_sender(
         player_rx,
         shutdown: Shutdown::new(notify_shutdown.subscribe()),
         _shutdown_complete: shutdown_complete_tx.clone(),
-        event_tx: event_tx.clone(),
+        msg_tx: msg_tx.clone(),
     };
 
     tokio::spawn(async move {
@@ -1588,7 +1584,7 @@ pub async fn handle_sender(
         player_tx: player_tx.clone(),
         shutdown: Shutdown::new(notify_shutdown.subscribe()),
         _shutdown_complete: shutdown_complete_tx.clone(),
-        event_tx,
+        msg_tx,
     };
 
     if let Err(err) = handler.run().await {

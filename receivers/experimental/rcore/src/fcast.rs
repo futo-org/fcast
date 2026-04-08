@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::Event;
+use crate::MessageSender;
 use bitflags::bitflags;
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
@@ -15,7 +15,7 @@ use tokio::{
         TcpStream,
         tcp::{ReadHalf, WriteHalf},
     },
-    sync::{broadcast::Receiver, mpsc::UnboundedSender},
+    sync::broadcast::Receiver,
 };
 use tokio_stream::StreamExt;
 use tracing::{debug, error, instrument, trace};
@@ -729,7 +729,7 @@ impl SessionDriver {
     async fn handle_state_result(
         id: SessionId,
         tcp_stream_tx: &mut WriteHalf<'_>,
-        event_tx: &UnboundedSender<Event>,
+        msg_tx: &MessageSender,
         res: Result<Action, StateError>,
     ) -> anyhow::Result<bool> {
         match res {
@@ -740,10 +740,7 @@ impl SessionDriver {
                 Action::Pong => Self::write_simple(tcp_stream_tx, Opcode::Pong).await?,
                 Action::EndSession => return Ok(true),
                 Action::Op(operation) => {
-                    event_tx.send(Event::Op {
-                        session_id: id,
-                        op: operation,
-                    })?;
+                    msg_tx.operation(id, operation);
                 }
                 Action::SendInitial => {
                     Self::write_packet(
@@ -844,7 +841,7 @@ impl SessionDriver {
     pub async fn run(
         mut self,
         mut updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,
-        event_tx: &UnboundedSender<Event>,
+        msg_tx: &MessageSender,
     ) -> anyhow::Result<()> {
         debug!("Session was started");
 
@@ -885,7 +882,7 @@ impl SessionDriver {
                     let opcode = packet.0;
                     let body = packet.1.as_ref();
                     let res = self.state.advance(DriverEvent::Packet { opcode, body: body.map(|b| b.as_str()) });
-                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, event_tx, res).await? {
+                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
                         break;
                     }
                 }
@@ -895,13 +892,13 @@ impl SessionDriver {
                     };
 
                     let res = self.state.advance(DriverEvent::ToSender(to_sender));
-                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, event_tx, res).await? {
+                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
                         break;
                     }
                 }
                 _ = tick_interval.tick() => {
                     let res = self.state.advance(DriverEvent::Tick);
-                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, event_tx, res).await? {
+                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
                         break;
                     }
                 }

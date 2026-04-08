@@ -2,8 +2,9 @@ use anyhow::{Result, anyhow, bail};
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
 use smallvec::SmallVec;
-use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, debug_span, error, instrument, warn};
+
+use crate::MessageSender;
 
 struct BoolLock(bool);
 
@@ -601,7 +602,7 @@ pub struct Player {
 impl Player {
     pub fn new(
         video_sink: gst::Element,
-        event_tx: UnboundedSender<crate::Event>,
+        msg_tx: MessageSender,
         gl_context: crate::graphics::GlContext,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
@@ -621,36 +622,36 @@ impl Player {
             .build()?;
 
         playbin.connect_notify(Some("volume"), {
-            let event_tx = event_tx.clone();
+            let msg_tx = msg_tx.clone();
             move |playbin, _pspec| {
-                let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::VolumeChanged(
+                msg_tx.player(PlayerEvent::VolumeChanged(
                     playbin.property::<f64>("volume"),
-                )));
+                ));
             }
         });
 
         playbin.connect_notify(Some("uri"), {
-            let event_tx = event_tx.clone();
+            let msg_tx = msg_tx.clone();
             move |playbin, _pspec| {
                 let new_uri = playbin.property::<String>("uri");
                 debug!(new_uri, "URI changed");
-                let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriSet(new_uri)));
+                msg_tx.player(PlayerEvent::UriSet(new_uri));
             }
         });
 
         playbin.connect("about-to-finish", false, {
-            let event_tx = event_tx.clone();
+            let msg_tx = msg_tx.clone();
             move |_| {
-                let _ = event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::AboutToFinish));
+                msg_tx.player(PlayerEvent::AboutToFinish);
                 None
             }
         });
 
         let bus = playbin.bus().ok_or(anyhow!("playbin is missing a bus"))?;
         let playbin_weak = playbin.downgrade();
-        let event_tx_c = event_tx.clone();
+        let msg_tx_c = msg_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            Self::handle_messsage(&playbin_weak, &event_tx_c, msg, &gl_context);
+            Self::handle_messsage(&playbin_weak, &msg_tx_c, msg, &gl_context);
             gst::BusSyncReply::Drop
         });
 
@@ -660,7 +661,7 @@ impl Player {
         std::thread::spawn({
             // Strong ref
             let playbin = playbin.clone();
-            let event_tx = event_tx.clone();
+            let msg_tx = msg_tx.clone();
             move || {
                 let span = debug_span!("player");
                 let _entered = span.enter();
@@ -689,21 +690,16 @@ impl Player {
                                 && success == gst::StateChangeSuccess::NoPreroll
                             {
                                 debug!("Pipeline is live");
-                                let _ = event_tx
-                                    .send(crate::Event::NewPlayerEvent(PlayerEvent::IsLive));
+                                msg_tx.player(PlayerEvent::IsLive);
                             }
 
-                            let _ =
-                                event_tx.send(crate::Event::NewPlayerEvent(PlayerEvent::UriLoaded));
+                            msg_tx.player(PlayerEvent::UriLoaded);
                         }
                         Job::Seek(seek) => {
                             let (_, state, _) = playbin.state(None);
 
                             if state != gst::State::Paused {
-                                let _ = event_tx.send(crate::Event::NewPlayerEvent(
-                                    // PlayerEvent::QueueSeek(seconds),
-                                    PlayerEvent::QueueSeek(seek),
-                                ));
+                                msg_tx.player(PlayerEvent::QueueSeek(seek));
                                 let _ = playbin.set_state(gst::State::Paused);
                                 continue;
                             }
@@ -746,9 +742,7 @@ impl Player {
                             } {
                                 error!(?err, "Failed to set rate");
                             } else {
-                                let _ = event_tx.send(crate::Event::NewPlayerEvent(
-                                    PlayerEvent::RateChanged(rate),
-                                ));
+                                msg_tx.player(PlayerEvent::RateChanged(rate));
                             }
                         }
                         Job::Quit => {
@@ -784,13 +778,13 @@ impl Player {
 
     fn handle_messsage(
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
-        event_tx: &UnboundedSender<crate::Event>,
+        msg_tx: &MessageSender,
         msg: &gst::Message,
         gl_context: &crate::graphics::GlContext,
     ) {
         use gst::MessageView;
 
-        let event = match msg.view() {
+        let msg = match msg.view() {
             MessageView::NeedContext(ctx) => {
                 let typ = ctx.context_type();
                 debug!(typ, "Need context");
@@ -876,7 +870,7 @@ impl Player {
             _ => return,
         };
 
-        let _ = event_tx.send(crate::Event::NewPlayerEvent(event));
+        msg_tx.player(msg);
     }
 
     pub fn handle_stream_collection(&mut self, collection: gst::StreamCollection) {
