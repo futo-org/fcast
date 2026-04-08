@@ -43,21 +43,23 @@ mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod gcast;
 mod graphics;
+mod gstreamer;
 mod gui;
 mod image;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
+mod logging;
 #[cfg(all(
     not(any(target_os = "android", target_os = "linux")),
     feature = "systray"
 ))]
 mod mac_win_tray;
+#[cfg(not(target_os = "android"))]
+mod mdns;
 mod player;
 mod raop;
 mod user_agent;
 mod video;
-mod gstreamer;
-mod logging;
 
 use crate::{
     fcast::{Operation, ReceiverToSenderMessage, TranslatableMessage},
@@ -152,8 +154,8 @@ macro_rules! log_if_err {
     };
 }
 
-const FCAST_TCP_PORT: u16 = 46899;
-const GCAST_TCP_PORT: u16 = 8009;
+pub const FCAST_TCP_PORT: u16 = 46899;
+pub const GCAST_TCP_PORT: u16 = 8009;
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(700);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
@@ -369,77 +371,7 @@ impl Application {
         let (updates_tx, _) = broadcast::channel(10);
 
         #[cfg(not(target_os = "android"))]
-        let mdns = {
-            use if_addrs::get_if_addrs;
-
-            let host_name = gethostname::gethostname();
-            let host_name = host_name.to_string_lossy();
-            let device_name = format!("FCast-{host_name}");
-            // Avoid naming confusion
-            let gcast_device_name = format!("Chromecast-{host_name}");
-            let _ = event_tx.send(Event::Mdns(MdnsEvent::NameSet(device_name.clone())));
-
-            if let Ok(ifaces) = get_if_addrs() {
-                let event =
-                    MdnsEvent::SetIps(ifaces.into_iter().map(|iface| iface.addr.ip()).collect());
-                let _ = event_tx.send(Event::Mdns(event));
-            }
-
-            let daemon = mdns_sd::ServiceDaemon::new()?;
-
-            let service = mdns_sd::ServiceInfo::new(
-                "_fcast._tcp.local.",
-                &device_name,
-                &format!("{device_name}.local."),
-                (), // Auto
-                FCAST_TCP_PORT,
-                None::<std::collections::HashMap<String, String>>,
-            )?
-            .enable_addr_auto();
-
-            daemon.register(service)?;
-
-            if !cli_args.no_google_cast {
-                let gcast_props = HashMap::from([
-                    ("fn".to_owned(), gcast_device_name.clone()),
-                    ("ca".to_owned(), "1".to_owned()), // Has display
-                ]);
-
-                let gcast_service = mdns_sd::ServiceInfo::new(
-                    "_googlecast._tcp.local.",
-                    &gcast::get_host_name(&gcast_device_name),
-                    &format!("{}.local.", uuid::Uuid::new_v4()),
-                    (), // Auto
-                    GCAST_TCP_PORT,
-                    gcast_props,
-                )?
-                .enable_addr_auto();
-
-                daemon.register(gcast_service)?;
-            }
-
-            if !cli_args.no_raop {
-                let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
-                daemon.register(raop_service).unwrap();
-
-                event_tx.send(Event::Raop(RaopEvent::ConfigAvailable(raop_config)))?;
-            }
-
-            let monitor = daemon.monitor()?;
-            let event_tx = event_tx.clone();
-            tokio::spawn(async move {
-                while let Ok(event) = monitor.recv_async().await {
-                    let event = match event {
-                        mdns_sd::DaemonEvent::IpAdd(addr) => MdnsEvent::IpAdded(addr),
-                        mdns_sd::DaemonEvent::IpDel(addr) => MdnsEvent::IpRemoved(addr),
-                        _ => continue,
-                    };
-                    let _ = event_tx.send(Event::Mdns(event));
-                }
-            });
-
-            daemon
-        };
+        let mdns = mdns::start_daemon(&event_tx, &cli_args)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
             !cli_args.no_google_cast
