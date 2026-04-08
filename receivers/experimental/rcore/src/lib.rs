@@ -73,7 +73,9 @@ pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
-use message::{Mdns, Message, Raop, Tray};
+use message::{Mdns, Message, Raop};
+#[cfg(feature = "systray")]
+use message::Tray;
 
 type MediaItemId = u64;
 // pub type MessageSender = UnboundedSender<Message>;
