@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rcore = { path = "../rcore", features = ["desktop"] }
+rcore = { path = "../rcore", features = ["fhs"] }
 # env_logger.workspace = true
 anyhow.workspace = true
 
@@ -15,9 +15,7 @@ bindgen = "0.71.0"
 tikv-jemallocator = "0.6"
 
 [features]
-default = ["systray"]
-systray = ["rcore/systray"]
-kms-backend = ["rcore/kms-backend"]
+default = []
 tracy = ["rcore/tracy"]
 
 [package.metadata.generate-rpm]
