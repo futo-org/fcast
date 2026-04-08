@@ -132,17 +132,28 @@ pub fn is_avif(len: usize, buf: InferenceBuffer) -> bool {
     false
 }
 
+fn check_many(buf: &[u8], candidates: &[&[u8]]) -> bool {
+    for candidate in candidates {
+        if buf == *candidate {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub fn is_heif(_len: usize, buf: InferenceBuffer) -> bool {
     if &buf[4..8] != b"ftyp" {
         return false;
     }
 
-    let brand = &buf[8..12];
+    check_many(&buf[8..12], &[b"heic", b"heix", b"heim", b"heis"])
+}
 
-    brand == b"heic"
-        || brand == b"heix"
-        || brand == b"heim"
-        || brand == b"heis"
+pub fn is_tiff(_len: usize, buf: InferenceBuffer) -> bool {
+    let magic = &buf[0..4];
+
+    magic == &[0x49, 0x49, 0x2A, 0x00] || magic == &[0x4D, 0x4D, 0x00, 0x2A]
 }
 
 // IsISOBMFF checks whether the given buffer represents ISO Base Media File Format data
@@ -218,9 +229,11 @@ pub fn is_webm(_len: usize, buf: InferenceBuffer) -> bool {
 }
 
 pub fn is_mov(_len: usize, buf: InferenceBuffer) -> bool {
-    ((buf[4] == b'f' && buf[5] == b't' && buf[6] == b'y' && buf[7] == b'p')
-        && (buf[8] == b'q' && buf[9] == b't' && buf[10] == b' ' && buf[11] == b' '))
-        || (buf[4] == 0x6d && buf[5] == 0x6f && buf[6] == 0x6f && buf[7] == 0x76)
+    if &buf[4..12] != b"ftypqt  " {
+        return false;
+    }
+
+    (buf[4] == 0x6d && buf[5] == 0x6f && buf[6] == 0x6f && buf[7] == 0x76)
         || (buf[4] == 0x6d && buf[5] == 0x64 && buf[6] == 0x61 && buf[7] == 0x74)
         || (buf[12] == 0x6d && buf[13] == 0x64 && buf[14] == 0x61 && buf[15] == 0x74)
 }
@@ -240,35 +253,19 @@ pub fn is_mpeg(_len: usize, buf: InferenceBuffer) -> bool {
 }
 
 pub fn is_mp4(_len: usize, buf: InferenceBuffer) -> bool {
-    (buf[4] == b'f' && buf[5] == b't' && buf[6] == b'y' && buf[7] == b'p')
-        && ((buf[8] == b'a' && buf[9] == b'v' && buf[10] == b'c' && buf[11] == b'1')
-            || (buf[8] == b'd' && buf[9] == b'a' && buf[10] == b's' && buf[11] == b'h')
-            || (buf[8] == b'i' && buf[9] == b's' && buf[10] == b'o' && buf[11] == b'2')
-            || (buf[8] == b'i' && buf[9] == b's' && buf[10] == b'o' && buf[11] == b'3')
-            || (buf[8] == b'i' && buf[9] == b's' && buf[10] == b'o' && buf[11] == b'4')
-            || (buf[8] == b'i' && buf[9] == b's' && buf[10] == b'o' && buf[11] == b'5')
-            || (buf[8] == b'i' && buf[9] == b's' && buf[10] == b'o' && buf[11] == b'6')
-            || (buf[8] == b'i' && buf[9] == b's' && buf[10] == b'o' && buf[11] == b'm')
-            || (buf[8] == b'm' && buf[9] == b'm' && buf[10] == b'p' && buf[11] == b'4')
-            || (buf[8] == b'm' && buf[9] == b'p' && buf[10] == b'4' && buf[11] == b'1')
-            || (buf[8] == b'm' && buf[9] == b'p' && buf[10] == b'4' && buf[11] == b'2')
-            || (buf[8] == b'm' && buf[9] == b'p' && buf[10] == b'4' && buf[11] == b'v')
-            || (buf[8] == b'm' && buf[9] == b'p' && buf[10] == b'7' && buf[11] == b'1')
-            || (buf[8] == b'M' && buf[9] == b'S' && buf[10] == b'N' && buf[11] == b'V')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'A' && buf[11] == b'S')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'S' && buf[11] == b'C')
-            || (buf[8] == b'N' && buf[9] == b'S' && buf[10] == b'D' && buf[11] == b'C')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'S' && buf[11] == b'H')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'S' && buf[11] == b'M')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'S' && buf[11] == b'P')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'S' && buf[11] == b'S')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'X' && buf[11] == b'C')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'X' && buf[11] == b'H')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'X' && buf[11] == b'M')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'X' && buf[11] == b'P')
-            || (buf[8] == b'N' && buf[9] == b'D' && buf[10] == b'X' && buf[11] == b'S')
-            || (buf[8] == b'F' && buf[9] == b'4' && buf[10] == b'V' && buf[11] == b' ')
-            || (buf[8] == b'F' && buf[9] == b'4' && buf[10] == b'P' && buf[11] == b' '))
+    if &buf[4..8] != b"ftyp" {
+        return false;
+    }
+
+    check_many(
+        &buf[8..12],
+        &[
+            b"avc1", b"dash", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"isom", b"mmp4",
+            b"mp41", b"mp42", b"mp4v", b"mp71", b"MSNV", b"NDAS", b"NDSC", b"NSDC", b"NDSH",
+            b"NDSM", b"NDSP", b"NDSS", b"NDXC", b"NDXH", b"NDXM", b"NDXP", b"NDXS", b"F4V ",
+            b"F4P ",
+        ],
+    )
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -318,6 +315,7 @@ matcher_map!(
     ("image/avif", is_avif),
     ("image/jxl", is_jxl),
     ("image/heif", is_heif),
+    ("image/tiff", is_tiff),
     // Video
     ("video/mp4", is_mp4),
     ("video/x-m4v", is_m4v),

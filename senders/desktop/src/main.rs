@@ -21,6 +21,7 @@ use mcore::{
     AudioSource, Event, FileSystemEntry, MediaFileEntry, RootDirType, ShouldQuit,
     transmission::WhepSink,
 };
+use mimalloc::MiMalloc;
 use serde::{Deserialize, Serialize};
 use slint::{Model, ToSharedString};
 use std::{
@@ -42,7 +43,6 @@ use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
     Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
-use mimalloc::MiMalloc;
 
 use desktop_sender::slint_generated::*;
 
@@ -1998,9 +1998,7 @@ impl Application {
 
                 let ui_weak = self.ui_weak.clone();
                 tokio::spawn(async move {
-                    let res = app_updater::download_update(
-                        UPDATER_BASE_URL,
-                        &update, {
+                    let res = app_updater::download_update(UPDATER_BASE_URL, &update, {
                         let ui_weak = ui_weak.clone();
                         move |progress, total| {
                             let progress_percent = if total == 0 {

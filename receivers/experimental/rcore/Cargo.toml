@@ -82,20 +82,7 @@ features = [
 package = "image"
 version = "0.25"
 default-features = false
-features = [
-    # TODO:
-    #  * APNG
-    #  * GIF
-    # "rayon", Only good for encoding?
-    "avif",
-    "avif-native",
-    "bmp",
-    "gif",
-    "ico",
-    "jpeg",
-    "png",
-    "webp",
-]
+features = ["default-formats"]
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tracing-gstreamer.workspace = true
