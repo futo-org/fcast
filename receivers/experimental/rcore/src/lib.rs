@@ -61,6 +61,7 @@ mod player;
 mod raop;
 mod user_agent;
 mod video;
+mod gstreamer;
 
 use crate::{
     fcast::{Operation, ReceiverToSenderMessage, TranslatableMessage},
