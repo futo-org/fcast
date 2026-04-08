@@ -1,26 +1,29 @@
 use std::rc::Rc;
 
 use crate::{
-    Bridge, CompoundImage, Event, GuiPlaybackState, MainWindow, Operation, SetVolumeMessage,
-    UiMediaTrack, UiMediaTrackType, UiPlayerVariant, image::DecodedImage, log_if_err,
+    Bridge, CompoundImage, GuiPlaybackState, MainWindow, Message, MessageSender, Operation,
+    SetVolumeMessage, UiMediaTrack, UiMediaTrackType, UiPlayerVariant, image::DecodedImage,
+    log_if_err,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use crate::message;
 use fcast_protocol::v3;
 use slint::{ComponentHandle, ToSharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error};
 
-pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedSender<Event>) {
+pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, msg_tx: MessageSender) {
     bridge.on_resume_or_pause({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move || {
-            log_if_err!(event_tx.send(Event::ResumeOrPause));
+            msg_tx.send(Message::ResumeOrPause);
         }
     });
 
     bridge.on_seek_to_percent({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move |percent| {
-            log_if_err!(event_tx.send(Event::SeekPercent(percent)));
+            msg_tx.send(Message::SeekPercent(percent));
         }
     });
 
@@ -37,14 +40,14 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedS
     });
 
     bridge.on_set_volume({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move |volume| {
-            log_if_err!(event_tx.send(Event::Op {
-                session_id: 0,
-                op: Operation::SetVolume(SetVolumeMessage {
+            msg_tx.operation(
+                0,
+                Operation::SetVolume(SetVolumeMessage {
                     volume: volume as f64,
-                })
-            }));
+                }),
+            );
         }
     });
 
@@ -53,21 +56,21 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedS
     });
 
     bridge.on_debug_toggled({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move || {
-            log_if_err!(event_tx.send(Event::ToggleDebug));
+            msg_tx.send(Message::ToggleDebug);
         }
     });
 
     bridge.on_change_playback_rate({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move |new_rate: f32| {
-            log_if_err!(event_tx.send(Event::Op {
-                session_id: 0,
-                op: Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
-                    speed: new_rate as f64
+            msg_tx.operation(
+                0,
+                Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
+                    speed: new_rate as f64,
                 }),
-            }));
+            );
         }
     });
 
@@ -87,37 +90,37 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, event_tx: UnboundedS
     });
 
     bridge.on_select_track({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move |id: i32, variant: UiMediaTrackType| {
-            log_if_err!(event_tx.send(Event::SelectTrack { id, variant }));
+            msg_tx.send(Message::SelectTrack { id, variant });
         }
     });
 
     bridge.on_select_playlist_item({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move |idx: i32| {
-            log_if_err!(event_tx.send(Event::Op {
-                session_id: 0,
-                op: Operation::SetPlaylistItem(v3::SetPlaylistItemMessage {
-                    item_index: idx as u64
+            msg_tx.operation(
+                0,
+                Operation::SetPlaylistItem(v3::SetPlaylistItemMessage {
+                    item_index: idx as u64,
                 }),
-            }));
+            );
         }
     });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     bridge.on_perform_app_update({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move || {
-            log_if_err!(event_tx.send(Event::AppUpdate(crate::AppUpdateEvent::UpdateApplication),));
+            msg_tx.app_update(message::AppUpdate::UpdateApplication);
         }
     });
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     bridge.on_restart_app({
-        let event_tx = event_tx.clone();
+        let msg_tx = msg_tx.clone();
         move || {
-            log_if_err!(event_tx.send(Event::AppUpdate(crate::AppUpdateEvent::RestartApp),));
+            msg_tx.app_update(message::AppUpdate::RestartApp);
         }
     });
 

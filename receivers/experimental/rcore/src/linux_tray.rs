@@ -1,16 +1,15 @@
 use imagelib::GenericImageView;
 use ksni::menu::*;
-use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{Event, TrayEvent};
+use crate::{MessageSender, message::Tray};
 
 pub struct LinuxSysTray {
-    pub event_tx: UnboundedSender<Event>,
+    pub msg_tx: MessageSender,
 }
 
 impl LinuxSysTray {
     fn toggle_window(&self) {
-        let _ = self.event_tx.send(Event::Tray(TrayEvent::Toggle));
+        self.msg_tx.tray(Tray::Toggle);
     }
 }
 
@@ -52,9 +51,7 @@ impl ksni::Tray for LinuxSysTray {
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Quit".to_owned(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.event_tx.send(Event::Tray(TrayEvent::Quit));
-                }),
+                activate: Box::new(|this: &mut Self| this.msg_tx.tray(Tray::Quit)),
                 ..Default::default()
             }
             .into(),

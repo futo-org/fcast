@@ -5,11 +5,11 @@ use std::{
     sync::LazyLock,
 };
 
-use rcore::{MdnsEvent, slint, tracing::error};
+use rcore::{Mdns, slint, tracing::error};
 
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
-static EVENT_TX: LazyLock<Mutex<Option<UnboundedSender<rcore::Event>>>> =
+static EVENT_TX: LazyLock<Mutex<Option<UnboundedSender<rcore::Message>>>> =
     LazyLock::new(|| Mutex::new(None));
 
 #[unsafe(no_mangle)]
@@ -57,8 +57,8 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_setMdnsDeviceNa
         return;
     };
 
-    let event = rcore::MdnsEvent::NameSet(device_name.to_string_lossy().to_string());
-    let _ = event_tx.send(rcore::Event::Mdns(event));
+    let event = rcore::Mdns::NameSet(device_name.to_string_lossy().to_string());
+    let _ = event_tx.send(rcore::Message::Mdns(event));
 }
 
 #[allow(non_snake_case)]
@@ -74,7 +74,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getDeviceNameRa
     let hash_str = rcore::hash_to_string(&hash);
     let event_tx = EVENT_TX.lock();
     if let Some(event_tx) = event_tx.as_ref() {
-        let _ = event_tx.send(rcore::Event::Raop(rcore::RaopEvent::ConfigAvailable(
+        let _ = event_tx.send(rcore::Message::Raop(rcore::Raop::ConfigAvailable(
             rcore::Configuration { hw_addr: hash },
         )));
     }
@@ -179,7 +179,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEv
             MdnsEvent::IpRemoved(addr)
         };
 
-        if let Err(err) = event_tx.send(rcore::Event::Mdns(event)) {
+        if let Err(err) = event_tx.send(rcore::Message::Mdns(event)) {
             error!(?err, "Failed to send mDNS event");
             return;
         }
