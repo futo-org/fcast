@@ -13,12 +13,20 @@
 
         <StandardDirectory Id="ProgramFiles64Folder">
             <Directory Id="INSTALLFOLDER" Name="FCastReceiver">
+                <Directory Id="GioDir" Name="gio">
+                    <Directory Id="GioModulesDir" Name="modules" />
+                </Directory>
+
                 <Component Id="MainExecutableComponent" Guid="75316f20-f4d3-4da3-9520-f3196560f983">
                     <File Id="MainExecutable" Source="fcast-receiver.exe" KeyPath="yes"/>
                 </Component>
 
                 <Component Id="DependencyFiles" Guid="8f3cd1df-6e69-461b-a29a-3fd1f827cc7a">
                     {{ dll_components }}
+                </Component>
+
+                <Component Id="GioComponents" Guid="99e821a8-e6ff-4901-9c97-9f1f3a239ab2" Directory="GioModulesDir">
+                    {{ gio_components }}
                 </Component>
             </Directory>
         </StandardDirectory>
@@ -47,6 +55,7 @@
             <ComponentRef Id="MainExecutableComponent"/>
             <ComponentRef Id="DependencyFiles"/>
             <ComponentRef Id="StartMenuShortcutComponent"/>
+            <ComponentRef Id="GioComponents"/>
         </Feature>
     </Package>
 </Wix>

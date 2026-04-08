@@ -143,6 +143,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 reqwest = { version = "0.13", features = [ "native-tls" ] }
 app-updater = { path = "../../../crates/app-updater"}
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
+receiver-resources.path = "../../../crates/receiver-resources"
 
 [build-dependencies]
 slint-build.workspace = true

@@ -22,6 +22,7 @@ walkdir = "2.5.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 askama = "0.14.0"
+receiver-resources.path = "../crates/receiver-resources"
 
 [features]
 default = []

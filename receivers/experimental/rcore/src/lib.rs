@@ -56,6 +56,7 @@ mod player;
 mod raop;
 mod user_agent;
 mod video;
+mod gstreamer;
 
 use crate::{
     fcast::{Operation, ReceiverToSenderMessage, TranslatableMessage},
@@ -2024,21 +2025,6 @@ pub fn run(
     tracing_gstreamer::integrate_events();
     gst::log::remove_default_log_function();
 
-    #[cfg(target_os = "windows")]
-    {
-        let mut plugin_dir = std::env::current_exe()?;
-        plugin_dir.pop();
-        unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let mut plugin_dir = std::env::current_exe()?;
-        plugin_dir.pop();
-        plugin_dir.push("lib");
-        unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
-    }
-
     #[cfg(not(target_os = "android"))]
     {
         use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -2284,16 +2270,11 @@ pub fn run(
         let event_tx = event_tx.clone();
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         async move {
-            gst::init().unwrap();
-            debug!(gstreamer_version = %gst::version_string());
-
-            // TODO: investigate why certain files leads to crashes when this is added
-            // gst::rust_allocator().clone().set_default();
+            gstreamer::init_and_load_plugins();
 
             let mut slint_sink = video::SlintOpenGLSink::new().unwrap();
             let slint_appsink = slint_sink.video_sink();
             let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
-
             slint_sink
                 .connect({
                     let ui_weak = ui_weak.clone();
@@ -2308,19 +2289,6 @@ pub fn run(
                 .unwrap();
 
             *slint_sink_mutex.lock() = Some(slint_sink);
-
-            fcastwhepsrcbin::plugin_init().unwrap();
-            fcasttextoverlay::plugin_init().unwrap();
-            gstreqwest::plugin_register_static().unwrap();
-
-            #[cfg(feature = "static-gst-plugins")]
-            {
-                gstwebrtchttp::plugin_register_static().unwrap();
-                gstrswebrtc::plugin_register_static().unwrap();
-                #[cfg(not(target_os = "android"))]
-                gstrsrtp::plugin_register_static().unwrap();
-                gstdav1d::plugin_register_static().unwrap();
-            }
 
             Application::new(
                 gui,
