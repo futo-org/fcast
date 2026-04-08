@@ -1,4 +1,4 @@
-use image::GenericImageView;
+use imagelib::GenericImageView;
 use ksni::menu::*;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -21,7 +21,7 @@ impl ksni::Tray for LinuxSysTray {
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         let icn = include_bytes!("../../../electron/assets/icons/app/icon.png");
-        let img = image::load_from_memory_with_format(icn, image::ImageFormat::Png).unwrap();
+        let img = imagelib::load_from_memory_with_format(icn, imagelib::ImageFormat::Png).unwrap();
         let (width, height) = img.dimensions();
         let mut data = img.into_rgba8().into_vec();
         for pixel in data.chunks_exact_mut(4) {

@@ -37,9 +37,9 @@ pub fn create_tray_icon() -> (TrayIcon, MenuItemIds) {
     }
 
     let (icon_rgba, icon_width, icon_height) = {
-        let image = image::load_from_memory_with_format(
+        let image = imagelib::load_from_memory_with_format(
             include_bytes!("../../../electron/assets/icons/app/icon.png"),
-            image::ImageFormat::Png,
+            imagelib::ImageFormat::Png,
         )
         .unwrap()
         .into_rgba8();

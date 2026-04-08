@@ -59,6 +59,11 @@ export enum UiUpdaterState {
     InstallSuccessful,
 }
 
+export struct UiAnimationFrame {
+    img: image,
+    delay: duration,
+}
+
 export global Bridge {
     in property <float> progress-secs;
     in property <float> duration-secs;
@@ -89,6 +94,8 @@ export global Bridge {
     in property <UiMode> ui-mode: UiMode.Full;
     in property <int> update-download-progress;
     in property <string> updater-error-msg;
+    in property <[UiAnimationFrame]> animation-frames;
+    in property <int> current-animation-frame;
 
     in-out property <GuiPlaybackState> playback-state: GuiPlaybackState.Idle;
     in-out property <float> volume: 1.0;

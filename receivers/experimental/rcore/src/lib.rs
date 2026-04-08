@@ -1,13 +1,11 @@
 use anyhow::{Result, bail};
 use base64::Engine;
-use bytes::Bytes;
 use fcast::{SessionDriver, SessionId};
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
 };
 use gst::prelude::*;
 use gst_gl::prelude::*;
-use image::{ImageDecoder, ImageFormat};
 use parking_lot::Mutex;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
@@ -23,7 +21,7 @@ use tokio::{
 };
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
-use tracing::{Instrument, debug, debug_span, error, info, instrument, warn};
+use tracing::{Instrument, debug, debug_span, error, info, warn};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -46,6 +44,7 @@ mod fcastwhepsrcbin;
 mod gcast;
 mod graphics;
 mod gui;
+mod image;
 #[cfg(all(target_os = "linux", feature = "systray"))]
 mod linux_tray;
 #[cfg(all(
@@ -67,26 +66,6 @@ use crate::{
 use graphics::GraphicsContext;
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
-#[derive(Debug, thiserror::Error)]
-pub enum DownloadImageError {
-    #[error("request failed: {0:?}")]
-    RequestFailed(#[from] reqwest::Error),
-    #[error("response is missing content type")]
-    MissingContentType,
-    #[error("response has invalid content type")]
-    InvalidContentType,
-    #[error("content type is not a string")]
-    ContentTypeIsNotString,
-    #[error("content type ({0}) is unsupported")]
-    UnsupportedContentType(String),
-    #[error("failed to decode image: {0:?}")]
-    DecodeImage(#[from] image::ImageError),
-    #[error("failed to parse URL: {0:?}")]
-    InvalidUrl(#[from] url::ParseError),
-    #[error("unsuccessful status={0}")]
-    Unsuccessful(reqwest::StatusCode),
-}
-
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
 #[derive(Debug)]
@@ -105,19 +84,6 @@ pub type EventSender = UnboundedSender<Event>;
 pub enum TrayEvent {
     Quit,
     Toggle,
-}
-
-#[derive(Debug)]
-pub struct DecodedImage {
-    id: ImageId,
-    pixels: SlintRgba8Pixbuf,
-    orientation: image::metadata::Orientation,
-}
-
-impl DecodedImage {
-    pub fn to_compound(self) -> CompoundImage {
-        CompoundImage::new(self.pixels, self.orientation)
-    }
 }
 
 #[derive(Debug)]
@@ -155,13 +121,7 @@ pub enum Event {
         session_id: SessionId,
         op: Operation,
     },
-    ImageDownloadResult {
-        id: ImageDownloadId,
-        res: std::result::Result<(Bytes, ImageFormat), DownloadImageError>,
-    },
-    AudioThumbnailAvailable(DecodedImage),
-    AudioThumbnailBlurAvailable(DecodedImage),
-    ImageDecoded(DecodedImage),
+    Image(image::Event),
     Mdns(MdnsEvent),
     PlaylistDataResult {
         play_message: Option<v3::PlayMessage>,
@@ -198,28 +158,6 @@ const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
 
 slint::include_modules!();
 
-impl CompoundImage {
-    fn new(
-        pixels: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
-        orientation: image::metadata::Orientation,
-    ) -> Self {
-        let rotation = match orientation {
-            image::metadata::Orientation::Rotate90
-            | image::metadata::Orientation::Rotate90FlipH => 90.0,
-            image::metadata::Orientation::Rotate180 => 180.0,
-            image::metadata::Orientation::Rotate270
-            | image::metadata::Orientation::Rotate270FlipH => 270.0,
-            image::metadata::Orientation::FlipHorizontal
-            | image::metadata::Orientation::FlipVertical
-            | image::metadata::Orientation::NoTransforms => 0.0,
-        };
-        Self {
-            img: slint::Image::from_rgba8(pixels),
-            rotation,
-        }
-    }
-}
-
 fn current_time_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -236,121 +174,6 @@ enum OnUriLoadedCommand {
 // TODO: rename and merge with OnUriLoadedCommand
 enum OnFirstPlayingStateChangedCommand {
     Seek { position: f64, rate: f64 },
-}
-
-enum ImageDecodeJobType {
-    AudioThumbnail,
-    Regular,
-}
-
-enum EncodedImageData {
-    Vec(Vec<u8>),
-    Bytes(Bytes),
-}
-
-impl std::ops::Deref for EncodedImageData {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Vec(vec) => vec.as_slice(),
-            Self::Bytes(bytes) => bytes,
-        }
-    }
-}
-
-struct ImageDecodeJob {
-    image: EncodedImageData,
-    format: Option<image::ImageFormat>,
-    typ: ImageDecodeJobType,
-}
-
-pub type ImageId = u32;
-pub type ImageDownloadId = u32;
-
-fn image_decode_worker(
-    job_rx: std::sync::mpsc::Receiver<(ImageId, ImageDecodeJob)>,
-    event_tx: EventSender,
-) -> anyhow::Result<()> {
-    let span = debug_span!("image-decoder");
-    let _entered = span.enter();
-
-    #[cfg(all(feature = "desktop", target_os = "linux"))]
-    libheif_rs::integration::image::register_all_decoding_hooks();
-    hayro_jpeg2000::integration::register_decoding_hook();
-    jxl_oxide::integration::register_image_decoding_hook();
-
-    while let Ok((id, job)) = job_rx.recv() {
-        debug!(?id, ?job.format, "Got job");
-
-        let img_data: std::io::Cursor<&[u8]> = std::io::Cursor::new(&job.image);
-        let reader_res = match job.format {
-            Some(format) => image::ImageReader::with_format(img_data, format).into_decoder(),
-            None => match image::ImageReader::new(img_data).with_guessed_format() {
-                Ok(guessed) => guessed.into_decoder(),
-                Err(err) => {
-                    error!(?err, "Failed to guess image format from data");
-                    continue;
-                }
-            },
-        };
-
-        let (decoded_res, orientation) = match reader_res {
-            Ok(mut decoder) => {
-                let orientation = decoder
-                    .orientation()
-                    .unwrap_or(image::metadata::Orientation::NoTransforms);
-                let image = image::DynamicImage::from_decoder(decoder);
-                (image, orientation)
-            }
-            Err(err) => {
-                error!(?err, "Failed to read image");
-                continue;
-            }
-        };
-
-        let decoded = match decoded_res {
-            Ok(img) => img.to_rgba8(),
-            Err(err) => {
-                // TODO: should notify about failure
-                error!(?err, "Failed to decode image");
-                continue;
-            }
-        };
-
-        fn to_slint_pixbuf(img: &image::RgbaImage) -> SlintRgba8Pixbuf {
-            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                img.as_raw(),
-                img.width(),
-                img.height(),
-            )
-        }
-
-        let img = DecodedImage {
-            id,
-            pixels: to_slint_pixbuf(&decoded),
-            orientation,
-        };
-
-        match job.typ {
-            ImageDecodeJobType::AudioThumbnail => {
-                event_tx.send(Event::AudioThumbnailAvailable(img))?;
-                let blured = to_slint_pixbuf(&image::imageops::fast_blur(&decoded, 64.0));
-                event_tx.send(Event::AudioThumbnailBlurAvailable(DecodedImage {
-                    id,
-                    pixels: blured,
-                    orientation,
-                }))?;
-            }
-            ImageDecodeJobType::Regular => {
-                event_tx.send(Event::ImageDecoded(img))?;
-            }
-        }
-    }
-
-    info!("Image decoding worker finished");
-
-    Ok(())
 }
 
 fn sec_to_string(sec: f64) -> String {
@@ -392,6 +215,23 @@ impl GCastUpdateSender {
     }
 }
 
+fn map_to_header_map(headers: &HashMap<String, String>) -> reqwest::header::HeaderMap {
+    let mut header_map = reqwest::header::HeaderMap::new();
+    for (k, v) in headers {
+        let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) else {
+            warn!(k, "Invalid header name");
+            continue;
+        };
+        let Ok(value) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) else {
+            warn!(v, "Invalid header value");
+            continue;
+        };
+        header_map.insert(name, value);
+    }
+
+    header_map
+}
+
 struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
@@ -405,16 +245,15 @@ struct Application {
     current_duration: Option<gst::ClockTime>,
     on_uri_loaded_command_queue: smallvec::SmallVec<[OnUriLoadedCommand; 1]>,
     on_playing_command_queue: smallvec::SmallVec<[OnFirstPlayingStateChangedCommand; 2]>,
-    current_image_id: ImageId,
-    current_image_download_id: ImageDownloadId,
+    current_image_id: image::ImageId,
+    current_image_download_id: image::ImageDownloadId,
     have_audio_track_cover: bool,
     video_sink_is_eos: Arc<AtomicBool>,
     current_play_data: Option<v3::PlayMessage>,
     have_media_info: bool,
-    current_thumbnail_id: ImageId,
-    pending_thumbnail: Option<ImageId>,
-    pending_thumbnail_download: Option<ImageDownloadId>,
-    image_decode_tx: std::sync::mpsc::Sender<(ImageId, ImageDecodeJob)>,
+    current_thumbnail_id: image::ImageId,
+    pending_thumbnail: Option<image::ImageId>,
+    pending_thumbnail_download: Option<image::ImageDownloadId>,
     current_addresses: HashSet<IpAddr>,
     have_media_title: bool,
     last_position_updated: f64,
@@ -436,6 +275,8 @@ struct Application {
     window_visible_before_playing: Option<bool>,
     window_fullscreen_before_playing: Option<bool>,
     gl_context: graphics::GlContext,
+    image_downloader: image::Downloader,
+    image_decoder: image::Decoder,
 }
 
 impl Application {
@@ -612,18 +453,6 @@ impl Application {
             GCastUpdateSender(None)
         };
 
-        let (image_decode_tx, image_decode_rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
-            .name("image-decoder".to_owned())
-            .spawn({
-                let event_tx = event_tx.clone();
-                move || {
-                    if let Err(err) = image_decode_worker(image_decode_rx, event_tx) {
-                        error!(?err, "Image decode worker failed");
-                    }
-                }
-            })?;
-
         tokio::spawn({
             let event_tx = event_tx.clone();
             async move {
@@ -664,6 +493,10 @@ impl Application {
             }
         });
 
+        let image_decoder = image::Decoder::new(event_tx.clone())?;
+        let http_client = reqwest::Client::new();
+        let image_downloader = image::Downloader::new(event_tx.clone(), http_client.clone());
+
         Ok(Self {
             #[cfg(target_os = "android")]
             android_app,
@@ -678,22 +511,21 @@ impl Application {
             debug_mode: false,
             player,
             current_duration: None,
-            on_uri_loaded_command_queue: smallvec::SmallVec::new(),
-            on_playing_command_queue: smallvec::SmallVec::new(),
+            on_uri_loaded_command_queue: SmallVec::new(),
+            on_playing_command_queue: SmallVec::new(),
             current_image_id: 0,
             have_audio_track_cover: false,
             video_sink_is_eos,
             current_play_data: None,
             have_media_info: false,
             pending_thumbnail: None,
-            image_decode_tx,
             current_thumbnail_id: 0,
             current_image_download_id: 0,
             pending_thumbnail_download: None,
             current_addresses: HashSet::new(),
             have_media_title: false,
             last_position_updated: -1.0,
-            http_client: reqwest::Client::new(),
+            http_client,
             current_request_headers: headers,
             current_playlist: None,
             current_playlist_item_idx: None,
@@ -711,63 +543,9 @@ impl Application {
             window_visible_before_playing: None,
             window_fullscreen_before_playing: None,
             gl_context,
+            image_downloader,
+            image_decoder,
         })
-    }
-
-    fn map_to_header_map(headers: &HashMap<String, String>) -> reqwest::header::HeaderMap {
-        let mut header_map = reqwest::header::HeaderMap::new();
-        for (k, v) in headers {
-            let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) else {
-                warn!(k, "Invalid header name");
-                continue;
-            };
-            let Ok(value) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) else {
-                warn!(v, "Invalid header value");
-                continue;
-            };
-            header_map.insert(name, value);
-        }
-
-        header_map
-    }
-
-    #[cfg_attr(not(target_os = "android"), instrument(skip_all, fields(url = url)))]
-    async fn download_image(
-        client: &reqwest::Client,
-        url: &str,
-        headers: Option<HashMap<String, String>>,
-    ) -> std::result::Result<(Bytes, ImageFormat), DownloadImageError> {
-        let url = url::Url::parse(url)?;
-        debug!("Starting image download");
-        let random_user_agent = user_agent::random_browser_user_agent(url.domain());
-        let mut request = client.get(url);
-        let mut did_set_user_agent = false;
-        if let Some(headers) = headers {
-            let header_map = Self::map_to_header_map(&headers);
-            did_set_user_agent = header_map.contains_key(reqwest::header::USER_AGENT);
-            request = request.headers(header_map);
-        }
-        if !did_set_user_agent {
-            request = request.header(reqwest::header::USER_AGENT, random_user_agent);
-        }
-
-        let resp = request.send().await?;
-        if !resp.status().is_success() {
-            return Err(DownloadImageError::Unsuccessful(resp.status()));
-        }
-
-        let headers = resp.headers();
-        let content_type = headers
-            .get(reqwest::header::CONTENT_TYPE)
-            .ok_or(DownloadImageError::MissingContentType)?
-            .to_str()
-            .map_err(|_| DownloadImageError::ContentTypeIsNotString)?;
-        let format = ImageFormat::from_mime_type(content_type).ok_or(
-            DownloadImageError::UnsupportedContentType(content_type.to_string()),
-        )?;
-
-        let body = resp.bytes().await?;
-        Ok((body, format))
     }
 
     #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all))]
@@ -1152,33 +930,23 @@ impl Application {
         {
             media_title = title.clone();
             self.have_audio_track_cover = true;
-            let event_tx = self.event_tx.clone();
             self.current_image_download_id += 1;
             let this_id = self.current_image_download_id;
             let url = thumbnail_url.clone();
             self.pending_thumbnail_download = Some(this_id);
-            let client = self.http_client.clone();
             let headers = self.current_request_headers.lock().clone();
-            tokio::spawn(async move {
-                let res = Self::download_image(&client, &url, headers).await;
-                let _ = event_tx.send(Event::ImageDownloadResult { id: this_id, res });
-            });
+            self.image_downloader.queue_download(this_id, url, headers);
         }
 
         *self.current_request_headers.lock() = media_item.headers.clone();
 
         let mut is_image = false;
-        if container != "image/gif" && container.starts_with("image/") {
-            let event_tx = self.event_tx.clone();
+        if container.starts_with("image/") {
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
-            let client = self.http_client.clone();
             let headers = self.current_request_headers.lock().clone();
             is_image = true;
-            tokio::spawn(async move {
-                let res = Self::download_image(&client, &url, headers).await;
-                let _ = event_tx.send(Event::ImageDownloadResult { id, res });
-            });
+            self.image_downloader.queue_download(id, url, headers);
         } else {
             self.player.set_uri(&url);
             if let Some(volume) = media_item.volume {
@@ -1233,7 +1001,7 @@ impl Application {
             tokio::spawn(async move {
                 let mut request = client.get(url);
                 if let Some(headers) = play_message.headers.as_ref() {
-                    request = request.headers(Self::map_to_header_map(headers));
+                    request = request.headers(map_to_header_map(headers));
                 }
                 let mut result = None;
                 match request.send().await {
@@ -1324,16 +1092,10 @@ impl Application {
             Operation::Seek(seek_message) => {
                 if self.is_playing() {
                     let seconds = seek_message.time;
-                    // if !self.seek_lock.is_locked() && seconds >= 0.0 && seconds.is_normal() {
-                    // self.seek_lock.acquire();
-                    // self.player.seek(gst::ClockTime::from_seconds_f64(time));
-                    // TODO: show errors as warnings in the UI
                     self.player.seek(seconds);
-                    // }
                 }
             }
             Operation::SetSpeed(set_speed_message) => {
-                // TODO: show errors as warnings in the UI
                 self.player.set_rate(set_speed_message.speed);
             }
             Operation::SetPlaylistItem(msg) => {
@@ -1419,14 +1181,6 @@ impl Application {
             );
 
             let qrcode = fast_qr::QRBuilder::new(device_url.as_bytes()).build()?;
-            // use fast_qr::convert::Builder;
-            // let qr_svg = fast_qr::convert::svg::SvgBuilder::default()
-            //     .shape(fast_qr::convert::Shape::Circle)
-            //     .module_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0xFF]))
-            //     .background_color(fast_qr::convert::Color::from([0x00, 0x00, 0x00, 0x00]))
-            //     .margin(1)
-            //     .to_str(&qrcode);
-
             let dims = qrcode.size as u32;
             let mut pixbuf: gui::QrCodeImage = slint::SharedPixelBuffer::new(dims, dims);
             let pixbuf_pixels = pixbuf.make_mut_slice();
@@ -1491,14 +1245,13 @@ impl Application {
                 {
                     self.current_thumbnail_id += 1;
                     let this_id = self.current_thumbnail_id;
-                    self.image_decode_tx.send((
+                    self.image_decoder.queue_job(
                         this_id,
-                        ImageDecodeJob {
-                            image: EncodedImageData::Vec(buffer.to_vec()),
-                            format: None,
-                            typ: ImageDecodeJobType::AudioThumbnail,
-                        },
-                    ))?;
+                        image::ImageDecodeJob::new_no_format(
+                            buffer.to_vec(),
+                            image::ImageDecodeJobType::AudioThumbnail,
+                        ),
+                    );
                     self.pending_thumbnail = Some(this_id);
                 }
 
@@ -1724,14 +1477,13 @@ impl Application {
             RaopEvent::CoverArtSet(data) => {
                 self.current_thumbnail_id += 1;
                 let this_id = self.current_thumbnail_id;
-                self.image_decode_tx.send((
+                self.image_decoder.queue_job(
                     this_id,
-                    ImageDecodeJob {
-                        image: EncodedImageData::Vec(data),
-                        format: None,
-                        typ: ImageDecodeJobType::AudioThumbnail,
-                    },
-                ))?;
+                    image::ImageDecodeJob::new_no_format(
+                        data,
+                        image::ImageDecodeJobType::AudioThumbnail,
+                    ),
+                );
                 self.pending_thumbnail = Some(this_id);
             }
             RaopEvent::CoverArtRemoved => self.gui.clear_audio_covers(),
@@ -1835,24 +1587,114 @@ impl Application {
         Ok(false)
     }
 
+    fn handle_image_event(&mut self, event: image::Event) -> Result<bool> {
+        match event {
+            image::Event::DownloadResult { id, res } => {
+                debug!(id, "Got image download result");
+
+                if Some(id) == self.pending_thumbnail_download {
+                    match res {
+                        Ok((encoded_image, format)) => {
+                            self.pending_thumbnail_download = None;
+                            self.current_thumbnail_id += 1;
+                            let this_id = self.current_thumbnail_id;
+                            self.pending_thumbnail = Some(this_id);
+                            self.image_decoder.queue_job(
+                                this_id,
+                                image::ImageDecodeJob::new(
+                                    encoded_image,
+                                    format,
+                                    image::ImageDecodeJobType::AudioThumbnail,
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            error!(%err, "Thumbnail image download failed");
+                        }
+                    }
+                    return Ok(false);
+                }
+
+                if id != self.current_image_download_id {
+                    warn!(id, "Ignoring old image download result");
+                    return Ok(false);
+                }
+
+                match res {
+                    Ok((encoded_image, format)) => {
+                        self.current_image_id += 1;
+                        let this_id = self.current_image_id;
+                        self.image_decoder.queue_job(
+                            this_id,
+                            image::ImageDecodeJob::new(
+                                encoded_image,
+                                format,
+                                image::ImageDecodeJobType::Regular,
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        self.media_error(format!("Image download failed: {err:?}"))?;
+                    }
+                }
+            }
+            image::Event::AudioThumbnailAvailable(img) => {
+                if let Some(pending_thumbnail) = self.pending_thumbnail
+                    && pending_thumbnail == img.id
+                {
+                    self.gui.set_audio_track_cover(img);
+                }
+            }
+            image::Event::AudioThumbnailBlurAvailable(img) => {
+                if let Some(pending_thumbnail) = self.pending_thumbnail
+                    && pending_thumbnail == img.id
+                {
+                    // NOTE: `AudioThumbnailBlurAvailable` is assumed to *always* be received after `AudioThumbnailAvailable`
+                    //       and no other thumbnail results in between.
+                    self.pending_thumbnail = None;
+                    self.gui.set_blured_audio_track_cover(img);
+                }
+            }
+            image::Event::Decoded(img) => {
+                if img.id != self.current_image_id {
+                    warn!(img.id, "Ignoring old image decode result");
+                    return Ok(false);
+                }
+
+                self.gui.set_image_preview(img);
+                self.gui.set_app_state(AppState::Playing);
+
+                self.media_loaded_successfully();
+            }
+            image::Event::DecodedAnimation { id, frames } => {
+                if id != self.current_image_id {
+                    warn!(id, "Ignoring old image decode result");
+                    return Ok(false);
+                }
+
+                self.gui.set_animation(frames);
+                self.gui.set_app_state(AppState::Playing);
+
+                self.media_loaded_successfully();
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Event) -> Result<bool> {
-        // NOTE: all player actions are async (right?)
         match event {
             Event::SessionFinished => {
                 self.gui.device_disconnected();
             }
             Event::ResumeOrPause => {
-                // let op = match self.player_state {
                 let op = match self.player.player_state() {
-                    // gst_play::PlayState::Paused => Operation::Resume,
-                    // gst_play::PlayState::Playing => Operation::Pause,
                     PlayerState::Paused => Operation::Resume,
                     PlayerState::Playing => Operation::Pause,
                     _ => {
                         error!(
                             "Cannot resume or pause in player current state: {:?}",
-                            // self.player_state
                             self.player.player_state(),
                         );
                         return Ok(false);
@@ -1876,84 +1718,7 @@ impl Application {
                 debug!(id, ?op, "Operation from sender");
                 return self.handle_operation(op);
             }
-            Event::ImageDownloadResult { id, res } => {
-                debug!(id, "Got image download result");
-
-                if Some(id) == self.pending_thumbnail_download {
-                    // Somewhere it goes wrong decoding?
-                    match res {
-                        Ok((encoded_image, format)) => {
-                            self.pending_thumbnail_download = None;
-                            self.current_thumbnail_id += 1;
-                            let this_id = self.current_thumbnail_id;
-                            self.pending_thumbnail = Some(this_id);
-                            self.image_decode_tx.send((
-                                this_id,
-                                ImageDecodeJob {
-                                    image: EncodedImageData::Bytes(encoded_image),
-                                    format: Some(format),
-                                    typ: ImageDecodeJobType::AudioThumbnail,
-                                },
-                            ))?;
-                        }
-                        Err(err) => {
-                            error!(%err, "Thumbnail image download failed");
-                        }
-                    }
-                    return Ok(false);
-                }
-
-                if id != self.current_image_download_id {
-                    warn!(id, "Ignoring old image download result");
-                    return Ok(false);
-                }
-
-                match res {
-                    Ok((encoded_image, format)) => {
-                        self.current_image_id += 1;
-                        let this_id = self.current_image_id;
-                        self.image_decode_tx.send((
-                            this_id,
-                            ImageDecodeJob {
-                                image: EncodedImageData::Bytes(encoded_image),
-                                format: Some(format),
-                                typ: ImageDecodeJobType::Regular,
-                            },
-                        ))?;
-                    }
-                    Err(err) => {
-                        self.media_error(format!("Image download failed: {err:?}"))?;
-                    }
-                }
-            }
-            Event::AudioThumbnailAvailable(img) => {
-                if let Some(pending_thumbnail) = self.pending_thumbnail
-                    && pending_thumbnail == img.id
-                {
-                    self.gui.set_audio_track_cover(img);
-                }
-            }
-            Event::AudioThumbnailBlurAvailable(img) => {
-                if let Some(pending_thumbnail) = self.pending_thumbnail
-                    && pending_thumbnail == img.id
-                {
-                    // NOTE: `AudioThumbnailBlurAvailable` is assumed to *always* be received after `AudioThumbnailAvailable`
-                    //       and no other thumbnail results in between.
-                    self.pending_thumbnail = None;
-                    self.gui.set_blured_audio_track_cover(img);
-                }
-            }
-            Event::ImageDecoded(img) => {
-                if img.id != self.current_image_id {
-                    warn!(img.id, "Ignoring old image decode result");
-                    return Ok(false);
-                }
-
-                self.gui.set_image_preview(img);
-                self.gui.set_app_state(AppState::Playing);
-
-                self.media_loaded_successfully();
-            }
+            Event::Image(event) => return self.handle_image_event(event),
             Event::Mdns(event) => {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;
@@ -2283,6 +2048,7 @@ pub fn run(
             .with_target("mdns_sd", LevelFilter::INFO)
             .with_target("hyper_util", LevelFilter::INFO)
             .with_target("h2", LevelFilter::INFO)
+            .with_target("winit", LevelFilter::INFO)
             .with_default(log_level);
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
