@@ -294,7 +294,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
             });
 
             unsafe {
-                fiatlux::fl_egl_window_framebuffer_swap(self.window.render_buffer);
                 fiatlux::fl_egl_window_framebuffer_present_framebuffer_wait_for_vsync(
                     self.window.render_buffer,
                     3.0,
