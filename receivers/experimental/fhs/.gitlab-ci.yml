@@ -24,6 +24,7 @@
     - BUCKET="s3://$FHS_R2_BUCKET"
     - export AWS_ACCESS_KEY_ID=$FHS_R2_ACCESS_KEY_ID
     - export AWS_SECRET_ACCESS_KEY=$FHS_R2_SECRET_ACCESS_KEY
+    - export AWS_DEFAULT_REGION=auto
     - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/${RPM_FILE}" $ENDPOINT
     - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/fcast-receiver-latest.${FHS_ARCH}.rpm" $ENDPOINT
   artifacts:
