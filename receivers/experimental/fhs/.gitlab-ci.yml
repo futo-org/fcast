@@ -1,7 +1,7 @@
 .buildReceiverFhsLinuxRPM:
   stage: receiverExperimental
   script:
-    - dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
+    - sudo dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
       gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
       gstreamer1-plugin-libav libdav1d-devel glib2-devel
       fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel
@@ -10,8 +10,8 @@
     - rm -rf /tmp/fiatlux-client
     - git clone --recursive https://oauth2:${FHS_GH_PAT}@github.com/futo-org/fhs-fiatlux-client.git /tmp/fiatlux-client
     - (cd /tmp/fiatlux-client && make build-${FHS_ARCH})
-    - cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/lib/* /usr/local/lib/
-    - cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/include/* /usr/local/include/
+    - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/lib/* /usr/local/lib/
+    - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/include/* /usr/local/include/
     - rustup install nightly-2026-01-15
     - rustup default nightly-2026-01-15
     - rustup target add ${RUST_TARGET}
