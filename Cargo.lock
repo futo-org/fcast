@@ -2123,6 +2123,7 @@ name = "desktop-receiver"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "enable-ansi-support",
  "mimalloc",
  "rcore",
 ]
@@ -7909,6 +7910,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.0",
  "rcgen",
+ "receiver-resources",
  "remote-pipeline-dbg",
  "reqwest 0.13.2",
  "rsa",
@@ -7973,6 +7975,10 @@ dependencies = [
  "rcore",
  "tokio",
 ]
+
+[[package]]
+name = "receiver-resources"
+version = "0.1.0"
 
 [[package]]
 name = "redox_syscall"
@@ -11728,6 +11734,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "mdns-sd",
+ "receiver-resources",
  "serde",
  "serde_json",
  "toml_edit 0.24.1+spec-1.1.0",

@@ -14,3 +14,6 @@ systray = ["rcore/systray"]
 kms-backend = ["rcore/kms-backend"]
 tracy = ["rcore/tracy"]
 static-gst-plugins = ["rcore/static-gst-plugins"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+enable-ansi-support = "0.3.1"

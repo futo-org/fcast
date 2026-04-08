@@ -8,7 +8,7 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/lib/");
     }
 
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+    if target_os == "windows" {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("../extra/fcast.ico");
         res.compile().unwrap();
