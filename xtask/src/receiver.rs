@@ -255,7 +255,7 @@ impl ReceiverArgs {
                 files_to_copy.extend(crate::find_c_runtime(
                     crate::find_windows_sdk_installation_path(),
                 ));
-                files_to_copy.push(("senders/extra/fcast.ico".into(), "fcast.ico".to_owned()));
+                files_to_copy.push(("receivers/experimental/extra/fcast.ico".into(), "fcast.ico".to_owned()));
 
                 let mut dll_components = String::new();
 

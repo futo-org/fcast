@@ -2117,6 +2117,7 @@ dependencies = [
  "enable-ansi-support",
  "mimalloc",
  "rcore",
+ "winresource",
 ]
 
 [[package]]
