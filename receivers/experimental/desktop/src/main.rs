@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     if std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent) {
         let selector = rcore::slint::BackendSelector::new();
         #[cfg(not(target_os = "windows"))]
-        let selector = selector.require_opengl();
+        let selector = selector.require_opengl_with_version(3, 30);
         #[cfg(target_os = "windows")]
         let selector = selector.require_opengl_with_version(4, 0);
         selector.select()?;

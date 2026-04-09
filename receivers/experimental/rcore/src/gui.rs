@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use crate::message;
 use crate::{
     Bridge, CompoundImage, GuiPlaybackState, MainWindow, Message, MessageSender, Operation,
     SetVolumeMessage, UiMediaTrack, UiMediaTrackType, UiPlayerVariant, image::DecodedImage,
     log_if_err,
 };
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use crate::message;
 use fcast_protocol::v3;
 use slint::{ComponentHandle, ToSharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -133,11 +133,15 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, msg_tx: MessageSende
     });
 }
 
+pub enum RendererMessage {
+    CreateBluredAudioTrackCover(DecodedImage),
+    ClearBluredAudioTrackCover,
+}
+
 #[derive(Debug)]
 pub enum ImageType {
     Preview,
     AudioTrackCover,
-    BluredAudioTrackCover,
 }
 
 pub type QrCodeImage = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
@@ -241,6 +245,8 @@ pub enum UpdateGuiCommand {
     QuitLoop,
 }
 
+type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
+
 pub struct GuiController {
     pub tx: UnboundedSender<UpdateGuiCommand>,
     playback_state: GuiPlaybackState,
@@ -309,10 +315,6 @@ impl GuiController {
 
     pub fn set_audio_track_cover(&self, img: DecodedImage) {
         self.set_image(img, ImageType::AudioTrackCover);
-    }
-
-    pub fn set_blured_audio_track_cover(&self, img: DecodedImage) {
-        self.set_image(img, ImageType::BluredAudioTrackCover);
     }
 
     pub fn update_playback_progress(&self, prog_sec: Seconds, dur_sec: Seconds) {
@@ -460,12 +462,12 @@ fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
     bridge.set_duration_secs(dur_sec);
 }
 
-fn clear_audio_covers(bridge: &Bridge) {
+fn clear_audio_covers(bridge: &Bridge, renderer_tx: &RendererMsgSender) {
     bridge.set_audio_track_cover(CompoundImage::default());
-    bridge.set_blured_audio_track_cover(CompoundImage::default());
+    let _ = renderer_tx.send(RendererMessage::ClearBluredAudioTrackCover);
 }
 
-fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
+fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererMsgSender) {
     let bridge = ui.global::<Bridge>();
 
     match cmd {
@@ -486,11 +488,12 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         }
         UpdateGuiCommand::SetImage { typ, img } => {
             bridge.set_animation_frames(slint::ModelRc::default());
-            let img = img.0.into_compound();
             match typ {
-                ImageType::Preview => bridge.set_image_preview(img),
-                ImageType::AudioTrackCover => bridge.set_audio_track_cover(img),
-                ImageType::BluredAudioTrackCover => bridge.set_blured_audio_track_cover(img),
+                ImageType::Preview => bridge.set_image_preview(img.as_compound()),
+                ImageType::AudioTrackCover => {
+                    bridge.set_audio_track_cover(img.as_compound());
+                    let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img.0));
+                }
             }
         }
         UpdateGuiCommand::UpdatePlaybackProgress {
@@ -501,9 +504,9 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         }
         UpdateGuiCommand::SetMediaTitle(title) => bridge.set_media_title(title.to_shared_string()),
         UpdateGuiCommand::SetArtistName(name) => bridge.set_artist_name(name.to_shared_string()),
-        UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge),
+        UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge, renderer_tx),
         UpdateGuiCommand::ClearCommonPlaybackState => {
-            clear_audio_covers(&bridge);
+            clear_audio_covers(&bridge, renderer_tx);
             set_playback_progress(&bridge, 0.0, 0.0);
         }
         UpdateGuiCommand::SetPlayerType(typ) => bridge.set_player_variant(typ),
@@ -571,8 +574,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
         UpdateGuiCommand::ClearImageState => {
             bridge.set_video_frame(slint::Image::default());
             bridge.set_image_preview(CompoundImage::default());
-            bridge.set_audio_track_cover(CompoundImage::default());
-            bridge.set_blured_audio_track_cover(CompoundImage::default());
+            clear_audio_covers(&bridge, renderer_tx);
             bridge.set_overlays(slint::ModelRc::default());
             bridge.set_animation_frames(slint::ModelRc::default());
         }
@@ -618,6 +620,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand) {
 pub fn spawn_command_handler(
     ui_weak: slint::Weak<MainWindow>,
     mut cmd_rx: UnboundedReceiver<UpdateGuiCommand>,
+    renderer_tx: RendererMsgSender,
 ) {
     slint::spawn_local(async move {
         loop {
@@ -631,7 +634,7 @@ pub fn spawn_command_handler(
                 if matches!(cmd, UpdateGuiCommand::QuitLoop) {
                     break;
                 }
-                handle_command(ui, cmd);
+                handle_command(ui, cmd, &renderer_tx);
             } else {
                 debug!("Stopping");
                 break;

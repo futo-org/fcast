@@ -33,36 +33,44 @@ pub enum DownloadImageError {
     Unsuccessful(reqwest::StatusCode),
 }
 
+pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
+    match orientation {
+        metadata::Orientation::Rotate90 | metadata::Orientation::Rotate90FlipH => 90.0,
+        metadata::Orientation::Rotate180 => 180.0,
+        metadata::Orientation::Rotate270 | metadata::Orientation::Rotate270FlipH => 270.0,
+        metadata::Orientation::FlipHorizontal
+        | metadata::Orientation::FlipVertical
+        | metadata::Orientation::NoTransforms => 0.0,
+    }
+}
+
 impl crate::CompoundImage {
-    pub fn new(
-        pixels: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
-        orientation: metadata::Orientation,
-    ) -> Self {
-        let rotation = match orientation {
-            metadata::Orientation::Rotate90 | metadata::Orientation::Rotate90FlipH => 90.0,
-            metadata::Orientation::Rotate180 => 180.0,
-            metadata::Orientation::Rotate270 | metadata::Orientation::Rotate270FlipH => 270.0,
-            metadata::Orientation::FlipHorizontal
-            | metadata::Orientation::FlipVertical
-            | metadata::Orientation::NoTransforms => 0.0,
-        };
+    pub fn new(pixels: SlintRgba8Pixbuf, orientation: metadata::Orientation) -> Self {
         Self {
             img: slint::Image::from_rgba8(pixels),
-            rotation,
+            rotation: orientation_to_degs(orientation),
         }
     }
+}
+
+fn to_slint_pixbuf(img: &imagelib::RgbaImage) -> SlintRgba8Pixbuf {
+    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+    )
 }
 
 #[derive(Debug)]
 pub struct DecodedImage {
     pub id: ImageId,
-    pub pixels: SlintRgba8Pixbuf,
+    pub image: imagelib::RgbaImage,
     pub orientation: metadata::Orientation,
 }
 
 impl DecodedImage {
-    pub fn into_compound(self) -> CompoundImage {
-        CompoundImage::new(self.pixels, self.orientation)
+    pub fn as_compound(&self) -> CompoundImage {
+        CompoundImage::new(to_slint_pixbuf(&self.image), self.orientation)
     }
 }
 
@@ -141,7 +149,6 @@ pub enum Event {
         res: std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError>,
     },
     AudioThumbnailAvailable(DecodedImage),
-    AudioThumbnailBlurAvailable(DecodedImage),
     Decoded(DecodedImage),
     DecodedAnimation {
         id: ImageId,
@@ -164,14 +171,6 @@ impl<'a> DecoderContext<'a> {
         }
     }
 
-    fn to_slint_pixbuf(img: &imagelib::RgbaImage) -> SlintRgba8Pixbuf {
-        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-            img.as_raw(),
-            img.width(),
-            img.height(),
-        )
-    }
-
     fn handle_animation<'b>(&self, decoder: impl AnimationDecoder<'b>) -> anyhow::Result<()> {
         let mut slint_frames = Vec::new();
         for frame in decoder.into_frames() {
@@ -183,7 +182,7 @@ impl<'a> DecoderContext<'a> {
             let (num, denom) = delay.numer_denom_ms();
             let delay_ms = (num as f64 / denom as f64) as i64;
             slint_frames.push(AnimationFrame {
-                image: Self::to_slint_pixbuf(&frame.into_buffer()),
+                image: to_slint_pixbuf(&frame.into_buffer()),
                 delay_ms,
             });
         }
@@ -213,20 +212,13 @@ impl<'a> DecoderContext<'a> {
 
         let img = DecodedImage {
             id: self.job_id,
-            pixels: Self::to_slint_pixbuf(&decoded),
+            image: decoded,
             orientation,
         };
 
         match self.job_type {
             ImageDecodeJobType::AudioThumbnail => {
                 self.msg_tx.image(Event::AudioThumbnailAvailable(img));
-                let blured = Self::to_slint_pixbuf(&imagelib::imageops::fast_blur(&decoded, 64.0));
-                self.msg_tx
-                    .image(Event::AudioThumbnailBlurAvailable(DecodedImage {
-                        id: self.job_id,
-                        pixels: blured,
-                        orientation,
-                    }));
             }
             ImageDecodeJobType::Regular => {
                 self.msg_tx.image(Event::Decoded(img));
@@ -455,7 +447,7 @@ impl Downloader {
         let tx = self.msg_tx.clone();
         tokio::spawn(async move {
             let res = Self::download_image(&client, &url, headers).await;
-            let _ = tx.send(crate::Message::Image(Event::DownloadResult { id, res }));
+            tx.image(Event::DownloadResult { id, res });
         });
     }
 }
