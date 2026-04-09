@@ -57,6 +57,7 @@ mod mac_win_tray;
 #[cfg(not(target_os = "android"))]
 mod mdns;
 mod message;
+mod opengl;
 mod player;
 mod raop;
 mod user_agent;
@@ -73,9 +74,9 @@ pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
-use message::{Mdns, Message, Raop};
 #[cfg(feature = "systray")]
 use message::Tray;
+use message::{Mdns, Message, Raop};
 
 type MediaItemId = u64;
 // pub type MessageSender = UnboundedSender<Message>;
@@ -1514,16 +1515,6 @@ impl Application {
                     self.gui.set_audio_track_cover(img);
                 }
             }
-            image::Event::AudioThumbnailBlurAvailable(img) => {
-                if let Some(pending_thumbnail) = self.pending_thumbnail
-                    && pending_thumbnail == img.id
-                {
-                    // NOTE: `AudioThumbnailBlurAvailable` is assumed to *always* be received after `AudioThumbnailAvailable`
-                    //       and no other thumbnail results in between.
-                    self.pending_thumbnail = None;
-                    self.gui.set_blured_audio_track_cover(img);
-                }
-            }
             image::Event::Decoded(img) => {
                 if img.id != self.current_image_id {
                     warn!(img.id, "Ignoring old image decode result");
@@ -1920,6 +1911,7 @@ pub fn run(
     #[cfg(debug_assertions)]
     bridge.set_is_debugging(true);
 
+    let (renderer_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
         let gst_gl_contexts = gst_gl_contexts.clone();
@@ -1930,6 +1922,7 @@ pub fn run(
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         let mut graphics_context = GraphicsContext::None;
         let msg_tx = msg_tx.clone();
+        let mut renderer = None;
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
@@ -1945,8 +1938,49 @@ pub fn run(
                         .window()
                         .set_fullscreen(fullscreen);
                 }
+
+                if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api {
+                    let gl = unsafe {
+                        glow::Context::from_loader_function_cstr(|s| get_proc_address(s))
+                    };
+                    match opengl::Renderer::new(gl) {
+                        Ok(r) => renderer = Some(r),
+                        Err(err) => error!(?err, "Failed to create renderer"),
+                    }
+                }
             }
             slint::RenderingState::BeforeRendering => {
+                let Some(ui) = ui_weak.upgrade() else {
+                    error!("Failed to upgrade ui");
+                    return;
+                };
+
+                let bridge = ui.global::<Bridge>();
+
+                while let Ok(msg) = renderer_rx.try_recv() {
+                    if let Some(renderer) = renderer.as_mut() {
+                        match msg {
+                            gui::RendererMessage::CreateBluredAudioTrackCover(img) => {
+                                let (width, height) = img.image.dimensions();
+                                match renderer.blur_rgba8_image(img.image.as_raw(), width, height) {
+                                    Ok(tex) => {
+                                        bridge.set_blured_audio_track_cover(CompoundImage {
+                                            img: tex.to_borrowed_slint_image(),
+                                            rotation: image::orientation_to_degs(img.orientation),
+                                        });
+                                        renderer.blured_audio_cover = Some(tex);
+                                    }
+                                    Err(err) => error!(?err, "Failed to blur audio track cover"),
+                                }
+                            }
+                            gui::RendererMessage::ClearBluredAudioTrackCover => {
+                                bridge.set_blured_audio_track_cover(CompoundImage::default());
+                                renderer.blured_audio_cover.take();
+                            }
+                        }
+                    }
+                }
+
                 let Some(slint_sink) = slint_sink.as_mut() else {
                     slint_sink = slint_sink_mutex.lock().take();
                     return;
@@ -1968,11 +2002,6 @@ pub fn run(
 
                 graphics_context = GraphicsContext::Initialized;
 
-                let Some(ui) = ui_weak.upgrade() else {
-                    error!("Failed to upgrade ui");
-                    return;
-                };
-
                 let new_size = ui.window().size();
                 let new_size = (new_size.width, new_size.height);
                 if new_size != prev_size {
@@ -1986,7 +2015,6 @@ pub fn run(
                     }
                 }
 
-                let bridge = ui.global::<Bridge>();
                 if bridge.invoke_is_playing() {
                     let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
                         match frame {
@@ -2071,7 +2099,7 @@ pub fn run(
 
     let (gui_tx, gui_rx) = mpsc::unbounded_channel::<gui::UpdateGuiCommand>();
 
-    gui::spawn_command_handler(ui.as_weak(), gui_rx);
+    gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx);
 
     let gui = GuiController::new(gui_tx);
 
@@ -2088,18 +2116,14 @@ pub fn run(
             let mut slint_sink = video::SlintOpenGLSink::new().unwrap();
             let slint_appsink = slint_sink.video_sink();
             let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
-            slint_sink
-                .connect({
-                    let ui_weak = ui_weak.clone();
-                    move || {
-                        ui_weak
-                            .upgrade_in_event_loop(move |ui| {
-                                ui.window().request_redraw();
-                            })
-                            .unwrap();
-                    }
-                })
-                .unwrap();
+            let request_redraw_cb = move || {
+                ui_weak
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.window().request_redraw();
+                    })
+                    .unwrap();
+            };
+            slint_sink.connect(request_redraw_cb).unwrap();
 
             *slint_sink_mutex.lock() = Some(slint_sink);
 

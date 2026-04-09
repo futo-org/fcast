@@ -65,13 +65,11 @@ google-cast-protocol = { path = "../../../sdk/common/google-cast-protocol" }
 rcgen = "0.14.7"
 uuid.workspace = true
 
+glow = "0.17.0"
+
 [dependencies.slint]
-# path = "../../../../slint/api/rs/slint"
-# git = "https://gitlab.futo.org/videostreaming/fcast-slint.git"
-# rev = "cefc48cad0b6425c223577af9b27c88c70cceb7c"
 workspace = true
 features = [
-    "accessibility",
     "backend-winit",
     "compat-1-2",
     "renderer-femtovg",
@@ -95,9 +93,6 @@ keepawake = "0.6"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 gst-allocators = { package = "gstreamer-allocators", version = "0.25" }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-glow = "0.17.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"
@@ -134,7 +129,6 @@ receiver-resources.path = "../../../crates/receiver-resources"
 
 [build-dependencies]
 slint-build.workspace = true
-# slint-build = { path = "../../../../slint/api/rs/build" }
 
 [features]
 default = []
