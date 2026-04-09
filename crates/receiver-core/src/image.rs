@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
+use fcast_protocol::companion;
+use image as imagelib;
 use imagelib::{
     AnimationDecoder, DynamicImage, ImageFormat, ImageReader,
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
@@ -8,7 +10,10 @@ use imagelib::{
 };
 use tracing::{debug, debug_span, error, info};
 
-use crate::{CompoundImage, MessageSender, SlintRgba8Pixbuf, utils::map_to_header_map};
+use crate::{
+    CompoundImage, MessageSender, SlintRgba8Pixbuf, fcast::CompanionContext, media_formats,
+    utils::map_to_header_map,
+};
 
 pub type ImageId = u32;
 pub type ImageDownloadId = u32;
@@ -31,6 +36,16 @@ pub enum DownloadImageError {
     InvalidUrl(#[from] url::ParseError),
     #[error("unsuccessful status={0}")]
     Unsuccessful(reqwest::StatusCode),
+    #[error("failed to get resource info")]
+    FailedToGetInfo,
+    #[error("invalid FCompanion URL")]
+    InvalidCompUrl,
+    #[error("FCompanion provider not found")]
+    ProviderNotFound,
+    #[error("FCompanion request failed")]
+    CompRequestFailed,
+    #[error("FCompanion resource not found")]
+    ResourceNotFound,
 }
 
 pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
@@ -110,14 +125,14 @@ impl From<Bytes> for EncodedImageData {
 
 pub struct ImageDecodeJob {
     pub image: EncodedImageData,
-    pub format: Option<ExtendedImageFormat>,
+    pub format: Option<media_formats::Image>,
     pub typ: ImageDecodeJobType,
 }
 
 impl ImageDecodeJob {
     pub fn new(
         image: impl Into<EncodedImageData>,
-        format: ExtendedImageFormat,
+        format: media_formats::Image,
         typ: ImageDecodeJobType,
     ) -> Self {
         Self {
@@ -146,7 +161,7 @@ pub struct AnimationFrame {
 pub enum Event {
     DownloadResult {
         id: ImageDownloadId,
-        res: std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError>,
+        res: std::result::Result<(Bytes, media_formats::Image), DownloadImageError>,
     },
     AudioThumbnailAvailable(DecodedImage),
     Decoded(DecodedImage),
@@ -233,7 +248,7 @@ impl<'a> DecoderContext<'a> {
             format
         } else {
             match imagelib::guess_format(&job.image) {
-                Ok(format) => ExtendedImageFormat::ImageLib(format),
+                Ok(format) => media_formats::Image::ImageLib(format),
                 Err(err) => {
                     error!(?err, "Could not guess image format");
                     return Ok(());
@@ -256,7 +271,7 @@ impl<'a> DecoderContext<'a> {
         }
 
         match format {
-            ExtendedImageFormat::ImageLib(format) => match format {
+            media_formats::Image::ImageLib(format) => match format {
                 ImageFormat::Png => {
                     let decoder = non_fatal!(PngDecoder::new(img_data), "PNG");
                     if decoder.is_apng().unwrap_or(false) {
@@ -288,7 +303,7 @@ impl<'a> DecoderContext<'a> {
                     self.handle_still(decoder)?;
                 }
             },
-            ExtendedImageFormat::JpegXl => {
+            media_formats::Image::JpegXl => {
                 // TODO: handle animations
                 // let image = jxl_oxide::JxlImage::builder().read(img_data).unwrap();
                 // let header = image.image_header();
@@ -299,7 +314,7 @@ impl<'a> DecoderContext<'a> {
                     non_fatal!(jxl_oxide::integration::JxlDecoder::new(img_data), "JPEG XL");
                 self.handle_still(decoder)?;
             }
-            ExtendedImageFormat::Jpeg2000 => {
+            media_formats::Image::Jpeg2000 => {
                 let decoder = non_fatal!(
                     hayro_jpeg2000::Image::new(
                         &job.image,
@@ -314,7 +329,7 @@ impl<'a> DecoderContext<'a> {
                 self.handle_still(decoder)?;
             }
             #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
-            ExtendedImageFormat::Heif => {
+            media_formats::Image::Heif => {
                 let reader = non_fatal!(ImageReader::new(img_data).with_guessed_format(), "HEIF");
                 let decoder = non_fatal!(reader.into_decoder(), "HEIF");
                 self.handle_still(decoder)?;
@@ -323,6 +338,13 @@ impl<'a> DecoderContext<'a> {
 
         Ok(())
     }
+}
+
+pub fn init_extra_decoders() {
+    #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+    libheif_rs::integration::image::register_all_decoding_hooks();
+    hayro_jpeg2000::integration::register_decoding_hook();
+    jxl_oxide::integration::register_image_decoding_hook();
 }
 
 pub struct Decoder {
@@ -355,11 +377,6 @@ impl Decoder {
         let span = debug_span!("image-decoder");
         let _entered = span.enter();
 
-        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
-        libheif_rs::integration::image::register_all_decoding_hooks();
-        hayro_jpeg2000::integration::register_decoding_hook();
-        jxl_oxide::integration::register_image_decoding_hook();
-
         while let Ok((id, job)) = job_rx.recv() {
             debug!(?id, ?job.format, "Got job");
             DecoderContext::new(&msg_tx, id, job.typ).decode(job)?;
@@ -371,32 +388,52 @@ impl Decoder {
     }
 }
 
-#[derive(Debug)]
-pub enum ExtendedImageFormat {
-    ImageLib(ImageFormat),
-    JpegXl,
-    Jpeg2000,
-    #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
-    Heif,
-}
-
 pub struct Downloader {
     msg_tx: crate::MessageSender,
     client: reqwest::Client,
+    companion_ctx: CompanionContext,
 }
 
 impl Downloader {
-    pub fn new(msg_tx: crate::MessageSender, client: reqwest::Client) -> Self {
-        Self { msg_tx, client }
+    pub fn new(
+        msg_tx: crate::MessageSender,
+        client: reqwest::Client,
+        companion_ctx: CompanionContext,
+    ) -> Self {
+        Self {
+            msg_tx,
+            client,
+            companion_ctx,
+        }
     }
 
-    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = url)))]
-    async fn download_image(
+    fn format_from_content_type(
+        ctype: &str,
+    ) -> std::result::Result<media_formats::Image, DownloadImageError> {
+        Ok(match ImageFormat::from_mime_type(ctype) {
+            Some(f) => media_formats::Image::ImageLib(f),
+            None => match ctype {
+                "image/jxl" => media_formats::Image::JpegXl,
+                "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
+                    media_formats::Image::Jpeg2000
+                }
+                #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+                "image/heif" | "image/heic" => media_formats::Image::Heif,
+                _ => {
+                    return Err(DownloadImageError::UnsupportedContentType(
+                        ctype.to_string(),
+                    ));
+                }
+            },
+        })
+    }
+
+    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = %url)))]
+    async fn download_image_http(
         client: &reqwest::Client,
-        url: &str,
+        url: url::Url,
         headers: Option<HashMap<String, String>>,
-    ) -> std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError> {
-        let url = url::Url::parse(url)?;
+    ) -> std::result::Result<(Bytes, media_formats::Image), DownloadImageError> {
         debug!("Starting image download");
         let random_user_agent = crate::user_agent::random_browser_user_agent(url.domain());
         let mut request = client.get(url);
@@ -421,33 +458,102 @@ impl Downloader {
             .ok_or(DownloadImageError::MissingContentType)?
             .to_str()
             .map_err(|_| DownloadImageError::ContentTypeIsNotString)?;
-        let format = match ImageFormat::from_mime_type(content_type) {
-            Some(f) => ExtendedImageFormat::ImageLib(f),
-            None => match content_type {
-                "image/jxl" => ExtendedImageFormat::JpegXl,
-                "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
-                    ExtendedImageFormat::Jpeg2000
-                }
-                #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
-                "image/heif" | "image/heic" => ExtendedImageFormat::Heif,
-                _ => {
-                    return Err(DownloadImageError::UnsupportedContentType(
-                        content_type.to_string(),
-                    ));
-                }
-            },
-        };
+        let format = Self::format_from_content_type(content_type)?;
 
         let body = resp.bytes().await?;
         Ok((body, format))
     }
 
-    pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
-        let client = self.client.clone();
-        let tx = self.msg_tx.clone();
-        tokio::spawn(async move {
-            let res = Self::download_image(&client, &url, headers).await;
-            tx.image(Event::DownloadResult { id, res });
-        });
+    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = %url)))]
+    async fn download_image_comp(
+        ctx: &CompanionContext,
+        url: url::Url,
+    ) -> std::result::Result<(Bytes, media_formats::Image), DownloadImageError> {
+        debug!("Starting image download");
+
+        let url = crate::fcompsrc::FCompUrl::new(&url).ok_or(DownloadImageError::InvalidCompUrl)?;
+
+        let provider = ctx
+            .get_provider(url.provider_id)
+            .ok_or(DownloadImageError::ProviderNotFound)?;
+        let mut info = provider
+            .get_resource_info(url.resource_id)
+            .map_err(|_| DownloadImageError::FailedToGetInfo)?;
+        let mut resource_rx = provider
+            .get_resource(url.resource_id, None)
+            .map_err(|_| DownloadImageError::CompRequestFailed)?;
+
+        let info = info
+            .recv()
+            .await
+            .ok_or(DownloadImageError::FailedToGetInfo)?;
+        let format = Self::format_from_content_type(info.borrow_dependent().content_type())?;
+
+        let mut res = Vec::new();
+        while let Some(a) = resource_rx.recv().await {
+            match a.result {
+                companion::GetResourceResult::NotFound => {
+                    return Err(DownloadImageError::ResourceNotFound);
+                }
+                companion::GetResourceResult::Success(buf) => res.extend_from_slice(&buf),
+            }
+        }
+
+        Ok((Bytes::from_owner(res), format))
     }
+
+    pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
+        let url = url::Url::parse(&url).unwrap();
+        let tx = self.msg_tx.clone();
+
+        match url.scheme() {
+            "http" | "https" => {
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    let res = Self::download_image_http(&client, url, headers).await;
+                    tx.image(Event::DownloadResult { id, res });
+                });
+            }
+            "fcomp" => {
+                let ctx = self.companion_ctx.clone();
+                tokio::spawn(async move {
+                    let res = Self::download_image_comp(&ctx, url).await;
+                    tx.image(Event::DownloadResult { id, res });
+                });
+            }
+            _ => todo!(),
+        }
+    }
+}
+
+pub fn find_formats() -> HashSet<media_formats::Image> {
+    use media_formats::Image;
+
+    macro_rules! il {
+        ($fmt:ident) => {
+            Image::ImageLib(image::ImageFormat::$fmt)
+        };
+    }
+
+    HashSet::from([
+        il!(Png),
+        il!(Jpeg),
+        il!(Gif),
+        il!(WebP),
+        il!(Pnm),
+        il!(Tiff),
+        il!(Tga),
+        il!(Dds),
+        il!(Bmp),
+        il!(Ico),
+        il!(Hdr),
+        il!(OpenExr),
+        il!(Farbfeld),
+        il!(Avif),
+        il!(Qoi),
+        Image::Jpeg2000,
+        Image::JpegXl,
+        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+        Image::Heif,
+    ])
 }

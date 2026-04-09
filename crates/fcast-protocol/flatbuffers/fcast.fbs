@@ -1,0 +1,387 @@
+namespace FCast.V4;
+
+// For messages named "<param>Changed" the other party should update its local
+// parameter to match the remote. For senders receiving param changes it should
+// mirror the values in it's UI. In the receiver case it should perform any
+// player updates as necessary (e.g. a `ProgressChanged` message would result in
+// a seek).
+union Message {
+    // Load and start playing some media.
+    //
+    // When the receiver gets this message it will broadcast it to all other
+    // connected senders. Request headers are stripped to prevent sensitive
+    // credentials from being shared across sender connections.
+    Load : Load,
+    // By default, these messages are sent every 500ms (which can be
+    // changed by `SetProgressUpdateInterval`) when the playback state is
+    // `Playing` or when the progress changes (e.g. from a seek).
+    //
+    // The sender would use this to perform a seek, the `duration` field will be
+    // ignored by the receiver.
+    ProgressChanged: ProgressChanged,
+    VolumeChanged: VolumeChanged,
+    PlaybackStateChanged: PlaybackStateChanged,
+    SpeedChanged: SpeedChanged,
+    SenderIntroduction: SenderIntroduction,
+    ReceiverIntroduction: ReceiverIntroduction,
+    // Stop whatever is currently playing.
+    //
+    // This will clear any playback related state including the current item or queue.
+    StopPlayback: StopPlayback,
+    StartMirroringSession: StartMirroringSession,
+    MirroringSessionDescription: MirroringSessionDescription,
+    QueueInsert: QueueInsert,
+    QueueRemove: QueueRemove,
+    TracksAvailable: TracksAvailable,
+    ChangeTrack: ChangeTrack,
+    QueueItemSelected: QueueItemSelected,
+    AddSubtitleSource: AddSubtitleSource,
+    SetProgressUpdateInterval: SetProgressUpdateInterval,
+    CompanionHelloRequest: CompanionHelloRequest,
+    CompanionHelloResponse: CompanionHelloResponse,
+    CompanionResourceInfoRequest: CompanionResourceInfoRequest,
+    CompanionResourceInfoResponse: CompanionResourceInfoResponse,
+    CompanionResourceRequest: CompanionResourceRequest,
+    Error: Error,
+}
+
+table Packet {
+    payload: Message;
+}
+
+root_type Packet;
+
+enum PlaybackState: ubyte {
+    Idle,
+    Buffering,
+    Playing,
+    Paused,
+    Ended,
+}
+
+struct Time {
+    micros: uint64;
+}
+
+table Chapter {
+    start: Time;
+    length: Time;
+    title: string (required);
+    // Optional hint to the receiver that it can show a UI element to skip
+    // this chapter (e.g. intro or summary).
+    skip_label: string;
+}
+
+table VideoMetadata {
+    chapters: [Chapter];
+}
+
+table AudioMetadata {
+    artist: string;
+    album: string;
+    chapters: [Chapter];
+}
+
+union Metadata {
+    Video: VideoMetadata,
+    Audio: AudioMetadata,
+}
+
+table RequestHeader {
+    key: string (required);
+    value: string (required);
+}
+
+table GenericMetaString {
+    value: string;
+}
+
+table GenericMetaFloat {
+    value: float64;
+}
+
+table GenericMetaInt {
+    value: int64;
+}
+
+table GenericMetaList {
+    value: [WrappedGenericMetaValue];
+}
+
+union GenericMetaValue {
+    String: GenericMetaString,
+    Float: GenericMetaFloat,
+    Int: GenericMetaInt,
+    List: GenericMetaList,
+    KVPair: MetadataKV,
+}
+
+table WrappedGenericMetaValue {
+    value: GenericMetaValue;
+}
+
+table MetadataKV {
+    key: string (required);
+    value: GenericMetaValue;
+}
+
+table MediaItem {
+    container: string (required);
+    source_url: string (required);
+    start_time: Time;
+    // 0.0-1.0
+    volume: float32 = null;
+    speed: float32 = null;
+    headers: [RequestHeader];
+    title: string;
+    thumbnail_url: string;
+    metadata: Metadata;
+    extra_metadata: [MetadataKV];
+}
+
+table QueueItem {
+    media_item: MediaItem (required);
+    playback_duration: Time;
+}
+
+table Queue {
+    // The maximum number of items is 2^8.
+    items: [QueueItem] (required);
+    start_index: ubyte = null;
+    // Whether the queue should automatically play the next items when they finish
+    autoplay: bool = false;
+}
+
+union MediaSource {
+    Single: MediaItem,
+    Queue: Queue,
+}
+
+table QueueIndex {
+    index: ubyte;
+}
+
+table QueueMarkerFront {}
+
+table QueueMarkerBack {}
+
+union QueuePosition {
+    Index: QueueIndex,
+    Front: QueueMarkerFront,
+    Back: QueueMarkerBack,
+}
+
+struct VideoResolution {
+    width: uint32;
+    height: uint32;
+}
+
+table VideoTrackMeta {
+    /* resolution: VideoResolution; */
+}
+
+table AudioTrackMeta {}
+
+table SubtitleTrackMeta {}
+
+union MediaTrackMetadata {
+    Video: VideoTrackMeta,
+    Audio: AudioTrackMeta,
+    Subtitle: SubtitleTrackMeta,
+}
+
+table DeviceInfo {
+    display_name: string;
+    app_name: string;
+    app_version: string;
+}
+
+table DisplayCapabilities {
+    resolution: VideoResolution;
+}
+
+table MediaCapabilities {
+    protocols: [string];
+    containers: [string];
+    video_formats: [string];
+    audio_formats: [string];
+    subtitle_formats: [string];
+    hdr_formats: [string];
+    image_formats: [string];
+    external_subtitles: bool;
+}
+
+table AudioCapabilities {
+    // 0.01=1%
+    volume_step_interval: float32;
+}
+
+table ReceiverCapabilities {
+    media: MediaCapabilities;
+    display: DisplayCapabilities;
+    audio: AudioCapabilities;
+}
+
+table MediaTrack {
+    id: uint32;
+    // A language code from any ISO 639 set. Use "und" (undetermined) when no
+    // language applies, e.g. most video tracks.
+    iso_639: string (required);
+    title: string;
+    metadata: MediaTrackMetadata;
+}
+
+table ProgressChanged {
+    position: Time;
+    duration: Time;
+}
+
+table Load {
+    source: MediaSource (required);
+}
+
+table QueueInsert {
+    item: QueueItem (required);
+    position: QueuePosition (required);
+}
+
+// It's not possible to remove the currently playing item, and attempting to do
+// so the receiver will send a `QueueRemovePlayingItem` error.
+table QueueRemove {
+    position: QueuePosition (required);
+}
+
+table QueueItemSelected {
+    position: QueuePosition (required);
+}
+
+enum MediaTrackType: ubyte {
+    Video,
+    Audio,
+    Subtitle,
+}
+
+table TracksAvailable {
+    tracks: [MediaTrack];
+}
+
+table ChangeTrack {
+    // ID of the track to change to for the given track type.
+    //
+    // When this is null, rendering of `track_type` will be disabled in the
+    // receiver which is useful when you for example don't want to show any
+    // subtitles.
+    id: uint32 = null;
+    track_type: MediaTrackType;
+}
+
+table SenderIntroduction {
+    device_info: DeviceInfo (required);
+}
+
+table ReceiverIntroduction {
+    device_info: DeviceInfo (required);
+    capabilities: ReceiverCapabilities;
+}
+
+table SpeedChanged {
+    speed: float32;
+}
+
+table AddSubtitleSource {
+    url: string (required);
+    // Whether this track should be selected immediately
+    select: bool;
+    name: string;
+    metadata: SubtitleTrackMeta;
+}
+
+table SetProgressUpdateInterval {
+    // The interval should be >=100ms and it will be rounded to the closest 100ms.
+    interval: Time;
+}
+
+table StartMirroringSession {
+    session_id: uint16;
+}
+
+table MirroringSessionDescription {
+    session_id: uint16;
+    sdp: string (required);
+}
+
+table VolumeChanged {
+    volume: float32;
+}
+
+table PlaybackStateChanged {
+    state: PlaybackState;
+}
+
+enum ErrorKind: ubyte {
+    InvalidOpcode,
+    ResourceNotFound,
+    // The seek was clamped to a valid range.
+    SeekOutOfRange,
+    // The volume was clamped to a valid range.
+    VolumeOutOfRange,
+    // The rate was clamped to a valid range.
+    RateOutOfRange,
+    UnsupportedFormat,
+    MalformedBody,
+    // Message cannot be sent in the current state.
+    InvalidState,
+    QueuePositionOutOfRange,
+    QueueRemovePlayingItem,
+    QueueFull,
+    InvalidPayloadType,
+    // An opaque internal receiver error
+    Internal,
+}
+
+table Error {
+    kind: ErrorKind;
+    // Optional packet sequence number that directly caused this error
+    packet_num: uint32 = null;
+}
+
+table StopPlayback {}
+
+table CompanionHelloRequest {}
+
+table CompanionHelloResponse {
+    provider_id: uint16;
+}
+
+table CompanionResourceInfoRequest {
+    request_id: uint32;
+    resource_id: uint32;
+}
+
+table UnknownResourceSize {}
+
+table KnownResourceSize {
+    size: uint64;
+}
+
+union CompanionResourceSize {
+    Unknown: UnknownResourceSize,
+    Known: KnownResourceSize,
+}
+
+table CompanionResourceInfoResponse {
+    request_id: uint32;
+    content_type: string (required);
+    resource_size: CompanionResourceSize;
+}
+
+struct ResourceReadHead {
+    start: uint64;
+    stop_inclusive: uint64;
+}
+
+table CompanionResourceRequest {
+    request_id: uint32;
+    resource_id: uint32;
+    read_head: ResourceReadHead;
+}

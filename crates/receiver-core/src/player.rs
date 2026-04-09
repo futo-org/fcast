@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
-use smallvec::SmallVec;
 use tracing::{debug, debug_span, error, instrument, warn};
 
 use crate::MessageSender;
@@ -39,6 +38,18 @@ pub enum PlayerState {
     Playing,
     Buffering,
     Stopped,
+}
+
+impl PlayerState {
+    pub fn as_fcast_v4(&self) -> fcast_protocol::v4::PlaybackState {
+        use fcast_protocol::v4;
+        match self {
+            PlayerState::Paused => v4::PlaybackState::Paused,
+            PlayerState::Playing => v4::PlaybackState::Playing,
+            PlayerState::Buffering => v4::PlaybackState::Buffering,
+            PlayerState::Stopped => v4::PlaybackState::Idle,
+        }
+    }
 }
 
 type StreamId = String;
@@ -119,7 +130,6 @@ struct StateMachine {
     position: Option<gst::ClockTime>,
     pub rate: f64,
     pub seekable: bool,
-    pub current_uri: Option<String>,
 }
 
 impl StateMachine {
@@ -131,7 +141,6 @@ impl StateMachine {
             position: None,
             rate: 1.0,
             seekable: false,
-            current_uri: None,
         }
     }
 
@@ -162,7 +171,7 @@ impl StateMachine {
         debug!(?seek, state = ?self.state, current_state = ?self.current_state);
 
         if seek.rate.is_none() {
-            seek.rate = Some(self.rate);
+            seek.rate = Some(self.rate as f32);
         }
 
         let target_state = if let Some(ts) = target_state {
@@ -206,6 +215,18 @@ impl StateMachine {
                 Some(seek)
             }
         }
+    }
+
+    fn is_seeking(&self) -> bool {
+        matches!(
+            self.state,
+            State::SeekAsync { .. }
+                | State::Seeking { .. }
+                | State::Buffering {
+                    pending_seek: Some(_),
+                    ..
+                }
+        )
     }
 
     #[must_use]
@@ -420,7 +441,6 @@ impl StateMachine {
                     return StateChangeResult::ChangeState(*target_state);
                 }
 
-                // TODO: check if next state is void pending and then send new state change?
                 StateChangeResult::Waiting
             }
             State::SeekAsync { seek, target_state } => {
@@ -523,32 +543,66 @@ impl StateMachine {
         self.position = None;
         self.rate = 1.0;
         self.seekable = false;
-        self.current_uri = None;
     }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Seek {
-    pub position: Option<f64>,
-    pub rate: Option<f64>,
+    // pub position: Option<f64>,
+    pub position: Option<gst::ClockTime>,
+    // pub rate: Option<f64>,
+    pub rate: Option<f32>,
 }
 
 impl Seek {
-    pub fn new(position: Option<f64>, rate: Option<f64>) -> Self {
+    // pub fn new(position: Option<f64>, rate: Option<f64>) -> Self {
+    pub fn new(position: Option<gst::ClockTime>, rate: Option<f32>) -> Self {
         Self { position, rate }
     }
 
-    /// Largest seek position, in seconds, that converts to a `gst::ClockTime`
-    /// without overflowing. `gst::ClockTime::from_seconds_f64` panics on values
-    /// at or beyond this, as well as on non-finite or negative inputs.
-    const MAX_POSITION_SECS: f64 = u64::MAX as f64 / 1_000_000_000.0;
+    // Largest seek position, in seconds, that converts to a `gst::ClockTime`
+    // without overflowing. `gst::ClockTime::from_seconds_f64` panics on values
+    // at or beyond this, as well as on non-finite or negative inputs.
+    // const MAX_POSITION_SECS: f64 = u64::MAX as f64 / 1_000_000_000.0;
 
-    fn position_is_safe(seconds: f64) -> bool {
-        seconds.is_finite() && seconds >= 0.0 && seconds < Self::MAX_POSITION_SECS
-    }
+    // fn position_is_safe(seconds: f64) -> bool {
+    //     seconds.is_finite() && seconds >= 0.0 && seconds < Self::MAX_POSITION_SECS
+    // }
 
-    fn rate_is_safe(rate: f64) -> bool {
+    fn rate_is_safe(rate: f32) -> bool {
         rate.is_finite() && rate != 0.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaErrorKind {
+    NotFound,
+    NotAuthorized,
+    UnsupportedFormat,
+    Other,
+}
+
+impl MediaErrorKind {
+    fn from_glib_error(err: &gst::glib::Error) -> Self {
+        if let Some(err) = err.kind::<gst::ResourceError>() {
+            match err {
+                gst::ResourceError::NotFound => Self::NotFound,
+                gst::ResourceError::NotAuthorized => Self::NotAuthorized,
+                _ => Self::Other,
+            }
+        } else if let Some(err) = err.kind::<gst::StreamError>() {
+            match err {
+                gst::StreamError::TypeNotFound
+                | gst::StreamError::WrongType
+                | gst::StreamError::CodecNotFound
+                | gst::StreamError::Decode
+                | gst::StreamError::Demux
+                | gst::StreamError::Format => Self::UnsupportedFormat,
+                _ => Self::Other,
+            }
+        } else {
+            Self::Other
+        }
     }
 }
 
@@ -557,12 +611,14 @@ pub enum PlayerEvent {
     EndOfStream,
     UriLoaded,
     /// User must call Player::get_duration()
-    DurationChanged,
+    // DurationChanged,
     Tags(gst::TagList),
     VolumeChanged(f64),
     /// User must call Player::handle_stream_collection()
     StreamCollection(gst::StreamCollection),
     AboutToFinish,
+    /// An async state change or (flushing) seek finished prerolling.
+    AsyncDone,
     Buffering(i32),
     IsLive,
     StateChanged {
@@ -570,6 +626,8 @@ pub enum PlayerEvent {
         current: gst::State,
         pending: gst::State,
     },
+    /// An element asked the application to change the pipeline state.
+    RequestState(gst::State),
     QueueSeek(Seek),
     StreamsSelected {
         video: Option<StreamId>,
@@ -578,9 +636,12 @@ pub enum PlayerEvent {
     },
     RateChanged(f64),
     SeekFailed,
-    Error(String),
+    Error {
+        kind: MediaErrorKind,
+        message: String,
+        failed_uri: Option<String>,
+    },
     Warning(String),
-    UriSet(String),
     StreamTagsUpdated,
 }
 
@@ -593,7 +654,6 @@ enum Job {
     SetUri(String),
     Seek(Seek),
     Quit,
-    UriWasSet,
 }
 
 pub fn stream_title(stream: &gst::Stream) -> String {
@@ -631,18 +691,20 @@ pub fn stream_title(stream: &gst::Stream) -> String {
     res
 }
 
+pub struct Stream {
+    pub inner: gst::Stream,
+    pub title: String,
+}
+
 pub struct Player {
     pub playbin: gst::Element,
-    seek_lock: BoolLock,
     volume_lock: BoolLock,
     selection_lock: BoolLock,
     work_tx: std::sync::mpsc::Sender<Job>,
-    pub video_streams: SmallVec<[gst::Stream; 3]>,
-    pub audio_streams: SmallVec<[gst::Stream; 3]>,
-    pub subtitle_streams: SmallVec<[gst::Stream; 3]>,
-    pub current_video_stream: i32,
-    pub current_audio_stream: i32,
-    pub current_subtitle_stream: i32,
+    pub streams: Vec<Stream>,
+    pub current_video_stream: Option<u32>,
+    pub current_audio_stream: Option<u32>,
+    pub current_subtitle_stream: Option<u32>,
     pub seekable: bool,
     state_machine: StateMachine,
     stream_collection: Option<gst::StreamCollection>,
@@ -650,7 +712,14 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(video_sink: Option<gst::Element>, msg_tx: MessageSender) -> Result<Self> {
+    pub fn new(
+        video_sink: Option<gst::Element>,
+        msg_tx: MessageSender,
+        fcomp_context: crate::fcompsrc::imp::CompContext,
+        // signalling_channel: std::sync::Arc<
+        //     parking_lot::Mutex<Option<crate::fwebrtcsrc::SignallingChannel>>,
+        // >,
+    ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = {
             let mut builder =
@@ -674,15 +743,6 @@ impl Player {
             }
         });
 
-        playbin.connect_notify(Some("uri"), {
-            let msg_tx = msg_tx.clone();
-            move |playbin, _pspec| {
-                let new_uri = playbin.property::<String>("uri");
-                debug!(new_uri, "URI changed");
-                msg_tx.player(PlayerEvent::UriSet(new_uri));
-            }
-        });
-
         playbin.connect("about-to-finish", false, {
             let msg_tx = msg_tx.clone();
             move |_| {
@@ -695,117 +755,124 @@ impl Player {
         let playbin_weak = playbin.downgrade();
         let msg_tx_c = msg_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            Self::handle_messsage(&playbin_weak, &msg_tx_c, msg);
+            Self::handle_messsage(
+                &playbin_weak,
+                &msg_tx_c,
+                msg,
+                &fcomp_context,
+                // &signalling_channel,
+            );
             gst::BusSyncReply::Drop
         });
 
         let (work_tx, work_rx) = std::sync::mpsc::channel();
 
         // Handle certain operations in a background thread to avoid blocking and potentially tokio runtime conflicts
-        std::thread::spawn({
-            // Strong ref
-            let playbin = playbin.clone();
-            let msg_tx = msg_tx.clone();
-            move || {
-                let span = debug_span!("player");
-                let _entered = span.enter();
+        std::thread::Builder::new()
+            .name("gst-player".to_owned())
+            .spawn({
+                // Strong ref
+                let playbin = playbin.clone();
+                let msg_tx = msg_tx.clone();
+                move || {
+                    let span = debug_span!("player");
+                    let _entered = span.enter();
 
-                while let Ok(job) = work_rx.recv() {
-                    debug!(?job, "Got job");
+                    while let Ok(job) = work_rx.recv() {
+                        debug!(?job, "Got job");
 
-                    match job {
-                        Job::SetState {
-                            target_state,
-                            feedback,
-                        } => {
-                            let _ = playbin.set_state(target_state);
-                            if let Some(feedback) = feedback {
-                                debug!(res = ?feedback.send(()), "Sent state change feedback signal");
-                            }
-                        }
-                        Job::SetUri(uri) => {
-                            playbin.set_state(gst::State::Ready).unwrap();
-
-                            playbin.set_property("uri", uri);
-                            playbin.set_property("suburi", None::<String>);
-                        }
-                        Job::UriWasSet => {
-                            if let Ok(success) = playbin.set_state(gst::State::Paused)
-                                && success == gst::StateChangeSuccess::NoPreroll
-                            {
-                                debug!("Pipeline is live");
-                                msg_tx.player(PlayerEvent::IsLive);
-                            }
-
-                            msg_tx.player(PlayerEvent::UriLoaded);
-                        }
-                        Job::Seek(seek) => {
-                            let (_, state, _) = playbin.state(None);
-
-                            if state != gst::State::Paused {
-                                msg_tx.player(PlayerEvent::QueueSeek(seek));
-                                let _ = playbin.set_state(gst::State::Paused);
-                                continue;
-                            }
-
-                            let position = match seek.position {
-                                Some(pos) => gst::ClockTime::from_seconds_f64(pos),
-                                None => {
-                                    let Some(pos) = playbin.query_position::<gst::ClockTime>()
-                                    else {
-                                        error!("Failed to query playback position");
-                                        continue;
-                                    };
-
-                                    pos
+                        match job {
+                            Job::SetState {
+                                target_state,
+                                feedback,
+                            } => {
+                                let _ = playbin.set_state(target_state);
+                                if let Some(feedback) = feedback {
+                                    debug!(res = ?feedback.send(()), "Sent state change feedback signal");
                                 }
-                            };
-
-                            let rate = seek.rate.unwrap_or(1.0);
-
-                            let mut flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH;
-                            if rate != 1.0 {
-                                flags |= gst::SeekFlags::TRICKMODE;
                             }
+                            Job::SetUri(uri) => {
+                                let _ = playbin.set_state(gst::State::Ready);
 
-                            debug!(rate, ?position, "Performing seek");
+                                playbin.set_property("uri", uri);
+                                playbin.set_property("suburi", None::<String>);
 
-                            let res = if rate >= 0.0 {
-                                playbin.seek(
-                                    rate,
-                                    flags,
-                                    gst::SeekType::Set,
-                                    position,
-                                    gst::SeekType::None,
-                                    gst::ClockTime::NONE,
-                                )
-                            } else {
-                                playbin.seek(
-                                    rate,
-                                    flags,
-                                    gst::SeekType::Set,
-                                    gst::ClockTime::ZERO,
-                                    gst::SeekType::End,
-                                    position,
-                                )
-                            };
+                                if let Ok(success) = playbin.set_state(gst::State::Paused)
+                                    && success == gst::StateChangeSuccess::NoPreroll
+                                {
+                                    debug!("Pipeline is live");
+                                    msg_tx.player(PlayerEvent::IsLive);
+                                }
 
-                            if let Err(err) = res {
-                                error!(?err, "Failed to seek");
-                                msg_tx.player(PlayerEvent::SeekFailed);
-                            } else {
-                                msg_tx.player(PlayerEvent::RateChanged(rate));
+                                msg_tx.player(PlayerEvent::UriLoaded);
                             }
-                        }
-                        Job::Quit => {
-                            break;
+                            Job::Seek(seek) => {
+                                let (_, state, _) = playbin.state(None);
+
+                                if state != gst::State::Paused {
+                                    msg_tx.player(PlayerEvent::QueueSeek(seek));
+                                    let _ = playbin.set_state(gst::State::Paused);
+                                    continue;
+                                }
+
+                                let position = match seek.position {
+                                    Some(pos) => pos,
+                                    None => {
+                                        let Some(pos) = playbin.query_position::<gst::ClockTime>()
+                                        else {
+                                            error!("Failed to query playback position");
+                                            continue;
+                                        };
+
+                                        pos
+                                    }
+                                };
+
+                                let rate = seek.rate.unwrap_or(1.0) as f64;
+
+                                let mut flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH;
+                                if rate != 1.0 {
+                                    flags |= gst::SeekFlags::TRICKMODE;
+                                }
+
+                                debug!(rate, ?position, "Performing seek");
+
+                                let res = if rate >= 0.0 {
+                                    playbin.seek(
+                                        rate,
+                                        flags,
+                                        gst::SeekType::Set,
+                                        position,
+                                        gst::SeekType::None,
+                                        gst::ClockTime::NONE,
+                                    )
+                                } else {
+                                    playbin.seek(
+                                        rate,
+                                        flags,
+                                        gst::SeekType::Set,
+                                        gst::ClockTime::ZERO,
+                                        gst::SeekType::End,
+                                        position,
+                                    )
+                                };
+
+                                if let Err(err) = res {
+                                    error!(?err, "Failed to seek");
+                                    msg_tx.player(PlayerEvent::SeekFailed);
+                                } else {
+                                    msg_tx.player(PlayerEvent::RateChanged(rate));
+                                }
+                            }
+                            Job::Quit => {
+                                break;
+                            }
                         }
                     }
-                }
 
-                debug!("Player thread finished");
-            }
-        });
+                    debug!("Player thread finished");
+                }
+            })?;
 
         work_tx.send(Job::SetState {
             target_state: gst::State::Ready,
@@ -814,20 +881,18 @@ impl Player {
 
         Ok(Self {
             playbin,
-            seek_lock: BoolLock::new(),
+            // TODO: are these "locks" needed?
             volume_lock: BoolLock::new(),
             selection_lock: BoolLock::new(),
             work_tx,
-            video_streams: SmallVec::new(),
-            audio_streams: SmallVec::new(),
-            subtitle_streams: SmallVec::new(),
-            current_video_stream: -1,
-            current_audio_stream: -1,
-            current_subtitle_stream: -1,
+            current_video_stream: None,
+            current_audio_stream: None,
+            current_subtitle_stream: None,
             seekable: false,
             state_machine: StateMachine::new(),
             stream_collection: None,
             stream_collection_notify: None,
+            streams: Vec::new(),
         })
     }
 
@@ -835,12 +900,73 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         msg_tx: &MessageSender,
         msg: &gst::Message,
+        fcomp_context: &crate::fcompsrc::imp::CompContext,
+        // signalling_channel: &std::sync::Arc<
+        //     parking_lot::Mutex<Option<crate::fwebrtcsrc::SignallingChannel>>,
+        // >,
     ) {
         use gst::MessageView;
 
         let msg = match msg.view() {
+            MessageView::NeedContext(ctx) => {
+                let typ = ctx.context_type();
+                debug!(typ, "Need context");
+                if let Some(element) = msg
+                    .src()
+                    .and_then(|source| source.downcast_ref::<gst::Element>())
+                {
+                    debug!(typ, "Elem needs context");
+                    if typ == crate::fcompsrc::imp::FCOMP_CONTEXT {
+                        let mut ctx = gst::Context::new(typ, true);
+                        {
+                            let ctx = ctx.get_mut().unwrap();
+                            let s = ctx.structure_mut();
+                            s.set("context", fcomp_context);
+                        }
+                        element.set_context(&ctx);
+                        return;
+                    }
+                    // } else if typ == crate::fwebrtcsrc::FSIG_CONTEXT {
+                    //     let mut ctx = gst::Context::new(typ, true);
+                    //     {
+                    //         let ctx = ctx.get_mut().unwrap();
+                    //         let s = ctx.structure_mut();
+                    //         let sig_ctx =
+                    //             crate::fwebrtcsrc::SigContext(signalling_channel.lock().clone());
+                    //         s.set("context", sig_ctx);
+                    //     }
+                    //     element.set_context(&ctx);
+                    //     return;
+                    // }
+                }
+
+                return;
+            }
             MessageView::Eos(_) => PlayerEvent::EndOfStream,
-            MessageView::Error(error) => PlayerEvent::Error(error.error().message().to_string()),
+            MessageView::Error(error) => {
+                if let Some(playbin) = playbin_weak.upgrade()
+                    && let Some(src) = msg.src()
+                    && !(src == &playbin)
+                    && !src.has_as_ancestor(&playbin)
+                {
+                    debug!(
+                        src = %src.name(),
+                        "Dropping error from element no longer in the current pipeline"
+                    );
+                    return;
+                }
+                let failed_uri = msg
+                    .src()
+                    .and_then(|src| src.dynamic_cast_ref::<gst::URIHandler>())
+                    .and_then(|handler| handler.uri())
+                    .map(|uri| uri.to_string());
+                let err = error.error();
+                PlayerEvent::Error {
+                    kind: MediaErrorKind::from_glib_error(&err),
+                    message: err.message().to_string(),
+                    failed_uri,
+                }
+            }
             MessageView::Warning(warning) => {
                 PlayerEvent::Warning(warning.error().message().to_string())
             }
@@ -861,19 +987,10 @@ impl Player {
                     pending: change.pending(),
                 }
             }
-            MessageView::DurationChanged(_) => PlayerEvent::DurationChanged,
             MessageView::RequestState(state) => {
-                if let Some(playbin) = playbin_weak.upgrade() {
-                    let state = state.requested_state();
-                    debug!(?state, "State requested");
-
-                    // TODO: safe to do this here?
-                    if let Err(err) = playbin.set_state(state) {
-                        error!(?err, "Failed to set requested state");
-                    }
-                }
-
-                return;
+                let state = state.requested_state();
+                debug!(?state, "State requested");
+                PlayerEvent::RequestState(state)
             }
             // MessageView::Toc(toc) TODO: is this something cool?
             MessageView::StreamCollection(collection) => {
@@ -905,6 +1022,17 @@ impl Player {
                     subtitle,
                 }
             }
+            MessageView::AsyncDone(_) => {
+                let Some(playbin) = playbin_weak.upgrade() else {
+                    return;
+                };
+
+                if !msg.src().map(|s| s == &playbin).unwrap_or(false) {
+                    return;
+                }
+
+                PlayerEvent::AsyncDone
+            }
             _ => return,
         };
 
@@ -926,7 +1054,6 @@ impl Player {
     ) {
         self.cleanup_stream_collection();
 
-        // TODO: optimize by only updating the stream that was changed
         self.stream_collection_notify = Some(collection.connect_stream_notify(
             None,
             move |_collection, _stream, param| {
@@ -936,20 +1063,18 @@ impl Player {
             },
         ));
 
-        self.video_streams.clear();
-        self.audio_streams.clear();
-        self.subtitle_streams.clear();
+        self.streams.clear();
 
         for stream in collection.iter() {
-            let typ = stream.stream_type();
+            // let typ = stream.stream_type();
 
-            if typ.contains(gst::StreamType::VIDEO) {
-                self.video_streams.push(stream);
-            } else if typ.contains(gst::StreamType::AUDIO) {
-                self.audio_streams.push(stream);
-            } else if typ.contains(gst::StreamType::TEXT) {
-                self.subtitle_streams.push(stream);
-            }
+            let title = stream_title(&stream);
+            let stream = Stream {
+                inner: stream,
+                title,
+            };
+
+            self.streams.push(stream);
         }
 
         self.stream_collection = Some(collection);
@@ -964,14 +1089,11 @@ impl Player {
     }
 
     fn clear_state(&mut self) {
-        self.video_streams.clear();
-        self.audio_streams.clear();
-        self.subtitle_streams.clear();
-        self.current_video_stream = -1;
-        self.current_audio_stream = -1;
-        self.current_subtitle_stream = -1;
+        self.streams.clear();
+        self.current_video_stream = None;
+        self.current_audio_stream = None;
+        self.current_subtitle_stream = None;
         self.seekable = false;
-        self.seek_lock.release();
         self.volume_lock.release();
     }
 
@@ -983,12 +1105,12 @@ impl Player {
     }
 
     fn seek_internal(&mut self, seek: Seek) {
-        if let Some(pos) = seek.position
-            && !Seek::position_is_safe(pos)
-        {
-            warn!(pos, "Ignoring out-of-range seek position");
-            return;
-        }
+        // if let Some(pos) = seek.position
+        //     // && !Seek::position_is_safe(pos)
+        // {
+        //     warn!(pos, "Ignoring out-of-range seek position");
+        //     return;
+        // }
         if let Some(rate) = seek.rate
             && !Seek::rate_is_safe(rate)
         {
@@ -1005,29 +1127,34 @@ impl Player {
         }
     }
 
-    pub fn seek(&mut self, seconds: f64) {
-        if !seconds.is_sign_positive() || seconds.is_nan() {
-            warn!(seconds, "Invalid seek timestamp");
-            return;
-        }
+    pub fn seek(&mut self, position: gst::ClockTime) {
+        // if !position.is_sign_positive() || seconds.is_nan() {
+        //     warn!(seconds, "Invalid seek timestamp");
+        //     return;
+        // }
 
         self.seek_internal(Seek {
-            position: Some(seconds),
+            position: Some(position),
             rate: None,
         });
+    }
+
+    pub fn is_seeking(&self) -> bool {
+        self.state_machine.is_seeking()
     }
 
     pub fn queue_seek(&mut self, seek: Seek) {
         self.state_machine.queue_seek(seek);
     }
 
-    pub fn set_volume(&mut self, volume: f64) {
+    pub fn set_volume(&mut self, volume: f32) {
         if self.volume_lock.is_locked() {
             warn!("Volume change is pending");
             return;
         }
 
-        self.playbin.set_property("volume", volume.clamp(0.0, 1.0));
+        self.playbin
+            .set_property("volume", (volume as f64).clamp(0.0, 1.0));
 
         self.volume_lock.acquire();
     }
@@ -1036,7 +1163,8 @@ impl Player {
         self.volume_lock.release();
     }
 
-    pub fn set_rate(&mut self, rate: f64) {
+    // pub fn set_rate(&mut self, rate: f64) {
+    pub fn set_rate(&mut self, rate: f32) {
         self.seek_internal(Seek {
             position: None,
             rate: Some(rate),
@@ -1053,9 +1181,10 @@ impl Player {
         }
     }
 
-    pub fn seek_and_set_rate(&mut self, seconds: f64, rate: f64) {
+    // pub fn seek_and_set_rate(&mut self, seconds: f64, rate: f64) {
+    pub fn seek_and_set_rate(&mut self, position: gst::ClockTime, rate: f32) {
         self.seek_internal(Seek {
-            position: Some(seconds),
+            position: Some(position),
             rate: Some(rate),
         });
     }
@@ -1082,6 +1211,12 @@ impl Player {
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Playing) {
             self.set_state_async(state);
         }
+    }
+
+    /// Honor a `RequestState` message from an element by dispatching the state
+    /// change to the worker thread (off the streaming thread it arrived on).
+    pub fn request_state(&self, state: gst::State) {
+        self.set_state_async(state);
     }
 
     #[cfg(debug_assertions)]
@@ -1142,30 +1277,40 @@ impl Player {
         self.go_to_stopped_state(Some(feedback));
     }
 
-    fn select_streams(&self, video: i32, audio: i32, subtitle: i32) -> Result<()> {
+    /// Returns `true` if any stream has new properties.
+    pub fn update_stream_properties(&mut self) -> bool {
+        let mut did_change = false;
+
+        for stream in &mut self.streams {
+            let title = stream_title(&stream.inner);
+            if title != stream.title {
+                stream.title = title;
+                did_change = true;
+            }
+        }
+
+        did_change
+    }
+
+    fn select_streams(
+        &self,
+        video: Option<u32>,
+        audio: Option<u32>,
+        subtitle: Option<u32>,
+    ) -> Result<()> {
         if self.selection_lock.is_locked() {
             bail!("Stream selection is pending");
         }
 
-        fn stream_id_from_idx(idx: i32, streams: &[gst::Stream]) -> Option<gst::glib::GString> {
-            if idx >= 0
-                && let Some(stream) = streams.get(idx as usize)
+        let mut streams = Vec::new();
+
+        for idx in [video, audio, subtitle] {
+            if let Some(idx) = idx
+                && let Some(stream) = self.streams.get(idx as usize)
+                && let Some(id) = stream.inner.stream_id()
             {
-                return stream.stream_id();
+                streams.push(id);
             }
-
-            None
-        }
-
-        let mut streams = vec![];
-        if let Some(vid) = stream_id_from_idx(video, &self.video_streams) {
-            streams.push(vid);
-        }
-        if let Some(aud) = stream_id_from_idx(audio, &self.audio_streams) {
-            streams.push(aud);
-        }
-        if let Some(sub) = stream_id_from_idx(subtitle, &self.subtitle_streams) {
-            streams.push(sub);
         }
 
         let event = gst::event::SelectStreams::new(streams.iter().map(|s| s.as_str()));
@@ -1174,25 +1319,20 @@ impl Player {
         Ok(())
     }
 
-    pub fn select_video_stream(&mut self, sid: i32) -> Result<()> {
+    pub fn select_video_stream(&mut self, sid: Option<u32>) -> Result<()> {
         self.select_streams(sid, self.current_audio_stream, self.current_subtitle_stream)
     }
 
-    pub fn select_audio_stream(&mut self, sid: i32) -> Result<()> {
+    pub fn select_audio_stream(&mut self, sid: Option<u32>) -> Result<()> {
         self.select_streams(self.current_video_stream, sid, self.current_subtitle_stream)
     }
 
-    pub fn select_subtitle_stream(&mut self, sid: i32) -> Result<()> {
+    pub fn select_subtitle_stream(&mut self, sid: Option<u32>) -> Result<()> {
         self.select_streams(self.current_video_stream, self.current_audio_stream, sid)
     }
 
     pub fn end_of_stream_reached(&mut self) {
         self.stop();
-    }
-
-    pub fn uri_set(&mut self, uri: String) {
-        let _ = self.work_tx.send(Job::UriWasSet);
-        self.state_machine.current_uri = Some(uri);
     }
 
     pub fn uri_loaded(&mut self) {
@@ -1244,44 +1384,20 @@ impl Player {
         None
     }
 
-    // fn stream_from_id_in<'a>(
-    //     &'a self,
-    //     id: &str,
-    //     streams: &'a [gst::Stream],
-    // ) -> Option<&'a gst::Stream> {
-    //     for stream in streams {
-    //         if let Some(sid) = stream.stream_id()
-    //             && sid == id
-    //         {
-    //             return Some(stream);
-    //         }
-    //     }
-
-    //     None
-    // }
-
-    // pub fn get_stream_from_id(&self, id: &str) -> Option<&gst::Stream> {
-    //     self.stream_from_id_in(id, &self.video_streams).or(self
-    //         .stream_from_id_in(id, &self.audio_streams)
-    //         .or(self.stream_from_id_in(id, &self.subtitle_streams)))
-    // }
-
     pub fn have_media_info(&self) -> bool {
-        !self.video_streams.is_empty()
-            || !self.audio_streams.is_empty()
-            || !self.subtitle_streams.is_empty()
+        !self.streams.is_empty()
     }
 
-    fn find_stream_idx(sid: &str, streams: &[gst::Stream]) -> i32 {
+    fn find_stream_idx(sid: &str, streams: &[Stream]) -> Option<u32> {
         for (idx, stream) in streams.iter().enumerate() {
-            if let Some(this_id) = stream.stream_id()
+            if let Some(this_id) = stream.inner.stream_id()
                 && this_id == sid
             {
-                return idx as i32;
+                return Some(idx as u32);
             }
         }
 
-        -1
+        None
     }
 
     #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
@@ -1290,23 +1406,23 @@ impl Player {
         video_sid: Option<&str>,
         audio_sid: Option<&str>,
         subtitle_sid: Option<&str>,
-    ) -> (i32, i32, i32) {
+    ) -> (Option<u32>, Option<u32>, Option<u32>) {
         self.selection_lock.release();
 
         debug!(?video_sid, ?audio_sid, ?subtitle_sid);
 
-        self.current_video_stream = -1;
-        self.current_audio_stream = -1;
-        self.current_subtitle_stream = -1;
+        self.current_video_stream = None;
+        self.current_audio_stream = None;
+        self.current_subtitle_stream = None;
 
         if let Some(video) = video_sid {
-            self.current_video_stream = Self::find_stream_idx(video, &self.video_streams);
+            self.current_video_stream = Self::find_stream_idx(video, &self.streams);
         }
         if let Some(audio) = audio_sid {
-            self.current_audio_stream = Self::find_stream_idx(audio, &self.audio_streams);
+            self.current_audio_stream = Self::find_stream_idx(audio, &self.streams);
         }
         if let Some(subtitle) = subtitle_sid {
-            self.current_subtitle_stream = Self::find_stream_idx(subtitle, &self.subtitle_streams);
+            self.current_subtitle_stream = Self::find_stream_idx(subtitle, &self.streams);
         }
 
         (
@@ -1354,10 +1470,6 @@ impl Player {
     pub fn set_rate_changed(&mut self, rate: f64) {
         self.state_machine.rate = rate;
     }
-
-    pub fn current_uri(&self) -> Option<&str> {
-        self.state_machine.current_uri.as_deref()
-    }
 }
 
 impl Drop for Player {
@@ -1389,21 +1501,28 @@ mod tests {
         };
     }
 
+    const CTZ: gst::ClockTime = gst::ClockTime::ZERO;
+    const ONE: gst::ClockTime = gst::ClockTime::from_seconds(1);
+    const FIVE: gst::ClockTime = gst::ClockTime::from_seconds(5);
+    const TEN: gst::ClockTime = gst::ClockTime::from_seconds(10);
+    // const TWENTY: gst::ClockTime = gst::ClockTime::from_seconds(10);
+    const THIRTY: gst::ClockTime = gst::ClockTime::from_seconds(10);
+
     #[test]
     #[rustfmt::skip]
     fn basic_playback() {
         let mut sm = StateMachine::new();
         sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
-        assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.seek_internal(Seek::new(Some(CTZ), None), None), Some(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
-        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))),);
+        sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
@@ -1416,35 +1535,36 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
-        assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.seek_internal(Seek::new(Some(gst::ClockTime::from_seconds(0)), None), None), Some(Seek::new(Some(gst::ClockTime::from_seconds(0)), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
-        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))),);
+        sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
-        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
+        sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(Paused)), new_ps!(Playing),);
 
         // 2nd seek:
-        assert_eq!(sm.seek_internal(Seek::new(Some(60.0), None), None), Some(Seek::new(Some(60.0), Some(1.0))));
+        let sixty = gst::ClockTime::from_seconds(60);
+        assert_eq!(sm.seek_internal(Seek::new(Some(sixty), None), None), Some(Seek::new(Some(sixty), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
-        sm.queue_seek(Seek::new(Some(60.0), Some(1.0)));
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
+        sm.queue_seek(Seek::new(Some(sixty), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(sixty), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
-        sm.queue_seek(Seek::new(Some(60.0), Some(1.0)));
+        sm.queue_seek(Seek::new(Some(sixty), Some(1.0)));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(sixty), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending),), StateChangeResult::ChangeState(gs!(Playing)),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(Paused)), new_ps!(Playing),);
@@ -1456,14 +1576,14 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
-        assert_eq!(sm.seek_internal(Seek {position: Some(0.0), rate: None}, None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.seek_internal(Seek {position: Some(CTZ), rate: None}, None), Some(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.buffering(1), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
         assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
-        sm.queue_seek(Seek { position: Some(0.0), rate: Some(1.0) });
-        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(0.0), Some(1.0))));
+        sm.queue_seek(Seek { position: Some(CTZ), rate: Some(1.0) });
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(88), BufferingStateResult::Buffering);
@@ -1498,20 +1618,21 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.state = State::PendingUriChange;
         assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
-        assert_eq!(sm.seek_internal(Seek::new(Some(0.0), None), None), Some(Seek::new(Some(0.0), Some(1.0))));
+        assert_eq!(sm.seek_internal(Seek::new(Some(CTZ), None), None), Some(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.state, State::Seeking {target_state: RunningState::Playing.into()});
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting,);
-        sm.queue_seek(Seek::new(Some(0.0), Some(1.0)));
+        sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
         assert!(matches!(sm.state, State::SeekAsync { seek: _, target_state: gs!(Playing) }));
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert!(matches!(sm.state, State::Buffering { .. }));
-        assert_eq!(sm.seek_internal(Seek::new(Some(60.0), None), None), None);
+        let sixty = gst::ClockTime::from_seconds(60);
+        assert_eq!(sm.seek_internal(Seek::new(Some(sixty), None), None), None);
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(sixty), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)),);
     }
 
@@ -1641,14 +1762,43 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn changing_waits_through_async_transition_then_recovers() {
+        let mut sm = StateMachine::new();
+        sm.current_state = gs!(Ready);
+        sm.state = State::Changing { target_state: gs!(Playing), pending_seek: None };
+        assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Playing), pending_seek: None },
+            "fall-through must not mutate state while the transition is still in flight");
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) },
+            "stranded in Changing after the async transition completed");
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn changing_fallthrough_recovers_even_if_target_flipped_mid_transition() {
+        let mut sm = StateMachine::new();
+        sm.current_state = gs!(Ready);
+        sm.state = State::Changing { target_state: gs!(Playing), pending_seek: None };
+        assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
+        assert_eq!(sm.set_playback_state(rs!(Paused)), None);
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Paused), pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Paused), pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.state, State::Running { state: rs!(Paused) });
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn seek_is_rejected_when_stopped_or_live() {
         let mut sm = StateMachine::new();
         assert_eq!(sm.state, State::Stopped);
-        assert_eq!(sm.seek_internal(Seek::new(Some(10.0), None), None), None);
+        assert_eq!(sm.seek_internal(Seek::new(Some(TEN), None), None), None);
         assert_eq!(sm.state, State::Stopped, "rejected seek must not mutate state");
         let mut sm = playing();
         sm.is_live = true;
-        assert_eq!(sm.seek_internal(Seek::new(Some(10.0), None), None), None);
+        assert_eq!(sm.seek_internal(Seek::new(Some(TEN), None), None), None);
         assert_eq!(sm.state, State::Running { state: rs!(Playing) }, "rejected live seek must not mutate state");
     }
 
@@ -1656,9 +1806,9 @@ mod tests {
     #[rustfmt::skip]
     fn seek_while_seeking_coalesces() {
         let mut sm = playing();
-        assert_eq!(sm.seek_internal(Seek::new(Some(10.0), None), None), Some(Seek::new(Some(10.0), Some(1.0))));
+        assert_eq!(sm.seek_internal(Seek::new(Some(TEN), None), None), Some(Seek::new(Some(TEN), Some(1.0))));
         assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) });
-        assert_eq!(sm.seek_internal(Seek::new(Some(20.0), None), None), None);
+        assert_eq!(sm.seek_internal(Seek::new(Some(gst::ClockTime::from_seconds(20)), None), None), None);
         assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) }, "still exactly one in-flight seek");
     }
 
@@ -1669,7 +1819,7 @@ mod tests {
         sm.current_state = gst::State::Paused;
         sm.state = State::Changing {
             target_state: gst::State::Paused,
-            pending_seek: Some(Seek::new(Some(1.0), Some(1.0))),
+            pending_seek: Some(Seek::new(Some(ONE), Some(1.0))),
         };
         let _ = sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending));
     }
@@ -1679,7 +1829,7 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.current_state = gst::State::Playing;
         sm.state = State::SeekAsync {
-            seek: Seek::new(Some(30.0), Some(1.0)),
+            seek: Seek::new(Some(THIRTY), Some(1.0)),
             target_state: gs!(Playing),
         };
 
@@ -1704,32 +1854,32 @@ mod tests {
 
     #[test]
     fn seek_position_guard_matches_clocktime_panic_boundary() {
-        let must_reject = [
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -5.0,
-            1e30,
-            Seek::MAX_POSITION_SECS,
-        ];
-        for v in must_reject {
-            assert!(!Seek::position_is_safe(v), "{v} should be rejected");
-            assert!(
-                std::panic::catch_unwind(|| gst::ClockTime::from_seconds_f64(v)).is_err(),
-                "expected ClockTime to panic on {v}; guard would be too strict/loose",
-            );
-        }
+        // let must_reject = [
+        //     f64::INFINITY,
+        //     f64::NEG_INFINITY,
+        //     f64::NAN,
+        //     -5.0,
+        //     1e30,
+        //     Seek::MAX_POSITION_SECS,
+        // ];
+        // for v in must_reject {
+        //     assert!(!Seek::position_is_safe(v), "{v} should be rejected");
+        //     assert!(
+        //         std::panic::catch_unwind(|| gst::ClockTime::from_seconds_f64(v)).is_err(),
+        //         "expected ClockTime to panic on {v}; guard would be too strict/loose",
+        //     );
+        // }
 
-        let must_accept = [0.0, 1.0, 3600.0, 1e9];
-        for v in must_accept {
-            assert!(Seek::position_is_safe(v), "{v} should be accepted");
-            assert!(
-                std::panic::catch_unwind(|| gst::ClockTime::from_seconds_f64(v)).is_ok(),
-                "expected ClockTime to accept {v}",
-            );
-        }
+        // let must_accept = [0.0, 1.0, 3600.0, 1e9];
+        // for v in must_accept {
+        //     assert!(Seek::position_is_safe(v), "{v} should be accepted");
+        //     assert!(
+        //         std::panic::catch_unwind(|| gst::ClockTime::from_seconds_f64(v)).is_ok(),
+        //         "expected ClockTime to accept {v}",
+        //     );
+        // }
 
-        for bad in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for bad in [0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(!Seek::rate_is_safe(bad), "rate {bad} should be rejected");
         }
         for ok in [1.0, 2.0, 0.5, -1.0] {
@@ -1740,7 +1890,7 @@ mod tests {
     #[test]
     fn queue_seek_preserves_playing_target() {
         let mut sm = playing();
-        sm.queue_seek(Seek::new(Some(5.0), Some(1.0)));
+        sm.queue_seek(Seek::new(Some(FIVE), Some(1.0)));
         assert!(
             matches!(
                 sm.state,
@@ -1757,7 +1907,7 @@ mod tests {
         sm.state = State::Running {
             state: RunningState::Paused,
         };
-        sm.queue_seek(Seek::new(Some(5.0), Some(1.0)));
+        sm.queue_seek(Seek::new(Some(FIVE), Some(1.0)));
         assert!(matches!(
             sm.state,
             State::SeekAsync {

@@ -12,7 +12,7 @@ gst.workspace = true
 gst-video.workspace = true
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25", optional = true }
 gst-app.workspace = true
-gst-plugin-webrtc = { workspace = true, features = [ "static" ] }
+gst-plugin-webrtc = { workspace = true, features = [ "static", "sink" ] }
 gst_webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 gst_sdp = { package = "gstreamer-sdp", version = "0.25" }
 bytes.workspace = true

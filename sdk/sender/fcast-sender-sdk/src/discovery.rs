@@ -142,6 +142,10 @@ pub(crate) async fn discover_devices(
     #[allow(unused_mut)]
     let mut msg_stream = msg_stream.merge(chromecast_mdns_stream);
 
+    fn txt_records(service_info: &Box<mdns_sd::ResolvedService>) -> HashMap<String, String> {
+        service_info.txt_properties.clone().into_property_map_str()
+    }
+
     while let Some(msg) = msg_stream.next().await {
         match msg {
             #[cfg(feature = "fcast")]
@@ -149,7 +153,8 @@ pub(crate) async fn discover_devices(
                 ServiceEvent::ServiceResolved(service_info) => {
                     let name =
                         strip_service_name(service_info.get_fullname(), FCAST_MDNS_SERVICE_NAME);
-                    let device_info = DeviceInfo::fcast(name.clone(), vec![], 0);
+                    let device_info =
+                        DeviceInfo::fcast(name.clone(), vec![], 0, txt_records(&service_info));
                     service_resolved(&mut devices, &event_handler, service_info, device_info);
                 }
                 ServiceEvent::ServiceRemoved(_, fullname) => {
@@ -168,7 +173,8 @@ pub(crate) async fn discover_devices(
                         .get_property(CHROMECAST_FRIENDLY_NAME_TXT)
                         .map(|name| name.val_str().to_string())
                         .unwrap_or(service_info.get_fullname().to_string());
-                    let device_info = DeviceInfo::chromecast(name.clone(), vec![], 0);
+                    let device_info =
+                        DeviceInfo::chromecast(name.clone(), vec![], 0, txt_records(&service_info));
                     service_resolved(&mut devices, &event_handler, service_info, device_info);
                 }
                 ServiceEvent::ServiceRemoved(_, fullname) => {

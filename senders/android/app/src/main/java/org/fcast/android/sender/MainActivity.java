@@ -111,6 +111,7 @@ import java.nio.IntBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
@@ -176,7 +177,7 @@ class FCastDiscoveryListener implements NsdManager.DiscoveryListener {
             }
         }
         List<ByteBuffer> addrsB = addrs.stream().map(FCastDiscoveryListener::addrConvert).collect(Collectors.toList());
-        serviceFound(serviceInfo.getServiceName(), addrsB, serviceInfo.getPort());
+        serviceFound(serviceInfo.getServiceName(), addrsB, serviceInfo.getAttributes(), serviceInfo.getPort());
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             nsdManager.registerServiceInfoCallback(serviceInfo, Runnable::run, new NsdManager.ServiceInfoCallback() {
@@ -186,7 +187,7 @@ class FCastDiscoveryListener implements NsdManager.DiscoveryListener {
 
                 @Override
                 public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {
-                    serviceFound(serviceInfo.getServiceName(), serviceInfo.getHostAddresses().stream().map(FCastDiscoveryListener::addrConvert).collect(Collectors.toList()), serviceInfo.getPort());
+                    serviceFound(serviceInfo.getServiceName(), serviceInfo.getHostAddresses().stream().map(FCastDiscoveryListener::addrConvert).collect(Collectors.toList()), serviceInfo.getAttributes(), serviceInfo.getPort());
                 }
 
                 @Override
@@ -210,7 +211,7 @@ class FCastDiscoveryListener implements NsdManager.DiscoveryListener {
                     Log.i(TAG, "Service resolved serviceInfo=" + serviceInfo);
                     InetAddress addr = serviceInfo.getHost();
                     if (addr != null) {
-                        serviceFound(serviceInfo.getServiceName(), List.of(addrConvert(addr)), serviceInfo.getPort());
+                        serviceFound(serviceInfo.getServiceName(), List.of(addrConvert(addr)), serviceInfo.getAttributes(), serviceInfo.getPort());
                     }
                 }
             });
@@ -223,7 +224,7 @@ class FCastDiscoveryListener implements NsdManager.DiscoveryListener {
         serviceLost(serviceInfo.getServiceName());
     }
 
-    private native void serviceFound(String name, List<ByteBuffer> addrs, int port);
+    private native void serviceFound(String name, List<ByteBuffer> addrs, Map<String, byte[]> txt, int port);
 
     private native void serviceLost(String name);
 }
@@ -469,8 +470,6 @@ public class MainActivity extends NativeActivity implements DisplayManager.Displ
 
         renderToFbWithProg(oesTexId, yFramebuffer, yProg, texMatrix);
         renderToMegaFbWithMegaProg(oesTexId, megabuffer, megaProg, texMatrix);
-
-        glFinish();
 
         nativeProcessFrame(nativeEglCtx, downscaledDims.width, downscaledDims.height, userMaxFps, yFramebuffer.fboId, megabuffer.fboId);
     }

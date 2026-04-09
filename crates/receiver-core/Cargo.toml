@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
-fcast-protocol = { path = "../../crates/fcast-protocol" }
+fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
 gethostname = "1"
 anyhow.workspace = true
 futures.workspace = true
@@ -21,13 +21,14 @@ gst-base.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 if-addrs = "0.15"
-base64 = "0.22"
+base64.workspace = true
 bitflags = "2.10"
 smallvec.workspace = true
+smol_str.workspace = true
 parking_lot.workspace = true
 image_swizzle.workspace = true
 bytes.workspace = true
-gst-plugin-webrtc = { workspace = true, features = [ "static", "whep-client" ] }
+gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
@@ -44,12 +45,15 @@ directories.workspace = true
 headers = "0.4"
 mime = "0.3"
 regex.workspace = true
+gst-webrtc.workspace = true
+self_cell.workspace = true
+image = { workspace = true, features = ["default-formats", "avif-native"] }
 
 # RAOP
 rtsp-types = "0.1"
 sdp-types = "0.1"
 rsa = { version = "0.9", features = ["sha2", "sha1"] }
-sha2 = "0.11"
+sha2.workspace = true
 sha1 = "0.10"
 lazy_static = "1.5"
 md-5 = "0.11"
@@ -62,12 +66,13 @@ byte-slice-cast = "1"
 rtp-types = "0.1"
 
 # Google Cast
-rustls-pki-types = "1.14"
+rustls-pki-types.workspace = true
 google-cast-protocol = { path = "../google-cast-protocol" }
-rcgen = "0.14"
+rcgen.workspace = true
 uuid.workspace = true
 
 glow.workspace = true
+
 
 [dependencies.slint]
 workspace = true
@@ -76,17 +81,11 @@ features = [
     "std",
 ]
 
-[dependencies.imagelib]
-package = "image"
-version = "0.25"
-default-features = false
-features = ["default-formats", "avif-native"]
-
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
 gst-plugin-rtp = { workspace = true, optional = true }
 clap.workspace = true
 inhibit-screensaver.path = "../inhibit-screensaver"
@@ -99,11 +98,11 @@ objc2-app-kit = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
-rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
+rustls = { workspace = true, default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls", "gzip", "cookies" ] }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 egl-sys.path = "../egl-sys"
 drm-fourcc = "2.2.0"
 
@@ -140,6 +139,7 @@ desktop = [
     # "slint/accessibility", Disabled because it causes too many allocations during playback
     "slint/backend-winit",
     "slint/renderer-femtovg",
+    "static-gst-plugins",
 ]
 systray = ["slint/system-tray"]
 kms-backend = ["slint/backend-linuxkms"]

@@ -4,8 +4,8 @@ use std::{rc::Rc, sync::Arc};
 use crate::message;
 use crate::{
     Bridge, CompoundImage, GuiPlaybackState, MainWindow, Message, MessageSender, Operation,
-    SetVolumeMessage, UiMediaTrack, UiMediaTrackType, UiPlayerVariant, image::DecodedImage,
-    log_if_err, utils::sec_to_string,
+    UiMediaTrack, UiMediaTrackType, UiPlayerVariant, application::PacketOrigin,
+    image::DecodedImage, log_if_err, utils::sec_to_string,
 };
 use fcast_protocol::v3;
 use parking_lot::{Condvar, Mutex};
@@ -18,7 +18,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     bridge.on_resume_or_pause({
         let msg_tx = msg_tx.clone();
         move || {
-            msg_tx.send(Message::ResumeOrPause);
+            msg_tx.operation(PacketOrigin::Gui, Operation::ResumeOrPause);
         }
     });
 
@@ -44,12 +44,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     bridge.on_set_volume({
         let msg_tx = msg_tx.clone();
         move |volume| {
-            msg_tx.operation(
-                0,
-                Operation::SetVolume(SetVolumeMessage {
-                    volume: volume as f64,
-                }),
-            );
+            msg_tx.operation(PacketOrigin::Gui, Operation::SetVolume(volume));
         }
     });
 
@@ -67,12 +62,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     bridge.on_change_playback_rate({
         let msg_tx = msg_tx.clone();
         move |new_rate: f32| {
-            msg_tx.operation(
-                0,
-                Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
-                    speed: new_rate as f64,
-                }),
-            );
+            msg_tx.operation(PacketOrigin::Gui, Operation::SetSpeed(new_rate));
         }
     });
 
@@ -102,7 +92,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         let msg_tx = msg_tx.clone();
         move |idx: i32| {
             msg_tx.operation(
-                0,
+                PacketOrigin::Gui,
                 Operation::SetPlaylistItem(v3::SetPlaylistItemMessage {
                     item_index: idx as u64,
                 }),

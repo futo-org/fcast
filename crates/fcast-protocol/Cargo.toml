@@ -11,4 +11,42 @@ serde.workspace = true
 serde_json.workspace = true
 serde_repr = "0.1.20"
 thiserror.workspace = true
-serde_with = "3.16"
+serde_with = { version = "3.18", default-features = false, features = ["macros"] }
+smol_str.workspace = true
+flatbuffers = "25.12.19"
+paste = "1.0.15"
+base64.workspace = true
+
+tokio = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, default-features = false, optional = true }
+tracing = { workspace = true, optional = true }
+
+# Tokio sender
+rustls-pki-types = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+askama = { workspace = true, optional = true }
+get-type-string-derive = { path = "../get-type-string-derive", optional = true }
+
+[build-dependencies]
+flatc-rust = "0.2.0"
+
+[[bin]]
+name = "fcast-protocol"
+path = "src/main.rs"
+required-features = ["__schema"]
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-rustls = { workspace = true, default-features = false, features = ["logging", "ring", "tls12"] }
+rustls-pki-types.workspace = true
+sha2.workspace = true
+rcgen.workspace = true
+
+[features]
+default = []
+# default = ["__schema"]
+tokio-sender = ["dep:tokio-rustls", "dep:tokio", "dep:tracing", "dep:x509-parser", "dep:sha2", "dep:rustls-pki-types"]
+tokio-receiver= ["dep:tokio-rustls", "dep:tokio", "dep:tracing"]
+__schema = ["dep:askama", "dep:get-type-string-derive"]

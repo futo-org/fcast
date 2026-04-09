@@ -5,11 +5,14 @@ use gst::prelude::*;
 use gst_video::VideoColorimetry;
 use jni::{
     JavaVM,
-    objects::{JByteBuffer, JObject, JString},
+    objects::{JByteArray, JByteBuffer, JMap, JObject, JString},
     sys::{jint, jlong, jstring},
 };
 use khronos_egl as egl;
-use mcore::{DeviceEvent, Event, ShouldQuit, SourceConfig, transmission::WhepSink};
+use mcore::{
+    DeviceEvent, Event, ShouldQuit, SourceConfig,
+    transmission::{FSink, WhepSink},
+};
 use mimalloc::MiMalloc;
 use parking_lot::{Condvar, Mutex};
 use slint::{SharedString, ToSharedString};
@@ -19,13 +22,43 @@ use tracing::{debug, error};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+enum TxSink {
+    FCast(FSink),
+    Whep(WhepSink),
+}
+
+impl TxSink {
+    fn shutdown(&mut self) {
+        match self {
+            TxSink::FCast(s) => s.shutdown(),
+            TxSink::Whep(s) => s.shutdown(),
+        }
+    }
+
+    fn get_play_msg(&self, addr: std::net::IpAddr, port: u16) -> Option<(String, String)> {
+        match self {
+            TxSink::FCast(_) => None,
+            TxSink::Whep(s) => Some(s.get_play_msg(addr, port)),
+        }
+    }
+}
+
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
 
 lazy_static::lazy_static! {
     pub static ref GLOB_EVENT_CHAN: (crossbeam_channel::Sender<Event>, crossbeam_channel::Receiver<Event>)
         = crossbeam_channel::bounded(2);
     pub static ref FRAME_PAIR: (Mutex<Option<(gst_video::VideoFrame<gst_video::video_frame::Writable>, gst::Caps)>>, Condvar) = (Mutex::new(None), Condvar::new());
-    pub static ref FRAME_POOL: Mutex<gst_video::VideoBufferPool> = Mutex::new(gst_video::VideoBufferPool::new());
+    pub static ref FRAME_POOL: Mutex<Option<FramePool>> = Mutex::new(None);
+}
+
+pub struct FramePool {
+    pool: gst_video::VideoBufferPool,
+    width: usize,
+    height: usize,
+    fps: jint,
+    info: gst_video::VideoInfo,
+    caps: gst::Caps,
 }
 
 slint::include_modules!();
@@ -79,7 +112,7 @@ struct Application {
     current_device_id: usize,
     local_address: Option<fcast_sender_sdk::IpAddr>,
     android_app: slint::android::AndroidApp,
-    tx_sink: Option<WhepSink>,
+    tx_sink: Option<TxSink>,
     our_source_url: Option<String>,
 }
 
@@ -238,16 +271,13 @@ impl Application {
                     fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                 };
 
-                let bound_port = match addr {
-                    fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
-                    fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
-                };
-
-                let (content_type, url) = self
+                let Some((content_type, url)) = self
                     .tx_sink
                     .as_ref()
-                    .unwrap()
-                    .get_play_msg(addr.into(), bound_port);
+                    .and_then(|s| s.get_play_msg(addr.into(), bound_port))
+                else {
+                    return Ok(ShouldQuit::No);
+                };
 
                 debug!(content_type, url, "Sending play message");
                 self.our_source_url = Some(url.clone());
@@ -266,10 +296,6 @@ impl Application {
                     }
                     None => error!("Active device is missing, cannot send play message"),
                 }
-
-                // self.ui_weak.upgrade_in_event_loop(|ui| {
-                //     ui.global::<Bridge>().invoke_change_state(AppState::Casting);
-                // })?;
             }
             Event::Quit => return Ok(ShouldQuit::Yes),
             Event::DeviceAvailable(device_info) => self.add_or_update_device(device_info)?,
@@ -326,6 +352,7 @@ impl Application {
                                 }
                             }
                         }
+                        DeviceEvent::TracksAvailable(_) | DeviceEvent::TrackSelected { .. } => {}
                     }
                 }
             }
@@ -396,14 +423,29 @@ impl Application {
 
                 let source_config = SourceConfig::Video(mcore::VideoSource::Source(appsrc));
 
-                self.tx_sink = Some(mcore::transmission::WhepSink::new(
-                    source_config,
-                    self.event_tx.clone(),
-                    tokio::runtime::Handle::current(),
-                    1920,
-                    1080,
-                    30,
-                )?);
+                let supports_fwrtc = self
+                    .active_device
+                    .as_ref()
+                    .is_some_and(|d| d.supports_feature(device::DeviceFeature::FWRTCSignalling));
+
+                if supports_fwrtc {
+                    let sink = FSink::new(
+                        source_config,
+                        self.event_tx.clone(),
+                        tokio::runtime::Handle::current(),
+                    )?;
+                    let signaller = sink.signaller.clone();
+                    self.tx_sink = Some(TxSink::FCast(sink));
+                    if let Some(device) = self.active_device.as_ref() {
+                        device.start_mirroring_session(Arc::new(signaller)).unwrap();
+                    }
+                } else {
+                    self.tx_sink = Some(TxSink::Whep(WhepSink::new(
+                        source_config,
+                        self.event_tx.clone(),
+                        tokio::runtime::Handle::current(),
+                    )?));
+                }
 
                 self.ui_weak.upgrade_in_event_loop(|ui| {
                     ui.global::<Bridge>().invoke_change_state(AppState::Casting);
@@ -500,7 +542,15 @@ fn android_main(app: slint::android::AndroidApp) {
     #[cfg(not(debug_assertions))]
     let log_level = log::LevelFilter::Info;
 
-    android_logger::init_once(android_logger::Config::default().with_max_level(log_level));
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log_level)
+            .with_filter(
+                android_logger::FilterBuilder::new()
+                    .parse(&format!("{log_level},tracing_gstreamer::callsite=off"))
+                    .build(),
+            ),
+    );
 
     let app_clone = app.clone();
 
@@ -580,6 +630,24 @@ fn jstring_to_string<'local>(env: &mut jni::JNIEnv<'local>, s: &JString<'local>)
     Ok(env.get_string(s)?.to_string_lossy().to_string())
 }
 
+fn jmap_to_txt_records(env: &mut jni::JNIEnv, map: &JObject) -> Result<HashMap<String, String>> {
+    let mut records = HashMap::new();
+    let map = JMap::from_env(env, map)?;
+    let mut iter = map.iter(env)?;
+    while let Some((key, value)) = iter.next(env)? {
+        let key = jstring_to_string(env, &JString::from(key))?;
+        let value = if value.is_null() {
+            String::new()
+        } else {
+            let bytes = env.convert_byte_array(JByteArray::from(value))?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        records.insert(key, value);
+    }
+
+    Ok(records)
+}
+
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_fcast_android_sender_FCastDiscoveryListener_serviceFound<'local>(
@@ -587,6 +655,7 @@ pub extern "C" fn Java_org_fcast_android_sender_FCastDiscoveryListener_serviceFo
     _class: jni::objects::JClass<'local>,
     name: JString<'local>,
     addrs: jni::objects::JObject,
+    txt: jni::objects::JObject,
     port: jni::sys::jint,
 ) {
     let name = match jstring_to_string(&mut env, &name) {
@@ -675,7 +744,16 @@ pub extern "C" fn Java_org_fcast_android_sender_FCastDiscoveryListener_serviceFo
         });
     }
 
-    let device_info = fcast_sender_sdk::device::DeviceInfo::fcast(name, ip_addrs, port);
+    let txt_records = match jmap_to_txt_records(&mut env, &txt) {
+        Ok(records) => records,
+        Err(err) => {
+            error!(?err, "Failed to convert txt records");
+            HashMap::new()
+        }
+    };
+
+    let device_info =
+        fcast_sender_sdk::device::DeviceInfo::fcast(name, ip_addrs, port, txt_records);
     debug!(?device_info, "Found device");
 
     log_err!(
@@ -773,66 +851,68 @@ fn process_frame<'local>(
     let width = width as usize;
     let height = height as usize;
 
-    let info = match gst_video::VideoInfo::builder(
-        gst_video::VideoFormat::I420,
-        width as u32,
-        height as u32,
-    )
-    .fps((fps, 1))
-    .colorimetry(&VideoColorimetry::new(
-        gst_video::VideoColorRange::Range0_255,
-        gst_video::VideoColorMatrix::Bt709,
-        gst_video::VideoTransferFunction::Bt709,
-        gst_video::VideoColorPrimaries::Bt709,
-    ))
-    .build()
-    {
-        Ok(info) => info,
-        Err(err) => {
-            bail!("Failed to crate video info: {err}");
-        }
+    let mut pool_state = FRAME_POOL.lock();
+
+    let needs_rebuild = match pool_state.as_ref() {
+        Some(state) => state.width != width || state.height != height || state.fps != fps,
+        None => true,
     };
 
-    let frame_size = info.size();
-    let new_caps = match info.to_caps() {
-        Ok(caps) => caps,
-        Err(err) => {
-            bail!("Failed to create caps from video info: {err}");
-        }
-    };
+    if needs_rebuild {
+        let info = match gst_video::VideoInfo::builder(
+            gst_video::VideoFormat::I420,
+            width as u32,
+            height as u32,
+        )
+        .fps((fps, 1))
+        .colorimetry(&VideoColorimetry::new(
+            gst_video::VideoColorRange::Range0_255,
+            gst_video::VideoColorMatrix::Bt709,
+            gst_video::VideoTransferFunction::Bt709,
+            gst_video::VideoColorPrimaries::Bt709,
+        ))
+        .build()
+        {
+            Ok(info) => info,
+            Err(err) => {
+                bail!("Failed to crate video info: {err}");
+            }
+        };
 
-    fn init_frame_pool(
-        pool: &gst_video::VideoBufferPool,
-        mut old_config: gst::BufferPoolConfig,
-        new_caps: &gst::Caps,
-        frame_size: u32,
-    ) -> Result<()> {
-        pool.set_config({
-            old_config.set_params(Some(&new_caps), frame_size, 1, 30);
-            old_config
-        })?;
+        let caps = match info.to_caps() {
+            Ok(caps) => caps,
+            Err(err) => {
+                bail!("Failed to create caps from video info: {err}");
+            }
+        };
+
+        let pool = gst_video::VideoBufferPool::new();
+        let mut config = pool.config();
+        config.set_params(Some(&caps), info.size() as u32, 0, 0);
+        pool.set_config(config)?;
         pool.set_active(true)?;
-        Ok(())
+
+        *pool_state = Some(FramePool {
+            pool,
+            width,
+            height,
+            fps,
+            info,
+            caps,
+        });
     }
 
-    let mut frame_pool = FRAME_POOL.lock();
-    let old_config = frame_pool.config();
-    if !frame_pool.is_active() {
-        init_frame_pool(&frame_pool, old_config, &new_caps, frame_size as u32)?;
-    } else {
-        let _ = frame_pool.set_active(false);
-        let new_frame_pool = gst_video::VideoBufferPool::new();
-        init_frame_pool(&new_frame_pool, old_config, &new_caps, frame_size as u32)?;
-        *frame_pool = new_frame_pool;
-    }
+    let state = pool_state
+        .as_ref()
+        .expect("pool is always set after rebuild");
 
-    let buffer = match frame_pool.acquire_buffer(None) {
+    let buffer = match state.pool.acquire_buffer(None) {
         Ok(buffer) => buffer,
         Err(err) => {
             bail!("Failed to acquire buffer from pool: {err}");
         }
     };
-    let Ok(mut vframe) = gst_video::VideoFrame::from_buffer_writable(buffer, &info) else {
+    let Ok(mut vframe) = gst_video::VideoFrame::from_buffer_writable(buffer, &state.info) else {
         bail!("Failed to crate VideoFrame from buffer");
     };
 
@@ -866,6 +946,8 @@ fn process_frame<'local>(
         width as i32 / 2,
         height as i32 / 2,
     );
+
+    let new_caps = state.caps.clone();
 
     let (lock, cvar) = &*FRAME_PAIR;
     let mut frame = lock.lock();

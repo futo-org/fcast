@@ -35,6 +35,7 @@ url = "2"
 file-server = { path = "../../crates/file-server" }
 num_cpus.workspace = true
 mimalloc.workspace = true
+isolang.workspace = true
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"

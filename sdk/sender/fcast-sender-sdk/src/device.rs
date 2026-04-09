@@ -68,16 +68,23 @@ pub struct DeviceInfo {
     pub protocol: ProtocolType,
     pub addresses: Vec<IpAddr>,
     pub port: u16,
+    pub txt_records: HashMap<String, String>,
 }
 
 macro_rules! dev_info_constructor {
     ($fname:ident, $type:ident) => {
-        pub fn $fname(name: String, addresses: Vec<IpAddr>, port: u16) -> DeviceInfo {
+        pub fn $fname(
+            name: String,
+            addresses: Vec<IpAddr>,
+            port: u16,
+            txt_records: HashMap<String, String>,
+        ) -> DeviceInfo {
             DeviceInfo {
                 name,
                 protocol: ProtocolType::$type,
                 addresses,
                 port,
+                txt_records,
             }
         }
     };
@@ -87,34 +94,13 @@ macro_rules! dev_info_constructor {
 #[cfg(feature = "fcast")]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
-    let connection_info = url.strip_prefix("fcast://r/")?;
-
-    use base64::{
-        alphabet::URL_SAFE,
-        engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
-        Engine as _,
-    };
-    let b64_engine = GeneralPurpose::new(
-        &URL_SAFE,
-        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
-    );
-    let json = match b64_engine.decode(connection_info) {
-        Ok(json) => json,
-        Err(err) => {
-            log::error!("Failed to decode base64: {err}");
-            return None;
-        }
-    };
-    let found_info: fcast_protocol::FCastNetworkConfig = match serde_json::from_slice(&json) {
-        Ok(info) => info,
-        Err(err) => {
-            log::error!("Failed to decode network config json: {err}");
-            return None;
-        }
+    let Some(network_config) = fcast_protocol::FCastNetworkConfig::parse_url(&url) else {
+        log::error!("Failed to parse URL as FCastNetworkConfig");
+        return None;
     };
 
     let tcp_service = 'out: {
-        for service in found_info.services {
+        for service in network_config.services {
             if service.r#type == 0 {
                 break 'out service;
             }
@@ -123,7 +109,7 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
         return None;
     };
 
-    let addrs = found_info
+    let addrs = network_config
         .addresses
         .iter()
         .map(|a| a.parse::<std::net::IpAddr>())
@@ -133,7 +119,12 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
         })
         .collect::<Option<Vec<IpAddr>>>()?;
 
-    Some(DeviceInfo::fcast(found_info.name, addrs, tcp_service.port))
+    Some(DeviceInfo::fcast(
+        network_config.name,
+        addrs,
+        tcp_service.port,
+        network_config.txt.unwrap_or(HashMap::new()),
+    ))
 }
 
 impl DeviceInfo {
@@ -151,6 +142,7 @@ pub enum PlaybackState {
     Buffering,
     Playing,
     Paused,
+    Ended,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -164,12 +156,19 @@ pub enum Source {
     Content {
         content: String,
     },
+    CompanionResource {
+        id: u32,
+        /// MIME content type
+        content_type: String,
+    },
 }
 
 impl Source {
     pub fn content_type(&self) -> Option<&str> {
         match self {
-            Source::Url { content_type, .. } => Some(content_type.as_str()),
+            Source::Url { content_type, .. } | Source::CompanionResource { content_type, .. } => {
+                Some(content_type.as_str())
+            }
             _ => None,
         }
     }
@@ -268,6 +267,27 @@ pub struct MediaEvent {
     pub item: MediaItem,
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug)]
+pub struct ResourceInfo {}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum MediaTrackType {
+    Video,
+    Audio,
+    Subtitle,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaTrack {
+    pub id: u32,
+    pub title: Option<String>,
+    pub language: String,
+    pub typ: MediaTrackType,
+}
+
 #[allow(unused_variables)]
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait DeviceEventHandler: Send + Sync {
@@ -281,22 +301,60 @@ pub trait DeviceEventHandler: Send + Sync {
     fn key_event(&self, event: KeyEvent);
     fn media_event(&self, event: MediaEvent);
     fn playback_error(&self, message: String);
+    fn tracks_available(&self, tracks: Vec<MediaTrack>);
+    fn track_selected(&self, id: Option<u32>, typ: MediaTrackType);
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
+pub struct MirroringOfferSink {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+impl MirroringOfferSink {
+    /// Deliver the SDP offer to the SDK.
+    pub fn send_offer(&self, sdp: String) {
+        let _ = self.tx.send(sdp);
+    }
+}
+
+impl MirroringOfferSink {
+    pub(crate) fn new(tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        Self { tx }
+    }
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
+pub trait FWRTCSignaller: Send + Sync + std::fmt::Debug {
+    fn set_offer_sink(&self, sink: Arc<MirroringOfferSink>);
+    fn on_answer_received(&self, answer: String);
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum CastingDeviceError {
-    #[error("failed to send command to worker thread")]
     FailedToSendCommand,
-    #[error("missing addresses")]
     MissingAddresses,
-    #[error("device already started")]
     DeviceAlreadyStarted,
-    #[error("unsupported subscription")]
     UnsupportedSubscription,
-    #[error("unsupported feature")]
     UnsupportedFeature,
+}
+
+impl std::error::Error for CastingDeviceError {}
+
+impl std::fmt::Display for CastingDeviceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CastingDeviceError::FailedToSendCommand => {
+                write!(f, "failed to send command to worker thread")
+            }
+            CastingDeviceError::MissingAddresses => write!(f, "missing addresses"),
+            CastingDeviceError::DeviceAlreadyStarted => write!(f, "device already started"),
+            CastingDeviceError::UnsupportedSubscription => write!(f, "unsupported subscription"),
+            CastingDeviceError::UnsupportedFeature => write!(f, "unsupported feature"),
+        }
+    }
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -313,6 +371,10 @@ pub enum DeviceFeature {
     PlaylistNextAndPrevious,
     SetPlaylistItemIndex,
     WhepStreaming,
+    FCompanion,
+    FWRTCSignalling,
+    ChangeTrack,
+    Queue,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -330,8 +392,56 @@ pub struct ApplicationInfo {
     pub display_name: String,
 }
 
+// TODO: should collapse to store in a file when using internally
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq)]
+pub enum CompanionSourceDescriptor {
+    Path(String),
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, PartialEq)]
+pub struct CompanionSource {
+    pub descriptor: CompanionSourceDescriptor,
+    pub content_type: String,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Debug, PartialEq)]
+pub enum QueueItem {
+    Url {
+        url: String,
+        content_type: String,
+        metadata: Option<Metadata>,
+        request_headers: Option<HashMap<String, String>>,
+    },
+    Companion {
+        content_type: String,
+        source: CompanionSource,
+        metadata: Option<Metadata>,
+    },
+}
+
+impl QueueItem {
+    pub fn content_type(&self) -> &str {
+        match self {
+            QueueItem::Url { content_type, .. } | QueueItem::Companion { content_type, .. } => {
+                &content_type
+            }
+        }
+    }
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Debug, PartialEq)]
+pub enum QueuePosition {
+    Front,
+    Back,
+    Index(u8),
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Debug)]
 pub enum LoadRequest {
     Url {
         content_type: String,
@@ -370,6 +480,18 @@ pub enum LoadRequest {
     },
     Playlist {
         items: Vec<PlaylistItem>,
+    },
+    CompanionResource {
+        content_type: String,
+        source: CompanionSource,
+        resume_position: Option<f64>,
+        speed: Option<f64>,
+        volume: Option<f64>,
+        metadata: Option<Metadata>,
+    },
+    Queue {
+        items: Vec<QueueItem>,
+        start_index: Option<u8>,
     },
 }
 
@@ -435,4 +557,107 @@ pub trait CastingDevice: Send + Sync {
     /// [`supports_feature`]: Self::supports_feature
     fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
     fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
+    fn start_mirroring_session(
+        &self,
+        signaller: Arc<dyn FWRTCSignaller>,
+    ) -> Result<(), CastingDeviceError>;
+    fn change_track(
+        &self,
+        id: Option<u32>,
+        track_type: MediaTrackType,
+    ) -> Result<(), CastingDeviceError>;
+    fn queue_remove(&self, position: QueuePosition) -> Result<(), CastingDeviceError>;
+    fn queue_add(&self, item: QueueItem, position: QueuePosition)
+        -> Result<(), CastingDeviceError>;
+    fn queue_select(&self, position: QueuePosition) -> Result<(), CastingDeviceError>;
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "fcast")]
+    #[test]
+    fn test_device_info_from_url() {
+        use super::{device_info_from_url, DeviceInfo, ProtocolType};
+        use crate::IpAddr;
+        use fcast_protocol::{FCastNetworkConfig, FCastService};
+        use std::collections::HashMap;
+
+        let config = FCastNetworkConfig {
+            name: "Living Room".to_string(),
+            addresses: vec!["192.168.1.42".to_string(), "10.0.0.5".to_string()],
+            services: vec![
+                FCastService {
+                    port: 8009,
+                    r#type: 1,
+                },
+                FCastService {
+                    port: 46899,
+                    r#type: 0,
+                },
+            ],
+            txt: Some(HashMap::from([("version".to_string(), "3".to_string())])),
+        };
+        let url = config.to_url().unwrap();
+        let info = device_info_from_url(url).expect("should produce device info");
+        assert_eq!(
+            info,
+            DeviceInfo {
+                name: "Living Room".to_string(),
+                protocol: ProtocolType::FCast,
+                addresses: vec![IpAddr::v4(192, 168, 1, 42), IpAddr::v4(10, 0, 0, 5)],
+                port: 46899,
+                txt_records: HashMap::from([("version".to_string(), "3".to_string())]),
+            }
+        );
+
+        let config = FCastNetworkConfig {
+            name: "No Txt".to_string(),
+            addresses: vec!["127.0.0.1".to_string()],
+            services: vec![FCastService {
+                port: 1234,
+                r#type: 0,
+            }],
+            txt: None,
+        };
+        let info = device_info_from_url(config.to_url().unwrap()).unwrap();
+        assert_eq!(info.port, 1234);
+        assert_eq!(info.addresses, vec![IpAddr::v4(127, 0, 0, 1)]);
+        assert!(info.txt_records.is_empty());
+
+        let config = FCastNetworkConfig {
+            name: "v6".to_string(),
+            addresses: vec!["fe80::1".to_string()],
+            services: vec![FCastService {
+                port: 46899,
+                r#type: 0,
+            }],
+            txt: None,
+        };
+        let info = device_info_from_url(config.to_url().unwrap()).unwrap();
+        let expected_v6 = IpAddr::from(&"fe80::1".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(info.addresses, vec![expected_v6]);
+
+        let config = FCastNetworkConfig {
+            name: "No TCP".to_string(),
+            addresses: vec!["192.168.1.1".to_string()],
+            services: vec![FCastService {
+                port: 8009,
+                r#type: 1,
+            }],
+            txt: None,
+        };
+        assert!(device_info_from_url(config.to_url().unwrap()).is_none());
+
+        let config = FCastNetworkConfig {
+            name: "Bad Addr".to_string(),
+            addresses: vec!["not-an-ip".to_string()],
+            services: vec![FCastService {
+                port: 46899,
+                r#type: 0,
+            }],
+            txt: None,
+        };
+        assert!(device_info_from_url(config.to_url().unwrap()).is_none());
+        assert!(device_info_from_url("https://example.com".to_string()).is_none());
+    }
 }

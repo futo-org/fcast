@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
-use xtask::{android, mdns, receiver, sender, sh, test_corpus, workspace};
+use xtask::{android, mdns, protocol, receiver, sender, sh, test_corpus, workspace};
 #[cfg(feature = "uniffi")]
 use xtask::{
     csharp, kotlin,
@@ -24,6 +24,7 @@ enum Command {
     Mdns(mdns::MdnsArgs),
     Receiver(receiver::ReceiverArgs),
     Test,
+    Protocol(protocol::ProtocolArgs),
 }
 
 #[derive(Parser)]
@@ -62,7 +63,8 @@ fn main() {
             let root_path = workspace::root_path().unwrap();
             let _p = sh.push_dir(root_path.clone());
 
-            cmd!(sh, "cargo test --all-features --workspace --exclude receiver-android --exclude android-sender --exclude fiatlux-sys --exclude fiatlux --exclude fhs-receiver").run().unwrap();
+            cmd!(sh, "cargo test --all-targets --all-features --workspace --exclude receiver-android --exclude android-sender --exclude fiatlux-sys --exclude fiatlux --exclude fhs-receiver --exclude xtask-fuzz").run().unwrap();
         }
+        Command::Protocol(cmd) => cmd.run().unwrap(),
     }
 }
