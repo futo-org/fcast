@@ -13,10 +13,19 @@ pub mod v3;
 
 pub const HEADER_LENGTH: usize = 5;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum TryFromByteError {
-    #[error("Unknown opcode: {0}")]
     UnknownOpcode(u8),
+}
+
+impl std::error::Error for TryFromByteError {}
+
+impl std::fmt::Display for TryFromByteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TryFromByteError::UnknownOpcode(opcode) => write!(f, "Unknown opcode: {opcode}"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]

@@ -2545,7 +2545,6 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "serde_with",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2566,7 +2565,6 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-stream",

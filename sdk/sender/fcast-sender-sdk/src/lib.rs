@@ -158,10 +158,28 @@ uniffi::setup_scaffolding!();
 #[cfg(any(feature = "discovery", any_protocol))]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum AsyncRuntimeError {
-    #[error("failed to build")]
-    FailedToBuild(#[from] std::io::Error),
+    FailedToBuild(std::io::Error),
+}
+
+#[cfg(any(feature = "discovery", any_protocol))]
+impl std::error::Error for AsyncRuntimeError {}
+
+#[cfg(any(feature = "discovery", any_protocol))]
+impl std::fmt::Display for AsyncRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AsyncRuntimeError::FailedToBuild(err) => write!(f, "Failed to build runtime {err:?}"),
+        }
+    }
+}
+
+#[cfg(any(feature = "discovery", any_protocol))]
+impl From<std::io::Error> for AsyncRuntimeError {
+    fn from(value: std::io::Error) -> Self {
+        Self::FailedToBuild(value)
+    }
 }
 
 #[cfg(any_protocol)]
@@ -255,10 +273,28 @@ impl IpAddr {
 #[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum ParseIpAddrError {
-    #[error("failed to parse address")]
-    FailedToParse(#[from] std::net::AddrParseError),
+    FailedToParse(std::net::AddrParseError),
+}
+
+#[cfg(any_protocol)]
+impl std::error::Error for ParseIpAddrError {}
+
+#[cfg(any_protocol)]
+impl std::fmt::Display for ParseIpAddrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseIpAddrError::FailedToParse(err) => write!(f, "Failed to parse IP address {err:?}"),
+        }
+    }
+}
+
+#[cfg(any_protocol)]
+impl From<std::net::AddrParseError> for ParseIpAddrError {
+    fn from(value: std::net::AddrParseError) -> Self {
+        Self::FailedToParse(value)
+    }
 }
 
 #[allow(dead_code)]
