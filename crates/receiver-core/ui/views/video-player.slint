@@ -183,12 +183,12 @@ component SettingsTrackList inherits Rectangle {
                 background: #FFFFFF0A;
             }
 
-            for track[id] in tracks: VerticalLayout {
+            for track in tracks: VerticalLayout {
                 SettingItem {
                     value: track.name;
-                    selected: selected-id == id;
+                    selected: selected-id == track.id;
 
-                    clicked => clicked(id);
+                    clicked => clicked(track.id);
                 }
 
                 Rectangle {

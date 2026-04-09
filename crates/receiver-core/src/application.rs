@@ -10,11 +10,14 @@ use base64::Engine;
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState,
     v3::{self, VolumeUpdateMessage},
+    v4::{self, flat::ErrorKind},
 };
 use gst::{glib::object::Cast, prelude::*};
 use parking_lot::Mutex;
+use rcgen::PublicKeyData;
 use slint::ToSharedString;
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use tokio::{
     net::TcpListener,
     sync::{
@@ -28,12 +31,16 @@ use tracing::{debug, error, info, warn};
 use crate::message;
 use crate::{
     AppState, FCAST_TCP_PORT, GCastUpdateSender, GuiPlaybackState, MediaItemId, MessageSender,
-    UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
-    fcast::{Operation, ReceiverToSenderMessage, SessionDriver, SessionId, TranslatableMessage},
-    gcast,
+    SenderId, UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
+    fcast::{
+        self, CompanionContext, InitialV4State, Operation, ReceiverToSenderMessage, SessionDriver,
+        TranslatableMessage, WrappedPlayMessage,
+    },
+    fcompsrc, fwebrtcsrc, gcast,
     gui::{self, GuiController, ToastType},
     image,
-    message::{Mdns, Message, Raop},
+    media_formats::SupportedFormats,
+    message::{Mdns, Message, Raop, ReceiverToFCastSender},
     player::{self, PlayerState},
     raop, user_agent,
     utils::{current_time_millis, map_to_header_map},
@@ -41,20 +48,11 @@ use crate::{
 #[cfg(not(target_os = "android"))]
 use crate::{Settings, mdns};
 
-const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(700);
+const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
+const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
-
-#[derive(Debug)]
-enum OnUriLoadedCommand {
-    Volume(f64),
-}
-
-#[derive(Debug)]
-// TODO: rename and merge with OnUriLoadedCommand
-enum OnFirstPlayingStateChangedCommand {
-    Seek { position: f64, rate: f64 },
-}
 
 #[derive(PartialEq, Eq)]
 enum PreservePlaylist {
@@ -72,6 +70,201 @@ struct RaopServer {
     config: raop::Configuration,
 }
 
+#[derive(Clone, Debug)]
+struct QueueItem {
+    content_type: String,
+    url: String,
+    time: Option<f64>,
+    volume: Option<f64>,
+    speed: Option<f64>,
+    show_duration: Option<f64>,
+    headers: Option<HashMap<String, String>>,
+    title: Option<String>,
+    thumbnail_url: Option<String>,
+}
+
+impl QueueItem {
+    fn from_flat(item: &v4::flat::QueueItem) -> Self {
+        let media_item = item.media_item();
+        let headers = media_item.headers().map(|headers| {
+            headers
+                .iter()
+                .map(|h| (h.key().to_owned(), h.value().to_owned()))
+                .collect()
+        });
+        Self {
+            content_type: media_item.container().to_owned(),
+            url: media_item.source_url().to_owned(),
+            time: media_item
+                .start_time()
+                .map(|t| Duration::from_micros(t.micros()).as_secs_f64()),
+            volume: media_item.volume().map(|v| v as f64),
+            speed: media_item.speed().map(|s| s as f64),
+            show_duration: item
+                .playback_duration()
+                .map(|t| Duration::from_micros(t.micros()).as_secs_f64()),
+            headers,
+            title: media_item.title().map(ToOwned::to_owned),
+            thumbnail_url: media_item.thumbnail_url().map(ToOwned::to_owned),
+        }
+    }
+
+    fn to_media_item(&self) -> v3::MediaItem {
+        let metadata = if self.title.is_some() || self.thumbnail_url.is_some() {
+            Some(v3::MetadataObject::Generic {
+                title: self.title.clone(),
+                thumbnail_url: self.thumbnail_url.clone(),
+                custom: None,
+            })
+        } else {
+            None
+        };
+        v3::MediaItem {
+            container: self.content_type.clone(),
+            url: Some(self.url.clone()),
+            time: self.time,
+            volume: self.volume,
+            speed: self.speed,
+            show_duration: self.show_duration,
+            headers: self.headers.clone(),
+            metadata,
+            ..Default::default()
+        }
+    }
+}
+
+struct QueueState {
+    items: Vec<QueueItem>,
+    current_idx: u8,
+}
+
+fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
+    use image::DownloadImageError as E;
+    match err {
+        E::RequestFailed(_)
+        | E::Unsuccessful(_)
+        | E::InvalidUrl(_)
+        | E::FailedToGetInfo
+        | E::InvalidCompUrl
+        | E::ProviderNotFound
+        | E::CompRequestFailed
+        | E::ResourceNotFound => ErrorKind::ResourceNotFound,
+        E::MissingContentType
+        | E::InvalidContentType
+        | E::ContentTypeIsNotString
+        | E::UnsupportedContentType(_)
+        | E::DecodeImage(_) => ErrorKind::UnsupportedFormat,
+    }
+}
+
+fn media_error_kind_to_error(kind: player::MediaErrorKind) -> ErrorKind {
+    match kind {
+        player::MediaErrorKind::NotFound | player::MediaErrorKind::NotAuthorized => {
+            ErrorKind::ResourceNotFound
+        }
+        player::MediaErrorKind::UnsupportedFormat => ErrorKind::UnsupportedFormat,
+        player::MediaErrorKind::Other => ErrorKind::Internal,
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum LoadMediaError {
+    #[error("invalid content container ({0})")]
+    InvalidContentContainer(String),
+    #[error("item has no URL or content")]
+    NoUrlOrContent,
+    #[error("no current media item")]
+    NoItem,
+    #[error("playlist/queue index out of bounds")]
+    IndexOutOfBounds,
+}
+
+fn load_media_error_kind(err: &LoadMediaError) -> ErrorKind {
+    match err {
+        LoadMediaError::NoUrlOrContent => ErrorKind::MalformedBody,
+        LoadMediaError::InvalidContentContainer(_) => ErrorKind::UnsupportedFormat,
+        LoadMediaError::IndexOutOfBounds | LoadMediaError::NoItem => ErrorKind::Internal,
+    }
+}
+
+enum MediaSource {
+    Single(Arc<fcast::WrappedPlayMessage>),
+    Playlist {
+        content: v3::PlaylistContent,
+        index: usize,
+    },
+    Queue(QueueState),
+    Raop,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum PacketOrigin {
+    Gui,
+    AutoPlay,
+    FCast {
+        sender_id: SenderId,
+        packet_num: Option<u32>,
+    },
+    GCast {
+        sender_id: SenderId,
+    },
+    Raop,
+}
+
+impl PacketOrigin {
+    pub(crate) fn fcast(sender_id: SenderId, packet_num: Option<u32>) -> Self {
+        Self::FCast {
+            sender_id,
+            packet_num,
+        }
+    }
+
+    pub(crate) fn gcast(sender_id: SenderId) -> Self {
+        Self::GCast { sender_id }
+    }
+}
+
+struct MediaSourceState {
+    origin: PacketOrigin,
+    source: MediaSource,
+    image_id: Option<image::ImageId>,
+    pending_thumbnail: Option<image::ImageId>,
+    pending_thumbnail_download: Option<image::ImageDownloadId>,
+}
+
+impl MediaSourceState {
+    fn new(origin: PacketOrigin, source: MediaSource) -> Self {
+        Self {
+            origin,
+            source,
+            image_id: None,
+            pending_thumbnail: None,
+            pending_thumbnail_download: None,
+        }
+    }
+}
+
+struct FCastSenderHandle {
+    msg_tx: mpsc::UnboundedSender<ReceiverToFCastSender>,
+    progress_interval: Duration,
+    last_progress_update: Instant,
+}
+
+impl FCastSenderHandle {
+    fn new(msg_tx: mpsc::UnboundedSender<ReceiverToFCastSender>) -> Self {
+        Self {
+            msg_tx,
+            progress_interval: DEFAULT_PROGRESS_INTERVAL,
+            last_progress_update: Instant::now(),
+        }
+    }
+}
+
+struct OnMediaLoadedOperation {
+    seek_position: gst::ClockTime,
+    seek_rate: f32,
+}
+
 pub struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
@@ -83,27 +276,21 @@ pub struct Application {
     debug_mode: bool,
     player: player::Player,
     current_duration: Option<gst::ClockTime>,
-    on_uri_loaded_command_queue: smallvec::SmallVec<[OnUriLoadedCommand; 1]>,
-    on_playing_command_queue: smallvec::SmallVec<[OnFirstPlayingStateChangedCommand; 2]>,
+    on_playing_command: Option<OnMediaLoadedOperation>,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
     have_audio_track_cover: bool,
-    current_play_data: Option<v3::PlayMessage>,
+    current_media: Option<MediaSourceState>,
     have_media_info: bool,
     current_thumbnail_id: image::ImageId,
-    pending_thumbnail: Option<image::ImageId>,
-    pending_thumbnail_download: Option<image::ImageDownloadId>,
     current_addresses: HashSet<IpAddr>,
     have_media_title: bool,
     last_position_updated: f64,
     http_client: reqwest::Client,
     current_request_headers: Arc<Mutex<Option<HashMap<String, String>>>>,
-    current_playlist: Option<v3::PlaylistContent>,
-    current_playlist_item_idx: Option<usize>,
     device_name: Option<String>,
     current_media_item_id: MediaItemId,
     is_loading_media: bool,
-    active_raop_session: bool,
     raop_server: Option<RaopServer>,
     gui: GuiController,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -116,6 +303,12 @@ pub struct Application {
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    companion_ctx: CompanionContext,
+    signalling_channel: Arc<Mutex<Option<fwebrtcsrc::SignallingChannel>>>,
+    receiver_info: Arc<crate::ReceiverInfo>,
+    fcast_txt_records: HashMap<String, String>,
+    fcast_senders: HashMap<SenderId, FCastSenderHandle>,
 }
 
 impl Application {
@@ -141,20 +334,28 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(video_sink, msg_tx.clone())?;
+        let companion_ctx = CompanionContext::new();
+        let signalling_channel = Arc::new(Mutex::new(None::<fwebrtcsrc::SignallingChannel>));
+        let player = player::Player::new(
+            video_sink,
+            msg_tx.clone(),
+            fcompsrc::imp::CompContext(companion_ctx.clone()),
+            // Arc::clone(&signalling_channel),
+        )?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
         player.playbin.connect("element-setup", false, {
             let headers = Arc::clone(&headers);
+            let signalling_channel = Arc::clone(&signalling_channel);
             move |vals| {
                 let Ok(elem) = vals[1].get::<gst::Element>() else {
                     return None;
                 };
 
                 let name = elem.factory()?.name();
+                // debug!(?name, "Setting up element");
                 match name.as_str() {
-                    "rtspsrc" | "webrtcbin" => elem.set_property("latency", 75u32),
                     "fcasthttpsrc" => {
                         let mut did_set_user_agent = false;
                         if let Some(ref headers) = *headers.lock() {
@@ -177,6 +378,14 @@ impl Application {
                             );
                         }
                     }
+                    "fwebrtcsrc" => {
+                        if let Some(chan) = signalling_channel.lock().clone() {
+                            elem.set_property("signalling-channel", chan);
+                            debug!("Set `signalling-channel` on `fwebrtcsrc`")
+                        } else {
+                            warn!("Missing signalling channel");
+                        }
+                    }
                     _ => (),
                 }
 
@@ -186,8 +395,34 @@ impl Application {
 
         let (updates_tx, _) = broadcast::channel(10);
 
+        let (acceptor, fingerprint) = {
+            use rcgen::{CertificateParams, DistinguishedName, KeyPair, date_time_ymd};
+            use tokio_rustls::{TlsAcceptor, rustls};
+
+            let mut params: CertificateParams = Default::default();
+            params.not_before = date_time_ymd(1975, 1, 1);
+            params.not_after = date_time_ymd(4096, 1, 1);
+            params.distinguished_name = DistinguishedName::new();
+            let key_pair = KeyPair::generate()?;
+            let cert = params.self_signed(&key_pair)?;
+            let spki = key_pair.subject_public_key_info();
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(&spki);
+            let fingerprint = base64::engine::general_purpose::STANDARD.encode(digest);
+
+            let config =
+                rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                    .with_no_client_auth()
+                    .with_single_cert(vec![cert.der().to_owned()], key_pair.into())?;
+            (TlsAcceptor::from(Arc::new(config)), fingerprint)
+        };
+
+        let fcast_txt_records = HashMap::from([
+            ("fp".to_owned(), fingerprint),
+            ("v".to_owned(), "4".to_owned()),
+        ]);
         #[cfg(not(target_os = "android"))]
-        let mdns = mdns::start_daemon(&msg_tx, &settings)?;
+        let mdns = mdns::start_daemon(&msg_tx, &settings, &fcast_txt_records)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
             !settings.cli.no_google_cast
@@ -218,8 +453,6 @@ impl Application {
                     if let Ok(_) = stream.read_exact(&mut buf).await
                         && buf[0] == 0xFF
                     {
-                        use crate::message::Message;
-
                         msg_tx.send(Message::DumpPipeline);
                     }
                 }
@@ -248,9 +481,22 @@ impl Application {
             }
         });
 
+        image::init_extra_decoders();
         let image_decoder = image::Decoder::new(msg_tx.clone())?;
         let http_client = reqwest::Client::new();
-        let image_downloader = image::Downloader::new(msg_tx.clone(), http_client.clone());
+        let image_downloader =
+            image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
+
+        let receiver_info = Arc::new(crate::ReceiverInfo {
+            device_info: fcast_protocol::v4::DeviceInfo {
+                display_name: None,
+                app_name: Some("FCast Receiver Desktop".to_owned()),
+                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            },
+            supported_formats: SupportedFormats::get_all(),
+        });
+
+        debug!("Receiver information: {receiver_info:?}");
 
         Ok(Self {
             #[cfg(target_os = "android")]
@@ -266,27 +512,21 @@ impl Application {
             debug_mode: false,
             player,
             current_duration: None,
-            on_uri_loaded_command_queue: SmallVec::new(),
-            on_playing_command_queue: SmallVec::new(),
+            on_playing_command: None,
             current_image_id: 0,
             have_audio_track_cover: false,
-            current_play_data: None,
+            current_media: None,
             have_media_info: false,
-            pending_thumbnail: None,
             current_thumbnail_id: 0,
             current_image_download_id: 0,
-            pending_thumbnail_download: None,
             current_addresses: HashSet::new(),
             have_media_title: false,
             last_position_updated: -1.0,
             http_client,
             current_request_headers: headers,
-            current_playlist: None,
-            current_playlist_item_idx: None,
             device_name: None,
             current_media_item_id: 0,
             is_loading_media: false,
-            active_raop_session: false,
             raop_server: None,
             gui,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -303,12 +543,108 @@ impl Application {
                     app_reverse_domain: "org.fcast.receiver".to_owned(),
                 },
             ),
+            tls_acceptor: acceptor,
+            companion_ctx,
+            signalling_channel,
+            receiver_info,
+            fcast_txt_records,
+            fcast_senders: HashMap::new(),
         })
+    }
+
+    fn should_broadcast(&self) -> bool {
+        self.updates_tx.receiver_count() > 0
+    }
+
+    fn broadcast_update(&self, msg: ReceiverToSenderMessage) {
+        let _ = self.updates_tx.send(Arc::new(msg)).is_err();
+    }
+
+    fn relay_to_other_senders(
+        &self,
+        origin: PacketOrigin,
+        serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
+    ) {
+        if let PacketOrigin::FCast { sender_id, .. } = origin
+            && self.should_broadcast()
+        {
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::RelayToOtherSenders {
+                    initiator_session_id: sender_id,
+                    serialized_msg,
+                },
+            ));
+        }
+    }
+
+    fn playback_progress_changed(&mut self) {
+        let position = self.player.get_position().unwrap_or(gst::ClockTime::ZERO);
+        let duration = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
+
+        self.gui
+            .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
+
+        if self.should_broadcast() {
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::ProgressUpdated {
+                    pos: position,
+                    dur: duration,
+                },
+            ));
+        }
+    }
+
+    fn send_v4_progress_updates(&mut self) {
+        if self.fcast_senders.is_empty() {
+            return;
+        }
+
+        let pos = self.player.get_position().unwrap_or(gst::ClockTime::ZERO);
+        let dur = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
+        let now = Instant::now();
+
+        for handle in self.fcast_senders.values_mut() {
+            if now.duration_since(handle.last_progress_update) < handle.progress_interval {
+                continue;
+            }
+            handle.last_progress_update = now;
+            let _ = handle
+                .msg_tx
+                .send(ReceiverToFCastSender::ProgressUpdate { pos, dur });
+        }
+    }
+
+    fn playback_state_changed(&mut self, state: fcast_protocol::v4::PlaybackState) {
+        if self.should_broadcast() {
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::PlaybackStateChanged(state),
+            ));
+        }
+    }
+
+    fn send_error(&self, origin: PacketOrigin, error: fcast_protocol::v4::flat::ErrorKind) {
+        error!(?origin, ?error, "An error occured");
+
+        match origin {
+            PacketOrigin::Gui | PacketOrigin::AutoPlay | PacketOrigin::Raop => (),
+            PacketOrigin::FCast {
+                sender_id,
+                packet_num,
+            } => {
+                if let Some(sender_handle) = self.fcast_senders.get(&sender_id) {
+                    let _ = sender_handle.msg_tx.send(ReceiverToFCastSender::Error {
+                        kind: error,
+                        packet_num,
+                    });
+                }
+            }
+            PacketOrigin::GCast { .. } => (),
+        }
     }
 
     #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all))]
     fn notify_updates(&mut self, force: bool) -> Result<()> {
-        if !self.player.have_media_info() {
+        if !self.player.have_media_info() || self.player.is_seeking() {
             return Ok(());
         }
 
@@ -347,7 +683,7 @@ impl Application {
         self.gui
             .update_playback_progress(position as f32, duration as f32);
 
-        if self.updates_tx.receiver_count() > 0
+        if self.should_broadcast()
             && (self.last_sent_update.elapsed() >= SENDER_UPDATE_INTERVAL || force)
         {
             let update = v3::PlaybackUpdateMessage {
@@ -365,11 +701,10 @@ impl Application {
 
             debug!("Sending update ({update:?})");
 
-            let msg = ReceiverToSenderMessage::Translatable {
+            self.broadcast_update(ReceiverToSenderMessage::LegacyTranslatable {
                 op: Opcode::PlaybackUpdate,
                 msg: TranslatableMessage::PlaybackUpdate(update),
-            };
-            let _ = self.updates_tx.send(Arc::new(msg));
+            });
             self.last_sent_update = Instant::now();
         }
 
@@ -380,23 +715,22 @@ impl Application {
         &mut self,
         continue_to_play: ContinueToPlay,
         preserve_playlist: PreservePlaylist,
-    ) -> Result<()> {
+    ) {
         self.current_duration = None;
-        self.on_uri_loaded_command_queue.clear();
-        self.on_playing_command_queue.clear();
+        self.on_playing_command = None;
         self.have_audio_track_cover = false;
-        self.current_play_data = None;
         self.have_media_info = false;
-        self.pending_thumbnail = None;
         self.have_media_title = false;
         self.last_position_updated = -1.0;
         *self.current_request_headers.lock() = None;
-        if preserve_playlist == PreservePlaylist::No {
-            self.current_playlist = None;
-            self.current_playlist_item_idx = None;
-        }
         self.player.stop();
         self.is_loading_media = false;
+        if let Some(current_media) = self.current_media.as_mut() {
+            // TODO: is this right?
+            current_media.image_id = None;
+            current_media.pending_thumbnail = None;
+            current_media.pending_thumbnail_download = None;
+        }
 
         self.current_thumbnail_id += 1;
         self.current_image_id += 1;
@@ -427,27 +761,10 @@ impl Application {
                 self.gui.set_window_visibility(visible);
             }
         }
-
-        Ok(())
-    }
-
-    fn play_message_to_media_item(msg: v3::PlayMessage) -> v3::MediaItem {
-        v3::MediaItem {
-            container: msg.container,
-            url: msg.url,
-            content: msg.content,
-            time: msg.time,
-            volume: msg.volume,
-            speed: msg.speed,
-            cache: None,
-            show_duration: None,
-            headers: msg.headers,
-            metadata: msg.metadata,
-        }
     }
 
     fn is_playing(&self) -> bool {
-        self.current_play_data.is_some() || self.current_playlist.is_some()
+        self.current_media.is_some()
     }
 
     fn media_loaded_successfully(&mut self) {
@@ -472,64 +789,75 @@ impl Application {
             });
         }
 
-        if self.updates_tx.receiver_count() > 0
-            && let Some(play_msg) = self.current_play_data.clone()
-        {
-            let event = v3::EventObject::MediaItem {
-                variant: v3::EventType::MediaItemStart,
-                item: Self::play_message_to_media_item(play_msg),
-            };
-            let msg = v3::EventMessage {
-                generation_time: current_time_millis(),
-                event,
-            };
-            let _ = self
-                .updates_tx
-                .send(Arc::new(ReceiverToSenderMessage::Event { msg }));
-        }
+        let Some(current_media) = self.current_media.as_ref() else {
+            return;
+        };
 
-        if let Some(playlist) = self.current_playlist.as_ref()
-            && let Some(playlist_item_idx) = self.current_playlist_item_idx
-        {
-            let Some(item) = playlist.items.get(playlist_item_idx).cloned() else {
-                return;
-            };
-
-            if let Some(show_duration) = item.show_duration {
-                let msg_tx = self.msg_tx.clone();
-                let id = self.current_media_item_id;
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
-                    msg_tx.send(Message::MediaItemFinish(id));
-                });
+        match &current_media.source {
+            MediaSource::Single(play_msg) => {
+                if self.should_broadcast()
+                    && let fcast::WrappedPlayMessage::Legacy(msg) = play_msg.as_ref()
+                {
+                    let event = v3::EventObject::MediaItem {
+                        variant: v3::EventType::MediaItemStart,
+                        item: msg.clone().into(),
+                    };
+                    let msg = v3::EventMessage {
+                        generation_time: current_time_millis(),
+                        event,
+                    };
+                    self.broadcast_update(ReceiverToSenderMessage::Event { msg });
+                }
             }
+            MediaSource::Playlist { content, index } => {
+                let Some(item) = content.items.get(*index).cloned() else {
+                    return;
+                };
 
-            if self.updates_tx.receiver_count() > 0 {
-                let event = v3::EventObject::MediaItem {
-                    variant: v3::EventType::MediaItemChange,
-                    item,
-                };
-                let msg = v3::EventMessage {
-                    generation_time: current_time_millis(),
-                    event,
-                };
-                let _ = self
-                    .updates_tx
-                    .send(Arc::new(ReceiverToSenderMessage::Event { msg }));
+                if let Some(show_duration) = item.show_duration {
+                    let msg_tx = self.msg_tx.clone();
+                    let id = self.current_media_item_id;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
+                        msg_tx.send(Message::MediaItemFinish(id));
+                    });
+                }
+
+                if self.should_broadcast() {
+                    let event = v3::EventObject::MediaItem {
+                        variant: v3::EventType::MediaItemChange,
+                        item,
+                    };
+                    let msg = v3::EventMessage {
+                        generation_time: current_time_millis(),
+                        event,
+                    };
+                    self.broadcast_update(ReceiverToSenderMessage::Event { msg });
+                }
             }
+            MediaSource::Queue(_) => (),
+            MediaSource::Raop => (),
         }
     }
 
     fn current_item_uri(&self) -> Option<&str> {
-        if let Some(play_msg) = self.current_play_data.as_ref() {
-            play_msg.url.as_deref()
-        } else if let Some(playlist) = self.current_playlist.as_ref()
-            && let Some(idx) = self.current_playlist_item_idx
-            && let Some(item) = playlist.items.get(idx)
-        {
-            item.url.as_deref()
-        } else {
-            None
+        match &self.current_media.as_ref()?.source {
+            MediaSource::Single(play_msg) => match play_msg.as_ref() {
+                fcast::WrappedPlayMessage::Legacy(msg) => msg.url.as_deref(),
+                fcast::WrappedPlayMessage::V4(msg) => {
+                    let msg = msg.borrow_dependent();
+                    match msg.source_type() {
+                        fcast_protocol::v4::flat::MediaSource::Single => {
+                            Some(msg.source_as_single()?.source_url())
+                        }
+                        _ => None,
+                    }
+                }
+                fcast::WrappedPlayMessage::Chromecast(item) => Some(&item.url),
+            },
+            MediaSource::Playlist { content, index } => content.items.get(*index)?.url.as_deref(),
+            MediaSource::Queue(queue) => Some(&queue.items.get(queue.current_idx as usize)?.url),
+            MediaSource::Raop => None,
         }
     }
 
@@ -540,9 +868,10 @@ impl Application {
 
         error!(msg = message, "Media error");
 
-        self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No)?;
+        self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
+        self.current_media = None;
 
-        if self.updates_tx.receiver_count() > 0 {
+        if self.should_broadcast() {
             let update = v3::PlaybackUpdateMessage {
                 generation_time: current_time_millis(),
                 time: None,
@@ -551,18 +880,13 @@ impl Application {
                 speed: None,
                 item_index: None,
             };
-            let msg = ReceiverToSenderMessage::Translatable {
+            self.broadcast_update(ReceiverToSenderMessage::LegacyTranslatable {
                 op: Opcode::PlaybackUpdate,
                 msg: TranslatableMessage::PlaybackUpdate(update),
-            };
-            let _ = self.updates_tx.send(Arc::new(msg));
-            let _ = self
-                .updates_tx
-                .send(Arc::new(ReceiverToSenderMessage::Error(
-                    PlaybackErrorMessage {
-                        message: message.clone(),
-                    },
-                )));
+            });
+            self.broadcast_update(ReceiverToSenderMessage::Error(PlaybackErrorMessage {
+                message: message.clone(),
+            }))
         }
 
         self.gui.show_toast(ToastType::Error, message);
@@ -583,7 +907,7 @@ impl Application {
         Ok(())
     }
 
-    fn media_ended(&mut self) -> Result<()> {
+    fn media_ended(&mut self) {
         info!("Media finished");
 
         #[cfg(target_os = "android")]
@@ -599,47 +923,115 @@ impl Application {
 
         // Special case for when there's a google cast sender connected
         if self.updates_tx.receiver_count() == 0 {
-            self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?;
+            self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
+            self.current_media = None;
         }
 
         self.screensaver_inhibitor.un_inhibit();
-
-        Ok(())
     }
 
-    fn load_media_item(&mut self, media_item: &v3::MediaItem) -> Result<()> {
-        let mut url = if let Some(url) = media_item.url.clone() {
-            url
-        } else {
-            let Some(content) = media_item.content.as_ref() else {
-                error!("Play message does not contain a URL or content");
-                return Ok(());
-            };
+    fn queue_mut(&mut self) -> Option<&mut QueueState> {
+        match &mut self.current_media.as_mut()?.source {
+            MediaSource::Queue(queue) => Some(queue),
+            _ => None,
+        }
+    }
 
-            let content_type = match media_item.container.as_str() {
-                "application/dash+xml" => "application/dash+xml",
-                "application/vnd.apple.mpegurl" | "audio/mpegurl" => "application/x-hls",
-                _ => {
-                    error!("Invalid content type {}", media_item.container);
-                    return Ok(());
+    fn load_media(&mut self) {
+        if let Err(err) = self.load_current_media_item() {
+            error!(?err, "Failed to load media");
+            if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
+                self.send_error(origin, load_media_error_kind(&err));
+            }
+        }
+    }
+
+    fn load_current_media_item(&mut self) -> std::result::Result<(), LoadMediaError> {
+        let current_media = self.current_media.as_ref().ok_or(LoadMediaError::NoItem)?;
+        // TODO: this shouldn't be v3 item
+        let item = match &current_media.source {
+            MediaSource::Single(play_data) => match play_data.as_ref() {
+                fcast::WrappedPlayMessage::Legacy(msg) => msg.clone().into(),
+                fcast::WrappedPlayMessage::V4(packet) => {
+                    let Some(single) = packet.borrow_dependent().source_as_single() else {
+                        error!("Body is not a valid single source");
+                        self.send_error(current_media.origin, ErrorKind::MalformedBody);
+                        return Ok(());
+                    };
+                    v3::MediaItem {
+                        container: single.container().to_owned(),
+                        url: Some(single.source_url().to_owned()),
+                        time: single
+                            .start_time()
+                            .map(|t| Duration::from_micros(t.micros()).as_secs_f64()),
+                        volume: single.volume().map(|v| v as f64),
+                        speed: single.speed().map(|s| s as f64),
+                        ..Default::default()
+                    }
                 }
-            };
-
-            let b64_content = base64::engine::general_purpose::STANDARD.encode(content);
-
-            format!("data:{content_type};base64,{b64_content}")
+                fcast::WrappedPlayMessage::Chromecast(cast) => v3::MediaItem {
+                    container: cast.container.clone(),
+                    url: Some(cast.url.clone()),
+                    time: cast.time,
+                    speed: cast.speed,
+                    ..Default::default()
+                },
+            },
+            MediaSource::Playlist { content, index } => content
+                .items
+                .get(*index)
+                // Caller checks the index so this shouldn't be reached
+                .ok_or(LoadMediaError::IndexOutOfBounds)?
+                .clone(),
+            MediaSource::Queue(queue) => queue
+                .items
+                .get(queue.current_idx as usize)
+                // Caller checks the index so this shouldn't be reached
+                .ok_or(LoadMediaError::IndexOutOfBounds)?
+                .to_media_item(),
+            MediaSource::Raop => {
+                warn!("Cannot load RAOP source");
+                return Ok(());
+            }
         };
+
+        let container = item.container;
+        let mut url = match item.url {
+            Some(url) => url,
+            None => {
+                let Some(content) = item.content else {
+                    return Err(LoadMediaError::NoUrlOrContent);
+                };
+                let content_type = match container.as_str() {
+                    "application/dash+xml" => "application/dash+xml",
+                    "application/vnd.apple.mpegurl" | "audio/mpegurl" => "application/x-hls",
+                    other => {
+                        return Err(LoadMediaError::InvalidContentContainer(other.to_owned()));
+                    }
+                };
+                let b64_content = base64::engine::general_purpose::STANDARD.encode(content);
+                format!("data:{content_type};base64,{b64_content}")
+            }
+        };
+        let volume = item.volume.map(|v| v as f32);
+        let start_position = item
+            .time
+            .and_then(|s| gst::ClockTime::try_from_seconds_f64(s).ok())
+            .unwrap_or(gst::ClockTime::ZERO);
+        let playback_rate = item.speed.unwrap_or(1.0) as f32;
+        let headers = item.headers;
 
         self.have_audio_track_cover = false;
         let mut is_for_sure_live = false;
-        if media_item.container == "application/x-whep" {
+        if container == "application/x-whep" {
             url = url.replace("http://", "fcastwhep://");
+            is_for_sure_live = true;
+        } else if container == "application/x-fwebrtc" {
             is_for_sure_live = true;
         }
 
-        self.on_playing_command_queue.clear();
+        self.on_playing_command = None;
 
-        let container = media_item.container.as_str();
         let player_variant = if container.starts_with("image/") {
             UiPlayerVariant::Image
         } else if container.starts_with("audio/")
@@ -648,6 +1040,7 @@ impl Application {
             || container == "application/x-whep"
             || container == "application/dash+xml"
             || container == "application/vnd.apple.mpegurl"
+            || container == "application/x-fwebrtc"
         {
             UiPlayerVariant::Audio
         } else {
@@ -656,10 +1049,10 @@ impl Application {
 
         match player_variant {
             UiPlayerVariant::Image => {
-                self.cleanup_playback_data(ContinueToPlay::Yes, PreservePlaylist::Yes)?
+                self.cleanup_playback_data(ContinueToPlay::Yes, PreservePlaylist::Yes)
             }
             UiPlayerVariant::Unknown | UiPlayerVariant::Audio | UiPlayerVariant::Video => {
-                self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?
+                self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)
             }
             UiPlayerVariant::Raop => (),
         }
@@ -675,40 +1068,41 @@ impl Application {
         let mut media_title = None;
         if !self.settings.cli.headless
             && let Some(v3::MetadataObject::Generic {
-                thumbnail_url: Some(thumbnail_url),
                 title,
+                thumbnail_url: Some(thumbnail_url),
                 ..
-            }) = media_item.metadata.as_ref()
+            }) = item.metadata
         {
-            media_title = title.clone();
+            media_title = title;
             self.have_audio_track_cover = true;
             self.current_image_download_id += 1;
             let this_id = self.current_image_download_id;
-            let url = thumbnail_url.clone();
-            self.pending_thumbnail_download = Some(this_id);
-            let headers = media_item.headers.clone();
-            self.image_downloader.queue_download(this_id, url, headers);
+            self.current_media
+                .as_mut()
+                .ok_or(LoadMediaError::NoItem)?
+                .pending_thumbnail_download = Some(this_id);
+            self.image_downloader
+                .queue_download(this_id, thumbnail_url, headers.clone());
         }
 
         let mut is_image = false;
         if container.starts_with("image/") {
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
-            let headers = media_item.headers.clone();
             is_image = true;
-            self.image_downloader.queue_download(id, url, headers);
+            self.image_downloader
+                .queue_download(id, url.clone(), headers.clone());
         } else {
             self.player.set_uri(&url);
-            if let Some(volume) = media_item.volume {
-                self.on_uri_loaded_command_queue
-                    .push(OnUriLoadedCommand::Volume(volume));
+            if let Some(volume) = volume {
+                self.player.set_volume(volume);
             }
 
             if !is_for_sure_live {
-                let position = media_item.time.unwrap_or(0.0);
-                let rate = media_item.speed.unwrap_or(1.0);
-                self.on_playing_command_queue
-                    .push(OnFirstPlayingStateChangedCommand::Seek { position, rate });
+                self.on_playing_command = Some(OnMediaLoadedOperation {
+                    seek_position: start_position,
+                    seek_rate: playback_rate,
+                });
             }
         }
 
@@ -735,14 +1129,14 @@ impl Application {
             });
         }
         self.is_loading_media = true;
-        *self.current_request_headers.lock() = media_item.headers.clone();
+        *self.current_request_headers.lock() = headers;
 
         self.screensaver_inhibitor.inhibit("Media playback");
 
         Ok(())
     }
 
-    fn handle_playlist_play_request(&mut self, play_message: &v3::PlayMessage) -> Result<()> {
+    fn handle_playlist_play_request(&mut self, play_message: &v3::PlayMessage) {
         if let Some(url) = play_message.url.as_ref() {
             let url = url.clone();
             let mut play_message = play_message.clone();
@@ -778,14 +1172,8 @@ impl Application {
                 play_message: Some(play_message.clone()),
             });
         } else {
-            bail!("No playlist available");
+            error!("Cannot load playlist since there's no URL or content");
         }
-
-        Ok(())
-    }
-
-    fn handle_simple_play_request(&mut self, play_message: &v3::PlayMessage) -> Result<()> {
-        self.load_media_item(&Self::play_message_to_media_item(play_message.clone()))
     }
 
     fn video_stream_available(&self) -> Result<()> {
@@ -801,76 +1189,384 @@ impl Application {
         Ok(())
     }
 
-    fn handle_operation(&mut self, op: Operation) -> Result<bool> {
-        match op {
-            Operation::Pause => {
-                if self.is_playing() {
-                    self.player.pause();
-                }
+    fn stop_playback(&mut self) {
+        tracing::info!(is_playing = self.is_playing());
+        if self.is_playing() {
+            self.player.stop();
+            self.gui.set_app_state(AppState::Idle);
+            self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
+            self.current_media = None;
+            self.screensaver_inhibitor.un_inhibit();
+        }
+    }
+
+    /// `relay` controls whether a successful selection is forwarded to the
+    /// other senders as a `QueueItemSelected`. It must be `false` for implicit
+    /// selections (e.g. the initial item of a freshly loaded queue), since the
+    /// triggering `Load` is relayed on its own.
+    fn play_queue_item(&mut self, origin: PacketOrigin, position: v4::QueuePosition, relay: bool) {
+        let Some(queue) = self.queue_mut() else {
+            error!("Cannot play a queue item when there's no active queue");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return;
+        };
+
+        let index = match position {
+            v4::QueuePosition::Index(idx) => idx,
+            v4::QueuePosition::Front => 0,
+            v4::QueuePosition::Back => queue.items.len().saturating_sub(1) as u8,
+        };
+
+        if queue.items.is_empty() || index as usize >= queue.items.len() {
+            error!(index, "Requested queue item index does not exist");
+            self.send_error(origin, ErrorKind::QueuePositionOutOfRange);
+            return;
+        }
+
+        debug!(?index, "Selecting queue item");
+        queue.current_idx = index;
+
+        self.load_media();
+
+        if relay {
+            self.relay_to_other_senders(
+                origin,
+                fcast_protocol::v4::MessageBuilder::new().queue_select(position),
+            );
+        }
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn remove_queue_item(&mut self, origin: PacketOrigin, position: v4::QueuePosition) {
+        let Some(queue) = self.queue_mut() else {
+            error!("Cannot play a queue item when there's no active queue");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return;
+        };
+
+        let idx = match position {
+            v4::QueuePosition::Index(idx) => idx as usize,
+            v4::QueuePosition::Front => 0,
+            v4::QueuePosition::Back => queue.items.len().saturating_sub(1),
+        };
+
+        if queue.items.is_empty() || idx >= queue.items.len() {
+            error!(idx, "Invalid index");
+            self.send_error(origin, ErrorKind::QueuePositionOutOfRange);
+            return;
+        }
+
+        if idx == queue.current_idx as usize {
+            error!(idx, "Cannot remove the currently playing item");
+            self.send_error(origin, ErrorKind::QueueRemovePlayingItem);
+            return;
+        }
+
+        if idx <= queue.current_idx as usize {
+            queue.current_idx = queue.current_idx.saturating_sub(1);
+        }
+
+        queue.items.remove(idx);
+
+        self.relay_to_other_senders(
+            origin,
+            fcast_protocol::v4::MessageBuilder::new().queue_remove(position),
+        );
+    }
+
+    // TODO: caching
+    #[tracing::instrument(skip_all)]
+    fn insert_queue_item(&mut self, origin: PacketOrigin, insert: fcast::QueueInsertCell) {
+        let Some(queue) = self.queue_mut() else {
+            error!("Cannot play a queue item when there's no active queue");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return;
+        };
+
+        if queue.items.len() >= u8::MAX as usize + 1 {
+            error!("Cannot insert into the queue because it's full");
+            self.send_error(origin, ErrorKind::QueueFull);
+            return;
+        }
+
+        let insert = insert.borrow_dependent();
+        let idx = match insert.position_type() {
+            v4::flat::QueuePosition::Back => queue.items.len(),
+            v4::flat::QueuePosition::Front => 0,
+            v4::flat::QueuePosition::Index => {
+                let Some(idx) = insert.position_as_index() else {
+                    error!("Queue insert position is missing its index");
+                    self.send_error(origin, ErrorKind::MalformedBody);
+                    return;
+                };
+
+                idx.index() as usize
             }
-            Operation::Resume => {
-                if self.is_playing() {
-                    self.player.play();
-                }
+            _ => {
+                error!(position = ?insert.position_type(), "Invalid queue position");
+                self.send_error(origin, ErrorKind::MalformedBody);
+                return;
             }
-            Operation::Stop => {
-                if self.is_playing() {
-                    self.player.stop();
-                    self.gui.set_app_state(AppState::Idle);
-                    self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No)?;
-                    self.screensaver_inhibitor.un_inhibit();
-                }
-                // TODO: notify update? or wait for async state change from player
-            }
-            Operation::Play(play_message) => {
-                if play_message.container == "application/json" {
-                    self.handle_playlist_play_request(&play_message)?;
+        };
+
+        if queue.items.is_empty() || idx > queue.items.len() {
+            error!(idx, "Invalid index");
+            self.send_error(origin, ErrorKind::QueuePositionOutOfRange);
+            return;
+        }
+
+        if idx <= queue.current_idx as usize {
+            queue.current_idx += 1;
+        }
+
+        queue
+            .items
+            .insert(idx, QueueItem::from_flat(&insert.item()));
+
+        if let Some(relay_msg) =
+            fcast_protocol::v4::MessageBuilder::new().from_queue_insert_stripped(insert)
+        {
+            self.relay_to_other_senders(origin, relay_msg);
+        }
+    }
+
+    fn pause(&mut self) {
+        if self.is_playing() {
+            self.player.pause();
+        }
+    }
+
+    fn resume(&mut self) {
+        if self.is_playing() {
+            self.player.play();
+        }
+    }
+
+    fn handle_play_message(&mut self, msg: WrappedPlayMessage, origin: PacketOrigin) {
+        let play_data = Arc::new(msg);
+        match play_data.as_ref() {
+            fcast::WrappedPlayMessage::Legacy(msg) => {
+                if msg.container == "application/json" {
+                    self.handle_playlist_play_request(msg);
                 } else {
-                    self.handle_simple_play_request(&play_message)?;
+                    self.current_media = Some(MediaSourceState::new(
+                        origin,
+                        MediaSource::Single(Arc::clone(&play_data)),
+                    ));
+                    self.load_media();
                 }
 
-                if self.updates_tx.receiver_count() > 0 {
-                    let play_update = v3::PlayUpdateMessage {
+                if self.should_broadcast() {
+                    let msg = v3::PlayUpdateMessage {
                         generation_time: Some(current_time_millis()),
-                        play_data: Some(play_message.clone()),
+                        play_data: Some(msg.clone()),
                     };
-                    let msg = ReceiverToSenderMessage::PlayUpdate { msg: play_update };
-                    let _ = self.updates_tx.send(Arc::new(msg));
+                    self.broadcast_update(ReceiverToSenderMessage::PlayUpdate { msg })
+                }
+            }
+            fcast::WrappedPlayMessage::V4(inner) => {
+                let play = inner.borrow_dependent();
+                match play.source_type() {
+                    v4::flat::MediaSource::Single => {
+                        self.current_media = Some(MediaSourceState::new(
+                            origin,
+                            MediaSource::Single(Arc::clone(&play_data)),
+                        ));
+                        self.load_media();
+                    }
+                    v4::flat::MediaSource::Queue => {
+                        let Some(queue) = play.source_as_queue() else {
+                            self.send_error(origin, ErrorKind::MalformedBody);
+                            return;
+                        };
+                        let items = queue.items();
+                        let mut queue_items = Vec::new();
+                        for item in items {
+                            queue_items.push(QueueItem::from_flat(&item));
+                        }
+                        let idx = queue.start_index().unwrap_or(0);
+                        self.current_media = Some(MediaSourceState::new(
+                            origin,
+                            MediaSource::Queue(QueueState {
+                                items: queue_items,
+                                current_idx: idx,
+                            }),
+                        ));
+                        self.play_queue_item(origin, v4::QueuePosition::Index(idx), false);
+                    }
+                    _ => {
+                        error!(source_type = ?play.source_type(), "Got play message with invalid source type");
+                        self.send_error(origin, ErrorKind::MalformedBody);
+                    }
                 }
 
-                self.current_play_data = Some(play_message);
-            }
-            Operation::Seek(seek_message) => {
-                if self.is_playing() {
-                    let seconds = seek_message.time;
-                    self.player.seek(seconds);
+                match origin {
+                    PacketOrigin::FCast {
+                        sender_id,
+                        packet_num: _,
+                    } => {
+                        if self.should_broadcast()
+                            && let Some(stripped) =
+                                fcast_protocol::v4::MessageBuilder::new().from_play_stripped(play)
+                        {
+                            debug!("Sending play message to active sesssions");
+                            self.broadcast_update(ReceiverToSenderMessage::V4(
+                                fcast::V4Message::Play {
+                                    initiator_session_id: sender_id,
+                                    serialized_msg: stripped,
+                                },
+                            ));
+                        }
+                    }
+                    _ => (),
                 }
             }
-            Operation::SetSpeed(set_speed_message) => {
-                self.player.set_rate(set_speed_message.speed);
+            fcast::WrappedPlayMessage::Chromecast(_) => {
+                self.current_media = Some(MediaSourceState::new(
+                    origin,
+                    MediaSource::Single(Arc::clone(&play_data)),
+                ));
+                self.load_media();
+            }
+        }
+    }
+
+    fn handle_operation(&mut self, op: Operation, origin: PacketOrigin) -> Result<bool> {
+        match op {
+            Operation::Pause => self.pause(),
+            Operation::Resume => self.resume(),
+            Operation::Stop => self.stop_playback(),
+            Operation::Seek(time) => {
+                if self.is_playing() {
+                    match self.current_duration {
+                        Some(duration) if duration > gst::ClockTime::ZERO && time > duration => {
+                            self.send_error(origin, ErrorKind::SeekOutOfRange);
+                            self.player.seek(duration);
+                        }
+                        _ => self.player.seek(time),
+                    }
+                }
+            }
+            Operation::SetSpeed(rate) => {
+                self.player.set_rate(rate);
             }
             Operation::SetPlaylistItem(msg) => {
                 debug!(?msg, "Set playlist item");
-                if let Some(ref playlist) = self.current_playlist {
-                    let new_index = msg.item_index as usize;
-                    if let Some(item) = playlist.items.get(new_index) {
-                        self.load_media_item(&item.clone())?;
-                    } else {
-                        todo!("Playlist item not found");
-                    }
-
-                    self.current_playlist_item_idx = Some(new_index);
-                    self.gui.set_playlist_index(new_index as i32);
-                }
+                let new_index = msg.item_index as usize;
+                if let Some(current_media) = self.current_media.as_mut()
+                    && let MediaSource::Playlist { content, index } = &mut current_media.source
                 {
+                    if new_index >= content.items.len() {
+                        error!(new_index, "Playlist item not found");
+                        return Ok(false);
+                    }
+                    *index = new_index;
+                } else {
                     error!("Cannot set playlist item when no playlist is loaded");
+                    return Ok(false);
+                }
+
+                self.load_media();
+                self.gui.set_playlist_index(new_index as i32);
+            }
+            Operation::SetVolume(volume) => {
+                self.player.set_volume(volume);
+                self.gui.set_volume(volume);
+            }
+            Operation::StartMirroringSession {
+                tx: client_tx,
+                offer_rx,
+            } => {
+                let chan = fwebrtcsrc::SignallingChannel {
+                    tx: client_tx.0,
+                    offer_rx,
+                };
+                *self.signalling_channel.lock() = Some(chan);
+                let play_message = v3::PlayMessage {
+                    container: "application/x-fwebrtc".to_owned(),
+                    url: Some("fwebrtc://fake.host".to_owned()),
+                    content: None,
+                    time: None,
+                    volume: None,
+                    speed: None,
+                    headers: None,
+                    metadata: None,
+                };
+                self.current_media = Some(MediaSourceState::new(
+                    origin,
+                    MediaSource::Single(Arc::new(fcast::WrappedPlayMessage::Legacy(play_message))),
+                ));
+                self.load_media();
+            }
+            Operation::SetPlaybackState(state) => match state {
+                fcast_protocol::v4::PlaybackState::Paused => {
+                    if self.is_playing() {
+                        self.player.pause();
+                    }
+                }
+                fcast_protocol::v4::PlaybackState::Playing => {
+                    if self.is_playing() {
+                        self.player.play();
+                    }
+                }
+                fcast_protocol::v4::PlaybackState::Idle
+                | fcast_protocol::v4::PlaybackState::Ended => {
+                    self.stop_playback();
+                }
+                _ => (),
+            },
+            Operation::PlayNew(msg) => {
+                self.handle_play_message(msg, origin);
+            }
+            Operation::ChangeTrack { id, typ } => {
+                debug!(id, ?typ, "changing track");
+
+                let res = match typ {
+                    v4::flat::MediaTrackType::Video => self.player.select_video_stream(id),
+                    v4::flat::MediaTrackType::Audio => self.player.select_audio_stream(id),
+                    v4::flat::MediaTrackType::Subtitle => self.player.select_subtitle_stream(id),
+                    _ => {
+                        error!(?typ, "Unknown track type");
+                        self.send_error(origin, ErrorKind::MalformedBody);
+                        return Ok(false);
+                    }
+                };
+
+                if let Err(err) = res {
+                    error!(?err, "Failed to change track");
+                    self.send_error(origin, ErrorKind::Internal);
                 }
             }
-            Operation::SetVolume(msg) => {
-                let volume = msg.volume;
-                self.player.set_volume(volume);
-                self.gui.set_volume(volume as f32);
+            Operation::SelectQueueItem(position) => {
+                self.play_queue_item(origin, position, true);
             }
+            Operation::RemoveQueueItem(position) => {
+                self.remove_queue_item(origin, position);
+            }
+            Operation::InsertQueueItem(insert) => {
+                self.insert_queue_item(origin, insert);
+            }
+            Operation::SetProgressUpdateInterval(interval) => {
+                if let PacketOrigin::FCast { sender_id, .. } = origin
+                    && let Some(handle) = self.fcast_senders.get_mut(&sender_id)
+                {
+                    debug!(?interval, sender_id, "Updating progress update interval");
+                    handle.progress_interval = interval;
+                    handle.last_progress_update = Instant::now();
+                }
+            }
+            Operation::ResumeOrPause => match self.player.player_state() {
+                PlayerState::Paused => self.resume(),
+                PlayerState::Playing => self.pause(),
+                _ => {
+                    error!(
+                        "Cannot resume or pause in player current state: {:?}",
+                        self.player.player_state(),
+                    );
+                    self.send_error(origin, ErrorKind::InvalidState);
+                    return Ok(false);
+                }
+            },
         }
 
         Ok(false)
@@ -921,16 +1617,10 @@ impl Application {
                     port: FCAST_TCP_PORT,
                     r#type: 0,
                 }],
+                txt: Some(self.fcast_txt_records.clone()),
             };
             debug!(?net_config, "Network config for QR code created");
-            let net_config = serde_json::to_string(&net_config)?;
-            let device_url = format!(
-                "fcast://r/{}",
-                base64::engine::general_purpose::URL_SAFE
-                    .encode(net_config)
-                    .as_str(),
-            );
-
+            let device_url = net_config.to_url()?;
             let qrcode = fast_qr::QRBuilder::new(device_url.as_bytes()).build()?;
             let dims = qrcode.size as u32;
             let mut pixbuf: gui::QrCodeImage = slint::SharedPixelBuffer::new(dims, dims);
@@ -950,78 +1640,151 @@ impl Application {
     }
 
     fn on_media_info_updated(&mut self) {
-        if self.player.seekable {
-            while let Some(command) = self.on_playing_command_queue.pop() {
-                #[allow(irrefutable_let_patterns)]
-                if let OnFirstPlayingStateChangedCommand::Seek { position, rate } = command {
-                    self.player.seek_and_set_rate(position, rate);
-                }
+        if self.player.seekable
+            && let Some(cmd) = self.on_playing_command.take()
+        {
+            self.player
+                .seek_and_set_rate(cmd.seek_position, cmd.seek_rate);
+        }
+    }
+
+    fn update_tracks(&mut self, force_update: bool) {
+        if !force_update && !self.player.update_stream_properties() {
+            return;
+        }
+
+        if self.should_broadcast() {
+            let serialized_msg = v4::MessageBuilder::new().tracks_available(
+                self.player
+                    .streams
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, s)| {
+                        let typ = s.inner.stream_type();
+
+                        let metadata = if typ.contains(gst::StreamType::VIDEO) {
+                            Some(v4::MediaTrackMetadata::Video)
+                        } else if typ.contains(gst::StreamType::AUDIO) {
+                            Some(v4::MediaTrackMetadata::Audio)
+                        } else if typ.contains(gst::StreamType::TEXT) {
+                            Some(v4::MediaTrackMetadata::Subtitle)
+                        } else {
+                            return None;
+                        };
+
+                        let (title, iso_639) = if let Some(tags) = s.inner.tags() {
+                            (
+                                tags.get::<gst::tags::Title>()
+                                    .map(|t| smol_str::SmolStr::new(t.get())),
+                                tags.get::<gst::tags::LanguageCode>()
+                                    .map(|t| SmolStr::new(t.get())),
+                            )
+                        } else {
+                            (None, None)
+                        };
+
+                        Some(v4::MediaTrack {
+                            id: idx as u32,
+                            title,
+                            iso_639: iso_639.unwrap_or(SmolStr::new("und")),
+                            metadata,
+                        })
+                    }),
+            );
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::TracksAvailable { serialized_msg },
+            ));
+        }
+
+        let mut videos = Vec::new();
+        let mut audios = Vec::new();
+        let mut subtitles = Vec::new();
+        for (idx, stream) in self.player.streams.iter().enumerate() {
+            let typ = stream.inner.stream_type();
+            let dst = if typ.contains(gst::StreamType::VIDEO) {
+                Some(&mut videos)
+            } else if typ.contains(gst::StreamType::AUDIO) {
+                Some(&mut audios)
+            } else if typ.contains(gst::StreamType::TEXT) {
+                Some(&mut subtitles)
+            } else {
+                None
+            };
+
+            if let Some(dst) = dst {
+                dst.push(UiMediaTrack {
+                    id: idx as i32,
+                    name: stream.title.to_shared_string(),
+                });
             }
         }
+
+        self.gui.set_tracks(videos, audios, subtitles);
     }
 
-    fn update_tracks_in_gui(&self) {
-        fn trackify(streams: &[gst::Stream]) -> Vec<UiMediaTrack> {
-            streams
-                .iter()
-                .map(|stream| UiMediaTrack {
-                    name: player::stream_title(stream).to_shared_string(),
-                })
-                .collect::<Vec<UiMediaTrack>>()
-        }
-
-        self.gui.set_tracks(
-            trackify(&self.player.video_streams),
-            trackify(&self.player.audio_streams),
-            trackify(&self.player.subtitle_streams),
-        );
-    }
-
-    fn handle_new_player_event(&mut self, event: player::PlayerEvent) -> Result<()> {
+    fn handle_player_event(&mut self, event: player::PlayerEvent) -> Result<()> {
         match event {
             player::PlayerEvent::EndOfStream => {
                 self.player.end_of_stream_reached();
 
                 debug!("Player reached EOS");
 
-                self.media_ended()?;
+                self.media_ended();
 
                 // TODO: this should be the last message sent regarding the media currently being played
-                if self.updates_tx.receiver_count() > 0
-                    && let Some(play_data) = self.current_play_data.as_ref()
+                if self.should_broadcast()
+                    && let Some(current_media) = self.current_media.as_ref()
                 {
-                    let event = v3::EventMessage {
-                        generation_time: current_time_millis(),
-                        event: v3::EventObject::MediaItem {
-                            variant: v3::EventType::MediaItemEnd,
-                            item: v3::MediaItem {
-                                container: play_data.container.clone(),
-                                url: play_data.url.clone(),
-                                content: play_data.content.clone(),
-                                time: play_data.time,
-                                volume: play_data.volume,
-                                speed: play_data.speed,
-                                cache: None,
-                                show_duration: None,
-                                headers: None,
-                                metadata: play_data.metadata.clone(),
-                            },
+                    match &current_media.source {
+                        MediaSource::Single(play_msg) => match play_msg.as_ref() {
+                            fcast::WrappedPlayMessage::Legacy(msg) => {
+                                let event = v3::EventMessage {
+                                    generation_time: current_time_millis(),
+                                    event: v3::EventObject::MediaItem {
+                                        variant: v3::EventType::MediaItemEnd,
+                                        item: msg.clone().into(),
+                                    },
+                                };
+                                self.broadcast_update(ReceiverToSenderMessage::Event {
+                                    msg: event,
+                                });
+                            }
+                            fcast::WrappedPlayMessage::V4(_) => {
+                                self.broadcast_update(ReceiverToSenderMessage::V4(
+                                    fcast::V4Message::PlaybackStateChanged(
+                                        fcast_protocol::v4::PlaybackState::Ended,
+                                    ),
+                                ));
+                            }
+                            fcast::WrappedPlayMessage::Chromecast(_) => (),
                         },
-                    };
-                    self.updates_tx
-                        .send(Arc::new(ReceiverToSenderMessage::Event { msg: event }))?;
+                        MediaSource::Queue(_) => {
+                            self.broadcast_update(ReceiverToSenderMessage::V4(
+                                fcast::V4Message::PlaybackStateChanged(
+                                    fcast_protocol::v4::PlaybackState::Ended,
+                                ),
+                            ));
+                        }
+                        MediaSource::Playlist { .. } | MediaSource::Raop => (),
+                    }
                 }
             }
-            player::PlayerEvent::DurationChanged => {
-                self.current_duration = self.player.get_duration();
-            }
             player::PlayerEvent::Tags(tags) => {
+                let Some(has_pending_thumbnail) = self
+                    .current_media
+                    .as_ref()
+                    .map(|m| m.pending_thumbnail.is_some())
+                else {
+                    error!("Received tags from player when no media is loaded");
+                    return Ok(());
+                };
+
                 if !self.settings.cli.headless
                     && !self.have_audio_track_cover
                     && let Some(cover) = tags.get::<gst::tags::Image>()
                     && let Some(buffer) = cover.get().buffer()
                     && let Ok(buffer) = buffer.map_readable()
-                    && self.pending_thumbnail.is_none()
+                    && !has_pending_thumbnail
                 {
                     self.current_thumbnail_id += 1;
                     let this_id = self.current_thumbnail_id;
@@ -1032,7 +1795,9 @@ impl Application {
                             image::ImageDecodeJobType::AudioThumbnail,
                         ),
                     );
-                    self.pending_thumbnail = Some(this_id);
+                    if let Some(current_media) = self.current_media.as_mut() {
+                        current_media.pending_thumbnail = Some(this_id);
+                    }
                 }
 
                 if !self.have_media_title
@@ -1049,18 +1814,22 @@ impl Application {
             player::PlayerEvent::VolumeChanged(volume) => {
                 self.player.volume_changed();
 
-                if self.updates_tx.receiver_count() > 0 {
+                if self.should_broadcast() {
                     let update = VolumeUpdateMessage {
                         generation_time: current_time_millis(),
                         volume,
                     };
 
-                    let msg = ReceiverToSenderMessage::Translatable {
+                    let msg = ReceiverToSenderMessage::LegacyTranslatable {
                         op: Opcode::VolumeUpdate,
                         msg: TranslatableMessage::VolumeUpdate(update),
                     };
                     self.updates_tx.send(Arc::new(msg))?;
                     self.last_sent_update = Instant::now();
+
+                    self.broadcast_update(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::VolumeChanged(volume as f32),
+                    ));
                 }
 
                 self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
@@ -1082,7 +1851,7 @@ impl Application {
 
                 self.player.play();
 
-                self.update_tracks_in_gui();
+                self.update_tracks(true);
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -1090,9 +1859,17 @@ impl Application {
                 }
             }
             player::PlayerEvent::AboutToFinish => {}
+            player::PlayerEvent::AsyncDone => {
+                if self.player.have_media_info()
+                    && self.player.player_state() != PlayerState::Playing
+                {
+                    self.playback_progress_changed();
+                }
+            }
             player::PlayerEvent::Buffering(percent) => {
                 if self.player.buffering(percent) {
                     self.notify_updates(true)?;
+                    self.playback_state_changed(fcast_protocol::v4::PlaybackState::Buffering);
                 }
             }
             player::PlayerEvent::IsLive => {
@@ -1105,6 +1882,26 @@ impl Application {
             } => {
                 if self.player.state_changed(old, current, pending).is_some() {
                     self.notify_updates(true)?;
+                    let v4_state = match self.player.player_state() {
+                        PlayerState::Paused => fcast_protocol::v4::PlaybackState::Paused,
+                        PlayerState::Playing => fcast_protocol::v4::PlaybackState::Playing,
+                        PlayerState::Buffering => fcast_protocol::v4::PlaybackState::Buffering,
+                        PlayerState::Stopped => fcast_protocol::v4::PlaybackState::Idle,
+                    };
+                    self.playback_state_changed(v4_state);
+                }
+
+                let first_paused = old == gst::State::Ready
+                    && current == gst::State::Paused
+                    && pending == gst::State::VoidPending;
+                let started_playing =
+                    current == gst::State::Playing && pending == gst::State::VoidPending;
+                // Try to get duration
+                if first_paused || started_playing {
+                    self.current_duration = self.player.get_duration();
+                    if self.current_duration.is_some() && self.should_broadcast() {
+                        self.playback_progress_changed();
+                    }
                 }
 
                 self.gcast_tx
@@ -1122,23 +1919,15 @@ impl Application {
                     self.on_media_info_updated();
                 }
             }
-            player::PlayerEvent::UriSet(uri) => {
-                self.player.uri_set(uri);
-            }
             player::PlayerEvent::UriLoaded => {
-                self.player.uri_loaded();
-
-                for command in self.on_uri_loaded_command_queue.iter() {
-                    match command {
-                        OnUriLoadedCommand::Volume(volume) => {
-                            self.player.set_volume(*volume);
-                        }
-                    }
+                if !self.is_playing() {
+                    debug!("Ignoring stale UriLoaded (nothing is loaded)");
+                    return Ok(());
                 }
+                self.player.uri_loaded();
             }
-            player::PlayerEvent::QueueSeek(seek) => {
-                self.player.queue_seek(seek);
-            }
+            player::PlayerEvent::RequestState(state) => self.player.request_state(state),
+            player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
             player::PlayerEvent::StreamsSelected {
                 video,
                 audio,
@@ -1149,9 +1938,27 @@ impl Application {
                     audio.as_deref(),
                     subtitle.as_deref(),
                 );
-                self.gui.set_track_ids(video_sid, audio_sid, subtitle_sid);
+                self.gui.set_track_ids(
+                    video_sid.map(|i| i as i32).unwrap_or(-1),
+                    audio_sid.map(|i| i as i32).unwrap_or(-1),
+                    subtitle_sid.map(|i| i as i32).unwrap_or(-1),
+                );
                 if video.is_some() {
                     self.video_stream_available()?;
+                }
+
+                if self.updates_tx.strong_count() > 0 {
+                    let msgs = vec![
+                        v4::MessageBuilder::new()
+                            .change_track(video_sid, v4::flat::MediaTrackType::Video),
+                        v4::MessageBuilder::new()
+                            .change_track(audio_sid, v4::flat::MediaTrackType::Audio),
+                        v4::MessageBuilder::new()
+                            .change_track(subtitle_sid, v4::flat::MediaTrackType::Subtitle),
+                    ];
+                    let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::TracksSelected(msgs),
+                    )));
                 }
             }
             player::PlayerEvent::SeekFailed => {
@@ -1160,16 +1967,29 @@ impl Application {
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);
                 self.notify_updates(true)?;
+                if self.updates_tx.strong_count() > 0 {
+                    let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::PlaybackRateChanged(new_rate as f32),
+                    )));
+                }
             }
-            player::PlayerEvent::Error(msg) => {
+            player::PlayerEvent::Error {
+                kind,
+                message,
+                failed_uri,
+            } => {
                 #[cfg(debug_assertions)]
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
-                if let Some(player_uri) = self.player.current_uri()
-                    && let Some(current_uri) = self.current_item_uri()
-                    && current_uri == player_uri
+                if let Some(failed_uri) = &failed_uri
+                    && self.current_item_uri() != Some(failed_uri.as_str())
                 {
+                    debug!(failed_uri, "Dropping error from a superseded load");
+                } else {
                     self.player.stop();
-                    self.media_error(msg)?;
+                    if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
+                        self.send_error(origin, media_error_kind_to_error(kind));
+                    }
+                    self.media_error(message)?;
                 }
             }
             player::PlayerEvent::Warning(msg) => {
@@ -1179,7 +1999,7 @@ impl Application {
                 self.media_warning(msg)?;
             }
             player::PlayerEvent::StreamTagsUpdated => {
-                self.update_tracks_in_gui();
+                self.update_tracks(false);
             }
         }
 
@@ -1215,8 +2035,8 @@ impl Application {
                 }
             }
             Raop::SenderConnected(stream) => {
-                if self.active_raop_session {
-                    debug!("Rejecting sender");
+                if self.current_media.is_some() {
+                    warn!("Rejecting RAOP sender because media is already loaded");
                     return Ok(false);
                 }
 
@@ -1233,14 +2053,15 @@ impl Application {
                 });
 
                 debug!("Session started");
-                self.active_raop_session = true;
+                self.current_media =
+                    Some(MediaSourceState::new(PacketOrigin::Raop, MediaSource::Raop));
 
                 self.gui.set_app_state(AppState::Playing);
                 self.gui.set_player_type(UiPlayerVariant::Raop);
             }
             Raop::SenderDisconnected => {
                 debug!("Session ended");
-                self.active_raop_session = false;
+                self.current_media = None;
                 self.gui.set_app_state(AppState::Idle);
                 self.gui.set_player_type(UiPlayerVariant::Unknown);
                 self.gui.clear_common_playback_state();
@@ -1255,7 +2076,12 @@ impl Application {
                         image::ImageDecodeJobType::AudioThumbnail,
                     ),
                 );
-                self.pending_thumbnail = Some(this_id);
+                match self.current_media.as_mut() {
+                    Some(current_media) => {
+                        current_media.pending_thumbnail = Some(this_id);
+                    }
+                    None => error!("Got CoverArtSet event but no media is currently loaded"),
+                }
             }
             Raop::CoverArtRemoved => self.gui.clear_audio_covers(),
             Raop::MetadataSet(metadata) => {
@@ -1279,12 +2105,11 @@ impl Application {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn handle_app_update_event(&mut self, event: message::AppUpdate) -> Result<bool> {
-        use crate::UiUpdaterState;
-
         match event {
             message::AppUpdate::UpdateAvailable(release) => {
                 self.update = Some(release);
-                self.gui.set_updater_state(UiUpdaterState::ShowingDialog);
+                self.gui
+                    .set_updater_state(crate::UiUpdaterState::ShowingDialog);
             }
             message::AppUpdate::UpdateApplication => {
                 let Some(update) = self.update.take() else {
@@ -1368,13 +2193,20 @@ impl Application {
             image::Event::DownloadResult { id, res } => {
                 debug!(id, "Got image download result");
 
-                if Some(id) == self.pending_thumbnail_download {
+                let pending_thumbnail_download = self
+                    .current_media
+                    .as_ref()
+                    .map(|m| m.pending_thumbnail_download)
+                    .flatten();
+                if Some(id) == pending_thumbnail_download {
                     match res {
                         Ok((encoded_image, format)) => {
-                            self.pending_thumbnail_download = None;
                             self.current_thumbnail_id += 1;
                             let this_id = self.current_thumbnail_id;
-                            self.pending_thumbnail = Some(this_id);
+                            if let Some(current_media) = self.current_media.as_mut() {
+                                current_media.pending_thumbnail_download = None;
+                                current_media.pending_thumbnail = Some(this_id);
+                            }
                             self.image_decoder.queue_job(
                                 this_id,
                                 image::ImageDecodeJob::new(
@@ -1410,12 +2242,16 @@ impl Application {
                         );
                     }
                     Err(err) => {
+                        if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
+                            self.send_error(origin, image_download_error_kind(&err));
+                        }
                         self.media_error(format!("Image download failed: {err:?}"))?;
                     }
                 }
             }
             image::Event::AudioThumbnailAvailable(img) => {
-                if let Some(pending_thumbnail) = self.pending_thumbnail
+                if let Some(current_media) = self.current_media.as_ref()
+                    && let Some(pending_thumbnail) = current_media.pending_thumbnail
                     && pending_thumbnail == img.id
                 {
                     self.gui.set_audio_track_cover(img);
@@ -1454,35 +2290,21 @@ impl Application {
             Message::SessionFinished => {
                 self.gui.device_disconnected();
             }
-            Message::ResumeOrPause => {
-                let op = match self.player.player_state() {
-                    PlayerState::Paused => Operation::Resume,
-                    PlayerState::Playing => Operation::Pause,
-                    _ => {
-                        error!(
-                            "Cannot resume or pause in player current state: {:?}",
-                            self.player.player_state(),
-                        );
-                        return Ok(false);
-                    }
-                };
-
-                return self.handle_operation(op);
-            }
             Message::SeekPercent(percent) => {
                 debug!("SeekPercent({percent})");
                 if let Some(duration) = self.current_duration {
-                    let seconds = percent as f64 * duration.seconds_f64();
-                    return self.handle_operation(Operation::Seek(fcast_protocol::SeekMessage {
-                        time: seconds,
-                    }));
+                    if let Ok(pos) = gst::ClockTime::try_from_seconds_f64(
+                        percent as f64 * duration.seconds_f64(),
+                    ) {
+                        return self.handle_operation(Operation::Seek(pos), PacketOrigin::Gui);
+                    }
                 }
             }
             Message::Quit => return Ok(true),
             Message::ToggleDebug => self.debug_mode = !self.debug_mode,
-            Message::Op { session_id: id, op } => {
-                debug!(id, ?op, "Operation from sender");
-                return self.handle_operation(op);
+            Message::Op { origin, op } => {
+                debug!(?origin, ?op, "Operation from sender");
+                return self.handle_operation(op, origin);
             }
             Message::Image(event) => return self.handle_image_event(event),
             Message::Mdns(event) => {
@@ -1509,51 +2331,61 @@ impl Application {
                 };
                 let length = playlist.items.len();
 
-                let Some(start_item) = playlist.items.get(start_idx) else {
+                if start_idx >= playlist.items.len() {
                     error!(
                         start_idx,
                         ?playlist,
                         "Playlist's start index is out of bounds"
                     );
                     return Ok(false);
-                };
+                }
 
-                self.load_media_item(start_item)?; // TODO: how should errors be handled?
-
-                self.current_playlist = Some(playlist);
-                self.current_playlist_item_idx = Some(start_idx);
+                self.current_media = Some(MediaSourceState::new(
+                    PacketOrigin::Gui,
+                    MediaSource::Playlist {
+                        content: playlist,
+                        index: start_idx,
+                    },
+                ));
+                self.load_media();
 
                 self.gui.update_playlist(start_idx as i32, length as i32);
             }
             Message::MediaItemFinish(id) => {
-                if self.current_playlist_item_idx.is_none() || id != self.current_media_item_id {
+                let Some(media) = &self.current_media else {
+                    return Ok(false);
+                };
+                let MediaSource::Playlist { content, index } = &media.source else {
+                    debug!(id, "Ignoring media item finish event");
+                    return Ok(false);
+                };
+
+                if id != self.current_media_item_id {
                     debug!(id, "Ignoring media item finish event");
                     return Ok(false);
                 }
 
-                if let Some(playlist) = self.current_playlist.as_ref()
-                    && let Some(item_idx) = self.current_playlist_item_idx
-                {
-                    let next_idx = item_idx + 1;
-                    if next_idx < playlist.items.len() {
-                        self.handle_operation(Operation::SetPlaylistItem(
-                            v3::SetPlaylistItemMessage {
-                                item_index: next_idx as u64,
-                            },
-                        ))?;
-                    } else {
-                        info!("Playlist ended");
-                    }
+                let next_idx = index + 1;
+                if next_idx < content.items.len() {
+                    self.handle_operation(
+                        Operation::SetPlaylistItem(v3::SetPlaylistItemMessage {
+                            item_index: next_idx as u64,
+                        }),
+                        PacketOrigin::AutoPlay,
+                    )?;
+                } else {
+                    info!("Playlist ended");
                 }
             }
-            #[allow(deprecated)]
             Message::SelectTrack { id, variant } => {
                 debug!(id, ?variant, "Selecting track");
 
+                let sid = if id >= 0 { Some(id as u32) } else { None };
+
                 let res = match variant {
-                    UiMediaTrackType::Video => self.player.select_video_stream(id),
-                    UiMediaTrackType::Audio => self.player.select_audio_stream(id),
-                    UiMediaTrackType::Subtitle => self.player.select_subtitle_stream(id),
+                    UiMediaTrackType::Video => self.player.select_video_stream(sid),
+                    UiMediaTrackType::Audio => self.player.select_audio_stream(sid),
+                    UiMediaTrackType::Subtitle => self.player.select_subtitle_stream(sid),
                 };
 
                 if let Err(err) = res {
@@ -1561,7 +2393,7 @@ impl Application {
                 }
             }
             Message::NewPlayerEvent(event) => {
-                self.handle_new_player_event(event)?;
+                self.handle_player_event(event)?;
             }
             Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
@@ -1578,9 +2410,61 @@ impl Application {
             Message::GuiWindowClosed(feedback) => {
                 self.player.shutdown(feedback);
             }
+            Message::FCastSenderDisconnect(id) => {
+                self.fcast_senders.remove(&id);
+            }
         }
 
         Ok(false)
+    }
+
+    fn handle_new_fcast_session(&mut self, stream: tokio::net::TcpStream, session_id: SenderId) {
+        debug!("New connection id={session_id}");
+
+        let (recv_to_f_tx, recv_to_f_rx) = mpsc::unbounded_channel();
+        let _ = self
+            .fcast_senders
+            .insert(session_id, FCastSenderHandle::new(recv_to_f_tx));
+        tokio::spawn({
+            let id = session_id;
+            let msg_tx = self.msg_tx.clone();
+            let updates_rx = self.updates_tx.subscribe();
+            let tls_acceptor = self.tls_acceptor.clone();
+            let companion_ctx = self.companion_ctx.clone();
+            let (comp_tx, comp_rx) = mpsc::unbounded_channel();
+            let receiver_info = Arc::clone(&self.receiver_info);
+            let initial_v4_state = if let Some(current_media) = self.current_media.as_ref()
+                && let MediaSource::Single(play_data) = &current_media.source
+                && matches!(play_data.as_ref(), fcast::WrappedPlayMessage::V4(_))
+            {
+                Some(InitialV4State {
+                    play_data: Arc::clone(play_data),
+                    playback_state: self.player.player_state().as_fcast_v4(),
+                })
+            } else {
+                None
+            };
+            async move {
+                if let Err(err) = SessionDriver::new(
+                    stream,
+                    id,
+                    tls_acceptor,
+                    companion_ctx,
+                    comp_tx,
+                    receiver_info,
+                    initial_v4_state,
+                )
+                .run(updates_rx, &msg_tx, comp_rx, recv_to_f_rx)
+                .await
+                {
+                    error!("Session exited with error: {err}");
+                }
+
+                msg_tx.send(Message::FCastSenderDisconnect(id));
+            }
+        });
+
+        self.gui.device_connected();
     }
 
     pub async fn run_event_loop(
@@ -1618,11 +2502,11 @@ impl Application {
             self.gui.set_fullscreen(true);
         }
 
-        let mut update_interval = tokio::time::interval(Duration::from_millis(200));
+        let mut update_interval = tokio::time::interval(PROGRESS_TICK_INTERVAL);
 
         use futures::stream::StreamExt;
 
-        let mut session_id: SessionId = 0;
+        let mut session_id: SenderId = 0;
         loop {
             tokio::select! {
                 event = event_rx.recv() => {
@@ -1639,32 +2523,12 @@ impl Application {
                 _ = update_interval.tick() => {
                     if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
+                        self.send_v4_progress_updates();
                     }
                 }
                 session = listener_stream.select_next_some() => {
                     let (stream, _) = session?;
-
-                    debug!("New connection id={session_id}");
-
-                    tokio::spawn({
-                        let id = session_id;
-                        let msg_tx = self.msg_tx.clone();
-                        let updates_rx = self.updates_tx.subscribe();
-                        async move {
-                            if let Err(err) =
-                                SessionDriver::new(stream, id)
-                                .run(updates_rx, &msg_tx)
-                                .await
-                            {
-                                error!("Session exited with error: {err}");
-                            }
-
-                            msg_tx.send(Message::SessionFinished);
-                        }
-                    });
-
-                    self.gui.device_connected();
-
+                    self.handle_new_fcast_session(stream, session_id);
                     session_id += 1;
                 }
             }

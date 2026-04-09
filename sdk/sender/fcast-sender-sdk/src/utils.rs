@@ -17,7 +17,7 @@ use any_protocol_prelude::*;
 pub(crate) async fn try_connect_tcp<T>(
     addrs: &[SocketAddr],
     timeout: Duration,
-    cmd_rx: &mut tokio::sync::mpsc::Receiver<T>,
+    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>,
     on_cmd: impl Fn(T) -> bool,
 ) -> anyhow::Result<Option<tokio::net::TcpStream>> {
     anyhow::ensure!(!addrs.is_empty());
@@ -64,16 +64,52 @@ pub(crate) async fn try_connect_tcp<T>(
 }
 
 #[cfg(any_protocol)]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum WorkError {
-    #[error("Did not connect: {0}")]
     DidNotConnect(String),
-    #[error("{0}")]
-    Anyhow(#[from] anyhow::Error),
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
-    #[error("{0}")]
-    SerdeJson(#[from] serde_json::Error),
+    Anyhow(anyhow::Error),
+    Io(std::io::Error),
+    SerdeJson(serde_json::Error),
+    Disconnected,
+    ReceivePacket,
+}
+
+#[cfg(any_protocol)]
+impl From<anyhow::Error> for WorkError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Anyhow(value)
+    }
+}
+
+#[cfg(any_protocol)]
+impl From<std::io::Error> for WorkError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+#[cfg(any_protocol)]
+impl From<serde_json::Error> for WorkError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::SerdeJson(value)
+    }
+}
+
+#[cfg(any_protocol)]
+impl std::error::Error for WorkError {}
+
+#[cfg(any_protocol)]
+impl std::fmt::Display for WorkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkError::DidNotConnect(err) => write!(f, "Did not connect: {err:?}"),
+            WorkError::Anyhow(err) => write!(f, "{err:?}"),
+            WorkError::Io(err) => write!(f, "{err:?}"),
+            WorkError::SerdeJson(err) => write!(f, "{err:?}"),
+            WorkError::Disconnected => write!(f, "Disconnected"),
+            WorkError::ReceivePacket => write!(f, "Received invalid packet"),
+        }
+    }
 }
 
 #[cfg(any_protocol)]
@@ -89,11 +125,11 @@ macro_rules! connection_loop {
                     if $reconnect_interval_millis == 0 {
                         break;
                     } else {
-                        tokio::time::sleep(reconnect_duration).await;
-                    }
+                        if !matches!(err, $crate::utils::WorkError::DidNotConnect(_)) {
+                            $on_reconnect_started;
+                        }
 
-                    if !matches!(err, $crate::utils::WorkError::DidNotConnect(_)) {
-                        $on_reconnect_started;
+                        tokio::time::sleep(reconnect_duration).await;
                     }
                 }
             }

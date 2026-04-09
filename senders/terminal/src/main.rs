@@ -3,7 +3,7 @@ use fcast_sender_sdk::{
     context::CastContext,
     device::{
         DeviceConnectionState, DeviceEventHandler, DeviceInfo, EventSubscription, KeyEvent,
-        KeyName, LoadRequest, MediaEvent, PlaybackState, Source,
+        KeyName, LoadRequest, MediaEvent, MediaTrack, MediaTrackType, PlaybackState, Source,
     },
     url_format_ip_addr, DeviceDiscovererEventHandler,
 };
@@ -181,6 +181,14 @@ impl DeviceEventHandler for EventHandler {
     fn playback_error(&self, message: String) {
         eprintln!("Playback error: {message}");
     }
+
+    fn tracks_available(&self, tracks: Vec<MediaTrack>) {
+        println!("Tracks available: tracks={tracks:?}");
+    }
+
+    fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
+        println!("Track selected: id={id:?} type={typ:?}");
+    }
 }
 
 /// Discovery handler that prints every event for the `scan` subcommand.
@@ -279,13 +287,19 @@ fn resolve_target(
                 eprintln!("Invalid host address `{host}`: {err}");
                 std::process::exit(1);
             });
-            DeviceInfo::fcast("FCast Receiver".to_owned(), vec![addr.into()], port)
+            DeviceInfo::fcast(
+                "FCast Receiver".to_owned(),
+                vec![addr.into()],
+                port,
+                HashMap::new(),
+            )
         }
         (None, Some(name)) => discover_by_name(context, name, discovery_timeout),
         (None, None) => DeviceInfo::fcast(
             "FCast Receiver".to_owned(),
             vec![IpAddr::from([127, 0, 0, 1]).into()],
             port,
+            HashMap::new(),
         ),
     }
 }

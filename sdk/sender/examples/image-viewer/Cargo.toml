@@ -1,0 +1,18 @@
+[package]
+name = "image-viewer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+slint = { workspace = true, features = [ "backend-default", "compat-1-2", "renderer-femtovg", "std" ] }
+image = { workspace = true, features = ["default-formats" ] }
+fcast-sender-sdk = { path = "../../fcast-sender-sdk", default-features = false, features = ["fcast", "logging", "discovery"] }
+env_logger.workspace = true
+num_cpus.workspace = true
+directories.workspace = true
+infer.workspace = true
+log.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

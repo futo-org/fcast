@@ -192,20 +192,36 @@ pub mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    fn add_drm_formats_to_caps(
-        caps: &mut gst::Caps,
+    fn strip_dmabuf_caps(caps: &gst::Caps) -> gst::Caps {
+        caps.iter_with_features()
+            .filter(|(_, features)| !features.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF))
+            .map(|(s, c)| (s.to_owned(), c.to_owned()))
+            .collect::<gst::Caps>()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_drm_formats(
+        caps: gst::Caps,
         formats: &std::collections::HashSet<drm_fourcc::DrmFormat>,
-    ) {
+    ) -> gst::Caps {
+        if formats.is_empty() {
+            return strip_dmabuf_caps(&caps);
+        }
+
         let formats = formats
             .iter()
             .map(|fmt| gst_video::dma_drm_fourcc_to_string(fmt.code as u32, fmt.modifier.into()))
             .collect::<Vec<_>>();
-        let caps = caps.make_mut();
-        for (s, feats) in caps.iter_with_features_mut() {
-            if feats.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF) {
-                s.set("drm-format", gst::List::new(&formats));
+        let mut caps = caps;
+        {
+            let caps = caps.make_mut();
+            for (s, feats) in caps.iter_with_features_mut() {
+                if feats.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF) {
+                    s.set("drm-format", gst::List::new(&formats));
+                }
             }
         }
+        caps
     }
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -298,8 +314,7 @@ pub mod imp {
                 #[cfg(target_os = "linux")]
                 "drm-formats" => {
                     let formats: DrmFormats = value.get().expect("type checked upstream");
-                    let mut caps = get_caps();
-                    add_drm_formats_to_caps(&mut caps, &formats.0);
+                    let caps = apply_drm_formats(get_caps(), &formats.0);
                     *self.cached_caps.lock() = Some(caps);
                 }
                 "window-resolution" => {
@@ -364,7 +379,13 @@ pub mod imp {
             let cached_caps = self.cached_caps.lock().clone();
             let mut tmp_caps = cached_caps.unwrap_or_else(|| {
                 let templ = Self::pad_templates();
-                templ[0].caps().clone()
+                #[allow(unused_mut)]
+                let mut caps = templ[0].caps().clone();
+                #[cfg(target_os = "linux")]
+                {
+                    caps = strip_dmabuf_caps(&caps);
+                }
+                caps
             });
 
             gst::debug!(CAT, imp = self, "Advertising our own caps: {tmp_caps:?}");

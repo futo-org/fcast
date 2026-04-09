@@ -17,7 +17,7 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, rustls, server::TlsStream};
 use tracing::{debug, error, instrument, warn};
 
-use crate::MessageSender;
+use crate::{MessageSender, application::PacketOrigin};
 
 const MAX_MSG_SIZE: usize = 1000 * 64;
 const MEDIA_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -54,6 +54,14 @@ pub enum StatusUpdate {
     Position(f64),
     Duration(f64),
     PlayerState(crate::PlayerState),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ChromecastLoadItem {
+    pub container: String,
+    pub url: String,
+    pub time: Option<f64>,
+    pub speed: Option<f64>,
 }
 
 struct State {
@@ -194,25 +202,26 @@ async fn handle_message(
         bail!("Received message with unsupported payload type");
     }
 
+    let origin = PacketOrigin::gcast(0);
     let json_payload = message.payload_utf8();
     match message.namespace.as_str() {
         HEARTBEAT_NAMESPACE => {}
         RECEIVER_NAMESPACE => match json::from_str::<namespaces::Receiver>(json_payload)? {
             namespaces::Receiver::SetVolume { volume, .. } => {
                 state.msg_tx.operation(
-                    0,
-                    crate::Operation::SetVolume(fcast_protocol::SetVolumeMessage {
-                        volume: volume.level.unwrap_or(
+                    origin,
+                    crate::Operation::SetVolume(
+                        volume.level.unwrap_or(
                             volume
                                 .muted
                                 .map(|mute| if mute { 0.0 } else { 1.0 })
                                 .unwrap_or(0.0),
-                        ),
-                    }),
+                        ) as f32,
+                    ),
                 );
             }
             namespaces::Receiver::StopSession { .. } => {
-                state.msg_tx.operation(0, crate::Operation::Stop);
+                state.msg_tx.operation(origin, crate::Operation::Stop);
                 return Ok(EndSession::Yes);
             }
             namespaces::Receiver::Launch { app_id, request_id } => {
@@ -242,17 +251,15 @@ async fn handle_message(
                     ..
                 } => {
                     state.msg_tx.operation(
-                        0,
-                        crate::Operation::Play(fcast_protocol::v3::PlayMessage {
-                            container: media.content_type.clone(),
-                            url: Some(media.content_id.clone()),
-                            content: None,
-                            time: current_time,
-                            volume: None,
-                            speed: playback_rate,
-                            headers: None,
-                            metadata: None,
-                        }),
+                        origin,
+                        crate::Operation::PlayNew(crate::fcast::WrappedPlayMessage::Chromecast(
+                            ChromecastLoadItem {
+                                container: media.content_type.clone(),
+                                url: media.content_id.clone(),
+                                time: current_time,
+                                speed: playback_rate,
+                            },
+                        )),
                     );
                     let mut status = state.media_status.write();
                     status.media = Some(media);
@@ -264,18 +271,18 @@ async fn handle_message(
                     ..
                 } => {
                     state.msg_tx.operation(
-                        0,
-                        crate::Operation::Seek(fcast_protocol::SeekMessage { time }),
+                        origin,
+                        crate::Operation::Seek(gst::ClockTime::from_seconds_f64(time)),
                     );
                 }
                 namespaces::Media::Resume { .. } => {
-                    state.msg_tx.operation(0, crate::Operation::Resume);
+                    state.msg_tx.operation(origin, crate::Operation::Resume);
                 }
                 namespaces::Media::Pause { .. } => {
-                    state.msg_tx.operation(0, crate::Operation::Pause);
+                    state.msg_tx.operation(origin, crate::Operation::Pause);
                 }
                 namespaces::Media::Stop { .. } => {
-                    state.msg_tx.operation(0, crate::Operation::Stop);
+                    state.msg_tx.operation(origin, crate::Operation::Stop);
                     let mut status = state.media_status.write();
                     status.media = None;
                 }
@@ -293,12 +300,9 @@ async fn handle_message(
                     .await?;
                 }
                 namespaces::Media::SetPlaybackRate { playback_rate, .. } => {
-                    state.msg_tx.operation(
-                        0,
-                        crate::Operation::SetSpeed(fcast_protocol::SetSpeedMessage {
-                            speed: playback_rate,
-                        }),
-                    );
+                    state
+                        .msg_tx
+                        .operation(origin, crate::Operation::SetSpeed(playback_rate as f32));
                 }
                 // TODO: implement support for these
                 // namespaces::Media::QueueLoad { request_id, items, repeat_mode, start_index, queue_type } => todo!(),
