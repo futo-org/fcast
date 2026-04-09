@@ -13,7 +13,6 @@ uniffi = { version = "0.29.4", optional = true }
 tokio.workspace = true
 log.workspace= true
 anyhow.workspace = true
-thiserror.workspace = true
 futures.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

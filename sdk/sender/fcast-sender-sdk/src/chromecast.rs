@@ -35,7 +35,8 @@ use crate::{
         Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
     },
     // googlecast_protocol, utils, IpAddr,
-    utils, IpAddr,
+    utils,
+    IpAddr,
 };
 
 const DEFAULT_GET_STATUS_DELAY: Duration = Duration::from_secs(1);
@@ -503,7 +504,10 @@ impl InnerDevice {
                                     self.transport_id = Some(application.transport_id);
 
                                     self.send_media_channel_message(
-                                        namespaces::Connection::Connect { conn_type: Some(0), request_id: None },
+                                        namespaces::Connection::Connect {
+                                            conn_type: Some(0),
+                                            request_id: None,
+                                        },
                                     )
                                     .await?;
 
@@ -519,8 +523,12 @@ impl InnerDevice {
                                     if !shared_state.is_running {
                                         self.event_handler.connection_state_changed(
                                             DeviceConnectionState::Connected {
-                                                used_remote_addr: shared_state.remote_sockaddr.into(),
-                                                local_addr: shared_state.stream_local_sockaddr.into(),
+                                                used_remote_addr: shared_state
+                                                    .remote_sockaddr
+                                                    .into(),
+                                                local_addr: shared_state
+                                                    .stream_local_sockaddr
+                                                    .into(),
                                             },
                                         );
                                     }
@@ -690,7 +698,10 @@ impl InnerDevice {
         self.send_channel_message(
             "sender-0",
             "receiver-0",
-            namespaces::Connection::Connect { conn_type: Some(0), request_id: None },
+            namespaces::Connection::Connect {
+                conn_type: Some(0),
+                request_id: None,
+            },
         )
         .await?;
 

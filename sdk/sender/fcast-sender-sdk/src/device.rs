@@ -285,18 +285,29 @@ pub trait DeviceEventHandler: Send + Sync {
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
 #[cfg_attr(feature = "uniffi", uniffi(flat_error))]
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum CastingDeviceError {
-    #[error("failed to send command to worker thread")]
     FailedToSendCommand,
-    #[error("missing addresses")]
     MissingAddresses,
-    #[error("device already started")]
     DeviceAlreadyStarted,
-    #[error("unsupported subscription")]
     UnsupportedSubscription,
-    #[error("unsupported feature")]
     UnsupportedFeature,
+}
+
+impl std::error::Error for CastingDeviceError {}
+
+impl std::fmt::Display for CastingDeviceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CastingDeviceError::FailedToSendCommand => {
+                write!(f, "failed to send command to worker thread")
+            }
+            CastingDeviceError::MissingAddresses => write!(f, "missing addresses"),
+            CastingDeviceError::DeviceAlreadyStarted => write!(f, "device already started"),
+            CastingDeviceError::UnsupportedSubscription => write!(f, "unsupported subscription"),
+            CastingDeviceError::UnsupportedFeature => write!(f, "unsupported feature"),
+        }
+    }
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
