@@ -5,4 +5,10 @@ fn main() {
     if target_os == "macos" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/lib/");
     }
+
+    if target_os == "windows" {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("../extra/fcast.ico");
+        res.compile().unwrap();
+    }
 }

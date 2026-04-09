@@ -17,3 +17,6 @@ static-gst-plugins = ["rcore/static-gst-plugins"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enable-ansi-support = "0.3.1"
+
+[build-dependencies]
+winresource = "0.1.28"
