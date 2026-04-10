@@ -839,7 +839,11 @@ mod tests {
                 speed: Some(1.0),
                 forward_cache: None,
                 backward_cache: None,
-                metadata: Some(MetadataObject::Generic { title: None, thumbnail_url: None, custom: None })
+                metadata: Some(MetadataObject::Generic {
+                    title: None,
+                    thumbnail_url: None,
+                    custom: None
+                })
             })
             .unwrap(),
             r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc"}],"volume":1.0,"speed":1.0,"metadata":{"thumbnailUrl":null,"title":null,"type":0}}"#,

@@ -18,13 +18,12 @@ use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState as FCastPlaybackState, SeekMessage,
     SetSpeedMessage, SetVolumeMessage, VersionMessage,
 };
-use futures::StreamExt;
 use log::{debug, error};
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     runtime::Handle,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 
 use crate::{
@@ -97,7 +96,7 @@ fn event_sub_to_object(sub: &EventSubscription) -> v3::EventSubscribeObject {
 struct State {
     rt_handle: Handle,
     started: bool,
-    command_tx: Option<Sender<Command>>,
+    command_tx: Option<UnboundedSender<Command>>,
     addresses: Vec<IpAddr>,
     name: String,
     port: u16,
@@ -163,6 +162,200 @@ fn meta_to_fcast_meta(meta: Option<Metadata>) -> Option<MetadataObject> {
         thumbnail_url: meta.thumbnail_url,
         custom: None,
     })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StateVariant {
+    Connecting,
+    V2,
+    V3,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QuitReason {
+    InvalidBody,
+    InvalidVersion,
+    MissingBody,
+    UnsupportedOpcode,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum VersionCode {
+    V2,
+    V3,
+}
+
+#[derive(Debug, PartialEq)]
+enum Action {
+    None,
+    Pong,
+    Quit(QuitReason),
+    Connected(VersionCode),
+    VolumeUpdated(v2::VolumeUpdateMessage),
+    PlaybackError(PlaybackErrorMessage),
+    PlaybackUpdateV2(v2::PlaybackUpdateMessage),
+    PlaybackUpdateV3(v3::PlaybackUpdateMessage),
+    Initial(v3::InitialReceiverMessage),
+    PlayUpdate(v3::PlayUpdateMessage),
+    Event(v3::EventMessage),
+}
+
+#[derive(Default)]
+struct SharedState {
+    pub time: f64,
+    pub duration: f64,
+    pub volume: f64,
+    pub speed: f64,
+    pub playback_state: PlaybackState,
+    pub source: Option<Source>,
+}
+
+macro_rules! body {
+    ($maybe_body:expr) => {
+        match $maybe_body {
+            Some(b) => b,
+            None => return Action::Quit(QuitReason::MissingBody),
+        }
+    };
+    (return_option, $maybe_body:expr) => {
+        match $maybe_body {
+            Some(b) => b,
+            None => return Some(Action::Quit(QuitReason::MissingBody)),
+        }
+    };
+}
+
+macro_rules! json_from_body {
+    ($type:ty, $body:expr) => {
+        match str::from_utf8($body) {
+            Ok(s) => match serde_json::from_str::<$type>(s) {
+                Ok(obj) => obj,
+                Err(_) => return Action::Quit(QuitReason::InvalidBody),
+            },
+            Err(_) => return Action::Quit(QuitReason::InvalidBody),
+        }
+    };
+    (return_option, $type:ty, $body:expr) => {
+        match str::from_utf8($body) {
+            Ok(s) => match serde_json::from_str::<$type>(s) {
+                Ok(obj) => obj,
+                Err(_) => return Some(Action::Quit(QuitReason::InvalidBody)),
+            },
+            Err(_) => return Some(Action::Quit(QuitReason::InvalidBody)),
+        }
+    };
+}
+
+struct DeviceStateMachine {
+    variant: StateVariant,
+}
+
+impl DeviceStateMachine {
+    fn new() -> Self {
+        Self {
+            variant: StateVariant::Connecting,
+        }
+    }
+
+    fn handle_opcode_common(&mut self, opcode: Opcode) -> Option<Action> {
+        match opcode {
+            Opcode::Ping => Some(Action::Pong),
+            Opcode::None | Opcode::Pong => Some(Action::None),
+            Opcode::Play
+            | Opcode::Pause
+            | Opcode::Resume
+            | Opcode::Stop
+            | Opcode::Seek
+            | Opcode::SetVolume
+            | _ => None,
+        }
+    }
+
+    fn handle_packet_in_connecting_state(&mut self, opcode: Opcode, body: Option<&[u8]>) -> Action {
+        match opcode {
+            Opcode::Version => {
+                let msg = json_from_body!(VersionMessage, body!(body));
+                match msg.version {
+                    2 => {
+                        self.variant = StateVariant::V2;
+                        Action::Connected(VersionCode::V2)
+                    }
+                    3 => {
+                        debug!("Receiver supports v3");
+                        self.variant = StateVariant::V3;
+                        Action::Connected(VersionCode::V3)
+                    }
+                    _ => Action::Quit(QuitReason::InvalidVersion),
+                }
+            }
+            _ => Action::Quit(QuitReason::UnsupportedOpcode),
+        }
+    }
+
+    fn handle_packet_common_v2_v3(
+        &mut self,
+        opcode: Opcode,
+        body: Option<&[u8]>,
+    ) -> Option<Action> {
+        match opcode {
+            Opcode::VolumeUpdate => Some(Action::VolumeUpdated(json_from_body!(
+                return_option,
+                v2::VolumeUpdateMessage,
+                body!(return_option, body)
+            ))),
+            Opcode::PlaybackError => Some(Action::PlaybackError(json_from_body!(
+                return_option,
+                PlaybackErrorMessage,
+                body!(return_option, body)
+            ))),
+            _ => None,
+        }
+    }
+
+    fn handle_packet_v2(&mut self, opcode: Opcode, body: Option<&[u8]>) -> Action {
+        if let Some(action) = self.handle_packet_common_v2_v3(opcode, body) {
+            return action;
+        }
+
+        match opcode {
+            Opcode::PlaybackUpdate => {
+                Action::PlaybackUpdateV2(json_from_body!(v2::PlaybackUpdateMessage, body!(body)))
+            }
+            _ => Action::Quit(QuitReason::UnsupportedOpcode),
+        }
+    }
+
+    fn handle_packet_v3(&mut self, opcode: Opcode, body: Option<&[u8]>) -> Action {
+        if let Some(action) = self.handle_packet_common_v2_v3(opcode, body) {
+            return action;
+        }
+
+        match opcode {
+            Opcode::PlaybackUpdate => {
+                Action::PlaybackUpdateV3(json_from_body!(v3::PlaybackUpdateMessage, body!(body)))
+            }
+            Opcode::Initial => {
+                Action::Initial(json_from_body!(InitialReceiverMessage, body!(body)))
+            }
+            Opcode::PlayUpdate => {
+                Action::PlayUpdate(json_from_body!(v3::PlayUpdateMessage, body!(body)))
+            }
+            Opcode::Event => Action::Event(json_from_body!(v3::EventMessage, body!(body))),
+            _ => Action::Quit(QuitReason::UnsupportedOpcode),
+        }
+    }
+
+    fn handle_packet(&mut self, opcode: Opcode, body: Option<&[u8]>) -> Action {
+        if let Some(action) = self.handle_opcode_common(opcode) {
+            return action;
+        }
+
+        match self.variant {
+            StateVariant::Connecting => self.handle_packet_in_connecting_state(opcode, body),
+            StateVariant::V2 => self.handle_packet_v2(opcode, body),
+            StateVariant::V3 => self.handle_packet_v3(opcode, body),
+        }
+    }
 }
 
 struct InnerDevice {
@@ -300,11 +493,240 @@ impl InnerDevice {
             });
     }
 
+    /// Returns `true` if the main loop should be quit.
+    async fn handle_action(
+        &mut self,
+        shared_state: &mut SharedState,
+        has_emitted_connected_event: &mut bool,
+        current_playlist_item_index: &mut Option<usize>,
+        used_remote_addr: &IpAddr,
+        local_addr: &IpAddr,
+        action: Action,
+    ) -> Result<bool, utils::WorkError> {
+        macro_rules! changed {
+            ($param:ident, $new:expr, $cb:ident) => {
+                if shared_state.$param != $new {
+                    self.event_handler.$cb($new);
+                    shared_state.$param = $new;
+                }
+            };
+        }
+
+        match action {
+            Action::None => (),
+            Action::Pong => {
+                self.send_empty(Opcode::Pong).await?;
+            }
+            Action::Quit(reason) => {
+                debug!("Quitting reason: {reason:?}");
+                return Ok(true);
+            }
+            Action::Connected(version_code) => match version_code {
+                VersionCode::V2 => {
+                    self.emit_connected(*used_remote_addr, *local_addr);
+                    *has_emitted_connected_event = true;
+                }
+                VersionCode::V3 => {
+                    self.send(
+                        Opcode::Initial,
+                        match self.app_info.as_ref() {
+                            Some(info) => v3::InitialSenderMessage {
+                                display_name: Some(info.display_name.clone()),
+                                app_name: Some(info.name.clone()),
+                                app_version: Some(info.version.clone()),
+                            },
+                            None => v3::InitialSenderMessage {
+                                display_name: None,
+                                app_name: Some(
+                                    concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION"))
+                                        .to_owned(),
+                                ),
+                                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                            },
+                        },
+                    )
+                    .await
+                    .context("Failed to send InitialSenderMessage")?;
+
+                    self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
+                }
+            },
+            Action::VolumeUpdated(msg) => {
+                changed!(volume, msg.volume, volume_changed);
+            }
+            Action::PlaybackError(error) => {
+                self.event_handler.playback_error(error.message);
+            }
+            Action::PlaybackUpdateV2(update) => {
+                changed!(time, update.time, time_changed);
+                changed!(duration, update.duration, duration_changed);
+                changed!(speed, update.speed, speed_changed);
+                changed!(
+                    playback_state,
+                    match update.state {
+                        FCastPlaybackState::Idle => PlaybackState::Idle,
+                        FCastPlaybackState::Playing => PlaybackState::Playing,
+                        FCastPlaybackState::Paused => PlaybackState::Paused,
+                    },
+                    playback_state_changed
+                );
+            }
+            Action::PlaybackUpdateV3(update) => {
+                if let Some(time_update) = update.time {
+                    changed!(time, time_update, time_changed);
+                }
+                if let Some(duration_update) = update.duration {
+                    changed!(duration, duration_update, duration_changed);
+                }
+                if let Some(speed_update) = update.speed {
+                    changed!(speed, speed_update, speed_changed);
+                }
+                changed!(
+                    playback_state,
+                    match update.state {
+                        FCastPlaybackState::Playing => PlaybackState::Playing,
+                        FCastPlaybackState::Paused => PlaybackState::Paused,
+                        FCastPlaybackState::Idle => PlaybackState::Idle,
+                    },
+                    playback_state_changed
+                );
+                *current_playlist_item_index = update.item_index.map(|idx| idx as usize);
+            }
+            Action::Initial(initial_msg) => {
+                debug!("Received InitialReceiverMessage: {initial_msg:?}");
+                if let Some(play_msg) = initial_msg.play_data {
+                    if let Some(url) = play_msg.url {
+                        let source = Source::Url {
+                            url,
+                            content_type: play_msg.container,
+                        };
+                        self.event_handler.source_changed(source.clone());
+                        self.event_handler
+                            .playback_state_changed(PlaybackState::Playing);
+                        shared_state.source = Some(source);
+                    } else if let Some(content) = play_msg.content {
+                        let source = Source::Content { content };
+                        self.event_handler.source_changed(source.clone());
+                        self.event_handler
+                            .playback_state_changed(PlaybackState::Playing);
+                        shared_state.source = Some(source);
+                    }
+                    if let Some(volume) = play_msg.volume {
+                        self.event_handler.volume_changed(volume);
+                    }
+                    if let Some(time) = play_msg.time {
+                        self.event_handler.time_changed(time);
+                    }
+                    if let Some(speed) = play_msg.speed {
+                        self.event_handler.speed_changed(speed);
+                    }
+                }
+
+                if let Some(ReceiverCapabilities {
+                    av:
+                        Some(AVCapabilities {
+                            livestream:
+                                Some(LivestreamCapabilities {
+                                    whep: Some(supports_whep),
+                                }),
+                        }),
+                }) = initial_msg.experimental_capabilities
+                {
+                    self.supports_whep.store(supports_whep, Ordering::Relaxed);
+                }
+
+                if !*has_emitted_connected_event {
+                    self.emit_connected(*used_remote_addr, *local_addr);
+                    *has_emitted_connected_event = true;
+                }
+            }
+            Action::PlayUpdate(msg) => {
+                let Some(play_data) = msg.play_data else {
+                    return Ok(false);
+                };
+                if let Some(url) = play_data.url {
+                    let source = Source::Url {
+                        url,
+                        content_type: play_data.container,
+                    };
+                    self.event_handler.source_changed(source.clone());
+                    self.event_handler
+                        .playback_state_changed(PlaybackState::Playing);
+                    shared_state.source = Some(source);
+                } else if let Some(content) = play_data.content {
+                    let source = Source::Content { content };
+                    self.event_handler.source_changed(source.clone());
+                    self.event_handler
+                        .playback_state_changed(PlaybackState::Playing);
+                    shared_state.source = Some(source);
+                }
+            }
+            Action::Event(msg) => match msg.event {
+                v3::EventObject::MediaItem { variant, item } => {
+                    let type_ = match variant {
+                        v3::EventType::MediaItemStart => MediaItemEventType::Start,
+                        v3::EventType::MediaItemEnd => MediaItemEventType::End,
+                        v3::EventType::MediaItemChange => MediaItemEventType::Change,
+                        _ => {
+                            error!("Received event of type {variant:?} when a media event was expected");
+                            return Ok(false);
+                        }
+                    };
+                    self.event_handler.media_event(MediaEvent {
+                        type_,
+                        item: MediaItem {
+                            content_type: item.container,
+                            url: item.url,
+                            content: item.content,
+                            time: item.time,
+                            volume: item.volume,
+                            speed: item.speed,
+                            show_duration: item.show_duration,
+                            metadata: item.metadata.map(|m| match m {
+                                MetadataObject::Generic {
+                                    title,
+                                    thumbnail_url,
+                                    ..
+                                } => Metadata {
+                                    title,
+                                    thumbnail_url,
+                                },
+                            }),
+                        },
+                    });
+                }
+                v3::EventObject::Key {
+                    variant,
+                    key,
+                    repeat,
+                    handled,
+                } => {
+                    let event = KeyEvent {
+                        released: match variant {
+                            v3::EventType::KeyDown => false,
+                            v3::EventType::KeyUp => true,
+                            _ => {
+                                error!("Expected Key event, got {variant:?}");
+                                return Ok(false);
+                            }
+                        },
+                        repeat,
+                        handled,
+                        name: key,
+                    };
+                    self.event_handler.key_event(event);
+                }
+            },
+        }
+
+        Ok(false)
+    }
+
     async fn inner_work(
         &mut self,
         addrs: &[SocketAddr],
-        cmd_rx: &mut Receiver<Command>,
-        cmd_tx: Sender<Command>,
+        cmd_rx: &mut UnboundedReceiver<Command>,
+        cmd_tx: UnboundedSender<Command>,
     ) -> Result<(), utils::WorkError> {
         let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| {
             cmd == Command::Quit
@@ -324,89 +746,18 @@ impl InnerDevice {
 
         tokio::spawn(async move {
             tokio::time::sleep(CONNECTED_EVENT_DEADLINE_DURATION).await;
-            let _ = cmd_tx.send(Command::ConnectedEventDeadlineElapsed).await;
+            let _ = cmd_tx.send(Command::ConnectedEventDeadlineElapsed);
         });
 
-        let (reader, writer) = stream.into_split();
+        let (mut reader, writer) = stream.into_split();
         self.writer = Some(writer);
-
-        let packet_stream = futures::stream::unfold(
-            (reader, vec![0u8; 1000 * 32 - 1]),
-            |(mut reader, mut body_buf)| async move {
-                async fn read_packet(
-                    reader: &mut tokio::net::tcp::OwnedReadHalf,
-                    body_buf: &mut [u8],
-                ) -> anyhow::Result<(Opcode, Option<String>)> {
-                    let mut header_buf: [u8; HEADER_LENGTH] = [0; HEADER_LENGTH];
-
-                    reader.read_exact(&mut header_buf).await?;
-
-                    let opcode = Opcode::try_from(header_buf[4])?;
-                    let body_length = u32::from_le_bytes([
-                        header_buf[0],
-                        header_buf[1],
-                        header_buf[2],
-                        header_buf[3],
-                    ]) as usize
-                        - 1;
-
-                    if body_length > body_buf.len() {
-                        bail!(
-                            "Message exceeded maximum length: {body_length} > {}",
-                            body_buf.len()
-                        );
-                    }
-
-                    let json_body = if body_length > 0 {
-                        reader.read_exact(body_buf[..body_length].as_mut()).await?;
-                        Some(String::from_utf8(body_buf[..body_length].to_vec())?)
-                    } else {
-                        None
-                    };
-
-                    Ok((opcode, json_body))
-                }
-
-                match read_packet(&mut reader, &mut body_buf).await {
-                    Ok((op, json)) => {
-                        if op != Opcode::Ping {
-                            debug!("Received packet with opcode: {op:?}, body: {json:?}");
-                        }
-                        Some(((op, json), (reader, body_buf)))
-                    }
-                    Err(err) => {
-                        error!("Error occurred while reading packet: {err}");
-                        None
-                    }
-                }
-            },
-        );
-
-        tokio::pin!(packet_stream);
-
-        #[derive(Default)]
-        struct SharedState {
-            pub time: f64,
-            pub duration: f64,
-            pub volume: f64,
-            pub speed: f64,
-            pub playback_state: PlaybackState,
-            pub source: Option<Source>,
-        }
-
         let mut shared_state = SharedState::default();
-
-        macro_rules! changed {
-            ($param:ident, $new:expr, $cb:ident) => {
-                if shared_state.$param != $new {
-                    self.event_handler.$cb($new);
-                    shared_state.$param = $new;
-                }
-            };
-        }
-
         let mut playlist_length = None::<usize>;
         let mut current_playlist_item_index = None::<usize>;
+        let mut state_machine = DeviceStateMachine::new();
+        let mut read_buf = [0u8; 1024 * 8];
+        const MAX_BODY_SIZE: usize = 1000 * 32;
+        let mut packet_reader = fcast_protocol::PacketReader::new(MAX_BODY_SIZE);
 
         self.send(
             Opcode::Version,
@@ -416,284 +767,47 @@ impl InnerDevice {
         )
         .await?;
 
-        loop {
+        'main_loop: loop {
             tokio::select! {
-                packet = packet_stream.next() => {
-                    let packet = packet.ok_or(anyhow!("No more packets"))?;
-                    match packet.0 {
-                        Opcode::PlaybackUpdate => {
-                            let Some(body) = packet.1 else {
-                                error!("Missing body");
-                                continue;
-                            };
-                            match self.session_version.get() {
-                                2 => {
-                                    let Ok(update) = serde_json::from_str::<v2::PlaybackUpdateMessage>(&body) else {
-                                        error!("Malformed body: {body}");
-                                        continue;
-                                    };
-                                    changed!(time, update.time, time_changed);
-                                    changed!(duration, update.duration, duration_changed);
-                                    changed!(speed, update.speed, speed_changed);
-                                    changed!(
-                                        playback_state,
-                                        match update.state {
-                                            FCastPlaybackState::Idle => PlaybackState::Idle,
-                                            FCastPlaybackState::Playing => PlaybackState::Playing,
-                                            FCastPlaybackState::Paused => PlaybackState::Paused,
-                                        },
-                                        playback_state_changed
-                                    );
-                                }
-                                3 => {
-                                    let Ok(update) = serde_json::from_str::<v3::PlaybackUpdateMessage>(&body) else {
-                                        error!("Malformed body: {body}");
-                                        continue;
-                                    };
-                                    if let Some(time_update) = update.time {
-                                        changed!(time, time_update, time_changed);
-                                    }
-                                    if let Some(duration_update) = update.duration {
-                                        changed!(duration, duration_update, duration_changed);
-                                    }
-                                    if let Some(speed_update) = update.speed {
-                                        changed!(speed, speed_update, speed_changed);
-                                    }
-                                    changed!(
-                                        playback_state,
-                                        match update.state {
-                                            FCastPlaybackState::Playing => PlaybackState::Playing,
-                                            FCastPlaybackState::Paused => PlaybackState::Paused,
-                                            FCastPlaybackState::Idle => PlaybackState::Idle,
-                                        },
-                                        playback_state_changed
-                                    );
-                                    current_playlist_item_index = update.item_index.map(|idx| idx as usize);
-                                }
-                                _ => return Err(anyhow!("Unsupported session version {}", self.session_version.get()).into()),
-                            }
-                        }
-                        Opcode::VolumeUpdate => {
-                            let Some(body) = packet.1 else {
-                                error!("Received volume update message with no body");
-                                continue;
-                            };
-                            let Ok(update) = serde_json::from_str::<v2::VolumeUpdateMessage>(&body) else {
-                                error!("Received volume update message with malformed body: {body}");
-                                continue;
-                            };
-                            changed!(volume, update.volume, volume_changed);
-                        }
-                        Opcode::Ping => self.send_empty(Opcode::Pong).await?,
-                        Opcode::Event => {
-                            if self.session_version.get() != V3_FEATURES_MIN_PROTO_VERSION {
-                                debug!("Received event message when not supposed to, ignoring");
+                res = reader.read(&mut read_buf) => {
+                    let n_read = res?;
+                    if n_read == 0 {
+                        return Err(utils::WorkError::Disconnected);
+                    }
+                    packet_reader.push_data(&read_buf[..n_read]);
+                    while let Some(packet) = packet_reader.get_packet() {
+                        let (opcode, body) = match packet.len() {
+                            0 => {
+                                error!("Received empty packet");
                                 continue;
                             }
-                            let Some(body) = packet.1 else {
-                                error!("Received event message with no body");
-                                continue;
-                            };
-                            let Ok(msg) = serde_json::from_str::<v3::EventMessage>(&body) else {
-                                error!("Received event message with malformed body: {body}");
-                                continue;
-                            };
-                            match msg.event {
-                                v3::EventObject::MediaItem { variant, item } => {
-                                    let type_ = match variant {
-                                        v3::EventType::MediaItemStart => MediaItemEventType::Start,
-                                        v3::EventType::MediaItemEnd => MediaItemEventType::End,
-                                        v3::EventType::MediaItemChange => MediaItemEventType::Change,
-                                        _ => {
-                                            error!("Received event of type {variant:?} when a media event was expected");
-                                            continue;
-                                        }
-                                    };
-                                    self.event_handler.media_event(
-                                        MediaEvent {
-                                            type_,
-                                            item: MediaItem {
-                                                content_type: item.container,
-                                                url: item.url,
-                                                content: item.content,
-                                                time: item.time,
-                                                volume: item.volume,
-                                                speed: item.speed,
-                                                show_duration: item.show_duration,
-                                                metadata: item.metadata.map(|m| match m {
-                                                    MetadataObject::Generic {title, thumbnail_url, ..} =>
-                                                        Metadata { title, thumbnail_url },
-                                                }),
-                                            }
-                                        }
-                                    );
-                                }
-                                v3::EventObject::Key { variant, key, repeat, handled } => {
-                                    let event = KeyEvent {
-                                        released: match variant {
-                                            v3::EventType::KeyDown => false,
-                                            v3::EventType::KeyUp => true,
-                                            _ => {
-                                                error!("Expected Key event, got {variant:?}");
-                                                continue;
-                                            }
-                                        },
-                                        repeat,
-                                        handled,
-                                        name: key
-                                    };
-                                    self.event_handler.key_event(event);
-                                }
-                            }
-                        }
-                        Opcode::PlayUpdate => {
-                            let Some(body) = packet.1 else {
-                                error!("Missing body");
-                                continue;
-                            };
-                            let Ok(play_update) = serde_json::from_str::<v3::PlayUpdateMessage>(&body) else {
-                                error!("Malformed body: {body}");
-                                continue;
-                            };
-                            let Some(play_data) = play_update.play_data else {
-                                continue;
-                            };
-                            if let Some(url) = play_data.url {
-                                let source = Source::Url {
-                                    url,
-                                    content_type: play_data.container,
-                                };
-                                self.event_handler.source_changed(source.clone());
-                                self.event_handler.playback_state_changed(PlaybackState::Playing);
-                                shared_state.source = Some(source);
-                            } else if let Some(content) = play_data.content {
-                                let source = Source::Content { content };
-                                self.event_handler.source_changed(source.clone());
-                                self.event_handler.playback_state_changed(PlaybackState::Playing);
-                                shared_state.source = Some(source);
-                            }
-                        }
-                        Opcode::Version => {
-                            let Some(body) = packet.1 else {
-                                error!("Version message is missing body");
-                                continue;
-                            };
-                            let version_msg = match serde_json::from_str::<VersionMessage>(&body) {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    error!("Failed to parse VersionMessage json body: {err}");
-                                    continue;
-                                }
-                            };
-                            if version_msg.version >= V3_FEATURES_MIN_PROTO_VERSION {
-                                debug!("Receiver supports v3");
+                            1 => (packet[0], None),
+                            _ => (packet[0], Some(&packet[1..])),
+                        };
 
-                                self.send(
-                                    Opcode::Initial,
-                                    match self.app_info.as_ref() {
-                                        Some(info) => {
-                                            v3::InitialSenderMessage {
-                                                display_name: Some(info.display_name.clone()),
-                                                app_name: Some(info.name.clone()),
-                                                app_version: Some(info.version.clone()),
-                                            }
-                                        }
-                                        None => {
-                                            v3::InitialSenderMessage {
-                                                display_name: None,
-                                                app_name: Some(
-                                                    concat!("FCast Sender SDK v", env!("CARGO_PKG_VERSION")).to_owned(),
-                                                ),
-                                                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                                            }
-                                        }
-                                    }
-                                )
-                                .await
-                                .context("Failed to send InitialSenderMessage")?;
+                        let opcode = Opcode::try_from(opcode).map_err(|e| anyhow!(e))?;
 
-                                self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
-                            } else {
-                                // Since the user of the SDK should be able to tell what features are available after the connected
-                                // event has occured, we emit that event after the receiver has anounced version 2, for version 3
-                                // we have to wait until the InitialReceiverMessage is received
-                                self.emit_connected(used_remote_addr, local_addr);
-                                has_emitted_connected_event = true;
+                        if let Some(body) = body.as_ref() {
+                            if body.len() > MAX_BODY_SIZE {
+                                return Err(anyhow!("Message exceeded maximum length ({} > {MAX_BODY_SIZE})", body.len()).into());
                             }
                         }
-                        Opcode::Initial => {
-                            let Some(body) = packet.1 else {
-                                error!("Received initial message with no body");
-                                continue;
-                            };
-                            let initial_msg = match serde_json::from_str::<InitialReceiverMessage>(&body) {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    error!("Failed to parse InitialReceiverMessage json body: {err}");
-                                    continue;
-                                }
-                            };
 
-                            debug!("Received InitialReceiverMessage: {initial_msg:?}");
-
-                            if let Some(play_msg) = initial_msg.play_data {
-                                if let Some(url) = play_msg.url {
-                                    let source = Source::Url {
-                                        url,
-                                        content_type: play_msg.container,
-                                    };
-                                    self.event_handler.source_changed(source.clone());
-                                    self.event_handler
-                                        .playback_state_changed(PlaybackState::Playing);
-                                    shared_state.source = Some(source);
-                                } else if let Some(content) = play_msg.content {
-                                    let source = Source::Content { content };
-                                    self.event_handler.source_changed(source.clone());
-                                    self.event_handler
-                                        .playback_state_changed(PlaybackState::Playing);
-                                    shared_state.source = Some(source);
-                                }
-                                if let Some(volume) = play_msg.volume {
-                                    self.event_handler.volume_changed(volume);
-                                }
-                                if let Some(time) = play_msg.time {
-                                    self.event_handler.time_changed(time);
-                                }
-                                if let Some(speed) = play_msg.speed {
-                                    self.event_handler.speed_changed(speed);
-                                }
-                            }
-
-                            if let Some(ReceiverCapabilities {
-                                av: Some(AVCapabilities {
-                                    livestream: Some(LivestreamCapabilities {
-                                        whep: Some(supports_whep)
-                                    })
-                                })
-                            }) = initial_msg.experimental_capabilities {
-                                self.supports_whep.store(supports_whep, Ordering::Relaxed);
-                            }
-
-                            if !has_emitted_connected_event {
-                                self.emit_connected(used_remote_addr, local_addr);
-                                has_emitted_connected_event = true;
-                            }
+                        if opcode != Opcode::Ping {
+                            debug!("Received packet opcode={opcode:?} body={:?}", body.map(|b| str::from_utf8(b)));
                         }
-                        Opcode::PlaybackError => {
-                            let Some(body) = packet.1 else {
-                                error!("Received playback error with no body");
-                                continue;
-                            };
-                            let error = match serde_json::from_str::<PlaybackErrorMessage>(&body) {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    error!("Failed to parse PlaybackErrorMessage json body: {err}");
-                                    continue;
-                                }
-                            };
-                            self.event_handler.playback_error(error.message);
+
+                        let action = state_machine.handle_packet(opcode, body);
+                        if self.handle_action(
+                            &mut shared_state,
+                            &mut has_emitted_connected_event,
+                            &mut current_playlist_item_index,
+                            &used_remote_addr,
+                            &local_addr,
+                            action
+                        ).await? {
+                            break 'main_loop;
                         }
-                        _ => debug!("Packet ignored: {packet:?}"),
                     }
                 }
                 cmd = cmd_rx.recv() => {
@@ -811,8 +925,8 @@ impl InnerDevice {
     pub async fn work(
         mut self,
         addrs: Vec<SocketAddr>,
-        mut cmd_rx: Receiver<Command>,
-        cmd_tx: Sender<Command>,
+        mut cmd_rx: UnboundedReceiver<Command>,
+        cmd_tx: UnboundedSender<Command>,
         reconnect_interval_millis: u64,
     ) {
         self.event_handler
@@ -835,15 +949,16 @@ impl InnerDevice {
 impl FCastDevice {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
         let state = self.state.lock().unwrap();
-        let Some(tx) = &state.command_tx else {
-            error!("Missing command tx");
-            return Err(CastingDeviceError::FailedToSendCommand);
-        };
-
-        let tx = tx.clone();
-        state.rt_handle.spawn(async move { tx.send(cmd).await });
-
-        Ok(())
+        match state.command_tx.as_ref() {
+            Some(cmd_tx) => {
+                let _ = cmd_tx.send(cmd);
+                Ok(())
+            }
+            None => {
+                error!("Missing command tx");
+                Err(CastingDeviceError::FailedToSendCommand)
+            }
+        }
     }
 
     fn load_url(
@@ -1062,7 +1177,7 @@ impl CastingDevice for FCastDevice {
         state.started = true;
         debug!("Starting with address list: {addrs:?}...");
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
         state.command_tx = Some(tx.clone());
 
         state.rt_handle.spawn(
@@ -1122,5 +1237,71 @@ impl CastingDevice for FCastDevice {
         } else {
             Err(CastingDeviceError::UnsupportedFeature)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init_with_version(version: VersionCode) -> DeviceStateMachine {
+        let mut state_machine = DeviceStateMachine::new();
+        let body = match version {
+            VersionCode::V2 => br#"{"version":2}"#,
+            VersionCode::V3 => br#"{"version":3}"#,
+        };
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Version, Some(body)),
+            Action::Connected(version)
+        );
+        assert_eq!(
+            state_machine.variant,
+            match version {
+                VersionCode::V2 => StateVariant::V2,
+                VersionCode::V3 => StateVariant::V3,
+            },
+        );
+        state_machine
+    }
+
+    #[test]
+    fn start_version_v2() {
+        init_with_version(VersionCode::V2);
+    }
+
+    #[test]
+    fn start_version_v3() {
+        init_with_version(VersionCode::V3);
+    }
+
+    #[test]
+    fn unversioned_init() {
+        let mut state_machine = DeviceStateMachine::new();
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Ping, None),
+            Action::Pong
+        );
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Pong, None),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn no_update_in_unversioned() {
+        let mut state_machine = DeviceStateMachine::new();
+        assert_eq!(
+            state_machine.handle_packet(Opcode::VolumeUpdate, Some(br#"{"volume":0.0}"#)),
+            Action::Quit(QuitReason::UnsupportedOpcode)
+        );
+    }
+
+    #[test]
+    fn invalid_body() {
+        let mut state_machine = init_with_version(VersionCode::V3);
+        assert_eq!(
+            state_machine.handle_packet(Opcode::VolumeUpdate, Some(br#"{"volume":0.0"#)),
+            Action::Quit(QuitReason::InvalidBody)
+        );
     }
 }
