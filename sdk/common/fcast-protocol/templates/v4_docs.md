@@ -53,8 +53,6 @@ Note the total packet size is max 128KB. Consequently, the maximum body size is 
 | 51     | ResourceInfo            | Both      | [↗](#resourceinfo)            |
 | 52     | Resource                | Both      | [↗](#resource)                |
 | 53     | StartTLS                | Both      | [↗](#starttls)                |
-| 54     | Unlock                  | S->R      | [↗](#unlock)                  |
-| 55     | UnlockRequired          | R->S      | [↗](#unlockrequired)          |
 
 ### Connection establishment
 
@@ -166,14 +164,6 @@ Sent from the receiver after seeks and at regular intervals.
 ### StartTLS
 
 Sent from the sender to the receiver when it wish to secure the connection. When the receiver receives the message, it will respond with a `StartTLS` message. When the sender receives this, it should start the TLS handshake.
-
-### Unlock
-
-TODO
-
-### UnlockReqired
-
-TODO
 
 # Shared types
 
