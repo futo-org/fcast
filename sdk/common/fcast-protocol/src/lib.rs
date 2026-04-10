@@ -11,6 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
+pub mod companion;
 pub mod v1;
 pub mod v2;
 pub mod v3;
@@ -76,6 +77,25 @@ pub enum Opcode {
     UnsubscribeEvent = 18,
     /// Receiver message to notify when a sender subscribed event has occurred, body is [`v3::EventMessage`]
     Event = 19,
+
+    /// #######################
+    /// |         V4          |
+    /// #######################
+    UpdateVolume = 20,
+    UpdatePlaybackState = 21,
+    PositionChanged = 22,
+    DurationChanged = 23,
+    QueueInsert = 24,
+    QueueRemove = 25,
+    TracksAvailable = 26,
+    ChangeTrack = 27,
+    QueueItemSelected = 28,
+    AddSubtitleSource = 29,
+    SetStatusUpdateInterval = 30,
+    CompanionHello = 50,
+    ResourceInfo = 51,
+    Resource = 52,
+    StartTLS = 53,
 }
 
 impl TryFrom<u8> for Opcode {

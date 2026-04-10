@@ -26,7 +26,7 @@ struct BODY {
 ```
 
 For opcodes defining a body, the format will be a `JSON` string encoded using `UTF-8`, unless stated otherwise.
-Note the total packet size is max 128KB. Consequently, the maximum body size is `128000 - 1` unless stated otherwise.
+Note the maximum total packet size is 128KB. Consequently, the maximum body size is `128000 - 1` unless stated otherwise.
 
 | Opcode | Name                    | Direction | Description                   |
 |--------|-------------------------|-----------|-------------------------------|
@@ -245,7 +245,7 @@ struct AddSubtitleSourceMessage {
 ```rust title="Body"
 struct SetStatusUpdateIntervalMessage {
     /// Milliseconds
-    interval: u32,
+    interval: u16,
 }
 ```
 
@@ -262,14 +262,20 @@ struct MediaItem {
     /// The MIME type
     container: String,
     source_url: String,
+    /// The time to start playing in seconds
     start_time: Option<f64>,
+    /// The desired volume (0-1)
     volume: Option<f64>,
+    /// Initial playback speed
     speed: Option<f64>,
+    /// HTTP request headers to add to the play request
     headers: Option<HashMap<String, String>>,
     title: Option<String>,
     thumbnail_url: Option<String>,
     metadata: Option<Metadata>,
     extra_metadata: Option<HashMap<String, Value>>,
+    /// Milliseconds
+    status_update_interval: u16,
 }
 ```
 
@@ -417,40 +423,43 @@ struct VideoResolution {
 
 # FCompanion
 
-TODO: implement this in Grayjay to verify it's a reasonable protocol.
+TODO: implement this in the desktop sender and maybe immich to verify it's a reasonable protocol.
+TODO: support webrtc signaling over FCompanion
 
 This section defines the FCompanion protocol used to transfer media data over an FCast connection. The bodies are in a custom binary format, and they can be of any size not exceeding `2^32 - 2`.
 
 URLs are defined like this:
 
-`fcomp://<server-uuid>.fcast/<resource-uuid>`
+`fcomp://<provider-id>.fcast/<resource-id>`
+
+ - `provider-id` is a `U16` and `resource-id` is a `U32` encoded as ASCII.
 
 The receiver implementation **must** support the case where a sender plays a companion URL provided by a different connection to the same receiver. This is to allow more flexibility for sender developers.
 
 ### CompanionHello
 
-This message is sent from the sender to the receiver to notify that the sender provides resources for the specified server ID.
+This message is sent from the sender to the receiver to get a companion provider ID. When the receiver gets the message, it will generate a unique ID for the sender's content provider and respond with the same opcode with the following body.
 
-| Arg. # | Type   | Description |
-|--------|--------|-------------|
-| 1      | [UUID] | Server ID   |
+| Arg. # | Type  | Description |
+|--------|-------|-------------|
+| 1      | U16LE | Provider ID |
 
 ### ResourceInfo
 
 #### Request
 
-| Arg. # | Type   | Description |
-|--------|--------|-------------|
-| 1      | U32LE  | Request ID  |
-| 2      | [UUID] | Resource ID |
+| Arg. # | Type  | Description |
+|--------|-------|-------------|
+| 1      | U32LE | Request ID  |
+| 2      | U32LE | Resource ID |
 
 #### Response
 
-| Arg. # | Type     | Description                                             |
-|--------|----------|---------------------------------------------------------|
-| 1      | U32LE    | Request ID                                              |
-| 2      | [String] | Content Type                                            |
-| 3      | S64LE    | Resource Size. A value of -1 means the size is unknown. |
+| Arg. # | Type           | Description    |
+|--------|----------------|----------------|
+| 1      | U32LE          | Request ID     |
+| 2      | [String]       | Content Type   |
+| 3      | [ResourceSize] | Resource Size. |
 
 ### Resource
 
@@ -459,7 +468,7 @@ This message is sent from the sender to the receiver to notify that the sender p
 | Arg. # | Type       | Description |
 |--------|------------|-------------|
 | 1      | U32LE      | Request ID  |
-| 2      | [UUID]     | Resource ID |
+| 2      | U32LE      | Resource ID |
 | 3      | [ReadHead] | Read head   |
 
 #### Response
@@ -470,12 +479,6 @@ This message is sent from the sender to the receiver to notify that the sender p
 | 2      | [GetResouceResult] | Result      |
 
 ## Shared types
-
-### UUID
-
-| Field # | Type | Description                                                                               |
-|---------|------|-------------------------------------------------------------------------------------------|
-| 1       | [U8] | A 16 bytes version 4 [UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier). |
 
 ### String
 
@@ -501,8 +504,8 @@ The values of `variant` are:
 
 | Field # | Type  | Description      |
 |---------|-------|------------------|
-| 1       | U64LE | Start            |
-| 2       | U64LE | Stop (inclusive) |
+| 1       | U48LE | Start            |
+| 2       | U48LE | Stop (inclusive) |
 
 ### GetResouceResult
 
@@ -510,22 +513,28 @@ A single byte (`U8`) called `variant` with optional extra data.
 
 The values of `variant` are:
 
-| Value | Extra Data     | Description                |
-|-------|----------------|----------------------------|
-| 0x00  | NONE           | The resource was not found |
-| 0x01  | [ResourceData] | Success                    |
+| Value | Extra Data | Description                |
+|-------|------------|----------------------------|
+| 0x00  | NONE       | The resource was not found |
+| 0x01  | \[U8\]     | Success                    |
 
-### ResourceData
+The length of the success array is calculated by subtracting the response size from the total message size.
 
-| Field # | Type  | Description                                        |
-|---------|-------|----------------------------------------------------|
-| 1       | U64LE | Content length                                     |
-| 2       | \[U8\]  | Resource data with length defined by argument `1`. |
+### ResourceSize
 
-[UUID]: #uuid
+A single byte (`U8`) called `variant` with optional extra data.
+
+The values of `variant` are:
+
+| Value | Extra Data | Description                         |
+|-------|------------|-------------------------------------|
+| 0x00  | NONE       | Resource Size is unknown            |
+| 0x01  | U48LE      | A range of bytes from the resource. |
+
 [String]: #string
 [ReadHead]: #readhead
 [Range]: #range
+[ResourceSize]: #resourcesize
 [UTF-8]: https://en.wikipedia.org/wiki/UTF-8
 [GetResouceResult]: #getresouceresult
 [ResourceData]: #resourcedata

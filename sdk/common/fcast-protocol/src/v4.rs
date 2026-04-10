@@ -62,19 +62,20 @@ pub struct MediaItem {
     /// The MIME type
     pub container: String,
     pub source_url: String,
-    // The time to start playing in seconds
+    /// The time to start playing in seconds
     pub start_time: Option<f64>,
-    // The desired volume (0-1)
+    /// The desired volume (0-1)
     pub volume: Option<f64>,
-    // Initial playback speed
+    /// Initial playback speed
     pub speed: Option<f64>,
-    // HTTP request headers to add to the play request
+    /// HTTP request headers to add to the play request
     pub headers: Option<HashMap<String, String>>,
-    // pub info: Option<MediaItemInformation>,
     pub title: Option<String>,
     pub thumbnail_url: Option<String>,
     pub metadata: Option<Metadata>,
     pub extra_metadata: Option<HashMap<String, Value>>,
+    /// Milliseconds
+    pub status_update_interval: u16,
 }
 
 #[cfg_attr(feature = "__schema", derive(JsonSchema, GetTypeString))]
@@ -291,5 +292,5 @@ pub struct AddSubtitleSourceMessage {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SetStatusUpdateIntervalMessage {
     /// Milliseconds
-    pub interval: u32,
+    pub interval: u16,
 }

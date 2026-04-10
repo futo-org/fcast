@@ -294,6 +294,7 @@
           "additionalProperties": true
         },
         "headers": {
+          "description": "HTTP request headers to add to the play request",
           "type": [
             "object",
             "null"
@@ -316,6 +317,7 @@
           "type": "string"
         },
         "speed": {
+          "description": "Initial playback speed",
           "type": [
             "number",
             "null"
@@ -323,11 +325,19 @@
           "format": "double"
         },
         "start_time": {
+          "description": "The time to start playing in seconds",
           "type": [
             "number",
             "null"
           ],
           "format": "double"
+        },
+        "status_update_interval": {
+          "description": "Milliseconds",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
         },
         "thumbnail_url": {
           "type": [
@@ -342,6 +352,7 @@
           ]
         },
         "volume": {
+          "description": "The desired volume (0-1)",
           "type": [
             "number",
             "null"
@@ -351,7 +362,8 @@
       },
       "required": [
         "container",
-        "source_url"
+        "source_url",
+        "status_update_interval"
       ]
     },
     "MediaTrack": {
