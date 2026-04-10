@@ -486,6 +486,19 @@ impl StateMachine {
         }
     }
 
+    fn seek_failed(&mut self) -> Option<gst::State> {
+        match self.state {
+            State::Seeking { target_state } => {
+                self.state = State::Changing {
+                    target_state,
+                    pending_seek: None,
+                };
+                Some(target_state)
+            }
+            _ => None,
+        }
+    }
+
     fn clear_state(&mut self) {
         self.state = State::Stopped;
         self.is_live = false;
@@ -533,6 +546,7 @@ pub enum PlayerEvent {
         subtitle: Option<StreamId>,
     },
     RateChanged(f64),
+    SeekFailed,
     Error(String),
     Warning(String),
     UriSet(String),
@@ -740,7 +754,8 @@ impl Player {
                                     position,
                                 )
                             } {
-                                error!(?err, "Failed to set rate");
+                                error!(?err, "Failed to seek");
+                                msg_tx.player(PlayerEvent::SeekFailed);
                             } else {
                                 msg_tx.player(PlayerEvent::RateChanged(rate));
                             }
@@ -1246,6 +1261,14 @@ impl Player {
 
     pub fn rate(&self) -> f64 {
         self.state_machine.rate
+    }
+
+    #[instrument(skip_all)]
+    pub fn seek_failed(&mut self) {
+        if let Some(target_state) = self.state_machine.seek_failed() {
+            debug!(?target_state);
+            self.set_state_async(target_state);
+        }
     }
 
     pub fn set_rate_changed(&mut self, rate: f64) {

@@ -1249,6 +1249,9 @@ impl Application {
                     self.video_stream_available()?;
                 }
             }
+            player::PlayerEvent::SeekFailed => {
+                self.player.seek_failed();
+            }
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);
                 self.notify_updates(true)?;
