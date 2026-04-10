@@ -20,7 +20,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     runtime::Handle,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 use tokio_rustls::{
     client::TlsStream,
@@ -59,7 +59,7 @@ impl RequestId {
 struct State {
     rt_handle: Handle,
     started: bool,
-    command_tx: Option<Sender<Command>>,
+    command_tx: Option<UnboundedSender<Command>>,
     addresses: Vec<IpAddr>,
     name: String,
     port: u16,
@@ -191,7 +191,7 @@ struct SharedReceiverState {
 
 struct InnerDevice {
     write_buffer: Vec<u8>,
-    cmd_rx: Receiver<Command>,
+    cmd_rx: UnboundedReceiver<Command>,
     event_handler: Arc<dyn DeviceEventHandler>,
     transport_id: Option<String>,
     writer: Option<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
@@ -204,7 +204,10 @@ struct InnerDevice {
 }
 
 impl InnerDevice {
-    pub fn new(cmd_rx: Receiver<Command>, event_handler: Arc<dyn DeviceEventHandler>) -> Self {
+    pub fn new(
+        cmd_rx: UnboundedReceiver<Command>,
+        event_handler: Arc<dyn DeviceEventHandler>,
+    ) -> Self {
         Self {
             write_buffer: vec![0u8; 1000 * 64],
             cmd_rx,
@@ -487,7 +490,7 @@ impl InnerDevice {
                 let msg: namespaces::Receiver = json::from_str(json_payload)?;
                 match msg {
                     namespaces::Receiver::Status { status, .. } => {
-                        debug!("Receiver status: {status:#?}");
+                        debug!("Receiver status: {status:?}");
                         let Some(applications) = status.applications else {
                             debug!("Got ReceiverStatus with no `applications` field");
                             if !shared_state.is_running {
@@ -542,7 +545,7 @@ impl InnerDevice {
                             self.launch_app().await?;
                         }
                     }
-                    _ => debug!("Ignored receiver message: {msg:#?}"),
+                    _ => debug!("Ignored receiver message: {msg:?}"),
                 }
             }
             MEDIA_NAMESPACE => {
@@ -645,7 +648,7 @@ impl InnerDevice {
                     }
                 };
 
-                debug!("Connection message: {msg:#?}");
+                debug!("Connection message: {msg:?}");
 
                 if matches!(msg, namespaces::Connection::Close) {
                     debug!("Session closed");
@@ -734,7 +737,7 @@ impl InnerDevice {
 
                 match read_packet(&mut reader, &mut body_buf).await {
                     Ok(body) => {
-                        debug!("Received packet, body: {body:#?}");
+                        debug!("Received packet, body: {body:?}");
                         Some((body, (reader, body_buf)))
                     }
                     Err(err) => {
@@ -835,15 +838,16 @@ impl InnerDevice {
 impl ChromecastDevice {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
         let state = self.state.lock().unwrap();
-        let Some(tx) = &state.command_tx else {
-            error!("Missing command tx");
-            return Err(CastingDeviceError::FailedToSendCommand);
-        };
-
-        let tx = tx.clone();
-        state.rt_handle.spawn(async move { tx.send(cmd).await });
-
-        Ok(())
+        match state.command_tx.as_ref() {
+            Some(cmd_tx) => {
+                let _ = cmd_tx.send(cmd);
+                Ok(())
+            }
+            None => {
+                error!("Missing command tx");
+                Err(CastingDeviceError::FailedToSendCommand)
+            }
+        }
     }
 
     fn load_url(
@@ -1022,7 +1026,7 @@ impl CastingDevice for ChromecastDevice {
         state.started = true;
         debug!("Starting with address list: {addrs:?}...");
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Command>(50);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
         state.command_tx = Some(tx);
 
         state

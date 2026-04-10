@@ -17,7 +17,7 @@ use any_protocol_prelude::*;
 pub(crate) async fn try_connect_tcp<T>(
     addrs: &[SocketAddr],
     timeout: Duration,
-    cmd_rx: &mut tokio::sync::mpsc::Receiver<T>,
+    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>,
     on_cmd: impl Fn(T) -> bool,
 ) -> anyhow::Result<Option<tokio::net::TcpStream>> {
     anyhow::ensure!(!addrs.is_empty());
@@ -70,20 +70,24 @@ pub(crate) enum WorkError {
     Anyhow(anyhow::Error),
     Io(std::io::Error),
     SerdeJson(serde_json::Error),
+    Disconnected,
 }
 
+#[cfg(any_protocol)]
 impl From<anyhow::Error> for WorkError {
     fn from(value: anyhow::Error) -> Self {
         Self::Anyhow(value)
     }
 }
 
+#[cfg(any_protocol)]
 impl From<std::io::Error> for WorkError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
     }
 }
 
+#[cfg(any_protocol)]
 impl From<serde_json::Error> for WorkError {
     fn from(value: serde_json::Error) -> Self {
         Self::SerdeJson(value)
@@ -101,6 +105,7 @@ impl std::fmt::Display for WorkError {
             WorkError::Anyhow(err) => write!(f, "{err:?}"),
             WorkError::Io(err) => write!(f, "{err:?}"),
             WorkError::SerdeJson(err) => write!(f, "{err:?}"),
+            WorkError::Disconnected => write!(f, "Disconnected"),
         }
     }
 }

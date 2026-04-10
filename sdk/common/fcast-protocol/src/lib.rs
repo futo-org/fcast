@@ -149,3 +149,158 @@ pub struct FCastNetworkConfig {
     pub addresses: Vec<String>,
     pub services: Vec<FCastService>,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReaderState {
+    MissingLength,
+    MissingBody { length: usize },
+    ShouldClear { body_length: usize },
+}
+
+pub struct PacketReader {
+    buffer: Vec<u8>,
+    state: ReaderState,
+}
+
+impl PacketReader {
+    // TODO: honor max packet size? (shring_to_fit() when?)
+    pub fn new(max_packet_size: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(max_packet_size),
+            state: ReaderState::MissingLength,
+        }
+    }
+
+    fn next_state(&mut self) -> Option<&[u8]> {
+        const LEN_SIZE: usize = std::mem::size_of::<u32>();
+
+        match self.state {
+            ReaderState::MissingLength => {
+                if self.buffer.len() >= LEN_SIZE {
+                    let length = u32::from_le_bytes([
+                        self.buffer[0],
+                        self.buffer[1],
+                        self.buffer[2],
+                        self.buffer[3],
+                    ]) as usize;
+                    self.state = ReaderState::MissingBody { length };
+                    self.next_state()
+                } else {
+                    None
+                }
+            }
+            ReaderState::MissingBody { length } => {
+                if self.buffer.len().saturating_sub(LEN_SIZE) >= length {
+                    self.state = ReaderState::ShouldClear {
+                        body_length: length,
+                    };
+                    Some(&self.buffer[LEN_SIZE..LEN_SIZE + length])
+                } else {
+                    None
+                }
+            }
+            ReaderState::ShouldClear { body_length } => {
+                let full_length = self.buffer.len().min(LEN_SIZE + body_length);
+                self.buffer.drain(0..full_length);
+                self.state = ReaderState::MissingLength;
+                self.next_state()
+            }
+        }
+    }
+
+    /// Push data to the reader's internal buffer.
+    ///
+    /// `get_packet()` should be called to extract packets.
+    pub fn push_data(&mut self, data: &[u8]) {
+        self.buffer.extend_from_slice(data);
+    }
+
+    /// Get a packet if it's available.
+    ///
+    /// This should be called in a loop until `None` is returned which means more data is needed.
+    pub fn get_packet(&mut self) -> Option<&[u8]> {
+        self.next_state()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packet_reader_single() {
+        let mut reader = PacketReader::new(100);
+        reader.push_data(&[1u32.to_le_bytes().as_slice(), [0u8].as_slice()].concat());
+        assert_eq!(reader.get_packet().unwrap(), &[0]);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 1 });
+        assert_eq!(reader.get_packet(), None);
+        assert_eq!(reader.buffer, Vec::<u8>::new());
+        assert_eq!(reader.state, ReaderState::MissingLength);
+        assert!(reader.buffer.is_empty());
+    }
+
+    #[test]
+    fn packet_reader_small_push() {
+        let mut reader = PacketReader::new(100);
+        let length = 1u32.to_le_bytes();
+        reader.push_data(&[length[0], length[1]]);
+        assert_eq!(reader.get_packet(), None);
+        reader.push_data(&[length[2]]);
+        assert_eq!(reader.get_packet(), None);
+        assert_eq!(reader.state, ReaderState::MissingLength);
+        reader.push_data(&[length[3]]);
+        assert_eq!(reader.get_packet(), None);
+        reader.push_data(&[0]);
+        assert_eq!(reader.get_packet().unwrap(), &[0]);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 1 });
+        assert_eq!(reader.get_packet(), None);
+        assert!(reader.buffer.is_empty());
+    }
+
+    #[rustfmt::skip]
+    #[test]
+    fn packet_reader_many_packets_single_push() {
+        let mut reader = PacketReader::new(100);
+        reader.push_data(&[
+            1u32.to_le_bytes().as_slice(), [0u8].as_slice(),
+            2u32.to_le_bytes().as_slice(), [0u8, 1].as_slice(),
+            3u32.to_le_bytes().as_slice(), [0u8, 1, 2].as_slice(),
+        ].concat());
+        assert_eq!(reader.get_packet().unwrap(), &[0]);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 1 });
+        assert_eq!(reader.get_packet().unwrap(), &[0, 1]);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 2 });
+        assert_eq!(reader.get_packet().unwrap(), &[0, 1, 2]);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 3 });
+        assert_eq!(reader.get_packet(), None);
+        assert_eq!(reader.state, ReaderState::MissingLength);
+        assert!(reader.buffer.is_empty());
+    }
+
+    #[test]
+    fn packet_reader_partial_body() {
+        let mut reader = PacketReader::new(100);
+        reader.push_data(&[4u32.to_le_bytes().as_slice(), [0u8, 1].as_slice()].concat());
+        assert_eq!(reader.get_packet(), None);
+        reader.push_data(&[2]);
+        assert_eq!(reader.get_packet(), None);
+        reader.push_data(&[3]);
+        assert_eq!(reader.get_packet().unwrap(), &[0, 1, 2, 3]);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 4 });
+        assert_eq!(reader.get_packet(), None);
+        assert_eq!(reader.state, ReaderState::MissingLength);
+        assert!(reader.buffer.is_empty());
+    }
+
+    #[test]
+    fn packet_reader_large_body() {
+        let mut reader = PacketReader::new(100);
+        let body = (0..10).collect::<Vec<u8>>();
+        reader.push_data(&[10u32.to_le_bytes().as_slice(), body.as_slice()].concat());
+        assert_eq!(reader.get_packet().unwrap(), &body);
+        assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 10 });
+        assert_eq!(reader.get_packet(), None);
+        assert_eq!(reader.state, ReaderState::MissingLength);
+        assert!(reader.buffer.is_empty());
+    }
+}

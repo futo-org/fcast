@@ -8,24 +8,18 @@ use fcast_protocol::{
     v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
     v3::{self, InitialReceiverMessage, ReceiverCapabilities},
 };
-use futures::stream::unfold;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{
-        TcpStream,
-        tcp::{ReadHalf, WriteHalf},
-    },
+    net::{TcpStream, tcp::WriteHalf},
     sync::broadcast::Receiver,
 };
-use tokio_stream::StreamExt;
 use tracing::{debug, error, instrument, trace};
 
 pub type SessionId = u64;
 
 const TICKS_BEFORE_PING: u32 = 3;
 
-pub const HEADER_BUFFER_SIZE: usize = 5;
-pub const MAX_BODY_SIZE: usize = 32000 - 1;
+pub const MAX_BODY_SIZE: usize = 32000;
 
 use anyhow::{Context, bail};
 
@@ -40,13 +34,6 @@ impl Header {
         Self {
             size: size + 1,
             opcode,
-        }
-    }
-
-    pub fn decode(buf: [u8; 5]) -> Self {
-        Self {
-            size: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) - 1,
-            opcode: Opcode::try_from(buf[4]).unwrap(),
         }
     }
 
@@ -808,35 +795,6 @@ impl SessionDriver {
         Ok(false)
     }
 
-    async fn read_packet(
-        stream: &mut ReadHalf<'_>,
-        read_buf: &mut [u8; MAX_BODY_SIZE],
-    ) -> anyhow::Result<(Opcode, Option<String>)> {
-        let mut header_buf: [u8; HEADER_BUFFER_SIZE] = [0; HEADER_BUFFER_SIZE];
-
-        stream.read_exact(&mut header_buf).await?;
-
-        let header = Header::decode(header_buf);
-
-        let mut body_string = None;
-
-        if header.size as usize > read_buf.len() {
-            bail!("Too big body size {}", header.size);
-        }
-
-        if header.size > 0 {
-            // let mut body_buf = vec![0; header.size as usize];
-            // stream.read_exact(&mut body_buf).await?;
-            stream
-                .read_exact(&mut read_buf[0..header.size as usize])
-                .await?;
-            // body_string = Some(String::from_utf8(read_buf[0..header.size as usize])?);
-            body_string = Some(str::from_utf8(&read_buf[0..header.size as usize])?.to_owned());
-        }
-
-        Ok((header.opcode, body_string))
-    }
-
     #[cfg_attr(not(target_os = "android"), instrument(name = "session", skip_all, fields(id = self.id)))]
     pub async fn run(
         mut self,
@@ -845,23 +803,9 @@ impl SessionDriver {
     ) -> anyhow::Result<()> {
         debug!("Session was started");
 
-        let (tcp_stream_rx, mut tcp_stream_tx) = self.stream.split();
+        let (mut tcp_stream_rx, mut tcp_stream_tx) = self.stream.split();
 
-        let packets_stream = unfold(
-            (tcp_stream_rx, Box::new([0; MAX_BODY_SIZE])),
-            |(mut tcp_stream, mut body_buf)| async move {
-                match Self::read_packet(&mut tcp_stream, &mut body_buf).await {
-                    Ok(p) => Some((p, (tcp_stream, body_buf))),
-                    Err(err) => {
-                        error!("Failed to receive packet: {err}");
-                        None
-                    }
-                }
-            },
-        );
-
-        tokio::pin!(packets_stream);
-
+        let mut packet_reader = fcast_protocol::PacketReader::new(MAX_BODY_SIZE);
         let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
 
         Self::write_packet(
@@ -870,20 +814,50 @@ impl SessionDriver {
         )
         .await?;
 
+        let mut read_buf = [0u8; 1024 * 8];
         loop {
             tokio::select! {
-                r = packets_stream.next() => {
-                    let Some(packet) = r else {
+                res = tcp_stream_rx.read(&mut read_buf) => {
+                    let Ok(n_read) = res else {
                         break;
                     };
 
-                    trace!(?packet, "Got packet");
-
-                    let opcode = packet.0;
-                    let body = packet.1.as_ref();
-                    let res = self.state.advance(DriverEvent::Packet { opcode, body: body.map(|b| b.as_str()) });
-                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
+                    if n_read == 0 {
                         break;
+                    }
+
+                    packet_reader.push_data(&read_buf[0..n_read]);
+
+                    while let Some(packet) = packet_reader.get_packet() {
+                        let (opcode, body) = match packet.len() {
+                            0 => {
+                                error!("Received empty packet");
+                                continue;
+                            }
+                            1 => (packet[0], None),
+                            _ => (packet[0], Some(&packet[1..])),
+                        };
+
+                        let opcode = Opcode::try_from(opcode)?;
+
+                        let body = match body {
+                            Some(body) => {
+                                if body.len() > MAX_BODY_SIZE {
+                                    bail!("Message exceeded maximum length ({} > {MAX_BODY_SIZE})", body.len())
+                                }
+                                Some(str::from_utf8(body)?)
+                            }
+                            None => None
+                        };
+
+                        if opcode != Opcode::Ping && opcode != Opcode::Pong {
+                            debug!("Received packet opcode={opcode:?} body={:?}", body);
+                        }
+
+                        let res = self.state.advance(DriverEvent::Packet { opcode, body });
+                        if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
+                            break;
+                        }
                     }
                 }
                 res = updates_rx.recv() => {
