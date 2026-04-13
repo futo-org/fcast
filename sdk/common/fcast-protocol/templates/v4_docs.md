@@ -25,7 +25,7 @@ struct BODY {
 };
 ```
 
-For opcodes defining a body, the format will be a `JSON` string encoded using `UTF-8`, unless stated otherwise.
+For opcodes defining a body, the format will be a `UTF-8` encoded `JSON` string, unless stated otherwise.
 Note the maximum total packet size is 128KB. Consequently, the maximum body size is `128000 - 1` unless stated otherwise.
 
 | Opcode | Name                    | Direction | Description                   |
@@ -53,6 +53,13 @@ Note the maximum total packet size is 128KB. Consequently, the maximum body size
 | 51     | ResourceInfo            | Both      | [↗](#resourceinfo)            |
 | 52     | Resource                | Both      | [↗](#resource)                |
 | 53     | StartTLS                | Both      | [↗](#starttls)                |
+
+### mDNS TXT records
+
+| Name | Example | Value description                       |
+|------|---------|-----------------------------------------|
+| v    | 4       | Highest supported protocol version      |
+| fp   | TODO    | Fingerprint (see [Security](#security)) |
 
 ### Connection establishment
 

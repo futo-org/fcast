@@ -42,10 +42,7 @@ pub enum VideoSource {
     #[cfg(not(target_os = "android"))]
     TestSrc,
     #[cfg(target_os = "linux")]
-    PipeWire {
-        node_id: u32,
-        fd: OwnedFd,
-    },
+    PipeWire { node_id: u32, fd: OwnedFd },
     #[cfg(target_os = "linux")]
     XDisplay {
         id: u32,
@@ -56,15 +53,9 @@ pub enum VideoSource {
         name: String,
     },
     #[cfg(target_os = "macos")]
-    CgDisplay {
-        id: i32,
-        name: String,
-    },
+    CgDisplay { id: i32, name: String },
     #[cfg(target_os = "windows")]
-    D3d12Monitor {
-        name: String,
-        handle: u64,
-    },
+    D3d12Monitor { name: String, handle: u64 },
     #[cfg(target_os = "android")]
     Source(gst_app::AppSrc),
 }
@@ -371,4 +362,12 @@ impl device::DeviceEventHandler for DeviceHandler {
     }
 
     fn playback_error(&self, _message: String) {}
+
+    // fn get_resource_info(&self, id: u32) -> device::ResourceInfo {
+    //     todo!()
+    // }
+
+    // fn get_resource_data(&self, id: u32, read: device::ReadLocation) -> Vec<u8> {
+    //     todo!()
+    // }
 }

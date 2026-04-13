@@ -374,7 +374,10 @@ fn create_webrtcsink(
             let event_tx = event_tx.clone();
             rt_handle.spawn(async move {
                 event_tx
-                    .send(Event::SignallerStarted { bound_port_v4, bound_port_v6 })
+                    .send(Event::SignallerStarted {
+                        bound_port_v4,
+                        bound_port_v6,
+                    })
                     .unwrap();
             });
 

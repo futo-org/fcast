@@ -66,6 +66,7 @@ pub enum Opcode {
     Pong = 13,
     /// Message to notify the other party of device information and state, body is InitialSenderMessage if receiver or
     /// [`v3::InitialReceiverMessage`] if sender
+    // TODO: rename for v4
     Initial = 14,
     /// Receiver message to notify all senders when any device has sent a [`v3::PlayMessage`], body is [`v3::PlayUpdateMessage`]
     PlayUpdate = 15,
@@ -81,7 +82,6 @@ pub enum Opcode {
     /// #######################
     /// |         V4          |
     /// #######################
-    UpdateVolume = 20,
     UpdatePlaybackState = 21,
     PositionChanged = 22,
     DurationChanged = 23,
@@ -103,26 +103,41 @@ impl TryFrom<u8> for Opcode {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         Ok(match value {
-            0 => Opcode::None,
-            1 => Opcode::Play,
-            2 => Opcode::Pause,
-            3 => Opcode::Resume,
-            4 => Opcode::Stop,
-            5 => Opcode::Seek,
-            6 => Opcode::PlaybackUpdate,
-            7 => Opcode::VolumeUpdate,
-            8 => Opcode::SetVolume,
-            9 => Opcode::PlaybackError,
-            10 => Opcode::SetSpeed,
-            11 => Opcode::Version,
-            12 => Opcode::Ping,
-            13 => Opcode::Pong,
-            14 => Opcode::Initial,
-            15 => Opcode::PlayUpdate,
-            16 => Opcode::SetPlaylistItem,
-            17 => Opcode::SubscribeEvent,
-            18 => Opcode::UnsubscribeEvent,
-            19 => Opcode::Event,
+            0 => Self::None,
+            1 => Self::Play,
+            2 => Self::Pause,
+            3 => Self::Resume,
+            4 => Self::Stop,
+            5 => Self::Seek,
+            6 => Self::PlaybackUpdate,
+            7 => Self::VolumeUpdate,
+            8 => Self::SetVolume,
+            9 => Self::PlaybackError,
+            10 => Self::SetSpeed,
+            11 => Self::Version,
+            12 => Self::Ping,
+            13 => Self::Pong,
+            14 => Self::Initial,
+            15 => Self::PlayUpdate,
+            16 => Self::SetPlaylistItem,
+            17 => Self::SubscribeEvent,
+            18 => Self::UnsubscribeEvent,
+            19 => Self::Event,
+            // 20 => Self::UpdateVolume,
+            21 => Self::UpdatePlaybackState,
+            22 => Self::PositionChanged,
+            23 => Self::DurationChanged,
+            24 => Self::QueueInsert,
+            25 => Self::QueueRemove,
+            26 => Self::TracksAvailable,
+            27 => Self::ChangeTrack,
+            28 => Self::QueueItemSelected,
+            29 => Self::AddSubtitleSource,
+            30 => Self::SetStatusUpdateInterval,
+            50 => Self::CompanionHello,
+            51 => Self::ResourceInfo,
+            52 => Self::Resource,
+            53 => Self::StartTLS,
             _ => return Err(TryFromByteError::UnknownOpcode(value)),
         })
     }

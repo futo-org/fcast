@@ -71,7 +71,7 @@ mod user_agent;
 mod video;
 
 use crate::{
-    fcast::{Operation, ReceiverToSenderMessage, TranslatableMessage},
+    fcast::{CompanionContext, Operation, ReceiverToSenderMessage, TranslatableMessage},
     gui::{GuiController, ToastType},
     player::PlayerState,
 };
@@ -227,6 +227,8 @@ struct Application {
     gl_context: graphics::GlContext,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    companion_ctx: CompanionContext,
 }
 
 impl Application {
@@ -386,9 +388,29 @@ impl Application {
             }
         });
 
+        let companion_ctx = CompanionContext::new();
         let image_decoder = image::Decoder::new(msg_tx.clone())?;
         let http_client = reqwest::Client::new();
-        let image_downloader = image::Downloader::new(msg_tx.clone(), http_client.clone());
+        let image_downloader =
+            image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
+
+        let acceptor = {
+            use rcgen::{CertificateParams, DistinguishedName, KeyPair, date_time_ymd};
+            use tokio_rustls::{TlsAcceptor, rustls};
+
+            let mut params: CertificateParams = Default::default();
+            params.not_before = date_time_ymd(1975, 1, 1);
+            params.not_after = date_time_ymd(4096, 1, 1);
+            params.distinguished_name = DistinguishedName::new();
+            let key_pair = KeyPair::generate()?;
+            let cert = params.self_signed(&key_pair)?;
+
+            let config =
+                rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                    .with_no_client_auth()
+                    .with_single_cert(vec![cert.der().to_owned()], key_pair.into())?;
+            TlsAcceptor::from(Arc::new(config))
+        };
 
         Ok(Self {
             #[cfg(target_os = "android")]
@@ -439,7 +461,35 @@ impl Application {
             gl_context,
             image_downloader,
             image_decoder,
+            tls_acceptor: acceptor,
+            companion_ctx,
         })
+    }
+
+    // TODO: send pos update after seek finishes in paused state
+    fn position_changed(&mut self) -> Result<()> {
+        // TODO: update the UI here as well
+        let Some(position) = self.player.get_position() else {
+            error!("player does not have a playback position");
+            return Ok(());
+        };
+        let position = position.seconds_f64();
+
+        if self.updates_tx.receiver_count() > 0 {
+            let msg = ReceiverToSenderMessage::V4(fcast::V4Message::PositionUpdated(position));
+            let _ = self.updates_tx.send(Arc::new(msg));
+        }
+
+        Ok(())
+    }
+
+    fn playback_state_changed(&mut self, state: fcast_protocol::v4::PlaybackState) -> Result<()> {
+        if self.updates_tx.receiver_count() > 0 {
+            let msg = ReceiverToSenderMessage::V4(fcast::V4Message::PlaybackStateChanged(state));
+            let _ = self.updates_tx.send(Arc::new(msg));
+        }
+
+        Ok(())
     }
 
     #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all))]
@@ -501,7 +551,7 @@ impl Application {
 
             debug!("Sending update ({update:?})");
 
-            let msg = ReceiverToSenderMessage::Translatable {
+            let msg = ReceiverToSenderMessage::LegacyTranslatable {
                 op: Opcode::PlaybackUpdate,
                 msg: TranslatableMessage::PlaybackUpdate(update),
             };
@@ -688,7 +738,7 @@ impl Application {
                 speed: None,
                 item_index: None,
             };
-            let msg = ReceiverToSenderMessage::Translatable {
+            let msg = ReceiverToSenderMessage::LegacyTranslatable {
                 op: Opcode::PlaybackUpdate,
                 msg: TranslatableMessage::PlaybackUpdate(update),
             };
@@ -1006,6 +1056,16 @@ impl Application {
                 self.player.set_volume(volume);
                 self.gui.set_volume(volume as f32);
             }
+            Operation::SetVolumeNew(vol) => {
+                self.player.set_volume(vol);
+                self.gui.set_volume(vol as f32);
+            }
+            Operation::SetSpeedNew(speed) => self.player.set_rate(speed),
+            Operation::SeekNew(time) => {
+                if self.is_playing() {
+                    self.player.seek(time);
+                }
+            }
         }
 
         Ok(false)
@@ -1104,6 +1164,8 @@ impl Application {
 
                 self.media_ended()?;
 
+                // TODO: send ended state change to v4
+
                 // TODO: this should be the last message sent regarding the media currently being played
                 if self.updates_tx.receiver_count() > 0
                     && let Some(play_data) = self.current_play_data.as_ref()
@@ -1128,11 +1190,28 @@ impl Application {
                     };
                     self.updates_tx
                         .send(Arc::new(ReceiverToSenderMessage::Event { msg: event }))?;
+
+                    self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::PlaybackStateChanged(
+                            fcast_protocol::v4::PlaybackState::Ended,
+                        ),
+                    )))?;
                 }
             }
-            player::PlayerEvent::DurationChanged => {
-                self.current_duration = self.player.get_duration();
-            }
+            // Not working
+            // player::PlayerEvent::DurationChanged => {
+            //     let duration = self.player.get_duration();
+            //     self.current_duration = duration;
+
+            //     debug!(?duration, "Duration changed");
+            //     if let Some(dur) = duration.map(|dur| dur.seconds_f64())
+            //         && self.updates_tx.receiver_count() > 0
+            //     {
+            //         self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+            //             fcast::V4Message::DurationChanged(dur),
+            //         )))?;
+            //     }
+            // }
             player::PlayerEvent::Tags(tags) => {
                 if !self.have_audio_track_cover
                     && let Some(cover) = tags.get::<gst::tags::Image>()
@@ -1172,12 +1251,16 @@ impl Application {
                         volume,
                     };
 
-                    let msg = ReceiverToSenderMessage::Translatable {
+                    let msg = ReceiverToSenderMessage::LegacyTranslatable {
                         op: Opcode::VolumeUpdate,
                         msg: TranslatableMessage::VolumeUpdate(update),
                     };
                     self.updates_tx.send(Arc::new(msg))?;
                     self.last_sent_update = Instant::now();
+
+                    self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::VolumeChanged(volume),
+                    )))?;
                 }
 
                 self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
@@ -1222,6 +1305,7 @@ impl Application {
             player::PlayerEvent::Buffering(percent) => {
                 if self.player.buffering(percent) {
                     self.notify_updates(true)?;
+                    self.playback_state_changed(fcast_protocol::v4::PlaybackState::Buffering)?;
                 }
             }
             player::PlayerEvent::IsLive => {
@@ -1234,6 +1318,30 @@ impl Application {
             } => {
                 if self.player.state_changed(old, current, pending).is_some() {
                     self.notify_updates(true)?;
+                    let v4_state = match self.player.player_state() {
+                        PlayerState::Paused => fcast_protocol::v4::PlaybackState::Paused,
+                        PlayerState::Playing => fcast_protocol::v4::PlaybackState::Playing,
+                        PlayerState::Buffering => fcast_protocol::v4::PlaybackState::Buffering,
+                        PlayerState::Stopped => fcast_protocol::v4::PlaybackState::Idle,
+                    };
+                    self.playback_state_changed(v4_state)?;
+                }
+
+                // Try to get duration
+                if (old == gst::State::Ready
+                    && current == gst::State::Paused
+                    && pending == gst::State::VoidPending)
+                    || (current == gst::State::Playing && pending == gst::State::VoidPending)
+                {
+                    let duration = self.player.get_duration();
+                    self.current_duration = duration;
+                    if let Some(dur) = duration.map(|dur| dur.seconds_f64())
+                        && self.updates_tx.receiver_count() > 0
+                    {
+                        self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                            fcast::V4Message::DurationChanged(dur),
+                        )))?;
+                    }
                 }
 
                 self.gcast_tx
@@ -1265,9 +1373,7 @@ impl Application {
                     }
                 }
             }
-            player::PlayerEvent::QueueSeek(seek) => {
-                self.player.queue_seek(seek);
-            }
+            player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
             player::PlayerEvent::StreamsSelected {
                 video,
                 audio,
@@ -1786,6 +1892,7 @@ impl Application {
                 _ = update_interval.tick() => {
                     if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
+                        self.position_changed()?;
                     }
                 }
                 session = listener_stream.select_next_some() => {
@@ -1797,10 +1904,13 @@ impl Application {
                         let id = session_id;
                         let msg_tx = self.msg_tx.clone();
                         let updates_rx = self.updates_tx.subscribe();
+                        let tls_acceptor = self.tls_acceptor.clone();
+                        let companion_ctx = self.companion_ctx.clone();
+                        let (comp_tx, comp_rx) = tokio::sync::mpsc::unbounded_channel();
                         async move {
                             if let Err(err) =
-                                SessionDriver::new(stream, id)
-                                .run(updates_rx, &msg_tx)
+                                SessionDriver::new(stream, id, tls_acceptor, companion_ctx, comp_tx)
+                                .run(updates_rx, &msg_tx, comp_rx)
                                 .await
                             {
                                 error!("Session exited with error: {err}");

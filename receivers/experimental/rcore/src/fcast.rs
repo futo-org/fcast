@@ -1,18 +1,25 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
 use crate::MessageSender;
 use bitflags::bitflags;
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
-    v1, v2,
-    v2::{PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
+    companion, v1,
+    v2::{self, PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
     v3::{self, InitialReceiverMessage, ReceiverCapabilities},
+    v4,
 };
+use parking_lot::Mutex;
+use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpStream, tcp::WriteHalf},
-    sync::broadcast::Receiver,
+    net::TcpStream,
+    sync::{
+        broadcast::Receiver,
+        mpsc::{UnboundedReceiver, UnboundedSender},
+    },
 };
+use tokio_rustls::{TlsAcceptor, server::TlsStream};
 use tracing::{debug, error, instrument, trace};
 
 pub type SessionId = u64;
@@ -66,6 +73,7 @@ pub enum Packet {
     Ping,
     Pong,
     Initial(InitialReceiverMessage),
+    CompanionHello(companion::HelloResponse),
 }
 
 impl From<&Packet> for Opcode {
@@ -86,6 +94,7 @@ impl From<&Packet> for Opcode {
             Packet::Ping => Opcode::Ping,
             Packet::Pong => Opcode::Pong,
             Packet::Initial(_) => Opcode::Initial,
+            Packet::CompanionHello(_) => Opcode::CompanionHello,
         }
     }
 }
@@ -160,6 +169,7 @@ impl Packet {
             Packet::SetSpeed(set_speed_msg) => serde_json::to_string(&set_speed_msg)?.into_bytes(),
             Packet::Version(version_msg) => serde_json::to_string(&version_msg)?.into_bytes(),
             Packet::Initial(initial_msg) => serde_json::to_string(&initial_msg)?.into_bytes(),
+            Packet::CompanionHello(hello_response) => hello_response.serialize().to_vec(),
             _ => Vec::new(),
         };
 
@@ -176,6 +186,7 @@ pub enum SessionVersion {
     V1,
     V2,
     V3,
+    V4 { companion_provider_id: Option<u16> },
 }
 
 /// Messages where higher versions can be translated to lower versions of the same message
@@ -207,13 +218,25 @@ impl TranslatableMessage {
                     state: msg.state,
                 })?,
                 SessionVersion::V3 => ser!(msg)?,
+                SessionVersion::V4 { .. } => {
+                    return None;
+                }
             },
             TranslatableMessage::VolumeUpdate(msg) => match session_version {
                 SessionVersion::V1 => ser!(v1::VolumeUpdateMessage { volume: msg.volume })?,
                 SessionVersion::V2 | SessionVersion::V3 => ser!(msg)?,
+                SessionVersion::V4 { .. } => return None,
             },
         })
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum V4Message {
+    PositionUpdated(f64),
+    VolumeChanged(f64),
+    DurationChanged(f64),
+    PlaybackStateChanged(v4::PlaybackState),
 }
 
 // #[derive(Debug, Clone)]
@@ -225,7 +248,7 @@ pub enum ReceiverToSenderMessage {
     //     data: Vec<u8>,
     // },
     Error(PlaybackErrorMessage),
-    Translatable {
+    LegacyTranslatable {
         op: Opcode,
         msg: TranslatableMessage,
     },
@@ -235,6 +258,7 @@ pub enum ReceiverToSenderMessage {
     Event {
         msg: v3::EventMessage,
     },
+    V4(V4Message),
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -270,6 +294,9 @@ pub enum Operation {
     SetSpeed(SetSpeedMessage),
     SetPlaylistItem(v3::SetPlaylistItemMessage),
     SetVolume(SetVolumeMessage),
+    SetVolumeNew(f64),
+    SetSpeedNew(f64),
+    SeekNew(f64),
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -285,12 +312,16 @@ enum Action {
         session_version: Option<SessionVersion>,
         msg: Arc<ReceiverToSenderMessage>,
     },
+    StartTLS,
+    RespondCompanionHello,
 }
 
 #[derive(Debug, PartialEq)]
 enum StateVariant {
     WaitingForVersion,
     Active { version: SessionVersion },
+    WaitingForStartTLS,
+    UninitV4,
 }
 
 impl StateVariant {
@@ -340,6 +371,56 @@ impl KeyEventFlags {
             flags.insert(Self::from_str(name));
         }
         flags
+    }
+}
+
+type CompanionMsgSender = UnboundedSender<CompanionMessage>;
+type CompanionMsgReceiver = UnboundedReceiver<CompanionMessage>;
+
+pub enum CompanionMessage {}
+
+struct CompanionProviderHandle {
+    tx: CompanionMsgSender,
+}
+
+#[derive(Default)]
+struct InnerCompanionContext {
+    providers: HashMap<companion::ProviderId, CompanionProviderHandle>,
+}
+
+impl InnerCompanionContext {
+    fn register_provider(&mut self, tx: CompanionMsgSender) -> companion::ProviderId {
+        let mut id = 0;
+        while self.providers.contains_key(&id) {
+            id += 1;
+        }
+
+        let handle = CompanionProviderHandle { tx };
+        self.providers.insert(id, handle);
+
+        id
+    }
+
+    pub fn unregister_provider(&mut self, id: companion::ProviderId) {
+        debug!(id, "Unregistering provider");
+        self.providers.remove(&id);
+    }
+}
+
+#[derive(Clone)]
+pub struct CompanionContext(Arc<Mutex<InnerCompanionContext>>);
+
+impl CompanionContext {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(InnerCompanionContext::default())))
+    }
+
+    pub fn register_provider(&self, tx: CompanionMsgSender) -> companion::ProviderId {
+        self.0.lock().register_provider(tx)
+    }
+
+    pub fn unregister_provider(&self, id: companion::ProviderId) {
+        self.0.lock().unregister_provider(id)
     }
 }
 
@@ -423,6 +504,11 @@ impl State {
                     1 => SessionVersion::V1,
                     2 => SessionVersion::V2,
                     3 => SessionVersion::V3,
+                    4 => {
+                        self.variant = StateVariant::WaitingForStartTLS;
+                        // self.variant = StateVariant::UninitV4;
+                        return Ok(Action::None);
+                    }
                     _ => return Err(StateError::IllegalVersion(msg.version)),
                 };
                 self.variant = StateVariant::Active { version };
@@ -571,6 +657,77 @@ impl State {
         })
     }
 
+    #[instrument(skip_all)]
+    fn handle_packet_v4(
+        &mut self,
+        opcode: Opcode,
+        body: Option<&str>,
+    ) -> Result<Action, StateError> {
+        Ok(match opcode {
+            Opcode::Play => {
+                let msg = err_json!(v4::PlayMessage, err_body!(body));
+                match msg {
+                    v4::PlayMessage::Single { media_item: item } => {
+                        Action::Op(Operation::Play(v3::PlayMessage {
+                            container: item.container,
+                            url: Some(item.source_url),
+                            content: None,
+                            time: None,
+                            volume: None,
+                            speed: None,
+                            headers: None,
+                            metadata: None,
+                        }))
+                    }
+                    v4::PlayMessage::Queue { items, start_index } => todo!(),
+                }
+            }
+            Opcode::Seek => Action::Op(Operation::SeekNew(
+                err_json!(v4::SeekMessage, err_body!(body)).time,
+            )),
+            Opcode::SetVolume => Action::Op(Operation::SetVolumeNew(
+                err_json!(v4::UpdateVolumeMessage, err_body!(body)).volume,
+            )),
+            Opcode::PlaybackError => todo!(),
+            Opcode::SetSpeed => Action::Op(Operation::SetSpeedNew(
+                err_json!(v4::SetSpeedMessage, err_body!(body)).speed,
+            )),
+            Opcode::Ping => Action::Pong,
+            Opcode::Pong => Action::None,
+            Opcode::Initial => {
+                let msg = err_json!(v4::InitialSenderMessage, err_body!(body));
+                debug!(?msg, "Got inital sender message");
+                Action::None
+            }
+            Opcode::UpdatePlaybackState => {
+                let msg = err_json!(v4::UpdatePlaybackStateMessage, err_body!(body));
+                debug!(?msg);
+                match msg.state {
+                    v4::PlaybackState::Idle => Action::Op(Operation::Stop),
+                    v4::PlaybackState::Playing => Action::Op(Operation::Resume),
+                    v4::PlaybackState::Paused => Action::Op(Operation::Pause),
+                    v4::PlaybackState::Buffering | v4::PlaybackState::Ended => todo!(),
+                }
+            }
+
+            // Only sent from receiver to sender
+            Opcode::PositionChanged | Opcode::DurationChanged | Opcode::TracksAvailable => {
+                return Err(StateError::IllegalOpcode(opcode));
+            }
+
+            Opcode::QueueInsert => todo!(),
+            Opcode::QueueRemove => todo!(),
+            Opcode::ChangeTrack => todo!(),
+            Opcode::QueueItemSelected => todo!(),
+            Opcode::AddSubtitleSource => todo!(),
+            Opcode::SetStatusUpdateInterval => todo!(),
+            Opcode::CompanionHello => Action::RespondCompanionHello,
+            Opcode::ResourceInfo => todo!(),
+            Opcode::Resource => todo!(),
+            _ => return Err(StateError::IllegalOpcode(opcode)),
+        })
+    }
+
     pub fn advance(&mut self, event: DriverEvent) -> Result<Action, StateError> {
         Ok(match event {
             DriverEvent::Tick => {
@@ -602,15 +759,43 @@ impl State {
                             SessionVersion::V1 => self.handle_packet_v1(opcode, body),
                             SessionVersion::V2 => self.handle_packet_v2(opcode, body),
                             SessionVersion::V3 => self.handle_packet_v3(opcode, body),
+                            SessionVersion::V4 { .. } => self.handle_packet_v4(opcode, body),
                         };
                     }
+                    StateVariant::WaitingForStartTLS => match opcode {
+                        Opcode::StartTLS => {
+                            self.variant = StateVariant::UninitV4;
+                            Action::StartTLS
+                        }
+                        _ => return Err(StateError::IllegalOpcode(opcode)),
+                    },
+                    StateVariant::UninitV4 => match opcode {
+                        Opcode::Initial => {
+                            self.variant = StateVariant::Active {
+                                version: SessionVersion::V4 {
+                                    companion_provider_id: None,
+                                },
+                            };
+                            Action::None
+                        }
+                        _ => return Err(StateError::IllegalOpcode(opcode)),
+                    },
                 }
             }
+            // DriverEvent::ToSender(msg) => match msg.as_ref() {
             DriverEvent::ToSender(msg) => match msg.as_ref() {
                 ReceiverToSenderMessage::Error(_)
-                | ReceiverToSenderMessage::Translatable { .. } => Action::Forward {
-                    session_version: self.variant.version(),
-                    msg,
+                | ReceiverToSenderMessage::LegacyTranslatable { .. } => match self.variant {
+                    StateVariant::Active { version } => match version {
+                        SessionVersion::V1 | SessionVersion::V2 | SessionVersion::V3 => {
+                            Action::Forward {
+                                session_version: self.variant.version(),
+                                msg,
+                            }
+                        }
+                        SessionVersion::V4 { .. } => Action::None,
+                    },
+                    _ => Action::None,
                 },
                 ReceiverToSenderMessage::Event { msg: event_msg } => {
                     match &event_msg.event {
@@ -678,74 +863,140 @@ impl State {
                         Action::None
                     }
                 }
+                ReceiverToSenderMessage::V4(_) => {
+                    if matches!(
+                        self.variant,
+                        StateVariant::Active {
+                            version: SessionVersion::V4 { .. },
+                        }
+                    ) {
+                        Action::Forward {
+                            session_version: None,
+                            msg,
+                        }
+                    } else {
+                        Action::None
+                    }
+                }
             },
         })
     }
 }
 
-pub struct SessionDriver {
-    stream: TcpStream,
-    id: SessionId,
-    state: State,
+#[derive(Default)]
+enum NetworkStream {
+    #[default]
+    None,
+    Tcp(TcpStream),
+    Tls(TlsStream<TcpStream>),
 }
 
-impl SessionDriver {
-    pub fn new(stream: TcpStream, id: SessionId) -> Self {
-        Self {
-            stream,
-            id,
-            state: State::new(),
+impl NetworkStream {
+    async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.read(buf).await,
+            Self::Tls(stream) => stream.read(buf).await,
+            Self::None => unreachable!(),
         }
     }
 
-    async fn write_simple(tcp_stream_tx: &mut WriteHalf<'_>, opcode: Opcode) -> anyhow::Result<()> {
+    async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.write_all(buf).await,
+            Self::Tls(stream) => stream.write_all(buf).await,
+            Self::None => unreachable!(),
+        }
+    }
+
+    async fn upgrade(&mut self, acceptor: &TlsAcceptor) -> io::Result<()> {
+        let old = std::mem::take(self);
+        *self = match old {
+            NetworkStream::Tcp(stream) => Self::Tls(acceptor.accept(stream).await?),
+            _ => old,
+        };
+
+        Ok(())
+    }
+}
+
+pub struct SessionDriver {
+    stream: NetworkStream,
+    id: SessionId,
+    state: State,
+    tls_acceptor: TlsAcceptor,
+    companion_ctx: CompanionContext,
+    internal_companion_tx: CompanionMsgSender,
+}
+
+impl SessionDriver {
+    pub fn new(
+        stream: TcpStream,
+        id: SessionId,
+        tls_acceptor: TlsAcceptor,
+        companion_ctx: CompanionContext,
+        internal_companion_tx: CompanionMsgSender,
+    ) -> Self {
+        Self {
+            stream: NetworkStream::Tcp(stream),
+            id,
+            state: State::new(),
+            tls_acceptor,
+            companion_ctx,
+            internal_companion_tx,
+        }
+    }
+
+    async fn write_simple(&mut self, opcode: Opcode) -> anyhow::Result<()> {
         let header = Header::new(opcode, 0).encode();
-        tcp_stream_tx.write_all(&header).await?;
+        self.stream.write_all(&header).await?;
         trace!(?opcode, "Sent simple packet");
         Ok(())
     }
 
-    async fn write_packet(stream: &mut WriteHalf<'_>, packet: Packet) -> anyhow::Result<()> {
+    async fn write_packet(&mut self, packet: Packet) -> anyhow::Result<()> {
         let bytes = packet.encode()?;
-        stream.write_all(&bytes).await?;
+        self.stream.write_all(&bytes).await?;
+        Ok(())
+    }
+
+    async fn send_msg(&mut self, opcode: Opcode, msg: impl Serialize) -> anyhow::Result<()> {
+        let body = serde_json::to_vec(&msg)?;
+        let header = Header::new(opcode, body.len() as u32).encode();
+        self.stream.write_all(&header).await?;
+        self.stream.write_all(&body).await?;
+
         Ok(())
     }
 
     /// Returns true if the session should end.
     #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
     async fn handle_state_result(
+        &mut self,
         id: SessionId,
-        tcp_stream_tx: &mut WriteHalf<'_>,
         msg_tx: &MessageSender,
         res: Result<Action, StateError>,
     ) -> anyhow::Result<bool> {
         match res {
             Ok(action) => match action {
                 Action::None => (),
-                Action::Ping => Self::write_simple(tcp_stream_tx, Opcode::Ping).await?,
-                // Action::Pong => write_packet(tcp_stream_tx, Packet::Pong).await?,
-                Action::Pong => Self::write_simple(tcp_stream_tx, Opcode::Pong).await?,
+                Action::Ping => self.write_simple(Opcode::Ping).await?,
+                Action::Pong => self.write_simple(Opcode::Pong).await?,
                 Action::EndSession => return Ok(true),
                 Action::Op(operation) => {
                     msg_tx.operation(id, operation);
                 }
                 Action::SendInitial => {
-                    Self::write_packet(
-                        tcp_stream_tx,
-                        Packet::Initial(v3::InitialReceiverMessage {
-                            display_name: None,
-                            app_name: Some("FCast Receiver Desktop".to_owned()),
-                            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                            play_data: None,
-                            experimental_capabilities: Some(ReceiverCapabilities {
-                                av: Some(v3::AVCapabilities {
-                                    livestream: Some(v3::LivestreamCapabilities {
-                                        whep: Some(true),
-                                    }),
-                                }),
+                    self.write_packet(Packet::Initial(v3::InitialReceiverMessage {
+                        display_name: None,
+                        app_name: Some("FCast Receiver Desktop".to_owned()),
+                        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                        play_data: None,
+                        experimental_capabilities: Some(ReceiverCapabilities {
+                            av: Some(v3::AVCapabilities {
+                                livestream: Some(v3::LivestreamCapabilities { whep: Some(true) }),
                             }),
                         }),
-                    )
+                    }))
                     .await?
                 }
                 Action::Forward {
@@ -755,10 +1006,10 @@ impl SessionDriver {
                     ReceiverToSenderMessage::Error(msg) => {
                         let body = serde_json::to_vec(&msg)?;
                         let header = Header::new(Opcode::PlaybackError, body.len() as u32).encode();
-                        tcp_stream_tx.write_all(&header).await?;
-                        tcp_stream_tx.write_all(&body).await?;
+                        self.stream.write_all(&header).await?;
+                        self.stream.write_all(&body).await?;
                     }
-                    ReceiverToSenderMessage::Translatable { op, msg } => {
+                    ReceiverToSenderMessage::LegacyTranslatable { op, msg } => {
                         let Some(session_version) = session_version else {
                             // Unreachable
                             error!("Missing session version");
@@ -766,25 +1017,100 @@ impl SessionDriver {
                         };
                         if let Some(body) = msg.translate_and_serialize(session_version) {
                             let header = Header::new(*op, body.len() as u32).encode();
-                            tcp_stream_tx.write_all(&header).await?;
-                            tcp_stream_tx.write_all(&body).await?;
+                            self.stream.write_all(&header).await?;
+                            self.stream.write_all(&body).await?;
                         } else {
                             error!("Could not translate message");
                         }
                     }
                     ReceiverToSenderMessage::Event { msg } => {
-                        let body = serde_json::to_vec(&msg)?;
-                        let header = Header::new(Opcode::Event, body.len() as u32).encode();
-                        tcp_stream_tx.write_all(&header).await?;
-                        tcp_stream_tx.write_all(&body).await?;
+                        self.send_msg(Opcode::Event, msg).await?;
+                        // let body = serde_json::to_vec(&msg)?;
+                        // let header = Header::new(Opcode::Event, body.len() as u32).encode();
+                        // self.stream.write_all(&header).await?;
+                        // self.stream.write_all(&body).await?;
                     }
                     ReceiverToSenderMessage::PlayUpdate { msg } => {
-                        let body = serde_json::to_vec(&msg)?;
-                        let header = Header::new(Opcode::PlayUpdate, body.len() as u32).encode();
-                        tcp_stream_tx.write_all(&header).await?;
-                        tcp_stream_tx.write_all(&body).await?;
+                        self.send_msg(Opcode::PlayUpdate, msg).await?;
+                        // let body = serde_json::to_vec(&msg)?;
+                        // let header = Header::new(Opcode::PlayUpdate, body.len() as u32).encode();
+                        // self.stream.write_all(&header).await?;
+                        // self.stream.write_all(&body).await?;
                     }
+                    ReceiverToSenderMessage::V4(msg) => match msg {
+                        V4Message::PositionUpdated(position) => {
+                            let msg = v4::PositionChangedMessage {
+                                position: *position,
+                            };
+                            self.send_msg(Opcode::PositionChanged, msg).await?;
+                        }
+                        V4Message::VolumeChanged(volume) => {
+                            let msg = v4::UpdateVolumeMessage { volume: *volume };
+                            self.send_msg(Opcode::VolumeUpdate, msg).await?;
+                        }
+                        V4Message::DurationChanged(duration) => {
+                            let msg = v4::DurationChangedMessage {
+                                duration: *duration,
+                            };
+                            self.send_msg(Opcode::DurationChanged, msg).await?;
+                        }
+                        V4Message::PlaybackStateChanged(state) => {
+                            let msg = v4::UpdatePlaybackStateMessage { state: *state };
+                            self.send_msg(Opcode::UpdatePlaybackState, msg).await?;
+                        }
+                    },
                 },
+                Action::StartTLS => {
+                    self.write_simple(Opcode::StartTLS).await?;
+                    debug!("Upgrading network stream to use TLS");
+                    self.stream.upgrade(&self.tls_acceptor).await?;
+                    debug!("Upgraded successfully");
+
+                    // TODO: v4
+                    self.write_packet(Packet::Initial(v3::InitialReceiverMessage {
+                        display_name: None,
+                        app_name: Some("FCast Receiver Desktop".to_owned()),
+                        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                        play_data: None,
+                        experimental_capabilities: Some(ReceiverCapabilities {
+                            av: Some(v3::AVCapabilities {
+                                livestream: Some(v3::LivestreamCapabilities { whep: Some(true) }),
+                            }),
+                        }),
+                    }))
+                    .await?
+                }
+                Action::RespondCompanionHello => {
+                    // let (id, mut rx) = self.companion_ctx.register_provider(self.internal_companion_tx.clone());
+                    let id = self
+                        .companion_ctx
+                        .register_provider(self.internal_companion_tx.clone());
+                    debug!(id, "Registered companion provider");
+                    tokio::spawn(async move {});
+
+                    self.write_packet(Packet::CompanionHello(companion::HelloResponse {
+                        provider_id: id,
+                    }))
+                    .await?;
+
+                    if let StateVariant::Active {
+                        version:
+                            SessionVersion::V4 {
+                                companion_provider_id,
+                            },
+                    } = &mut self.state.variant
+                    {
+                        *companion_provider_id = Some(id);
+                    }
+
+                    // let tx = self.internal_companion_tx.clone();
+                    // tokio::spawn(async move {
+                    //     loop {
+                    //         let res = rx.recv().await.unwrap();
+                    //         tx.send(res).unwrap();
+                    //     }
+                    // });
+                }
             },
             Err(err) => {
                 error!(?err, "Error occured when advancing state");
@@ -800,24 +1126,22 @@ impl SessionDriver {
         mut self,
         mut updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,
         msg_tx: &MessageSender,
+        mut comp_rx: CompanionMsgReceiver,
     ) -> anyhow::Result<()> {
         debug!("Session was started");
-
-        let (mut tcp_stream_rx, mut tcp_stream_tx) = self.stream.split();
 
         let mut packet_reader = fcast_protocol::PacketReader::new(MAX_BODY_SIZE);
         let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
 
-        Self::write_packet(
-            &mut tcp_stream_tx,
-            Packet::Version(VersionMessage { version: 3 }),
-        )
-        .await?;
+        self.write_packet(Packet::Version(VersionMessage { version: 4 }))
+            .await?;
 
         let mut read_buf = [0u8; 1024 * 8];
-        loop {
+        'main_loop: loop {
             tokio::select! {
-                res = tcp_stream_rx.read(&mut read_buf) => {
+                comp = comp_rx.recv() => {
+                }
+                res = self.stream.read(&mut read_buf) => {
                     let Ok(n_read) = res else {
                         break;
                     };
@@ -855,8 +1179,8 @@ impl SessionDriver {
                         }
 
                         let res = self.state.advance(DriverEvent::Packet { opcode, body });
-                        if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
-                            break;
+                        if self.handle_state_result(self.id, msg_tx, res).await? {
+                            break 'main_loop;
                         }
                     }
                 }
@@ -866,17 +1190,29 @@ impl SessionDriver {
                     };
 
                     let res = self.state.advance(DriverEvent::ToSender(to_sender));
-                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
+                    if self.handle_state_result(self.id, msg_tx, res).await? {
                         break;
                     }
                 }
                 _ = tick_interval.tick() => {
                     let res = self.state.advance(DriverEvent::Tick);
-                    if Self::handle_state_result(self.id, &mut tcp_stream_tx, msg_tx, res).await? {
+                    if self.handle_state_result(self.id, msg_tx, res).await? {
                         break;
                     }
                 }
             }
+        }
+
+        debug!(state = ?self.state.variant);
+
+        if let StateVariant::Active {
+            version:
+                SessionVersion::V4 {
+                    companion_provider_id: Some(id),
+                },
+        } = self.state.variant
+        {
+            self.companion_ctx.unregister_provider(id);
         }
 
         Ok(())

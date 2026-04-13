@@ -123,11 +123,11 @@ macro_rules! connection_loop {
                     if $reconnect_interval_millis == 0 {
                         break;
                     } else {
-                        tokio::time::sleep(reconnect_duration).await;
-                    }
+                        if !matches!(err, $crate::utils::WorkError::DidNotConnect(_)) {
+                            $on_reconnect_started;
+                        }
 
-                    if !matches!(err, $crate::utils::WorkError::DidNotConnect(_)) {
-                        $on_reconnect_started;
+                        tokio::time::sleep(reconnect_duration).await;
                     }
                 }
             }

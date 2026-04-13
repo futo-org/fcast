@@ -941,7 +941,9 @@ impl CastingDevice for ChromecastDevice {
                 metadata,
                 request_headers,
             }),
-            LoadRequest::Content { .. } => Err(CastingDeviceError::UnsupportedFeature),
+            LoadRequest::Content { .. } | LoadRequest::CompanionResource { .. } => {
+                Err(CastingDeviceError::UnsupportedFeature)
+            }
             LoadRequest::Video {
                 content_type,
                 url,
@@ -1043,6 +1045,7 @@ impl CastingDevice for ChromecastDevice {
             protocol: ProtocolType::Chromecast,
             addresses: state.addresses.clone(),
             port: state.port,
+            txt_records: HashMap::new(), // TODO
         }
     }
 

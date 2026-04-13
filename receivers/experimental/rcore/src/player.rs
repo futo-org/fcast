@@ -529,7 +529,7 @@ pub enum PlayerEvent {
     EndOfStream,
     UriLoaded,
     /// User must call Player::get_duration()
-    DurationChanged,
+    // DurationChanged,
     Tags(gst::TagList),
     VolumeChanged(f64),
     /// User must call Player::handle_stream_collection()
@@ -847,7 +847,7 @@ impl Player {
                 // TODO: handle redirects?
                 return;
             }
-            MessageView::DurationChanged(_) => PlayerEvent::DurationChanged,
+            // MessageView::DurationChanged(_) => PlayerEvent::DurationChanged,
             MessageView::RequestState(state) => {
                 if let Some(playbin) = playbin_weak.upgrade() {
                     let state = state.requested_state();

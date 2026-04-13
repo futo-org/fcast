@@ -32,7 +32,7 @@ pub enum PlaybackState {
     Playing = 2,
     Paused = 3,
     Ended = 4,
-    Stopped = 5,
+    // Stopped = 5,
 }
 
 #[cfg_attr(feature = "__schema", derive(JsonSchema, GetTypeString))]
@@ -85,6 +85,7 @@ pub struct QueueItem {
     pub media_item: MediaItem,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[cfg_attr(feature = "__schema", derive(JsonSchema, GetTypeString))]
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

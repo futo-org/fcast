@@ -68,16 +68,23 @@ pub struct DeviceInfo {
     pub protocol: ProtocolType,
     pub addresses: Vec<IpAddr>,
     pub port: u16,
+    pub txt_records: HashMap<String, String>,
 }
 
 macro_rules! dev_info_constructor {
     ($fname:ident, $type:ident) => {
-        pub fn $fname(name: String, addresses: Vec<IpAddr>, port: u16) -> DeviceInfo {
+        pub fn $fname(
+            name: String,
+            addresses: Vec<IpAddr>,
+            port: u16,
+            txt_records: HashMap<String, String>,
+        ) -> DeviceInfo {
             DeviceInfo {
                 name,
                 protocol: ProtocolType::$type,
                 addresses,
                 port,
+                txt_records,
             }
         }
     };
@@ -133,7 +140,12 @@ pub fn device_info_from_url(url: String) -> Option<DeviceInfo> {
         })
         .collect::<Option<Vec<IpAddr>>>()?;
 
-    Some(DeviceInfo::fcast(found_info.name, addrs, tcp_service.port))
+    Some(DeviceInfo::fcast(
+        found_info.name,
+        addrs,
+        tcp_service.port,
+        HashMap::new(), /* TODO */
+    ))
 }
 
 impl DeviceInfo {
@@ -164,12 +176,19 @@ pub enum Source {
     Content {
         content: String,
     },
+    CompanionResource {
+        id: u32,
+        /// MIME content type
+        content_type: String,
+    },
 }
 
 impl Source {
     pub fn content_type(&self) -> Option<&str> {
         match self {
-            Source::Url { content_type, .. } => Some(content_type.as_str()),
+            Source::Url { content_type, .. } | Source::CompanionResource { content_type, .. } => {
+                Some(content_type.as_str())
+            }
             _ => None,
         }
     }
@@ -268,6 +287,23 @@ pub struct MediaEvent {
     pub item: MediaItem,
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Clone, Debug)]
+pub struct ResourceInfo {}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReadLocation {
+    Whole,
+    Range { start: u64, stop_inclusive: u64 },
+}
+
+// #[allow(unused_variables)]
+// #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
+// pub trait DataBuffer: Send + Sync {
+//     fn write(&self, data: Vec<u8>);
+// }
+
 #[allow(unused_variables)]
 #[cfg_attr(feature = "uniffi", uniffi::export(with_foreign))]
 pub trait DeviceEventHandler: Send + Sync {
@@ -281,6 +317,9 @@ pub trait DeviceEventHandler: Send + Sync {
     fn key_event(&self, event: KeyEvent);
     fn media_event(&self, event: MediaEvent);
     fn playback_error(&self, message: String);
+    // fn get_resource_info(&self, id: u32) -> ResourceInfo;
+    // fn get_resource_data(&self, id: u32, read: ReadLocation, buffer: Arc<dyn DataBuffer>) -> Vec<u8>;
+    // fn get_resource_data(&self, id: u32, read: ReadLocation) -> Vec<u8>;
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
@@ -324,6 +363,7 @@ pub enum DeviceFeature {
     PlaylistNextAndPrevious,
     SetPlaylistItemIndex,
     WhepStreaming,
+    FCompanion,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -342,7 +382,14 @@ pub struct ApplicationInfo {
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq)]
+pub enum CompanionSource {
+    Path(String),
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+// #[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum LoadRequest {
     Url {
         content_type: String,
@@ -381,6 +428,15 @@ pub enum LoadRequest {
     },
     Playlist {
         items: Vec<PlaylistItem>,
+    },
+    CompanionResource {
+        content_type: String,
+        // id: u32,
+        source: CompanionSource,
+        resume_position: Option<f64>,
+        speed: Option<f64>,
+        volume: Option<f64>,
+        metadata: Option<Metadata>,
     },
 }
 

@@ -54,6 +54,13 @@ Note the maximum total packet size is 128KB. Consequently, the maximum body size
 | 52     | Resource                | Both      | [↗](#resource)                |
 | 53     | StartTLS                | Both      | [↗](#starttls)                |
 
+### mDNS TXT records
+
+| Name | Example | Value description                       |
+|------|---------|-----------------------------------------|
+| v    | 4       | Highest supported protocol version      |
+| fp   | TODO    | Fingerprint (see [Security](#security)) |
+
 ### Connection establishment
 
 When a sender or receiver establishes a connection with the other party, it **must** send a `Version` message to indicate which messages and protocol features are supported.

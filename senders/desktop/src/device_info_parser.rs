@@ -1,5 +1,5 @@
 use fcast_sender_sdk::device::{DeviceInfo, ProtocolType};
-use std::net::IpAddr;
+use std::{collections::HashMap, net::IpAddr};
 
 const DEFAULT_FCAST_PORT: u16 = 46899;
 const DEFAULT_GCAST_PORT: u16 = 46899;
@@ -67,22 +67,24 @@ pub fn parse(uri: &str) -> Option<fcast_sender_sdk::device::DeviceInfo> {
         protocol,
         addresses: vec![(&addr).into()],
         port,
+        txt_records: HashMap::new(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     macro_rules! f {
         ($addr:expr, $port:expr) => {
-            DeviceInfo::fcast("FCast".to_owned(), vec![$addr], $port)
+            DeviceInfo::fcast("FCast".to_owned(), vec![$addr], $port, HashMap::new())
         };
     }
 
     macro_rules! g {
         ($addr:expr, $port:expr) => {
-            DeviceInfo::chromecast("Chromecast".to_owned(), vec![$addr], $port)
+            DeviceInfo::chromecast("Chromecast".to_owned(), vec![$addr], $port, HashMap::new())
         };
     }
 

@@ -8,7 +8,7 @@ use imagelib::{
 };
 use tracing::{debug, debug_span, error, info};
 
-use crate::{CompoundImage, MessageSender, SlintRgba8Pixbuf};
+use crate::{CompoundImage, MessageSender, SlintRgba8Pixbuf, fcast::CompanionContext};
 
 pub type ImageId = u32;
 pub type ImageDownloadId = u32;
@@ -383,20 +383,28 @@ pub enum ExtendedImageFormat {
 pub struct Downloader {
     msg_tx: crate::MessageSender,
     client: reqwest::Client,
+    companion_ctx: CompanionContext,
 }
 
 impl Downloader {
-    pub fn new(msg_tx: crate::MessageSender, client: reqwest::Client) -> Self {
-        Self { msg_tx, client }
+    pub fn new(
+        msg_tx: crate::MessageSender,
+        client: reqwest::Client,
+        companion_ctx: CompanionContext,
+    ) -> Self {
+        Self {
+            msg_tx,
+            client,
+            companion_ctx,
+        }
     }
 
-    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = url)))]
-    async fn download_image(
+    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = %url)))]
+    async fn download_image_http(
         client: &reqwest::Client,
-        url: &str,
+        url: url::Url,
         headers: Option<HashMap<String, String>>,
     ) -> std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError> {
-        let url = url::Url::parse(url)?;
         debug!("Starting image download");
         let random_user_agent = crate::user_agent::random_browser_user_agent(url.domain());
         let mut request = client.get(url);
@@ -442,12 +450,33 @@ impl Downloader {
         Ok((body, format))
     }
 
+    #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = %url)))]
+    async fn download_image_comp(
+        ctx: &CompanionContext,
+        url: url::Url,
+    ) -> std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError> {
+        debug!("Starting image download");
+        todo!()
+    }
+
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
-        let client = self.client.clone();
+        let url = url::Url::parse(&url).unwrap();
         let tx = self.msg_tx.clone();
-        tokio::spawn(async move {
-            let res = Self::download_image(&client, &url, headers).await;
-            tx.image(Event::DownloadResult { id, res });
-        });
+
+        match url.scheme() {
+            "http" | "https" => {
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    let res = Self::download_image_http(&client, url, headers).await;
+                    tx.image(Event::DownloadResult { id, res });
+                });
+            }
+            "fcomp" => {
+                let ctx = self.companion_ctx.clone();
+                tokio::spawn(async move {
+                });
+            }
+            _ => todo!(),
+        }
     }
 }

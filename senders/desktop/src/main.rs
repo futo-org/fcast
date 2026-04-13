@@ -1107,17 +1107,30 @@ impl Application {
     ) -> Result<()> {
         path.push(&file_entry.name);
         debug!(?path, "Getting ready to cast");
-        let id = file_server.add_file(path, file_entry.mime_type);
-        let url = file_server.get_url(&(local_addr.into()), &id);
-        device.load(device::LoadRequest::Url {
-            content_type: file_entry.mime_type.to_string(),
-            url,
-            resume_position: None,
-            speed: None,
-            volume: Some(volume),
-            metadata: None,
-            request_headers: None,
-        })?;
+        if device.supports_feature(DeviceFeature::FCompanion) {
+            device.load(device::LoadRequest::CompanionResource {
+                content_type: file_entry.mime_type.to_string(),
+                source: fcast_sender_sdk::device::CompanionSource::Path(
+                    path.to_str().unwrap().to_owned(),
+                ),
+                resume_position: None,
+                speed: None,
+                volume: Some(volume),
+                metadata: None,
+            })?;
+        } else {
+            let id = file_server.add_file(path, file_entry.mime_type);
+            let url = file_server.get_url(&(local_addr.into()), &id);
+            device.load(device::LoadRequest::Url {
+                content_type: file_entry.mime_type.to_string(),
+                url,
+                resume_position: None,
+                speed: None,
+                volume: Some(volume),
+                metadata: None,
+                request_headers: None,
+            })?;
+        }
 
         Ok(())
     }
