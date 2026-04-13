@@ -20,12 +20,20 @@ fn main() {
 
     let gstreamer_root = gst_libs;
 
+    let host_tag = if cfg!(target_os = "macos") {
+        "darwin-x86_64"
+    } else if cfg!(target_os = "windows") {
+        "windows-x86_64"
+    } else {
+        "linux-x86_64"
+    };
+
     let search_paths = [
         format!("{gstreamer_root}/{gst_target_abi}/lib"),
         format!("{gstreamer_root}/{gst_target_abi}/lib/gstreamer-1.0"),
         format!("{}/app/libs/{android_target_abi}", proj_root.display()),
-        // format!("{android_ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/"), // r27d
-        format!("{android_ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/lib64/clang/14.0.7/lib/linux/"), // r25c
+        // format!("{android_ndk_home}/toolchains/llvm/prebuilt/{host_tag}/lib/clang/18/lib/linux/"), // r27d
+        format!("{android_ndk_home}/toolchains/llvm/prebuilt/{host_tag}/lib64/clang/14.0.7/lib/linux/"), // r25c
     ];
 
     for search_path in search_paths {
