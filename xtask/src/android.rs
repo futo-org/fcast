@@ -72,11 +72,12 @@ impl AndroidArgs {
                 cmd!(sh, "unzip -o {zip} -d {ANDROID_SDK_PATH}").run()?;
                 sh.remove_path(&zip)?;
 
-                let shell_code = format!("yes | {ANDROID_SDK_PATH}/cmdline-tools/bin/sdkmanager --sdk_root={ANDROID_HOME_PATH} --licenses");
+                let sdkmanager = if cfg!(windows) { "sdkmanager.bat" } else { "sdkmanager" };
+                let shell_code = format!("yes | {ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --licenses");
                 cmd!(sh, "sh -c {shell_code}").run()?;
 
-                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/sdkmanager --sdk_root={ANDROID_HOME_PATH} --install platforms;android-35").run()?;
-                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/sdkmanager --sdk_root={ANDROID_HOME_PATH} --install build-tools;35.0.0").run()?;
+                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --install platforms;android-35").run()?;
+                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --install build-tools;35.0.0").run()?;
             }
             AndroidCommand::DownloadGstreamer => {
                 cmd!(sh, "wget {GST_ANDROID_URL} -O {GST_ANDROID_AR_PATH}").run()?;
