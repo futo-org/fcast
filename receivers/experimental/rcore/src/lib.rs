@@ -1068,6 +1068,17 @@ impl Application {
         Ok(())
     }
 
+    fn on_media_info_updated(&mut self) {
+        if self.player.seekable {
+            while let Some(command) = self.on_playing_command_queue.pop() {
+                #[allow(irrefutable_let_patterns)]
+                if let OnFirstPlayingStateChangedCommand::Seek { position, rate } = command {
+                    self.player.seek_and_set_rate(position, rate);
+                }
+            }
+        }
+    }
+
     fn handle_new_player_event(&mut self, event: player::PlayerEvent) -> Result<()> {
         match event {
             player::PlayerEvent::EndOfStream => {
@@ -1159,20 +1170,15 @@ impl Application {
                 self.player.handle_stream_collection(collection);
                 // self.media_loaded_successfully();
 
+                self.player.update_media_info();
+                self.on_media_info_updated();
+
                 self.gui.set_app_state(AppState::Playing);
 
                 // self.current_duration = info.duration();
                 // if info.number_of_video_streams() > 0 {
                 //     self.video_stream_available()?;
                 // }
-
-                debug!("Commands: {:?}", self.on_playing_command_queue);
-                while let Some(command) = self.on_playing_command_queue.pop() {
-                    #[allow(irrefutable_let_patterns)]
-                    if let OnFirstPlayingStateChangedCommand::Seek { position, rate } = command {
-                        self.player.seek_and_set_rate(position, rate);
-                    }
-                }
 
                 self.player.play();
 
@@ -1216,6 +1222,18 @@ impl Application {
 
                 self.gcast_tx
                     .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
+
+                if (old == gst::State::Ready
+                    && current == gst::State::Paused
+                    && pending == gst::State::VoidPending)
+                    || (old == gst::State::Paused
+                        && current == gst::State::Playing
+                        && pending == gst::State::VoidPending)
+                {
+                    // pre-rolled
+                    self.player.update_media_info();
+                    self.on_media_info_updated();
+                }
             }
             player::PlayerEvent::UriSet(uri) => {
                 self.player.uri_set(uri);
