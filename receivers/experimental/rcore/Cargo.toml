@@ -80,7 +80,7 @@ features = [
 package = "image"
 version = "0.25"
 default-features = false
-features = ["default-formats"]
+features = ["default-formats", "avif-native"]
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tracing-gstreamer.workspace = true
