@@ -169,8 +169,9 @@ impl StateMachine {
                 State::Running {
                     state: RunningState::Playing,
                 } => gst::State::Playing,
-                State::Changing { target_state, .. } => target_state,
-                State::SeekAsync { target_state, .. } => target_state,
+                State::Changing { target_state, .. }
+                | State::SeekAsync { target_state, .. }
+                | State::Buffering { target_state, .. } => target_state,
                 _ => gst::State::Paused,
             }
         };
@@ -610,6 +611,7 @@ pub struct Player {
     pub current_video_stream: i32,
     pub current_audio_stream: i32,
     pub current_subtitle_stream: i32,
+    pub seekable: bool,
     state_machine: StateMachine,
 }
 
@@ -787,6 +789,7 @@ impl Player {
             current_video_stream: -1,
             current_audio_stream: -1,
             current_subtitle_stream: -1,
+            seekable: false,
             state_machine: StateMachine::new(),
         })
     }
@@ -921,6 +924,7 @@ impl Player {
         self.current_video_stream = -1;
         self.current_audio_stream = -1;
         self.current_subtitle_stream = -1;
+        self.seekable = false;
         self.seek_lock.release();
         self.volume_lock.release();
     }
@@ -933,8 +937,12 @@ impl Player {
     }
 
     fn seek_internal(&mut self, seek: Seek) {
-        if let Some(seek) = self.state_machine.seek_internal(seek, None) {
-            let _ = self.work_tx.send(Job::Seek(seek));
+        if self.seekable {
+            if let Some(seek) = self.state_machine.seek_internal(seek, None) {
+                let _ = self.work_tx.send(Job::Seek(seek));
+            }
+        } else {
+            warn!(?seek, "Attempted to seek on a non seekable stream");
         }
     }
 
@@ -974,6 +982,16 @@ impl Player {
             position: None,
             rate: Some(rate),
         });
+    }
+
+    pub fn update_media_info(&mut self) {
+        let mut query = gst::query::Seeking::new(gst::Format::Time);
+        if self.playbin.query(query.query_mut()) {
+            let (seekable, _, _) = query.result();
+            let dur = self.get_duration();
+            debug!(?dur, seekable, "Seek query returned");
+            self.seekable = seekable && dur.is_some();
+        }
     }
 
     pub fn seek_and_set_rate(&mut self, seconds: f64, rate: f64) {
