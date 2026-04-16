@@ -1,6 +1,14 @@
 # FCast Receiver Changelog
 
-## 0.0.1-beta - Unreleased
+## 0.1.1-beta - 2026-04-16
+
+### New Features
+
+ - Animated images
+ - Support for more image formats (heif, jxl, jp2)
+ - Windows support
+
+## 0.1.0-beta - 2026-04-06
 
 ### New Features
 
