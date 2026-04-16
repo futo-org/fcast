@@ -1694,7 +1694,6 @@ impl Application {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
             Message::GuiWindowClosed(feedback) => {
-                let _ = self.handle_operation(Operation::Stop);
                 self.player.shutdown(feedback);
             }
         }
