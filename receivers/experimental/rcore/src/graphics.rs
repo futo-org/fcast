@@ -80,10 +80,10 @@ impl GlContext {
 #[allow(clippy::large_enum_variant)]
 pub enum GraphicsContext {
     None,
-    #[cfg(target_os = "linux")]
-    Egl(glutin_egl_sys::egl::Egl),
-    #[cfg(target_os = "linux")]
-    Glx(glutin_glx_sys::glx::Glx),
+    // #[cfg(target_os = "linux")]
+    // Egl(glutin_egl_sys::egl::Egl),
+    // #[cfg(target_os = "linux")]
+    // Glx(glutin_glx_sys::glx::Glx),
     #[cfg(target_os = "windows")]
     Wgl(u32),
     #[cfg(target_os = "macos")]
@@ -92,33 +92,33 @@ pub enum GraphicsContext {
 }
 
 impl GraphicsContext {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn is_on_wayland() -> Result<bool> {
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            Ok(true)
-        } else if std::env::var("DISPLAY").is_ok() {
-            Ok(false)
-        } else {
-            anyhow::bail!("Unsupported platform")
-        }
-    }
+    // #[cfg(any(target_os = "linux", target_os = "android"))]
+    // fn is_on_wayland() -> Result<bool> {
+    //     if std::env::var("WAYLAND_DISPLAY").is_ok() {
+    //         Ok(true)
+    //     } else if std::env::var("DISPLAY").is_ok() {
+    //         Ok(false)
+    //     } else {
+    //         anyhow::bail!("Unsupported platform")
+    //     }
+    // }
 
     #[allow(unused)]
     pub fn from_slint(api: &slint::GraphicsAPI<'_>) -> Result<Self> {
         match api {
             slint::GraphicsAPI::NativeOpenGL { get_proc_address } => {
-                #[cfg(any(target_os = "linux", target_os = "android"))]
-                match Self::is_on_wayland() {
-                    // NOTE: If error: assume KMS or Android
-                    Ok(true) | Err(_) => {
-                        Ok(Self::Egl(glutin_egl_sys::egl::Egl::load_with(|symbol| {
-                            get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                        })))
-                    }
-                    Ok(false) => Ok(Self::Glx(glutin_glx_sys::glx::Glx::load_with(|symbol| {
-                        get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                    }))),
-                }
+                // #[cfg(any(target_os = "linux", target_os = "android"))]
+                // match Self::is_on_wayland() {
+                //     // NOTE: If error: assume KMS or Android
+                //     Ok(true) | Err(_) => {
+                //         Ok(Self::Egl(glutin_egl_sys::egl::Egl::load_with(|symbol| {
+                //             get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                //         })))
+                //     }
+                //     Ok(false) => Ok(Self::Glx(glutin_glx_sys::glx::Glx::load_with(|symbol| {
+                //         get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                //     }))),
+                // }
                 #[cfg(target_os = "windows")]
                 {
                     use glow::HasContext;
@@ -138,52 +138,52 @@ impl GraphicsContext {
     #[instrument(skip_all)]
     pub fn get_gst_contexts(&self) -> Option<(gst_gl::GLContext, GLDisplay)> {
         match &self {
-            #[cfg(target_os = "linux")]
-            GraphicsContext::Egl(egl) => {
-                let platform = gst_gl::GLPlatform::EGL;
+            // #[cfg(target_os = "linux")]
+            // GraphicsContext::Egl(egl) => {
+            //     let platform = gst_gl::GLPlatform::EGL;
 
-                unsafe {
-                    let egl_display = egl.GetCurrentDisplay();
-                    let display =
-                        gst_gl_egl::GLDisplayEGL::with_egl_display(egl_display as usize).unwrap();
-                    let native_context = egl.GetCurrentContext();
+            //     unsafe {
+            //         let egl_display = egl.GetCurrentDisplay();
+            //         let display =
+            //             gst_gl_egl::GLDisplayEGL::with_egl_display(egl_display as usize).unwrap();
+            //         let native_context = egl.GetCurrentContext();
 
-                    Some((
-                        gst_gl::GLContext::new_wrapped(
-                            &display,
-                            native_context as _,
-                            platform,
-                            gst_gl::GLContext::current_gl_api(platform).0,
-                        )
-                        .ok_or(anyhow::anyhow!("unable to create wrapped GL context"))
-                        .unwrap(),
-                        display.upcast(),
-                    ))
-                }
-            }
-            #[cfg(target_os = "linux")]
-            GraphicsContext::Glx(glx) => {
-                let platform = gst_gl::GLPlatform::GLX;
+            //         Some((
+            //             gst_gl::GLContext::new_wrapped(
+            //                 &display,
+            //                 native_context as _,
+            //                 platform,
+            //                 gst_gl::GLContext::current_gl_api(platform).0,
+            //             )
+            //             .ok_or(anyhow::anyhow!("unable to create wrapped GL context"))
+            //             .unwrap(),
+            //             display.upcast(),
+            //         ))
+            //     }
+            // }
+            // #[cfg(target_os = "linux")]
+            // GraphicsContext::Glx(glx) => {
+            //     let platform = gst_gl::GLPlatform::GLX;
 
-                unsafe {
-                    let glx_display = glx.GetCurrentDisplay();
-                    let display =
-                        gst_gl_x11::GLDisplayX11::with_display(glx_display as usize).unwrap();
-                    let native_context = glx.GetCurrentContext();
+            //     unsafe {
+            //         let glx_display = glx.GetCurrentDisplay();
+            //         let display =
+            //             gst_gl_x11::GLDisplayX11::with_display(glx_display as usize).unwrap();
+            //         let native_context = glx.GetCurrentContext();
 
-                    Some((
-                        gst_gl::GLContext::new_wrapped(
-                            &display,
-                            native_context as _,
-                            platform,
-                            gst_gl::GLContext::current_gl_api(platform).0,
-                        )
-                        .ok_or(anyhow::anyhow!("unable to create wrapped GL context"))
-                        .unwrap(),
-                        display.upcast(),
-                    ))
-                }
-            }
+            //         Some((
+            //             gst_gl::GLContext::new_wrapped(
+            //                 &display,
+            //                 native_context as _,
+            //                 platform,
+            //                 gst_gl::GLContext::current_gl_api(platform).0,
+            //             )
+            //             .ok_or(anyhow::anyhow!("unable to create wrapped GL context"))
+            //             .unwrap(),
+            //             display.upcast(),
+            //         ))
+            //     }
+            // }
             #[cfg(target_os = "windows")]
             GraphicsContext::Wgl(major_version) => {
                 let platform = gst_gl::GLPlatform::WGL;

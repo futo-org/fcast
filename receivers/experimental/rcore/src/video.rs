@@ -1,13 +1,11 @@
 use anyhow::Result;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use gst_gl::GLVideoFrameExt;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::{
-    num::NonZero,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool, AtomicU32, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{self, AtomicBool, AtomicU32, Ordering},
 };
 
 use gst::prelude::*;
@@ -16,23 +14,47 @@ use tracing::{debug, error};
 
 use crate::fcasttextoverlay::meta_imp::TextFormat;
 
+pub enum Resource<T> {
+    Eos,
+    Unchanged,
+    New(T),
+}
+
+#[cfg_attr(target_os = "linux", allow(clippy::large_enum_variant))]
+pub enum RawFrame {
+    SystemMemory {
+        frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
+    },
+    #[cfg(target_os = "linux")]
+    DmaBuf {
+        buffer: gst::Buffer,
+        info: gst_video::VideoInfo,
+        dma_info: gst_video::VideoInfoDmaDrm,
+    },
+}
+
+impl RawFrame {
+    pub fn width(&self) -> u32 {
+        match self {
+            RawFrame::SystemMemory { frame } => frame.width(),
+            #[cfg(target_os = "linux")]
+            RawFrame::DmaBuf { info, .. } => info.width(),
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        match self {
+            RawFrame::SystemMemory { frame } => frame.height(),
+            #[cfg(target_os = "linux")]
+            RawFrame::DmaBuf { info, .. } => info.height(),
+        }
+    }
+}
+
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
 pub type Subtitles = Arc<Mutex<Option<Option<SmallVec<[String; 3]>>>>>;
-type GlVideoFrame = gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>;
-
-pub struct SlintOpenGLSink {
-    pub appsink: gst_app::AppSink,
-    sinkbin: gst::Element,
-    next_frame: Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
-    next_overlays: Overlays,
-    next_subtitles: Subtitles,
-    current_frame: Mutex<Option<(gst_video::VideoInfo, GlVideoFrame)>>,
-    old_frame: Mutex<Option<GlVideoFrame>>,
-    pub gst_gl_context: Option<gst_gl::GLContext>,
-    pub is_eos: Arc<AtomicBool>,
-    pub window_width: Arc<AtomicU32>,
-    pub window_height: Arc<AtomicU32>,
-}
+// type GlVideoFrame = gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>;
+pub type Frame = RawFrame;
 
 #[derive(Debug)]
 pub struct Overlay {
@@ -41,106 +63,158 @@ pub struct Overlay {
     pub y: i32,
 }
 
-pub struct Frame {
-    pub tex_id: NonZero<u32>,
-    pub width: u32,
-    pub height: u32,
+pub struct SlintOpenGLSink {
+    pub appsink: gst_app::AppSink,
+    next_frame: Arc<Mutex<Option<Frame>>>,
+    next_overlays: Overlays,
+    next_subtitles: Subtitles,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub gst_gl_context: Option<gst_gl::GLContext>,
+    pub is_eos: Arc<AtomicBool>,
+    pub window_width: Arc<AtomicU32>,
+    pub window_height: Arc<AtomicU32>,
 }
 
 impl SlintOpenGLSink {
     pub fn new() -> Result<Self> {
-        let mut caps = gst::Caps::new_empty();
-        {
-            let caps = caps.get_mut().unwrap();
-            for features in [
-                gst::CapsFeatures::new([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
-                gst::CapsFeatures::new([
-                    gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
-                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
-                ]),
-                gst::CapsFeatures::new([
-                    gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
-                    crate::fcasttextoverlay::CAPS_FEATURE_FCAST_TEXT_OVERLAY,
-                ]),
-            ] {
-                let these_caps = gst_video::VideoCapsBuilder::new()
-                    .features(features.iter())
-                    .format(gst_video::VideoFormat::Rgba)
-                    .field("texture-target", "2D")
-                    .pixel_aspect_ratio(gst::Fraction::new(1, 1))
-                    .width_range(1..i32::MAX)
-                    .height_range(1..i32::MAX)
-                    .build();
-                caps.append(these_caps);
-            }
-        }
-
         let appsink = gst_app::AppSink::builder()
-            .caps(&caps)
+            .caps(&Self::get_caps())
             .enable_last_sample(false)
             .max_buffers(1u32)
             .property("emit-signals", true)
             .build();
 
-        let sinkbin = gst::ElementFactory::make("glsinkbin")
-            .property("sink", &appsink)
-            .build()?;
+        // TODO: import system memory then dmabuf. Handle opengl buffers on macos?
 
         Ok(Self {
             appsink,
             next_frame: Default::default(),
-            current_frame: Default::default(),
-            old_frame: Default::default(),
             next_overlays: Default::default(),
             next_subtitles: Default::default(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             gst_gl_context: None,
             is_eos: Arc::new(AtomicBool::new(false)),
             window_width: Arc::new(AtomicU32::new(0)),
             window_height: Arc::new(AtomicU32::new(0)),
-            sinkbin,
         })
     }
 
+    fn get_caps() -> gst::Caps {
+        let mut caps = gst::Caps::new_empty();
+        {
+            let caps = caps.get_mut().unwrap();
+            let formats = [
+                gst_video::VideoFormat::Nv12,
+                gst_video::VideoFormat::I420,
+                gst_video::VideoFormat::P01010le,
+                gst_video::VideoFormat::P012Le,
+                gst_video::VideoFormat::I42010le,
+                gst_video::VideoFormat::I42012le,
+                gst_video::VideoFormat::I42212le,
+                gst_video::VideoFormat::Y444,
+                gst_video::VideoFormat::Y44410le,
+                gst_video::VideoFormat::Y44412le,
+            ];
+            for features in [
+                gst::CapsFeatures::new_empty(),
+                gst::CapsFeatures::new([
+                    "memory:SystemMemory",
+                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                ]),
+                #[cfg(target_os = "linux")]
+                gst::CapsFeatures::new([gst_allocators::CAPS_FEATURE_MEMORY_DMABUF]),
+                #[cfg(target_os = "linux")]
+                gst::CapsFeatures::new([
+                    gst_allocators::CAPS_FEATURE_MEMORY_DMABUF,
+                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                ]),
+                // TODO: GL memory for rectangle texture target
+                // gst::CapsFeatures::new([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
+                // gst::CapsFeatures::new([
+                //     gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
+                //     crate::fcasttextoverlay::CAPS_FEATURE_FCAST_TEXT_OVERLAY,
+                // ]),
+            ] {
+                let mut these_caps = gst_video::VideoCapsBuilder::new()
+                    .features(features.iter())
+                    .pixel_aspect_ratio(gst::Fraction::new(1, 1))
+                    .width_range(1..i32::MAX)
+                    .height_range(1..i32::MAX);
+                #[cfg(target_os = "linux")]
+                if features.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF) {
+                    these_caps = these_caps.format(gst_video::VideoFormat::DmaDrm);
+                } else {
+                    these_caps = these_caps.format_list(formats);
+                }
+
+                #[cfg(not(target_os = "linux"))]
+                {
+                    these_caps = these_caps.format_list(formats);
+                }
+
+                caps.append(these_caps.build());
+            }
+        }
+
+        caps
+    }
+
+    #[cfg(target_os = "linux")]
+    fn add_drm_formats_to_caps(
+        caps: &mut gst::Caps,
+        formats: &std::collections::HashSet<drm_fourcc::DrmFormat>,
+    ) {
+        let formats = formats
+            .iter()
+            .map(|fmt| gst_video::dma_drm_fourcc_to_string(fmt.code as u32, fmt.modifier.into()))
+            .collect::<Vec<_>>();
+        let caps = caps.make_mut();
+        for (s, feats) in caps.iter_with_features_mut() {
+            if feats.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF) {
+                s.set("drm-format", gst::List::new(&formats));
+            }
+        }
+    }
+
     pub fn video_sink(&self) -> gst::Element {
-        self.sinkbin.clone().upcast()
+        self.appsink.clone().upcast()
     }
 
     fn handle_new_sample<F>(
         sample: gst::Sample,
-        next_frame_ref: &Arc<Mutex<Option<(gst_video::VideoInfo, gst::Buffer)>>>,
+        next_frame_ref: &Arc<Mutex<Option<Frame>>>,
         next_overlays_ref: &Overlays,
         next_subtitles_ref: &Subtitles,
         next_frame_available_notifier: &Arc<F>,
         is_eos: &Arc<AtomicBool>,
+        dma_info: &Arc<Mutex<Option<gst_video::VideoInfoDmaDrm>>>,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
     where
         F: Fn() + Send + Sync + 'static,
     {
         is_eos.store(false, atomic::Ordering::Relaxed);
 
-        let mut buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+        let buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
 
-        let context = match (buffer.n_memory() > 0)
-            .then(|| buffer.peek_memory(0))
-            .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
-            .map(|m| m.context())
-        {
-            Some(context) => context.clone(),
-            None => {
-                error!("Got non-GL memory");
-                return Err(gst::FlowError::Error);
-            }
-        };
+        // let context = match (buffer.n_memory() > 0)
+        //     .then(|| buffer.peek_memory(0))
+        //     .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
+        //     .map(|m| m.context())
+        // {
+        //     Some(context) => context.clone(),
+        //     None => {
+        //         error!("Got non-GL memory");
+        //         return Err(gst::FlowError::Error);
+        //     }
+        // };
 
-        if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
-            // debug!("Buffer has sync meta");
-            meta.set_sync_point(&context);
-        } else {
-            // tracing::warn!("Buffer has no sync meta");
-            let buffer = buffer.make_mut();
-            let meta = gst_gl::GLSyncMeta::add(buffer, &context);
-            meta.set_sync_point(&context);
-        }
+        // if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
+        //     meta.set_sync_point(&context);
+        // } else {
+        //     let buffer = buffer.make_mut();
+        //     let meta = gst_gl::GLSyncMeta::add(buffer, &context);
+        //     meta.set_sync_point(&context);
+        // }
 
         let Some(info) = sample
             .caps()
@@ -149,8 +223,6 @@ impl SlintOpenGLSink {
             error!("Got invalid caps");
             return Err(gst::FlowError::NotNegotiated);
         };
-
-        // tracing::debug!(video_caps = ?info);
 
         // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/video/gtk4/src/sink/frame.rs?ref_type=heads
         let overlays: SmallVec<[Overlay; 3]> = buffer
@@ -220,11 +292,45 @@ impl SlintOpenGLSink {
             *next_subtitles_ref.lock() = None;
         }
 
-        *next_frame_ref.lock() = Some((info, buffer));
+        #[cfg(target_os = "linux")]
+        {
+            let dma_info = dma_info.lock();
+            if let Some(dma_info) = dma_info.as_ref() {
+                *next_frame_ref.lock() = Some(RawFrame::DmaBuf {
+                    buffer,
+                    info,
+                    dma_info: dma_info.clone(),
+                });
+
+                next_frame_available_notifier();
+
+                return Ok(gst::FlowSuccess::Ok);
+            }
+        }
+
+        match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
+            Ok(frame) => {
+                *next_frame_ref.lock() = Some(RawFrame::SystemMemory { frame });
+            }
+            Err(err) => {
+                error!(?err, "Failed to create video frame");
+            }
+        }
 
         next_frame_available_notifier();
 
         Ok(gst::FlowSuccess::Ok)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_drm_formats(
+        &mut self,
+        drm_formats: &std::collections::HashSet<drm_fourcc::DrmFormat>,
+    ) {
+        let mut caps = Self::get_caps();
+        #[cfg(target_os = "linux")]
+        Self::add_drm_formats_to_caps(&mut caps, drm_formats);
+        self.appsink.set_caps(Some(&caps));
     }
 
     pub fn connect<F>(&mut self, next_frame_available_notifier: F) -> Result<()>
@@ -240,6 +346,8 @@ impl SlintOpenGLSink {
         let next_subtitles_ref = Arc::clone(&self.next_subtitles);
         let window_width = Arc::clone(&self.window_width);
         let window_height = Arc::clone(&self.window_height);
+        let dma_info = Arc::new(Mutex::new(None::<gst_video::VideoInfoDmaDrm>));
+        // TODO: create an element instead of using an appsink which has more boilerplate at this point
         self.appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .propose_allocation(move |_, allocation| {
@@ -269,12 +377,27 @@ impl SlintOpenGLSink {
 
                     true
                 })
+                .new_event({
+                    let dma_info = Arc::clone(&dma_info);
+                    move |appsink| {
+                        let obj = appsink.pull_object().unwrap();
+                        if let Some(event) = obj.downcast_ref::<gst::Event>()
+                            && let gst::EventView::Caps(event) = event.view()
+                        {
+                            *dma_info.lock() =
+                                gst_video::VideoInfoDmaDrm::from_caps(event.caps()).ok();
+                        }
+
+                        false
+                    }
+                })
                 .new_preroll({
                     let next_frame_ref = Arc::clone(&next_frame_ref);
                     let next_overlays_ref = Arc::clone(&self.next_overlays);
                     let next_subtitles_ref = Arc::clone(&self.next_subtitles);
                     let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
                     let is_eos = Arc::clone(&is_eos_ref);
+                    let dma_info = Arc::clone(&dma_info);
                     move |appsink| {
                         let sample = appsink
                             .pull_preroll()
@@ -287,6 +410,7 @@ impl SlintOpenGLSink {
                                 &next_subtitles_ref,
                                 &next_frame_available_notifier,
                                 &is_eos,
+                                &dma_info,
                             )
                         } else {
                             Ok(gst::FlowSuccess::Ok)
@@ -295,6 +419,7 @@ impl SlintOpenGLSink {
                 })
                 .new_sample({
                     let is_eos = Arc::clone(&is_eos_ref);
+                    let dma_info = Arc::clone(&dma_info);
                     move |appsink| {
                         let sample = appsink
                             .pull_sample()
@@ -306,6 +431,7 @@ impl SlintOpenGLSink {
                             &next_subtitles_ref,
                             &next_frame_available_notifier,
                             &is_eos,
+                            &dma_info,
                         )
                     }
                 })
@@ -318,60 +444,69 @@ impl SlintOpenGLSink {
         Ok(())
     }
 
-    pub fn fetch_next_frame(&self) -> Option<Option<Frame>> {
+    pub fn fetch_next_frame(&self) -> Resource<Frame> {
         if self.is_eos.load(atomic::Ordering::Relaxed) {
-            return None;
+            return Resource::Eos;
         }
 
-        if let Some((info, buffer)) = self.next_frame.lock().take() {
-            let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
-            sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
+        if let Some(frame) = self.next_frame.lock().take() {
+            // let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
+            // sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
 
-            if let Ok(frame) = gst_gl::GLVideoFrame::from_buffer_readable(buffer, &info) {
-                *self.current_frame.lock() = Some((info, frame));
-            }
+            // let sync_meta = frame.buffer().meta::<gst_gl::GLSyncMeta>().unwrap();
+            // let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
+            // sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
+
+            // if let Ok(frame) = gst_gl::GLVideoFrame::from_buffer_readable(buffer, &info) {
+            //     // *self.current_frame.lock() = Some((info, frame));
+            //     *self.current_frame.lock() = Some(frame);
+            // }
+
+            Resource::New(frame)
+        } else {
+            Resource::Unchanged
         }
-
-        Some(self.current_frame.lock().take().map(|(_info, frame)| {
-            let new = Frame {
-                tex_id: frame
-                    .texture_id(0)
-                    .ok()
-                    .and_then(|id| id.try_into().ok())
-                    .unwrap(),
-                width: frame.width(),
-                height: frame.height(),
-            };
-            *self.old_frame.lock() = Some(frame);
-            new
-        }))
     }
 
-    pub fn fetch_next_overlays(&self) -> Option<Option<SmallVec<[Overlay; 3]>>> {
+    pub fn fetch_next_overlays(&self) -> Resource<SmallVec<[Overlay; 3]>> {
         if self.is_eos.load(atomic::Ordering::Relaxed) {
-            return None;
+            return Resource::Eos;
         }
 
-        self.next_overlays
+        if let Some(overlays) = self
+            .next_overlays
             .lock()
             .as_mut()
-            .map(|overlays| overlays.take())
+            .and_then(|overlays| overlays.take())
+        {
+            Resource::New(overlays)
+        } else {
+            Resource::Unchanged
+        }
     }
 
-    pub fn fetch_next_subtitles(&self) -> Option<Option<SmallVec<[String; 3]>>> {
+    pub fn fetch_next_subtitles(&self) -> Resource<SmallVec<[String; 3]>> {
         if self.is_eos.load(atomic::Ordering::Relaxed) {
-            return None;
+            return Resource::Eos;
         }
 
-        self.next_subtitles.lock().as_mut().map(|subs| subs.take())
+        if let Some(subs) = self
+            .next_subtitles
+            .lock()
+            .as_mut()
+            .and_then(|subs| subs.take())
+        {
+            Resource::New(subs)
+        } else {
+            Resource::Unchanged
+        }
     }
 
     pub fn release_state(&mut self) {
         debug!("Releasing state");
         self.next_frame.lock().take();
-        self.current_frame.lock().take();
-        self.old_frame.lock().take();
         self.next_overlays.lock().take();
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.gst_gl_context.take();
     }
 }

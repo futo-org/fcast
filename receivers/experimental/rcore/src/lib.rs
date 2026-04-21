@@ -1,3 +1,5 @@
+// #![feature(stmt_expr_attributes)]
+
 use anyhow::{Result, bail};
 use base64::Engine;
 use fcast::{SessionDriver, SessionId};
@@ -5,6 +7,7 @@ use fcast_protocol::{
     Opcode, PlaybackErrorMessage, PlaybackState, SetVolumeMessage, v2::VolumeUpdateMessage, v3,
 };
 use gst::prelude::*;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use gst_gl::prelude::*;
 use parking_lot::Mutex;
 #[cfg(target_os = "android")]
@@ -38,10 +41,15 @@ use std::{
 pub use clap;
 pub use slint;
 pub use tracing;
+#[cfg(target_os = "linux")]
+mod dmabuf;
+#[cfg(target_os = "linux")]
+mod egl;
 mod fcast;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod gcast;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod graphics;
 mod gstreamer;
 mod gui;
@@ -58,6 +66,7 @@ mod mac_win_tray;
 mod mdns;
 mod message;
 mod opengl;
+mod placebo;
 mod player;
 mod raop;
 mod user_agent;
@@ -69,6 +78,7 @@ use crate::{
     player::PlayerState,
 };
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use graphics::GraphicsContext;
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
@@ -215,6 +225,7 @@ struct Application {
     cli_args: CliArgs,
     window_visible_before_playing: Option<bool>,
     window_fullscreen_before_playing: Option<bool>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     gl_context: graphics::GlContext,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
@@ -226,7 +237,7 @@ impl Application {
         appsink: gst::Element,
         msg_tx: MessageSender,
         video_sink_is_eos: Arc<AtomicBool>,
-        gl_context: graphics::GlContext,
+        #[cfg(any(target_os = "macos", target_os = "windows"))] gl_context: graphics::GlContext,
         #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
@@ -241,7 +252,12 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, msg_tx.clone(), gl_context.clone())?;
+        let player = player::Player::new(
+            appsink,
+            msg_tx.clone(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            gl_context.clone(),
+        )?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -412,6 +428,7 @@ impl Application {
             cli_args,
             window_visible_before_playing: None,
             window_fullscreen_before_playing: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             gl_context,
             image_downloader,
             image_decoder,
@@ -778,7 +795,9 @@ impl Application {
         self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
         #[cfg(not(target_os = "android"))]
         if !self.cli_args.no_fullscreen_player {
+            // TODO: handle for all cases
             // If the window was hidden, it takes some time before it can be fullscreened.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if self.window_visible_before_playing == Some(false) {
                 debug!(
                     "Waiting for GL contexts to become available before setting window fullscreen"
@@ -1905,6 +1924,7 @@ pub fn run(
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gst_gl_contexts = graphics::GlContext::new();
 
     let (msg_tx, event_rx) = mpsc::unbounded_channel::<Message>();
@@ -1929,27 +1949,38 @@ pub fn run(
 
     let bridge = ui.global::<Bridge>();
 
+    let pl_log = libplacebo::Log::new();
+
     #[cfg(debug_assertions)]
     bridge.set_is_debugging(true);
 
     let (renderer_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let gst_gl_contexts = gst_gl_contexts.clone();
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
         let mut prev_size = (0, 0);
         let mut slint_sink = None;
         let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let mut graphics_context = GraphicsContext::None;
         let msg_tx = msg_tx.clone();
         let mut renderer = None;
+        let mut pl_context = None;
+        let mut cached_frame = None;
+        #[cfg(target_os = "linux")]
+        let mut drm_formats = HashSet::new();
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
                 let ui_weak = ui_weak.clone();
 
-                graphics_context = GraphicsContext::from_slint(graphics_api).unwrap();
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                {
+                    graphics_context = GraphicsContext::from_slint(graphics_api).unwrap();
+                }
 
                 #[cfg(not(target_os = "android"))]
                 if let Some(fullscreen) = start_fullscreen.take() {
@@ -1961,6 +1992,53 @@ pub fn run(
                 }
 
                 if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api {
+                    #[cfg(target_os = "linux")]
+                    {
+                        egl::ensure_init();
+                        let egl = glutin_egl_sys::egl::Egl::load_with(|symbol| {
+                            get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                        });
+
+                        let display = unsafe { egl.GetCurrentDisplay() };
+                        pl_context = unsafe {
+                            Some(
+                                crate::placebo::PlaceboContext::new_egl(
+                                    &pl_log,
+                                    display as *mut _,
+                                    egl.GetCurrentContext() as *mut _,
+                                )
+                                .unwrap(),
+                            )
+                        };
+
+                        let extensions = egl::get_extensions(&egl);
+                        if extensions.contains(&egl::Extension::ImageDmaBufImport)
+                            && extensions.contains(&egl::Extension::ImageDmaBufImportModifiers)
+                        {
+                            match egl::get_supported_dma_drm_formats(display) {
+                                Ok(formats) => {
+                                    debug!(
+                                        formats = formats
+                                            .iter()
+                                            .map(|fmt| format!("{}:{:?}", fmt.code, fmt.modifier))
+                                            .collect::<Vec<_>>()
+                                            .join(" "),
+                                        "Got supported DMA DRM formats"
+                                    );
+                                    drm_formats = formats;
+                                }
+                                Err(err) => {
+                                    error!(?err, "Failed to get supported DMA DRM formats");
+                                }
+                            }
+                        }
+                    }
+
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        pl_context = Some(crate::placebo::PlaceboContext::new(&pl_log).unwrap());
+                    }
+
                     let gl = unsafe {
                         glow::Context::from_loader_function_cstr(|s| get_proc_address(s))
                     };
@@ -2003,10 +2081,15 @@ pub fn run(
                 }
 
                 let Some(slint_sink) = slint_sink.as_mut() else {
-                    slint_sink = slint_sink_mutex.lock().take();
+                    if let Some(mut sink) = slint_sink_mutex.lock().take() {
+                        #[cfg(target_os = "linux")]
+                        sink.set_drm_formats(&drm_formats);
+                        slint_sink = Some(sink);
+                    }
                     return;
                 };
 
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 if let Some((gst_gl_context, gst_gl_display)) = graphics_context.get_gst_contexts()
                 {
                     gst_gl_context
@@ -2021,7 +2104,10 @@ pub fn run(
                     gst_gl_contexts.set_contexts(gst_gl_display, gst_gl_context);
                 }
 
-                graphics_context = GraphicsContext::Initialized;
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                {
+                    graphics_context = GraphicsContext::Initialized;
+                }
 
                 let new_size = ui.window().size();
                 let new_size = (new_size.width, new_size.height);
@@ -2034,55 +2120,80 @@ pub fn run(
                     if let Some(sink_pad) = slint_sink.appsink.static_pad("sink") {
                         sink_pad.push_event(gst::event::Reconfigure::builder().build());
                     }
+
+                    if let Some(placebo) = pl_context.as_ref() {
+                        placebo.resize_swapchain(new_size.0 as i32, new_size.1 as i32);
+                    }
                 }
 
-                if bridge.invoke_is_playing() {
-                    let frame = if let Some(frame) = slint_sink.fetch_next_frame() {
-                        match frame {
-                            Some(frame) => unsafe {
-                                slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                                    frame.tex_id,
-                                    (frame.width, frame.height).into(),
-                                )
-                                .build()
-                            },
-                            None => return,
-                        }
-                    } else {
-                        slint::Image::default()
-                    };
+                if let Some(renderer) = renderer.as_mut() {
+                    use glow::HasContext;
+                    unsafe {
+                        renderer.gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                        renderer.gl.clear(glow::COLOR_BUFFER_BIT);
+                    }
+                }
 
-                    bridge.set_video_frame(frame);
-
-                    let overlays = slint_sink.fetch_next_overlays();
-                    if let Some(overlays) = overlays {
-                        let overlays: Option<VecModel<UiSubOverlay>> = overlays.map(|overlays| {
-                            overlays
-                                .into_iter()
-                                .map(|overlay| UiSubOverlay {
-                                    img: slint::Image::from_rgba8(overlay.pix_buffer),
-                                    x: overlay.x as f32,
-                                    y: overlay.y as f32,
-                                })
-                                .collect()
-                        });
-                        if let Some(overlays) = overlays {
-                            bridge.set_overlays(Rc::new(overlays).into());
+                match slint_sink.fetch_next_frame() {
+                    video::Resource::Eos => {
+                        if cached_frame.is_some()
+                            && let Some(placebo) = pl_context.as_ref()
+                        {
+                            // This doesn't do much now since no HDR things are enabled
+                            placebo.flush_renderer_cache();
                         }
-                    } else {
+                        cached_frame.take();
+                    }
+                    video::Resource::Unchanged => (),
+                    video::Resource::New(frame) => {
+                        bridge.set_video_frame_width(frame.width() as i32);
+                        bridge.set_video_frame_height(frame.height() as i32);
+                        cached_frame = Some(frame);
+                    }
+                }
+
+                match slint_sink.fetch_next_overlays() {
+                    video::Resource::Eos => {
                         bridge.set_overlays(slint::ModelRc::default());
                     }
+                    video::Resource::Unchanged => (),
+                    video::Resource::New(overlays) => {
+                        let overlays: VecModel<UiSubOverlay> = overlays
+                            .into_iter()
+                            .map(|overlay| UiSubOverlay {
+                                img: slint::Image::from_rgba8(overlay.pix_buffer),
+                                x: overlay.x as f32,
+                                y: overlay.y as f32,
+                            })
+                            .collect();
+                        bridge.set_overlays(Rc::new(overlays).into());
+                    }
                 }
 
-                let subtitles = slint_sink.fetch_next_subtitles();
-                if let Some(subtitles) = subtitles {
-                    let subtitles: Option<VecModel<slint::SharedString>> = subtitles
-                        .map(|subs| subs.into_iter().map(|s| s.to_shared_string()).collect());
-                    if let Some(subs) = subtitles {
+                match slint_sink.fetch_next_subtitles() {
+                    video::Resource::Eos => {
+                        bridge.set_subtitles(slint::ModelRc::default());
+                    }
+                    video::Resource::Unchanged => (),
+                    video::Resource::New(subs) => {
+                        let subs: VecModel<slint::SharedString> =
+                            subs.into_iter().map(|s| s.to_shared_string()).collect();
                         bridge.set_subtitles(Rc::new(subs).into());
                     }
-                } else {
-                    bridge.set_subtitles(slint::ModelRc::default());
+                }
+
+                if let Some(frame) = cached_frame.as_ref()
+                    && let Some(placebo) = pl_context.as_ref()
+                    && let Some(swframe) = placebo.start_frame()
+                {
+                    match placebo.render_frame(&swframe, frame) {
+                        Ok(_) => {
+                            placebo.submit_frame();
+                        }
+                        Err(err) => {
+                            error!(?err, "Failed to render frame");
+                        }
+                    }
                 }
             }
             slint::RenderingState::RenderingTeardown => {
@@ -2096,11 +2207,14 @@ pub fn run(
                     }
                 }
 
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 gst_gl_contexts.deactivate_and_clear();
 
                 if let Some(sink) = slint_sink.as_mut() {
                     sink.release_state();
                 }
+
+                pl_context.take();
             }
             _ => (),
         }
@@ -2155,6 +2269,7 @@ pub fn run(
                 video_sink_is_eos,
                 #[cfg(target_os = "android")]
                 android_app,
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 gst_gl_contexts,
                 #[cfg(not(target_os = "android"))]
                 cli_args,

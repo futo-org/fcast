@@ -1,0 +1,9 @@
+[package]
+name = "libplacebo"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+libplacebo-sys.path = "../libplacebo-sys"
+tracing.workspace = true

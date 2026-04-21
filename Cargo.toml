@@ -17,7 +17,11 @@ members = [
     "receivers/experimental/android",
     "tools/remote-pipeline-dbg",
     "crates/app-updater",
-    "sdk/common/google-cast-protocol", "crates/receiver-resources",
+    "sdk/common/google-cast-protocol",
+    "crates/receiver-resources",
+    "crates/libplacebo-sys",
+    "crates/libplacebo",
+    "crates/egl-sys",
 ]
 resolver = "2"
 

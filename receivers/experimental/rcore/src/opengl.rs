@@ -240,7 +240,7 @@ impl BlurProgram {
 }
 
 pub struct Renderer {
-    gl: Rc<glow::Context>,
+    pub gl: Rc<glow::Context>,
     blur: BlurProgram,
     pub blured_audio_cover: Option<Texture>,
 }

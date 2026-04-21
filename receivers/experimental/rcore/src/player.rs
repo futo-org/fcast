@@ -619,6 +619,7 @@ impl Player {
     pub fn new(
         video_sink: gst::Element,
         msg_tx: MessageSender,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: crate::graphics::GlContext,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
@@ -667,7 +668,13 @@ impl Player {
         let playbin_weak = playbin.downgrade();
         let msg_tx_c = msg_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            Self::handle_messsage(&playbin_weak, &msg_tx_c, msg, &gl_context);
+            Self::handle_messsage(
+                &playbin_weak,
+                &msg_tx_c,
+                msg,
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                &gl_context,
+            );
             gst::BusSyncReply::Drop
         });
 
@@ -798,11 +805,13 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         msg_tx: &MessageSender,
         msg: &gst::Message,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: &crate::graphics::GlContext,
     ) {
         use gst::MessageView;
 
         let msg = match msg.view() {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             MessageView::NeedContext(ctx) => {
                 let typ = ctx.context_type();
                 debug!(typ, "Need context");
