@@ -1,6 +1,6 @@
 use anyhow::Result;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use gst_gl::GLVideoFrameExt;
+// #[cfg(any(target_os = "macos", target_os = "windows"))]
+// use gst_gl::GLVideoFrameExt;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::sync::{
@@ -187,6 +187,7 @@ impl SlintOpenGLSink {
         next_subtitles_ref: &Subtitles,
         next_frame_available_notifier: &Arc<F>,
         is_eos: &Arc<AtomicBool>,
+        #[cfg(target_os = "linux")]
         dma_info: &Arc<Mutex<Option<gst_video::VideoInfoDmaDrm>>>,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
     where
@@ -346,6 +347,7 @@ impl SlintOpenGLSink {
         let next_subtitles_ref = Arc::clone(&self.next_subtitles);
         let window_width = Arc::clone(&self.window_width);
         let window_height = Arc::clone(&self.window_height);
+        #[cfg(target_os = "linux")]
         let dma_info = Arc::new(Mutex::new(None::<gst_video::VideoInfoDmaDrm>));
         // TODO: create an element instead of using an appsink which has more boilerplate at this point
         self.appsink.set_callbacks(
@@ -378,14 +380,19 @@ impl SlintOpenGLSink {
                     true
                 })
                 .new_event({
+                    #[cfg(target_os = "linux")]
                     let dma_info = Arc::clone(&dma_info);
+                    #[allow(unused_variables)]
                     move |appsink| {
-                        let obj = appsink.pull_object().unwrap();
-                        if let Some(event) = obj.downcast_ref::<gst::Event>()
-                            && let gst::EventView::Caps(event) = event.view()
+                        #[cfg(target_os = "linux")]
                         {
-                            *dma_info.lock() =
-                                gst_video::VideoInfoDmaDrm::from_caps(event.caps()).ok();
+                            let obj = appsink.pull_object().unwrap();
+                            if let Some(event) = obj.downcast_ref::<gst::Event>()
+                                && let gst::EventView::Caps(event) = event.view()
+                            {
+                                *dma_info.lock() =
+                                    gst_video::VideoInfoDmaDrm::from_caps(event.caps()).ok();
+                            }
                         }
 
                         false
@@ -397,6 +404,7 @@ impl SlintOpenGLSink {
                     let next_subtitles_ref = Arc::clone(&self.next_subtitles);
                     let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
                     let is_eos = Arc::clone(&is_eos_ref);
+                    #[cfg(target_os = "linux")]
                     let dma_info = Arc::clone(&dma_info);
                     move |appsink| {
                         let sample = appsink
@@ -410,6 +418,7 @@ impl SlintOpenGLSink {
                                 &next_subtitles_ref,
                                 &next_frame_available_notifier,
                                 &is_eos,
+                                #[cfg(target_os = "linux")]
                                 &dma_info,
                             )
                         } else {
@@ -419,6 +428,7 @@ impl SlintOpenGLSink {
                 })
                 .new_sample({
                     let is_eos = Arc::clone(&is_eos_ref);
+                    #[cfg(target_os = "linux")]
                     let dma_info = Arc::clone(&dma_info);
                     move |appsink| {
                         let sample = appsink
@@ -431,6 +441,7 @@ impl SlintOpenGLSink {
                             &next_subtitles_ref,
                             &next_frame_available_notifier,
                             &is_eos,
+                            #[cfg(target_os = "linux")]
                             &dma_info,
                         )
                     }

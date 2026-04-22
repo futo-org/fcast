@@ -2081,6 +2081,7 @@ pub fn run(
                 }
 
                 let Some(slint_sink) = slint_sink.as_mut() else {
+                    #[allow(unused_mut)]
                     if let Some(mut sink) = slint_sink_mutex.lock().take() {
                         #[cfg(target_os = "linux")]
                         sink.set_drm_formats(&drm_formats);

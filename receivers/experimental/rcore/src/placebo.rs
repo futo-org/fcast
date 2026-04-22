@@ -1,4 +1,6 @@
-use std::{ffi::c_void, ptr};
+use std::{mem::ManuallyDrop, ptr};
+#[cfg(target_os = "linux")]
+use std::ffi::c_void;
 
 use anyhow::anyhow;
 #[cfg(target_os = "linux")]
@@ -170,9 +172,9 @@ fn create_pl_frame(
 }
 
 pub struct PlaceboContext {
-    opengl: OpenGL,
-    swapchain: Swapchain,
-    renderer: Renderer,
+    opengl: ManuallyDrop<OpenGL>,
+    swapchain: ManuallyDrop<Swapchain>,
+    renderer: ManuallyDrop<Renderer>,
 }
 
 impl PlaceboContext {
@@ -184,9 +186,9 @@ impl PlaceboContext {
         let renderer = Renderer::new(log, &opengl).ok_or(anyhow!("failed to create renderer"))?;
 
         Ok(Self {
-            opengl,
-            swapchain,
-            renderer,
+            opengl: ManuallyDrop::new(opengl),
+            swapchain: ManuallyDrop::new(swapchain),
+            renderer: ManuallyDrop::new(renderer),
         })
     }
 
@@ -202,9 +204,9 @@ impl PlaceboContext {
         let renderer = Renderer::new(log, &opengl).ok_or(anyhow!("failed to create renderer"))?;
 
         Ok(Self {
-            opengl,
-            swapchain,
-            renderer,
+            opengl: ManuallyDrop::new(opengl),
+            swapchain: ManuallyDrop::new(swapchain),
+            renderer: ManuallyDrop::new(renderer),
         })
     }
 
@@ -453,6 +455,16 @@ impl PlaceboContext {
             crate::video::RawFrame::DmaBuf {
                 buffer, dma_info, ..
             } => self.render_dmabuf(swframe, buffer, dma_info),
+        }
+    }
+}
+
+impl Drop for PlaceboContext {
+    fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.renderer);
+            ManuallyDrop::drop(&mut self.swapchain);
+            ManuallyDrop::drop(&mut self.opengl);
         }
     }
 }
