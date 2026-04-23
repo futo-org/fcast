@@ -331,10 +331,7 @@ impl SlintOpenGLSink {
 
         #[cfg(target_os = "macos")]
         if is_gl {
-            *next_frame_ref.lock() = Some(RawFrame::Gl {
-                buffer,
-                info,
-            });
+            *next_frame_ref.lock() = Some(RawFrame::Gl { buffer, info });
             return Ok(gst::FlowSuccess::Ok);
         }
 
@@ -508,12 +505,10 @@ impl SlintOpenGLSink {
         }
 
         match self.next_overlays.lock().as_mut() {
-            Some(overlays) => {
-                match overlays.take() {
-                    Some(o) => Resource::New(o),
-                    None => Resource::Unchanged,
-                }
-            }
+            Some(overlays) => match overlays.take() {
+                Some(o) => Resource::New(o),
+                None => Resource::Unchanged,
+            },
             None => Resource::Cleared,
         }
     }
@@ -524,12 +519,10 @@ impl SlintOpenGLSink {
         }
 
         match self.next_subtitles.lock().as_mut() {
-            Some(subs) => {
-                match subs.take() {
-                    Some(s) => Resource::New(s),
-                    None => Resource::Unchanged,
-                }
-            }
+            Some(subs) => match subs.take() {
+                Some(s) => Resource::New(s),
+                None => Resource::Unchanged,
+            },
             None => Resource::Cleared,
         }
     }
