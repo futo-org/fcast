@@ -32,6 +32,11 @@ pub enum RawFrame {
         info: gst_video::VideoInfo,
         dma_info: gst_video::VideoInfoDmaDrm,
     },
+    #[cfg(target_os = "macos")]
+    Gl {
+        buffer: gst::Buffer,
+        info: gst_video::VideoInfo,
+    },
 }
 
 impl RawFrame {
@@ -40,6 +45,8 @@ impl RawFrame {
             RawFrame::SystemMemory { frame } => frame.width(),
             #[cfg(target_os = "linux")]
             RawFrame::DmaBuf { info, .. } => info.width(),
+            #[cfg(target_os = "macos")]
+            RawFrame::Gl { info, .. } => info.width(),
         }
     }
 
@@ -48,13 +55,14 @@ impl RawFrame {
             RawFrame::SystemMemory { frame } => frame.height(),
             #[cfg(target_os = "linux")]
             RawFrame::DmaBuf { info, .. } => info.height(),
+            #[cfg(target_os = "macos")]
+            RawFrame::Gl { info, .. } => info.height(),
         }
     }
 }
 
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
 pub type Subtitles = Arc<Mutex<Option<Option<SmallVec<[String; 3]>>>>>;
-// type GlVideoFrame = gst_gl::GLVideoFrame<gst_gl::gl_video_frame::Readable>;
 pub type Frame = RawFrame;
 
 #[derive(Debug)]
@@ -84,8 +92,6 @@ impl SlintOpenGLSink {
             .max_buffers(1u32)
             .property("emit-signals", true)
             .build();
-
-        // TODO: import system memory then dmabuf. Handle opengl buffers on macos?
 
         Ok(Self {
             appsink,
@@ -129,16 +135,17 @@ impl SlintOpenGLSink {
                     gst_allocators::CAPS_FEATURE_MEMORY_DMABUF,
                     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
                 ]),
-                // TODO: GL memory for rectangle texture target
+                // #[cfg(target_os = "macos")]
                 // gst::CapsFeatures::new([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
+                // #[cfg(target_os = "macos")]
                 // gst::CapsFeatures::new([
                 //     gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
-                //     crate::fcasttextoverlay::CAPS_FEATURE_FCAST_TEXT_OVERLAY,
+                //     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
                 // ]),
             ] {
                 let mut these_caps = gst_video::VideoCapsBuilder::new()
                     .features(features.iter())
-                    .pixel_aspect_ratio(gst::Fraction::new(1, 1))
+                    // .pixel_aspect_ratio(gst::Fraction::new(1, 1))
                     .width_range(1..i32::MAX)
                     .height_range(1..i32::MAX);
                 #[cfg(target_os = "linux")]
@@ -148,7 +155,19 @@ impl SlintOpenGLSink {
                     these_caps = these_caps.format_list(formats);
                 }
 
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                if features.contains(gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY) {
+                    these_caps = these_caps.format_list([
+                        gst_video::VideoFormat::Nv12,
+                        gst_video::VideoFormat::Ayuv64,
+                        gst_video::VideoFormat::P01010le,
+                    ]);
+                    // these_caps = these_caps.field("texture-target", "rectangle");
+                } else {
+                    these_caps = these_caps.format_list(formats);
+                }
+
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
                     these_caps = these_caps.format_list(formats);
                 }
@@ -195,27 +214,28 @@ impl SlintOpenGLSink {
     {
         is_eos.store(false, atomic::Ordering::Relaxed);
 
-        let buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
+        #[allow(unused_mut)]
+        let mut buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
 
-        // let context = match (buffer.n_memory() > 0)
-        //     .then(|| buffer.peek_memory(0))
-        //     .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
-        //     .map(|m| m.context())
-        // {
-        //     Some(context) => context.clone(),
-        //     None => {
-        //         error!("Got non-GL memory");
-        //         return Err(gst::FlowError::Error);
-        //     }
-        // };
+        #[cfg(target_os = "macos")]
+        let mut is_gl = false;
 
-        // if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
-        //     meta.set_sync_point(&context);
-        // } else {
-        //     let buffer = buffer.make_mut();
-        //     let meta = gst_gl::GLSyncMeta::add(buffer, &context);
-        //     meta.set_sync_point(&context);
-        // }
+        #[cfg(target_os = "macos")]
+        if let Some(context) = (buffer.n_memory() > 0)
+            .then(|| buffer.peek_memory(0))
+            .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
+            .map(|m| m.context())
+        {
+            let context = context.clone();
+            if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
+                meta.set_sync_point(&context);
+            } else {
+                let buffer = buffer.make_mut();
+                let meta = gst_gl::GLSyncMeta::add(buffer, &context);
+                meta.set_sync_point(&context);
+            }
+            is_gl = true;
+        }
 
         let Some(info) = sample
             .caps()
@@ -307,6 +327,15 @@ impl SlintOpenGLSink {
 
                 return Ok(gst::FlowSuccess::Ok);
             }
+        }
+
+        #[cfg(target_os = "macos")]
+        if is_gl {
+            *next_frame_ref.lock() = Some(RawFrame::Gl {
+                buffer,
+                info,
+            });
+            return Ok(gst::FlowSuccess::Ok);
         }
 
         match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
@@ -461,17 +490,11 @@ impl SlintOpenGLSink {
         }
 
         if let Some(frame) = self.next_frame.lock().take() {
-            // let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
-            // sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
-
-            // let sync_meta = frame.buffer().meta::<gst_gl::GLSyncMeta>().unwrap();
-            // let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
-            // sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
-
-            // if let Ok(frame) = gst_gl::GLVideoFrame::from_buffer_readable(buffer, &info) {
-            //     // *self.current_frame.lock() = Some((info, frame));
-            //     *self.current_frame.lock() = Some(frame);
-            // }
+            #[cfg(target_os = "macos")]
+            if let RawFrame::Gl { buffer, .. } = &frame {
+                let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
+                sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
+            }
 
             Resource::New(frame)
         } else {

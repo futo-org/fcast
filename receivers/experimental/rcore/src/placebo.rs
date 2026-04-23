@@ -468,6 +468,10 @@ impl PlaceboContext {
             crate::video::RawFrame::DmaBuf {
                 buffer, dma_info, ..
             } => self.render_dmabuf(swframe, buffer, dma_info),
+            #[cfg(target_os = "macos")]
+            crate::video::RawFrame::Gl { .. } => {
+                Ok(())
+            }
         }
     }
 }
