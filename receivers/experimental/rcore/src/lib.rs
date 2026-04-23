@@ -246,6 +246,15 @@ impl Application {
             reqwest_src.set_rank(gst::Rank::PRIMARY + 1);
         }
 
+        for nv_feature in registry.features_by_plugin("nvcodec") {
+            if let Some(elem) = nv_feature.downcast_ref::<gst::ElementFactory>()
+                && elem.has_type(gst::ElementFactoryType::DECODER)
+            {
+                debug!("Changing {}'s rank to MARGINAL", elem.name());
+                elem.set_rank(gst::Rank::MARGINAL);
+            }
+        }
+
         #[cfg(target_os = "android")]
         if let Some(amcaudiodec) = registry.lookup_feature("amcaudiodec") {
             // https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/4883

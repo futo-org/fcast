@@ -627,6 +627,7 @@ impl Player {
             .property("video-sink", video_sink)
             // .property("video-sink", gst::ElementFactory::make("fakesink").build()?)
             // .property("video-sink", gst::ElementFactory::make("glimagesink").build()?)
+            // .property("video-sink", gst::ElementFactory::make("autovideosink").build()?)
             // .property("video-sink", gst::ElementFactory::make("gtk4paintablesink").build()?)
             // .property("video-sink", gst::ElementFactory::make("waylandsink").build()?)
             .property("audio-filter", scaletempo)
