@@ -572,7 +572,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         },
         UpdateGuiCommand::SetPlaybackState(state) => bridge.set_playback_state(state),
         UpdateGuiCommand::ClearImageState => {
-            bridge.set_video_frame(slint::Image::default());
             bridge.set_image_preview(CompoundImage::default());
             clear_audio_covers(&bridge, renderer_tx);
             bridge.set_overlays(slint::ModelRc::default());

@@ -556,31 +556,17 @@ component PlaybackControls inherits Rectangle {
 export component VideoPlayerView inherits Rectangle {
     width: 100%;
     height: 100%;
-    // background: black;
-    // background: transparent;
-
-    // vframe := Image {
-    //     source <=> Bridge.video-frame;
-    //     // image-fit: contain;
-    //     // width: 100%;
-    //     // height: 100%;
-
-    //     width: 10px;
-    //     height: 10px;
-    // }
+    background: transparent;
 
     pure function scale() -> length {
-        // Math.min(root.height / vframe.source.height, root.width / vframe.source.width)
         Math.min(root.height / Bridge.video-frame-height, root.width / Bridge.video-frame-width)
     }
 
     pure function frame-x() -> length {
-        // root.width / 2 - vframe.source.width * scale() / 2
         root.width / 2 - Bridge.video-frame-width * scale() / 2
     }
 
     pure function frame-y() -> length {
-        // root.height / 2 - vframe.source.height * scale() / 2
         root.height / 2 - Bridge.video-frame-height * scale() / 2
     }
 
