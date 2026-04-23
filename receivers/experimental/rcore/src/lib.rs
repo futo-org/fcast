@@ -1,5 +1,3 @@
-// #![feature(stmt_expr_attributes)]
-
 use anyhow::{Result, bail};
 use base64::Engine;
 use fcast::{SessionDriver, SessionId};

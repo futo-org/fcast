@@ -625,17 +625,11 @@ impl Player {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
             .property("video-sink", video_sink)
-            // .property("video-sink", gst::ElementFactory::make("fakesink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("glimagesink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("autovideosink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("gtk4paintablesink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("waylandsink").build()?)
             .property("audio-filter", scaletempo)
             // .property_from_str(
             //     "flags",
             //     "deinterlace+buffering+soft-volume+text+audio+video",
             // )
-            // .property("text-sink", gst::ElementFactory::make("fakesink").build()?) // debugging
             // .property("instant-uri", true)
             .build()?;
 
