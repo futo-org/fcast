@@ -178,6 +178,7 @@ pub struct PlaceboContext {
     renderer: ManuallyDrop<Renderer>,
     // Textures used for system memory buffers
     cached_textures: [pl_tex; 4],
+    rendering_params: pl_render_params,
 }
 
 impl PlaceboContext {
@@ -208,6 +209,7 @@ impl PlaceboContext {
             swapchain: ManuallyDrop::new(swapchain),
             renderer: ManuallyDrop::new(renderer),
             cached_textures: [std::ptr::null(); 4],
+            rendering_params: unsafe { pl_render_default_params.clone() },
         })
     }
 
@@ -326,8 +328,7 @@ impl PlaceboContext {
         target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
 
         unsafe {
-            let params = pl_render_default_params;
-            pl_render_image(self.renderer.renderer, &image, &target, &params);
+            pl_render_image(self.renderer.renderer, &image, &target, &self.rendering_params);
         }
 
         Ok(())
@@ -449,8 +450,7 @@ impl PlaceboContext {
         target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
 
         unsafe {
-            let params = pl_render_default_params;
-            pl_render_image(self.renderer.renderer, &image, &target, &params);
+            pl_render_image(self.renderer.renderer, &image, &target, &self.rendering_params);
             destroy_textures(self.opengl.gpu(), image.num_planes, &mut image.planes);
         }
 
