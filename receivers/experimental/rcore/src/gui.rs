@@ -248,7 +248,6 @@ pub enum UpdateGuiCommand {
 
 type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
 
-
 struct GuiIsVisibleHandle {
     is_visible: Mutex<bool>,
     cvar: Condvar,
@@ -489,7 +488,10 @@ impl GuiController {
     pub fn wait_for_is_visible(&self) -> bool {
         if !self.is_visible.get() {
             let mut is_visible = self.is_visible.0.is_visible.lock();
-            self.is_visible.0.cvar.wait_for(&mut is_visible, std::time::Duration::from_millis(200));
+            self.is_visible
+                .0
+                .cvar
+                .wait_for(&mut is_visible, std::time::Duration::from_millis(200));
             *is_visible
         } else {
             true

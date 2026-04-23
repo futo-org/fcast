@@ -331,7 +331,12 @@ impl PlaceboContext {
         target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
 
         unsafe {
-            pl_render_image(self.renderer.renderer, &image, &target, &self.rendering_params);
+            pl_render_image(
+                self.renderer.renderer,
+                &image,
+                &target,
+                &self.rendering_params,
+            );
         }
 
         Ok(())
@@ -432,7 +437,6 @@ impl PlaceboContext {
             let tex = unsafe { pl_tex_create(self.opengl.gpu(), &tex_params) };
             assert!(!tex.is_null());
             image.planes[plane_idx as usize].texture = tex;
-            image.planes[plane_idx as usize].components = if plane_idx == 0 { 1 } else { 2 };
 
             let mut components = 0;
             for comp_idx in 0..normal_info.n_components() {
@@ -442,6 +446,8 @@ impl PlaceboContext {
                     components += 1;
                 }
             }
+
+            image.planes[plane_idx as usize].components = components as i32;
         }
 
         let mut target = unsafe {
@@ -453,7 +459,12 @@ impl PlaceboContext {
         target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
 
         unsafe {
-            pl_render_image(self.renderer.renderer, &image, &target, &self.rendering_params);
+            pl_render_image(
+                self.renderer.renderer,
+                &image,
+                &target,
+                &self.rendering_params,
+            );
             destroy_textures(self.opengl.gpu(), image.num_planes, &mut image.planes);
         }
 
