@@ -802,18 +802,8 @@ impl Application {
         self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
         #[cfg(not(target_os = "android"))]
         if !self.cli_args.no_fullscreen_player {
-            // TODO: handle for all cases
             // If the window was hidden, it takes some time before it can be fullscreened.
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if self.window_visible_before_playing == Some(false) {
-                debug!(
-                    "Waiting for GL contexts to become available before setting window fullscreen"
-                );
-                let available = self
-                    .gl_context
-                    .try_wait_available(Duration::from_millis(200));
-                debug!(available, "Finished waiting");
-            }
+            self.gui.wait_for_is_visible();
             self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
         }
 
@@ -1958,6 +1948,8 @@ pub fn run(
 
     let pl_log = libplacebo::Log::new().unwrap();
 
+    let gui_is_visible = gui::GuiIsVisible::new();
+
     #[cfg(debug_assertions)]
     bridge.set_is_debugging(true);
 
@@ -1979,6 +1971,7 @@ pub fn run(
         let mut cached_frame = None;
         #[cfg(target_os = "linux")]
         let mut drm_formats = HashSet::new();
+        let gui_is_visible = gui_is_visible.clone();
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
@@ -2054,6 +2047,8 @@ pub fn run(
                         Err(err) => error!(?err, "Failed to create renderer"),
                     }
                 }
+
+                gui_is_visible.set(true);
             }
             slint::RenderingState::BeforeRendering => {
                 let Some(ui) = ui_weak.upgrade() else {
@@ -2204,6 +2199,8 @@ pub fn run(
                 }
             }
             slint::RenderingState::RenderingTeardown => {
+                gui_is_visible.set(false);
+
                 let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
 
                 msg_tx.send(Message::GuiWindowClosed(feedback_tx));
@@ -2243,7 +2240,7 @@ pub fn run(
 
     gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx);
 
-    let gui = GuiController::new(gui_tx);
+    let gui = GuiController::new(gui_tx, gui_is_visible.clone());
 
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
