@@ -507,15 +507,14 @@ impl SlintOpenGLSink {
             return Resource::Eos;
         }
 
-        if let Some(overlays) = self
-            .next_overlays
-            .lock()
-            .as_mut()
-            .and_then(|overlays| overlays.take())
-        {
-            Resource::New(overlays)
-        } else {
-            Resource::Cleared
+        match self.next_overlays.lock().as_mut() {
+            Some(overlays) => {
+                match overlays.take() {
+                    Some(o) => Resource::New(o),
+                    None => Resource::Unchanged,
+                }
+            }
+            None => Resource::Cleared,
         }
     }
 
@@ -524,15 +523,14 @@ impl SlintOpenGLSink {
             return Resource::Eos;
         }
 
-        if let Some(subs) = self
-            .next_subtitles
-            .lock()
-            .as_mut()
-            .and_then(|subs| subs.take())
-        {
-            Resource::New(subs)
-        } else {
-            Resource::Cleared
+        match self.next_subtitles.lock().as_mut() {
+            Some(subs) => {
+                match subs.take() {
+                    Some(s) => Resource::New(s),
+                    None => Resource::Unchanged,
+                }
+            }
+            None => Resource::Cleared,
         }
     }
 
