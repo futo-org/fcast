@@ -16,6 +16,7 @@ use crate::fcasttextoverlay::meta_imp::TextFormat;
 
 pub enum Resource<T> {
     Eos,
+    Cleared,
     Unchanged,
     New(T),
 }
@@ -491,7 +492,7 @@ impl SlintOpenGLSink {
         {
             Resource::New(overlays)
         } else {
-            Resource::Unchanged
+            Resource::Cleared
         }
     }
 
@@ -508,7 +509,7 @@ impl SlintOpenGLSink {
         {
             Resource::New(subs)
         } else {
-            Resource::Unchanged
+            Resource::Cleared
         }
     }
 

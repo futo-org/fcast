@@ -2136,7 +2136,7 @@ pub fn run(
                 }
 
                 match slint_sink.fetch_next_frame() {
-                    video::Resource::Eos => {
+                    video::Resource::Eos | video::Resource::Cleared => {
                         if cached_frame.is_some()
                             && let Some(placebo) = pl_context.as_mut()
                         {
@@ -2153,7 +2153,7 @@ pub fn run(
                 }
 
                 match slint_sink.fetch_next_overlays() {
-                    video::Resource::Eos => {
+                    video::Resource::Eos | video::Resource::Cleared => {
                         bridge.set_overlays(slint::ModelRc::default());
                     }
                     video::Resource::Unchanged => (),
@@ -2171,7 +2171,7 @@ pub fn run(
                 }
 
                 match slint_sink.fetch_next_subtitles() {
-                    video::Resource::Eos => {
+                    video::Resource::Eos | video::Resource::Cleared => {
                         bridge.set_subtitles(slint::ModelRc::default());
                     }
                     video::Resource::Unchanged => (),
