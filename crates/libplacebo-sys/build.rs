@@ -120,6 +120,8 @@ fn main() {
         .probe()
         .unwrap();
 
+    // https://github.com/rust-av/libplacebo-rs/blob/master/libplacebo-sys/build.rs
+
     let headers = libs
         .get_by_name("libplacebo")
         .unwrap()
