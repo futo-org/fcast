@@ -147,6 +147,9 @@ pub enum RenderFrameError {
     #[cfg(target_os = "linux")]
     #[error("invalid format info")]
     InvalidFormatInfo,
+    #[cfg(target_os = "linux")]
+    #[error("failed to create texture from DMABuf")]
+    TextureCreation,
     #[error("frame is missing a plane")]
     MissingPlane,
     #[error("failed to upload plane")]
@@ -435,7 +438,12 @@ impl PlaceboContext {
             };
 
             let tex = unsafe { pl_tex_create(self.opengl.gpu(), &tex_params) };
-            assert!(!tex.is_null());
+            if tex.is_null() {
+                unsafe {
+                    destroy_textures(self.opengl.gpu(), plane_idx + 1, &mut image.planes);
+                }
+                return Err(RenderFrameError::TextureCreation);
+            }
             image.planes[plane_idx as usize].texture = tex;
 
             let mut components = 0;
