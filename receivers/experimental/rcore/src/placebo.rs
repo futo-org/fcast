@@ -71,6 +71,7 @@ fn gst_transfer_to_placebo(transfer: gst_video::VideoTransferFunction) -> pl_col
     }
 }
 
+#[cfg(target_os = "linux")]
 unsafe fn destroy_textures(gpu: *const pl_gpu_t, num_planes: i32, planes: &mut [pl_plane; 4]) {
     for p in 0..num_planes {
         let mut tex = planes[p as usize].texture;
