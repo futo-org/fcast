@@ -1843,6 +1843,7 @@ impl Application {
 
 #[cfg(not(target_os = "android"))]
 #[derive(clap::Parser)]
+#[command(name = "FCast Receiver")]
 #[command(version)]
 pub struct CliArgs {
     /// Start minimized to tray
