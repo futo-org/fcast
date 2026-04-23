@@ -538,6 +538,7 @@ impl SlintOpenGLSink {
         debug!("Releasing state");
         self.next_frame.lock().take();
         self.next_overlays.lock().take();
+        self.next_subtitles.lock().take();
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.gst_gl_context.take();
     }
