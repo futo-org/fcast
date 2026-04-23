@@ -63,7 +63,6 @@ impl Drop for Log {
     }
 }
 
-// TODO: rename to Gpu?
 pub struct OpenGL {
     pub gl: *const pl_opengl_t,
 }
