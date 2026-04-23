@@ -187,8 +187,7 @@ impl SlintOpenGLSink {
         next_subtitles_ref: &Subtitles,
         next_frame_available_notifier: &Arc<F>,
         is_eos: &Arc<AtomicBool>,
-        #[cfg(target_os = "linux")]
-        dma_info: &Arc<Mutex<Option<gst_video::VideoInfoDmaDrm>>>,
+        #[cfg(target_os = "linux")] dma_info: &Arc<Mutex<Option<gst_video::VideoInfoDmaDrm>>>,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
     where
         F: Fn() + Send + Sync + 'static,

@@ -2138,10 +2138,9 @@ pub fn run(
                 match slint_sink.fetch_next_frame() {
                     video::Resource::Eos => {
                         if cached_frame.is_some()
-                            && let Some(placebo) = pl_context.as_ref()
+                            && let Some(placebo) = pl_context.as_mut()
                         {
-                            // This doesn't do much now since no HDR things are enabled
-                            placebo.flush_renderer_cache();
+                            placebo.flush_cache();
                         }
                         cached_frame.take();
                     }
@@ -2184,7 +2183,7 @@ pub fn run(
                 }
 
                 if let Some(frame) = cached_frame.as_ref()
-                    && let Some(placebo) = pl_context.as_ref()
+                    && let Some(placebo) = pl_context.as_mut()
                     && let Some(swframe) = placebo.start_frame()
                 {
                     match placebo.render_frame(&swframe, frame) {

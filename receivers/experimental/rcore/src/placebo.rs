@@ -1,6 +1,6 @@
-use std::{mem::ManuallyDrop, ptr};
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
+use std::{mem::ManuallyDrop, ptr};
 
 use anyhow::anyhow;
 #[cfg(target_os = "linux")]
@@ -175,6 +175,8 @@ pub struct PlaceboContext {
     opengl: ManuallyDrop<OpenGL>,
     swapchain: ManuallyDrop<Swapchain>,
     renderer: ManuallyDrop<Renderer>,
+    // Textures used for system memory buffers
+    cached_textures: [pl_tex; 4],
 }
 
 impl PlaceboContext {
@@ -182,14 +184,7 @@ impl PlaceboContext {
     pub fn new(log: &libplacebo::Log) -> anyhow::Result<Self> {
         let opengl =
             libplacebo::OpenGL::new(log).ok_or(anyhow!("failed to create opengl context"))?;
-        let swapchain = Swapchain::new(&opengl).ok_or(anyhow!("failed to create swapchain"))?;
-        let renderer = Renderer::new(log, &opengl).ok_or(anyhow!("failed to create renderer"))?;
-
-        Ok(Self {
-            opengl: ManuallyDrop::new(opengl),
-            swapchain: ManuallyDrop::new(swapchain),
-            renderer: ManuallyDrop::new(renderer),
-        })
+        Self::new_from_gl(log, opengl)
     }
 
     #[cfg(target_os = "linux")]
@@ -200,6 +195,10 @@ impl PlaceboContext {
     ) -> anyhow::Result<Self> {
         let opengl = unsafe { libplacebo::OpenGL::new_egl(log, display, context) }
             .ok_or(anyhow!("failed to create opengl context"))?;
+        Self::new_from_gl(log, opengl)
+    }
+
+    fn new_from_gl(log: &libplacebo::Log, opengl: OpenGL) -> anyhow::Result<Self> {
         let swapchain = Swapchain::new(&opengl).ok_or(anyhow!("failed to create swapchain"))?;
         let renderer = Renderer::new(log, &opengl).ok_or(anyhow!("failed to create renderer"))?;
 
@@ -207,6 +206,7 @@ impl PlaceboContext {
             opengl: ManuallyDrop::new(opengl),
             swapchain: ManuallyDrop::new(swapchain),
             renderer: ManuallyDrop::new(renderer),
+            cached_textures: [std::ptr::null(); 4],
         })
     }
 
@@ -214,9 +214,21 @@ impl PlaceboContext {
         self.swapchain.resize(width, height);
     }
 
-    pub fn flush_renderer_cache(&self) {
+    fn flush_texture_cache(&mut self) {
+        for i in 0..self.cached_textures.len() {
+            if !self.cached_textures[i].is_null() {
+                unsafe {
+                    pl_tex_destroy(self.opengl.gpu(), &mut self.cached_textures[i]);
+                    assert!(self.cached_textures[i].is_null());
+                }
+            }
+        }
+    }
+
+    pub fn flush_cache(&mut self) {
         self.renderer.flush_cache();
-        debug!("Flushed the renderer cache");
+        self.flush_texture_cache();
+        debug!("Flushed cache");
     }
 
     pub fn start_frame(&self) -> Option<SwapchainFrame> {
@@ -228,7 +240,7 @@ impl PlaceboContext {
     }
 
     fn upload_sys_mem(
-        &self,
+        &mut self,
         info: &gst_video::VideoInfo,
         frame_info: &RenderFrameInfo,
         frame: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
@@ -276,9 +288,12 @@ impl PlaceboContext {
             }
 
             unsafe {
-                // TODO: cache `tex`?
-                let mut tex = std::ptr::null();
-                if !pl_upload_plane(self.opengl.gpu(), plane, &mut tex, &plane_data) {
+                if !pl_upload_plane(
+                    self.opengl.gpu(),
+                    plane,
+                    &mut self.cached_textures[plane_idx as usize],
+                    &plane_data,
+                ) {
                     return Err(RenderFrameError::PlaneUploadFailed);
                 }
             }
@@ -288,7 +303,7 @@ impl PlaceboContext {
     }
 
     fn render_sysmem(
-        &self,
+        &mut self,
         swframe: &libplacebo::SwapchainFrame,
         frame: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
     ) -> std::result::Result<(), RenderFrameError> {
@@ -297,9 +312,7 @@ impl PlaceboContext {
 
         let mut image = create_pl_frame(frame.n_planes() as i32, info, &frame_info);
         if let Err(err) = self.upload_sys_mem(info, &frame_info, frame, &mut image) {
-            unsafe {
-                destroy_textures(self.opengl.gpu(), image.num_planes, &mut image.planes);
-            }
+            self.flush_texture_cache();
             return Err(err);
         };
 
@@ -314,7 +327,6 @@ impl PlaceboContext {
         unsafe {
             let params = pl_render_default_params;
             pl_render_image(self.renderer.renderer, &image, &target, &params);
-            destroy_textures(self.opengl.gpu(), image.num_planes, &mut image.planes);
         }
 
         Ok(())
@@ -445,7 +457,7 @@ impl PlaceboContext {
     }
 
     pub fn render_frame(
-        &self,
+        &mut self,
         swframe: &libplacebo::SwapchainFrame,
         frame: &crate::video::RawFrame,
     ) -> std::result::Result<(), RenderFrameError> {
@@ -462,6 +474,7 @@ impl PlaceboContext {
 impl Drop for PlaceboContext {
     fn drop(&mut self) {
         unsafe {
+            self.flush_texture_cache();
             ManuallyDrop::drop(&mut self.renderer);
             ManuallyDrop::drop(&mut self.swapchain);
             ManuallyDrop::drop(&mut self.opengl);
