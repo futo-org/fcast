@@ -1,5 +1,3 @@
-// TODO: error handling
-
 use std::{ffi::CStr, os::raw::c_void};
 
 use libplacebo_sys::*;
@@ -37,7 +35,7 @@ pub struct Log {
 }
 
 impl Log {
-    pub fn new() -> Self {
+    pub fn new() -> Option<Self> {
         unsafe {
             let log = pl_log_create_360(
                 PL_API_VER as i32,
@@ -48,7 +46,11 @@ impl Log {
                 } as *const _,
             );
 
-            Self { log }
+            if log.is_null() {
+                return None;
+            }
+
+            Some(Self { log })
         }
     }
 }
@@ -132,7 +134,7 @@ impl Swapchain {
                         id: 0,
                         flipped: false,
                     },
-                    max_swapchain_depth: 0, // TODO: ?
+                    max_swapchain_depth: 0,
                     priv_: std::ptr::null_mut(),
                 } as *const _,
             );
@@ -168,10 +170,9 @@ impl Swapchain {
         }
     }
 
-    pub fn submit_frame(&self) {
+    pub fn submit_frame(&self) -> bool {
         unsafe {
-            // TODO: handle ret
-            assert!(pl_swapchain_submit_frame(self.swapchain));
+            pl_swapchain_submit_frame(self.swapchain)
         }
     }
 }

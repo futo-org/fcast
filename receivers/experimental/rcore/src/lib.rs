@@ -1958,7 +1958,7 @@ pub fn run(
 
     let bridge = ui.global::<Bridge>();
 
-    let pl_log = libplacebo::Log::new();
+    let pl_log = libplacebo::Log::new().unwrap();
 
     #[cfg(debug_assertions)]
     bridge.set_is_debugging(true);

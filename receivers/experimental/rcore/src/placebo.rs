@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use drm_fourcc::DrmFourcc;
 use gst_video::prelude::*;
 use libplacebo::{OpenGL, Renderer, Swapchain, SwapchainFrame, libplacebo_sys::*};
-use tracing::debug;
+use tracing::{debug, warn};
 
 fn gst_matrix_to_placebo(matrix: gst_video::VideoColorMatrix) -> pl_color_system {
     match matrix {
@@ -238,8 +238,11 @@ impl PlaceboContext {
         self.swapchain.start_frame()
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn submit_frame(&self) {
-        self.swapchain.submit_frame()
+        if !self.swapchain.submit_frame() {
+            warn!("Failed to submit frame");
+        }
     }
 
     fn upload_sys_mem(
