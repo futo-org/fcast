@@ -9,6 +9,19 @@ use gst_video::prelude::*;
 use libplacebo::{OpenGL, Renderer, Swapchain, SwapchainFrame, libplacebo_sys::*};
 use tracing::{debug, warn};
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum RenderProfile {
+    Fast,
+    Default,
+    HighQuality,
+}
+
+pub struct RenderingOptions {
+    pub profile: RenderProfile,
+    pub visualize_lut: bool,
+    pub show_clipping: bool,
+}
+
 fn gst_matrix_to_placebo(matrix: gst_video::VideoColorMatrix) -> pl_color_system {
     match matrix {
         gst_video::VideoColorMatrix::Rgb => pl_color_system::PL_COLOR_SYSTEM_RGB,
@@ -186,33 +199,56 @@ pub struct PlaceboContext {
 
 impl PlaceboContext {
     #[cfg(not(target_os = "linux"))]
-    pub fn new(log: &libplacebo::Log) -> anyhow::Result<Self> {
+    pub fn new(log: &libplacebo::Log, opts: &RenderingOptions) -> anyhow::Result<Self> {
         let opengl =
             libplacebo::OpenGL::new(log).ok_or(anyhow!("failed to create opengl context"))?;
-        Self::new_from_gl(log, opengl)
+        Self::new_from_gl(log, opengl, opts)
     }
 
     #[cfg(target_os = "linux")]
     pub unsafe fn new_egl(
         log: &libplacebo::Log,
+        opts: &RenderingOptions,
         display: *mut c_void,
         context: *mut c_void,
     ) -> anyhow::Result<Self> {
         let opengl = unsafe { libplacebo::OpenGL::new_egl(log, display, context) }
             .ok_or(anyhow!("failed to create opengl context"))?;
-        Self::new_from_gl(log, opengl)
+        Self::new_from_gl(log, opengl, opts)
     }
 
-    fn new_from_gl(log: &libplacebo::Log, opengl: OpenGL) -> anyhow::Result<Self> {
+    fn new_from_gl(
+        log: &libplacebo::Log,
+        opengl: OpenGL,
+        opts: &RenderingOptions,
+    ) -> anyhow::Result<Self> {
         let swapchain = Swapchain::new(&opengl).ok_or(anyhow!("failed to create swapchain"))?;
         let renderer = Renderer::new(log, &opengl).ok_or(anyhow!("failed to create renderer"))?;
+
+        let mut params = unsafe {
+            match opts.profile {
+                RenderProfile::Fast => pl_render_fast_params.clone(),
+                RenderProfile::Default => pl_render_default_params.clone(),
+                RenderProfile::HighQuality => pl_render_high_quality_params.clone(),
+            }
+        };
+
+        let color_map_params = {
+            let mut params = unsafe { (*params.color_map_params).clone() };
+            params.visualize_lut = opts.visualize_lut;
+            params.show_clipping = opts.show_clipping;
+            let boxed = Box::new(params);
+            Box::leak(boxed)
+        };
+
+        params.color_map_params = color_map_params;
 
         Ok(Self {
             opengl: ManuallyDrop::new(opengl),
             swapchain: ManuallyDrop::new(swapchain),
             renderer: ManuallyDrop::new(renderer),
             cached_textures: [std::ptr::null(); 4],
-            rendering_params: unsafe { pl_render_default_params.clone() },
+            rendering_params: params,
         })
     }
 
@@ -503,6 +539,8 @@ impl Drop for PlaceboContext {
             ManuallyDrop::drop(&mut self.renderer);
             ManuallyDrop::drop(&mut self.swapchain);
             ManuallyDrop::drop(&mut self.opengl);
+            let _ =
+                Box::from_raw(self.rendering_params.color_map_params as *mut pl_color_map_params);
         }
     }
 }

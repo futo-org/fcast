@@ -1883,6 +1883,25 @@ pub struct CliArgs {
     /// Disable the Google Cast receiver
     #[arg(long, default_value_t = false)]
     no_google_cast: bool,
+    /// Change what video frame render profile should be used
+    #[arg(long, value_enum, default_value_t = placebo::RenderProfile::Default)]
+    render_profile: placebo::RenderProfile,
+    /// Visualize the color mapping lookup table used for video rendering
+    #[arg(long, default_value_t = false)]
+    visualize_color_mapping_lut: bool,
+    /// Visualize clipped pixels from tone-mapping
+    #[arg(long, default_value_t = false)]
+    visualize_hdr_clipping: bool,
+}
+
+impl CliArgs {
+    fn rendering_options(&self) -> placebo::RenderingOptions {
+        placebo::RenderingOptions {
+            profile: self.render_profile,
+            visualize_lut: self.visualize_color_mapping_lut,
+            show_clipping: self.visualize_hdr_clipping,
+        }
+    }
 }
 
 /// Run the main app.
@@ -1947,6 +1966,7 @@ pub fn run(
     let bridge = ui.global::<Bridge>();
 
     let pl_log = libplacebo::Log::new().unwrap();
+    let render_opts = cli_args.rendering_options();
 
     let gui_is_visible = gui::GuiIsVisible::new();
 
@@ -2004,6 +2024,7 @@ pub fn run(
                             Some(
                                 crate::placebo::PlaceboContext::new_egl(
                                     &pl_log,
+                                    &render_opts,
                                     display as *mut _,
                                     egl.GetCurrentContext() as *mut _,
                                 )
@@ -2036,7 +2057,9 @@ pub fn run(
 
                     #[cfg(not(target_os = "linux"))]
                     {
-                        pl_context = Some(crate::placebo::PlaceboContext::new(&pl_log).unwrap());
+                        pl_context = Some(
+                            crate::placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
+                        );
                     }
 
                     let gl = unsafe {
