@@ -1,0 +1,16 @@
+[package]
+name = "libplacebo-sys"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+link-cplusplus = "1"
+
+[build-dependencies]
+bindgen.workspace = true
+system-deps = "7.0"
+
+[package.metadata.system-deps.libplacebo]
+name = "libplacebo"
+version = "7"

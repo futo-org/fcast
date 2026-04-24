@@ -5,7 +5,8 @@ use std::mem;
 
 use gst::glib::{self, types::StaticType};
 
-pub const CAPS_FEATURE_FCAST_TEXT_OVERLAY: &str = "meta:FCastTextOverlay";
+// Unused
+// pub const CAPS_FEATURE_FCAST_TEXT_OVERLAY: &str = "meta:FCastTextOverlay";
 
 pub(crate) mod meta_imp {
     use gst::glib::{self, translate::*};

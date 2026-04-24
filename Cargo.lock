@@ -2268,6 +2268,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "egl-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "gl_generator",
+ "libloading 0.9.0",
+ "pkg-config",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3846,31 +3856,6 @@ dependencies = [
  "gstreamer-base-sys",
  "gstreamer-sys 0.25.0",
  "gstreamer-video-sys",
- "libc",
- "system-deps 7.0.8",
-]
-
-[[package]]
-name = "gstreamer-gl-x11"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "642d86fed827466e2d1ff4f430313fdab5d113bc2bf1e9c9736a873e8832c6ca"
-dependencies = [
- "glib 0.22.5",
- "gstreamer 0.25.1",
- "gstreamer-gl",
- "gstreamer-gl-x11-sys",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-gl-x11-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1391e727c873085ce4f8b2deb7fc4dcb15098ef75433777510860b0d983ff39f"
-dependencies = [
- "glib-sys 0.22.3",
- "gstreamer-gl-sys",
  "libc",
  "system-deps 7.0.8",
 ]
@@ -5613,6 +5598,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5626,6 +5621,23 @@ checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
 dependencies = [
  "cc",
  "libc",
+]
+
+[[package]]
+name = "libplacebo"
+version = "0.1.0"
+dependencies = [
+ "libplacebo-sys",
+ "tracing",
+]
+
+[[package]]
+name = "libplacebo-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "link-cplusplus",
+ "system-deps 7.0.8",
 ]
 
 [[package]]
@@ -5702,6 +5714,15 @@ name = "linebender_resource_handle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
+
+[[package]]
+name = "link-cplusplus"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f78c730aaa7d0b9336a299029ea49f9ee53b0ed06e9202e8cb7db9bae7b8c82"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "linked-hash-map"
@@ -7828,13 +7849,14 @@ dependencies = [
  "cbc",
  "clap",
  "ctrlc",
+ "drm-fourcc",
+ "egl-sys",
  "fast_qr",
  "fcast-protocol",
  "futures",
  "gethostname",
  "glow",
  "glutin_egl_sys",
- "glutin_glx_sys",
  "google-cast-protocol",
  "gst-plugin-dav1d",
  "gst-plugin-reqwest",
@@ -7848,7 +7870,6 @@ dependencies = [
  "gstreamer-base",
  "gstreamer-gl",
  "gstreamer-gl-egl",
- "gstreamer-gl-x11",
  "gstreamer-tag",
  "gstreamer-video",
  "hayro-jpeg2000",
@@ -7861,6 +7882,7 @@ dependencies = [
  "ksni",
  "lazy_static",
  "libheif-rs",
+ "libplacebo",
  "md-5",
  "mdns-sd",
  "nom 7.1.3",

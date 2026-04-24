@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::message;
@@ -8,6 +8,7 @@ use crate::{
     log_if_err,
 };
 use fcast_protocol::v3;
+use parking_lot::{Condvar, Mutex};
 use slint::{ComponentHandle, ToSharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error};
@@ -247,20 +248,50 @@ pub enum UpdateGuiCommand {
 
 type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
 
+struct GuiIsVisibleHandle {
+    is_visible: Mutex<bool>,
+    cvar: Condvar,
+}
+
+#[derive(Clone)]
+pub struct GuiIsVisible(Arc<GuiIsVisibleHandle>);
+
+impl GuiIsVisible {
+    pub fn new() -> Self {
+        let handle = GuiIsVisibleHandle {
+            is_visible: Mutex::new(false),
+            cvar: Condvar::new(),
+        };
+
+        Self(Arc::new(handle))
+    }
+
+    pub fn set(&self, visible: bool) {
+        *self.0.is_visible.lock() = visible;
+        self.0.cvar.notify_one();
+    }
+
+    pub fn get(&self) -> bool {
+        *self.0.is_visible.lock()
+    }
+}
+
 pub struct GuiController {
     pub tx: UnboundedSender<UpdateGuiCommand>,
     playback_state: GuiPlaybackState,
     playback_rate: f32,
     is_live: bool,
+    is_visible: GuiIsVisible,
 }
 
 impl GuiController {
-    pub fn new(tx: UnboundedSender<UpdateGuiCommand>) -> Self {
+    pub fn new(tx: UnboundedSender<UpdateGuiCommand>, is_visible: GuiIsVisible) -> Self {
         Self {
             tx,
             playback_state: GuiPlaybackState::default(),
             playback_rate: -1.0,
             is_live: false,
+            is_visible,
         }
     }
 
@@ -453,6 +484,19 @@ impl GuiController {
     pub fn quit_loop(&mut self) {
         self.send(UpdateGuiCommand::QuitLoop);
     }
+
+    pub fn wait_for_is_visible(&self) -> bool {
+        if !self.is_visible.get() {
+            let mut is_visible = self.is_visible.0.is_visible.lock();
+            self.is_visible
+                .0
+                .cvar
+                .wait_for(&mut is_visible, std::time::Duration::from_millis(200));
+            *is_visible
+        } else {
+            true
+        }
+    }
 }
 
 fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
@@ -572,7 +616,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         },
         UpdateGuiCommand::SetPlaybackState(state) => bridge.set_playback_state(state),
         UpdateGuiCommand::ClearImageState => {
-            bridge.set_video_frame(slint::Image::default());
             bridge.set_image_preview(CompoundImage::default());
             clear_audio_covers(&bridge, renderer_tx);
             bridge.set_overlays(slint::ModelRc::default());

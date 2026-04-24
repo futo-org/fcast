@@ -19,7 +19,7 @@ gst-app.workspace = true
 gst-video.workspace = true
 gst-base.workspace = true
 serde.workspace = true
-gst-gl = { package = "gstreamer-gl", version = "0.25", features = ["v1_20"] }
+# gst-gl = { package = "gstreamer-gl", version = "0.25", features = ["v1_20"], optional = true }
 serde_json.workspace = true
 if-addrs = "0.14"
 base64 = "0.22"
@@ -42,6 +42,7 @@ hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }
 ctrlc.workspace = true
+libplacebo.path = "../../../crates/libplacebo"
 
 # RAOP
 rtsp-types = "0.1"
@@ -98,16 +99,18 @@ gst-allocators = { package = "gstreamer-allocators", version = "0.25" }
 objc2-app-kit = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
-gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.25" }
+# gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
+# gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.25" }
 glutin_egl_sys = { version = "0.7.1" }
-glutin_glx_sys = { version = "0.6.1" }
+# glutin_glx_sys = { version = "0.6.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
 ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
+egl-sys.path = "../../../crates/egl-sys"
+drm-fourcc = "2.2.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = { version = "0.21.3", default-features = false, optional = true }
@@ -126,6 +129,7 @@ reqwest = { version = "0.13", features = [ "native-tls" ] }
 app-updater = { path = "../../../crates/app-updater"}
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
 receiver-resources.path = "../../../crates/receiver-resources"
+gst-gl = { package = "gstreamer-gl", version = "0.25", features = ["v1_20"] }
 
 [build-dependencies]
 slint-build.workspace = true
