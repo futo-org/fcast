@@ -1,0 +1,13 @@
+[package]
+name = "egl-sys"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+libloading = "0.9.0"
+
+[build-dependencies]
+bindgen.workspace = true
+pkg-config = "0.3.17"
+gl_generator = "0.14.0"

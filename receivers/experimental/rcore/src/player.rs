@@ -619,21 +619,17 @@ impl Player {
     pub fn new(
         video_sink: gst::Element,
         msg_tx: MessageSender,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: crate::graphics::GlContext,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
             .property("video-sink", video_sink)
-            // .property("video-sink", gst::ElementFactory::make("fakesink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("glimagesink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("gtk4paintablesink").build()?)
-            // .property("video-sink", gst::ElementFactory::make("waylandsink").build()?)
             .property("audio-filter", scaletempo)
             // .property_from_str(
             //     "flags",
             //     "deinterlace+buffering+soft-volume+text+audio+video",
             // )
-            // .property("text-sink", gst::ElementFactory::make("fakesink").build()?) // debugging
             // .property("instant-uri", true)
             .build()?;
 
@@ -667,7 +663,13 @@ impl Player {
         let playbin_weak = playbin.downgrade();
         let msg_tx_c = msg_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            Self::handle_messsage(&playbin_weak, &msg_tx_c, msg, &gl_context);
+            Self::handle_messsage(
+                &playbin_weak,
+                &msg_tx_c,
+                msg,
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                &gl_context,
+            );
             gst::BusSyncReply::Drop
         });
 
@@ -798,11 +800,13 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         msg_tx: &MessageSender,
         msg: &gst::Message,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: &crate::graphics::GlContext,
     ) {
         use gst::MessageView;
 
         let msg = match msg.view() {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             MessageView::NeedContext(ctx) => {
                 let typ = ctx.context_type();
                 debug!(typ, "Need context");

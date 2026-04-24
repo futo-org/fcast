@@ -17,7 +17,11 @@ members = [
     "receivers/experimental/android",
     "tools/remote-pipeline-dbg",
     "crates/app-updater",
-    "sdk/common/google-cast-protocol", "crates/receiver-resources",
+    "sdk/common/google-cast-protocol",
+    "crates/receiver-resources",
+    "crates/libplacebo-sys",
+    "crates/libplacebo",
+    "crates/egl-sys",
 ]
 resolver = "2"
 
@@ -60,6 +64,7 @@ mimalloc = { version = "0.1", features = ["v3"] }
 ctrlc = "3"
 hyper = "1.7.0"
 hyper-util = "0.1.17"
+bindgen = "0.72"
 
 [profile.release]
 lto = "fat"
