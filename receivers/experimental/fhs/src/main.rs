@@ -129,6 +129,11 @@ impl FiatLuxWindowAdapter {
     pub fn set_size(&self, size: impl Into<slint::WindowSize>) {
         self.window.set_size(size);
     }
+
+    pub fn set_scale(&self, scale: f32) {
+        self.window
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale });
+    }
 }
 
 impl slint::platform::WindowAdapter for FiatLuxWindowAdapter {
@@ -228,6 +233,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
             self.window.fl_window.width,
             self.window.fl_window.height,
         ));
+        self.window.set_scale(self.window.fl_window.display_scale);
 
         loop {
             if self.window.window.has_active_animations() {
@@ -264,6 +270,8 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
                     const WINDOW_RESIZED: u8 =
                         fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
+                    const DISPLAY_SCALE_NOTIFY: u8 =
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify as u8;
                     match event.header.event_type {
                         WINDOW_RESIZED => {
                             fiatlux::fl_egl_window_framebuffer_resize(
@@ -275,7 +283,10 @@ impl slint::platform::Platform for FiatLuxPlatform {
                                 event.window_resized.width,
                                 event.window_resized.height,
                             ));
-                        }
+                        },
+                        DISPLAY_SCALE_NOTIFY => {
+                            self.window.set_scale(event.display_scale_notify.display_scale);
+                        },
                         _ => {}
                     }
 

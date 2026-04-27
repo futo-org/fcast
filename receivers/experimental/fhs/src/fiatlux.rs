@@ -60,6 +60,7 @@ pub struct Window {
     pub window_id: fl_protocol_WindowId,
     pub width: u32,
     pub height: u32,
+    pub display_scale: f32,
 }
 
 impl Window {
@@ -71,6 +72,7 @@ impl Window {
                 identifier,
                 title,
                 icon_filepath.as_ptr(),
+                true,
             );
             if create_window_seq.value == 0 {
                 return Err(anyhow!("Failed to create window"));
@@ -89,12 +91,14 @@ impl Window {
             let window_id = create_window_rep.window_id;
             let width = create_window_rep.width;
             let height = create_window_rep.height;
+            let display_scale = create_window_rep.display_scale;
             fl_free_reply_create_full_screen_window(create_window_rep);
 
             Ok(Self {
                 window_id: window_id,
                 width: width,
                 height: height,
+                display_scale: display_scale,
             })
         }
     }
