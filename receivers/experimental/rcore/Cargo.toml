@@ -141,7 +141,7 @@ desktop = [
     "extra-imgfmt",
     "slint/accessibility",
     "slint/backend-winit",
-    "slint/renderer-skia-opengl",
+    "slint/renderer-femtovg",
 ]
 systray = ["dep:ksni", "dep:tray-icon"]
 kms-backend = ["slint/backend-linuxkms"]
