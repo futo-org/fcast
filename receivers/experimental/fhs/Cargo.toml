@@ -5,14 +5,11 @@ edition = "2024"
 
 [dependencies]
 rcore = { path = "../rcore", features = ["fhs"] }
-# env_logger.workspace = true
 anyhow.workspace = true
+mimalloc.workspace = true
 
 [build-dependencies]
 bindgen = "0.71.0"
-
-[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dependencies]
-tikv-jemallocator = "0.6"
 
 [features]
 default = []

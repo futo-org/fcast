@@ -5,6 +5,7 @@ use rcore::{
     clap::Parser,
     slint::{self, platform::femtovg_renderer},
 };
+use mimalloc::MiMalloc;
 use std::{
     cell::Cell,
     ffi::CString,
@@ -19,12 +20,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: MiMalloc = MiMalloc;
 
 struct FiatLuxGlContext {
     gc: fiatlux::GraphicsContext,
