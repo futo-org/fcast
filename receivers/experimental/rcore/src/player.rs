@@ -36,7 +36,7 @@ pub enum PlayerState {
 
 type StreamId = String;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum RunningState {
     Paused,
     Playing,
@@ -220,12 +220,14 @@ impl StateMachine {
             State::Changing { target_state, .. } => if *target_state != next_state {},
             State::SeekAsync { target_state, .. } => *target_state = next_state,
             State::Seeking { target_state, .. } => *target_state = next_state,
-            State::Running { .. } => {
-                self.state = State::Changing {
-                    target_state: next_state,
-                    pending_seek: None,
-                };
-                return Some(next_state);
+            State::Running { state: current_state } => {
+                if *current_state != state {
+                    self.state = State::Changing {
+                        target_state: next_state,
+                        pending_seek: None,
+                    };
+                    return Some(next_state);
+                }
             }
         }
 
@@ -1455,5 +1457,31 @@ mod tests {
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek,);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(60.0), Some(1.0))),);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)),);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn state_change() {
+        let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(VoidPending)), StateChangeResult::NewPlaybackState(PlaybackState::Paused));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), Some(gst::State::Playing));
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+        assert_eq!(sm.state, State::Changing { target_state: gst::State::Playing, pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::NewPlaybackState(PlaybackState::Playing));
+        assert_eq!(sm.state, State::Running { state: RunningState::Playing });
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
+
+        assert_eq!(sm.set_playback_state(RunningState::Paused), Some(gst::State::Paused));
+        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+        assert_eq!(sm.state, State::Changing { target_state: gst::State::Paused, pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::NewPlaybackState(PlaybackState::Paused));
+        assert_eq!(sm.state, State::Running { state: RunningState::Paused });
+        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
     }
 }
