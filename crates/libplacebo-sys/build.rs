@@ -5,8 +5,7 @@ mod build {
 
     use super::*;
     use std::{
-        path::Path,
-        process::{Command, Stdio},
+        fs, path::Path, process::{Command, Stdio}
     };
 
     const REPO: &str = "https://code.videolan.org/videolan/libplacebo.git";
@@ -35,45 +34,67 @@ mod build {
         let build_path = source.join(build_dir);
         let release_path = source.join(release_dir);
 
-        if !Path::new(&source.join(".git")).exists() {
-            runner!(
-                "git",
-                "clone",
-                "--recursive",
-                "--depth",
-                "1",
-                "-b",
-                TAG,
-                REPO,
-                &source
-            );
+        if let Ok(git_src) = env::var("LIBPLACEBO_GIT") {
+            fn copy_dir(dst: &PathBuf, root: &Path) {
+                fs::create_dir_all(dst).unwrap();
+                for entry in fs::read_dir(root).unwrap() {
+                    let entry = entry.unwrap();
+                    let path = entry.path();
+                    if path.is_file() {
+                        let name = path.file_name().unwrap();
+                        let mut dst = dst.clone();
+                        dst.push(name);
+                        std::fs::copy(path, dst).unwrap();
+                    } else {
+                        let mut next = dst.clone();
+                        next.push(path.components().last().unwrap());
+                        copy_dir(&next, &path);
+                    }
+                }
+            }
+
+            copy_dir(&source, &std::path::PathBuf::from(git_src));
         } else {
-            runner!(
-                "git",
-                "-C",
-                source.to_str().unwrap(),
-                "fetch",
-                "--depth",
-                "1",
-                "origin",
-                TAG
-            );
-            runner!(
-                "git",
-                "-C",
-                source.to_str().unwrap(),
-                "checkout",
-                "FETCH_HEAD"
-            );
-            runner!(
-                "git",
-                "-C",
-                source.to_str().unwrap(),
-                "submodule",
-                "update",
-                "--init",
-                "--recursive"
-            );
+            if !Path::new(&source.join(".git")).exists() {
+                runner!(
+                    "git",
+                    "clone",
+                    "--recursive",
+                    "--depth",
+                    "1",
+                    "-b",
+                    TAG,
+                    REPO,
+                    &source
+                );
+            } else {
+                runner!(
+                    "git",
+                    "-C",
+                    source.to_str().unwrap(),
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    TAG
+                );
+                runner!(
+                    "git",
+                    "-C",
+                    source.to_str().unwrap(),
+                    "checkout",
+                    "FETCH_HEAD"
+                );
+                runner!(
+                    "git",
+                    "-C",
+                    source.to_str().unwrap(),
+                    "submodule",
+                    "update",
+                    "--init",
+                    "--recursive"
+                );
+            }
         }
 
         runner!(
