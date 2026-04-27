@@ -156,9 +156,12 @@ build_receiver_for_win_x64:
         winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         \$env:PATH += ";C:\Program Files\CMake\bin"
 
+        winget install --id=mesonbuild.meson -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Program Files\Meson"
+
         winget install --id=gstreamerproject.gstreamer --version 1.28.1 --scope=machine -e --accept-package-agreements --accept-source-agreements
 
-        git clone --depth=1 "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
+        git clone --recursive --depth=1 "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
         cd fcast-receiver-windows-build-deps
         Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
         cd ..

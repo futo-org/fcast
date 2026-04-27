@@ -1,5 +1,12 @@
 # FCast Receiver Changelog
 
+## 0.1.2-beta - X
+
+ - New video renderer that uses [libplacebo]
+ - Fixed a bug where playback would freeze if the sender changed playback states quickly
+
+[libplacebo]: https://code.videolan.org/videolan/libplacebo
+
 ## 0.1.1-beta - 2026-04-16
 
 ### New Features
