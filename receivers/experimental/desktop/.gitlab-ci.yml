@@ -187,7 +187,7 @@ build_receiver_for_win_x64:
         rustup install nightly
         rustup default nightly
 
-        git clone --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
+        git clone --recursive --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
         cd fcast
 
         cargo xtask receiver build-windows-installer
