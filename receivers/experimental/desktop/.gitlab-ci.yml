@@ -156,8 +156,19 @@ build_receiver_for_win_x64:
         winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         \$env:PATH += ";C:\Program Files\CMake\bin"
 
-        winget install --id=mesonbuild.meson -e --accept-package-agreements --accept-source-agreements
-        \$env:PATH += ";C:\Program Files\Meson"
+        winget install --id=LLVM.LLVM -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Program Files\LLVM\bin"
+        \$env:CC = "clang-cl"
+        \$env:CXX = "clang-cl"
+
+        winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\Programs\Python\Python314\"
+
+        pip3 install meson
+        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Roaming\Python\Python314\Scripts"
+
+        winget install --id=Ninja-build.Ninja -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\Microsoft\WinGet\Links\"
 
         winget install --id=gstreamerproject.gstreamer --version 1.28.1 --scope=machine -e --accept-package-agreements --accept-source-agreements
 
