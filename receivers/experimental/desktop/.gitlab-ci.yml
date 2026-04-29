@@ -151,7 +151,7 @@ build_receiver_for_win_x64:
         \$env:PATH += ";C:\Program Files\Git\bin"
 
         winget install --id=NASM.NASM -e --accept-package-agreements --accept-source-agreements
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\bin\NASM"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\bin\NASM"
 
         winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         \$env:PATH += ";C:\Program Files\CMake\bin"
@@ -162,15 +162,15 @@ build_receiver_for_win_x64:
         \$env:CXX = "clang-cl"
 
         winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\Programs\Python\Python314\"
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\Programs\Python\Python314\Scripts"
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\Programs\Python\Launcher"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Python314\"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Python314\Scripts"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Launcher"
 
         pip3 install meson
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Roaming\Python\Python314\Scripts"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Roaming\Python\Python314\Scripts"
 
         winget install --id=Ninja-build.Ninja -e --accept-package-agreements --accept-source-agreements
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\Microsoft\WinGet\Links\"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Microsoft\WinGet\Links\"
 
         winget install --id=gstreamerproject.gstreamer --version 1.28.1 --scope=machine -e --accept-package-agreements --accept-source-agreements
 
