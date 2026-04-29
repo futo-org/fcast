@@ -151,13 +151,26 @@ build_receiver_for_win_x64:
         \$env:PATH += ";C:\Program Files\Git\bin"
 
         winget install --id=NASM.NASM -e --accept-package-agreements --accept-source-agreements
-        \$env:PATH += ";C:\Users\\$Env:UserName\AppData\Local\bin\NASM"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\bin\NASM"
 
         winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         \$env:PATH += ";C:\Program Files\CMake\bin"
 
-        winget install --id=mesonbuild.meson -e --accept-package-agreements --accept-source-agreements
-        \$env:PATH += ";C:\Program Files\Meson"
+        winget install --id=LLVM.LLVM -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Program Files\LLVM\bin"
+        \$env:CC = "clang-cl"
+        \$env:CXX = "clang-cl"
+
+        winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Python314\"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Python314\Scripts"
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Launcher"
+
+        pip3 install meson
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Roaming\Python\Python314\Scripts"
+
+        winget install --id=Ninja-build.Ninja -e --accept-package-agreements --accept-source-agreements
+        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Microsoft\WinGet\Links\"
 
         winget install --id=gstreamerproject.gstreamer --version 1.28.1 --scope=machine -e --accept-package-agreements --accept-source-agreements
 
@@ -174,7 +187,7 @@ build_receiver_for_win_x64:
         rustup install nightly
         rustup default nightly
 
-        git clone --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
+        git clone --recursive --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
         cd fcast
 
         cargo xtask receiver build-windows-installer
