@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-receiver"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
@@ -7836,7 +7836,7 @@ dependencies = [
 
 [[package]]
 name = "rcore"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "aes",
  "alac",
