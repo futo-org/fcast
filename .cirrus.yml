@@ -80,7 +80,7 @@ desktop_receiver_task:
   macos_instance:
     image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
   buildReceiverMac_script:
-    - brew install rustup-init wget
+    - brew install rustup-init wget meson cmake ninja
     - rustup-init -y
     - rustup target add aarch64-apple-darwin
     - rustup default nightly
