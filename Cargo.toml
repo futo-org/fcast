@@ -48,8 +48,8 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = "0.9"
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { version = "1.16.0", default-features = false }
-slint-build = "1.16.0"
+slint = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "8f4eee15185c5e03f45257e8eec9efd306d1067f", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/videostreaming/fcast-slint.git", rev = "8f4eee15185c5e03f45257e8eec9efd306d1067f" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.18.1", features = [ "v4" ] }
 bytes = "1"

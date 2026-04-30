@@ -1594,8 +1594,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9713489fbc45a2d113f58d17448c73115d533ed27fd2f2d0e5e5c69663eaf19b"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1604,8 +1603,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b5dc851b7ea80cc4f69aa28632385ffd3e0f88014d53db3f2e5a781896ca783"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4473,8 +4471,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a318b5aebc2ad8e6fdbac8588984d9ea2e99a210449954717073d8a246e12fe7"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -4489,8 +4486,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3224c3aa9f3ea568daf38389d0f7ace164eda4d6f1851042eb83750ac43e1a65"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "bytemuck",
  "calloop 0.14.4",
@@ -4514,8 +4510,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f93c9c4203e0a2c5c396b8f1686160816f73e9b9cadaf3915aa3b888a83448aa"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "cfg-if",
  "i-slint-backend-android-activity",
@@ -4530,8 +4525,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4df6ec88d452e3c22e418d20c96bc1ccbc9509e81e6596426d3388bf226a5f9"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4577,8 +4571,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40cae5cd0a81ce044029ac303256e025f98a4c59495b5189fc22b588da094e01"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "derive_more",
  "fontique",
@@ -4590,8 +4583,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7b7f9834faf2a62cc36f01decc7c683e66bb0861b53511723c3da9ad914d9bb"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -4623,8 +4615,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89e4a57afd78d8a1f599a78781dc1413af68545b2bc5ba5e143ecf022c75d5f3"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "auto_enums",
  "bitflags 2.11.0",
@@ -4671,8 +4662,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7931356d5238281e6be994ec15241fb2d9e66359776d53b4bd6b2fdd9c257c6e"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "quote",
  "serde_json",
@@ -4682,8 +4672,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b28a8f0a7a777e670fbe2af6cbcec4935c37335bc0dab100f73bdc197dfa3a"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -4704,8 +4693,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4030ff9eeb1b99fdf9b47472f3a7a582f3bcb57207c9bc07505dc6998abdcbc"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -4741,8 +4729,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee8a21285f3a81a8e1b1e7c385eefe89bf9487f53fabfd5b238c68bc895d6013"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "bytemuck",
  "clru",
@@ -8909,8 +8896,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d46bc502cc6b113bfd1a7e9a0876532a9454ff4ee905afe09784eaa2ec3f3f33"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
@@ -8931,8 +8917,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a73854b9adf81fa1600b46df488ffc3796400e8e9b40d504a94a36b55c8f3d0a"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "derive_more",
  "fontique",
@@ -8944,8 +8929,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d5884e06072c329da7096ad1367eb83b98c78e5313f7ac90d66f90d4acc62ee"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -10429,8 +10413,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ea953f65593feb5287b022b83c35046d1ff49c7417b6f5851a079d8a231fe31"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -10441,8 +10424,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "482a37f9777480673d3a99c80ac2edc69f92382230440946855fa27ebc47cba6"
+source = "git+https://gitlab.futo.org/videostreaming/fcast-slint.git?rev=8f4eee15185c5e03f45257e8eec9efd306d1067f#8f4eee15185c5e03f45257e8eec9efd306d1067f"
 dependencies = [
  "proc-macro2",
  "quote",
