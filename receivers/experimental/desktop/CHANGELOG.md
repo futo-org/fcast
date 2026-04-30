@@ -1,6 +1,6 @@
 # FCast Receiver Changelog
 
-## 0.1.2-beta - X
+## 0.1.2-beta - 2026-04-30
 
  - New video renderer that uses [libplacebo]
  - Fixed a bug where playback would freeze if the sender changed playback states quickly
