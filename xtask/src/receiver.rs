@@ -319,9 +319,10 @@ impl ReceiverArgs {
                 let library_target_directory = build_dir_root.join("lib");
                 sh.create_dir(&library_target_directory)?;
 
+                // "cargo build --release --package desktop-receiver --features static-gst-plugins"
                 cmd!(
                     sh,
-                    "cargo build --release --package desktop-receiver --features static-gst-plugins"
+                    "cargo build --release --package desktop-receiver --no-default-features --features static-gst-plugins"
                 )
                 .run()?;
 
