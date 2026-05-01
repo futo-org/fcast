@@ -1,5 +1,8 @@
 .buildReceiverFhsLinuxRPM:
   stage: receiverExperimental
+  variables:
+   GIT_SUBMODULE_STRATEGY: recursive
+   GIT_SUBMODULE_DEPTH: 1
   script:
     - sudo dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
       gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
@@ -12,11 +15,11 @@
     - (cd /tmp/fiatlux-client && make build-${FHS_ARCH})
     - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/lib/* /usr/local/lib/
     - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/include/* /usr/local/include/
-    - rustup install nightly-2026-01-15
-    - rustup default nightly-2026-01-15
+    - rustup install nightly
+    - rustup default nightly
     - rustup target add ${RUST_TARGET}
     - cargo install cargo-generate-rpm
-    - cargo build --release --package fhs-receiver --target ${RUST_TARGET}
+    - cargo build --release --package fhs-receiver --features static-gst-plugins --target ${RUST_TARGET}
     - cargo generate-rpm -p receivers/experimental/fhs --target ${RUST_TARGET}
     - cp target/${RUST_TARGET}/generate-rpm/*.rpm .
     - RPM_FILE=$(ls *.rpm | head -1)

@@ -12,6 +12,7 @@ fiatlux.path = "../../../crates/fiatlux"
 [features]
 default = []
 tracy = ["rcore/tracy"]
+static-gst-plugins = ["rcore/static-gst-plugins"]
 
 [package.metadata.generate-rpm]
 name = "fcast-receiver"
