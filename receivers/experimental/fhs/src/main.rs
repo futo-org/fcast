@@ -236,9 +236,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
         self.window.set_scale(self.window.fl_window.display_scale);
 
         loop {
-            if self.window.window.has_active_animations() {
-                slint::platform::update_timers_and_animations();
-            }
+            slint::platform::update_timers_and_animations();
 
             unsafe {
                 if !fiatlux::fl_is_connected_to_server(self.window.client.client) {
