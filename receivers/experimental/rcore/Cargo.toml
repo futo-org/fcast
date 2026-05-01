@@ -44,8 +44,6 @@ oneshot = { version = "0.2", features = ["std"] }
 ctrlc.workspace = true
 libplacebo.path = "../../../crates/libplacebo"
 
-libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
-
 # RAOP
 rtsp-types = "0.1"
 sdp-types = "0.1"
@@ -149,5 +147,3 @@ android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-webrtchttp", "dep:gst-plugin-webrtc", "dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
 fhs = ["extra-imgfmt", "slint/renderer-femtovg"]
-
-# TODO: have a build mode which statically links every rust plugin we use + use fat LTO to check performance gains
