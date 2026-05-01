@@ -1,0 +1,8 @@
+[package]
+name = "fiatlux-sys"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[build-dependencies]
+bindgen = "0.71.0"

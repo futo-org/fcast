@@ -23,6 +23,8 @@ members = [
     "crates/libplacebo-sys",
     "crates/libplacebo",
     "crates/egl-sys",
+    "crates/fiatlux-sys",
+    "crates/fiatlux",
 ]
 resolver = "2"
 

@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-receiver"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
@@ -2643,9 +2643,24 @@ name = "fhs-receiver"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bindgen 0.71.1",
+ "fiatlux",
  "mimalloc",
  "rcore",
+]
+
+[[package]]
+name = "fiatlux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fiatlux-sys",
+]
+
+[[package]]
+name = "fiatlux-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
 ]
 
 [[package]]
@@ -7852,7 +7867,7 @@ dependencies = [
 
 [[package]]
 name = "rcore"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "aes",
  "alac",

@@ -7,9 +7,7 @@ edition = "2024"
 rcore = { path = "../rcore", features = ["fhs"] }
 anyhow.workspace = true
 mimalloc.workspace = true
-
-[build-dependencies]
-bindgen = "0.71.0"
+fiatlux.path = "../../../crates/fiatlux"
 
 [features]
 default = []

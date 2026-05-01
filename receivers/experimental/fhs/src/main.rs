@@ -1,5 +1,3 @@
-mod fiatlux;
-
 use anyhow::Result;
 use rcore::{
     clap::Parser,
