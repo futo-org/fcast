@@ -42,8 +42,6 @@ A "receiver", in this context, is a software implementation running on various p
 **Receivers**
 - [**Android**](receivers/android)
 - [**Electron**](receivers/electron)
-- [**webOS**](receivers/webos)
-- [**Tizen**](receivers/tizen)
 
 **Senders**
 - FCast Senders:
