@@ -29,6 +29,8 @@ google-cast-protocol = { path = "../../common/google-cast-protocol", optional = 
 # FCast
 fcast-protocol = { path = "../../common/fcast-protocol", version = "0.1.3", optional = true }
 base64 = { version = "0.22.1", optional = true }
+x509-parser = "0.17"
+sha2.workspace = true
 
 env_logger = { workspace = true, optional = true }
 

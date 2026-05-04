@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context};
+use base64::Engine;
 use fcast_protocol::{
     companion, v2,
     v3::{
@@ -19,7 +20,7 @@ use fcast_protocol::{
     v4, Opcode, PlaybackErrorMessage, PlaybackState as FCastPlaybackState, SeekMessage,
     SetSpeedMessage, SetVolumeMessage, VersionMessage,
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
 use tokio::{
@@ -28,7 +29,8 @@ use tokio::{
     runtime::Handle,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
-use tokio_rustls::{client::TlsStream, TlsConnector};
+use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
+use x509_parser::prelude::FromDer;
 
 use crate::{
     device::{
@@ -482,21 +484,36 @@ impl DeviceStateMachine {
 }
 
 #[derive(Debug)]
-struct AllCertVerifier;
+struct CertVerifier {
+    fingerprint: Vec<u8>,
+}
 
-use tokio_rustls::rustls;
-
-// TODO: accept spki hash thing
-impl rustls::client::danger::ServerCertVerifier for AllCertVerifier {
+impl rustls::client::danger::ServerCertVerifier for CertVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls_pki_types::CertificateDer<'_>,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
         _intermediates: &[rustls_pki_types::CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls_pki_types::UnixTime,
     ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
+        match x509_parser::prelude::X509Certificate::from_der(end_entity) {
+            Ok(cert) => {
+                use sha2::Digest;
+                let fingerprint = sha2::Sha256::digest(cert.1.subject_pki.raw);
+                if fingerprint.as_slice() == self.fingerprint.as_slice() {
+                    Ok(rustls::client::danger::ServerCertVerified::assertion())
+                } else {
+                    Err(rustls::Error::General(format!(
+                        "Fingerprints does not match got={fingerprint:?} expected={:?}",
+                        self.fingerprint
+                    )))
+                }
+            }
+            Err(err) => Err(rustls::Error::General(format!(
+                "Failed to parse X509 cert: {err:?}"
+            ))),
+        }
     }
 
     fn verify_tls12_signature(
@@ -626,6 +643,7 @@ struct InnerDevice {
     state_machine: DeviceStateMachine,
     // companion_sources: HashMap<u32, CompanionSource>,
     companion_sources: HashMap<u32, WrappedCompanionSource>,
+    receiver_fingerprint: Option<Vec<u8>>,
 }
 
 impl InnerDevice {
@@ -634,6 +652,7 @@ impl InnerDevice {
         event_handler: Arc<dyn DeviceEventHandler>,
         session_version: FCastVersion,
         supports_whep: Arc<AtomicBool>,
+        receiver_fingerprint: Option<Vec<u8>>,
     ) -> Self {
         Self {
             event_handler,
@@ -645,6 +664,7 @@ impl InnerDevice {
             supports_whep,
             state_machine: DeviceStateMachine::new(),
             companion_sources: HashMap::new(),
+            receiver_fingerprint,
         }
     }
 
@@ -1085,11 +1105,15 @@ impl InnerDevice {
                 self.send_empty(Opcode::StartTLS).await?;
             }
             Action::UpgradeToTLS => {
+                let Some(fingerprint) = self.receiver_fingerprint.clone() else {
+                    todo!();
+                };
+
                 let config = rustls::ClientConfig::builder_with_protocol_versions(&[
                     &rustls::version::TLS13,
                 ])
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(AllCertVerifier))
+                .with_custom_certificate_verifier(Arc::new(CertVerifier { fingerprint }))
                 .with_no_client_auth();
                 let connector = TlsConnector::from(Arc::new(config));
                 // let dnsname = ServerName::from(remote_addr);
@@ -1181,10 +1205,7 @@ impl InnerDevice {
                                 }
                             };
 
-                            source
-                                .file
-                                .seek(std::io::SeekFrom::Start(start))
-                                .await?;
+                            source.file.seek(std::io::SeekFrom::Start(start)).await?;
 
                             let mut bytes_to_read = stop_inclusive - start;
 
@@ -1736,12 +1757,24 @@ impl CastingDevice for FCastDevice {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
         state.command_tx = Some(tx.clone());
 
+        let fingerprint = state.txt_records.get("fp").and_then(|fp| {
+            let mut fingerprint = Vec::new();
+            match base64::engine::general_purpose::STANDARD.decode_vec(fp, &mut fingerprint) {
+                Ok(_) => Some(fingerprint),
+                Err(err) => {
+                    warn!("Failed to decode `fp` TXT record as base64: {err:?}");
+                    None
+                }
+            }
+        });
+
         state.rt_handle.spawn(
             InnerDevice::new(
                 app_info,
                 event_handler,
                 self.session_version.clone(),
                 Arc::clone(&self.supports_whep),
+                fingerprint,
             )
             .work(
                 addrs,

@@ -49,7 +49,7 @@ libplacebo.path = "../../../crates/libplacebo"
 rtsp-types = "0.1"
 sdp-types = "0.1"
 rsa = { version = "0.9", features = ["sha2", "sha1"] }
-sha2 = "0.10"
+sha2.workspace = true
 sha1 = "0.10"
 lazy_static = "1.5"
 md-5 = "0.10"

@@ -10,6 +10,7 @@ use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 pub fn start_daemon(
     msg_tx: &crate::MessageSender,
     cli_args: &crate::CliArgs,
+    fcast_fingerprint: String,
 ) -> Result<ServiceDaemon> {
     let host_name = gethostname::gethostname();
     let host_name = host_name.to_string_lossy();
@@ -26,13 +27,17 @@ pub fn start_daemon(
 
     let daemon = mdns_sd::ServiceDaemon::new()?;
 
+
+    let fcast_props = HashMap::from([
+        ("fp".to_owned(), fcast_fingerprint),
+    ]);
     let service = mdns_sd::ServiceInfo::new(
         "_fcast._tcp.local.",
         &device_name,
         &format!("{device_name}.local."),
         (), // Auto
         FCAST_TCP_PORT,
-        None::<std::collections::HashMap<String, String>>,
+        fcast_props,
     )?
     .enable_addr_auto();
 

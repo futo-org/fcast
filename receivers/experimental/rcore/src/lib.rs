@@ -8,6 +8,7 @@ use gst::prelude::*;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gst_gl::prelude::*;
 use parking_lot::Mutex;
+use rcgen::PublicKeyData;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
@@ -335,8 +336,30 @@ impl Application {
 
         let (updates_tx, _) = broadcast::channel(10);
 
+        let (acceptor, fingerprint) = {
+            use rcgen::{CertificateParams, DistinguishedName, KeyPair, date_time_ymd};
+            use tokio_rustls::{TlsAcceptor, rustls};
+
+            let mut params: CertificateParams = Default::default();
+            params.not_before = date_time_ymd(1975, 1, 1);
+            params.not_after = date_time_ymd(4096, 1, 1);
+            params.distinguished_name = DistinguishedName::new();
+            let key_pair = KeyPair::generate()?;
+            let cert = params.self_signed(&key_pair)?;
+            let spki = key_pair.subject_public_key_info();
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(&spki);
+            let fingerprint = base64::engine::general_purpose::STANDARD.encode(digest);
+
+            let config =
+                rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                    .with_no_client_auth()
+                    .with_single_cert(vec![cert.der().to_owned()], key_pair.into())?;
+            (TlsAcceptor::from(Arc::new(config)), fingerprint)
+        };
+
         #[cfg(not(target_os = "android"))]
-        let mdns = mdns::start_daemon(&msg_tx, &cli_args)?;
+        let mdns = mdns::start_daemon(&msg_tx, &cli_args, fingerprint)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
             !cli_args.no_google_cast
@@ -395,24 +418,6 @@ impl Application {
         let http_client = reqwest::Client::new();
         let image_downloader =
             image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
-
-        let acceptor = {
-            use rcgen::{CertificateParams, DistinguishedName, KeyPair, date_time_ymd};
-            use tokio_rustls::{TlsAcceptor, rustls};
-
-            let mut params: CertificateParams = Default::default();
-            params.not_before = date_time_ymd(1975, 1, 1);
-            params.not_after = date_time_ymd(4096, 1, 1);
-            params.distinguished_name = DistinguishedName::new();
-            let key_pair = KeyPair::generate()?;
-            let cert = params.self_signed(&key_pair)?;
-
-            let config =
-                rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-                    .with_no_client_auth()
-                    .with_single_cert(vec![cert.der().to_owned()], key_pair.into())?;
-            TlsAcceptor::from(Arc::new(config))
-        };
 
         Ok(Self {
             #[cfg(target_os = "android")]
