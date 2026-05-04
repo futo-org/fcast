@@ -220,7 +220,9 @@ impl StateMachine {
             State::Changing { target_state, .. } => if *target_state != next_state {},
             State::SeekAsync { target_state, .. } => *target_state = next_state,
             State::Seeking { target_state, .. } => *target_state = next_state,
-            State::Running { state: current_state } => {
+            State::Running {
+                state: current_state,
+            } => {
                 if *current_state != state {
                     self.state = State::Changing {
                         target_state: next_state,
@@ -623,6 +625,7 @@ impl Player {
         msg_tx: MessageSender,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: crate::graphics::GlContext,
+        fcomp_context: crate::fcompsrc::imp::CompContext,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
@@ -671,6 +674,7 @@ impl Player {
                 msg,
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 &gl_context,
+                &fcomp_context,
             );
             gst::BusSyncReply::Drop
         });
@@ -804,11 +808,11 @@ impl Player {
         msg: &gst::Message,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: &crate::graphics::GlContext,
+        fcomp_context: &crate::fcompsrc::imp::CompContext,
     ) {
         use gst::MessageView;
 
         let msg = match msg.view() {
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
             MessageView::NeedContext(ctx) => {
                 let typ = ctx.context_type();
                 debug!(typ, "Need context");
@@ -816,6 +820,18 @@ impl Player {
                     .src()
                     .and_then(|source| source.downcast_ref::<gst::Element>())
                 {
+                    if typ == crate::fcompsrc::imp::FCOMP_CONTEXT {
+                        let mut ctx = gst::Context::new(typ, true);
+                        {
+                            let ctx = ctx.get_mut().unwrap();
+                            let s = ctx.structure_mut();
+                            s.set("context", fcomp_context);
+                        }
+                        element.set_context(&ctx);
+                        return;
+                    }
+
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     gl_context.handle_need_context_msg(typ, element);
                 }
 

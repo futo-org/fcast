@@ -1110,9 +1110,12 @@ impl Application {
         if device.supports_feature(DeviceFeature::FCompanion) {
             device.load(device::LoadRequest::CompanionResource {
                 content_type: file_entry.mime_type.to_string(),
-                source: fcast_sender_sdk::device::CompanionSource::Path(
-                    path.to_str().unwrap().to_owned(),
-                ),
+                source: fcast_sender_sdk::device::CompanionSource {
+                    descriptor: fcast_sender_sdk::device::CompanionSourceDescriptor::Path(
+                        path.to_str().unwrap().to_owned(),
+                    ),
+                    content_type: file_entry.mime_type.to_string(),
+                },
                 resume_position: None,
                 speed: None,
                 volume: Some(volume),

@@ -1,8 +1,12 @@
 // TODO: optimize serialize functions
 
-use std::{error, fmt};
+use std::{error, fmt, ops::Deref};
+
+use smol_str::SmolStr;
 
 pub type ProviderId = u16;
+pub type ResourceId = u32;
+pub type RequestId = u32;
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -26,11 +30,25 @@ impl fmt::Display for ParseError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct U48(u64);
+pub struct U48(pub u64);
 
 impl From<u32> for U48 {
     fn from(value: u32) -> Self {
         Self(value.into())
+    }
+}
+
+impl From<u64> for U48 {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl Deref for U48 {
+    type Target = u64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -124,7 +142,8 @@ pub fn parse_str(buf: &[u8]) -> Result<&str, ParseError> {
     Ok(s)
 }
 
-pub fn serialize_str(s: &str) -> Vec<u8> {
+pub fn serialize_str(s: impl AsRef<str>) -> Vec<u8> {
+    let s = s.as_ref();
     [
         &(s.len() as u16).to_le_bytes(), //
         s.as_bytes(),                    //
@@ -133,21 +152,21 @@ pub fn serialize_str(s: &str) -> Vec<u8> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct ResourceInfoResponse<'a> {
+pub struct ResourceInfoResponse {
     pub request_id: u32,
-    pub content_type: &'a str,
+    pub content_type: SmolStr,
     pub resource_size: ResourceSize,
 }
 
-impl<'a> ResourceInfoResponse<'a> {
-    pub fn parse(buf: &'a [u8]) -> Result<Self, ParseError> {
+impl ResourceInfoResponse {
+    pub fn parse(buf: &[u8]) -> Result<Self, ParseError> {
         if buf.len() < size_of::<u32>() + size_of::<u16>() + 1 {
             return Err(ParseError::MissingData);
         }
 
         let request_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let mut start_idx = 4;
-        let content_type = parse_str(&buf[start_idx..])?;
+        let content_type = SmolStr::new(parse_str(&buf[start_idx..])?);
         start_idx += size_of::<u16>() + content_type.len();
         let resource_size = ResourceSize::parse(&buf[start_idx..])?;
 
@@ -161,7 +180,7 @@ impl<'a> ResourceInfoResponse<'a> {
     pub fn serialize(&self) -> Vec<u8> {
         [
             self.request_id.to_le_bytes().as_slice(),    //
-            serialize_str(self.content_type).as_slice(), //
+            serialize_str(&self.content_type).as_slice(), //
             self.resource_size.serialize().as_slice(),   //
         ]
         .concat()
@@ -234,13 +253,13 @@ impl ResourceRequest {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct ResourceResponse<'a> {
+pub struct ResourceResponse {
     pub request_id: u32,
-    pub result: GetResourceResult<'a>,
+    pub result: GetResourceResult,
 }
 
-impl<'a> ResourceResponse<'a> {
-    pub fn parse(buf: &'a [u8]) -> Result<Self, ParseError> {
+impl ResourceResponse {
+    pub fn parse(buf: &[u8]) -> Result<Self, ParseError> {
         if buf.len() < size_of::<u32>() {
             return Err(ParseError::MissingData);
         }
@@ -257,6 +276,17 @@ impl<'a> ResourceResponse<'a> {
             self.result.serialize().as_slice(),
         ]
         .concat()
+    }
+
+    pub fn header_success(request_id: u32) -> [u8; 5] {
+        let id = request_id.to_le_bytes();
+        [
+            id[0],
+            id[1],
+            id[2],
+            id[3],
+            GetResourceResult::success_tag(),
+        ]
     }
 }
 
@@ -305,20 +335,20 @@ impl ReadHead {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum GetResourceResult<'a> {
+pub enum GetResourceResult {
     None,
-    Success(&'a [u8]),
+    Success(Vec<u8>),
 }
 
-impl<'a> GetResourceResult<'a> {
-    pub fn parse(buf: &'a [u8]) -> Result<Self, ParseError> {
+impl GetResourceResult {
+    pub fn parse(buf: &[u8]) -> Result<Self, ParseError> {
         if buf.is_empty() {
             return Err(ParseError::MissingData);
         }
 
         match buf[0] {
             0x00 => Ok(Self::None),
-            0x01 => Ok(Self::Success(&buf[1..])),
+            0x01 => Ok(Self::Success(buf[1..].to_vec())),
             v => Err(ParseError::InvalidEnumVariant(v)),
         }
     }
@@ -326,13 +356,30 @@ impl<'a> GetResourceResult<'a> {
     pub fn serialize(&self) -> Vec<u8> {
         match self {
             GetResourceResult::None => vec![0x00],
-            GetResourceResult::Success(buf) => [&[0x01u8], *buf].concat(),
+            GetResourceResult::Success(buf) => [&[Self::success_tag()], buf.as_slice()].concat(),
         }
+    }
+
+    const fn success_tag() -> u8 {
+        0x01
     }
 }
 
 pub fn create_url(provider_id: u16, resource_id: u32) -> String {
     format!("fcomp://{provider_id}.fcast/{resource_id}")
+}
+
+pub struct RequestIdGenerator(RequestId);
+
+impl RequestIdGenerator {
+    pub fn new() -> Self {
+        Self(0)
+    }
+
+    pub fn next(&mut self) -> RequestId {
+        self.0 += 1;
+        self.0 - 1
+    }
 }
 
 #[cfg(test)]
@@ -371,8 +418,8 @@ mod tests {
             request_id: 100,
             resource_id: 200,
             read_head: ReadHead::Range {
-                start: 300.into(),
-                stop_inclusive: 400.into(),
+                start: 300u32.into(),
+                stop_inclusive: 400u32.into(),
             },
         };
         assert_eq!(ResourceRequest::parse(&inp.serialize()).unwrap(), inp,);
@@ -397,13 +444,13 @@ mod tests {
     fn resource_info_response() {
         let inp = ResourceInfoResponse {
             request_id: 100,
-            content_type: "video/mp4",
+            content_type: "video/mp4".into(),
             resource_size: ResourceSize::Unknown,
         };
         assert_eq!(ResourceInfoResponse::parse(&inp.serialize()).unwrap(), inp,);
         let inp = ResourceInfoResponse {
             request_id: 200,
-            content_type: "",
+            content_type: "".into(),
             resource_size: ResourceSize::Unknown,
         };
         assert_eq!(ResourceInfoResponse::parse(&inp.serialize()).unwrap(), inp,);
@@ -413,7 +460,7 @@ mod tests {
     fn resource_size() {
         let inp = ResourceSize::Unknown;
         assert_eq!(ResourceSize::parse(&inp.serialize()).unwrap(), inp);
-        let inp = ResourceSize::Known(1234.into());
+        let inp = ResourceSize::Known(1234u32.into());
         assert_eq!(ResourceSize::parse(&inp.serialize()).unwrap(), inp);
     }
 
@@ -426,7 +473,7 @@ mod tests {
         assert_eq!(ResourceResponse::parse(&inp.serialize()).unwrap(), inp,);
         let inp = ResourceResponse {
             request_id: 123,
-            result: GetResourceResult::Success(&[1, 2, 3, 4]),
+            result: GetResourceResult::Success(vec![1, 2, 3, 4]),
         };
         assert_eq!(ResourceResponse::parse(&inp.serialize()).unwrap(), inp,);
     }
@@ -438,8 +485,8 @@ mod tests {
             ReadHead::Whole,
         );
         let inp = ReadHead::Range {
-            start: 123.into(),
-            stop_inclusive: 321.into(),
+            start: 123u32.into(),
+            stop_inclusive: 321u32.into(),
         };
         assert_eq!(ReadHead::parse(&inp.serialize()).unwrap(), inp,);
     }
@@ -452,11 +499,11 @@ mod tests {
         );
         assert_eq!(
             GetResourceResult::parse(&[0x01, 1, 2, 3]).unwrap(),
-            GetResourceResult::Success(&[1, 2, 3]),
+            GetResourceResult::Success(vec![1, 2, 3]),
         );
         assert_eq!(
             GetResourceResult::parse(&[0x01]).unwrap(),
-            GetResourceResult::Success(&[]),
+            GetResourceResult::Success(vec![]),
         );
     }
 }

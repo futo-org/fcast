@@ -381,14 +381,21 @@ pub struct ApplicationInfo {
     pub display_name: String,
 }
 
+// TODO: should collapse to store in a file when using internally
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, PartialEq)]
-pub enum CompanionSource {
+pub enum CompanionSourceDescriptor {
     Path(String),
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, PartialEq)]
+pub struct CompanionSource {
+    pub descriptor: CompanionSourceDescriptor,
+    pub content_type: String,
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-// #[derive(Debug, Clone)]
 #[derive(Debug)]
 pub enum LoadRequest {
     Url {

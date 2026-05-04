@@ -4,12 +4,13 @@ use crate::MessageSender;
 use bitflags::bitflags;
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
-    companion, v1,
+    companion::{self, ResourceInfoResponse},
+    v1,
     v2::{self, PlayMessage, PlaybackUpdateMessage, VolumeUpdateMessage},
     v3::{self, InitialReceiverMessage, ReceiverCapabilities},
     v4,
 };
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -17,6 +18,7 @@ use tokio::{
     sync::{
         broadcast::Receiver,
         mpsc::{UnboundedReceiver, UnboundedSender},
+        oneshot,
     },
 };
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
@@ -263,6 +265,8 @@ pub enum ReceiverToSenderMessage {
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 enum StateError {
+    #[error("body is not valid UTF-8")]
+    BodyIsNotUtf8,
     #[error("invalid json")]
     InvalidJson,
     #[error("illegal version: {0}")]
@@ -271,6 +275,8 @@ enum StateError {
     IllegalOpcode(Opcode),
     #[error("missing body")]
     MissingBody,
+    #[error("invalid body")]
+    InvalidBody,
 }
 
 #[derive(Debug)]
@@ -278,7 +284,8 @@ enum DriverEvent<'a> {
     Tick,
     Packet {
         opcode: Opcode,
-        body: Option<&'a str>,
+        // body: Option<&'a str>,
+        body: Option<&'a [u8]>,
     },
     ToSender(Arc<ReceiverToSenderMessage>),
 }
@@ -299,6 +306,12 @@ pub enum Operation {
     SeekNew(f64),
 }
 
+#[derive(Debug, PartialEq)]
+enum CompanionResponse {
+    ResourceInfo(companion::ResourceInfoResponse),
+    ResourceResponse(companion::ResourceResponse),
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
 enum Action {
@@ -314,6 +327,7 @@ enum Action {
     },
     StartTLS,
     RespondCompanionHello,
+    Companion(CompanionResponse),
 }
 
 #[derive(Debug, PartialEq)]
@@ -377,10 +391,132 @@ impl KeyEventFlags {
 type CompanionMsgSender = UnboundedSender<CompanionMessage>;
 type CompanionMsgReceiver = UnboundedReceiver<CompanionMessage>;
 
-pub enum CompanionMessage {}
+pub struct BlockingFeedbackChannel<T>(Arc<(Mutex<Option<T>>, Condvar)>);
 
-struct CompanionProviderHandle {
+impl<T> Clone for BlockingFeedbackChannel<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> BlockingFeedbackChannel<T> {
+    pub fn new() -> Self {
+        Self(Arc::new((Mutex::new(None::<T>), Condvar::new())))
+    }
+
+    fn send(&self, obj: T) {
+        *self.0.0.lock() = Some(obj);
+        self.0.1.notify_one();
+    }
+
+    // TODO: accept timeout
+    pub fn recv(&self) -> Option<T> {
+        let mut lock = self.0.0.lock();
+        loop {
+            debug!("Receiving object");
+            if let Some(obj) = lock.take() {
+                debug!("Received obj");
+                return Some(obj);
+            }
+            debug!("Wating");
+            self.0.1.wait(&mut lock);
+        }
+    }
+}
+
+pub enum FeedbackSender<T> {
+    Oneshot(oneshot::Sender<T>),
+    Blocking(BlockingFeedbackChannel<T>),
+}
+
+impl<T> FeedbackSender<T> {
+    fn send(self, obj: T) {
+        match self {
+            FeedbackSender::Oneshot(sender) => {
+                let _ = sender.send(obj);
+            }
+            FeedbackSender::Blocking(chan) => {
+                chan.send(obj);
+            }
+        }
+    }
+}
+
+pub enum CompanionMessage {
+    GetResourceInfo {
+        id: companion::ResourceId,
+        feedback: FeedbackSender<companion::ResourceInfoResponse>,
+    },
+    GetResource {
+        id: companion::ResourceId,
+        read_head: companion::ReadHead,
+        feedback: FeedbackSender<companion::ResourceResponse>,
+    },
+}
+
+#[derive(Clone)]
+pub struct CompanionProviderHandle {
     tx: CompanionMsgSender,
+}
+
+impl CompanionProviderHandle {
+    pub fn get_resource_info_blocking(
+        &self,
+        resource_id: companion::ResourceId,
+    ) -> BlockingFeedbackChannel<companion::ResourceInfoResponse> {
+        let chan = BlockingFeedbackChannel::new();
+        self.tx
+            .send(CompanionMessage::GetResourceInfo {
+                id: resource_id,
+                feedback: FeedbackSender::Blocking(chan.clone()),
+            })
+            .unwrap(); // TODO: handle error
+        chan
+    }
+
+    pub fn get_resoure_info(
+        &self,
+        resource_id: companion::ResourceId,
+    ) -> anyhow::Result<oneshot::Receiver<ResourceInfoResponse>> {
+        let (feedback, rx) = oneshot::channel();
+        self.tx.send(CompanionMessage::GetResourceInfo {
+            id: resource_id,
+            feedback: FeedbackSender::Oneshot(feedback),
+        })?;
+        Ok(rx)
+    }
+
+    pub fn get_resource_blocking(
+        &self,
+        resource_id: companion::ResourceId,
+        read_head: companion::ReadHead,
+    ) -> BlockingFeedbackChannel<companion::ResourceResponse> {
+        let chan = BlockingFeedbackChannel::new();
+        self.tx
+            .send(CompanionMessage::GetResource {
+                id: resource_id,
+                read_head,
+                feedback: FeedbackSender::Blocking(chan.clone()),
+            })
+            .unwrap(); // TODO: handle error
+        chan
+    }
+
+    pub async fn get_resouce(
+        &self,
+        resource_id: companion::ResourceId,
+        read_head: companion::ReadHead,
+    ) -> std::result::Result<companion::ResourceResponse, oneshot::error::RecvError> {
+        let (feedback, rx) = oneshot::channel();
+        self.tx
+            .send(CompanionMessage::GetResource {
+                id: resource_id,
+                read_head,
+                feedback: FeedbackSender::Oneshot(feedback),
+            })
+            .unwrap(); // TODO: handle error
+        rx.await
+    }
 }
 
 #[derive(Default)]
@@ -410,6 +546,12 @@ impl InnerCompanionContext {
 #[derive(Clone)]
 pub struct CompanionContext(Arc<Mutex<InnerCompanionContext>>);
 
+impl std::fmt::Debug for CompanionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CompanionContext").finish()
+    }
+}
+
 impl CompanionContext {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(InnerCompanionContext::default())))
@@ -421,6 +563,10 @@ impl CompanionContext {
 
     pub fn unregister_provider(&self, id: companion::ProviderId) {
         self.0.lock().unregister_provider(id)
+    }
+
+    pub fn get_provider(&self, id: companion::ProviderId) -> Option<CompanionProviderHandle> {
+        self.0.lock().providers.get(&id).cloned()
     }
 }
 
@@ -465,6 +611,18 @@ struct State {
     media_item_events: MediaItemEventFlags,
     key_name_events_down: KeyEventFlags,
     key_name_events_up: KeyEventFlags,
+}
+
+macro_rules! stringify {
+    ($bytes:expr) => {
+        match $bytes {
+            Some(bytes) => match str::from_utf8(bytes) {
+                Ok(s) => Some(s),
+                Err(_) => return Err(StateError::BodyIsNotUtf8),
+            },
+            None => None,
+        }
+    };
 }
 
 impl State {
@@ -525,6 +683,7 @@ impl State {
 
     /// Handle those packets that are common for v{1, 2, 3}
     // TODO: should it return option or error variant like Unsupported?
+    #[instrument(skip_all)]
     fn handle_packet_common(
         &mut self,
         opcode: Opcode,
@@ -556,6 +715,7 @@ impl State {
         }))
     }
 
+    #[instrument(skip_all)]
     fn handle_packet_v1(
         &mut self,
         opcode: Opcode,
@@ -568,6 +728,7 @@ impl State {
         Err(StateError::IllegalOpcode(opcode))
     }
 
+    #[instrument(skip_all)]
     fn handle_packet_v2(
         &mut self,
         opcode: Opcode,
@@ -588,6 +749,7 @@ impl State {
         })
     }
 
+    #[instrument(skip_all)]
     fn handle_packet_v3(
         &mut self,
         opcode: Opcode,
@@ -661,11 +823,11 @@ impl State {
     fn handle_packet_v4(
         &mut self,
         opcode: Opcode,
-        body: Option<&str>,
+        body: Option<&[u8]>,
     ) -> Result<Action, StateError> {
         Ok(match opcode {
             Opcode::Play => {
-                let msg = err_json!(v4::PlayMessage, err_body!(body));
+                let msg = err_json!(v4::PlayMessage, err_body!(stringify!(body)));
                 match msg {
                     v4::PlayMessage::Single { media_item: item } => {
                         Action::Op(Operation::Play(v3::PlayMessage {
@@ -683,24 +845,24 @@ impl State {
                 }
             }
             Opcode::Seek => Action::Op(Operation::SeekNew(
-                err_json!(v4::SeekMessage, err_body!(body)).time,
+                err_json!(v4::SeekMessage, err_body!(stringify!(body))).time,
             )),
             Opcode::SetVolume => Action::Op(Operation::SetVolumeNew(
-                err_json!(v4::UpdateVolumeMessage, err_body!(body)).volume,
+                err_json!(v4::UpdateVolumeMessage, err_body!(stringify!(body))).volume,
             )),
             Opcode::PlaybackError => todo!(),
             Opcode::SetSpeed => Action::Op(Operation::SetSpeedNew(
-                err_json!(v4::SetSpeedMessage, err_body!(body)).speed,
+                err_json!(v4::SetSpeedMessage, err_body!(stringify!(body))).speed,
             )),
             Opcode::Ping => Action::Pong,
             Opcode::Pong => Action::None,
             Opcode::Initial => {
-                let msg = err_json!(v4::InitialSenderMessage, err_body!(body));
+                let msg = err_json!(v4::InitialSenderMessage, err_body!(stringify!(body)));
                 debug!(?msg, "Got inital sender message");
                 Action::None
             }
             Opcode::UpdatePlaybackState => {
-                let msg = err_json!(v4::UpdatePlaybackStateMessage, err_body!(body));
+                let msg = err_json!(v4::UpdatePlaybackStateMessage, err_body!(stringify!(body)));
                 debug!(?msg);
                 match msg.state {
                     v4::PlaybackState::Idle => Action::Op(Operation::Stop),
@@ -722,12 +884,27 @@ impl State {
             Opcode::AddSubtitleSource => todo!(),
             Opcode::SetStatusUpdateInterval => todo!(),
             Opcode::CompanionHello => Action::RespondCompanionHello,
-            Opcode::ResourceInfo => todo!(),
-            Opcode::Resource => todo!(),
+            Opcode::ResourceInfo => {
+                let Some(body) = body else {
+                    return Err(StateError::MissingBody);
+                };
+                let resp = companion::ResourceInfoResponse::parse(body)
+                    .map_err(|_| StateError::InvalidBody)?;
+                Action::Companion(CompanionResponse::ResourceInfo(resp))
+            }
+            Opcode::Resource => {
+                let Some(body) = body else {
+                    return Err(StateError::MissingBody);
+                };
+                let resp = companion::ResourceResponse::parse(body)
+                    .map_err(|_| StateError::InvalidBody)?;
+                Action::Companion(CompanionResponse::ResourceResponse(resp))
+            }
             _ => return Err(StateError::IllegalOpcode(opcode)),
         })
     }
 
+    #[instrument(skip_all)]
     pub fn advance(&mut self, event: DriverEvent) -> Result<Action, StateError> {
         Ok(match event {
             DriverEvent::Tick => {
@@ -752,13 +929,13 @@ impl State {
 
                 match &self.variant {
                     StateVariant::WaitingForVersion => {
-                        return self.handle_packet_uninit(opcode, body);
+                        return self.handle_packet_uninit(opcode, stringify!(body));
                     }
                     StateVariant::Active { version } => {
                         return match version {
-                            SessionVersion::V1 => self.handle_packet_v1(opcode, body),
-                            SessionVersion::V2 => self.handle_packet_v2(opcode, body),
-                            SessionVersion::V3 => self.handle_packet_v3(opcode, body),
+                            SessionVersion::V1 => self.handle_packet_v1(opcode, stringify!(body)),
+                            SessionVersion::V2 => self.handle_packet_v2(opcode, stringify!(body)),
+                            SessionVersion::V3 => self.handle_packet_v3(opcode, stringify!(body)),
                             SessionVersion::V4 { .. } => self.handle_packet_v4(opcode, body),
                         };
                     }
@@ -887,36 +1064,74 @@ impl State {
 enum NetworkStream {
     #[default]
     None,
-    Tcp(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tcp {
+        rx: tokio::io::ReadHalf<TcpStream>,
+        tx: tokio::io::BufWriter<tokio::io::WriteHalf<TcpStream>>,
+    },
+    Tls {
+        tx: tokio::io::BufWriter<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
+        rx: tokio::io::ReadHalf<TlsStream<TcpStream>>,
+    },
 }
 
 impl NetworkStream {
+    pub fn new(stream: TcpStream) -> Self {
+        let (rx, tx) = tokio::io::split(stream);
+        let tx = tokio::io::BufWriter::new(tx);
+
+        Self::Tcp { rx, tx }
+    }
+
+    #[instrument(skip_all)]
     async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
-            Self::Tcp(stream) => stream.read(buf).await,
-            Self::Tls(stream) => stream.read(buf).await,
+            Self::Tcp { rx, .. } => rx.read(buf).await,
+            Self::Tls { rx, .. } => rx.read(buf).await,
             Self::None => unreachable!(),
         }
     }
 
+    #[instrument(skip_all)]
     async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         match self {
-            Self::Tcp(stream) => stream.write_all(buf).await,
-            Self::Tls(stream) => stream.write_all(buf).await,
+            Self::Tcp { tx, .. } => tx.write_all(buf).await,
+            Self::Tls { tx, .. } => tx.write_all(buf).await,
             Self::None => unreachable!(),
         }
+    }
+
+    pub async fn flush(&mut self) -> io::Result<()> {
+        match self {
+            NetworkStream::Tcp { tx, .. } => tx.flush().await?,
+            NetworkStream::Tls { tx, .. } => tx.flush().await?,
+            _ => (),
+        }
+
+        Ok(())
     }
 
     async fn upgrade(&mut self, acceptor: &TlsAcceptor) -> io::Result<()> {
         let old = std::mem::take(self);
         *self = match old {
-            NetworkStream::Tcp(stream) => Self::Tls(acceptor.accept(stream).await?),
+            NetworkStream::Tcp { rx, tx } => {
+                let tx = tx.into_inner();
+                let stream = rx.unsplit(tx);
+
+                let stream = acceptor.accept(stream).await?;
+                let (rx, tx) = tokio::io::split(stream);
+                let tx = tokio::io::BufWriter::new(tx);
+                Self::Tls { tx, rx }
+            }
             _ => old,
         };
 
         Ok(())
     }
+}
+
+enum CompanionQueueItem {
+    GetResourceInfo(FeedbackSender<companion::ResourceInfoResponse>),
+    GetResource(FeedbackSender<companion::ResourceResponse>),
 }
 
 pub struct SessionDriver {
@@ -926,6 +1141,8 @@ pub struct SessionDriver {
     tls_acceptor: TlsAcceptor,
     companion_ctx: CompanionContext,
     internal_companion_tx: CompanionMsgSender,
+    companion_queue: HashMap<companion::ResourceId, CompanionQueueItem>,
+    req_id_gen: companion::RequestIdGenerator,
 }
 
 impl SessionDriver {
@@ -937,34 +1154,50 @@ impl SessionDriver {
         internal_companion_tx: CompanionMsgSender,
     ) -> Self {
         Self {
-            stream: NetworkStream::Tcp(stream),
+            stream: NetworkStream::new(stream),
             id,
             state: State::new(),
             tls_acceptor,
             companion_ctx,
             internal_companion_tx,
+            companion_queue: HashMap::new(),
+            req_id_gen: companion::RequestIdGenerator::new(),
         }
     }
 
+    #[instrument(skip_all)]
     async fn write_simple(&mut self, opcode: Opcode) -> anyhow::Result<()> {
         let header = Header::new(opcode, 0).encode();
         self.stream.write_all(&header).await?;
+        self.stream.flush().await?;
         trace!(?opcode, "Sent simple packet");
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn write_packet(&mut self, packet: Packet) -> anyhow::Result<()> {
         let bytes = packet.encode()?;
         self.stream.write_all(&bytes).await?;
+        self.stream.flush().await?;
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn send_msg(&mut self, opcode: Opcode, msg: impl Serialize) -> anyhow::Result<()> {
         let body = serde_json::to_vec(&msg)?;
         let header = Header::new(opcode, body.len() as u32).encode();
         self.stream.write_all(&header).await?;
         self.stream.write_all(&body).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
 
+    #[instrument(skip_all)]
+    async fn send_companion_msg(&mut self, opcode: Opcode, msg: &[u8]) -> anyhow::Result<()> {
+        let header = Header::new(opcode, msg.len() as u32).encode();
+        self.stream.write_all(&header).await?;
+        self.stream.write_all(&msg).await?;
+        self.stream.flush().await?;
         Ok(())
     }
 
@@ -1111,6 +1344,34 @@ impl SessionDriver {
                     //     }
                     // });
                 }
+                Action::Companion(resp) => match resp {
+                    CompanionResponse::ResourceInfo(resource_info) => {
+                        if let Some(req) = self.companion_queue.remove(&resource_info.request_id) {
+                            if let CompanionQueueItem::GetResourceInfo(feedback) = req {
+                                feedback.send(resource_info);
+                            }
+                        } else {
+                            error!(
+                                request_id = resource_info.request_id,
+                                "Could not find request from response request ID"
+                            );
+                        }
+                    }
+                    CompanionResponse::ResourceResponse(resource) => {
+                        if let Some(req) = self.companion_queue.remove(&resource.request_id) {
+                            if let CompanionQueueItem::GetResource(feedback) = req {
+                                debug!("Sending resource for req_id={}", resource.request_id);
+                                feedback.send(resource);
+                                debug!("Sent OK");
+                            }
+                        } else {
+                            error!(
+                                request_id = resource.request_id,
+                                "Could not find request from response request ID"
+                            );
+                        }
+                    }
+                },
             },
             Err(err) => {
                 error!(?err, "Error occured when advancing state");
@@ -1140,6 +1401,23 @@ impl SessionDriver {
         'main_loop: loop {
             tokio::select! {
                 comp = comp_rx.recv() => {
+                    let Some(comp) = comp else {
+                        continue;
+                    };
+
+                    let request_id = self.req_id_gen.next();
+                    match comp {
+                        CompanionMessage::GetResourceInfo { id, feedback } => {
+                            let request = companion::ResourceInfoRequest { request_id, resource_id: id };
+                            self.send_companion_msg(Opcode::ResourceInfo, &request.serialize()).await?;
+                            self.companion_queue.insert(request_id, CompanionQueueItem::GetResourceInfo(feedback));
+                        }
+                        CompanionMessage::GetResource { id, read_head, feedback } => {
+                            let request = companion::ResourceRequest { request_id, resource_id: id, read_head };
+                            self.send_companion_msg(Opcode::Resource, &request.serialize()).await?;
+                            self.companion_queue.insert(request_id, CompanionQueueItem::GetResource(feedback));
+                        }
+                    }
                 }
                 res = self.stream.read(&mut read_buf) => {
                     let Ok(n_read) = res else {
@@ -1152,7 +1430,11 @@ impl SessionDriver {
 
                     packet_reader.push_data(&read_buf[0..n_read]);
 
+                    // let mut start = std::time::Instant::now();
+
                     while let Some(packet) = packet_reader.get_packet() {
+                        // let end = start.elapsed();
+                        // debug!("Read packet in {end:?}");
                         let (opcode, body) = match packet.len() {
                             0 => {
                                 error!("Received empty packet");
@@ -1166,22 +1448,26 @@ impl SessionDriver {
 
                         let body = match body {
                             Some(body) => {
-                                if body.len() > MAX_BODY_SIZE {
-                                    bail!("Message exceeded maximum length ({} > {MAX_BODY_SIZE})", body.len())
-                                }
-                                Some(str::from_utf8(body)?)
+                                // if body.len() > MAX_BODY_SIZE {
+                                //     bail!("Message exceeded maximum length ({} > {MAX_BODY_SIZE})", body.len())
+                                // }
+                                Some(body)
                             }
                             None => None
                         };
 
+                        // if opcode != Opcode::Ping && opcode != Opcode::Pong && opcode != Opcode::Resource {
                         if opcode != Opcode::Ping && opcode != Opcode::Pong {
-                            debug!("Received packet opcode={opcode:?} body={:?}", body);
+                            // debug!(?opcode, "Received packet opcode={opcode:?} body={:?}", body);
+                            debug!(?opcode, "Received packet");
                         }
 
                         let res = self.state.advance(DriverEvent::Packet { opcode, body });
                         if self.handle_state_result(self.id, msg_tx, res).await? {
                             break 'main_loop;
                         }
+
+                        // start = std::time::Instant::now();
                     }
                 }
                 res = updates_rx.recv() => {
@@ -1257,13 +1543,13 @@ mod tests {
             ),
             (
                 Opcode::Version,
-                Some(v2_json.as_str()),
+                Some(v2_json.as_bytes()),
                 Action::None,
                 SessionVersion::V2,
             ),
             (
                 Opcode::Version,
-                Some(v3_json.as_str()),
+                Some(v3_json.as_bytes()),
                 Action::SendInitial,
                 SessionVersion::V3,
             ),
@@ -1287,7 +1573,7 @@ mod tests {
             vec![(
                 DriverEvent::Packet {
                     opcode: Opcode::Version,
-                    body: Some("{"),
+                    body: Some(b"{"),
                 },
                 Err(StateError::InvalidJson),
             )],
@@ -1304,7 +1590,7 @@ mod tests {
                 (
                     DriverEvent::Packet {
                         opcode: Opcode::Version,
-                        body: Some(v2_json.as_str()),
+                        body: Some(v2_json.as_bytes()),
                     },
                     Ok(Action::None),
                 ),

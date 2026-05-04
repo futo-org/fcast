@@ -182,6 +182,7 @@ async fn main() {
         "FCast Receiver".to_owned(),
         vec![app.host.parse::<IpAddr>().unwrap().into()],
         app.port,
+        HashMap::new(),
     );
 
     let device = context.create_device_from_info(device_info);

@@ -25,6 +25,7 @@ if-addrs = "0.14"
 base64 = "0.22"
 bitflags = "2.10"
 smallvec.workspace = true
+smol_str.workspace = true
 parking_lot.workspace = true
 image_swizzle.workspace = true
 bytes.workspace = true
@@ -61,7 +62,7 @@ byte-slice-cast = "1"
 rtp-types = "0.1"
 
 # Google Cast
-rustls-pki-types = "1.12.0"
+rustls-pki-types.workspace = true
 google-cast-protocol = { path = "../../../sdk/common/google-cast-protocol" }
 rcgen = "0.14.7"
 uuid.workspace = true
@@ -103,12 +104,12 @@ objc2-app-kit = "0.3.2"
 # gst-gl-x11 = { package = "gstreamer-gl-x11", version = "0.25" }
 glutin_egl_sys = { version = "0.7.1" }
 # glutin_glx_sys = { version = "0.6.1" }
-rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
+rustls = { workspace = true, default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
 ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 egl-sys.path = "../../../crates/egl-sys"
 drm-fourcc = "2.2.0"
 

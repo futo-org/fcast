@@ -67,6 +67,9 @@ hyper = "1.7.0"
 hyper-util = "0.1.17"
 bindgen = "0.72"
 askama = "0.15"
+rustls = { version = "0.23", default-features = false }
+tokio-rustls = { version = "0.26.4", default-features = false }
+rustls-pki-types = "1.12.0"
 
 [profile.release]
 lto = "fat"

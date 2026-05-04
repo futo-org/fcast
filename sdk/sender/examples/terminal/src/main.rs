@@ -65,6 +65,7 @@ async fn main() {
         protocol: ProtocolType::FCast,
         addresses: vec![IpAddr::v4(127, 0, 0, 1)],
         port: 46899,
+        txt_records: std::collections::HashMap::new(),
     });
 
     dev.connect(

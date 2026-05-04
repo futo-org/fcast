@@ -46,6 +46,7 @@ mod egl;
 mod fcast;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
+mod fcompsrc;
 mod gcast;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod graphics;
@@ -261,11 +262,13 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
+        let companion_ctx = CompanionContext::new();
         let player = player::Player::new(
             appsink,
             msg_tx.clone(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             gl_context.clone(),
+            fcompsrc::imp::CompContext(companion_ctx.clone()),
         )?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
@@ -388,7 +391,6 @@ impl Application {
             }
         });
 
-        let companion_ctx = CompanionContext::new();
         let image_decoder = image::Decoder::new(msg_tx.clone())?;
         let http_client = reqwest::Client::new();
         let image_downloader =

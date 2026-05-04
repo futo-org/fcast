@@ -7899,6 +7899,7 @@ dependencies = [
  "slint",
  "slint-build",
  "smallvec",
+ "smol_str 0.3.6",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

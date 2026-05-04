@@ -23,7 +23,7 @@ use log::{debug, error};
 use rustls_pki_types::ServerName;
 use serde::Serialize;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     net::TcpStream,
     runtime::Handle,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -31,9 +31,13 @@ use tokio::{
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
 use crate::{
-    IpAddr, device::{
-        ApplicationInfo, CastingDevice, CastingDeviceError, CompanionSource, DeviceConnectionState, DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent, MediaItem, MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source
-    }, utils
+    device::{
+        ApplicationInfo, CastingDevice, CastingDeviceError, CompanionSource,
+        CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
+        DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent, MediaItem,
+        MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Source,
+    },
+    utils, IpAddr,
 };
 
 const DEFAULT_SESSION_VERSION: u64 = 2;
@@ -195,6 +199,12 @@ enum VersionCode {
 }
 
 #[derive(Debug, PartialEq)]
+enum CompanionRequest {
+    ResourceInfo(companion::ResourceInfoRequest),
+    Resource(companion::ResourceRequest),
+}
+
+#[derive(Debug, PartialEq)]
 enum Action {
     None,
     Pong,
@@ -213,6 +223,7 @@ enum Action {
     DurationChanged(f64),
     VolumeChanged(f64),
     PlaybackStateChanged(v4::PlaybackState),
+    Companion(CompanionRequest),
 }
 
 #[derive(Default)]
@@ -428,8 +439,20 @@ impl DeviceStateMachine {
 
                 Action::None
             }
-            Opcode::ResourceInfo => todo!(),
-            Opcode::Resource => todo!(),
+            Opcode::ResourceInfo => {
+                let Some(body) = body else {
+                    return Action::Quit(QuitReason::MissingBody);
+                };
+                let request = companion::ResourceInfoRequest::parse(body).unwrap(); // TODO: handle error
+                Action::Companion(CompanionRequest::ResourceInfo(request))
+            }
+            Opcode::Resource => {
+                let Some(body) = body else {
+                    return Action::Quit(QuitReason::MissingBody);
+                };
+                let request = companion::ResourceRequest::parse(body).unwrap(); // TODO: handle error
+                Action::Companion(CompanionRequest::Resource(request))
+            }
             _ => todo!(),
         }
     }
@@ -517,25 +540,51 @@ impl rustls::client::danger::ServerCertVerifier for AllCertVerifier {
 enum NetworkStream {
     #[default]
     None,
-    Tcp(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tcp {
+        peer_addr: std::net::SocketAddr,
+        rx: tokio::io::ReadHalf<TcpStream>,
+        tx: tokio::io::BufWriter<tokio::io::WriteHalf<TcpStream>>,
+    },
+    Tls {
+        tx: tokio::io::BufWriter<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
+        rx: tokio::io::ReadHalf<TlsStream<TcpStream>>,
+    },
 }
 
 impl NetworkStream {
+    pub fn new(stream: TcpStream) -> io::Result<Self> {
+        let peer_addr = stream.peer_addr()?;
+
+        let (rx, tx) = tokio::io::split(stream);
+        let tx = tokio::io::BufWriter::new(tx);
+
+        Ok(Self::Tcp { peer_addr, rx, tx })
+    }
+
     pub async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
-            Self::Tcp(stream) => stream.read(buf).await,
-            Self::Tls(stream) => stream.read(buf).await,
+            Self::Tcp { rx, .. } => rx.read(buf).await,
+            Self::Tls { rx, .. } => rx.read(buf).await,
             Self::None => unreachable!(),
         }
     }
 
     pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         match self {
-            Self::Tcp(stream) => stream.write_all(buf).await,
-            Self::Tls(stream) => stream.write_all(buf).await,
+            Self::Tcp { tx, .. } => tx.write_all(buf).await,
+            Self::Tls { tx, .. } => tx.write_all(buf).await,
             Self::None => unreachable!(),
         }
+    }
+
+    pub async fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tcp { tx, .. } => tx.flush().await?,
+            Self::Tls { tx, .. } => tx.flush().await?,
+            _ => (),
+        }
+
+        Ok(())
     }
 
     pub async fn upgrade(
@@ -545,15 +594,25 @@ impl NetworkStream {
     ) -> io::Result<()> {
         let old = std::mem::take(self);
         *self = match old {
-            Self::Tcp(stream) => {
+            Self::Tcp { tx, rx, .. } => {
+                let tx = tx.into_inner();
+                let stream = rx.unsplit(tx);
+
                 let tls_stream = connector.connect(server_name, stream).await?;
-                Self::Tls(tls_stream)
+                let (rx, tx) = tokio::io::split(tls_stream);
+                let tx = tokio::io::BufWriter::with_capacity(1024 * 16, tx);
+                Self::Tls { tx, rx }
             }
             _ => old,
         };
 
         Ok(())
     }
+}
+
+struct WrappedCompanionSource {
+    file: tokio::fs::File,
+    content_type: String,
 }
 
 struct InnerDevice {
@@ -565,7 +624,8 @@ struct InnerDevice {
     app_info: Option<ApplicationInfo>,
     supports_whep: Arc<AtomicBool>,
     state_machine: DeviceStateMachine,
-    companion_sources: HashMap<u32, CompanionSource>,
+    // companion_sources: HashMap<u32, CompanionSource>,
+    companion_sources: HashMap<u32, WrappedCompanionSource>,
 }
 
 impl InnerDevice {
@@ -588,13 +648,22 @@ impl InnerDevice {
         }
     }
 
-    fn add_source(&mut self, source: CompanionSource) -> u32 {
+    async fn add_source(&mut self, source: CompanionSource) -> std::io::Result<u32> {
+        let file = match source.descriptor {
+            CompanionSourceDescriptor::Path(ref path) => tokio::fs::File::open(path).await?,
+        };
+
+        let source = WrappedCompanionSource {
+            file,
+            content_type: source.content_type,
+        };
+
         let mut id = 0;
         while self.companion_sources.contains_key(&id) {
             id += 1;
         }
         self.companion_sources.insert(id, source);
-        0
+        Ok(id)
     }
 
     async fn send<T: Serialize>(&mut self, op: Opcode, msg: T) -> anyhow::Result<()> {
@@ -610,16 +679,15 @@ impl InnerDevice {
         header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
         header[HEADER_LENGTH - 1] = op as u8;
 
-        let mut packet = header;
-        packet.extend_from_slice(data);
+        // let mut packet = header;
+        // packet.extend_from_slice(data);
 
         // writer.write_all(&packet).await?;
-        self.stream.write_all(&packet).await?;
+        self.stream.write_all(&header).await?;
+        self.stream.write_all(&data).await?;
+        self.stream.flush().await?;
 
-        debug!(
-            "Sent {} bytes with opcode: {op:?}, body: {json}",
-            packet.len()
-        );
+        debug!("Sent opcode: {op:?}, body: {json}");
 
         Ok(())
     }
@@ -630,16 +698,43 @@ impl InnerDevice {
         //     bail!("`writer` is missing");
         // };
 
+        // TODO: use common header type with receiver
         let mut header = [0u8; HEADER_LENGTH];
         header[..HEADER_LENGTH - 1].copy_from_slice(&1u32.to_le_bytes());
         header[HEADER_LENGTH - 1] = op as u8;
 
         // writer.write_all(&header).await?;
         self.stream.write_all(&header).await?;
+        self.stream.flush().await?;
 
         if op != Opcode::Pong {
             debug!("Sent {} bytes with opcode: {op:?}", header.len());
         }
+
+        Ok(())
+    }
+
+    async fn send_companion(&mut self, op: Opcode, body: &[u8]) -> anyhow::Result<()> {
+        let size = 1 + body.len();
+        let mut header = [0u8; HEADER_LENGTH];
+        header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
+        header[HEADER_LENGTH - 1] = op as u8;
+
+        // if header.len() + body.len() < self.scratch_buffer.len() {
+        //     self.scratch_buffer[0..header.len()].copy_from_slice(&header);
+        //     self.scratch_buffer[header.len()..header.len() + body.len()].copy_from_slice(body);
+        //     self.stream.write_all(&self.scratch_buffer[0..header.len() + body.len()]).await?;
+        // } else {
+        //     self.stream.write_all(&header).await?;
+        //     self.stream.write_all(&body).await?;
+        // }
+
+        self.stream.write_all(&header).await?;
+        self.stream.write_all(&body).await?;
+        self.stream.flush().await?;
+
+        // self.stream.write_all(&header).await?;
+        // self.stream.write_all(body).await?;
 
         Ok(())
     }
@@ -705,18 +800,22 @@ impl InnerDevice {
                 let msg = v4::PlayMessage::Single {
                     media_item: v4::MediaItem {
                         container: content_type.clone(),
-                        // source_url: match type_.clone() {
                         source_url: match type_ {
                             LoadType::Url { url } => url.clone(),
-                            LoadType::Content { .. } => todo!(),
-                            // LoadType::CompanionResource { id } => {
+                            LoadType::Content { .. } => unreachable!(),
                             LoadType::CompanionResource { source } => {
                                 if let StateVariant::V4 {
                                     companion_provider_id,
                                 } = self.state_machine.variant
                                 {
-                                    let resource_id = self.add_source(source);
-                                    companion::create_url(companion_provider_id.unwrap(), resource_id)
+                                    if let Ok(resource_id) = self.add_source(source).await {
+                                        companion::create_url(
+                                            companion_provider_id.unwrap(),
+                                            resource_id,
+                                        )
+                                    } else {
+                                        todo!()
+                                    }
                                 } else {
                                     todo!("Receiver does not support FCompanion");
                                 }
@@ -986,14 +1085,17 @@ impl InnerDevice {
                 self.send_empty(Opcode::StartTLS).await?;
             }
             Action::UpgradeToTLS => {
-                let config = rustls::ClientConfig::builder()
-                    .dangerous()
-                    .with_custom_certificate_verifier(Arc::new(AllCertVerifier))
-                    .with_no_client_auth();
+                let config = rustls::ClientConfig::builder_with_protocol_versions(&[
+                    &rustls::version::TLS13,
+                ])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AllCertVerifier))
+                .with_no_client_auth();
                 let connector = TlsConnector::from(Arc::new(config));
                 // let dnsname = ServerName::from(remote_addr);
                 let dnsname = rustls_pki_types::ServerName::from(match &self.stream {
-                    NetworkStream::Tcp(stream) => stream.peer_addr().unwrap().ip(),
+                    // NetworkStream::Tcp(stream) => stream.peer_addr().unwrap().ip(),
+                    NetworkStream::Tcp { peer_addr, .. } => peer_addr.ip(),
                     _ => unreachable!(),
                 });
                 debug!("Upgrading network stream to use TLS");
@@ -1047,6 +1149,78 @@ impl InnerDevice {
                 };
                 self.event_handler.playback_state_changed(state);
             }
+            Action::Companion(request) => {
+                match request {
+                    CompanionRequest::ResourceInfo(request) => {
+                        if let Some(source) = self.companion_sources.get(&request.resource_id) {
+                            if let Ok(meta) = source.file.metadata().await {
+                                let len = meta.len();
+                                let response = companion::ResourceInfoResponse {
+                                    request_id: request.request_id,
+                                    content_type: source.content_type.clone().into(),
+                                    resource_size: companion::ResourceSize::Known(len.into()),
+                                };
+                                let body = response.serialize();
+                                self.send_companion(Opcode::ResourceInfo, &body).await?;
+                            }
+                        }
+                        // TODO: send failed?
+                    }
+                    CompanionRequest::Resource(request) => {
+                        if let Some(source) = self.companion_sources.get_mut(&request.resource_id) {
+                            let meta = source.file.metadata().await?;
+                            let file_len = meta.len();
+                            let (start, stop_inclusive): (u64, u64) = match request.read_head {
+                                companion::ReadHead::Whole => (0, file_len - 1),
+                                companion::ReadHead::Range {
+                                    start,
+                                    stop_inclusive,
+                                } => {
+                                    let stop_inclusive = file_len.min(*stop_inclusive);
+                                    (*start, stop_inclusive)
+                                }
+                            };
+
+                            source
+                                .file
+                                .seek(std::io::SeekFrom::Start(start))
+                                .await?;
+
+                            let mut bytes_to_read = stop_inclusive - start;
+
+                            let response_header =
+                                companion::ResourceResponse::header_success(request.request_id);
+                            let size = 1 + response_header.len() + bytes_to_read as usize;
+                            let mut header = [0u8; HEADER_LENGTH];
+                            header[..HEADER_LENGTH - 1]
+                                .copy_from_slice(&(size as u32).to_le_bytes());
+                            header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
+                            self.stream.write_all(&header).await?;
+                            self.stream.write_all(&response_header).await?;
+
+                            while bytes_to_read > 0 {
+                                let mut buf = [0u8; 1024 * 8];
+                                let mut n_read = source.file.read(&mut buf).await?;
+                                if n_read == 0 {
+                                    break;
+                                }
+                                if n_read as u64 > bytes_to_read {
+                                    n_read = bytes_to_read as usize;
+                                }
+
+                                self.stream.write_all(&buf[0..n_read]).await?;
+                                if (n_read as u64) < bytes_to_read {
+                                    bytes_to_read -= n_read as u64;
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            self.stream.flush().await?;
+                        }
+                    }
+                }
+            }
         }
 
         Ok(false)
@@ -1090,7 +1264,8 @@ impl InnerDevice {
 
         // let (mut reader, writer) = stream.into_split();
         // self.writer = Some(writer);
-        self.stream = NetworkStream::Tcp(stream);
+        // self.stream = NetworkStream::Tcp(stream);
+        self.stream = NetworkStream::new(stream)?;
         let mut shared_state = SharedState::default();
         let mut playlist_length = None::<usize>;
         let mut current_playlist_item_index = None::<usize>;
@@ -1131,7 +1306,8 @@ impl InnerDevice {
                         }
 
                         if opcode != Opcode::Ping {
-                            debug!("Received packet opcode={opcode:?} body={:?}", body.map(|b| str::from_utf8(b)));
+                            // debug!("Received packet opcode={opcode:?} body={:?}", body.map(|b| str::from_utf8(b)));
+                            debug!("Received packet opcode={opcode:?}");
                         }
 
                         // let action = state_machine.handle_packet(opcode, body);
@@ -1206,6 +1382,7 @@ impl InnerDevice {
                             }
 
                             self.event_handler.playback_state_changed(PlaybackState::Idle);
+                            self.companion_sources.clear();
                         }
                         Command::PauseVideo => match self.state_machine.variant {
                             StateVariant::V2
@@ -1477,7 +1654,6 @@ impl CastingDevice for FCastDevice {
             }
             LoadRequest::CompanionResource {
                 content_type,
-                // id,
                 source,
                 resume_position,
                 speed,
@@ -1489,7 +1665,6 @@ impl CastingDevice for FCastDevice {
                 }
 
                 self.send_command(Command::Load {
-                    // type_: LoadType::CompanionResource { id },
                     type_: LoadType::CompanionResource { source },
                     content_type,
                     resume_position: resume_position.unwrap_or(0.0),

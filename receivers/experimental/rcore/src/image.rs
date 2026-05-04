@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
+use fcast_protocol::companion;
 use imagelib::{
     AnimationDecoder, DynamicImage, ImageFormat, ImageReader,
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
@@ -31,6 +32,12 @@ pub enum DownloadImageError {
     InvalidUrl(#[from] url::ParseError),
     #[error("unsuccessful status={0}")]
     Unsuccessful(reqwest::StatusCode),
+    #[error("failed to get resource info")]
+    FailedToGetInfo,
+    #[error("invalid FCompanion URL")]
+    InvalidCompUrl,
+    #[error("FCompanion provider not found")]
+    ProviderNotFound,
 }
 
 pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
@@ -399,6 +406,27 @@ impl Downloader {
         }
     }
 
+    fn format_from_content_type(
+        ctype: &str,
+    ) -> std::result::Result<ExtendedImageFormat, DownloadImageError> {
+        Ok(match ImageFormat::from_mime_type(ctype) {
+            Some(f) => ExtendedImageFormat::ImageLib(f),
+            None => match ctype {
+                "image/jxl" => ExtendedImageFormat::JpegXl,
+                "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
+                    ExtendedImageFormat::Jpeg2000
+                }
+                #[cfg(all(feature = "desktop", target_os = "linux"))]
+                "image/heif" | "image/heic" => ExtendedImageFormat::Heif,
+                _ => {
+                    return Err(DownloadImageError::UnsupportedContentType(
+                        ctype.to_string(),
+                    ));
+                }
+            },
+        })
+    }
+
     #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all, fields(url = %url)))]
     async fn download_image_http(
         client: &reqwest::Client,
@@ -429,22 +457,7 @@ impl Downloader {
             .ok_or(DownloadImageError::MissingContentType)?
             .to_str()
             .map_err(|_| DownloadImageError::ContentTypeIsNotString)?;
-        let format = match ImageFormat::from_mime_type(content_type) {
-            Some(f) => ExtendedImageFormat::ImageLib(f),
-            None => match content_type {
-                "image/jxl" => ExtendedImageFormat::JpegXl,
-                "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
-                    ExtendedImageFormat::Jpeg2000
-                }
-                #[cfg(all(feature = "desktop", target_os = "linux"))]
-                "image/heif" | "image/heic" => ExtendedImageFormat::Heif,
-                _ => {
-                    return Err(DownloadImageError::UnsupportedContentType(
-                        content_type.to_string(),
-                    ));
-                }
-            },
-        };
+        let format = Self::format_from_content_type(content_type)?;
 
         let body = resp.bytes().await?;
         Ok((body, format))
@@ -456,7 +469,28 @@ impl Downloader {
         url: url::Url,
     ) -> std::result::Result<(Bytes, ExtendedImageFormat), DownloadImageError> {
         debug!("Starting image download");
-        todo!()
+
+        let url = crate::fcompsrc::FCompUrl::new(&url).ok_or(DownloadImageError::InvalidCompUrl)?;
+
+        let provider = ctx
+            .get_provider(url.provider_id)
+            .ok_or(DownloadImageError::ProviderNotFound)?;
+        let res = provider
+            .get_resoure_info(url.resource_id)
+            .map_err(|_| DownloadImageError::FailedToGetInfo)?
+            .await
+            .map_err(|_| DownloadImageError::FailedToGetInfo)?;
+        let format = Self::format_from_content_type(&res.content_type)?;
+
+        let resp = provider
+            .get_resouce(url.resource_id, companion::ReadHead::Whole)
+            .await
+            .unwrap();
+
+        match resp.result {
+            companion::GetResourceResult::None => todo!(),
+            companion::GetResourceResult::Success(buf) => Ok((Bytes::from_owner(buf), format)),
+        }
     }
 
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
@@ -474,6 +508,8 @@ impl Downloader {
             "fcomp" => {
                 let ctx = self.companion_ctx.clone();
                 tokio::spawn(async move {
+                    let res = Self::download_image_comp(&ctx, url).await;
+                    tx.image(Event::DownloadResult { id, res });
                 });
             }
             _ => todo!(),
