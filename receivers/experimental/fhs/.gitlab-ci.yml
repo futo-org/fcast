@@ -34,7 +34,7 @@
     paths:
       - ./*.rpm
   rules:
-    - if: '$CI_COMMIT_BRANCH == "fhs"'
+    - if: '$CI_COMMIT_BRANCH == "master"'
       when: on_success
     - when: manual
       allow_failure: true
