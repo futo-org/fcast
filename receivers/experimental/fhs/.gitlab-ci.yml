@@ -1,6 +1,39 @@
+resolveReceiverFhsRelease:
+  stage: receiverExperimental
+  tags:
+    - fcast-autoscaler
+  resource_group: fcast-fhs-publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: on_success
+    - when: manual
+      allow_failure: true
+  script:
+    - set -euo pipefail
+    - sudo dnf install -y awscli2
+    - export AWS_ACCESS_KEY_ID=$FHS_R2_ACCESS_KEY_ID
+    - export AWS_SECRET_ACCESS_KEY=$FHS_R2_SECRET_ACCESS_KEY
+    - export AWS_DEFAULT_REGION=auto
+    - ENDPOINT="--endpoint-url $FHS_R2_ENDPOINT"
+    - BUCKET="s3://$FHS_R2_BUCKET"
+    - VERSION=$(grep -m1 '^version *=' receivers/experimental/fhs/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+    - LISTING=$(aws s3 ls "${BUCKET}/fcast-receiver/" $ENDPOINT)
+    - EXISTING=$(echo "$LISTING" | grep -oE "fcast-receiver-${VERSION}-[0-9]+\.(x86_64|aarch64)\.rpm" | sed -E "s/fcast-receiver-${VERSION}-([0-9]+)\..+/\1/" | sort -n | tail -1 || true)
+    - RELEASE=$(( ${EXISTING:-0} + 1 ))
+    - echo "FCAST_FHS_VERSION=$VERSION" >> build.env
+    - echo "FCAST_FHS_RELEASE=$RELEASE" >> build.env
+    - echo "Resolved fcast-receiver-${VERSION}-${RELEASE}.{x86_64,aarch64}.rpm"
+  artifacts:
+    reports:
+      dotenv: build.env
+
 .buildReceiverFhsLinuxRPM:
   stage: receiverExperimental
+  needs:
+    - resolveReceiverFhsRelease
+  resource_group: fcast-fhs-publish
   script:
+    - set -euo pipefail
     - sudo dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
       gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
       gstreamer1-plugin-libav libdav1d-devel glib2-devel
@@ -17,15 +50,17 @@
     - rustup target add ${RUST_TARGET}
     - cargo install cargo-generate-rpm
     - cargo build --release --package fhs-receiver --target ${RUST_TARGET}
+    - grep -q '^release *=' receivers/experimental/fhs/Cargo.toml
+    - sed -i "s/^release = .*/release = \"${FCAST_FHS_RELEASE}\"/" receivers/experimental/fhs/Cargo.toml
     - cargo generate-rpm -p receivers/experimental/fhs --target ${RUST_TARGET}
-    - cp target/${RUST_TARGET}/generate-rpm/*.rpm .
-    - RPM_FILE=$(ls *.rpm | head -1)
+    - RPM_FILE="fcast-receiver-${FCAST_FHS_VERSION}-${FCAST_FHS_RELEASE}.${FHS_ARCH}.rpm"
+    - cp "target/${RUST_TARGET}/generate-rpm/${RPM_FILE}" "${RPM_FILE}"
     - ENDPOINT="--endpoint-url $FHS_R2_ENDPOINT"
     - BUCKET="s3://$FHS_R2_BUCKET"
     - export AWS_ACCESS_KEY_ID=$FHS_R2_ACCESS_KEY_ID
     - export AWS_SECRET_ACCESS_KEY=$FHS_R2_SECRET_ACCESS_KEY
     - export AWS_DEFAULT_REGION=auto
-    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/${RPM_FILE}" $ENDPOINT
+    - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/fcast-receiver-${FCAST_FHS_VERSION}-${FCAST_FHS_RELEASE}.${FHS_ARCH}.rpm" $ENDPOINT
     - aws s3 cp "$RPM_FILE" "${BUCKET}/fcast-receiver/fcast-receiver-latest.${FHS_ARCH}.rpm" $ENDPOINT
   artifacts:
     untracked: false

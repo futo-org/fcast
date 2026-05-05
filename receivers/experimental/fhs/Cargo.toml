@@ -23,6 +23,7 @@ name = "fcast-receiver"
 summary = "FCast Receiver for displaying multimedia content"
 license = "GPL-3.0"
 url = "https://fcast.org/"
+release = "1"
 assets = [
     { source = "target/release/fhs-receiver", dest = "/usr/bin/fcast-receiver", mode = "755" },
     { source = ".flatpak/org.fcast.Receiver.desktop", dest = "/usr/share/applications/org.fcast.Receiver.fhs", mode = "644" },
