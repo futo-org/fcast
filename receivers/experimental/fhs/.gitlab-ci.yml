@@ -54,8 +54,8 @@ resolveReceiverFhsRelease:
     - (cd /tmp/fiatlux-client && make build-${FHS_ARCH})
     - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/lib/* /usr/local/lib/
     - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/include/* /usr/local/include/
-    - rustup install nightly
-    - rustup default nightly
+    - rustup install nightly-2026-01-15
+    - rustup default nightly-2026-01-15
     - rustup target add ${RUST_TARGET}
     - cargo install cargo-generate-rpm
     - cargo build --release --package fhs-receiver --features static-gst-plugins --target ${RUST_TARGET}
