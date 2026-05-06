@@ -1,0 +1,96 @@
+resolveReceiverFhsRelease:
+  stage: receiverExperimental
+  tags:
+    - fcast-autoscaler
+  resource_group: fcast-fhs-publish
+  variables:
+    AWS_ACCESS_KEY_ID: $FHS_R2_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY: $FHS_R2_SECRET_ACCESS_KEY
+    AWS_DEFAULT_REGION: auto
+    AWS_ENDPOINT_URL: $FHS_R2_ENDPOINT
+    R2_BUCKET: s3://$FHS_R2_BUCKET
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: on_success
+    - when: manual
+      allow_failure: true
+  script:
+    - set -euo pipefail
+    - sudo dnf install -y awscli2
+    - VERSION=$(grep -m1 '^version *=' receivers/experimental/fhs/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+    - LISTING=$(aws s3 ls "${R2_BUCKET}/fcast-receiver/")
+    - EXISTING=$(echo "$LISTING" | grep -oE "fcast-receiver-${VERSION}-[0-9]+\.(x86_64|aarch64)\.rpm" | sed -E "s/fcast-receiver-${VERSION}-([0-9]+)\..+/\1/" | sort -n | tail -1 || true)
+    - RELEASE=$(( ${EXISTING:-0} + 1 ))
+    - echo "FCAST_FHS_VERSION=$VERSION" >> build.env
+    - echo "FCAST_FHS_RELEASE=$RELEASE" >> build.env
+    - echo "Resolved fcast-receiver-${VERSION}-${RELEASE}.{x86_64,aarch64}.rpm"
+  artifacts:
+    reports:
+      dotenv: build.env
+
+.buildReceiverFhsLinuxRPM:
+  stage: receiverExperimental
+  needs:
+    - resolveReceiverFhsRelease
+  resource_group: fcast-fhs-publish
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    GIT_SUBMODULE_DEPTH: 1
+    AWS_ACCESS_KEY_ID: $FHS_R2_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY: $FHS_R2_SECRET_ACCESS_KEY
+    AWS_DEFAULT_REGION: auto
+    AWS_ENDPOINT_URL: $FHS_R2_ENDPOINT
+    R2_BUCKET: s3://$FHS_R2_BUCKET
+  script:
+    - set -euo pipefail
+    - sudo dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
+      gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
+      gstreamer1-plugin-libav libdav1d-devel glib2-devel
+      fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel
+      libheif-devel pango-devel libdrm-devel zig awscli2
+      meson ninja-build
+    - git config --global url."https://oauth2:${FHS_GH_PAT}@github.com/".insteadOf "git@github.com:"
+    - rm -rf /tmp/fiatlux-client
+    - git clone --recursive https://oauth2:${FHS_GH_PAT}@github.com/futo-org/fhs-fiatlux-client.git /tmp/fiatlux-client
+    - (cd /tmp/fiatlux-client && make build-${FHS_ARCH})
+    - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/lib/* /usr/local/lib/
+    - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/include/* /usr/local/include/
+    - rustup install nightly-2026-01-15
+    - rustup default nightly-2026-01-15
+    - rustup target add ${RUST_TARGET}
+    - cargo install cargo-generate-rpm
+    - cargo build --release --package fhs-receiver --features static-gst-plugins --target ${RUST_TARGET}
+    - grep -q '^release *=' receivers/experimental/fhs/Cargo.toml
+    - sed -i "s/^release = .*/release = \"${FCAST_FHS_RELEASE}\"/" receivers/experimental/fhs/Cargo.toml
+    - cargo generate-rpm -p receivers/experimental/fhs --target ${RUST_TARGET}
+    - RPM_FILE="fcast-receiver-${FCAST_FHS_VERSION}-${FCAST_FHS_RELEASE}.${FHS_ARCH}.rpm"
+    - cp "target/${RUST_TARGET}/generate-rpm/${RPM_FILE}" "${RPM_FILE}"
+    - aws s3 cp "$RPM_FILE" "${R2_BUCKET}/fcast-receiver/${RPM_FILE}"
+    - aws s3 cp "$RPM_FILE" "${R2_BUCKET}/fcast-receiver/fcast-receiver-latest.${FHS_ARCH}.rpm"
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    paths:
+      - ./*.rpm
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: on_success
+    - when: manual
+      allow_failure: true
+
+buildReceiverFhsLinuxX64RPM:
+  extends: .buildReceiverFhsLinuxRPM
+  tags:
+    - fcast-autoscaler
+  variables:
+    FHS_ARCH: "x86_64"
+    RUST_TARGET: "x86_64-unknown-linux-gnu"
+
+buildReceiverFhsLinuxAarch64RPM:
+  extends: .buildReceiverFhsLinuxRPM
+  tags:
+    - fcast-autoscaler-arm
+  variables:
+    FHS_ARCH: "aarch64"
+    RUST_TARGET: "aarch64-unknown-linux-gnu"

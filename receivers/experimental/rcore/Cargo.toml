@@ -71,9 +71,7 @@ glow = "0.17.0"
 [dependencies.slint]
 workspace = true
 features = [
-    "backend-winit",
     "compat-1-2",
-    "renderer-femtovg",
     "std",
 ]
 
@@ -136,9 +134,16 @@ slint-build.workspace = true
 
 [features]
 default = []
-desktop = ["dep:libheif-rs"]
+extra-imgfmt = ["dep:libheif-rs"]
+desktop = [
+    "extra-imgfmt",
+    "slint/accessibility",
+    "slint/backend-winit",
+    "slint/renderer-femtovg",
+]
 systray = ["dep:ksni", "dep:tray-icon"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-webrtchttp", "dep:gst-plugin-webrtc", "dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
+fhs = ["extra-imgfmt", "slint/renderer-femtovg"]

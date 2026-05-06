@@ -1,0 +1,34 @@
+[package]
+name = "fhs-receiver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rcore = { path = "../rcore", features = ["fhs"] }
+anyhow.workspace = true
+mimalloc.workspace = true
+fiatlux.path = "../../../crates/fiatlux"
+
+[features]
+default = []
+tracy = ["rcore/tracy"]
+static-gst-plugins = ["rcore/static-gst-plugins"]
+
+[package.metadata.generate-rpm]
+name = "fcast-receiver"
+summary = "FCast Receiver for displaying multimedia content"
+license = "GPL-3.0"
+url = "https://fcast.org/"
+release = "1"
+assets = [
+    { source = "target/release/fhs-receiver", dest = "/usr/bin/fcast-receiver", mode = "755" },
+    { source = ".flatpak/org.fcast.Receiver.desktop", dest = "/usr/share/applications/org.fcast.Receiver.fhs", mode = "644" },
+    { source = ".flatpak/org.fcast.Receiver.metainfo.xml", dest = "/usr/share/metainfo/org.fcast.Receiver.metainfo.xml", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+gstreamer1 = "*"
+gstreamer1-plugins-base = "*"
+gstreamer1-plugins-good = "*"
+gstreamer1-plugins-bad-free = "*"
+gstreamer1-libav = "*"
