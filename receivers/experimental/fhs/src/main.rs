@@ -131,6 +131,7 @@ impl FiatLuxWindowAdapter {
     pub fn set_scale(&self, scale: f32) {
         self.window
             .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale });
+        self.window.set_size(self.size.get());
     }
 }
 
@@ -227,11 +228,11 @@ impl slint::platform::Platform for FiatLuxPlatform {
     }
 
     fn run_event_loop(&self) -> Result<(), slint::PlatformError> {
+        self.window.set_scale(self.window.fl_window.display_scale);
         self.window.set_size(slint::PhysicalSize::new(
             self.window.fl_window.width,
             self.window.fl_window.height,
         ));
-        self.window.set_scale(self.window.fl_window.display_scale);
 
         loop {
             slint::platform::update_timers_and_animations();
