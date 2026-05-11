@@ -1,5 +1,4 @@
 use anyhow::Result;
-use fiatlux::fl_protocol_Button;
 use mimalloc::MiMalloc;
 use rcore::{
     clap::Parser,
@@ -242,7 +241,7 @@ impl FiatLuxPlatform {
     }
 
     fn fl_button_to_slint_button(
-        fl_button: fl_protocol_Button,
+        fl_button: fiatlux::fl_protocol_Button,
     ) -> slint::platform::PointerEventButton {
         match fl_button {
             fl_protocol_Button_fl_protocol_Button_button1 => {
@@ -352,7 +351,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
                                     x: event.button.abs_x as f32,
                                     y: event.button.abs_y as f32,
                                 },
-                                FiatLuxPlatform::fl_button_to_slint_button(event.button.button as fl_protocol_Button),
+                                FiatLuxPlatform::fl_button_to_slint_button(event.button.button as fiatlux::fl_protocol_Button),
                                 event.button.state as fiatlux::fl_protocol_ButtonState == fiatlux::fl_protocol_ButtonState_fl_protocol_ButtonState_pressed,
                             );
                         }
