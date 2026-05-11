@@ -244,13 +244,13 @@ impl FiatLuxPlatform {
         fl_button: fiatlux::fl_protocol_Button,
     ) -> slint::platform::PointerEventButton {
         match fl_button {
-            fl_protocol_Button_fl_protocol_Button_button1 => {
+            fiatlux::fl_protocol_Button_fl_protocol_Button_button1 => {
                 slint::platform::PointerEventButton::Left
             }
-            fl_protocol_Button_fl_protocol_Button_button2 => {
+            fiatlux::fl_protocol_Button_fl_protocol_Button_button2 => {
                 slint::platform::PointerEventButton::Middle
             }
-            fl_protocol_Button_fl_protocol_Button_button3 => {
+            fiatlux::fl_protocol_Button_fl_protocol_Button_button3 => {
                 slint::platform::PointerEventButton::Right
             },
             _ => slint::platform::PointerEventButton::Other,
