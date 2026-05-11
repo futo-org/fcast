@@ -253,7 +253,8 @@ impl FiatLuxPlatform {
             }
             fl_protocol_Button_fl_protocol_Button_button3 => {
                 slint::platform::PointerEventButton::Right
-            }
+            },
+            _ => slint::platform::PointerEventButton::Other,
         }
     }
 }
