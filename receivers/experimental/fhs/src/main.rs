@@ -1,9 +1,9 @@
 use anyhow::Result;
+use mimalloc::MiMalloc;
 use rcore::{
     clap::Parser,
     slint::{self, platform::femtovg_renderer},
 };
-use mimalloc::MiMalloc;
 use std::{
     cell::Cell,
     ffi::CString,
@@ -128,9 +128,35 @@ impl FiatLuxWindowAdapter {
         self.window.set_size(size);
     }
 
-    pub fn set_scale(&self, scale: f32) {
+    pub fn set_scale(&self, scale_factor: f32) {
         self.window
-            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale });
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor });
+        self.window.set_size(self.size.get());
+    }
+
+    pub fn window_active_changed(&self, active: bool) {
+        self.window
+            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(active));
+    }
+
+    pub fn pointer_moved(&self, position: slint::LogicalPosition) {
+        self.window
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    }
+
+    pub fn pointer_button(
+        &self,
+        position: slint::LogicalPosition,
+        button: slint::platform::PointerEventButton,
+        pressed: bool,
+    ) {
+        if pressed {
+            self.window
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        } else {
+            self.window
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        }
     }
 }
 
@@ -213,6 +239,23 @@ impl FiatLuxPlatform {
             quit_event_loop: Arc::new(AtomicBool::new(false)),
         })
     }
+
+    fn fl_button_to_slint_button(
+        fl_button: fiatlux::fl_protocol_Button,
+    ) -> slint::platform::PointerEventButton {
+        match fl_button {
+            fiatlux::fl_protocol_Button_fl_protocol_Button_button1 => {
+                slint::platform::PointerEventButton::Left
+            }
+            fiatlux::fl_protocol_Button_fl_protocol_Button_button2 => {
+                slint::platform::PointerEventButton::Middle
+            }
+            fiatlux::fl_protocol_Button_fl_protocol_Button_button3 => {
+                slint::platform::PointerEventButton::Right
+            },
+            _ => slint::platform::PointerEventButton::Other,
+        }
+    }
 }
 
 impl slint::platform::Platform for FiatLuxPlatform {
@@ -227,11 +270,11 @@ impl slint::platform::Platform for FiatLuxPlatform {
     }
 
     fn run_event_loop(&self) -> Result<(), slint::PlatformError> {
+        self.window.set_scale(self.window.fl_window.display_scale);
         self.window.set_size(slint::PhysicalSize::new(
             self.window.fl_window.width,
             self.window.fl_window.height,
         ));
-        self.window.set_scale(self.window.fl_window.display_scale);
 
         loop {
             slint::platform::update_timers_and_animations();
@@ -267,7 +310,15 @@ impl slint::platform::Platform for FiatLuxPlatform {
                     const WINDOW_RESIZED: u8 =
                         fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
                     const DISPLAY_SCALE_NOTIFY: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify as u8;
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
+                            as u8;
+                    const WINDOW_VISIBILITY_CHANGED: u8 =
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
+                    const POINTER_MOVED: u8 =
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
+                    const BUTTON: u8 =
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_button as u8;
+
                     match event.header.event_type {
                         WINDOW_RESIZED => {
                             fiatlux::fl_egl_window_framebuffer_resize(
@@ -279,10 +330,31 @@ impl slint::platform::Platform for FiatLuxPlatform {
                                 event.window_resized.width,
                                 event.window_resized.height,
                             ));
-                        },
+                        }
                         DISPLAY_SCALE_NOTIFY => {
-                            self.window.set_scale(event.display_scale_notify.display_scale);
-                        },
+                            self.window
+                                .set_scale(event.display_scale_notify.display_scale);
+                        }
+                        WINDOW_VISIBILITY_CHANGED => {
+                            self.window
+                                .window_active_changed(event.window_visibility_changed.visible);
+                        }
+                        POINTER_MOVED => {
+                            self.window.pointer_moved(slint::LogicalPosition {
+                                x: event.pointer_moved.abs_x as f32,
+                                y: event.pointer_moved.abs_y as f32,
+                            });
+                        }
+                        BUTTON => {
+                            self.window.pointer_button(
+                                slint::LogicalPosition {
+                                    x: event.button.abs_x as f32,
+                                    y: event.button.abs_y as f32,
+                                },
+                                FiatLuxPlatform::fl_button_to_slint_button(event.button.button as fiatlux::fl_protocol_Button),
+                                event.button.state as fiatlux::fl_protocol_ButtonState == fiatlux::fl_protocol_ButtonState_fl_protocol_ButtonState_pressed,
+                            );
+                        }
                         _ => {}
                     }
 
