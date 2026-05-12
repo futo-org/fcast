@@ -552,6 +552,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         UpdateGuiCommand::ClearCommonPlaybackState => {
             clear_audio_covers(&bridge, renderer_tx);
             set_playback_progress(&bridge, 0.0, 0.0);
+            bridge.set_render_subtitles(true);
         }
         UpdateGuiCommand::SetPlayerType(typ) => bridge.set_player_variant(typ),
         #[cfg(feature = "systray")]

@@ -370,7 +370,16 @@ component ButtonControls inherits HorizontalLayout {
                     tracks: Bridge.subtitle-tracks;
                     selected-id: Bridge.current-subtitle-track;
                     can-be-disabled: true;
-                    clicked(id) => Bridge.select-track(id, UiMediaTrackType.Subtitle);
+                    clicked(id) => {
+                        // HACK: needed until https://gitlab.freedesktop.org/gstreamer/gstreamer/-/work_items/4744 is fixed
+                        if id != -1 {
+                            Bridge.render-subtitles = true;
+                            Bridge.select-track(id, UiMediaTrackType.Subtitle);
+                        } else {
+                            Bridge.render-subtitles = false;
+                            Bridge.current-subtitle-track = -1;
+                        }
+                    }
                 }
             }
         }
@@ -466,7 +475,7 @@ component PlaybackControls inherits Rectangle {
 
         Rectangle { }
 
-        if Bridge.subtitles.length > 0: SubtitleView { }
+        if Bridge.render-subtitles && Bridge.subtitles.length > 0: SubtitleView { }
 
         HorizontalLayout {
             padding: 10px;
@@ -578,7 +587,7 @@ export component VideoPlayerView inherits Rectangle {
         source: overlay.img;
     }
 
-    if !playback-control.visible && Bridge.subtitles.length > 0: VerticalLayout {
+    if !playback-control.visible && Bridge.render-subtitles && Bridge.subtitles.length > 0: VerticalLayout {
         padding: 30px;
 
         Rectangle { }

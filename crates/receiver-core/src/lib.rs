@@ -530,6 +530,7 @@ impl Application {
             self.gui.set_playback_state(GuiPlaybackState::Idle);
             self.gui.clear_tracks();
             self.gui.set_track_ids(-1, -1, -1);
+            self.gui.clear_common_playback_state();
 
             if preserve_playlist == PreservePlaylist::No {
                 self.gui.update_playlist(0, 0);
