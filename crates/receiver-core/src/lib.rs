@@ -349,6 +349,7 @@ impl Application {
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         tokio::spawn({
+            use tracing::Instrument;
             let msg_tx = msg_tx.clone();
             async move {
                 match app_updater::check_for_update(UPDATER_BASE_URL, env!("CARGO_PKG_VERSION"))
