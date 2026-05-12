@@ -220,7 +220,9 @@ impl StateMachine {
             State::Changing { target_state, .. } => if *target_state != next_state {},
             State::SeekAsync { target_state, .. } => *target_state = next_state,
             State::Seeking { target_state, .. } => *target_state = next_state,
-            State::Running { state: current_state } => {
+            State::Running {
+                state: current_state,
+            } => {
                 if *current_state != state {
                     self.state = State::Changing {
                         target_state: next_state,
@@ -553,6 +555,7 @@ pub enum PlayerEvent {
     Error(String),
     Warning(String),
     UriSet(String),
+    StreamTagsUpdated,
 }
 
 #[derive(Debug)]
@@ -615,6 +618,8 @@ pub struct Player {
     pub current_subtitle_stream: i32,
     pub seekable: bool,
     state_machine: StateMachine,
+    stream_collection: Option<gst::StreamCollection>,
+    stream_collection_notify: Option<gst::glib::SignalHandlerId>,
 }
 
 impl Player {
@@ -795,6 +800,8 @@ impl Player {
             current_subtitle_stream: -1,
             seekable: false,
             state_machine: StateMachine::new(),
+            stream_collection: None,
+            stream_collection_notify: None,
         })
     }
 
@@ -897,7 +904,31 @@ impl Player {
         msg_tx.player(msg);
     }
 
-    pub fn handle_stream_collection(&mut self, collection: gst::StreamCollection) {
+    fn cleanup_stream_collection(&mut self) {
+        if let Some(old_collection) = self.stream_collection.take()
+            && let Some(sig_id) = self.stream_collection_notify.take()
+        {
+            old_collection.disconnect(sig_id);
+        }
+    }
+
+    pub fn handle_stream_collection(
+        &mut self,
+        collection: gst::StreamCollection,
+        msg_tx: MessageSender,
+    ) {
+        self.cleanup_stream_collection();
+
+        // TODO: optimize by only updating the stream that was changed
+        self.stream_collection_notify = Some(collection.connect_stream_notify(
+            None,
+            move |_collection, _stream, param| {
+                if param.name() == "tags" {
+                    msg_tx.player(PlayerEvent::StreamTagsUpdated);
+                }
+            },
+        ));
+
         self.video_streams.clear();
         self.audio_streams.clear();
         self.subtitle_streams.clear();
@@ -913,6 +944,8 @@ impl Player {
                 self.subtitle_streams.push(stream);
             }
         }
+
+        self.stream_collection = Some(collection);
     }
 
     pub fn get_duration(&self) -> Option<gst::ClockTime> {
@@ -1057,6 +1090,8 @@ impl Player {
     }
 
     fn go_to_stopped_state(&mut self, null: Option<oneshot::Sender<()>>) {
+        self.cleanup_stream_collection();
+
         let target = if null.is_some() {
             gst::State::Null
         } else {

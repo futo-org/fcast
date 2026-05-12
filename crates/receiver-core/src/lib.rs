@@ -1077,6 +1077,23 @@ impl Application {
         }
     }
 
+    fn update_tracks_in_gui(&self) {
+        fn trackify(streams: &[gst::Stream]) -> Vec<UiMediaTrack> {
+            streams
+                .iter()
+                .map(|stream| UiMediaTrack {
+                    name: player::stream_title(stream).to_shared_string(),
+                })
+                .collect::<Vec<UiMediaTrack>>()
+        }
+
+        self.gui.set_tracks(
+            trackify(&self.player.video_streams),
+            trackify(&self.player.audio_streams),
+            trackify(&self.player.subtitle_streams),
+        );
+    }
+
     fn handle_new_player_event(&mut self, event: player::PlayerEvent) -> Result<()> {
         match event {
             player::PlayerEvent::EndOfStream => {
@@ -1165,7 +1182,8 @@ impl Application {
                 self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
             }
             player::PlayerEvent::StreamCollection(collection) => {
-                self.player.handle_stream_collection(collection);
+                self.player
+                    .handle_stream_collection(collection, self.msg_tx.clone());
                 // self.media_loaded_successfully();
 
                 self.player.update_media_info();
@@ -1180,20 +1198,7 @@ impl Application {
 
                 self.player.play();
 
-                fn trackify(streams: &[gst::Stream]) -> Vec<UiMediaTrack> {
-                    streams
-                        .iter()
-                        .map(|stream| UiMediaTrack {
-                            name: player::stream_title(stream).to_shared_string(),
-                        })
-                        .collect::<Vec<UiMediaTrack>>()
-                }
-
-                self.gui.set_tracks(
-                    trackify(&self.player.video_streams),
-                    trackify(&self.player.audio_streams),
-                    trackify(&self.player.subtitle_streams),
-                );
+                self.update_tracks_in_gui();
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -1288,6 +1293,9 @@ impl Application {
                 self.player
                     .dump_graph(remote_pipeline_dbg::Trigger::Warning);
                 self.media_warning(msg)?;
+            }
+            player::PlayerEvent::StreamTagsUpdated => {
+                self.update_tracks_in_gui();
             }
         }
 
