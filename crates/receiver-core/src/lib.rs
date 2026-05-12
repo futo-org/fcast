@@ -276,8 +276,7 @@ impl Application {
 
                 let name = elem.factory()?.name();
                 match name.as_str() {
-                    "rtspsrc" => elem.set_property("latency", 25u32),
-                    "webrtcbin" => elem.set_property("latency", 25u32),
+                    "rtspsrc" | "webrtcbin" => elem.set_property("latency", 75u32),
                     "whepsrc" => {
                         let mut caps = gst::Caps::new_empty();
                         {
