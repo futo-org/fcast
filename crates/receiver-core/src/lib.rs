@@ -13,7 +13,6 @@ use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
 use smallvec::SmallVec;
 use tokio::{
-    io::AsyncReadExt,
     net::TcpListener,
     sync::{
         broadcast,
@@ -22,7 +21,7 @@ use tokio::{
 };
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
-use tracing::{Instrument, debug, debug_span, error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -347,7 +346,10 @@ impl Application {
             GCastUpdateSender(None)
         };
 
+        #[cfg(debug_assertions)]
         tokio::spawn({
+            use tokio::io::AsyncReadExt;
+            use tracing::{Instrument, debug_span};
             let msg_tx = msg_tx.clone();
             async move {
                 let listener = tokio::net::TcpListener::bind("[::]:46897").await.unwrap();
@@ -1291,6 +1293,7 @@ impl Application {
                 self.notify_updates(true)?;
             }
             player::PlayerEvent::Error(msg) => {
+                #[cfg(debug_assertions)]
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
                 if let Some(player_uri) = self.player.current_uri()
                     && let Some(current_uri) = self.current_item_uri()
@@ -1301,6 +1304,7 @@ impl Application {
                 }
             }
             player::PlayerEvent::Warning(msg) => {
+                #[cfg(debug_assertions)]
                 self.player
                     .dump_graph(remote_pipeline_dbg::Trigger::Warning);
                 self.media_warning(msg)?;
@@ -1704,6 +1708,7 @@ impl Application {
                 }
             }
             Message::Raop(event) => return self.handle_raop_event(event),
+            #[cfg(debug_assertions)]
             Message::DumpPipeline => {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);
             }

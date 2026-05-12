@@ -115,6 +115,7 @@ pub enum Message {
     Tray(Tray),
     ShouldSetLoadingStatus(MediaItemId),
     Raop(Raop),
+    #[cfg(debug_assertions)]
     DumpPipeline,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     AppUpdate(AppUpdate),
