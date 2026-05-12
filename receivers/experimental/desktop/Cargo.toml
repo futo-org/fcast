@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 
 [dependencies]
-rcore = { path = "../rcore", features = ["desktop"] }
+rcore = { package = "receiver-core", path = "../../../crates/receiver-core", features = ["desktop"] }
 anyhow.workspace = true
 mimalloc.workspace = true
 

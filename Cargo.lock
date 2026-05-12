@@ -2093,7 +2093,7 @@ dependencies = [
  "anyhow",
  "enable-ansi-support",
  "mimalloc",
- "rcore",
+ "receiver-core",
  "winresource",
 ]
 
@@ -2645,7 +2645,7 @@ dependencies = [
  "anyhow",
  "fiatlux",
  "mimalloc",
- "rcore",
+ "receiver-core",
 ]
 
 [[package]]
@@ -7866,7 +7866,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "rcore"
+name = "read-fonts"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
+dependencies = [
+ "bytemuck",
+ "core_maths",
+ "font-types",
+]
+
+[[package]]
+name = "receiver-android"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "anyhow",
+ "env_logger",
+ "jni 0.21.1",
+ "log",
+ "log-panics",
+ "parking_lot",
+ "receiver-core",
+ "tokio",
+]
+
+[[package]]
+name = "receiver-core"
 version = "0.1.2"
 dependencies = [
  "aes",
@@ -7952,32 +7978,6 @@ dependencies = [
  "tray-icon",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "read-fonts"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
-dependencies = [
- "bytemuck",
- "core_maths",
- "font-types",
-]
-
-[[package]]
-name = "receiver-android"
-version = "0.1.0"
-dependencies = [
- "android_logger",
- "anyhow",
- "env_logger",
- "jni 0.21.1",
- "log",
- "log-panics",
- "parking_lot",
- "rcore",
- "tokio",
 ]
 
 [[package]]

@@ -1,12 +1,12 @@
 [package]
-name = "rcore"
+name = "receiver-core"
 version = "0.1.2"
 edition = "2024"
 
 [dependencies]
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
-fcast-protocol = { path = "../../../sdk/common/fcast-protocol" }
+fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
 gethostname = "1"
 anyhow.workspace = true
 futures.workspace = true
@@ -35,14 +35,14 @@ gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true 
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
-remote-pipeline-dbg = { path = "../../../tools/remote-pipeline-dbg", default-features = false, features = ["client"] }
+remote-pipeline-dbg = { path = "../../tools/remote-pipeline-dbg", default-features = false, features = ["client"] }
 tracing-tracy = { version = "=0.11.2", optional = true }
 pango = { version = "0.22.0", features = ["v1_44"] }
 hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }
 ctrlc.workspace = true
-libplacebo.path = "../../../crates/libplacebo"
+libplacebo.path = "../libplacebo"
 
 # RAOP
 rtsp-types = "0.1"
@@ -62,7 +62,7 @@ rtp-types = "0.1"
 
 # Google Cast
 rustls-pki-types = "1.12.0"
-google-cast-protocol = { path = "../../../sdk/common/google-cast-protocol" }
+google-cast-protocol = { path = "../../sdk/common/google-cast-protocol" }
 rcgen = "0.14.7"
 uuid.workspace = true
 
@@ -107,7 +107,7 @@ ksni = { version = "0.3", default-features = false, features = ["async-io"], opt
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
-egl-sys.path = "../../../crates/egl-sys"
+egl-sys.path = "../egl-sys"
 drm-fourcc = "2.2.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
@@ -124,9 +124,9 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 reqwest = { version = "0.13", features = [ "native-tls" ] }
-app-updater = { path = "../../../crates/app-updater"}
+app-updater = { path = "../app-updater"}
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
-receiver-resources.path = "../../../crates/receiver-resources"
+receiver-resources.path = "../receiver-resources"
 gst-gl = { package = "gstreamer-gl", version = "0.25", features = ["v1_20"] }
 
 [build-dependencies]
