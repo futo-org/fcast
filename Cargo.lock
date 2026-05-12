@@ -782,7 +782,27 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
- "tungstenite",
+ "tungstenite 0.28.0",
+]
+
+[[package]]
+name = "async-tungstenite"
+version = "0.34.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8447f02eaa65412035e2d3eeaa3fc82bbb8d7137c84c5976b4af685136012ee9"
+dependencies = [
+ "atomic-waker",
+ "futures-core",
+ "futures-io",
+ "futures-task",
+ "futures-util",
+ "log",
+ "pin-project-lite",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite 0.29.0",
 ]
 
 [[package]]
@@ -3537,8 +3557,8 @@ dependencies = [
 
 [[package]]
 name = "gst-plugin-reqwest"
-version = "0.14.4"
-source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=1371ed652de9d8bd7f9efb60198beda2fedd62d3#1371ed652de9d8bd7f9efb60198beda2fedd62d3"
+version = "0.15.2"
+source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=06c29061365d9ba19956540da47abf8dffea7d31#06c29061365d9ba19956540da47abf8dffea7d31"
 dependencies = [
  "futures",
  "gst-plugin-version-helper",
@@ -3603,7 +3623,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6a45f5b656c0ab166156cf9b48a2c1b63743eaf340d9b056f66f98061115d7d"
 dependencies = [
  "anyhow",
- "async-tungstenite",
+ "async-tungstenite 0.33.0",
  "bytes",
  "chrono",
  "fastrand",
@@ -3645,13 +3665,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-webrtc"
+version = "0.15.2"
+source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=06c29061365d9ba19956540da47abf8dffea7d31#06c29061365d9ba19956540da47abf8dffea7d31"
+dependencies = [
+ "anyhow",
+ "async-tungstenite 0.34.1",
+ "bytes",
+ "chrono",
+ "fastrand",
+ "futures",
+ "gst-plugin-version-helper",
+ "gst-plugin-webrtc-signalling",
+ "gst-plugin-webrtc-signalling-protocol",
+ "gstreamer 0.25.1",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-net",
+ "gstreamer-pbutils",
+ "gstreamer-rtp",
+ "gstreamer-sdp",
+ "gstreamer-utils",
+ "gstreamer-video",
+ "gstreamer-webrtc",
+ "http",
+ "human_bytes",
+ "hyper-util",
+ "indexmap 2.13.1",
+ "itertools 0.14.0",
+ "parse_link_header",
+ "rand 0.10.0",
+ "reqwest 0.12.28",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "gst-plugin-webrtc-signalling"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4bd0c5a8433ef26d997b8f06254ccaf24185b1c4b2faf5cd379ee8e279feb01"
 dependencies = [
  "anyhow",
- "async-tungstenite",
+ "async-tungstenite 0.33.0",
  "clap",
  "futures",
  "gst-plugin-webrtc-signalling-protocol",
@@ -3678,25 +3746,6 @@ checksum = "4a65a57d00a57ff98b4f5d51375ee90295865bb76e6a8c5cec8d36aabf396e4b"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "gst-plugin-webrtchttp"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9059b4836d2f3a98e34b62b11058e917d1f4743c968623636b755e74a06056e3"
-dependencies = [
- "async-recursion",
- "bytes",
- "futures",
- "gst-plugin-version-helper",
- "gstreamer 0.25.1",
- "gstreamer-sdp",
- "gstreamer-webrtc",
- "parse_link_header",
- "reqwest 0.12.28",
- "rustls",
- "tokio",
 ]
 
 [[package]]
@@ -5966,7 +6015,7 @@ dependencies = [
  "fcast-protocol",
  "fcast-sender-sdk",
  "futures",
- "gst-plugin-webrtc",
+ "gst-plugin-webrtc 0.15.0",
  "gstreamer 0.25.1",
  "gstreamer-app",
  "gstreamer-pbutils",
@@ -7918,8 +7967,7 @@ dependencies = [
  "gst-plugin-dav1d",
  "gst-plugin-reqwest",
  "gst-plugin-rtp",
- "gst-plugin-webrtc",
- "gst-plugin-webrtchttp",
+ "gst-plugin-webrtc 0.15.2",
  "gstreamer 0.25.1",
  "gstreamer-allocators",
  "gstreamer-app",
@@ -10066,6 +10114,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tungstenite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.2",
+ "rustls",
+ "rustls-pki-types",
+ "sha1",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
 name = "typed-index-collections"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10760,9 +10827,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
+checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
 dependencies = [
  "rustls-pki-types",
 ]

@@ -73,12 +73,16 @@ mod imp {
             let element = self.obj();
             let bin: &gst::Bin = element.upcast_ref();
 
-            let whepsrc = gst::ElementFactory::make("whepsrc")
-                .property("whep-endpoint", &uri)
+            let whepsrc = gst::ElementFactory::make("whepclientsrc")
+                .property("video-codecs", gst::Array::new(["VP8"]))
+                .property("stun-server", "")
                 .build()
                 .map_err(|err| {
                     glib::Error::new(gst::PluginError::Dependencies, &err.to_string())
                 })?;
+
+            let signaller = whepsrc.property::<gstrswebrtc::signaller::Signallable>("signaller");
+            signaller.set_property("whep-endpoint", &uri);
 
             bin.add(&whepsrc).unwrap();
 

@@ -28,9 +28,8 @@ smallvec.workspace = true
 parking_lot.workspace = true
 image_swizzle.workspace = true
 bytes.workspace = true
-gst-plugin-reqwest = { rev = "1371ed652de9d8bd7f9efb60198beda2fedd62d3", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
-gst-plugin-webrtc = { version = "0.15", default-features = false, features = [ "static" ], optional = true }
-gst-plugin-webrtchttp = { version = "0.15", features = [ "static" ], optional = true }
+gst-plugin-reqwest = { rev = "06c29061365d9ba19956540da47abf8dffea7d31", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
+gst-plugin-webrtc = { rev = "06c29061365d9ba19956540da47abf8dffea7d31", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false, features = [ "static", "whep-client" ] }
 gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
@@ -145,5 +144,5 @@ systray = ["dep:ksni", "dep:tray-icon"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 tracy = ["dep:tracing-tracy"]
-static-gst-plugins = ["dep:gst-plugin-webrtchttp", "dep:gst-plugin-webrtc", "dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
+static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
 fhs = ["extra-imgfmt", "slint/renderer-femtovg"]

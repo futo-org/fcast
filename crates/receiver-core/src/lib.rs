@@ -277,26 +277,6 @@ impl Application {
                 let name = elem.factory()?.name();
                 match name.as_str() {
                     "rtspsrc" | "webrtcbin" => elem.set_property("latency", 75u32),
-                    "whepsrc" => {
-                        let mut caps = gst::Caps::new_empty();
-                        {
-                            let caps = caps.get_mut().unwrap();
-
-                            let accept = [("VP8", 101)];
-
-                            for (encoding, payload) in accept {
-                                let cap = gst::Caps::builder("application/x-rtp")
-                                    .field("media", "video")
-                                    .field("payload", payload)
-                                    .field("encoding-name", encoding)
-                                    .field("clock-rate", 90000)
-                                    .build();
-                                caps.append(cap);
-                            }
-                        }
-
-                        elem.set_property("video-caps", caps);
-                    }
                     "reqwesthttpsrc" => {
                         let mut did_set_user_agent = false;
                         if let Some(ref headers) = *headers.lock() {
