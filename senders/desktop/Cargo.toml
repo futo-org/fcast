@@ -28,7 +28,7 @@ gst-plugin-rtp.workspace = true
 webbrowser = "1.0.6"
 directories = "6.0.0"
 toml_edit.workspace = true
-fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
+fcast-protocol = { path = "../../crates/fcast-protocol" }
 mcore.path = "../../sdk/mirroring_core/"
 image = { version = "0.25", default-features = false, features = [ "png", "jpeg", "webp", "avif", "rayon" ] }
 url = "2"

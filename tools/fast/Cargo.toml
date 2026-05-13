@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fcast-protocol.path = "../../sdk/common/fcast-protocol"
+fcast-protocol = { path = "../../crates/fcast-protocol" }
 clap.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true

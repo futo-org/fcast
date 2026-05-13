@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
+fcast-protocol = { path = "../../crates/fcast-protocol" }
 fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = [ "fcast", "discovery" ] }
 parking_lot.workspace = true
 gst.workspace = true

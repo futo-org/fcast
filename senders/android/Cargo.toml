@@ -17,7 +17,7 @@ gst-app.workspace = true
 anyhow.workspace = true
 crossbeam-channel = "0.5.15"
 gst.workspace = true
-fcast-protocol = { path = "../../sdk/common/fcast-protocol" }
+fcast-protocol = { path = "../../crates/fcast-protocol" }
 fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = [ "fcast" ] }
 mcore.path = "../../sdk/mirroring_core/"
 parking_lot.workspace = true
