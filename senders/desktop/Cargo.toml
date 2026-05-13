@@ -32,7 +32,7 @@ fcast-protocol = { path = "../../crates/fcast-protocol" }
 mcore.path = "../../sdk/mirroring_core/"
 image = { version = "0.25", default-features = false, features = [ "png", "jpeg", "webp", "avif", "rayon" ] }
 url = "2"
-file-server = { path = "../../sdk/file-server" }
+file-server = { path = "../../crates/file-server" }
 num_cpus.workspace = true
 mimalloc.workspace = true
 

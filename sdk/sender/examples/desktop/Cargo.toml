@@ -14,7 +14,7 @@ anyhow.workspace = true
 slint = { workspace = true, features = [ "backend-default", "compat-1-2", "renderer-femtovg", "renderer-software", "std" ] }
 rfd = "0.15.4" # File dialog
 infer = "0.19.0" # MIME type inference
-file-server.path = "../../../file-server"
+file-server.path = "../../../../crates/file-server"
 
 [build-dependencies]
 slint-build.workspace = true

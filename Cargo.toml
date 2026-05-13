@@ -10,7 +10,7 @@ members = [
     "senders/desktop",
     "senders/android",
     "tools/fast",
-    "sdk/file-server",
+    "crates/file-server",
     "senders/android",
     "crates/receiver-core",
     "receivers/experimental/desktop",
