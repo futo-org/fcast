@@ -6,7 +6,7 @@ members = [
     "senders/terminal",
     "sdk/sender/examples/desktop",
     "crates/fcast-protocol",
-    "sdk/mirroring_core",
+    "crates/mirroring-core",
     "senders/desktop",
     "senders/android",
     "tools/fast",
