@@ -83,11 +83,10 @@ impl FiatLuxWindowAdapter {
             fiatlux::fl_egl_create_window_framebuffer(
                 fiatlux::fl_graphics_context_get_egl(gc.gc),
                 client.client,
-                fiatlux::fl_graphics_context_get_egl_config(gc.gc),
-                fiatlux::fl_graphics_context_get_egl_context(gc.gc),
                 fl_window.window_id,
                 fl_window.width,
                 fl_window.height,
+                fiatlux::fl_PixmapFormat_FL_PIXMAP_FORMAT_RGBA8,
             )
             .as_mut()
             .expect("Failed to create window framebuffer")
@@ -240,17 +239,17 @@ impl FiatLuxPlatform {
         })
     }
 
-    fn fl_button_to_slint_button(
-        fl_button: fiatlux::fl_protocol_Button,
+    fn fl_pointer_button_to_slint_pointer_button(
+        fl_button: fiatlux::fl_protocol_PointerButton,
     ) -> slint::platform::PointerEventButton {
         match fl_button {
-            fiatlux::fl_protocol_Button_fl_protocol_Button_button1 => {
+            fiatlux::fl_protocol_PointerButton_fl_protocol_PointerButton_button1 => {
                 slint::platform::PointerEventButton::Left
             }
-            fiatlux::fl_protocol_Button_fl_protocol_Button_button2 => {
+            fiatlux::fl_protocol_PointerButton_fl_protocol_PointerButton_button2 => {
                 slint::platform::PointerEventButton::Middle
             }
-            fiatlux::fl_protocol_Button_fl_protocol_Button_button3 => {
+            fiatlux::fl_protocol_PointerButton_fl_protocol_PointerButton_button3 => {
                 slint::platform::PointerEventButton::Right
             },
             _ => slint::platform::PointerEventButton::Other,
@@ -316,8 +315,8 @@ impl slint::platform::Platform for FiatLuxPlatform {
                         fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
                     const POINTER_MOVED: u8 =
                         fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
-                    const BUTTON: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_button as u8;
+                    const POINTER_BUTTON: u8 =
+                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
 
                     match event.header.event_type {
                         WINDOW_RESIZED => {
@@ -345,14 +344,14 @@ impl slint::platform::Platform for FiatLuxPlatform {
                                 y: event.pointer_moved.abs_y as f32,
                             });
                         }
-                        BUTTON => {
+                        POINTER_BUTTON => {
                             self.window.pointer_button(
                                 slint::LogicalPosition {
-                                    x: event.button.abs_x as f32,
-                                    y: event.button.abs_y as f32,
+                                    x: event.pointer_button.abs_x as f32,
+                                    y: event.pointer_button.abs_y as f32,
                                 },
-                                FiatLuxPlatform::fl_button_to_slint_button(event.button.button as fiatlux::fl_protocol_Button),
-                                event.button.state as fiatlux::fl_protocol_ButtonState == fiatlux::fl_protocol_ButtonState_fl_protocol_ButtonState_pressed,
+                                FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fiatlux::fl_protocol_PointerButton),
+                                event.pointer_button.state as fiatlux::fl_protocol_PointerButtonState == fiatlux::fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
                             );
                         }
                         _ => {}
