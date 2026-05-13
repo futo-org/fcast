@@ -18,7 +18,7 @@ members = [
     "receivers/experimental/fhs",
     "tools/remote-pipeline-dbg",
     "crates/app-updater",
-    "sdk/common/google-cast-protocol",
+    "crates/google-cast-protocol",
     "crates/receiver-resources",
     "crates/libplacebo-sys",
     "crates/libplacebo",

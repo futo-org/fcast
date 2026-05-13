@@ -61,7 +61,7 @@ rtp-types = "0.1"
 
 # Google Cast
 rustls-pki-types = "1.12.0"
-google-cast-protocol = { path = "../../sdk/common/google-cast-protocol" }
+google-cast-protocol = { path = "../google-cast-protocol" }
 rcgen = "0.14.7"
 uuid.workspace = true
 
