@@ -1,5 +1,10 @@
 # FCast Receiver Changelog
 
+## 0.1.3-beta - 2026-05-14
+
+ - Fix freezing when disabling subtitles
+ - Update dependencies
+
 ## 0.1.2-beta - 2026-04-30
 
  - New video renderer that uses [libplacebo]
