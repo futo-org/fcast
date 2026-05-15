@@ -352,6 +352,19 @@ impl PlaceboContext {
         swframe: &libplacebo::SwapchainFrame,
         frame: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
     ) -> std::result::Result<(), RenderFrameError> {
+        let mut target = unsafe {
+            let mut t = std::mem::zeroed();
+            pl_frame_from_swapchain(&mut t, &swframe.frame);
+            t
+        };
+        self.render_sysmem_to(&mut target, frame)
+    }
+
+    fn render_sysmem_to(
+        &mut self,
+        target: &mut pl_frame,
+        frame: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
+    ) -> std::result::Result<(), RenderFrameError> {
         let info = frame.info();
         let frame_info = RenderFrameInfo::new(info);
 
@@ -361,19 +374,13 @@ impl PlaceboContext {
             return Err(err);
         };
 
-        let mut target = unsafe {
-            let mut t = std::mem::zeroed();
-            pl_frame_from_swapchain(&mut t, &swframe.frame);
-            t
-        };
-
         target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
 
         unsafe {
             pl_render_image(
                 self.renderer.renderer,
                 &image,
-                &target,
+                target,
                 &self.rendering_params,
             );
         }
@@ -385,6 +392,21 @@ impl PlaceboContext {
     fn render_dmabuf(
         &self,
         swframe: &libplacebo::SwapchainFrame,
+        buffer: &gst::Buffer,
+        dma_info: &gst_video::VideoInfoDmaDrm,
+    ) -> std::result::Result<(), RenderFrameError> {
+        let mut target = unsafe {
+            let mut t = std::mem::zeroed();
+            pl_frame_from_swapchain(&mut t, &swframe.frame);
+            t
+        };
+        self.render_dmabuf_to(&mut target, buffer, dma_info)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn render_dmabuf_to(
+        &self,
+        target: &mut pl_frame,
         buffer: &gst::Buffer,
         dma_info: &gst_video::VideoInfoDmaDrm,
     ) -> std::result::Result<(), RenderFrameError> {
@@ -494,19 +516,13 @@ impl PlaceboContext {
             image.planes[plane_idx as usize].components = components as i32;
         }
 
-        let mut target = unsafe {
-            let mut t = std::mem::zeroed();
-            pl_frame_from_swapchain(&mut t, &swframe.frame);
-            t
-        };
-
         target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
 
         unsafe {
             pl_render_image(
                 self.renderer.renderer,
                 &image,
-                &target,
+                target,
                 &self.rendering_params,
             );
             destroy_textures(self.opengl.gpu(), image.num_planes, &mut image.planes);
@@ -529,6 +545,54 @@ impl PlaceboContext {
             #[cfg(target_os = "macos")]
             crate::video::RawFrame::Gl { .. } => Ok(()),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn render_frame_to_tex(
+        &mut self,
+        target_tex: pl_tex,
+        target_width: i32,
+        target_height: i32,
+        target_color: pl_color_space,
+        frame: &crate::video::RawFrame,
+    ) -> std::result::Result<(), RenderFrameError> {
+        let mut target: pl_frame = unsafe { std::mem::zeroed() };
+        target.num_planes = 1;
+        target.planes[0] = libplacebo::new_plane();
+        target.planes[0].texture = target_tex;
+        target.planes[0].components = 4;
+        target.planes[0].component_mapping = [0, 1, 2, 3];
+        target.repr = pl_color_repr {
+            sys: pl_color_system::PL_COLOR_SYSTEM_RGB,
+            levels: pl_color_levels::PL_COLOR_LEVELS_FULL,
+            alpha: pl_alpha_mode::PL_ALPHA_NONE,
+            bits: pl_bit_encoding {
+                sample_depth: 0,
+                color_depth: 0,
+                bit_shift: 0,
+            },
+            dovi: ptr::null(),
+        };
+        target.color = target_color;
+        target.crop = pl_rect2df {
+            x0: 0.0,
+            y0: 0.0,
+            x1: target_width as f32,
+            y1: target_height as f32,
+        };
+
+        match frame {
+            crate::video::RawFrame::SystemMemory { frame } => {
+                self.render_sysmem_to(&mut target, frame)
+            }
+            crate::video::RawFrame::DmaBuf {
+                buffer, dma_info, ..
+            } => self.render_dmabuf_to(&mut target, buffer, dma_info),
+        }
+    }
+
+    pub unsafe fn gpu(&self) -> *const pl_gpu_t {
+        unsafe { self.opengl.gpu() }
     }
 }
 

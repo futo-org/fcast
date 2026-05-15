@@ -12,11 +12,13 @@ use std::{
     rc::{Rc, Weak},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
 };
+
+mod pixmap_video_sink;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -43,7 +45,6 @@ unsafe impl femtovg_renderer::OpenGLInterface for FiatLuxGlContext {
         _width: NonZeroU32,
         _height: NonZeroU32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // TODO: Resize?
         Ok(())
     }
 
@@ -225,10 +226,13 @@ struct FiatLuxPlatform {
     job_sender: mpsc::Sender<Job>,
     job_receiver: mpsc::Receiver<Job>,
     quit_event_loop: Arc<AtomicBool>,
+    video_pixmap_id: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl FiatLuxPlatform {
-    pub fn new() -> Result<Self> {
+    pub fn new(
+        video_pixmap_id: Arc<std::sync::atomic::AtomicU32>,
+    ) -> Result<Self> {
         let (job_sender, job_receiver) = mpsc::channel::<Job>();
         Ok(Self {
             window: FiatLuxWindowAdapter::new()?,
@@ -236,6 +240,7 @@ impl FiatLuxPlatform {
             job_sender: job_sender,
             job_receiver: job_receiver,
             quit_event_loop: Arc::new(AtomicBool::new(false)),
+            video_pixmap_id,
         })
     }
 
@@ -361,6 +366,13 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             }
 
+            // Force slint to redraw every iteration so the window
+            // framebuffer's gbm BO chain always rotates to a freshly rendered
+            // buffer. Otherwise present_framebuffer below would cycle through
+            // stale BOs whenever slint thought no redraw was needed, which
+            // shows up as flicker between the current and an old UI state.
+            self.window.window.request_redraw();
+
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
                 unsafe {
@@ -368,12 +380,31 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             });
 
-            unsafe {
-                fiatlux::fl_egl_window_framebuffer_present_framebuffer_wait_for_vsync(
-                    self.window.render_buffer,
-                    3.0,
-                );
+            // Present the video pixmap (if a target is currently set) so the
+            // compositor keeps the video layer visible every frame, even on
+            // iterations where there was no new decoded frame to render.
+            let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
+            if video_pixmap_id_value != 0 {
+                let pixmap_id = fiatlux::fl_protocol_PixmapId {
+                    value: video_pixmap_id_value,
+                };
+                unsafe {
+                    fiatlux::fl_present_pixmap(
+                        self.window.client.client,
+                        pixmap_id,
+                        self.window.fl_window.window_id,
+                        0,
+                        0,
+                    )
+                };
             }
+
+            unsafe {
+                fiatlux::fl_egl_window_framebuffer_present_framebuffer(
+                    self.window.render_buffer,
+                );
+                fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0);
+            };
         }
 
         return Ok(());
@@ -388,7 +419,13 @@ impl slint::platform::Platform for FiatLuxPlatform {
 }
 
 fn main() -> Result<()> {
-    let args = rcore::CliArgs::parse();
-    slint::platform::set_platform(Box::new(FiatLuxPlatform::new()?))?;
-    rcore::run(args)
+    let video_pixmap_id = Arc::new(AtomicU32::new(0));
+    let platform = FiatLuxPlatform::new(video_pixmap_id.clone())?;
+    let client_ptr = platform.window.client.client;
+
+    slint::platform::set_platform(Box::new(platform))?;
+
+    let sink: Box<dyn rcore::VideoSink> =
+        Box::new(pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_pixmap_id));
+    rcore::run(rcore::CliArgs::parse(), sink)
 }
