@@ -46,17 +46,12 @@ export component MainWindow inherits Window {
         capture-key-pressed(event) => Bridge.capture-key-pressed(event);
     }
 
-    // TODO:
     // Rectangle {
     //     x: root.safe-area-insets.left;
     //     y: root.safe-area-insets.top;
     //     width: root.width - root.safe-area-insets.right - root.safe-area-insets.left;
     //     height: root.height - root.safe-area-insets.bottom - root.safe-area-insets.top;
     // }
-
-    if Bridge.app-state == AppState.Idle: IdleView { }
-
-    if Bridge.app-state == AppState.LoadingMedia: LoadingMediaView { }
 
     if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
 
@@ -65,6 +60,22 @@ export component MainWindow inherits Window {
     if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
     if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
+
+    IdleView {
+        opacity: Bridge.app-state == AppState.Idle ? 100% : 0%;
+
+        animate opacity {
+            duration: 100ms;
+        }
+    }
+
+    LoadingMediaView {
+        opacity: Bridge.app-state == AppState.LoadingMedia ? 100% : 0%;
+
+        animate opacity {
+            duration: 100ms;
+        }
+    }
 
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
 }

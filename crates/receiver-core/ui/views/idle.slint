@@ -48,8 +48,6 @@ component IdleText inherits FText {
 }
 
 export component IdleView inherits Rectangle {
-    // background: @linear-gradient(155deg, #414141 0%, #000000 100%);
-
     Image {
         source: Icons.background-dark;
         width: 100%;
@@ -61,6 +59,7 @@ export component IdleView inherits Rectangle {
         padding-right: 58px;
         padding-left: self.padding-right;
         spacing: 20px;
+
 
         // TODO: re-introduce when we have settings
         // HorizontalLayout {
@@ -75,17 +74,11 @@ export component IdleView inherits Rectangle {
         //     }
         // }
 
-        pure function qr-size() -> length {
-            let width = Math.min(root.width * 35%, 400px);
-            let height = Math.min(root.height * 50%, 750px);
-            Math.min(width, height)
-        }
-
         HorizontalLayout {
             alignment: space-between;
 
             Rectangle {
-                width: Math.min(root.width * 45%, 500px);
+                max-width: 500px;
 
                 VerticalLayout {
                     padding: 10px;
@@ -102,10 +95,11 @@ export component IdleView inherits Rectangle {
                         // color: @linear-gradient(180deg, #FFFFFF 17.11%, #B4B4B4 78.95%);
                     }
 
-                    if root.height > 380px: Text {
+                    Text {
                         font-size: 12pt;
                         text: "Stream to this device by opening your FCast sender app and selecting this device from the Cast menu, or scan the QR code for instant setup.";
                         wrap: word-wrap;
+                        overflow: elide;
                         color: FCastPalette.opacity-light-500;
                     }
 
@@ -216,13 +210,11 @@ export component IdleView inherits Rectangle {
                 }
             }
 
-            // Rectangle { }
-
-            VerticalLayout {
+            VerticalLayout{
                 alignment: center;
 
                 Rectangle {
-                    width: qr-size();
+                    width: 350px;
                     height: self.width;
                     border-radius: 8px;
                     clip: true;
