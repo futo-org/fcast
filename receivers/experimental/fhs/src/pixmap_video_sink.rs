@@ -307,6 +307,15 @@ impl VideoSink for FhsPixmapSink {
                 .map(|prev| !hdr_metadata_equal(prev, &fl_hdr))
                 .unwrap_or(true);
             if need_update {
+                debug!(
+                    transfer_function = fl_hdr.transfer_function,
+                    primaries = fl_hdr.primaries,
+                    max_mastering = fl_hdr.max_mastering_luminance,
+                    min_mastering = fl_hdr.min_mastering_luminance,
+                    max_cll = fl_hdr.max_cll,
+                    max_fall = fl_hdr.max_fall,
+                    "Sending HDR pixmap metadata to display server"
+                );
                 unsafe {
                     let seq = fl_set_pixmap_hdr_metadata(self.client, pixmap_id, &fl_hdr);
                     if seq.value == 0 {
@@ -458,16 +467,6 @@ fn build_target_color(
             fl_hdr.max_mastering_luminance = 1000.0;
             fl_hdr.min_mastering_luminance = 0.005;
         }
-
-        debug!(
-            transfer = ?pl_transfer,
-            primaries = ?pl_primaries,
-            max_mastering = fl_hdr.max_mastering_luminance,
-            min_mastering = fl_hdr.min_mastering_luminance,
-            max_cll = fl_hdr.max_cll,
-            max_fall = fl_hdr.max_fall,
-            "Configured HDR pixmap metadata"
-        );
     }
 
     (color_space, fl_hdr)
