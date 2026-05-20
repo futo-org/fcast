@@ -8,7 +8,7 @@ use imagelib::{
 };
 use tracing::{debug, debug_span, error, info};
 
-use crate::{CompoundImage, MessageSender, SlintRgba8Pixbuf};
+use crate::{CompoundImage, MessageSender, SlintRgba8Pixbuf, utils::map_to_header_map};
 
 pub type ImageId = u32;
 pub type ImageDownloadId = u32;
@@ -402,7 +402,7 @@ impl Downloader {
         let mut request = client.get(url);
         let mut did_set_user_agent = false;
         if let Some(headers) = headers {
-            let header_map = crate::map_to_header_map(&headers);
+            let header_map = map_to_header_map(&headers);
             did_set_user_agent = header_map.contains_key(reqwest::header::USER_AGENT);
             request = request.headers(header_map);
         }
