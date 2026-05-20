@@ -227,14 +227,14 @@ impl PlaceboContext {
 
         let mut params = unsafe {
             match opts.profile {
-                RenderProfile::Fast => pl_render_fast_params.clone(),
-                RenderProfile::Default => pl_render_default_params.clone(),
-                RenderProfile::HighQuality => pl_render_high_quality_params.clone(),
+                RenderProfile::Fast => pl_render_fast_params,
+                RenderProfile::Default => pl_render_default_params,
+                RenderProfile::HighQuality => pl_render_high_quality_params,
             }
         };
 
         let color_map_params = {
-            let mut params = unsafe { (*params.color_map_params).clone() };
+            let mut params = unsafe { *params.color_map_params };
             params.visualize_lut = opts.visualize_lut;
             params.show_clipping = opts.show_clipping;
             let boxed = Box::new(params);

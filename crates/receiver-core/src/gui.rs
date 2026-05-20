@@ -5,11 +5,11 @@ use crate::message;
 use crate::{
     Bridge, CompoundImage, GuiPlaybackState, MainWindow, Message, MessageSender, Operation,
     SetVolumeMessage, UiMediaTrack, UiMediaTrackType, UiPlayerVariant, image::DecodedImage,
-    log_if_err,
+    log_if_err, utils::sec_to_string,
 };
 use fcast_protocol::v3;
 use parking_lot::{Condvar, Mutex};
-use slint::{ComponentHandle, ToSharedString, VecModel};
+use slint::{ComponentHandle, SharedString, ToSharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error};
 
@@ -125,12 +125,12 @@ pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, msg_tx: MessageSende
         }
     });
 
-    bridge.on_sec_to_string(|sec: i32| -> slint::SharedString {
-        crate::sec_to_string(sec as f64).to_shared_string()
+    bridge.on_sec_to_string(|sec: i32| -> SharedString {
+        sec_to_string(sec as f64).to_shared_string()
     });
 
-    bridge.on_sec_float_to_string(|sec: f32| -> slint::SharedString {
-        crate::sec_to_string(sec as f64).to_shared_string()
+    bridge.on_sec_float_to_string(|sec: f32| -> SharedString {
+        sec_to_string(sec as f64).to_shared_string()
     });
 }
 
@@ -235,7 +235,7 @@ pub enum UpdateGuiCommand {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     SetUpdateDownloadProgress(i32),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    SetUpdaterError(slint::SharedString),
+    SetUpdaterError(SharedString),
     SetWindowVisibility {
         visible: bool,
         prev_tx: oneshot::Sender<bool>,
