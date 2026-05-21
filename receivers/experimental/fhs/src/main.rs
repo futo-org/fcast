@@ -289,8 +289,16 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             }
 
+            let mut has_fcast_events = false;
             while let Ok(job) = self.job_receiver.try_recv() {
+                has_fcast_events = true;
                 job();
+            }
+
+            if has_fcast_events {
+                unsafe {
+                    fiatlux::fl_inhibit_idle(self.window.client.client);
+                }
             }
 
             if self.quit_event_loop.load(Ordering::Relaxed) {
@@ -375,9 +383,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
-                unsafe {
-                    fiatlux::fl_inhibit_idle(self.window.client.client);
-                }
             });
 
             // Present the video pixmap (if a target is currently set) so the
@@ -389,13 +394,17 @@ impl slint::platform::Platform for FiatLuxPlatform {
                     value: video_pixmap_id_value,
                 };
                 unsafe {
-                    fiatlux::fl_present_pixmap(
+                    let seq = fiatlux::fl_present_pixmap(
                         self.window.client.client,
                         pixmap_id,
                         self.window.fl_window.window_id,
                         0,
                         0,
-                    )
+                    );
+                    let present_pixmap_reply = fiatlux::fl_receive_reply_present_pixmap(self.window.client.client, seq);
+                    if !present_pixmap_reply.is_null() {
+                        fiatlux::fl_free_reply_present_pixmap(present_pixmap_reply);
+                    }
                 };
             }
 
