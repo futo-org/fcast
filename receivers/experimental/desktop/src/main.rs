@@ -21,5 +21,5 @@ fn main() -> anyhow::Result<()> {
         selector.select()?;
     }
 
-    rcore::run(args, Box::new(rcore::SwapchainSink::new()))
+    rcore::run(args, rcore::SwapchainSink::new())
 }

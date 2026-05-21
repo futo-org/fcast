@@ -434,7 +434,8 @@ fn main() -> Result<()> {
 
     slint::platform::set_platform(Box::new(platform))?;
 
-    let sink: Box<dyn rcore::VideoSink> =
-        Box::new(pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_pixmap_id));
-    rcore::run(rcore::CliArgs::parse(), sink)
+    rcore::run(
+        rcore::CliArgs::parse(),
+        pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_pixmap_id),
+    )
 }

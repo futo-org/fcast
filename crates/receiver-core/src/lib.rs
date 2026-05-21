@@ -152,11 +152,11 @@ pub use video_sink::{SwapchainSink, VideoSink};
 /// Run the main app.
 ///
 /// Slint and friends are assumed to be initialized by the platform specific target.
-pub fn run(
+pub fn run<S: VideoSink>(
     #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
     #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Message>,
-    video_sink: Box<dyn VideoSink>,
+    video_sink: S,
 ) -> Result<()> {
     logging::init(cli_args.loglevel);
 
@@ -238,7 +238,7 @@ pub fn run(
         #[cfg(target_os = "linux")]
         let mut drm_formats = HashSet::new();
         let gui_is_visible = gui_is_visible.clone();
-        let mut video_sink: Box<dyn VideoSink> = video_sink;
+        let mut video_sink = video_sink;
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");

@@ -37,7 +37,7 @@ fn android_main(app: slint::android::AndroidApp) {
     let (event_tx, event_rx) = unbounded_channel();
     *EVENT_TX.lock() = Some(event_tx);
 
-    rcore::run(app, event_rx, Box::new(rcore::SwapchainSink::new())).unwrap();
+    rcore::run(app, event_rx, rcore::SwapchainSink::new()).unwrap();
 }
 
 #[allow(non_snake_case)]
