@@ -78,7 +78,7 @@ fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn get_receiver_version() -> String {
     let receiver_toml =
-        std::fs::read_to_string("receivers/experimental/desktop/Cargo.toml").unwrap();
+        std::fs::read_to_string("receivers/desktop/Cargo.toml").unwrap();
     let doc = receiver_toml.parse::<toml_edit::DocumentMut>().unwrap();
     doc["package"]["version"].as_str().unwrap().to_string()
 }
@@ -255,7 +255,7 @@ impl ReceiverArgs {
                 files_to_copy.extend(crate::find_c_runtime(
                     crate::find_windows_sdk_installation_path(),
                 ));
-                files_to_copy.push(("receivers/experimental/extra/fcast.ico".into(), "fcast.ico".to_owned()));
+                files_to_copy.push(("receivers/extra/fcast.ico".into(), "fcast.ico".to_owned()));
 
                 let mut dll_components = String::new();
 
@@ -368,7 +368,6 @@ impl ReceiverArgs {
                 sh.copy_file(
                     root_path
                         .join("receivers")
-                        .join("experimental")
                         .join("extra")
                         .join("fcast.icns"),
                     app_top_level

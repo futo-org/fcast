@@ -13,7 +13,7 @@ members = [
     "crates/file-server",
     "senders/android",
     "crates/receiver-core",
-    "receivers/experimental/desktop",
+    "receivers/desktop",
     "receivers/experimental/android",
     "receivers/experimental/fhs",
     "tools/remote-pipeline-dbg",
