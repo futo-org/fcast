@@ -402,12 +402,11 @@ impl slint::platform::Platform for FiatLuxPlatform {
                     self.present_pixmap(pixmap_id);
                 }
 
-                unsafe {
-                    if ui_pixmap.value != 0 {
-                        self.present_pixmap(ui_pixmap);
-                    }
-                    fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0);
-                };
+                if ui_pixmap.value != 0 {
+                    self.present_pixmap(ui_pixmap);
+                }
+
+                unsafe { fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
             });
         }
 
