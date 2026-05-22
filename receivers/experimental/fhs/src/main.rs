@@ -260,6 +260,22 @@ impl FiatLuxPlatform {
             _ => slint::platform::PointerEventButton::Other,
         }
     }
+
+    fn present_pixmap(&self, pixmap_id: fiatlux::fl_protocol_PixmapId) {
+        unsafe {
+            let seq = fiatlux::fl_present_pixmap(
+                self.window.client.client,
+                pixmap_id,
+                self.window.fl_window.window_id,
+                0,
+                0,
+            );
+            let present_pixmap_reply = fiatlux::fl_receive_reply_present_pixmap(self.window.client.client, seq);
+            if !present_pixmap_reply.is_null() {
+                fiatlux::fl_free_reply_present_pixmap(present_pixmap_reply);
+            }
+        }
+    }
 }
 
 impl slint::platform::Platform for FiatLuxPlatform {
@@ -280,6 +296,8 @@ impl slint::platform::Platform for FiatLuxPlatform {
             self.window.fl_window.height,
         ));
 
+        let mut ui_pixmap = fiatlux::fl_protocol_PixmapId { value: 0 };
+
         loop {
             slint::platform::update_timers_and_animations();
 
@@ -289,16 +307,8 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             }
 
-            let mut has_fcast_events = false;
             while let Ok(job) = self.job_receiver.try_recv() {
-                has_fcast_events = true;
                 job();
-            }
-
-            if has_fcast_events {
-                unsafe {
-                    fiatlux::fl_inhibit_idle(self.window.client.client);
-                }
             }
 
             if self.quit_event_loop.load(Ordering::Relaxed) {
@@ -374,46 +384,31 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             }
 
-            // Force slint to redraw every iteration so the window
-            // framebuffer's gbm BO chain always rotates to a freshly rendered
-            // buffer. Otherwise present_framebuffer below would cycle through
-            // stale BOs whenever slint thought no redraw was needed, which
-            // shows up as flicker between the current and an old UI state.
-            self.window.window.request_redraw();
-
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
-            });
-
-            // Present the video pixmap (if a target is currently set) so the
-            // compositor keeps the video layer visible every frame, even on
-            // iterations where there was no new decoded frame to render.
-            let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
-            if video_pixmap_id_value != 0 {
-                let pixmap_id = fiatlux::fl_protocol_PixmapId {
-                    value: video_pixmap_id_value,
-                };
                 unsafe {
-                    let seq = fiatlux::fl_present_pixmap(
-                        self.window.client.client,
-                        pixmap_id,
-                        self.window.fl_window.window_id,
-                        0,
-                        0,
+                    fiatlux::fl_egl_window_framebuffer_swap_buffers(
+                        self.window.render_buffer,
+                        &mut ui_pixmap,
                     );
-                    let present_pixmap_reply = fiatlux::fl_receive_reply_present_pixmap(self.window.client.client, seq);
-                    if !present_pixmap_reply.is_null() {
-                        fiatlux::fl_free_reply_present_pixmap(present_pixmap_reply);
-                    }
-                };
-            }
+                    fiatlux::fl_inhibit_idle(self.window.client.client);
+                }
 
-            unsafe {
-                fiatlux::fl_egl_window_framebuffer_present_framebuffer(
-                    self.window.render_buffer,
-                );
-                fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0);
-            };
+                let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
+                if video_pixmap_id_value != 0 {
+                    let pixmap_id = fiatlux::fl_protocol_PixmapId {
+                        value: video_pixmap_id_value,
+                    };
+                    self.present_pixmap(pixmap_id);
+                }
+
+                unsafe {
+                    if ui_pixmap.value != 0 {
+                        self.present_pixmap(ui_pixmap);
+                    }
+                    fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0);
+                };
+            });
         }
 
         return Ok(());
