@@ -276,6 +276,83 @@ impl FiatLuxPlatform {
             }
         }
     }
+
+    fn handle_events(&self) {
+        let mut new_pointer_position: Option<slint::LogicalPosition> = None;
+
+        loop {
+            unsafe {
+                let mut poll_event_res = fiatlux::fl_poll_event_result_fl_poll_event_success;
+                let event = match fiatlux::fl_poll_events(
+                    self.window.client.client,
+                    0.0,
+                    &mut poll_event_res,
+                )
+                .as_mut()
+                {
+                    Some(e) => e,
+                    None => break,
+                };
+
+                const WINDOW_RESIZED: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
+                const DISPLAY_SCALE_NOTIFY: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
+                        as u8;
+                const WINDOW_VISIBILITY_CHANGED: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
+                const POINTER_MOVED: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
+                const POINTER_BUTTON: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
+
+                match event.header.event_type {
+                    WINDOW_RESIZED => {
+                        fiatlux::fl_egl_window_framebuffer_resize(
+                            self.window.render_buffer,
+                            event.window_resized.width,
+                            event.window_resized.height,
+                        );
+                        self.window.set_size(slint::PhysicalSize::new(
+                            event.window_resized.width,
+                            event.window_resized.height,
+                        ));
+                    }
+                    DISPLAY_SCALE_NOTIFY => {
+                        self.window
+                            .set_scale(event.display_scale_notify.display_scale);
+                    }
+                    WINDOW_VISIBILITY_CHANGED => {
+                        self.window
+                            .window_active_changed(event.window_visibility_changed.visible);
+                    }
+                    POINTER_MOVED => {
+                        new_pointer_position = Some(slint::LogicalPosition {
+                            x: event.pointer_moved.abs_x as f32,
+                            y: event.pointer_moved.abs_y as f32,
+                        });
+                    }
+                    POINTER_BUTTON => {
+                        self.window.pointer_button(
+                            slint::LogicalPosition {
+                                x: event.pointer_button.abs_x as f32,
+                                y: event.pointer_button.abs_y as f32,
+                            },
+                            FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fiatlux::fl_protocol_PointerButton),
+                            event.pointer_button.state as fiatlux::fl_protocol_PointerButtonState == fiatlux::fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
+                        );
+                    }
+                    _ => {}
+                }
+
+                fiatlux::fl_free_event(event);
+            }
+        }
+
+        if let Some(new_pointer_position) = new_pointer_position {
+            self.window.pointer_moved(new_pointer_position);
+        }
+    }
 }
 
 impl slint::platform::Platform for FiatLuxPlatform {
@@ -313,74 +390,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 break;
             }
 
-            loop {
-                unsafe {
-                    let mut poll_event_res = fiatlux::fl_poll_event_result_fl_poll_event_success;
-                    let event = match fiatlux::fl_poll_events(
-                        self.window.client.client,
-                        0.0,
-                        &mut poll_event_res,
-                    )
-                    .as_mut()
-                    {
-                        Some(e) => e,
-                        None => break,
-                    };
-
-                    const WINDOW_RESIZED: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
-                    const DISPLAY_SCALE_NOTIFY: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
-                            as u8;
-                    const WINDOW_VISIBILITY_CHANGED: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
-                    const POINTER_MOVED: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
-                    const POINTER_BUTTON: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
-
-                    match event.header.event_type {
-                        WINDOW_RESIZED => {
-                            fiatlux::fl_egl_window_framebuffer_resize(
-                                self.window.render_buffer,
-                                event.window_resized.width,
-                                event.window_resized.height,
-                            );
-                            self.window.set_size(slint::PhysicalSize::new(
-                                event.window_resized.width,
-                                event.window_resized.height,
-                            ));
-                        }
-                        DISPLAY_SCALE_NOTIFY => {
-                            self.window
-                                .set_scale(event.display_scale_notify.display_scale);
-                        }
-                        WINDOW_VISIBILITY_CHANGED => {
-                            self.window
-                                .window_active_changed(event.window_visibility_changed.visible);
-                        }
-                        POINTER_MOVED => {
-                            self.window.pointer_moved(slint::LogicalPosition {
-                                x: event.pointer_moved.abs_x as f32,
-                                y: event.pointer_moved.abs_y as f32,
-                            });
-                        }
-                        POINTER_BUTTON => {
-                            self.window.pointer_button(
-                                slint::LogicalPosition {
-                                    x: event.pointer_button.abs_x as f32,
-                                    y: event.pointer_button.abs_y as f32,
-                                },
-                                FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fiatlux::fl_protocol_PointerButton),
-                                event.pointer_button.state as fiatlux::fl_protocol_PointerButtonState == fiatlux::fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
-                            );
-                        }
-                        _ => {}
-                    }
-
-                    fiatlux::fl_free_event(event);
-                }
-            }
+            self.handle_events();
 
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
