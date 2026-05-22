@@ -7,5 +7,5 @@ Comment=Receiver for displaying multimedia content from FCast sender application
 Categories=AudioVideo;Audio;Video;Network;Utility;
 
 Icon=org.fcast.Receiver
-Exec=run.sh
+Exec=fcast-receiver
 Terminal=false

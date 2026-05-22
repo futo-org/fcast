@@ -30,7 +30,7 @@ in
 rustPlatform.buildRustPackage rec {
   pname = "fcast-receiver";
   version = "0.0.1";
-  buildAndTestSubdir = "receivers/experimental/desktop";
+  buildAndTestSubdir = "receivers/desktop";
   doCheck = false;
 
   src = localSrc;

@@ -20,7 +20,7 @@
         in {
           packages = {
             fcast-sender = pkgs.callPackage ./senders/desktop/fcast-sender.nix { };
-            fcast-receiver = pkgs.callPackage ./receivers/experimental/desktop/fcast-receiver.nix {
+            fcast-receiver = pkgs.callPackage ./receivers/desktop/fcast-receiver.nix {
               rustPlatform = pkgs.makeRustPlatform {
                 cargo = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);
                 rustc = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);

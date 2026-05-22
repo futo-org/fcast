@@ -1,5 +1,7 @@
 # FCast Receiver Changelog
 
+## 3.0.0 - 2026-05-22
+
 ## 0.1.3-beta - 2026-05-14
 
  - Fix freezing when disabling subtitles
