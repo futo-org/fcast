@@ -12,11 +12,13 @@ use std::{
     rc::{Rc, Weak},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
 };
+
+mod pixmap_video_sink;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -43,7 +45,6 @@ unsafe impl femtovg_renderer::OpenGLInterface for FiatLuxGlContext {
         _width: NonZeroU32,
         _height: NonZeroU32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // TODO: Resize?
         Ok(())
     }
 
@@ -225,10 +226,13 @@ struct FiatLuxPlatform {
     job_sender: mpsc::Sender<Job>,
     job_receiver: mpsc::Receiver<Job>,
     quit_event_loop: Arc<AtomicBool>,
+    video_pixmap_id: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl FiatLuxPlatform {
-    pub fn new() -> Result<Self> {
+    pub fn new(
+        video_pixmap_id: Arc<std::sync::atomic::AtomicU32>,
+    ) -> Result<Self> {
         let (job_sender, job_receiver) = mpsc::channel::<Job>();
         Ok(Self {
             window: FiatLuxWindowAdapter::new()?,
@@ -236,6 +240,7 @@ impl FiatLuxPlatform {
             job_sender: job_sender,
             job_receiver: job_receiver,
             quit_event_loop: Arc::new(AtomicBool::new(false)),
+            video_pixmap_id,
         })
     }
 
@@ -253,6 +258,99 @@ impl FiatLuxPlatform {
                 slint::platform::PointerEventButton::Right
             },
             _ => slint::platform::PointerEventButton::Other,
+        }
+    }
+
+    fn present_pixmap(&self, pixmap_id: fiatlux::fl_protocol_PixmapId) {
+        unsafe {
+            let seq = fiatlux::fl_present_pixmap(
+                self.window.client.client,
+                pixmap_id,
+                self.window.fl_window.window_id,
+                0,
+                0,
+            );
+            let present_pixmap_reply = fiatlux::fl_receive_reply_present_pixmap(self.window.client.client, seq);
+            if !present_pixmap_reply.is_null() {
+                fiatlux::fl_free_reply_present_pixmap(present_pixmap_reply);
+            }
+        }
+    }
+
+    fn handle_events(&self) {
+        let mut new_pointer_position: Option<slint::LogicalPosition> = None;
+
+        loop {
+            unsafe {
+                let mut poll_event_res = fiatlux::fl_poll_event_result_fl_poll_event_success;
+                let event = match fiatlux::fl_poll_events(
+                    self.window.client.client,
+                    0.0,
+                    &mut poll_event_res,
+                )
+                .as_mut()
+                {
+                    Some(e) => e,
+                    None => break,
+                };
+
+                const WINDOW_RESIZED: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
+                const DISPLAY_SCALE_NOTIFY: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
+                        as u8;
+                const WINDOW_VISIBILITY_CHANGED: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
+                const POINTER_MOVED: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
+                const POINTER_BUTTON: u8 =
+                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
+
+                match event.header.event_type {
+                    WINDOW_RESIZED => {
+                        fiatlux::fl_egl_window_framebuffer_resize(
+                            self.window.render_buffer,
+                            event.window_resized.width,
+                            event.window_resized.height,
+                        );
+                        self.window.set_size(slint::PhysicalSize::new(
+                            event.window_resized.width,
+                            event.window_resized.height,
+                        ));
+                    }
+                    DISPLAY_SCALE_NOTIFY => {
+                        self.window
+                            .set_scale(event.display_scale_notify.display_scale);
+                    }
+                    WINDOW_VISIBILITY_CHANGED => {
+                        self.window
+                            .window_active_changed(event.window_visibility_changed.visible);
+                    }
+                    POINTER_MOVED => {
+                        new_pointer_position = Some(slint::LogicalPosition {
+                            x: event.pointer_moved.abs_x as f32,
+                            y: event.pointer_moved.abs_y as f32,
+                        });
+                    }
+                    POINTER_BUTTON => {
+                        self.window.pointer_button(
+                            slint::LogicalPosition {
+                                x: event.pointer_button.abs_x as f32,
+                                y: event.pointer_button.abs_y as f32,
+                            },
+                            FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fiatlux::fl_protocol_PointerButton),
+                            event.pointer_button.state as fiatlux::fl_protocol_PointerButtonState == fiatlux::fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
+                        );
+                    }
+                    _ => {}
+                }
+
+                fiatlux::fl_free_event(event);
+            }
+        }
+
+        if let Some(new_pointer_position) = new_pointer_position {
+            self.window.pointer_moved(new_pointer_position);
         }
     }
 }
@@ -292,88 +390,26 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 break;
             }
 
-            loop {
-                unsafe {
-                    let mut poll_event_res = fiatlux::fl_poll_event_result_fl_poll_event_success;
-                    let event = match fiatlux::fl_poll_events(
-                        self.window.client.client,
-                        0.0,
-                        &mut poll_event_res,
-                    )
-                    .as_mut()
-                    {
-                        Some(e) => e,
-                        None => break,
-                    };
-
-                    const WINDOW_RESIZED: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
-                    const DISPLAY_SCALE_NOTIFY: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
-                            as u8;
-                    const WINDOW_VISIBILITY_CHANGED: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
-                    const POINTER_MOVED: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
-                    const POINTER_BUTTON: u8 =
-                        fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
-
-                    match event.header.event_type {
-                        WINDOW_RESIZED => {
-                            fiatlux::fl_egl_window_framebuffer_resize(
-                                self.window.render_buffer,
-                                event.window_resized.width,
-                                event.window_resized.height,
-                            );
-                            self.window.set_size(slint::PhysicalSize::new(
-                                event.window_resized.width,
-                                event.window_resized.height,
-                            ));
-                        }
-                        DISPLAY_SCALE_NOTIFY => {
-                            self.window
-                                .set_scale(event.display_scale_notify.display_scale);
-                        }
-                        WINDOW_VISIBILITY_CHANGED => {
-                            self.window
-                                .window_active_changed(event.window_visibility_changed.visible);
-                        }
-                        POINTER_MOVED => {
-                            self.window.pointer_moved(slint::LogicalPosition {
-                                x: event.pointer_moved.abs_x as f32,
-                                y: event.pointer_moved.abs_y as f32,
-                            });
-                        }
-                        POINTER_BUTTON => {
-                            self.window.pointer_button(
-                                slint::LogicalPosition {
-                                    x: event.pointer_button.abs_x as f32,
-                                    y: event.pointer_button.abs_y as f32,
-                                },
-                                FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fiatlux::fl_protocol_PointerButton),
-                                event.pointer_button.state as fiatlux::fl_protocol_PointerButtonState == fiatlux::fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
-                            );
-                        }
-                        _ => {}
-                    }
-
-                    fiatlux::fl_free_event(event);
-                }
-            }
+            self.handle_events();
 
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
+
+                let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
+                if video_pixmap_id_value != 0 {
+                    let pixmap_id = fiatlux::fl_protocol_PixmapId {
+                        value: video_pixmap_id_value,
+                    };
+                    self.present_pixmap(pixmap_id);
+                }
+
                 unsafe {
+                    fiatlux::fl_egl_window_framebuffer_present_framebuffer(self.window.render_buffer);
                     fiatlux::fl_inhibit_idle(self.window.client.client);
                 }
             });
 
-            unsafe {
-                fiatlux::fl_egl_window_framebuffer_present_framebuffer_wait_for_vsync(
-                    self.window.render_buffer,
-                    3.0,
-                );
-            }
+            unsafe { fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
         }
 
         return Ok(());
@@ -388,7 +424,14 @@ impl slint::platform::Platform for FiatLuxPlatform {
 }
 
 fn main() -> Result<()> {
-    let args = rcore::CliArgs::parse();
-    slint::platform::set_platform(Box::new(FiatLuxPlatform::new()?))?;
-    rcore::run(args)
+    let video_pixmap_id = Arc::new(AtomicU32::new(0));
+    let platform = FiatLuxPlatform::new(video_pixmap_id.clone())?;
+    let client_ptr = platform.window.client.client;
+
+    slint::platform::set_platform(Box::new(platform))?;
+
+    rcore::run(
+        rcore::CliArgs::parse(),
+        pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_pixmap_id),
+    )
 }
