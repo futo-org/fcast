@@ -296,8 +296,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
             self.window.fl_window.height,
         ));
 
-        let mut ui_pixmap = fiatlux::fl_protocol_PixmapId { value: 0 };
-
         loop {
             slint::platform::update_timers_and_animations();
 
@@ -386,13 +384,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
             self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
-                unsafe {
-                    fiatlux::fl_egl_window_framebuffer_swap_buffers(
-                        self.window.render_buffer,
-                        &mut ui_pixmap,
-                    );
-                    fiatlux::fl_inhibit_idle(self.window.client.client);
-                }
 
                 let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
                 if video_pixmap_id_value != 0 {
@@ -402,8 +393,9 @@ impl slint::platform::Platform for FiatLuxPlatform {
                     self.present_pixmap(pixmap_id);
                 }
 
-                if ui_pixmap.value != 0 {
-                    self.present_pixmap(ui_pixmap);
+                unsafe {
+                    fiatlux::fl_egl_window_framebuffer_present_framebuffer(self.window.render_buffer);
+                    fiatlux::fl_inhibit_idle(self.window.client.client);
                 }
             });
 
