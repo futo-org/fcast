@@ -405,9 +405,9 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 if ui_pixmap.value != 0 {
                     self.present_pixmap(ui_pixmap);
                 }
-
-                unsafe { fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
             });
+
+            unsafe { fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
         }
 
         return Ok(());
