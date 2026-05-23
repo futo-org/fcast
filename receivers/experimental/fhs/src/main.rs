@@ -81,13 +81,18 @@ impl FiatLuxWindowAdapter {
             fiatlux::Window::new(&client, window_identifier.as_ptr(), window_title.as_ptr())?;
 
         let render_buffer = unsafe {
-            fiatlux::fl_egl_create_window_framebuffer(
+            // Slint needs a stencil buffer to render non-rectangular shapes correctly
+            let opts = fiatlux::fl_WindowFramebufferOpts {
+                stencil_size: 8,
+            };
+            fiatlux::fl_egl_create_window_framebuffer_with_opts(
                 fiatlux::fl_graphics_context_get_egl(gc.gc),
                 client.client,
                 fl_window.window_id,
                 fl_window.width,
                 fl_window.height,
                 fiatlux::fl_PixmapFormat_FL_PIXMAP_FORMAT_RGBA8,
+                &opts,
             )
             .as_mut()
             .expect("Failed to create window framebuffer")
