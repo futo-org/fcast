@@ -11,9 +11,7 @@ use std::{
     ptr::null,
     rc::{Rc, Weak},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc,
+        Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc
     },
     time::{Duration, Instant},
 };
@@ -22,6 +20,8 @@ mod pixmap_video_sink;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+const IDLE_UPDATE_TIMEOUT_SEC: f64 = 5.0;
 
 struct FiatLuxGlContext {
     gc: fiatlux::GraphicsContext,
@@ -204,11 +204,35 @@ type Job = Box<dyn FnOnce() + Send>;
 struct LoopProxy {
     job_sender: mpsc::Sender<Job>,
     quit_event_loop: Arc<AtomicBool>,
+    idle_updated_timer: Mutex<Instant>,
+    client: fiatlux::ClientPtr,
+}
+
+impl LoopProxy {
+    pub fn new(job_sender: mpsc::Sender<Job>, quit_event_loop: Arc<AtomicBool>, client: fiatlux::ClientPtr) -> Self {
+        Self {
+            job_sender: job_sender,
+            quit_event_loop: quit_event_loop,
+            idle_updated_timer: Mutex::new(Instant::now()),
+            client: client,
+        }
+    }
+
+    fn idle_handle(&self) {
+        let now = Instant::now();
+        let mut idle_updated_timer = self.idle_updated_timer.lock().unwrap();
+        if now.duration_since(*idle_updated_timer).as_secs_f64() >= IDLE_UPDATE_TIMEOUT_SEC {
+            *idle_updated_timer = now;
+            unsafe { fiatlux::fl_inhibit_idle(self.client.0); }
+        }
+        drop(idle_updated_timer);
+    }
 }
 
 impl slint::platform::EventLoopProxy for LoopProxy {
     fn quit_event_loop(&self) -> Result<(), rcore::slint::EventLoopError> {
         self.quit_event_loop.store(true, Ordering::Relaxed);
+        self.idle_handle();
         // Wake up the event loop by sending an empty job
         self.job_sender
             .send(Box::new(move || {}))
@@ -219,6 +243,7 @@ impl slint::platform::EventLoopProxy for LoopProxy {
         &self,
         event: Box<dyn FnOnce() + Send>,
     ) -> Result<(), rcore::slint::EventLoopError> {
+        self.idle_handle();
         self.job_sender
             .send(event)
             .map_err(|_| rcore::slint::EventLoopError::EventLoopTerminated)
@@ -410,7 +435,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
                 unsafe {
                     fiatlux::fl_egl_window_framebuffer_present_framebuffer(self.window.render_buffer);
-                    fiatlux::fl_inhibit_idle(self.window.client.client);
                 }
             });
 
@@ -421,10 +445,11 @@ impl slint::platform::Platform for FiatLuxPlatform {
     }
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn slint::platform::EventLoopProxy>> {
-        Some(Box::new(LoopProxy {
-            job_sender: self.job_sender.clone(),
-            quit_event_loop: self.quit_event_loop.clone(),
-        }))
+        Some(Box::new(LoopProxy::new(
+            self.job_sender.clone(),
+            self.quit_event_loop.clone(),
+            fiatlux::ClientPtr(self.window.client.client),
+        )))
     }
 }
 

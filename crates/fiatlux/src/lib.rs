@@ -30,6 +30,12 @@ impl Drop for Client {
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct ClientPtr(pub *mut fl_Client);
+
+unsafe impl Send for ClientPtr {}
+unsafe impl Sync for ClientPtr {}
+
 pub struct GraphicsContext {
     pub gc: *mut fl_GraphicsContext,
 }
