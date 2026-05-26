@@ -427,6 +427,8 @@ pub fn run(
                                 img: slint::Image::from_rgba8(overlay.pix_buffer),
                                 x: overlay.x as f32,
                                 y: overlay.y as f32,
+                                render_width: overlay.render_width as f32,
+                                render_height: overlay.render_height as f32,
                             })
                             .collect();
                         bridge.set_overlays(Rc::new(overlays).into());

@@ -70,6 +70,8 @@ pub struct Overlay {
     pub pix_buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     pub x: i32,
     pub y: i32,
+    pub render_width: u32,
+    pub render_height: u32,
 }
 
 pub struct SlintOpenGLSink {
@@ -254,7 +256,7 @@ impl SlintOpenGLSink {
                     .filter_map(|rect| {
                         let buffer = rect
                             .pixels_unscaled_argb(gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA);
-                        let (x, y, _width, _height) = rect.render_rectangle();
+                        let (x, y, render_width, render_height) = rect.render_rectangle();
 
                         let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
 
@@ -283,7 +285,13 @@ impl SlintOpenGLSink {
                         );
                         image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
 
-                        Some(Overlay { pix_buffer, x, y })
+                        Some(Overlay {
+                            pix_buffer,
+                            x,
+                            y,
+                            render_width,
+                            render_height,
+                        })
                     })
                     .collect::<SmallVec<[_; 3]>>()
             })
