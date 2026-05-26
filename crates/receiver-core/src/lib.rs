@@ -49,12 +49,19 @@ mod mac_win_tray;
 mod mdns;
 mod message;
 mod opengl;
-mod placebo;
 mod player;
 mod raop;
 mod user_agent;
 mod utils;
-mod video;
+pub mod placebo;
+pub mod video_sink;
+pub mod video;
+
+pub use libplacebo;
+pub use gst;
+pub use gst_video;
+pub use glow;
+pub use video_sink::{SwapchainSink, VideoSink};
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -145,10 +152,11 @@ impl CliArgs {
 /// Run the main app.
 ///
 /// Slint and friends are assumed to be initialized by the platform specific target.
-pub fn run(
+pub fn run<S: VideoSink + 'static>(
     #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
     #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Message>,
+    video_sink: S,
 ) -> Result<()> {
     logging::init(cli_args.loglevel);
 
@@ -230,6 +238,7 @@ pub fn run(
         #[cfg(target_os = "linux")]
         let mut drm_formats = HashSet::new();
         let gui_is_visible = gui_is_visible.clone();
+        let mut video_sink = video_sink;
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
@@ -395,16 +404,13 @@ pub fn run(
                     if let Some(sink_pad) = slint_sink.appsink.static_pad("sink") {
                         sink_pad.push_event(gst::event::Reconfigure::builder().build());
                     }
-
-                    if let Some(placebo) = pl_context.as_ref() {
-                        placebo.resize_swapchain(new_size.0 as i32, new_size.1 as i32);
-                    }
                 }
 
                 if let Some(renderer) = renderer.as_mut() {
                     use glow::HasContext;
+                    let clear_color = video_sink.get_clear_color();
                     unsafe {
-                        renderer.gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                        renderer.gl.clear_color(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
                         renderer.gl.clear(glow::COLOR_BUFFER_BIT);
                     }
                 }
@@ -414,14 +420,14 @@ pub fn run(
                         if cached_frame.is_some()
                             && let Some(placebo) = pl_context.as_mut()
                         {
-                            placebo.flush_cache();
+                            video_sink.flush_cache(placebo);
                         }
                         cached_frame.take();
                     }
                     video::Resource::Unchanged => (),
                     video::Resource::New(frame) => {
-                        bridge.set_video_frame_width(frame.width() as i32);
-                        bridge.set_video_frame_height(frame.height() as i32);
+                        bridge.set_video_frame_width(frame.data.width() as i32);
+                        bridge.set_video_frame_height(frame.data.height() as i32);
                         cached_frame = Some(frame);
                     }
                 }
@@ -460,15 +466,10 @@ pub fn run(
 
                 if let Some(frame) = cached_frame.as_ref()
                     && let Some(placebo) = pl_context.as_mut()
-                    && let Some(swframe) = placebo.start_frame()
+                    && let Some(renderer) = renderer.as_ref()
                 {
-                    match placebo.render_frame(&swframe, frame) {
-                        Ok(_) => {
-                            placebo.submit_frame();
-                        }
-                        Err(err) => {
-                            error!(?err, "Failed to render frame");
-                        }
+                    if let Err(err) = video_sink.render(placebo, &renderer.gl, frame, prev_size) {
+                        error!(?err, "video sink render failed");
                     }
                 }
             }
@@ -490,6 +491,10 @@ pub fn run(
 
                 if let Some(sink) = slint_sink.as_mut() {
                     sink.release_state();
+                }
+
+                if let Some(placebo) = pl_context.as_mut() {
+                    video_sink.teardown(placebo);
                 }
 
                 pl_context.take();
