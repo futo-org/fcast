@@ -198,7 +198,6 @@ pub struct PlaceboContext {
 }
 
 impl PlaceboContext {
-    #[cfg(not(target_os = "linux"))]
     pub fn new(log: &libplacebo::Log, opts: &RenderingOptions) -> anyhow::Result<Self> {
         let opengl =
             libplacebo::OpenGL::new(log).ok_or(anyhow!("failed to create opengl context"))?;

@@ -258,38 +258,49 @@ pub fn run(
                         });
 
                         let display = unsafe { egl.GetCurrentDisplay() };
-                        pl_context = unsafe {
-                            Some(
-                                crate::placebo::PlaceboContext::new_egl(
-                                    &pl_log,
-                                    &render_opts,
-                                    display as *mut _,
-                                    egl.GetCurrentContext() as *mut _,
+                        let err = unsafe { egl.GetError() };
+                        if !display.is_null() && err == glutin_egl_sys::egl::SUCCESS as i32 {
+                            pl_context = unsafe {
+                                Some(
+                                    crate::placebo::PlaceboContext::new_egl(
+                                        &pl_log,
+                                        &render_opts,
+                                        display as *mut _,
+                                        egl.GetCurrentContext() as *mut _,
+                                    )
+                                    .unwrap(),
                                 )
-                                .unwrap(),
-                            )
-                        };
+                            };
 
-                        let extensions = egl::get_extensions(&egl);
-                        if extensions.contains(&egl::Extension::ImageDmaBufImport)
-                            && extensions.contains(&egl::Extension::ImageDmaBufImportModifiers)
-                        {
-                            match egl::get_supported_dma_drm_formats(display) {
-                                Ok(formats) => {
-                                    debug!(
-                                        formats = formats
-                                            .iter()
-                                            .map(|fmt| format!("{}:{:?}", fmt.code, fmt.modifier))
-                                            .collect::<Vec<_>>()
-                                            .join(" "),
-                                        "Got supported DMA DRM formats"
-                                    );
-                                    drm_formats = formats;
-                                }
-                                Err(err) => {
-                                    error!(?err, "Failed to get supported DMA DRM formats");
+                            let extensions = egl::get_extensions(&egl);
+                            if extensions.contains(&egl::Extension::ImageDmaBufImport)
+                                && extensions.contains(&egl::Extension::ImageDmaBufImportModifiers)
+                            {
+                                match egl::get_supported_dma_drm_formats(display) {
+                                    Ok(formats) => {
+                                        debug!(
+                                            formats = formats
+                                                .iter()
+                                                .map(|fmt| format!("{}:{:?}", fmt.code, fmt.modifier))
+                                                .collect::<Vec<_>>()
+                                                .join(" "),
+                                            "Got supported DMA DRM formats"
+                                        );
+                                        drm_formats = formats;
+                                    }
+                                    Err(err) => {
+                                        error!(?err, "Failed to get supported DMA DRM formats");
+                                    }
                                 }
                             }
+                        } else {
+                            pl_context = Some(
+                                crate::placebo::PlaceboContext::new(
+                                    &pl_log,
+                                    &render_opts,
+                                )
+                                .unwrap(),
+                            );
                         }
                     }
 
