@@ -223,15 +223,17 @@ impl LoopProxy {
     }
 
     fn idle_handle(&self) {
-        let now = Instant::now();
         let mut idle_updated_timer = self.idle_updated_timer.lock().unwrap();
+        let now = Instant::now();
         if now.duration_since(*idle_updated_timer).as_secs_f64() >= IDLE_UPDATE_TIMEOUT_SEC {
             *idle_updated_timer = now;
+            drop(idle_updated_timer);
             unsafe {
                 fl_inhibit_idle(self.client.0);
             }
+        } else {
+            drop(idle_updated_timer);
         }
-        drop(idle_updated_timer);
     }
 }
 
