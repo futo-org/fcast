@@ -1,3 +1,4 @@
 wrap_comments = false
 max_width = 100
 imports_granularity = "Crate"
+edition = "2024"

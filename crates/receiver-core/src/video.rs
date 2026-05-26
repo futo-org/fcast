@@ -22,7 +22,7 @@ pub enum Resource<T> {
 }
 
 #[cfg_attr(target_os = "linux", allow(clippy::large_enum_variant))]
-pub enum RawFrame {
+pub enum RawFrameData {
     SystemMemory {
         frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
     },
@@ -39,26 +39,69 @@ pub enum RawFrame {
     },
 }
 
-impl RawFrame {
+impl RawFrameData {
     pub fn width(&self) -> u32 {
         match self {
-            RawFrame::SystemMemory { frame } => frame.width(),
+            Self::SystemMemory { frame } => frame.width(),
             #[cfg(target_os = "linux")]
-            RawFrame::DmaBuf { info, .. } => info.width(),
+            Self::DmaBuf { info, .. } => info.width(),
             #[cfg(target_os = "macos")]
-            RawFrame::Gl { info, .. } => info.width(),
+            Self::Gl { info, .. } => info.width(),
         }
     }
 
     pub fn height(&self) -> u32 {
         match self {
-            RawFrame::SystemMemory { frame } => frame.height(),
+            Self::SystemMemory { frame } => frame.height(),
             #[cfg(target_os = "linux")]
-            RawFrame::DmaBuf { info, .. } => info.height(),
+            Self::DmaBuf { info, .. } => info.height(),
             #[cfg(target_os = "macos")]
-            RawFrame::Gl { info, .. } => info.height(),
+            Self::Gl { info, .. } => info.height(),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct Coordinate {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl From<gst_video::VideoMasteringDisplayInfoCoordinate> for Coordinate {
+    fn from(value: gst_video::VideoMasteringDisplayInfoCoordinate) -> Self {
+        Self {
+            x: value.x(),
+            y: value.y(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MasteringDisplayInfo {
+    /// The xy coordinates of primaries in the CIE 1931 color space.
+    ///
+    /// The index 0 contains red, 1 is for green and 2 is for blue.
+    pub display_primaries: [Coordinate; 3],
+    /// The xy coordinates of white point in the CIE 1931 color space.
+    pub white_point: Coordinate,
+    /// The maximum value of display luminance in unit of 0.0001 nit
+    pub max_display_mastering_luminance: u32,
+    /// The minimum value of display luminance in unit of 0.0001 nit
+    pub min_display_mastering_luminance: u32,
+}
+
+#[derive(Debug)]
+pub struct ContentLightLevel {
+    /// The maximum content light level in nits
+    pub max_content_light_level: u16,
+    /// The maximum frame average light level in nits
+    pub max_frame_average_light_level: u16,
+}
+
+pub struct RawFrame {
+    pub data: RawFrameData,
+    pub mastering_display_info: Option<MasteringDisplayInfo>,
+    pub content_light_level: Option<ContentLightLevel>,
 }
 
 pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
@@ -239,13 +282,31 @@ impl SlintOpenGLSink {
             is_gl = true;
         }
 
-        let Some(info) = sample
-            .caps()
-            .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok())
-        else {
+        let Some(caps) = sample.caps() else {
             error!("Got invalid caps");
             return Err(gst::FlowError::NotNegotiated);
         };
+
+        let Some(info) = gst_video::VideoInfo::from_caps(caps).ok() else {
+            error!("Got invalid caps");
+            return Err(gst::FlowError::NotNegotiated);
+        };
+
+        let mastering_display_info = gst_video::VideoMasteringDisplayInfo::from_caps(caps)
+            .map(|mdi| MasteringDisplayInfo {
+                display_primaries: mdi.display_primaries().map(Coordinate::from),
+                white_point: mdi.white_point().into(),
+                max_display_mastering_luminance: mdi.max_display_mastering_luminance(),
+                min_display_mastering_luminance: mdi.min_display_mastering_luminance(),
+            })
+            .ok();
+
+        let content_light_level = gst_video::VideoContentLightLevel::from_caps(caps)
+            .map(|cll| ContentLightLevel {
+                max_content_light_level: cll.max_content_light_level(),
+                max_frame_average_light_level: cll.max_frame_average_light_level(),
+            })
+            .ok();
 
         // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/video/gtk4/src/sink/frame.rs?ref_type=heads
         let overlays: SmallVec<[Overlay; 3]> = buffer
@@ -325,10 +386,15 @@ impl SlintOpenGLSink {
         {
             let dma_info = dma_info.lock();
             if let Some(dma_info) = dma_info.as_ref() {
-                *next_frame_ref.lock() = Some(RawFrame::DmaBuf {
+                let data = RawFrameData::DmaBuf {
                     buffer,
                     info,
                     dma_info: dma_info.clone(),
+                };
+                *next_frame_ref.lock() = Some(RawFrame {
+                    data,
+                    mastering_display_info,
+                    content_light_level,
                 });
 
                 next_frame_available_notifier();
@@ -339,13 +405,26 @@ impl SlintOpenGLSink {
 
         #[cfg(target_os = "macos")]
         if is_gl {
-            *next_frame_ref.lock() = Some(RawFrame::Gl { buffer, info });
+            let data = RawFrameData::Gl {
+                buffer,
+                info,
+            };
+            *next_frame_ref.lock() = Some(RawFrame {
+                data,
+                mastering_display_info,
+                content_light_level,
+            });
             return Ok(gst::FlowSuccess::Ok);
         }
 
         match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
             Ok(frame) => {
-                *next_frame_ref.lock() = Some(RawFrame::SystemMemory { frame });
+                let data = RawFrameData::SystemMemory { frame };
+                *next_frame_ref.lock() = Some(RawFrame {
+                    data,
+                    mastering_display_info,
+                    content_light_level,
+                });
             }
             Err(err) => {
                 error!(?err, "Failed to create video frame");
