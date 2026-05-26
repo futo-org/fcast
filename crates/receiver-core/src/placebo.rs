@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum RenderProfile {
     Fast,
-    Default,
+    Balanced,
     HighQuality,
 }
 
@@ -227,7 +227,7 @@ impl PlaceboContext {
         let mut params = unsafe {
             match opts.profile {
                 RenderProfile::Fast => pl_render_fast_params,
-                RenderProfile::Default => pl_render_default_params,
+                RenderProfile::Balanced => pl_render_default_params,
                 RenderProfile::HighQuality => pl_render_high_quality_params,
             }
         };

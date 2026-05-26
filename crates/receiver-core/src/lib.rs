@@ -129,7 +129,7 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     no_google_cast: bool,
     /// Change what video frame render profile should be used
-    #[arg(long, value_enum, default_value_t = placebo::RenderProfile::Default)]
+    #[arg(long, value_enum, default_value_t = placebo::RenderProfile::Fast)]
     render_profile: placebo::RenderProfile,
     /// Visualize the color mapping lookup table used for video rendering
     #[arg(long, default_value_t = false)]
