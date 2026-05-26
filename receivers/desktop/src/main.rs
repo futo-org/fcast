@@ -21,5 +21,5 @@ fn main() -> anyhow::Result<()> {
         selector.select()?;
     }
 
-    rcore::run(args)
+    rcore::run(args, rcore::SwapchainSink::new())
 }

@@ -11,27 +11,28 @@ use std::{
     ptr::null,
     rc::{Rc, Weak},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc,
+        Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc
     },
     time::{Duration, Instant},
 };
+use fiatlux::*;
 
 mod pixmap_video_sink;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+const IDLE_UPDATE_TIMEOUT_SEC: f64 = 5.0;
+
 struct FiatLuxGlContext {
-    gc: fiatlux::GraphicsContext,
-    render_buffer: *mut fiatlux::fl_RenderBuffer,
+    gc: GraphicsContext,
+    render_buffer: *mut fl_RenderBuffer,
 }
 
 unsafe impl femtovg_renderer::OpenGLInterface for FiatLuxGlContext {
     fn ensure_current(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         unsafe {
-            fiatlux::fl_egl_window_framebuffer_make_context_active(self.render_buffer);
+            fl_egl_window_framebuffer_make_context_active(self.render_buffer);
         }
         Ok(())
     }
@@ -50,8 +51,8 @@ unsafe impl femtovg_renderer::OpenGLInterface for FiatLuxGlContext {
 
     fn get_proc_address(&self, name: &std::ffi::CStr) -> *const std::ffi::c_void {
         unsafe {
-            let egl = fiatlux::fl_graphics_context_get_egl(self.gc.gc);
-            match fiatlux::fl_egl_get_proc_address_func(egl.as_mut().unwrap()) {
+            let egl = fl_graphics_context_get_egl(self.gc.gc);
+            match fl_egl_get_proc_address_func(egl.as_mut().unwrap()) {
                 Some(func) => core::mem::transmute(func(name.as_ptr())),
                 None => null(),
             }
@@ -65,9 +66,9 @@ struct FiatLuxWindowAdapter {
     renderer: femtovg_renderer::FemtoVGRenderer,
     needs_redraw: Cell<bool>,
     size: Cell<slint::PhysicalSize>,
-    client: fiatlux::Client,
-    fl_window: fiatlux::Window,
-    render_buffer: *mut fiatlux::fl_RenderBuffer,
+    client: Client,
+    fl_window: Window,
+    render_buffer: *mut fl_RenderBuffer,
 }
 
 impl FiatLuxWindowAdapter {
@@ -75,26 +76,31 @@ impl FiatLuxWindowAdapter {
         let window_identifier = CString::new("org.futo.Receiver")?;
         let window_title = CString::new("fcast-receiver")?;
 
-        let client = fiatlux::Client::new()?;
-        let gc = fiatlux::GraphicsContext::new(&client)?;
+        let client = Client::new()?;
+        let gc = GraphicsContext::new(&client)?;
         let fl_window =
-            fiatlux::Window::new(&client, window_identifier.as_ptr(), window_title.as_ptr())?;
+            Window::new(&client, window_identifier.as_ptr(), window_title.as_ptr())?;
 
         let render_buffer = unsafe {
-            fiatlux::fl_egl_create_window_framebuffer(
-                fiatlux::fl_graphics_context_get_egl(gc.gc),
+            // Slint needs a stencil buffer to render non-rectangular shapes correctly
+            let opts = fl_WindowFramebufferOpts {
+                stencil_size: 8,
+            };
+            fl_egl_create_window_framebuffer_with_opts(
+                fl_graphics_context_get_egl(gc.gc),
                 client.client,
                 fl_window.window_id,
                 fl_window.width,
                 fl_window.height,
-                fiatlux::fl_PixmapFormat_FL_PIXMAP_FORMAT_RGBA8,
+                fl_PixmapFormat_FL_PIXMAP_FORMAT_RGBA8,
+                &opts,
             )
             .as_mut()
             .expect("Failed to create window framebuffer")
         };
 
         unsafe {
-            fiatlux::fl_egl_window_framebuffer_make_context_active(render_buffer);
+            fl_egl_window_framebuffer_make_context_active(render_buffer);
         }
 
         Ok(Rc::new_cyclic(|w: &Weak<Self>| Self {
@@ -189,7 +195,7 @@ impl slint::platform::WindowAdapter for FiatLuxWindowAdapter {
 impl Drop for FiatLuxWindowAdapter {
     fn drop(&mut self) {
         unsafe {
-            fiatlux::fl_egl_destroy_window_framebuffer(self.render_buffer);
+            fl_egl_destroy_window_framebuffer(self.render_buffer);
         }
     }
 }
@@ -199,11 +205,35 @@ type Job = Box<dyn FnOnce() + Send>;
 struct LoopProxy {
     job_sender: mpsc::Sender<Job>,
     quit_event_loop: Arc<AtomicBool>,
+    idle_updated_timer: Mutex<Instant>,
+    client: ClientPtr,
+}
+
+impl LoopProxy {
+    pub fn new(job_sender: mpsc::Sender<Job>, quit_event_loop: Arc<AtomicBool>, client: ClientPtr) -> Self {
+        Self {
+            job_sender: job_sender,
+            quit_event_loop: quit_event_loop,
+            idle_updated_timer: Mutex::new(Instant::now()),
+            client: client,
+        }
+    }
+
+    fn idle_handle(&self) {
+        let now = Instant::now();
+        let mut idle_updated_timer = self.idle_updated_timer.lock().unwrap();
+        if now.duration_since(*idle_updated_timer).as_secs_f64() >= IDLE_UPDATE_TIMEOUT_SEC {
+            *idle_updated_timer = now;
+            unsafe { fl_inhibit_idle(self.client.0); }
+        }
+        drop(idle_updated_timer);
+    }
 }
 
 impl slint::platform::EventLoopProxy for LoopProxy {
     fn quit_event_loop(&self) -> Result<(), rcore::slint::EventLoopError> {
         self.quit_event_loop.store(true, Ordering::Relaxed);
+        self.idle_handle();
         // Wake up the event loop by sending an empty job
         self.job_sender
             .send(Box::new(move || {}))
@@ -214,6 +244,7 @@ impl slint::platform::EventLoopProxy for LoopProxy {
         &self,
         event: Box<dyn FnOnce() + Send>,
     ) -> Result<(), rcore::slint::EventLoopError> {
+        self.idle_handle();
         self.job_sender
             .send(event)
             .map_err(|_| rcore::slint::EventLoopError::EventLoopTerminated)
@@ -237,42 +268,42 @@ impl FiatLuxPlatform {
         Ok(Self {
             window: FiatLuxWindowAdapter::new()?,
             timer: Instant::now(),
-            job_sender: job_sender,
-            job_receiver: job_receiver,
+            job_sender,
+            job_receiver,
             quit_event_loop: Arc::new(AtomicBool::new(false)),
             video_pixmap_id,
         })
     }
 
     fn fl_pointer_button_to_slint_pointer_button(
-        fl_button: fiatlux::fl_protocol_PointerButton,
+        fl_button: fl_protocol_PointerButton,
     ) -> slint::platform::PointerEventButton {
         match fl_button {
-            fiatlux::fl_protocol_PointerButton_fl_protocol_PointerButton_button1 => {
+            fl_protocol_PointerButton_fl_protocol_PointerButton_button1 => {
                 slint::platform::PointerEventButton::Left
             }
-            fiatlux::fl_protocol_PointerButton_fl_protocol_PointerButton_button2 => {
+            fl_protocol_PointerButton_fl_protocol_PointerButton_button2 => {
                 slint::platform::PointerEventButton::Middle
             }
-            fiatlux::fl_protocol_PointerButton_fl_protocol_PointerButton_button3 => {
+            fl_protocol_PointerButton_fl_protocol_PointerButton_button3 => {
                 slint::platform::PointerEventButton::Right
             },
             _ => slint::platform::PointerEventButton::Other,
         }
     }
 
-    fn present_pixmap(&self, pixmap_id: fiatlux::fl_protocol_PixmapId) {
+    fn present_pixmap(&self, pixmap_id: fl_protocol_PixmapId) {
         unsafe {
-            let seq = fiatlux::fl_present_pixmap(
+            let seq = fl_present_pixmap(
                 self.window.client.client,
                 pixmap_id,
                 self.window.fl_window.window_id,
                 0,
                 0,
             );
-            let present_pixmap_reply = fiatlux::fl_receive_reply_present_pixmap(self.window.client.client, seq);
+            let present_pixmap_reply = fl_receive_reply_present_pixmap(self.window.client.client, seq);
             if !present_pixmap_reply.is_null() {
-                fiatlux::fl_free_reply_present_pixmap(present_pixmap_reply);
+                fl_free_reply_present_pixmap(present_pixmap_reply);
             }
         }
     }
@@ -282,8 +313,8 @@ impl FiatLuxPlatform {
 
         loop {
             unsafe {
-                let mut poll_event_res = fiatlux::fl_poll_event_result_fl_poll_event_success;
-                let event = match fiatlux::fl_poll_events(
+                let mut poll_event_res = fl_poll_event_result_fl_poll_event_success;
+                let event = match fl_poll_events(
                     self.window.client.client,
                     0.0,
                     &mut poll_event_res,
@@ -295,20 +326,20 @@ impl FiatLuxPlatform {
                 };
 
                 const WINDOW_RESIZED: u8 =
-                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
+                    fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
                 const DISPLAY_SCALE_NOTIFY: u8 =
-                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
+                    fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
                         as u8;
                 const WINDOW_VISIBILITY_CHANGED: u8 =
-                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
+                    fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
                 const POINTER_MOVED: u8 =
-                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
+                    fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
                 const POINTER_BUTTON: u8 =
-                    fiatlux::fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
+                    fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
 
                 match event.header.event_type {
                     WINDOW_RESIZED => {
-                        fiatlux::fl_egl_window_framebuffer_resize(
+                        fl_egl_window_framebuffer_resize(
                             self.window.render_buffer,
                             event.window_resized.width,
                             event.window_resized.height,
@@ -338,14 +369,14 @@ impl FiatLuxPlatform {
                                 x: event.pointer_button.abs_x as f32,
                                 y: event.pointer_button.abs_y as f32,
                             },
-                            FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fiatlux::fl_protocol_PointerButton),
-                            event.pointer_button.state as fiatlux::fl_protocol_PointerButtonState == fiatlux::fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
+                            FiatLuxPlatform::fl_pointer_button_to_slint_pointer_button(event.pointer_button.button as fl_protocol_PointerButton),
+                            event.pointer_button.state as fl_protocol_PointerButtonState == fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed,
                         );
                     }
                     _ => {}
                 }
 
-                fiatlux::fl_free_event(event);
+                fl_free_event(event);
             }
         }
 
@@ -377,7 +408,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
             slint::platform::update_timers_and_animations();
 
             unsafe {
-                if !fiatlux::fl_is_connected_to_server(self.window.client.client) {
+                if !fl_is_connected_to_server(self.window.client.client) {
                     self.quit_event_loop.store(true, Ordering::Relaxed);
                 }
             }
@@ -397,29 +428,29 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
                 let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
                 if video_pixmap_id_value != 0 {
-                    let pixmap_id = fiatlux::fl_protocol_PixmapId {
+                    let pixmap_id = fl_protocol_PixmapId {
                         value: video_pixmap_id_value,
                     };
                     self.present_pixmap(pixmap_id);
                 }
 
                 unsafe {
-                    fiatlux::fl_egl_window_framebuffer_present_framebuffer(self.window.render_buffer);
-                    fiatlux::fl_inhibit_idle(self.window.client.client);
+                    fl_egl_window_framebuffer_present_framebuffer(self.window.render_buffer);
                 }
             });
 
-            unsafe { fiatlux::fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
+            unsafe { fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
         }
 
         return Ok(());
     }
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn slint::platform::EventLoopProxy>> {
-        Some(Box::new(LoopProxy {
-            job_sender: self.job_sender.clone(),
-            quit_event_loop: self.quit_event_loop.clone(),
-        }))
+        Some(Box::new(LoopProxy::new(
+            self.job_sender.clone(),
+            self.quit_event_loop.clone(),
+            ClientPtr(self.window.client.client),
+        )))
     }
 }
 

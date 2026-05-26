@@ -349,31 +349,38 @@ impl PlaceboContext {
 
     fn render_sysmem(
         &mut self,
-        swframe: &libplacebo::SwapchainFrame,
-        frame: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
+        destination: &libplacebo::SwapchainFrame,
+        source: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
     ) -> std::result::Result<(), RenderFrameError> {
-        let info = frame.info();
+        let mut target = unsafe {
+            let mut t = std::mem::zeroed();
+            pl_frame_from_swapchain(&mut t, &destination.frame);
+            t
+        };
+        self.render_sysmem_to_frame(&mut target, source)
+    }
+
+    fn render_sysmem_to_frame(
+        &mut self,
+        destination: &mut pl_frame,
+        source: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
+    ) -> std::result::Result<(), RenderFrameError> {
+        let info = source.info();
         let frame_info = RenderFrameInfo::new(info);
 
-        let mut image = create_pl_frame(frame.n_planes() as i32, info, &frame_info);
-        if let Err(err) = self.upload_sys_mem(info, &frame_info, frame, &mut image) {
+        let mut image = create_pl_frame(source.n_planes() as i32, info, &frame_info);
+        if let Err(err) = self.upload_sys_mem(info, &frame_info, source, &mut image) {
             self.flush_texture_cache();
             return Err(err);
         };
 
-        let mut target = unsafe {
-            let mut t = std::mem::zeroed();
-            pl_frame_from_swapchain(&mut t, &swframe.frame);
-            t
-        };
-
-        target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
+        destination.crop = libplacebo::scale_and_fit(&destination.crop, &image.crop);
 
         unsafe {
             pl_render_image(
                 self.renderer.renderer,
                 &image,
-                &target,
+                destination,
                 &self.rendering_params,
             );
         }
@@ -384,13 +391,28 @@ impl PlaceboContext {
     #[cfg(target_os = "linux")]
     fn render_dmabuf(
         &self,
-        swframe: &libplacebo::SwapchainFrame,
-        buffer: &gst::Buffer,
-        dma_info: &gst_video::VideoInfoDmaDrm,
+        destination: &libplacebo::SwapchainFrame,
+        source_buffer: &gst::Buffer,
+        source_dma_info: &gst_video::VideoInfoDmaDrm,
+    ) -> std::result::Result<(), RenderFrameError> {
+        let mut target = unsafe {
+            let mut t = std::mem::zeroed();
+            pl_frame_from_swapchain(&mut t, &destination.frame);
+            t
+        };
+        self.render_dmabuf_to_frame(&mut target, source_buffer, source_dma_info)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn render_dmabuf_to_frame(
+        &self,
+        destination: &mut pl_frame,
+        source_buffer: &gst::Buffer,
+        source_dma_info: &gst_video::VideoInfoDmaDrm,
     ) -> std::result::Result<(), RenderFrameError> {
         use tracing::error;
 
-        let Some(vmeta) = buffer.meta::<gst_video::VideoMeta>() else {
+        let Some(vmeta) = source_buffer.meta::<gst_video::VideoMeta>() else {
             return Err(RenderFrameError::MissingVideoMeta);
         };
 
@@ -400,20 +422,20 @@ impl PlaceboContext {
         let mut sizes = [0usize; 4];
         let n_planes = vmeta.n_planes() as usize;
         let dma_drm_fourcc =
-            DrmFourcc::try_from(dma_info.fourcc()).map_err(|_| RenderFrameError::InvalidFourcc)?;
-        let modifier = dma_info.modifier();
+            DrmFourcc::try_from(source_dma_info.fourcc()).map_err(|_| RenderFrameError::InvalidFourcc)?;
+        let modifier = source_dma_info.modifier();
 
         let vmeta_offsets = vmeta.offset();
         let vmeta_strides = vmeta.stride();
 
         for plane in 0..n_planes {
             let Some((range, skip)) =
-                buffer.find_memory(vmeta_offsets[plane]..(vmeta_offsets[plane] + 1))
+                source_buffer.find_memory(vmeta_offsets[plane]..(vmeta_offsets[plane] + 1))
             else {
                 break;
             };
 
-            let mem = buffer.peek_memory(range.start);
+            let mem = source_buffer.peek_memory(range.start);
             let Some(mem) = mem.downcast_memory_ref::<gst_allocators::DmaBufMemory>() else {
                 break;
             };
@@ -430,7 +452,7 @@ impl PlaceboContext {
             return Err(RenderFrameError::InvalidDmaBufFd);
         }
 
-        let normal_info = dma_info
+        let normal_info = source_dma_info
             .to_video_info()
             .map_err(|_| RenderFrameError::InvalidFormatInfo)?;
         let frame_info = RenderFrameInfo::new(&normal_info);
@@ -494,19 +516,13 @@ impl PlaceboContext {
             image.planes[plane_idx as usize].components = components as i32;
         }
 
-        let mut target = unsafe {
-            let mut t = std::mem::zeroed();
-            pl_frame_from_swapchain(&mut t, &swframe.frame);
-            t
-        };
-
-        target.crop = libplacebo::scale_and_fit(&target.crop, &image.crop);
+        destination.crop = libplacebo::scale_and_fit(&destination.crop, &image.crop);
 
         unsafe {
             pl_render_image(
                 self.renderer.renderer,
                 &image,
-                &target,
+                destination,
                 &self.rendering_params,
             );
             destroy_textures(self.opengl.gpu(), image.num_planes, &mut image.planes);
@@ -529,6 +545,54 @@ impl PlaceboContext {
             #[cfg(target_os = "macos")]
             crate::video::RawFrame::Gl { .. } => Ok(()),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn render_frame_to_tex(
+        &mut self,
+        destination_tex: pl_tex,
+        destination_width: i32,
+        destination_height: i32,
+        destination_color: pl_color_space,
+        source_frame: &crate::video::RawFrame,
+    ) -> std::result::Result<(), RenderFrameError> {
+        let mut destination_frame: pl_frame = unsafe { std::mem::zeroed() };
+        destination_frame.num_planes = 1;
+        destination_frame.planes[0] = libplacebo::new_plane();
+        destination_frame.planes[0].texture = destination_tex;
+        destination_frame.planes[0].components = 4;
+        destination_frame.planes[0].component_mapping = [0, 1, 2, 3];
+        destination_frame.repr = pl_color_repr {
+            sys: pl_color_system::PL_COLOR_SYSTEM_RGB,
+            levels: pl_color_levels::PL_COLOR_LEVELS_FULL,
+            alpha: pl_alpha_mode::PL_ALPHA_NONE,
+            bits: pl_bit_encoding {
+                sample_depth: 8,
+                color_depth: 8,
+                bit_shift: 0,
+            },
+            dovi: ptr::null(),
+        };
+        destination_frame.color = destination_color;
+        destination_frame.crop = pl_rect2df {
+            x0: 0.0,
+            y0: 0.0,
+            x1: destination_width as f32,
+            y1: destination_height as f32,
+        };
+
+        match source_frame {
+            crate::video::RawFrame::SystemMemory { frame } => {
+                self.render_sysmem_to_frame(&mut destination_frame, frame)
+            }
+            crate::video::RawFrame::DmaBuf { buffer, dma_info, .. } => {
+                self.render_dmabuf_to_frame(&mut destination_frame, buffer, dma_info)
+            }
+        }
+    }
+
+    pub fn gpu(&self) -> *const pl_gpu_t {
+        unsafe { self.opengl.gpu() }
     }
 }
 
