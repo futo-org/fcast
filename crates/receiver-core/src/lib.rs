@@ -415,8 +415,8 @@ pub fn run<S: VideoSink + 'static>(
                     }
                     video::Resource::Unchanged => (),
                     video::Resource::New(frame) => {
-                        bridge.set_video_frame_width(frame.width() as i32);
-                        bridge.set_video_frame_height(frame.height() as i32);
+                        bridge.set_video_frame_width(frame.data.width() as i32);
+                        bridge.set_video_frame_height(frame.data.height() as i32);
                         cached_frame = Some(frame);
                     }
                 }
@@ -455,12 +455,7 @@ pub fn run<S: VideoSink + 'static>(
                     && let Some(placebo) = pl_context.as_mut()
                     && let Some(renderer) = renderer.as_ref()
                 {
-                    let caps = slint_sink
-                        .appsink
-                        .static_pad("sink")
-                        .and_then(|pad| pad.current_caps());
-                    let caps_ref = caps.as_deref();
-                    if let Err(err) = video_sink.render(placebo, &renderer.gl, frame, prev_size, caps_ref) {
+                    if let Err(err) = video_sink.render(placebo, &renderer.gl, frame, prev_size) {
                         error!(?err, "video sink render failed");
                     }
                 }

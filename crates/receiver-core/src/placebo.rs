@@ -421,8 +421,8 @@ impl PlaceboContext {
         let mut strides = [0; 4];
         let mut sizes = [0usize; 4];
         let n_planes = vmeta.n_planes() as usize;
-        let dma_drm_fourcc =
-            DrmFourcc::try_from(source_dma_info.fourcc()).map_err(|_| RenderFrameError::InvalidFourcc)?;
+        let dma_drm_fourcc = DrmFourcc::try_from(source_dma_info.fourcc())
+            .map_err(|_| RenderFrameError::InvalidFourcc)?;
         let modifier = source_dma_info.modifier();
 
         let vmeta_offsets = vmeta.offset();
@@ -536,12 +536,14 @@ impl PlaceboContext {
         swframe: &libplacebo::SwapchainFrame,
         frame: &crate::video::RawFrame,
     ) -> std::result::Result<(), RenderFrameError> {
-        match frame {
-            crate::video::RawFrame::SystemMemory { frame } => self.render_sysmem(swframe, frame),
+        match &frame.data {
+            crate::video::RawFrameData::SystemMemory { frame } => {
+                self.render_sysmem(swframe, &frame)
+            }
             #[cfg(target_os = "linux")]
-            crate::video::RawFrame::DmaBuf {
+            crate::video::RawFrameData::DmaBuf {
                 buffer, dma_info, ..
-            } => self.render_dmabuf(swframe, buffer, dma_info),
+            } => self.render_dmabuf(swframe, &buffer, &dma_info),
             #[cfg(target_os = "macos")]
             crate::video::RawFrame::Gl { .. } => Ok(()),
         }
@@ -581,13 +583,13 @@ impl PlaceboContext {
             y1: destination_height as f32,
         };
 
-        match source_frame {
-            crate::video::RawFrame::SystemMemory { frame } => {
-                self.render_sysmem_to_frame(&mut destination_frame, frame)
+        match &source_frame.data {
+            crate::video::RawFrameData::SystemMemory { frame } => {
+                self.render_sysmem_to_frame(&mut destination_frame, &frame)
             }
-            crate::video::RawFrame::DmaBuf { buffer, dma_info, .. } => {
-                self.render_dmabuf_to_frame(&mut destination_frame, buffer, dma_info)
-            }
+            crate::video::RawFrameData::DmaBuf {
+                buffer, dma_info, ..
+            } => self.render_dmabuf_to_frame(&mut destination_frame, &buffer, &dma_info),
         }
     }
 

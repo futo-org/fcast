@@ -9,7 +9,6 @@ pub trait VideoSink {
         gl: &glow::Context,
         frame: &RawFrame,
         target_size: (u32, u32),
-        caps: Option<&gst::CapsRef>,
     ) -> Result<()>;
 
     fn flush_cache(&mut self, placebo: &mut PlaceboContext) {
@@ -38,7 +37,6 @@ impl VideoSink for SwapchainSink {
         _gl: &glow::Context,
         frame: &RawFrame,
         target_size: (u32, u32),
-        _caps: Option<&gst::CapsRef>,
     ) -> Result<()> {
         if target_size != self.size {
             placebo.resize_swapchain(target_size.0 as i32, target_size.1 as i32);

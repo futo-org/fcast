@@ -11,12 +11,11 @@ use std::{
 use anyhow::{Result, anyhow};
 use fiatlux::*;
 use rcore::{
-    VideoSink, glow, gst, gst_video,
-    gst_video::prelude::*,
+    VideoSink, glow, gst_video::{self, prelude::*},
     libplacebo::libplacebo_sys::*,
     placebo::PlaceboContext,
     tracing::{debug, warn},
-    video::RawFrame,
+    video::{RawFrame, RawFrameData},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,11 +249,10 @@ impl VideoSink for FhsPixmapSink {
         gl: &glow::Context,
         frame: &RawFrame,
         target_size: (u32, u32),
-        source_caps: Option<&gst::CapsRef>,
     ) -> Result<()> {
         let (target_width, target_height) = target_size;
-        let info = frame_video_info(frame)?;
-        let transfer = info.colorimetry().transfer();
+        let colorimetry = frame_video_colorimetry(frame);
+        let transfer = colorimetry.transfer();
         let is_pq = matches!(transfer, gst_video::VideoTransferFunction::Smpte2084);
         let is_hlg = matches!(transfer, gst_video::VideoTransferFunction::AribStdB67);
         let is_hdr = is_pq || is_hlg;
@@ -268,7 +266,7 @@ impl VideoSink for FhsPixmapSink {
         self.ensure_target(placebo, target_width, target_height, format)?;
         let target = self.target.as_ref().expect("target exists after ensure");
 
-        let (target_color, new_hdr_metadata) = build_target_color(source_caps, is_pq, is_hlg);
+        let (target_color, new_hdr_metadata) = build_target_color(frame, is_pq, is_hlg);
 
         placebo
             .render_frame_to_tex(
@@ -346,17 +344,15 @@ fn bytes_per_pixel(format: TargetFormat) -> u8 {
     }
 }
 
-fn frame_video_info(frame: &RawFrame) -> Result<gst_video::VideoInfo> {
-    Ok(match frame {
-        RawFrame::SystemMemory { frame } => frame.info().clone(),
-        RawFrame::DmaBuf { dma_info, .. } => dma_info
-            .to_video_info()
-            .map_err(|e| anyhow!("invalid dma-buf video info: {e}"))?,
-    })
+fn frame_video_colorimetry(frame: &RawFrame) -> gst_video::VideoColorimetry {
+    match &frame.data {
+        RawFrameData::SystemMemory { frame } => frame.info().colorimetry(),
+        RawFrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry()
+    }
 }
 
 fn build_target_color(
-    caps: Option<&gst::CapsRef>,
+    frame: &RawFrame,
     is_pq: bool,
     is_hlg: bool,
 ) -> (pl_color_space, fl_protocol_HdrMetadata) {
@@ -402,45 +398,43 @@ fn build_target_color(
     if is_hdr {
         let mut have_valid_mastering = false;
 
-        if let Some(caps) = caps {
-            if let Ok(mdi) = gst_video::VideoMasteringDisplayInfo::from_caps(caps) {
-                let primaries = mdi.display_primaries();
-                let wp = mdi.white_point();
-                let max_cd = mdi.max_display_mastering_luminance() as f32 / 10000.0;
-                let min_cd = mdi.min_display_mastering_luminance() as f32 / 10000.0;
+        if let Some(mdi) = &frame.mastering_display_info {
+            let primaries = &mdi.display_primaries;
+            let wp = &mdi.white_point;
+            let max_cd = mdi.max_display_mastering_luminance as f32 / 10000.0;
+            let min_cd = mdi.min_display_mastering_luminance as f32 / 10000.0;
 
-                if max_cd >= 100.0 {
-                    hdr_metadata.mastering_display_primaries[0] = fl_protocol_XyColor {
-                        x: primaries[0].x(),
-                        y: primaries[0].y(),
-                    };
-                    hdr_metadata.mastering_display_primaries[1] = fl_protocol_XyColor {
-                        x: primaries[1].x(),
-                        y: primaries[1].y(),
-                    };
-                    hdr_metadata.mastering_display_primaries[2] = fl_protocol_XyColor {
-                        x: primaries[2].x(),
-                        y: primaries[2].y(),
-                    };
-                    hdr_metadata.mastering_display_white_point = fl_protocol_XyColor {
-                        x: wp.x(),
-                        y: wp.y(),
-                    };
-                    hdr_metadata.max_mastering_luminance = max_cd;
-                    hdr_metadata.min_mastering_luminance = min_cd;
-                    have_valid_mastering = true;
-                } else {
-                    debug!(
-                        raw_max = mdi.max_display_mastering_luminance(),
-                        max_cd, "Ignoring implausible mastering-display max luminance"
-                    );
-                }
+            if max_cd >= 100.0 {
+                hdr_metadata.mastering_display_primaries[0] = fl_protocol_XyColor {
+                    x: primaries[0].x,
+                    y: primaries[0].y,
+                };
+                hdr_metadata.mastering_display_primaries[1] = fl_protocol_XyColor {
+                    x: primaries[1].x,
+                    y: primaries[1].y,
+                };
+                hdr_metadata.mastering_display_primaries[2] = fl_protocol_XyColor {
+                    x: primaries[2].x,
+                    y: primaries[2].y,
+                };
+                hdr_metadata.mastering_display_white_point = fl_protocol_XyColor {
+                    x: wp.x,
+                    y: wp.y,
+                };
+                hdr_metadata.max_mastering_luminance = max_cd;
+                hdr_metadata.min_mastering_luminance = min_cd;
+                have_valid_mastering = true;
+            } else {
+                debug!(
+                    raw_max = mdi.max_display_mastering_luminance,
+                    max_cd, "Ignoring implausible mastering-display max luminance"
+                );
             }
+        }
 
-            if let Ok(cll) = gst_video::VideoContentLightLevel::from_caps(caps) {
-                hdr_metadata.max_cll = cll.max_content_light_level() as f32;
-                hdr_metadata.max_fall = cll.max_frame_average_light_level() as f32;
-            }
+        if let Some(cll) = &frame.content_light_level {
+            hdr_metadata.max_cll = cll.max_content_light_level as f32;
+            hdr_metadata.max_fall = cll.max_frame_average_light_level as f32;
         }
 
         if !have_valid_mastering {
