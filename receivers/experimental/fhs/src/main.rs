@@ -1,4 +1,5 @@
 use anyhow::Result;
+use fiatlux::*;
 use mimalloc::MiMalloc;
 use rcore::{
     clap::Parser,
@@ -11,11 +12,12 @@ use std::{
     ptr::null,
     rc::{Rc, Weak},
     sync::{
-        Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
-use fiatlux::*;
 
 mod pixmap_video_sink;
 
@@ -78,14 +80,11 @@ impl FiatLuxWindowAdapter {
 
         let client = Client::new()?;
         let gc = GraphicsContext::new(&client)?;
-        let fl_window =
-            Window::new(&client, window_identifier.as_ptr(), window_title.as_ptr())?;
+        let fl_window = Window::new(&client, window_identifier.as_ptr(), window_title.as_ptr())?;
 
         let render_buffer = unsafe {
             // Slint needs a stencil buffer to render non-rectangular shapes correctly
-            let opts = fl_WindowFramebufferOpts {
-                stencil_size: 8,
-            };
+            let opts = fl_WindowFramebufferOpts { stencil_size: 8 };
             fl_egl_create_window_framebuffer_with_opts(
                 fl_graphics_context_get_egl(gc.gc),
                 client.client,
@@ -210,7 +209,11 @@ struct LoopProxy {
 }
 
 impl LoopProxy {
-    pub fn new(job_sender: mpsc::Sender<Job>, quit_event_loop: Arc<AtomicBool>, client: ClientPtr) -> Self {
+    pub fn new(
+        job_sender: mpsc::Sender<Job>,
+        quit_event_loop: Arc<AtomicBool>,
+        client: ClientPtr,
+    ) -> Self {
         Self {
             job_sender: job_sender,
             quit_event_loop: quit_event_loop,
@@ -224,7 +227,9 @@ impl LoopProxy {
         let mut idle_updated_timer = self.idle_updated_timer.lock().unwrap();
         if now.duration_since(*idle_updated_timer).as_secs_f64() >= IDLE_UPDATE_TIMEOUT_SEC {
             *idle_updated_timer = now;
-            unsafe { fl_inhibit_idle(self.client.0); }
+            unsafe {
+                fl_inhibit_idle(self.client.0);
+            }
         }
         drop(idle_updated_timer);
     }
@@ -261,9 +266,7 @@ struct FiatLuxPlatform {
 }
 
 impl FiatLuxPlatform {
-    pub fn new(
-        video_pixmap_id: Arc<std::sync::atomic::AtomicU32>,
-    ) -> Result<Self> {
+    pub fn new(video_pixmap_id: Arc<std::sync::atomic::AtomicU32>) -> Result<Self> {
         let (job_sender, job_receiver) = mpsc::channel::<Job>();
         Ok(Self {
             window: FiatLuxWindowAdapter::new()?,
@@ -287,7 +290,7 @@ impl FiatLuxPlatform {
             }
             fl_protocol_PointerButton_fl_protocol_PointerButton_button3 => {
                 slint::platform::PointerEventButton::Right
-            },
+            }
             _ => slint::platform::PointerEventButton::Other,
         }
     }
@@ -301,7 +304,8 @@ impl FiatLuxPlatform {
                 0,
                 0,
             );
-            let present_pixmap_reply = fl_receive_reply_present_pixmap(self.window.client.client, seq);
+            let present_pixmap_reply =
+                fl_receive_reply_present_pixmap(self.window.client.client, seq);
             if !present_pixmap_reply.is_null() {
                 fl_free_reply_present_pixmap(present_pixmap_reply);
             }
@@ -314,22 +318,18 @@ impl FiatLuxPlatform {
         loop {
             unsafe {
                 let mut poll_event_res = fl_poll_event_result_fl_poll_event_success;
-                let event = match fl_poll_events(
-                    self.window.client.client,
-                    0.0,
-                    &mut poll_event_res,
-                )
-                .as_mut()
-                {
-                    Some(e) => e,
-                    None => break,
-                };
+                let event =
+                    match fl_poll_events(self.window.client.client, 0.0, &mut poll_event_res)
+                        .as_mut()
+                    {
+                        Some(e) => e,
+                        None => break,
+                    };
 
                 const WINDOW_RESIZED: u8 =
                     fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
                 const DISPLAY_SCALE_NOTIFY: u8 =
-                    fl_protocol_EventType_fl_protocol_EventType_display_scale_notify
-                        as u8;
+                    fl_protocol_EventType_fl_protocol_EventType_display_scale_notify as u8;
                 const WINDOW_VISIBILITY_CHANGED: u8 =
                     fl_protocol_EventType_fl_protocol_EventType_window_visibility_changed as u8;
                 const POINTER_MOVED: u8 =
@@ -439,7 +439,9 @@ impl slint::platform::Platform for FiatLuxPlatform {
                 }
             });
 
-            unsafe { fl_wait_for_vsync_finished(self.window.client.client, 3.0); };
+            unsafe {
+                fl_wait_for_vsync_finished(self.window.client.client, 3.0);
+            };
         }
 
         return Ok(());

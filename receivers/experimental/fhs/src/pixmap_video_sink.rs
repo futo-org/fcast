@@ -10,13 +10,14 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use fiatlux::*;
-use rcore::gst;
-use rcore::gst_video::prelude::*;
-use rcore::libplacebo::libplacebo_sys::*;
-use rcore::placebo::PlaceboContext;
-use rcore::tracing::{debug, warn};
-use rcore::video::RawFrame;
-use rcore::{VideoSink, gst_video, glow};
+use rcore::{
+    VideoSink, glow, gst, gst_video,
+    gst_video::prelude::*,
+    libplacebo::libplacebo_sys::*,
+    placebo::PlaceboContext,
+    tracing::{debug, warn},
+    video::RawFrame,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TargetFormat {
@@ -190,9 +191,22 @@ impl FhsPixmapSink {
                 pixmap_id
             };
 
-            debug!(width, height, ?format, fourcc, modifier, "Created pixmap-backed render target");
+            debug!(
+                width,
+                height,
+                ?format,
+                fourcc,
+                modifier,
+                "Created pixmap-backed render target"
+            );
 
-            Ok(Target { tex, pixmap_id, width, height, format })
+            Ok(Target {
+                tex,
+                pixmap_id,
+                width,
+                height,
+                format,
+            })
         })();
 
         match result {
@@ -367,7 +381,7 @@ fn build_target_color(
         transfer: pl_transfer,
         // Keep default values for hdr soe the renderer treats luminance as unknown
         // and preserves the soruce dynamic range
-        hdr: unsafe {std::mem::zeroed() },
+        hdr: unsafe { std::mem::zeroed() },
     };
 
     let mut hdr_metadata: fl_protocol_HdrMetadata = unsafe { std::mem::zeroed() };
