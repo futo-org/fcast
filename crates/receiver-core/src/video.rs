@@ -575,7 +575,7 @@ impl SlintOpenGLSink {
 
         if let Some(frame) = self.next_frame.lock().take() {
             #[cfg(target_os = "macos")]
-            if let RawFrame::Gl { buffer, .. } = &frame {
+            if let RawFrameData::Gl { buffer, .. } = &frame.data {
                 let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
                 sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
             }
