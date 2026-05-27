@@ -21,7 +21,7 @@ gst-base.workspace = true
 serde.workspace = true
 # gst-gl = { package = "gstreamer-gl", version = "0.25", features = ["v1_20"], optional = true }
 serde_json.workspace = true
-if-addrs = "0.14"
+if-addrs = "0.15"
 base64 = "0.22"
 bitflags = "2.10"
 smallvec.workspace = true
@@ -47,10 +47,10 @@ libplacebo.path = "../libplacebo"
 rtsp-types = "0.1"
 sdp-types = "0.1"
 rsa = { version = "0.9", features = ["sha2", "sha1"] }
-sha2 = "0.10"
+sha2 = "0.11"
 sha1 = "0.10"
 lazy_static = "1.5"
-md-5 = "0.10"
+md-5 = "0.11"
 aes = "0.8"
 alac = { version = "0.5", default-features = false }
 cbc = { version = "0.1", features = ["alloc", "std"] }
@@ -60,12 +60,12 @@ byte-slice-cast = "1"
 rtp-types = "0.1"
 
 # Google Cast
-rustls-pki-types = "1.12.0"
+rustls-pki-types = "1.14"
 google-cast-protocol = { path = "../google-cast-protocol" }
-rcgen = "0.14.7"
+rcgen = "0.14"
 uuid.workspace = true
 
-glow = "0.17.0"
+glow = "0.17"
 
 [dependencies.slint]
 workspace = true
