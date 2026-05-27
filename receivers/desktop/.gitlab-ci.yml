@@ -5,7 +5,9 @@ buildReceiverDesktopMacosAarch64:
     - macscript
   variables:
    GIT_SUBMODULE_STRATEGY: recursive
-   GIT_SUBMODULE_DEPTH: 1
+   GIT_STRATEGY: clone
+   # GIT_SUBMODULE_DEPTH: 1
+   GIT_DEPTH: 0
   before_script:
     - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
   script:
