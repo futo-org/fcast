@@ -459,6 +459,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
 }
 
 fn main() -> Result<()> {
+    let cli_args = rcore::CliArgs::parse();
     let video_pixmap_id = Arc::new(AtomicU32::new(0));
     let platform = FiatLuxPlatform::new(video_pixmap_id.clone())?;
     let client_ptr = platform.window.client.client;
@@ -466,7 +467,7 @@ fn main() -> Result<()> {
     slint::platform::set_platform(Box::new(platform))?;
 
     rcore::run(
-        rcore::CliArgs::parse(),
+        cli_args,
         pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_pixmap_id),
     )
 }
