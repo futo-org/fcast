@@ -1,0 +1,21 @@
+[package]
+name = "inhibit-screensaver"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.15.0"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_System_Power"
+]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+objc2-io-kit = { version = "0.3.2", features = ["pwr_mgt"] }

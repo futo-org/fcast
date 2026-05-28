@@ -49,18 +49,18 @@ mod mac_win_tray;
 mod mdns;
 mod message;
 mod opengl;
+pub mod placebo;
 mod player;
 mod raop;
 mod user_agent;
 mod utils;
-pub mod placebo;
-pub mod video_sink;
 pub mod video;
+pub mod video_sink;
 
-pub use libplacebo;
+pub use glow;
 pub use gst;
 pub use gst_video;
-pub use glow;
+pub use libplacebo;
 pub use video_sink::{SwapchainSink, VideoSink};
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
@@ -290,7 +290,10 @@ pub fn run<S: VideoSink + 'static>(
                                         debug!(
                                             formats = formats
                                                 .iter()
-                                                .map(|fmt| format!("{}:{:?}", fmt.code, fmt.modifier))
+                                                .map(|fmt| format!(
+                                                    "{}:{:?}",
+                                                    fmt.code, fmt.modifier
+                                                ))
                                                 .collect::<Vec<_>>()
                                                 .join(" "),
                                             "Got supported DMA DRM formats"
@@ -304,11 +307,7 @@ pub fn run<S: VideoSink + 'static>(
                             }
                         } else {
                             pl_context = Some(
-                                crate::placebo::PlaceboContext::new(
-                                    &pl_log,
-                                    &render_opts,
-                                )
-                                .unwrap(),
+                                crate::placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
                             );
                         }
                     }
@@ -410,7 +409,12 @@ pub fn run<S: VideoSink + 'static>(
                     use glow::HasContext;
                     let clear_color = video_sink.get_clear_color();
                     unsafe {
-                        renderer.gl.clear_color(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
+                        renderer.gl.clear_color(
+                            clear_color[0],
+                            clear_color[1],
+                            clear_color[2],
+                            clear_color[3],
+                        );
                         renderer.gl.clear(glow::COLOR_BUFFER_BIT);
                     }
                 }
@@ -566,14 +570,6 @@ pub fn run<S: VideoSink + 'static>(
     });
 
     gui::register_callbacks(&ui, &bridge, msg_tx.clone());
-
-    #[cfg(not(target_os = "android"))]
-    let _awake = keepawake::Builder::default()
-        .display(true)
-        .reason("Media playback")
-        .app_name("FCast Receiver")
-        .app_reverse_domain("org.fcast.receiver")
-        .create();
 
     info!(initialized_in = ?start.elapsed());
 

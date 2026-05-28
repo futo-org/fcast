@@ -123,6 +123,7 @@ pub struct Application {
     gl_context: crate::graphics::GlContext,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
+    screensaver_inhibitor: inhibit_screensaver::Inhibitor,
 }
 
 impl Application {
@@ -131,7 +132,8 @@ impl Application {
         appsink: gst::Element,
         msg_tx: MessageSender,
         video_sink_is_eos: Arc<AtomicBool>,
-        #[cfg(any(target_os = "macos", target_os = "windows"))] gl_context: crate::graphics::GlContext,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        gl_context: crate::graphics::GlContext,
         #[cfg(not(target_os = "android"))] cli_args: CliArgs,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
@@ -320,6 +322,11 @@ impl Application {
             gl_context,
             image_downloader,
             image_decoder,
+            screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
+                inhibit_screensaver::Options {
+                    app_reverse_domain: "org.fcast.receiver".to_owned(),
+                },
+            ),
         })
     }
 
@@ -621,6 +628,8 @@ impl Application {
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)?;
         }
 
+        self.screensaver_inhibitor.un_inhibit();
+
         Ok(())
     }
 
@@ -757,6 +766,8 @@ impl Application {
         }
         self.is_loading_media = true;
 
+        self.screensaver_inhibitor.inhibit("Media playback");
+
         Ok(())
     }
 
@@ -836,6 +847,7 @@ impl Application {
                     self.player.stop();
                     self.gui.set_app_state(AppState::Idle);
                     self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No)?;
+                    self.screensaver_inhibitor.un_inhibit();
                 }
                 // TODO: notify update? or wait for async state change from player
             }

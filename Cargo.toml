@@ -25,6 +25,7 @@ members = [
     "crates/egl-sys",
     "crates/fiatlux-sys",
     "crates/fiatlux",
+    "crates/inhibit-screensaver",
 ]
 resolver = "2"
 
