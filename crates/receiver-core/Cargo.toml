@@ -87,7 +87,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 gst-plugin-rtp = { workspace = true, optional = true }
 clap.workspace = true
-keepawake = "0.6"
+inhibit-screensaver.path = "../inhibit-screensaver"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 gst-allocators = { package = "gstreamer-allocators", version = "0.25" }
