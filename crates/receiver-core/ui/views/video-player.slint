@@ -119,6 +119,7 @@ component SettingItem inherits Rectangle {
 
         FText {
             text: value;
+            overflow: elide;
         }
 
         Rectangle { }
@@ -159,36 +160,42 @@ component PlaybackSettingHeader inherits HorizontalLayout {
     }
 }
 
-component SettingsTrackList inherits VerticalLayout {
+component SettingsTrackList inherits Rectangle {
     in property <[UiMediaTrack]> tracks;
     in property <int> selected-id;
     in property <bool> can-be-disabled: false;
 
     callback clicked(id: int);
 
-    if can-be-disabled: SettingItem {
-        value: "Off";
-        selected: selected-id == -1;
+    ScrollView {
+        viewport-height: vl.preferred-height;
 
-        clicked => clicked(-1);
-    }
+        vl := VerticalLayout {
+            if can-be-disabled: SettingItem {
+                value: "Off";
+                selected: selected-id == -1;
 
-    Rectangle {
-        height: 1px;
-        background: #FFFFFF0A;
-    }
+                clicked => clicked(-1);
+            }
 
-    for track[id] in tracks: VerticalLayout {
-        SettingItem {
-            value: track.name;
-            selected: selected-id == id;
+            Rectangle {
+                height: 1px;
+                background: #FFFFFF0A;
+            }
 
-            clicked => clicked(id);
-        }
+            for track[id] in tracks: VerticalLayout {
+                SettingItem {
+                    value: track.name;
+                    selected: selected-id == id;
 
-        Rectangle {
-            height: 1px;
-            background: #FFFFFF0A;
+                    clicked => clicked(id);
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: #FFFFFF0A;
+                }
+            }
         }
     }
 }
@@ -280,6 +287,7 @@ component PlaybackControls inherits Rectangle {
         mouse-cursor: suggested-cursor;
 
         clicked => {
+            current-settings-page = SettingsPage.Start;
             show-settings = false;
         }
 
@@ -396,34 +404,24 @@ component PlaybackControls inherits Rectangle {
         }
     }
 
-    if show-settings: Rectangle {
-        background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
-        border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
-        border-width: 1px;
-        border-radius: 6px;
-        width: settings-inner.preferred-width;
-        height: current-settings-page == SettingsPage.Start
-        ? settings-start.preferred-height
-        : current-settings-page == SettingsPage.Video
-        ? settings-video.preferred-height
-        : current-settings-page == SettingsPage.Audio
-        ? settings-audio.preferred-height
-        : current-settings-page == SettingsPage.Subtitle
-        ? settings-subtitle.preferred-height
-        : current-settings-page == SettingsPage.Rate
-        ? settings-rate.preferred-height
-        : settings-inner.preferred-height;
-        x: ctrl-layout.x + ctrl-layout.width - self.width;
-        y: ctrl-layout.y + 105px - self.height;
+    HorizontalLayout {
+        Rectangle {}
 
-        TouchArea {}
+        Rectangle {
+            background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
+            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
+            border-width: 1px;
+            border-radius: 6px;
+            width: show-settings ? root.width * 0.25 : 0px;
+            animate width {
+                duration: 100ms;
+            }
 
-        settings-inner := Rectangle {
-            settings-start := VerticalLayout {
+            TouchArea {}
+
+            if current-settings-page == SettingsPage.Start: VerticalLayout {
                 padding: 15px;
                 padding-top: 18px;
-                height: current-settings-page == SettingsPage.Start ? self.preferred-height : 0px;
-                visible: current-settings-page == SettingsPage.Start;
 
                 FText {
                     text: "Playback settings";
@@ -470,14 +468,14 @@ component PlaybackControls inherits Rectangle {
                             current-settings-page = SettingsPage.Rate;
                         }
                     }
+
+                    Rectangle {}
                 }
             }
 
-            settings-video := VerticalLayout {
+            if current-settings-page == SettingsPage.Video: VerticalLayout {
                 padding: 15px;
                 padding-top: 18px;
-                height: current-settings-page == SettingsPage.Video ? self.preferred-height : 0px;
-                visible: current-settings-page == SettingsPage.Video;
 
                 PlaybackSettingHeader {
                     title: "Video track";
@@ -500,11 +498,9 @@ component PlaybackControls inherits Rectangle {
                 }
             }
 
-            settings-audio := VerticalLayout {
+            if current-settings-page == SettingsPage.Audio: VerticalLayout {
                 padding: 15px;
                 padding-top: 18px;
-                height: current-settings-page == SettingsPage.Audio ? self.preferred-height : 0px;
-                visible: current-settings-page == SettingsPage.Audio;
 
                 PlaybackSettingHeader {
                     title: "Audio track";
@@ -527,11 +523,9 @@ component PlaybackControls inherits Rectangle {
                 }
             }
 
-            settings-subtitle := VerticalLayout {
+            if current-settings-page == SettingsPage.Subtitle: VerticalLayout {
                 padding: 15px;
                 padding-top: 18px;
-                height: current-settings-page == SettingsPage.Subtitle ? self.preferred-height : 0px;
-                visible: current-settings-page == SettingsPage.Subtitle;
 
                 PlaybackSettingHeader {
                     title: "Subtitle track";
@@ -545,9 +539,7 @@ component PlaybackControls inherits Rectangle {
                     padding-top: 10px;
                     spacing: 5px;
 
-                    // TODO: scroll view if needed
                     SettingsTrackList {
-                        alignment: start;
                         tracks: Bridge.subtitle-tracks;
                         selected-id: Bridge.current-subtitle-track;
                         can-be-disabled: true;
@@ -566,11 +558,9 @@ component PlaybackControls inherits Rectangle {
                 }
             }
 
-            settings-rate := VerticalLayout {
+            if current-settings-page == SettingsPage.Rate: VerticalLayout {
                 padding: 15px;
                 padding-top: 18px;
-                height: current-settings-page == SettingsPage.Rate ? self.preferred-height : 0px;
-                visible: current-settings-page == SettingsPage.Rate;
 
                 PlaybackSettingHeader {
                     title: "Playback speed";
@@ -587,8 +577,6 @@ component PlaybackControls inherits Rectangle {
                     property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
 
                     ListView {
-                        height: 200px;
-
                         for rate in rates: VerticalLayout {
                             SettingItem {
                                 value: rate;
@@ -615,7 +603,7 @@ component PlaybackControls inherits Rectangle {
         interval: 2s;
         running: true;
         triggered => {
-            if ta.has-hover && !show-settings {
+            if ta.has-hover || show-settings {
                 parent.close();
                 Bridge.hide-cursor-hack();
             }
