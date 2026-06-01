@@ -1,12 +1,26 @@
-.fhsR2Common:
-  variables:
-    R2_BUCKET: s3://$FHS_R2_BUCKET
-  before_script:
+.mintGhAppToken:
+  script:
     - set -euo pipefail
-    - export AWS_ACCESS_KEY_ID="$FHS_R2_ACCESS_KEY_ID"
-    - export AWS_SECRET_ACCESS_KEY="$FHS_R2_SECRET_ACCESS_KEY"
-    - export AWS_DEFAULT_REGION=auto
-    - export AWS_ENDPOINT_URL="$FHS_R2_ENDPOINT"
+    - sudo dnf install -y jq curl
+    - 'GH_TOKEN_ARCH=$(uname -m | sed -e "s/x86_64/amd64/" -e "s/aarch64/arm64/")'
+    - sudo curl -fSL "https://github.com/Link-/gh-token/releases/download/v2.0.10/linux-${GH_TOKEN_ARCH}" -o /usr/local/bin/gh-token
+    - sudo chmod +x /usr/local/bin/gh-token
+    - gh-token --version
+
+    - curl --silent --fail "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+    - PRIVATE_KEY_PATH="$CI_PROJECT_DIR/.secure_files/fhs-ci.2026-05-26.private-key.pem"
+    - 'test -f "$PRIVATE_KEY_PATH" || { echo "secure file missing at $PRIVATE_KEY_PATH" >&2; ls -la "$CI_PROJECT_DIR/.secure_files/" >&2 || true; exit 1; }'
+    - 'export FHS_GH_TOKEN=$(gh-token generate
+        --app-id $FHS_GH_APP_ID
+        --installation-id $FHS_GH_APP_INSTALLATION_ID
+        --key $PRIVATE_KEY_PATH
+        | jq -r .token)'
+    - rm -f "$PRIVATE_KEY_PATH"
+    - echo "Minted GitHub App installation token (expires in ~1h)"
+
+.buildReceiverFhsLinuxRPM:
+  stage: receiverExperimental
+  resource_group: fcast-fhs-publish
   rules:
     - if: '$CI_COMMIT_BRANCH == "master"'
       when: on_success
@@ -43,43 +57,56 @@ resolveReceiverFhsRelease:
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
     GIT_SUBMODULE_DEPTH: 1
+    ZIG_VERSION: "0.15.2"
     RUST_NIGHTLY: "nightly-2026-01-15"
-    FIATLUX_CLIENT_VERSION: "latest"
+  before_script:
+    - set -euo pipefail
+    - !reference [.mintGhAppToken, script]
   script:
     # Setup
     - sudo dnf install -y gstreamer1-devel gstreamer1-plugins-base-devel
       gstreamer1-plugins-good gstreamer1-plugins-bad-free-devel
       gstreamer1-plugin-libav libdav1d-devel glib2-devel
       fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel
-      libheif-devel pango-devel libdrm-devel awscli2
+      libheif-devel pango-devel libdrm-devel
       meson ninja-build
 
+    - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${FHS_ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+    - sudo rm -rf /opt/zig && sudo mkdir -p /opt/zig
+    - sudo tar -xf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+    - sudo ln -sf /opt/zig/zig /usr/local/bin/zig
+    - zig version
     - rustup install "$RUST_NIGHTLY" && rustup default "$RUST_NIGHTLY"
     - rustup target add ${RUST_TARGET}
     - cargo install cargo-generate-rpm
 
-    - aws s3 cp "${R2_BUCKET}/fiatlux-client/fiatlux-client-${FIATLUX_CLIENT_VERSION}.${FHS_ARCH}.rpm" /tmp/fiatlux-client.rpm
-    - sudo dnf install -y /tmp/fiatlux-client.rpm
-
     # Build
+    - git config --global url."https://x-access-token:${FHS_GH_TOKEN}@github.com/".insteadOf "git@github.com:"
+    - rm -rf /tmp/fiatlux-client
+    - git clone --recursive "https://x-access-token:${FHS_GH_TOKEN}@github.com/futo-org/fhs-fiatlux-client.git" /tmp/fiatlux-client
+    - (cd /tmp/fiatlux-client && make build-${FHS_ARCH})
+    - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/lib/*     /usr/local/lib/
+    - sudo cp -r /tmp/fiatlux-client/zig-out/${FHS_ARCH}/include/* /usr/local/include/
+
+    - VERSION=$(grep -m1 '^version *=' receivers/experimental/fhs/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
     - cargo build --release --package fhs-receiver --features static-gst-plugins --target ${RUST_TARGET}
-    - grep -q '^release *=' receivers/experimental/fhs/Cargo.toml
-    - sed -i "s/^release = .*/release = \"${FCAST_FHS_RELEASE}\"/" receivers/experimental/fhs/Cargo.toml
     - cargo generate-rpm -p receivers/experimental/fhs --target ${RUST_TARGET}
 
-    # Publish
-    - RPM_FILE="fcast-receiver-${FCAST_FHS_VERSION}-${FCAST_FHS_RELEASE}.${FHS_ARCH}.rpm"
+    - RPM_FILE="fcast-receiver-${VERSION}-1.${FHS_ARCH}.rpm"
     - cp "target/${RUST_TARGET}/generate-rpm/${RPM_FILE}" "${RPM_FILE}"
-    - aws s3 cp "$RPM_FILE" "${R2_BUCKET}/fcast-receiver/${RPM_FILE}"
-    - aws s3 cp "$RPM_FILE" "${R2_BUCKET}/fcast-receiver/fcast-receiver-latest.${FHS_ARCH}.rpm"
+    - echo "FCAST_FHS_VERSION=${VERSION}" >> build.env
+    - echo "FCAST_FHS_${FHS_ARCH^^}_JOB_ID=${CI_JOB_ID}" >> build.env
   artifacts:
     untracked: false
     when: on_success
     access: all
+    expire_in: 1 week
     paths:
       - ./*.rpm
   rules:
     - when: manual
+    reports:
+      dotenv: build.env
 
 buildReceiverFhsLinuxX64RPM:
   extends: .buildReceiverFhsLinuxRPM
@@ -97,3 +124,35 @@ buildReceiverFhsLinuxAarch64RPM:
   variables:
     FHS_ARCH: "aarch64"
     RUST_TARGET: "aarch64-unknown-linux-gnu"
+
+dispatchFhsCoreSysext:
+  stage: receiverExperimental
+  tags:
+    - fcast-autoscaler
+  needs:
+    - job: buildReceiverFhsLinuxX64RPM
+      artifacts: true
+    - job: buildReceiverFhsLinuxAarch64RPM
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: on_success
+    - when: manual
+      allow_failure: true
+  before_script:
+    - !reference [.mintGhAppToken, script]
+  script:
+    - 'PAYLOAD=$(jq -n
+        --arg ref     "michael/systemd-packages"
+        --arg v       "$FCAST_FHS_VERSION"
+        --arg x86_id  "$FCAST_FHS_X86_64_JOB_ID"
+        --arg arm_id  "$FCAST_FHS_AARCH64_JOB_ID"
+        --arg sha     "$CI_COMMIT_SHA"
+        ''{ref: $ref, inputs: {version: $v, "x86_64-job-id": $x86_id, "aarch64-job-id": $arm_id, "source-commit": $sha}}'')'
+    - echo "Dispatching fhs-core fcast.yml with version=$FCAST_FHS_VERSION jobs=$FCAST_FHS_X86_64_JOB_ID,$FCAST_FHS_AARCH64_JOB_ID"
+    - 'curl -sSf -X POST
+        -H "Authorization: Bearer $FHS_GH_TOKEN"
+        -H "Accept: application/vnd.github+json"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+        https://api.github.com/repos/futo-org/fhs-core/actions/workflows/fcast.yml/dispatches
+        -d "$PAYLOAD"'
