@@ -57,6 +57,7 @@ nav = [
   {"Sender" = [
     "sender/index.md",
     "sender/terminal.md",
+    "sender/desktop.md",
   ]},
   {"SDK" = [
     "sdk/index.md",
