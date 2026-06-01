@@ -8,8 +8,8 @@
     - gh-token --version
 
     - curl --silent --fail "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
-    - PRIVATE_KEY_PATH="$CI_PROJECT_DIR/.secure_files/fhs-ci.2026-05-26.private-key.pem"
-    - 'test -f "$PRIVATE_KEY_PATH" || { echo "secure file missing at $PRIVATE_KEY_PATH" >&2; ls -la "$CI_PROJECT_DIR/.secure_files/" >&2 || true; exit 1; }'
+    - PRIVATE_KEY_PATH=".secure_files/fhs-ci.2026-05-26.private-key.pem"
+    - 'test -f "$PRIVATE_KEY_PATH" || { echo "secure file missing at $PRIVATE_KEY_PATH" >&2; ls -la .secure_files/ >&2 || true; exit 1; }'
     - 'export FHS_GH_TOKEN=$(gh-token generate
         --app-id $FHS_GH_APP_ID
         --installation-id $FHS_GH_APP_INSTALLATION_ID
