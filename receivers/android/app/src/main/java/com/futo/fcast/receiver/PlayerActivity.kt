@@ -35,6 +35,7 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.session.MediaSession
 import com.futo.fcast.receiver.models.ControlFocus
 import com.futo.fcast.receiver.models.EventMessage
 import com.futo.fcast.receiver.models.EventType
@@ -81,6 +82,7 @@ enum class ControlBarMode {
 @UnstableApi
 class PlayerActivity : AppCompatActivity() {
     private lateinit var _exoPlayer: ExoPlayer
+    private lateinit var _mediaSession: MediaSession
 
     private var _shouldPlaybackRestartOnConnectivity: Boolean = false
     private var _preloadManager: DefaultPreloadManager? = null
@@ -227,6 +229,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
 
+        _mediaSession.release()
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
         NetworkService.activityCount--
@@ -606,6 +609,7 @@ class PlayerActivity : AppCompatActivity() {
 //        _exoPlayer.preloadConfiguration = ExoPlayer.PreloadConfiguration(5_000_000L)
         _exoPlayer.addListener(_playerEventListener)
         _exoPlayer.playWhenReady = true
+        _mediaSession = MediaSession.Builder(this, _exoPlayer).build()
 
 //        _exoPlayer.setvideoscalingMode
 //        _exoPlayer.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
