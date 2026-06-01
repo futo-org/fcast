@@ -1,7 +1,7 @@
 .mintGhAppToken:
   script:
     - set -euo pipefail
-    - sudo dnf install -y jq curl
+    - sudo dnf install -y jq curl which
     - 'GH_TOKEN_ARCH=$(uname -m | sed -e "s/x86_64/amd64/" -e "s/aarch64/arm64/")'
     - sudo curl -fSL "https://github.com/Link-/gh-token/releases/download/v2.0.10/linux-${GH_TOKEN_ARCH}" -o /usr/local/bin/gh-token
     - sudo chmod +x /usr/local/bin/gh-token
