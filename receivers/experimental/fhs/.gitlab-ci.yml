@@ -10,13 +10,25 @@
     - curl --silent --fail "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
     - PRIVATE_KEY_PATH=".secure_files/fhs-ci.2026-05-26.private-key.pem"
     - 'test -f "$PRIVATE_KEY_PATH" || { echo "secure file missing at $PRIVATE_KEY_PATH" >&2; ls -la .secure_files/ >&2 || true; exit 1; }'
-    - 'export FHS_GH_TOKEN=$(gh-token generate
-        --app-id $FHS_GH_APP_ID
-        --installation-id $FHS_GH_APP_INSTALLATION_ID
-        --key $PRIVATE_KEY_PATH
-        | jq -r .token)'
+    - |
+      set -euo pipefail
+      GH_TOKEN_RESPONSE=$(gh-token generate \
+          --app_id "$FHS_GH_APP_ID" \
+          --installation_id "$FHS_GH_APP_INSTALLATION_ID" \
+          --key "$PRIVATE_KEY_PATH" 2>&1) || {
+        echo "::error::gh-token generate failed (exit=$?). Response:" >&2
+        printf '%s\n' "$GH_TOKEN_RESPONSE" >&2
+        exit 1
+      }
+      FHS_GH_TOKEN=$(printf '%s' "$GH_TOKEN_RESPONSE" | jq -r '.token // empty')
+      if [ -z "$FHS_GH_TOKEN" ]; then
+        echo "::error::gh-token returned no .token. Response:" >&2
+        printf '%s\n' "$GH_TOKEN_RESPONSE" >&2
+        exit 1
+      fi
+      export FHS_GH_TOKEN
+      echo "Minted GitHub App installation token (length=${#FHS_GH_TOKEN}, expires in ~1h)"
     - rm -f "$PRIVATE_KEY_PATH"
-    - echo "Minted GitHub App installation token (expires in ~1h)"
 
 .buildReceiverFhsLinuxRPM:
   stage: receiverExperimental
