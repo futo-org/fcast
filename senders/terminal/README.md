@@ -12,9 +12,21 @@ cargo build
 
 # Usage
 
+A receiver is selected with `-H/--host <ip>`. Alternatively it can be discovered
+on the local network via mDNS: list receivers with `scan`, or target one directly
+by its advertised name with `-n/--name`. When neither `--host` nor `--name` is
+given, `127.0.0.1` is assumed.
+
 Example usage of the fcast client.
 
 ```console
+# Discover receivers on the local network (Ctrl-C to stop, or pass --timeout)
+./fcast scan
+./fcast scan --timeout 5
+
+# Cast to a receiver by its discovered name instead of an IP address
+./fcast --name "Living Room TV" play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4
+
 # Play a mp4 video URL (1.0 playbackspeed explicit)
 ./fcast -H 127.0.0.1 play --mime-type video/mp4 --url http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4 -t 10 -s 1.0
 

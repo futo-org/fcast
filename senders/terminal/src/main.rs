@@ -2,9 +2,10 @@ use clap::{Parser, Subcommand};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        DeviceConnectionState, DeviceEventHandler, EventSubscription, KeyEvent, KeyName,
-        LoadRequest, MediaEvent, PlaybackState, Source,
+        DeviceConnectionState, DeviceEventHandler, DeviceInfo, EventSubscription, KeyEvent,
+        KeyName, LoadRequest, MediaEvent, PlaybackState, Source,
     },
+    url_format_ip_addr, DeviceDiscovererEventHandler,
 };
 use std::{
     collections::HashMap,
@@ -13,7 +14,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{channel, Sender},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -81,14 +82,28 @@ enum Command {
         #[arg(long, short)]
         item_index: u32,
     },
+    /// Scan the local network for FCast receivers and print them
+    Scan {
+        /// How long to scan for, in seconds. If omitted, scans until Ctrl-C.
+        #[arg(long, short)]
+        timeout: Option<u64>,
+    },
 }
 
 #[derive(Parser)]
 #[command(version)]
 struct TerminalSender {
-    /// The host address to send the command to
-    #[arg(long, short('H'), default_value_t = String::from("127.0.0.1"))]
-    host: String,
+    /// The host address to send the command to. If omitted, --name is used to
+    /// discover a receiver, otherwise 127.0.0.1 is assumed.
+    #[arg(long, short('H'))]
+    host: Option<String>,
+    /// Connect to a receiver discovered via mDNS by its advertised name
+    /// (use `fcast scan` to list names). Ignored when --host is given.
+    #[arg(long, short)]
+    name: Option<String>,
+    /// How long, in seconds, to wait for --name discovery before giving up
+    #[arg(long, default_value_t = 10)]
+    discovery_timeout: u64,
     /// The port to send the command to
     #[arg(long, short, default_value_t = 46899)]
     port: u16,
@@ -168,6 +183,146 @@ impl DeviceEventHandler for EventHandler {
     }
 }
 
+/// Discovery handler that prints every event for the `scan` subcommand.
+struct ScanEventHandler;
+
+impl DeviceDiscovererEventHandler for ScanEventHandler {
+    fn device_available(&self, device_info: DeviceInfo) {
+        print_discovered("+", &device_info);
+    }
+
+    fn device_changed(&self, device_info: DeviceInfo) {
+        print_discovered("~", &device_info);
+    }
+
+    fn device_removed(&self, device_name: String) {
+        println!("- {device_name}");
+    }
+}
+
+/// Discovery handler that resolves a single receiver by name for `--name`.
+struct ResolveByNameHandler {
+    target: String,
+    tx: Mutex<Option<Sender<DeviceInfo>>>,
+}
+
+impl ResolveByNameHandler {
+    fn try_resolve(&self, device_info: DeviceInfo) {
+        if device_info.name.eq_ignore_ascii_case(&self.target) && !device_info.addresses.is_empty()
+        {
+            if let Ok(mut guard) = self.tx.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(device_info);
+                }
+            }
+        }
+    }
+}
+
+impl DeviceDiscovererEventHandler for ResolveByNameHandler {
+    fn device_available(&self, device_info: DeviceInfo) {
+        self.try_resolve(device_info);
+    }
+
+    fn device_changed(&self, device_info: DeviceInfo) {
+        self.try_resolve(device_info);
+    }
+
+    fn device_removed(&self, _device_name: String) {}
+}
+
+fn print_discovered(prefix: &str, device_info: &DeviceInfo) {
+    let addresses = device_info
+        .addresses
+        .iter()
+        .map(|addr| format!("{}:{}", url_format_ip_addr(addr), device_info.port))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("{prefix} {}\t{addresses}", device_info.name);
+}
+
+/// Browse the local network for FCast receivers, printing them as they appear.
+fn run_scan(context: &CastContext, timeout: Option<u64>) {
+    match timeout {
+        Some(secs) => println!("Scanning for FCast receivers for {secs}s..."),
+        None => println!("Scanning for FCast receivers (press Ctrl-C to stop)..."),
+    }
+
+    context.start_discovery(Arc::new(ScanEventHandler));
+
+    match timeout {
+        Some(secs) => std::thread::sleep(Duration::from_secs(secs)),
+        None => {
+            let running = Arc::new(AtomicBool::new(true));
+            let r = Arc::clone(&running);
+            ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))
+                .expect("Failed to set Ctrl-C handler");
+            while running.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Determine which receiver to connect to: an explicit `--host`, a receiver
+/// discovered by `--name`, or the `127.0.0.1` fallback.
+fn resolve_target(
+    context: &CastContext,
+    host: Option<&str>,
+    name: Option<&str>,
+    discovery_timeout: u64,
+    port: u16,
+) -> DeviceInfo {
+    match (host, name) {
+        (Some(host), _) => {
+            let addr = host.parse::<IpAddr>().unwrap_or_else(|err| {
+                eprintln!("Invalid host address `{host}`: {err}");
+                std::process::exit(1);
+            });
+            DeviceInfo::fcast("FCast Receiver".to_owned(), vec![addr.into()], port)
+        }
+        (None, Some(name)) => discover_by_name(context, name, discovery_timeout),
+        (None, None) => DeviceInfo::fcast(
+            "FCast Receiver".to_owned(),
+            vec![IpAddr::from([127, 0, 0, 1]).into()],
+            port,
+        ),
+    }
+}
+
+/// Block until a receiver advertising `name` is discovered (or `timeout_secs` elapses).
+fn discover_by_name(context: &CastContext, name: &str, timeout_secs: u64) -> DeviceInfo {
+    println!("Looking for receiver `{name}` (up to {timeout_secs}s)...");
+
+    let (tx, rx) = channel();
+    context.start_discovery(Arc::new(ResolveByNameHandler {
+        target: name.to_owned(),
+        tx: Mutex::new(Some(tx)),
+    }));
+
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(device_info) => {
+            let addr = device_info
+                .addresses
+                .first()
+                .map(url_format_ip_addr)
+                .unwrap_or_default();
+            println!(
+                "Found `{}` at {addr}:{}",
+                device_info.name, device_info.port
+            );
+            device_info
+        }
+        Err(_) => {
+            eprintln!(
+                "No receiver named `{name}` found within {timeout_secs}s. \
+                 Try `fcast scan` to list receivers."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -175,12 +330,21 @@ async fn main() {
     let app = TerminalSender::parse();
 
     let context = CastContext::new().unwrap();
+
+    // Discovery-only subcommand: list receivers and exit without connecting.
+    if let Command::Scan { timeout } = &app.command {
+        run_scan(&context, *timeout);
+        return;
+    }
+
     #[allow(unused)]
     let file_server;
 
-    let device_info = fcast_sender_sdk::device::DeviceInfo::fcast(
-        "FCast Receiver".to_owned(),
-        vec![app.host.parse::<IpAddr>().unwrap().into()],
+    let device_info = resolve_target(
+        &context,
+        app.host.as_deref(),
+        app.name.as_deref(),
+        app.discovery_timeout,
         app.port,
     );
 
@@ -340,6 +504,8 @@ async fn main() {
         Command::SetPlaylistItem { item_index } => {
             device.set_playlist_item_index(item_index).unwrap()
         }
+        // Handled before connecting; see the early return in `main`.
+        Command::Scan { .. } => unreachable!(),
     }
 
     while !quit.load(Ordering::SeqCst) {
