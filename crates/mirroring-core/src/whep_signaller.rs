@@ -2,7 +2,7 @@
 // From: https://gitlab.freedesktop.org/tkanakamalla/gst-plugins-rs/-/tree/whepsink
 
 use gst::glib::{self, object::ObjectExt};
-use gst_rs_webrtc::signaller::Signallable;
+use gstrswebrtc::signaller::Signallable;
 
 pub const ON_SERVER_STARTED_SIGNAL_NAME: &str = "on-server-started";
 
@@ -17,7 +17,7 @@ mod imp {
     use tokio::{net::TcpListener, sync::mpsc};
     use tracing::{debug, error};
 
-    use gst_rs_webrtc::signaller::{Signallable, SignallableImpl};
+    use gstrswebrtc::signaller::{Signallable, SignallableImpl};
 
     use std::{
         collections::HashMap,
