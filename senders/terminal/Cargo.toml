@@ -9,6 +9,6 @@ publish = false
 clap.workspace = true
 env_logger.workspace = true
 ctrlc = "3.1.9"
-fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = ["fcast"] }
+fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = ["fcast", "discovery"] }
 file-server.path = "../../crates/file-server"
 tokio.workspace = true
