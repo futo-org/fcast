@@ -344,7 +344,7 @@ fn create_webrtcsink(
     server_port: u16,
     rt_handle: tokio::runtime::Handle,
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
-) -> anyhow::Result<gst_rs_webrtc::webrtcsink::BaseWebRTCSink> {
+) -> anyhow::Result<gstrswebrtc::webrtcsink::BaseWebRTCSink> {
     let signaller = crate::whep_signaller::WhepServerSignaller::default();
     signaller.connect(
         crate::whep_signaller::ON_SERVER_STARTED_SIGNAL_NAME,
@@ -382,8 +382,8 @@ fn create_webrtcsink(
         },
     );
     signaller.set_property("server-port", server_port as u32);
-    let sink = gst_rs_webrtc::webrtcsink::BaseWebRTCSink::with_signaller(
-        gst_rs_webrtc::signaller::Signallable::from(signaller),
+    let sink = gstrswebrtc::webrtcsink::BaseWebRTCSink::with_signaller(
+        gstrswebrtc::signaller::Signallable::from(signaller),
     );
     sink.set_property("min-bitrate", WHEP_MIN_BITRATE);
     sink.set_property("start-bitrate", WHEP_START_BITRATE);

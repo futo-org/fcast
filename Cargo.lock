@@ -3568,54 +3568,6 @@ dependencies = [
 [[package]]
 name = "gst-plugin-webrtc"
 version = "0.15.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58b0f7af06bd2e98c71e8ad76a27a4045727b88af769a89d6a7f0fd5903047b0"
-dependencies = [
- "anyhow",
- "async-tungstenite",
- "bytes",
- "chrono",
- "fastrand",
- "futures",
- "gst-plugin-version-helper",
- "gst-plugin-webrtc-signalling",
- "gst-plugin-webrtc-signalling-protocol",
- "gstreamer 0.25.2",
- "gstreamer-app",
- "gstreamer-audio",
- "gstreamer-base",
- "gstreamer-net",
- "gstreamer-pbutils",
- "gstreamer-rtp",
- "gstreamer-sdp",
- "gstreamer-utils",
- "gstreamer-video",
- "gstreamer-webrtc",
- "http",
- "human_bytes",
- "hyper-util",
- "indexmap 2.14.0",
- "itertools 0.14.0",
- "parse_link_header",
- "rand 0.10.1",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tracing",
- "tracing-log",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "gst-plugin-webrtc"
-version = "0.15.2"
 source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=06c29061365d9ba19956540da47abf8dffea7d31#06c29061365d9ba19956540da47abf8dffea7d31"
 dependencies = [
  "anyhow",
@@ -5987,7 +5939,7 @@ dependencies = [
  "fcast-protocol",
  "fcast-sender-sdk",
  "futures",
- "gst-plugin-webrtc 0.15.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gst-plugin-webrtc",
  "gstreamer 0.25.2",
  "gstreamer-app",
  "gstreamer-pbutils",
@@ -7947,7 +7899,7 @@ dependencies = [
  "gst-plugin-dav1d",
  "gst-plugin-reqwest",
  "gst-plugin-rtp",
- "gst-plugin-webrtc 0.15.2 (git+https://github.com/MAlba124/gst-plugins-rs.git?rev=06c29061365d9ba19956540da47abf8dffea7d31)",
+ "gst-plugin-webrtc",
  "gstreamer 0.25.2",
  "gstreamer-allocators",
  "gstreamer-app",
