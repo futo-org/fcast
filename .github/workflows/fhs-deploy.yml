@@ -52,6 +52,8 @@ jobs:
     container:
       image: quay.io/fedora/fedora-bootc:43
       options: --user root
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     permissions:
       contents: read
       packages: read
