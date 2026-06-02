@@ -76,7 +76,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          # TODO: revert to `master` after fhs-core branch is merged
+          # temp
           ref: michael/systemd-packages
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
@@ -175,21 +175,89 @@ jobs:
           path: pkg/tmp/fcast-*-sysext.raw
           retention-days: 1
 
-  publish:
-    name: Publish
+  # Workaround since cannot use private workflows in public repo
+  resolve:
+    name: Resolve release counter
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.r.outputs.version }}
+      release: ${{ steps.r.outputs.release }}
+    steps:
+      - name: Check out fhs-core (resolve script)
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/fhs-core
+          # temp
+          ref: michael/systemd-packages
+          path: fhs-core
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GH_PAT }}" | oras login ghcr.io -u USERNAME --password-stdin
+
+      - name: Resolve
+        id: r
+        env:
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          INPUT_VERSION: ${{ needs.build.outputs.version }}
+        run: bash fhs-core/os/extensions/resolve-release.sh >> "$GITHUB_OUTPUT"
+
+  # Workaround since cannot use private workflows in public repo
+  publish:
+    name: Publish (${{ matrix.arch }})
+    needs: [build, resolve]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: sysext-ghcr.io/futo-org/fhs-core/sysext/fcast:${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.release }}.${{ matrix.arch }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
       id-token: write
-    # temp
-    uses: futo-org/fhs-core/.github/workflows/sysext.yml@michael/systemd-packages
-    with:
-      ghcr-image: ghcr.io/futo-org/fhs-core/sysext/fcast
-      version: ${{ needs.build.outputs.version }}
-      prebuilt-artifact: true
-      architectures: '["x86_64","aarch64"]'
-      # temp
-      fhs-core-ref: michael/systemd-packages
-    secrets:
-      GH_PAT: ${{ secrets.GH_PAT }}
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Check out fhs-core (publish script)
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/fhs-core
+          # temp
+          ref: michael/systemd-packages
+          path: fhs-core
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - name: Download pre-built .raw artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: fcast-${{ matrix.arch }}
+          path: ${{ github.workspace }}/pkg/tmp
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Set up cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GH_PAT }}" | oras login ghcr.io -u USERNAME --password-stdin
+
+      - name: Publish + sign
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}
+          ARCH: ${{ matrix.arch }}
+          PKG_DIR: ${{ github.workspace }}/pkg
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE: ${{ needs.resolve.outputs.release }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: bash fhs-core/os/extensions/publish-sysext.sh
