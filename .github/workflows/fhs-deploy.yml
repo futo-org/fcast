@@ -2,8 +2,7 @@ name: FHS Deploy
 
 on:
   push:
-    # temp
-    branches: [master, michael/fhs-sysext]
+    branches: [master]
     paths:
       - 'receivers/experimental/fhs/**'
       - 'crates/receiver-core/**'
@@ -78,8 +77,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          # temp
-          ref: michael/systemd-packages
+          ref: master
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
@@ -194,8 +192,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          # temp
-          ref: michael/systemd-packages
+          ref: master
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
@@ -233,8 +230,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          # temp
-          ref: michael/systemd-packages
+          ref: master
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
