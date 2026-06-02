@@ -143,7 +143,7 @@ dispatchFhsCoreSysext:
     - !reference [.mintGhAppToken, script]
   script:
     - 'PAYLOAD=$(jq -n
-        --arg ref     "michael/systemd-packages"
+        --arg ref     "master"
         --arg v       "$FCAST_FHS_VERSION"
         --arg x86_id  "$FCAST_FHS_X86_64_JOB_ID"
         --arg arm_id  "$FCAST_FHS_AARCH64_JOB_ID"
