@@ -3,7 +3,7 @@ name: FHS Deploy
 on:
   push:
     # temp
-    branches: [master, michael/systemd-packages]
+    branches: [master, michael/fhs-sysext]
     paths:
       - 'receivers/experimental/fhs/**'
       - 'crates/receiver-core/**'
