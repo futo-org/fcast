@@ -1,6 +1,6 @@
 # FCast Receiver Changelog
 
-## 3.0.1 - UNRELEASED
+## 3.0.1 - 2026-06-02
 
  - Fix crash when running on X11
  - inhibit screensaver only when playing media
