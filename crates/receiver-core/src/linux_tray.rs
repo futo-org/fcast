@@ -19,7 +19,7 @@ impl ksni::Tray for LinuxSysTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let icn = include_bytes!("../../../receivers/electron/assets/icons/app/icon.png");
+        let icn = include_bytes!("../../../receivers/assets/icons/app/icon.png");
         let img = imagelib::load_from_memory_with_format(icn, imagelib::ImageFormat::Png).unwrap();
         let (width, height) = img.dimensions();
         let mut data = img.into_rgba8().into_vec();

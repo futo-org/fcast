@@ -8,7 +8,7 @@ The FCast Receiver is a receiver implementation that supports using the FCast pr
 Currently supported receiver platforms include:
 
 * Android (Native)
-* Electron (Linux, Windows, MacOS)
+* Linux, Windows, MacOS
 
 Receivers can be downloaded from https://fcast.org/#downloads
 
@@ -36,38 +36,3 @@ If you are using a sender application on a mobile device, you will have the abil
 
 The receiver will indicate once you have successfully connected to the sender application.
 ![The main window of the FCast Receiver showing a device has been connected.](/images/receiver_main_connected.png)
-
-## Electron Receiver
-
-The Electron receiver is the desktop receiver application which runs from the OS system tray. The application will continue to run in the system tray when you close the player or main window.
-You can exit the application or access other menu options from the tray icon.
-
-#### Command-line Interface Flags
-
-The application supports the following CLI flags:
-```
-Options:
-  --help                  Show help                                    [boolean]
-  --version               Show version number                          [boolean]
-  --no-main-window        Start minimized to tray                      [boolean]
-  --fullscreen            Start application in fullscreen              [boolean]
-  --log, --loglevel       Defines the verbosity level of the logger
-  --no-fullscreen-player  Start player in windowed mode                [boolean]
-  --no-player-window      Play videos in the main application window   [boolean]
-```
-
-#### Configuration Settings
-
-You may modify internal configuration settings if you wish to change the receiver's default behavior. The configuration file can be found in the following directories:
-
-* Windows: `%APPDATA%\fcast-receiver\UserSettings.json`
-* MacOS: `~/Library/Application Support/fcast-receiver/UserSettings.json`
-* Linux: `~/.config/fcast-receiver/UserSettings.json`
-
-#### Application Logs
-
-Log files for troubleshooting can be found in the following directories:
-
-* Windows: `%APPDATA%\fcast-receiver\logs\fcast-receiver.log`
-* MacOS: `~/Library/Logs/fcast-receiver/fcast-receiver.log`
-* Linux: `~/.config/fcast-receiver/logs/fcast-receiver.log`
