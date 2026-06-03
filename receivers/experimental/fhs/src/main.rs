@@ -117,6 +117,7 @@ impl FiatLuxWindowAdapter {
         }))
     }
 
+    // Returns the render damage sequence or 0 if no rendering was performed
     pub fn draw_if_needed(
         &self,
         render_callback: impl FnOnce(&femtovg_renderer::FemtoVGRenderer) -> u32,
