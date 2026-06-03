@@ -1,0 +1,262 @@
+name: FHS Deploy
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'receivers/experimental/fhs/**'
+      - 'crates/receiver-core/**'
+      - 'crates/fcast-protocol/**'
+      - 'crates/libplacebo/**'
+      - 'crates/libplacebo-sys/**'
+      - 'crates/google-cast-protocol/**'
+      - 'crates/inhibit-screensaver/**'
+      - 'crates/egl-sys/**'
+      - 'crates/fiatlux/**'
+      - 'crates/fiatlux-sys/**'
+      - 'tools/remote-pipeline-dbg/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/fhs-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fhs-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ZIG_VERSION: "0.15.2"
+  RUST_NIGHTLY: "nightly-2026-01-15"
+  GHCR_IMAGE: ghcr.io/futo-org/fhs-core/sysext/fcast
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-cpu=x86-64-v3"
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+            rustflags: ""
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: quay.io/fedora/fedora-bootc:44
+      options: --user root
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Install pre-checkout deps
+        run: dnf -y install git zstd
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Extract receiver version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version *=' receivers/experimental/fhs/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out fhs-core (for sysext build scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/fhs-core
+          ref: master
+          path: fhs-core
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - name: Install fcast build deps
+        run: |
+          dnf -y install \
+            gstreamer1-devel gstreamer1-plugins-base-devel \
+            gstreamer1-plugins-good gstreamer1-plugins-bad-free \
+            gstreamer1-plugins-bad-free-devel gstreamer1-plugin-libav \
+            libdav1d-devel glib2-devel \
+            fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel \
+            libheif-devel pango-devel libdrm-devel \
+            meson ninja-build \
+            gcc gcc-c++ make rustup \
+            clang-libs clang-devel
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Rust nightly + cross target
+        run: |
+          rustup-init -y --default-toolchain ${{ env.RUST_NIGHTLY }} \
+            --profile minimal --target ${{ matrix.rust-target }} --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
+        with:
+          key: ${{ matrix.arch }}-fhs
+          cache-targets: true
+          cache-on-failure: true
+
+      - name: Install cargo-generate-rpm
+        uses: taiki-e/install-action@6887963ccf37a9ddcd8c5fa4baeb3e1e5fd61fa1  # v2.81.2
+        with:
+          tool: cargo-generate-rpm@0.21.0
+
+      - name: Check out fhs-fiatlux-client
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/fhs-fiatlux-client
+          ref: master
+          path: fiatlux-client
+          token: ${{ secrets.GH_PAT }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build fhs-fiatlux-client (link dep)
+        run: |
+          (cd fiatlux-client && make build-${{ matrix.arch }})
+          echo "FL_LIB_PATH=${{ github.workspace }}/fiatlux-client/zig-out/${{ matrix.arch }}/lib" >> "$GITHUB_ENV"
+          echo "FL_INCLUDE_PATH=${{ github.workspace }}/fiatlux-client/zig-out/${{ matrix.arch }}/include" >> "$GITHUB_ENV"
+
+      - name: Build fcast-receiver RPM
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          cargo build --release --package fhs-receiver \
+            --features static-gst-plugins \
+            --target ${{ matrix.rust-target }}
+          cargo generate-rpm -p receivers/experimental/fhs --target ${{ matrix.rust-target }}
+          mkdir -p tmp
+          RPM_FILE="fcast-receiver-${{ steps.version.outputs.version }}-1.${{ matrix.arch }}.rpm"
+          cp "target/${{ matrix.rust-target }}/generate-rpm/${RPM_FILE}" tmp/fcast-receiver.rpm
+          ls -la tmp/fcast-receiver.rpm
+
+      - name: Compute package delta
+        env:
+          FCAST_RPM: ${{ github.workspace }}/tmp/fcast-receiver.rpm
+        run: bash fhs-core/os/extensions/fcast/compute-package-delta.sh
+
+      - name: Install sysext build deps
+        # Done after compute-package-delta so these tools don't appear in
+        # the pre-fcast snapshot and inflate the delta.
+        run: dnf -y install erofs-utils binutils glib2 fontconfig gtk3 yq
+
+      - name: Build sysext layers (4 .raws)
+        env:
+          PKG_DIR: ${{ github.workspace }}/pkg
+        run: |
+          set -euo pipefail
+          mkdir -p "$PKG_DIR"
+          bash fhs-core/os/extensions/fcast/build.sh
+
+      - name: Compute artifact name
+        id: artifact
+        run: echo "name=${GHCR_IMAGE##*/}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload .raw artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: pkg/tmp/fcast-*-sysext.raw
+          retention-days: 1
+
+  # Workaround since cannot use private workflows in public repo
+  resolve:
+    name: Resolve release counter
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.r.outputs.version }}
+      release: ${{ steps.r.outputs.release }}
+    steps:
+      - name: Check out fhs-core (resolve script)
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/fhs-core
+          ref: master
+          path: fhs-core
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GH_PAT }}" | oras login ghcr.io -u USERNAME --password-stdin
+
+      - name: Resolve
+        id: r
+        env:
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          INPUT_VERSION: ${{ needs.build.outputs.version }}
+        run: bash fhs-core/os/extensions/resolve-release.sh >> "$GITHUB_OUTPUT"
+
+  # Workaround since cannot use private workflows in public repo
+  publish:
+    name: Publish (${{ matrix.arch }})
+    needs: [build, resolve]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: sysext-ghcr.io/futo-org/fhs-core/sysext/fcast:${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.release }}.${{ matrix.arch }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Check out fhs-core (publish script)
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/fhs-core
+          ref: master
+          path: fhs-core
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - name: Download pre-built .raw artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: fcast-${{ matrix.arch }}
+          path: ${{ github.workspace }}/pkg/tmp
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Set up cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GH_PAT }}" | oras login ghcr.io -u USERNAME --password-stdin
+
+      - name: Publish + sign
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}
+          ARCH: ${{ matrix.arch }}
+          PKG_DIR: ${{ github.workspace }}/pkg
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE: ${{ needs.resolve.outputs.release }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: bash fhs-core/os/extensions/publish-sysext.sh
