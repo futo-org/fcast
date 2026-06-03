@@ -2,19 +2,16 @@ use std::{
     ffi::CString,
     os::fd::{BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
     ptr,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
 };
 
 use anyhow::{Result, anyhow};
 use fiatlux::*;
 use rcore::{
-    VideoSink, glow, gst_video::{self, prelude::*},
+    VideoSink, glow,
+    gst_video::{self, prelude::*},
     libplacebo::libplacebo_sys::*,
     placebo::PlaceboContext,
-    tracing::{debug, warn},
+    tracing::debug,
     video::{RawFrame, RawFrameData},
 };
 
@@ -45,16 +42,18 @@ pub struct FhsPixmapSink {
     client: *mut fl_Client,
     target: Option<Target>,
     hdr_metadata: Option<fl_protocol_HdrMetadata>,
-    shared_pixmap_id: Arc<AtomicU32>,
+    surface_id: fl_protocol_SurfaceId,
+    surface_has_hdr_metadata: bool,
 }
 
 impl FhsPixmapSink {
-    pub fn new(client: *mut fl_Client, shared_pixmap_id: Arc<AtomicU32>) -> Self {
+    pub fn new(client: *mut fl_Client, surface_id: fl_protocol_SurfaceId) -> Self {
         Self {
             client,
             target: None,
             hdr_metadata: None,
-            shared_pixmap_id,
+            surface_id,
+            surface_has_hdr_metadata: false,
         }
     }
 
@@ -166,7 +165,6 @@ impl FhsPixmapSink {
                     self.client,
                     width,
                     height,
-                    fl_protocol_ContentType_fl_protocol_ContentType_video,
                     fourcc,
                     1,
                     offsets.as_ptr(),
@@ -180,14 +178,12 @@ impl FhsPixmapSink {
                     return Err(anyhow!("fl_create_pixmap_from_dmabuf failed"));
                 }
 
-                let reply = fl_receive_reply_create_pixmap_from_dma_buf(self.client, seq);
-                if reply.is_null() {
+                let mut reply: fl_reply_CreatePixmapFromDmaBuf = std::mem::zeroed();
+                if !fl_receive_reply_create_pixmap_from_dma_buf(self.client, seq, &mut reply) {
                     return Err(anyhow!("fl_create_pixmap_from_dmabuf reply was null"));
                 }
 
-                let pixmap_id = (*reply).pixmap_id;
-                fl_free_reply_create_pixmap_from_dma_buf(reply);
-                pixmap_id
+                reply.pixmap_id
             };
 
             debug!(
@@ -198,6 +194,13 @@ impl FhsPixmapSink {
                 modifier,
                 "Created pixmap-backed render target"
             );
+
+            unsafe {
+                fl_discard_reply(
+                    self.client,
+                    fl_set_surface_pixmap(self.client, self.surface_id, pixmap_id).value,
+                );
+            }
 
             Ok(Target {
                 tex,
@@ -210,8 +213,6 @@ impl FhsPixmapSink {
 
         match result {
             Ok(target) => {
-                self.shared_pixmap_id
-                    .store(target.pixmap_id.value, Ordering::Release);
                 self.target = Some(target);
                 self.hdr_metadata = None;
                 Ok(())
@@ -227,15 +228,11 @@ impl FhsPixmapSink {
         let Some(target) = self.target.take() else {
             return;
         };
-        self.shared_pixmap_id.store(0, Ordering::Release);
         unsafe {
-            let seq = fl_destroy_pixmap(self.client, target.pixmap_id);
-            if seq.value != 0 {
-                let reply = fl_receive_reply_destroy_pixmap(self.client, seq);
-                if !reply.is_null() {
-                    fl_free_reply_destroy_pixmap(reply);
-                }
-            }
+            fl_discard_reply(
+                self.client,
+                fl_destroy_pixmap(self.client, target.pixmap_id).value,
+            );
             let mut tex = target.tex;
             pl_tex_destroy(pl_ctx.gpu(), &mut tex);
         }
@@ -280,8 +277,6 @@ impl VideoSink for FhsPixmapSink {
 
         unsafe { pl_gpu_finish(placebo.gpu()) };
 
-        let pixmap_id = target.pixmap_id;
-
         if is_hdr {
             let need_update = self
                 .hdr_metadata
@@ -299,22 +294,31 @@ impl VideoSink for FhsPixmapSink {
                     "Sending HDR pixmap metadata to display server"
                 );
                 unsafe {
-                    let seq = fl_set_pixmap_hdr_metadata(self.client, pixmap_id, &new_hdr_metadata);
-                    if seq.value == 0 {
-                        warn!("fl_set_pixmap_hdr_metadata failed");
-                    } else {
-                        let reply = fl_receive_reply_set_pixmap_hdr_metadata(self.client, seq);
-                        if reply.is_null() {
-                            warn!("fl_receive_reply_set_pixmap_hdr_metadata returned null");
-                        } else {
-                            fl_free_reply_set_pixmap_hdr_metadata(reply);
-                        }
-                    }
+                    fl_discard_reply(
+                        self.client,
+                        fl_set_surface_hdr_metadata(
+                            self.client,
+                            self.surface_id,
+                            &new_hdr_metadata,
+                        )
+                        .value,
+                    );
                 }
                 self.hdr_metadata = Some(new_hdr_metadata);
+                self.surface_has_hdr_metadata = true;
             }
         } else {
+            if self.surface_has_hdr_metadata {
+                unsafe {
+                    fl_discard_reply(
+                        self.client,
+                        fl_set_surface_hdr_metadata(self.client, self.surface_id, std::ptr::null())
+                            .value,
+                    );
+                }
+            }
             self.hdr_metadata = None;
+            self.surface_has_hdr_metadata = false;
         }
 
         // libplacebo leaves its own FBO + viewport set after the dmabuf render.
@@ -347,7 +351,7 @@ fn bytes_per_pixel(format: TargetFormat) -> u8 {
 fn frame_video_colorimetry(frame: &RawFrame) -> gst_video::VideoColorimetry {
     match &frame.data {
         RawFrameData::SystemMemory { frame } => frame.info().colorimetry(),
-        RawFrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry()
+        RawFrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry(),
     }
 }
 
@@ -417,10 +421,8 @@ fn build_target_color(
                     x: primaries[2].x,
                     y: primaries[2].y,
                 };
-                hdr_metadata.mastering_display_white_point = fl_protocol_XyColor {
-                    x: wp.x,
-                    y: wp.y,
-                };
+                hdr_metadata.mastering_display_white_point =
+                    fl_protocol_XyColor { x: wp.x, y: wp.y };
                 hdr_metadata.max_mastering_luminance = max_cd;
                 hdr_metadata.min_mastering_luminance = min_cd;
                 have_valid_mastering = true;
