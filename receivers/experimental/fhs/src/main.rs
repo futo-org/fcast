@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use fiatlux::*;
 use mimalloc::MiMalloc;
 use rcore::{
@@ -13,7 +13,7 @@ use std::{
     rc::{Rc, Weak},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -117,15 +117,15 @@ impl FiatLuxWindowAdapter {
         }))
     }
 
+    // Returns the render damage sequence or 0 if no rendering was performed
     pub fn draw_if_needed(
         &self,
-        render_callback: impl FnOnce(&femtovg_renderer::FemtoVGRenderer),
-    ) -> bool {
+        render_callback: impl FnOnce(&femtovg_renderer::FemtoVGRenderer) -> u32,
+    ) -> u32 {
         if self.needs_redraw.replace(false) {
-            render_callback(&self.renderer);
-            true
+            render_callback(&self.renderer)
         } else {
-            false
+            0
         }
     }
 
@@ -264,19 +264,33 @@ struct FiatLuxPlatform {
     job_sender: mpsc::Sender<Job>,
     job_receiver: mpsc::Receiver<Job>,
     quit_event_loop: Arc<AtomicBool>,
-    video_pixmap_id: Arc<std::sync::atomic::AtomicU32>,
+    video_surface_id: fl_protocol_SurfaceId,
 }
 
 impl FiatLuxPlatform {
-    pub fn new(video_pixmap_id: Arc<std::sync::atomic::AtomicU32>) -> Result<Self> {
+    pub fn new() -> Result<Self> {
+        let window = FiatLuxWindowAdapter::new()?;
+        let video_surface_id = unsafe {
+            let mut reply: fl_reply_CreateSurface = std::mem::zeroed();
+            if !fl_receive_reply_create_surface(
+                window.client.client,
+                fl_create_surface(window.client.client, window.fl_window.window_id, -1),
+                &mut reply,
+            ) {
+                return Err(anyhow!("Failed to create video surface"));
+            }
+            reply.surface_id
+        };
+
         let (job_sender, job_receiver) = mpsc::channel::<Job>();
+
         Ok(Self {
-            window: FiatLuxWindowAdapter::new()?,
+            window,
             timer: Instant::now(),
             job_sender,
             job_receiver,
             quit_event_loop: Arc::new(AtomicBool::new(false)),
-            video_pixmap_id,
+            video_surface_id,
         })
     }
 
@@ -294,23 +308,6 @@ impl FiatLuxPlatform {
                 slint::platform::PointerEventButton::Right
             }
             _ => slint::platform::PointerEventButton::Other,
-        }
-    }
-
-    fn present_pixmap(&self, pixmap_id: fl_protocol_PixmapId) {
-        unsafe {
-            let seq = fl_present_pixmap(
-                self.window.client.client,
-                pixmap_id,
-                self.window.fl_window.window_id,
-                0,
-                0,
-            );
-            let present_pixmap_reply =
-                fl_receive_reply_present_pixmap(self.window.client.client, seq);
-            if !present_pixmap_reply.is_null() {
-                fl_free_reply_present_pixmap(present_pixmap_reply);
-            }
         }
     }
 
@@ -425,24 +422,26 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
             self.handle_events();
 
-            self.window.draw_if_needed(|renderer| {
+            let damage_seq = self.window.draw_if_needed(|renderer| {
                 renderer.render().unwrap();
 
-                let video_pixmap_id_value = self.video_pixmap_id.load(Ordering::Acquire);
-                if video_pixmap_id_value != 0 {
-                    let pixmap_id = fl_protocol_PixmapId {
-                        value: video_pixmap_id_value,
-                    };
-                    self.present_pixmap(pixmap_id);
-                }
-
                 unsafe {
-                    fl_egl_window_framebuffer_present_framebuffer(self.window.render_buffer);
+                    let ui_surface_id =
+                        fl_egl_window_framebuffer_swap_buffers(self.window.render_buffer);
+                    let surface_ids = [self.video_surface_id, ui_surface_id];
+                    let damage_seq = fl_mark_surfaces_as_damaged(
+                        self.window.client.client,
+                        surface_ids.as_ptr(),
+                        surface_ids.len(),
+                    )
+                    .value;
+                    fl_discard_reply(self.window.client.client, damage_seq);
+                    damage_seq
                 }
             });
 
             unsafe {
-                fl_wait_for_vsync_finished(self.window.client.client, 3.0);
+                fl_wait_for_vsync_finished(self.window.client.client, damage_seq, 3.0);
             };
         }
 
@@ -460,14 +459,14 @@ impl slint::platform::Platform for FiatLuxPlatform {
 
 fn main() -> Result<()> {
     let cli_args = rcore::CliArgs::parse();
-    let video_pixmap_id = Arc::new(AtomicU32::new(0));
-    let platform = FiatLuxPlatform::new(video_pixmap_id.clone())?;
+    let platform = FiatLuxPlatform::new()?;
     let client_ptr = platform.window.client.client;
+    let video_surface_id = platform.video_surface_id;
 
     slint::platform::set_platform(Box::new(platform))?;
 
     rcore::run(
         cli_args,
-        pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_pixmap_id),
+        pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_surface_id),
     )
 }
