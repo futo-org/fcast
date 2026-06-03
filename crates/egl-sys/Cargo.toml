@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-libloading = "0.9.0"
+libloading.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

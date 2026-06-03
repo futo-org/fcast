@@ -109,6 +109,7 @@ export component ComboBox {
         width: root.width;
         height: root.visible-items * FluentSizeSettings.item-height +  2 * root.popup-padding;
         forward-focus: inner-fs;
+        close-policy: close-on-click-outside;
 
         inner-fs := FocusScope {
             focus-changed-event => {
@@ -132,6 +133,7 @@ export component ComboBox {
                             touch-area := TouchArea {
                                 clicked => {
                                     base.select(index);
+                                    popup.close();
                                 }
                             }
                         }
