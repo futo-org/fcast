@@ -31,6 +31,8 @@ resolveReceiverFhsRelease:
   artifacts:
     reports:
       dotenv: build.env
+  rules:
+    - when: manual
 
 .buildReceiverFhsLinuxRPM:
   extends: .fhsR2Common
@@ -76,6 +78,8 @@ resolveReceiverFhsRelease:
     access: all
     paths:
       - ./*.rpm
+  rules:
+    - when: manual
 
 buildReceiverFhsLinuxX64RPM:
   extends: .buildReceiverFhsLinuxRPM
