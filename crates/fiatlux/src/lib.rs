@@ -71,8 +71,9 @@ impl Window {
     pub fn new(client: &Client, identifier: *const c_char, title: *const c_char) -> Result<Self> {
         let icon_filepath = CString::new("")?;
         unsafe {
-            let create_window_seq = fl_create_full_screen_window(
+            let create_window_seq = fl_create_window(
                 client.client,
+                fl_protocol_WindowType_fl_protocol_WindowType_fullscreen,
                 identifier,
                 title,
                 icon_filepath.as_ptr(),
@@ -82,27 +83,16 @@ impl Window {
                 return Err(anyhow!("Failed to create window"));
             }
 
-            let create_window_rep =
-                match fl_receive_reply_create_full_screen_window(client.client, create_window_seq)
-                    .as_mut()
-                {
-                    Some(create_window_rep) => create_window_rep,
-                    None => {
-                        return Err(anyhow!("fl_receive_reply_create_full_screen_window failed"));
-                    }
-                };
-
-            let window_id = create_window_rep.window_id;
-            let width = create_window_rep.width;
-            let height = create_window_rep.height;
-            let display_scale = create_window_rep.display_scale;
-            fl_free_reply_create_full_screen_window(create_window_rep);
+            let mut create_window_rep: fl_reply_CreateWindow = std::mem::zeroed();
+            if !fl_receive_reply_create_window(client.client, create_window_seq, &mut create_window_rep) {
+                return Err(anyhow!("fl_receive_reply_create_full_screen_window failed"));
+            }
 
             Ok(Self {
-                window_id: window_id,
-                width: width,
-                height: height,
-                display_scale: display_scale,
+                window_id: create_window_rep.window_id,
+                width: create_window_rep.width,
+                height: create_window_rep.height,
+                display_scale: create_window_rep.display_scale,
             })
         }
     }
