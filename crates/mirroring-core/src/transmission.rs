@@ -18,7 +18,7 @@ use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 const MEGA_BIT: u32 = 1024 * 1024;
 const WHEP_MIN_BITRATE: u32 = MEGA_BIT / 2;
-const WHEP_START_BITRATE: u32 = MEGA_BIT * 16;
+const WHEP_START_BITRATE: u32 = MEGA_BIT * 4;
 const WHEP_MAX_BITRATE: u32 = MEGA_BIT * 48;
 
 fn addr_to_url_string(addr: IpAddr) -> String {
@@ -393,6 +393,16 @@ fn create_webrtcsink(
     // NOTE: we ask for VP8 only because it's widely available and having few possible formats
     //       reduces the startup time before streaming
     sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
+
+    sink.connect("encoder-setup", false, |values| {
+        let encoder = values[3].get::<gst::Element>().unwrap();
+        if let Some(factory) = encoder.factory() && factory.name() == "vp8enc" {
+            encoder.set_property("static-threshold", 100i32);
+            encoder.set_property("max-intra-bitrate", 3500i32);
+        }
+
+        Some(false.to_value())
+    });
 
     Ok(sink)
 }

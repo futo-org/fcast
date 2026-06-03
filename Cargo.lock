@@ -284,7 +284,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-gstreamer",
- "webbrowser",
 ]
 
 [[package]]

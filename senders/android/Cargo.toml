@@ -21,14 +21,13 @@ fcast-protocol = { path = "../../crates/fcast-protocol" }
 fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = [ "fcast" ] }
 mcore.path = "../../crates/mirroring-core/"
 parking_lot.workspace = true
-tracing-gstreamer = "0.9.0"
+tracing-gstreamer.workspace = true
 tracing = { workspace = true, features = ["log", "log-always"] }
 log.workspace = true
-webbrowser.workspace = true
-mimalloc = { version = "0.1", features = ["v3"] }
+mimalloc.workspace = true
 khronos-egl = { version = "6", features = ["dynamic"] }
 libloading = "0.8.9"
-glow = "0.17"
+glow.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

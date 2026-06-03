@@ -65,7 +65,7 @@ google-cast-protocol = { path = "../google-cast-protocol" }
 rcgen = "0.14"
 uuid.workspace = true
 
-glow = "0.17"
+glow.workspace = true
 
 [dependencies.slint]
 workspace = true

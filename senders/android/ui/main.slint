@@ -1,7 +1,7 @@
 import { VerticalBox } from "std-widgets.slint";
 import { Button, Spinner, FText, ScrollView, Icons, Palette, NoReceiverFound, RoundBackButton, Spacer, ListView, SecondaryText, LicenseAndCopyrightNotice, HyperLink } from "../../ui-components/std-widgets.slint";
 import { FCastPalette } from "../../ui-components/styling.slint";
-import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../sdk/mirroring_core/ui/common.slint";
+import { Utils, VideoResolutionPicker, FrameratePicker } from "../../../crates/mirroring-core/ui/common.slint";
 import "../../ui-components/fonts/Outfit-Regular.ttf";
 
 enum AppState {
@@ -27,7 +27,6 @@ export global Bridge {
     callback start-casting(scale-width: int, scale-height: int, max-framerate: int);
     callback stop-casting();
     callback scan-qr();
-    callback open-url(url: string);
 
     public function change-state(to: AppState) {
         if to == AppState.Disconnected {
@@ -266,7 +265,7 @@ component SettingsView inherits Rectangle {
             HyperLink {
                 url: "https://fcast.org";
                 text: self.url;
-                clicked(url) => Bridge.open-url(url);
+                clicked(url) => Platform.open-url(url);
             }
         }
 
@@ -281,7 +280,7 @@ component SettingsView inherits Rectangle {
             HyperLink {
                 url: "https://github.com/futo-org/fcast/issues";
                 text: "our issue tracker";
-                clicked(url) => Bridge.open-url(url);
+                clicked(url) => Platform.open-url(url);
             }
         }
 

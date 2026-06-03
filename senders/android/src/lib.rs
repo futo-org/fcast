@@ -552,13 +552,6 @@ fn android_main(app: slint::android::AndroidApp) {
         }
     });
 
-    bridge.on_open_url(|url: SharedString| {
-        debug!(?url, "Trying to open URL");
-        if let Err(err) = webbrowser::open(&url) {
-            error!(?err, "Failed to open URL");
-        }
-    });
-
     bridge.set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
 
     let ui_weak = ui.as_weak();
