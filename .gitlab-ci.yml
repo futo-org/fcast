@@ -2,7 +2,6 @@ stages:
   - buildDockerContainers
   - receiverAndroid
   - receiverExperimental
-  - buildAndDeployElectron
   - buildWebOSReceiver
   - buildTizenOSReceiver
   - buildSenderSDK
@@ -21,7 +20,6 @@ variables:
 include:
   - local: 'docs/.gitlab-ci.yml'
   - local: 'receivers/android/.gitlab-ci.yml'
-  - local: 'receivers/electron/.gitlab-ci.yml'
   - local: 'receivers/desktop/.gitlab-ci.yml'
   - local: 'receivers/webos/.gitlab-ci.yml'
   - local: 'receivers/tizen/.gitlab-ci.yml'
