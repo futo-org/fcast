@@ -1,5 +1,8 @@
 # What is FCast?
 
+> [!WARNING]
+> **Deprecated.** This receiver is no longer actively maintained. You shoud use the new [desktop](../desktop) receiver.
+
 FCast is a protocol designed for wireless streaming of audio and video content between devices. Unlike alternative protocols like Chromecast and AirPlay, FCast is an open source protocol that allows for custom receiver implementations, enabling third-party developers to create their own receiver devices or integrate the FCast protocol into their own apps.
 
 # Why do I need a receiver?
