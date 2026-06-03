@@ -29,5 +29,3 @@ include:
   - local: 'senders/android/.gitlab-ci.yml'
   - local: 'senders/desktop/.gitlab-ci.yml'
   - local: 'website/.gitlab-ci.yml'
-
-# - local: 'receivers/experimental/fhs/.gitlab-ci.yml'
