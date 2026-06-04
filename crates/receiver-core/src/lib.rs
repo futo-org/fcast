@@ -574,9 +574,13 @@ pub fn run<S: VideoSink + 'static>(
     info!(initialized_in = ?start.elapsed());
 
     #[cfg(not(target_os = "android"))]
-    let _ = ctrlc::set_handler(|| {
-        debug!("Got Ctrl+C");
-        let _ = slint::quit_event_loop();
+    runtime.spawn(async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            error!(?err, "Failed to listen for ctrl+c event");
+        } else {
+            debug!("Got Ctrl+C");
+            let _ = slint::quit_event_loop();
+        }
     });
 
     #[cfg(any(target_os = "android", not(feature = "systray")))]

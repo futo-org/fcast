@@ -7836,7 +7836,6 @@ dependencies = [
  "bytes",
  "cbc",
  "clap",
- "ctrlc",
  "drm-fourcc",
  "egl-sys",
  "fast_qr",
