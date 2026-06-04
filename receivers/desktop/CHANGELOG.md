@@ -1,5 +1,9 @@
 # FCast Receiver Changelog
 
+## 3.0.2 - UNRELEASED
+
+ - Downgrade session version if sender is higher than receiver instead of rejecting the connection
+
 ## 3.0.1 - 2026-06-02
 
  - Fix crash when running on X11

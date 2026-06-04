@@ -433,10 +433,14 @@ impl State {
             Opcode::Version => {
                 let msg = err_json!(VersionMessage, err_body!(body));
                 let version = match msg.version {
+                    0 => return Err(StateError::IllegalVersion(msg.version)),
                     1 => SessionVersion::V1,
                     2 => SessionVersion::V2,
                     3 => SessionVersion::V3,
-                    _ => return Err(StateError::IllegalVersion(msg.version)),
+                    sender_version => {
+                        debug!(sender_version, "Sender is higher version than we implement, downgrading");
+                        SessionVersion::V3
+                    }
                 };
                 self.variant = StateVariant::Active { version };
                 if version == SessionVersion::V3 {
