@@ -8,6 +8,7 @@ use fcast_sender_sdk::{
     },
     DeviceDiscovererEventHandler, IpAddr,
 };
+use file_server::FileServer;
 use log::{debug, error};
 use rfd::{AsyncFileDialog, FileHandle};
 use slint::{Model, SharedString, VecModel};
@@ -15,7 +16,6 @@ use tokio::{
     runtime::Runtime,
     sync::mpsc::{channel, Receiver, Sender},
 };
-use file_server::FileServer;
 
 slint::include_modules!();
 
@@ -396,7 +396,9 @@ impl App {
                         continue;
                     }
                     let content_type = media_type.mime_type().to_string();
-                    let entry = self.file_server.add_file(handle.path().into(), &content_type);
+                    let entry = self
+                        .file_server
+                        .add_file(handle.path().into(), &content_type);
                     match active_device.as_ref() {
                         Some(active_device) => {
                             let url = self.file_server.get_url(&(&local_adddress).into(), &entry);

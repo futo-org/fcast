@@ -380,7 +380,10 @@ mod imp {
 
                     obj.emit_by_name::<()>(
                         ON_SERVER_STARTED_SIGNAL_NAME,
-                        &[&gst::glib::Value::from(bound_port_v4 as u32), &gst::glib::Value::from(bound_port as u32)],
+                        &[
+                            &gst::glib::Value::from(bound_port_v4 as u32),
+                            &gst::glib::Value::from(bound_port as u32),
+                        ],
                     );
                 } else {
                     error!("Failed to upgrade obj_weak ");
@@ -427,7 +430,9 @@ mod imp {
                     });
                 }
 
-                fn handle_sig(sig: std::result::Result<(), tokio::sync::oneshot::error::RecvError>) {
+                fn handle_sig(
+                    sig: std::result::Result<(), tokio::sync::oneshot::error::RecvError>,
+                ) {
                     match sig {
                         Ok(_) => debug!("Server shut down signal received"),
                         Err(err) => error!(?err, "Sender dropped"),

@@ -442,13 +442,11 @@ pub fn ipv6_is_global(v6: std::net::Ipv6Addr) -> bool {
         || matches!(v6.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
         || matches!(v6.segments(), [0x100, 0, 0, 0, _, _, _, _])
         || (matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
-            && !(
-                u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
+            && !(u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
                 || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
                 || matches!(v6.segments(), [0x2001, 3, _, _, _, _, _, _])
                 || matches!(v6.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
-                || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
-            ))
+                || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)))
         || matches!(v6.segments(), [0x2002, _, _, _, _, _, _, _])
         || matches!(v6.segments(), [0x5f00, ..])
         || v6.is_unique_local()

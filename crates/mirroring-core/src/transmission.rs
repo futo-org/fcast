@@ -374,7 +374,10 @@ fn create_webrtcsink(
             let event_tx = event_tx.clone();
             rt_handle.spawn(async move {
                 event_tx
-                    .send(Event::SignallerStarted { bound_port_v4, bound_port_v6 })
+                    .send(Event::SignallerStarted {
+                        bound_port_v4,
+                        bound_port_v6,
+                    })
                     .unwrap();
             });
 
@@ -396,7 +399,9 @@ fn create_webrtcsink(
 
     sink.connect("encoder-setup", false, |values| {
         let encoder = values[3].get::<gst::Element>().unwrap();
-        if let Some(factory) = encoder.factory() && factory.name() == "vp8enc" {
+        if let Some(factory) = encoder.factory()
+            && factory.name() == "vp8enc"
+        {
             encoder.set_property("static-threshold", 100i32);
             encoder.set_property("max-intra-bitrate", 3500i32);
         }

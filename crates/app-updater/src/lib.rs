@@ -6,10 +6,10 @@ mod starting_binary;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod imp {
     use anyhow::{Result, anyhow};
-    use serde::Deserialize;
-    use tracing::{debug, error, info};
     use bytes::Bytes;
+    use serde::Deserialize;
     use std::path::PathBuf;
+    use tracing::{debug, error, info};
 
     #[cfg(target_os = "macos")]
     const OS_SPECIFIC_PATH: &str = "/macos-aarch64";
@@ -43,8 +43,7 @@ mod imp {
 
         let latest_version =
             str_to_version(&latest_release.version).ok_or(anyhow!("Invalid version"))?;
-        let current_version =
-            str_to_version(pkg_version).ok_or(anyhow!("Invalid version"))?;
+        let current_version = str_to_version(pkg_version).ok_or(anyhow!("Invalid version"))?;
 
         debug!(latest_version, current_version);
 

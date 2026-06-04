@@ -21,10 +21,14 @@ impl PipelineSource {
 
 impl Display for PipelineSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f,  "{}", match self {
-            PipelineSource::MainPlayer => "Main player",
-            PipelineSource::RaopPlayer => "RAOP player",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                PipelineSource::MainPlayer => "Main player",
+                PipelineSource::RaopPlayer => "RAOP player",
+            }
+        )
     }
 }
 
@@ -52,12 +56,16 @@ impl Trigger {
 
 impl Display for Trigger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            Trigger::Pause => "Pause",
-            Trigger::Warning => "Warning",
-            Trigger::Error => "Error",
-            Trigger::Manual => "Manual",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                Trigger::Pause => "Pause",
+                Trigger::Warning => "Warning",
+                Trigger::Error => "Error",
+                Trigger::Manual => "Manual",
+            }
+        )
     }
 }
 

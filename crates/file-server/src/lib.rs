@@ -445,12 +445,7 @@ impl FileServer {
             std::net::IpAddr::V4(addr) => (self.bound_ports.ipv4, addr.to_string()),
             std::net::IpAddr::V6(addr) => (self.bound_ports.ipv6, format!("[{addr}]")),
         };
-        format!(
-            "http://{}:{}/{}",
-            addr_str,
-            port,
-            file_id,
-        )
+        format!("http://{}:{}/{}", addr_str, port, file_id,)
     }
 
     #[cfg(feature = "headers")]

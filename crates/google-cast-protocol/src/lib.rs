@@ -1,6 +1,6 @@
 pub use prost;
-use serde::{de, ser, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de, ser};
+use serde_json::{Value, json};
 
 pub mod protos {
     include!(concat!(env!("OUT_DIR"), "/protos.rs"));

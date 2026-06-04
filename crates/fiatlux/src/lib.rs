@@ -84,7 +84,11 @@ impl Window {
             }
 
             let mut create_window_rep: fl_reply_CreateWindow = std::mem::zeroed();
-            if !fl_receive_reply_create_window(client.client, create_window_seq, &mut create_window_rep) {
+            if !fl_receive_reply_create_window(
+                client.client,
+                create_window_seq,
+                &mut create_window_rep,
+            ) {
                 return Err(anyhow!("fl_create_window failed"));
             }
 

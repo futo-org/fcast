@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rcore::clap::Parser;
 use mimalloc::MiMalloc;
+use rcore::clap::Parser;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;

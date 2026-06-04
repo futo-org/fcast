@@ -438,7 +438,10 @@ impl State {
                     2 => SessionVersion::V2,
                     3 => SessionVersion::V3,
                     sender_version => {
-                        debug!(sender_version, "Sender is higher version than we implement, downgrading");
+                        debug!(
+                            sender_version,
+                            "Sender is higher version than we implement, downgrading"
+                        );
                         SessionVersion::V3
                     }
                 };

@@ -27,10 +27,12 @@ use windows::InhibitorImpl;
 #[cfg(target_os = "windows")]
 mod windows {
     use tracing::{error, instrument};
-    use windows::core::Error as WindowsError;
-    use windows::Win32::System::Power::{
-        SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS, ES_DISPLAY_REQUIRED,
-        ES_SYSTEM_REQUIRED, EXECUTION_STATE,
+    use windows::{
+        Win32::System::Power::{
+            ES_AWAYMODE_REQUIRED, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+            EXECUTION_STATE, SetThreadExecutionState,
+        },
+        core::Error as WindowsError,
     };
 
     use crate::Options;
@@ -52,7 +54,7 @@ mod windows {
         }
 
         #[instrument(skip_all)]
-        pub fn inhibit(&mut self, _reason: &str)  {
+        pub fn inhibit(&mut self, _reason: &str) {
             unsafe {
                 self.previous = SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
                 if self.previous == EXECUTION_STATE(0) {
@@ -80,12 +82,12 @@ mod windows {
 use macos::InhibitorImpl;
 #[cfg(target_os = "macos")]
 mod macos {
-    use tracing::{error, instrument};
     use objc2_core_foundation::CFString;
     use objc2_io_kit::{
-        kIOPMAssertionLevelOn, kIOReturnSuccess, IOPMAssertionCreateWithName, IOPMAssertionID,
-        IOPMAssertionRelease,
+        IOPMAssertionCreateWithName, IOPMAssertionID, IOPMAssertionRelease, kIOPMAssertionLevelOn,
+        kIOReturnSuccess,
     };
+    use tracing::{error, instrument};
 
     use crate::Options;
 
@@ -192,7 +194,7 @@ mod linux {
             }
 
             if let Err(err) = f(self, reason) {
-                    error!(?err, "Failed to inhibit");
+                error!(?err, "Failed to inhibit");
             }
         }
 

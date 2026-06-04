@@ -72,7 +72,11 @@ impl AndroidArgs {
                 cmd!(sh, "unzip -o {zip} -d {ANDROID_SDK_PATH}").run()?;
                 sh.remove_path(&zip)?;
 
-                let sdkmanager = if cfg!(windows) { "sdkmanager.bat" } else { "sdkmanager" };
+                let sdkmanager = if cfg!(windows) {
+                    "sdkmanager.bat"
+                } else {
+                    "sdkmanager"
+                };
                 let shell_code = format!("yes | {ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --licenses");
                 cmd!(sh, "sh -c {shell_code}").run()?;
 

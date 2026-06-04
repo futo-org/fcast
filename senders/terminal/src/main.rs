@@ -439,7 +439,9 @@ async fn main() {
 
             if file.is_some() || url.is_some() {
                 let url = if let Some(file_path) = file {
-                    let server = file_server::FileServer::new(file_server_port.unwrap_or(0)).await.unwrap();
+                    let server = file_server::FileServer::new(file_server_port.unwrap_or(0))
+                        .await
+                        .unwrap();
                     let file_id = server.add_file(file_path.into(), &mime_type);
                     let url = server.get_url(&(&local_addr).into(), &file_id);
                     file_server = server;

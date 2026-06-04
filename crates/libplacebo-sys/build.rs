@@ -5,7 +5,9 @@ mod build {
 
     use super::*;
     use std::{
-        fs, path::Path, process::{Command, Stdio}
+        fs,
+        path::Path,
+        process::{Command, Stdio},
     };
 
     const TAG: &str = "v7.360.1";
@@ -29,7 +31,8 @@ mod build {
         let build_dir = "build";
         let release_dir = "release";
 
-        let libplacebo_source = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("libplacebo");
+        let libplacebo_source =
+            PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("libplacebo");
 
         let source = PathBuf::from(env::var("OUT_DIR").unwrap()).join("libplacebo");
         let build_path = source.join(build_dir);

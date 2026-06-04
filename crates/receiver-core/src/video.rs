@@ -405,10 +405,7 @@ impl SlintOpenGLSink {
 
         #[cfg(target_os = "macos")]
         if is_gl {
-            let data = RawFrameData::Gl {
-                buffer,
-                info,
-            };
+            let data = RawFrameData::Gl { buffer, info };
             *next_frame_ref.lock() = Some(RawFrame {
                 data,
                 mastering_display_info,

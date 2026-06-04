@@ -77,8 +77,7 @@ fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn get_receiver_version() -> String {
-    let receiver_toml =
-        std::fs::read_to_string("receivers/desktop/Cargo.toml").unwrap();
+    let receiver_toml = std::fs::read_to_string("receivers/desktop/Cargo.toml").unwrap();
     let doc = receiver_toml.parse::<toml_edit::DocumentMut>().unwrap();
     doc["package"]["version"].as_str().unwrap().to_string()
 }
@@ -169,10 +168,7 @@ impl ReceiverArgs {
                         let ndk_root = sh.var("ANDROID_NDK_ROOT").unwrap();
                         cmd!(sh, "make -f {ndk_root}/build/core/build-local.mk").run()?;
                     }
-                    AndroidReceiverCommand::Build {
-                        release,
-                        target,
-                    } => {
+                    AndroidReceiverCommand::Build { release, target } => {
                         let out_dir = concat_path(
                             &root_path,
                             "receivers/experimental/android/app/src/main/jniLibs",
@@ -270,7 +266,11 @@ impl ReceiverArgs {
                     }
                 }
 
-                let src = gst_root.join("lib").join("gio").join("modules").join("gioopenssl.dll");
+                let src = gst_root
+                    .join("lib")
+                    .join("gio")
+                    .join("modules")
+                    .join("gioopenssl.dll");
                 sh.create_dir(build_dir_root.join("gio").join("modules"))?;
                 let dst = "gio\\modules\\gioopenssl.dll".to_owned();
                 let dst = concat_path(&build_dir_root, &dst);
@@ -326,19 +326,18 @@ impl ReceiverArgs {
                 )
                 .run()?;
 
-                let binary_path = concat_paths(&[
-                    root_path.as_str(),
-                    "target",
-                    "release",
-                    "desktop-receiver",
-                ]);
+                let binary_path =
+                    concat_paths(&[root_path.as_str(), "target", "release", "desktop-receiver"]);
 
                 std::fs::copy(&binary_path, build_dir_root.join("fcast-receiver"))?;
 
                 use askama::Template;
 
-                let binary_dependencies =
-                    crate::find_libraries(&binary_path, all_plugins_for_macos(), &["libsoup-3.0.dylib"]);
+                let binary_dependencies = crate::find_libraries(
+                    &binary_path,
+                    all_plugins_for_macos(),
+                    &["libsoup-3.0.dylib"],
+                );
                 let relative_path = Utf8PathBuf::from("lib/");
 
                 println!("############### Rewriting dependencies to be relative ###############");
@@ -366,10 +365,7 @@ impl ReceiverArgs {
                 .render()?;
                 sh.create_dir(app_top_level.join("Contents").join("Resources"))?;
                 sh.copy_file(
-                    root_path
-                        .join("receivers")
-                        .join("extra")
-                        .join("fcast.icns"),
+                    root_path.join("receivers").join("extra").join("fcast.icns"),
                     app_top_level
                         .join("Contents")
                         .join("Resources")

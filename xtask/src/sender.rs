@@ -401,18 +401,10 @@ impl SenderArgs {
                 let library_target_directory = build_dir_root.join("lib");
                 sh.create_dir(&library_target_directory)?;
 
-                cmd!(
-                    sh,
-                    "cargo build --release --package desktop-sender"
-                )
-                .run()?;
+                cmd!(sh, "cargo build --release --package desktop-sender").run()?;
 
-                let binary_path = concat_paths(&[
-                    root_path.as_str(),
-                    "target",
-                    "release",
-                    "desktop-sender",
-                ]);
+                let binary_path =
+                    concat_paths(&[root_path.as_str(), "target", "release", "desktop-sender"]);
 
                 std::fs::copy(&binary_path, build_dir_root.join("fcast-sender"))?;
 

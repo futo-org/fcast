@@ -41,7 +41,7 @@ impl Format {
                     "x-matroska" => "video/x-matroska",
                     "mp3" => "audio/mp3",
                     _ => return None,
-                }
+                },
             },
         })
     }

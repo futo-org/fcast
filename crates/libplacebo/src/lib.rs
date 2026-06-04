@@ -170,9 +170,7 @@ impl Swapchain {
     }
 
     pub fn submit_frame(&self) -> bool {
-        unsafe {
-            pl_swapchain_submit_frame(self.swapchain)
-        }
+        unsafe { pl_swapchain_submit_frame(self.swapchain) }
     }
 }
 
