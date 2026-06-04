@@ -2,9 +2,7 @@
 members = [
     "xtask",
     "sdk/sender/fcast-sender-sdk",
-    "sdk/sender/examples/terminal",
     "senders/terminal",
-    "sdk/sender/examples/desktop",
     "crates/fcast-protocol",
     "crates/mirroring-core",
     "senders/desktop",
