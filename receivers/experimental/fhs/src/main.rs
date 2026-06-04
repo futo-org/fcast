@@ -24,8 +24,6 @@ mod pixmap_video_sink;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-const IDLE_UPDATE_TIMEOUT_SEC: f64 = 5.0;
-
 struct FiatLuxGlContext {
     gc: GraphicsContext,
     render_buffer: *mut fl_RenderBuffer,
@@ -204,7 +202,6 @@ type Job = Box<dyn FnOnce() + Send>;
 struct LoopProxy {
     job_sender: mpsc::Sender<Job>,
     quit_event_loop: Arc<AtomicBool>,
-    idle_updated_timer: Mutex<Instant>,
     client: ClientPtr,
 }
 
@@ -217,22 +214,7 @@ impl LoopProxy {
         Self {
             job_sender: job_sender,
             quit_event_loop: quit_event_loop,
-            idle_updated_timer: Mutex::new(Instant::now()),
             client: client,
-        }
-    }
-
-    fn idle_handle(&self) {
-        let mut idle_updated_timer = self.idle_updated_timer.lock().unwrap();
-        let now = Instant::now();
-        if now.duration_since(*idle_updated_timer).as_secs_f64() >= IDLE_UPDATE_TIMEOUT_SEC {
-            *idle_updated_timer = now;
-            drop(idle_updated_timer);
-            unsafe {
-                fl_inhibit_idle(self.client.0);
-            }
-        } else {
-            drop(idle_updated_timer);
         }
     }
 }
@@ -240,7 +222,6 @@ impl LoopProxy {
 impl slint::platform::EventLoopProxy for LoopProxy {
     fn quit_event_loop(&self) -> Result<(), rcore::slint::EventLoopError> {
         self.quit_event_loop.store(true, Ordering::Relaxed);
-        self.idle_handle();
         // Wake up the event loop by sending an empty job
         self.job_sender
             .send(Box::new(move || {}))
@@ -251,7 +232,6 @@ impl slint::platform::EventLoopProxy for LoopProxy {
         &self,
         event: Box<dyn FnOnce() + Send>,
     ) -> Result<(), rcore::slint::EventLoopError> {
-        self.idle_handle();
         self.job_sender
             .send(event)
             .map_err(|_| rcore::slint::EventLoopError::EventLoopTerminated)
