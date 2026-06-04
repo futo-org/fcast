@@ -435,7 +435,6 @@ impl From<std::net::SocketAddr> for IpAddr {
 }
 
 // Copy of https://doc.rust-lang.org/std/net/struct.Ipv6Addr.html#method.is_unicast_global to not have to force the use of a nightly toolchain
-#[cfg(all(any_protocol, not(feature = "uniffi")))]
 pub fn ipv6_is_global(v6: std::net::Ipv6Addr) -> bool {
     !(v6.is_unspecified()
         || v6.is_loopback()

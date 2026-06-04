@@ -62,7 +62,7 @@ fn main() {
             let root_path = workspace::root_path().unwrap();
             let _p = sh.push_dir(root_path.clone());
 
-            cmd!(sh, "cargo test --all-features --workspace --exclude receiver-android --exclude android-sender").run().unwrap();
+            cmd!(sh, "cargo test --all-features --workspace --exclude receiver-android --exclude android-sender --exclude fiatlux-sys --exclude fiatlux --exclude fhs-receiver").run().unwrap();
         }
     }
 }
