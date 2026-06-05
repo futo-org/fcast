@@ -450,7 +450,7 @@ mod imp {
                     imp = self,
                     "clipping buffer timestamp/duration to segment"
                 );
-                let buffer_mut = buffer.get_mut().unwrap();
+                let buffer_mut = buffer.make_mut();
                 buffer_mut.set_pts(clip_start);
                 if end.is_none() {
                     buffer_mut.set_duration(clip_end - clip_start);
@@ -478,11 +478,6 @@ mod imp {
                 match self.wait_for_text_buf(&buffer, start, end) {
                     WaitForTextResult::Have(text_buf) => {
                         if let Some(text_buf) = text_buf {
-                            let Some(buffer_mut) = buffer.get_mut() else {
-                                gst::debug!(CAT, imp = self, "received invalid video frame buffer");
-                                break;
-                            };
-
                             let Ok(text_read) = text_buf.map_readable() else {
                                 gst::warning!(CAT, imp = self, "text buffer is invalid");
                                 break;
@@ -495,7 +490,7 @@ mod imp {
 
                             match str::from_utf8(text_read.as_slice()) {
                                 Ok(text) => FCastVideoTextOverlayMeta::add(
-                                    buffer_mut,
+                                    buffer.make_mut(),
                                     format,
                                     text.to_owned(),
                                 ),

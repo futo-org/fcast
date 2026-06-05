@@ -3,6 +3,7 @@
 ## 3.0.2 - UNRELEASED
 
  - Downgrade session version if sender is higher than receiver instead of rejecting the connection
+ - Fix subtitles flickering in certain situations
 
 ## 3.0.1 - 2026-06-02
 
