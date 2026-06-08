@@ -35,7 +35,7 @@ A "receiver", in this context, is a software implementation running on various p
 
 - Receivers
     - [**Android**](https://github.com/futo-org/fcast/tree/master/receivers/android) native.
-    - [**Linux, Windows, MacOS**](https://github.com/futo-org/fcast/tree/master/receivers/electron) electron.
+    - [**Linux, Windows, MacOS**](https://github.com/futo-org/fcast/tree/master/receivers/desktop)
     - [**webOS**](https://github.com/futo-org/fcast/tree/master/receivers/webos)
     - [**Tizen**](https://github.com/futo-org/fcast/tree/master/receivers/tizen)
 
