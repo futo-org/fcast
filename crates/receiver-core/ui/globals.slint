@@ -176,9 +176,16 @@ export global Bridge {
         } else if Bridge.is-playing() && event.text == Key.Space {
             resume-or-pause();
             return accept;
-        } else if Bridge.is-playing() && (event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Return) {
-            // TODO: do something
+        } else if Bridge.is-playing() && event.text == Key.LeftArrow {
+            Bridge.seek-to-percent((Bridge.progress-secs - 10) / Bridge.duration-secs);
+        } else if Bridge.is-playing() && event.text == Key.RightArrow {
+            Bridge.seek-to-percent((Bridge.progress-secs + 10) / Bridge.duration-secs);
+        } else if Bridge.is-playing() && event.text == Key.DownArrow {
+            Bridge.set-volume(Math.clamp(Bridge.volume - 0.05, 0.0, 1.0));
+        } else if Bridge.is-playing() && event.text == Key.UpArrow {
+            Bridge.set-volume(Math.clamp(Bridge.volume + 0.05, 0.0, 1.0));
         }
+
         reject
     }
 }

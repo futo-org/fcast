@@ -247,6 +247,8 @@ component PlaybackControls inherits Rectangle {
     property <bool> show-settings: false;
     property <SettingsPage> current-settings-page: SettingsPage.Start;
 
+    forward-focus: focus;
+
     animate elems-opacity, background-height {
         duration: 200ms;
         easing: ease-out-expo;
@@ -286,6 +288,8 @@ component PlaybackControls inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: suggested-cursor;
 
+        double-clicked => Bridge.toggle-fullscreen();
+
         clicked => {
             current-settings-page = SettingsPage.Start;
             show-settings = false;
@@ -295,6 +299,10 @@ component PlaybackControls inherits Rectangle {
             if (pe.kind == PointerEventKind.move) {
                 parent.show();
             }
+        }
+
+        focus := FocusScope {
+            capture-key-pressed(event) => Bridge.capture-key-pressed(event);
         }
     }
 
@@ -603,7 +611,7 @@ component PlaybackControls inherits Rectangle {
         interval: 2s;
         running: true;
         triggered => {
-            if ta.has-hover || show-settings {
+            if ta.has-hover || !focus.has-focus || show-settings {
                 parent.close();
                 Bridge.hide-cursor-hack();
             }
@@ -643,19 +651,8 @@ export component VideoPlayerView inherits Rectangle {
         height: 100%;
     }
 
-    TouchArea {
+    PlaybackControls {
         width: 100%;
         height: 100%;
-        visible: Bridge.is-playing();
-        mouse-cursor: self.visible && !playback-control.visible ? none : default;
-
-        FocusScope {
-            capture-key-pressed(event) => Bridge.capture-key-pressed(event);
-        }
-
-        playback-control := PlaybackControls {
-            width: 100%;
-            height: 100%;
-        }
     }
 }
