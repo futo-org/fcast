@@ -88,7 +88,7 @@ export component IdleView inherits Rectangle {
 
                     IdleText {
                         font-size: 28px;
-                        text: "Idle. Ready to cast";
+                        text: @tr("Idle. Ready to cast");
                         font-weight: 600;
                         font-family: "Outfit Semibold";
                         overflow: elide;
@@ -97,7 +97,7 @@ export component IdleView inherits Rectangle {
 
                     Text {
                         font-size: 12pt;
-                        text: "Stream to this device by opening your FCast sender app and selecting this device from the Cast menu, or scan the QR code for instant setup.";
+                        text: @tr("Stream to this device by opening your FCast sender app and selecting this device from the Cast menu, or scan the QR code for instant setup.");
                         wrap: word-wrap;
                         overflow: elide;
                         color: FCastPalette.opacity-light-500;
@@ -117,7 +117,7 @@ export component IdleView inherits Rectangle {
                                 icon: Icons.tv-outline;
                                 icon-width: 15px;
                                 icon-height: 12.3px;
-                                key: "Device name";
+                                key: @tr("Device name");
                                 value: Bridge.device-name;
                             }
 
@@ -130,7 +130,7 @@ export component IdleView inherits Rectangle {
                                 icon: Icons.network;
                                 icon-width: 13.3px;
                                 icon-height: 14px;
-                                key: "Local IP Address";
+                                key: @tr("Local IP Address");
                                 value: Bridge.local-ip-addrs;
                             }
                         }
@@ -138,7 +138,7 @@ export component IdleView inherits Rectangle {
 
                     if Bridge.updater-state == UiUpdaterState.ShowingDialog: VerticalLayout {
                         IdleText {
-                            text: "An update is available. Do you want to update now?";
+                            text: @tr("An update is available. Do you want to update now?");
                         }
 
                         HorizontalLayout {
@@ -146,13 +146,13 @@ export component IdleView inherits Rectangle {
                             spacing: 5px;
 
                             Button {
-                                text: "Yes";
+                                text: @tr("Yes");
 
                                 clicked => Bridge.perform-app-update();
                             }
 
                             Button {
-                                text: "No";
+                                text: @tr("No");
 
                                 clicked => {
                                     Bridge.updater-state = UiUpdaterState.None;
@@ -163,7 +163,7 @@ export component IdleView inherits Rectangle {
 
                     if Bridge.updater-state == UiUpdaterState.Downloading: VerticalLayout {
                         IdleText {
-                            text: "Downloading update...";
+                            text: @tr("Downloading update...");
                         }
 
                         IdleText {
@@ -174,32 +174,32 @@ export component IdleView inherits Rectangle {
 
                     if Bridge.updater-state == UiUpdaterState.DownloadFailed: VerticalLayout {
                         IdleText {
-                            text: "Failed to download update: " + Bridge.updater-error-msg;
+                            text: @tr("Failed to download update: {}", Bridge.updater-error-msg);
                         }
                     }
 
                     if Bridge.updater-state == UiUpdaterState.InstallFailed: VerticalLayout {
                         IdleText {
-                            text: "Failed to install update: " + Bridge.updater-error-msg;
+                            text: @tr("Failed to install update: {}", Bridge.updater-error-msg);
                         }
                     }
 
                     if Bridge.updater-state == UiUpdaterState.InstallSuccessful: VerticalLayout {
                         IdleText {
-                            text: "Installed update successfully. Do you want to restart the app now?";
+                            text: @tr("Installed update successfully. Do you want to restart the app now?");
                         }
 
                         HorizontalLayout {
                             padding-top: 5px;
                             spacing: 5px;
                             Button {
-                                text: "Yes";
+                                text: @tr("Yes");
 
                                 clicked => Bridge.restart-app();
                             }
 
                             Button {
-                                text: "No";
+                                text: @tr("No");
 
                                 clicked => {
                                     Bridge.updater-state = UiUpdaterState.None;
@@ -245,7 +245,7 @@ export component IdleView inherits Rectangle {
                         }
 
                         FText {
-                            text: "Your device isn’t connected to a network. Connect to network via LAN or Wifi to continue.";
+                            text: @tr("Your device isn’t connected to a network. Connect to network via LAN or Wifi to continue.");
                             wrap: word-wrap;
                             horizontal-alignment: center;
                             font-size: 18px;

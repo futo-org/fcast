@@ -172,7 +172,7 @@ component SettingsTrackList inherits Rectangle {
 
         vl := VerticalLayout {
             if can-be-disabled: SettingItem {
-                value: "Off";
+                value: @tr("Off");
                 selected: selected-id == -1;
 
                 clicked => clicked(-1);
@@ -381,7 +381,7 @@ component PlaybackControls inherits Rectangle {
                                 }
 
                                 FText {
-                                    text: "LIVE";
+                                    text: @tr("LIVE");
                                     font-weight: 500;
                                     vertical-alignment: center;
                                 }
@@ -432,7 +432,7 @@ component PlaybackControls inherits Rectangle {
                 padding-top: 18px;
 
                 FText {
-                    text: "Playback settings";
+                    text: @tr("Playback settings");
                     font-weight: 500;
                     font-size: 18px;
                 }
@@ -442,7 +442,7 @@ component PlaybackControls inherits Rectangle {
                     spacing: 5px;
 
                     if Bridge.video-tracks.length > 0: PlaybackSettingsMenuItem {
-                        label: "Video";
+                        label: @tr("Video");
                         icon: Icons.settings-video;
 
                         clicked => {
@@ -451,7 +451,7 @@ component PlaybackControls inherits Rectangle {
                     }
 
                     if Bridge.audio-tracks.length > 0: PlaybackSettingsMenuItem {
-                        label: "Audio";
+                        label: @tr("Audio");
                         icon: Icons.details-audio;
 
                         clicked => {
@@ -460,7 +460,7 @@ component PlaybackControls inherits Rectangle {
                     }
 
                     if Bridge.subtitle-tracks.length > 0: PlaybackSettingsMenuItem {
-                        label: "Subtitles";
+                        label: @tr("Subtitles");
                         icon: Icons.subtitles;
 
                         clicked => {
@@ -469,7 +469,7 @@ component PlaybackControls inherits Rectangle {
                     }
 
                     PlaybackSettingsMenuItem {
-                        label: "Playback Speed";
+                        label: @tr("Playback Speed");
                         icon: Icons.playback-rate;
 
                         clicked => {
@@ -486,7 +486,7 @@ component PlaybackControls inherits Rectangle {
                 padding-top: 18px;
 
                 PlaybackSettingHeader {
-                    title: "Video track";
+                    title: @tr("Video track");
 
                     navigate-previous => {
                         current-settings-page = SettingsPage.Start;
@@ -511,7 +511,7 @@ component PlaybackControls inherits Rectangle {
                 padding-top: 18px;
 
                 PlaybackSettingHeader {
-                    title: "Audio track";
+                    title: @tr("Audio track");
 
                     navigate-previous => {
                         current-settings-page = SettingsPage.Start;
@@ -536,7 +536,7 @@ component PlaybackControls inherits Rectangle {
                 padding-top: 18px;
 
                 PlaybackSettingHeader {
-                    title: "Subtitle track";
+                    title: @tr("Subtitle track");
 
                     navigate-previous => {
                         current-settings-page = SettingsPage.Start;
@@ -571,7 +571,7 @@ component PlaybackControls inherits Rectangle {
                 padding-top: 18px;
 
                 PlaybackSettingHeader {
-                    title: "Playback speed";
+                    title: @tr("Playback speed");
 
                     navigate-previous => {
                         current-settings-page = SettingsPage.Start;

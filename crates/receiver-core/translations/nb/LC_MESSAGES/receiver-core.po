@@ -1,0 +1,147 @@
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"POT-Creation-Date: 2026-06-09 07:55+0000\n"
+"PO-Revision-Date: 2026-06-09 07:55+0000\n"
+"Last-Translator: Marcus Hanestad <marcus@futo.org>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: nb\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: crates/receiver-core/ui/views/idle.slint:91
+msgctxt "IdleView"
+msgid "Idle. Ready to cast"
+msgstr "Klar til å caste"
+
+#: crates/receiver-core/ui/views/idle.slint:100
+msgctxt "IdleView"
+msgid ""
+"Stream to this device by opening your FCast sender app and selecting this "
+"device from the Cast menu, or scan the QR code for instant setup."
+msgstr "Strøm til denne enheten ved å åpne en FCast sender applikasjon og "
+"velg denne enheten fra Cast menyen, eller scan QR koden for umiddelbar "
+"tilkobling."
+
+#: crates/receiver-core/ui/views/idle.slint:120
+msgctxt "IdleView"
+msgid "Device name"
+msgstr "Enhetsnavn"
+
+#: crates/receiver-core/ui/views/idle.slint:133
+msgctxt "IdleView"
+msgid "Local IP Address"
+msgstr "Lokal IP adresse"
+
+#: crates/receiver-core/ui/views/idle.slint:141
+msgctxt "IdleView"
+msgid "An update is available. Do you want to update now?"
+msgstr "En oppdatering er tilgjengelig. Ønsker du å oppdatere nå?"
+
+#: crates/receiver-core/ui/views/idle.slint:149
+#: crates/receiver-core/ui/views/idle.slint:149
+msgctxt "IdleView"
+msgid "Yes"
+msgstr "Ja"
+
+#: crates/receiver-core/ui/views/idle.slint:155
+#: crates/receiver-core/ui/views/idle.slint:155
+msgctxt "IdleView"
+msgid "No"
+msgstr "Nei"
+
+#: crates/receiver-core/ui/views/idle.slint:166
+msgctxt "IdleView"
+msgid "Downloading update..."
+msgstr "Laster ned oppdatering..."
+
+#: crates/receiver-core/ui/views/idle.slint:177
+msgctxt "IdleView"
+msgid "Failed to download update: {}"
+msgstr "Klarte ikke å laste ned oppdatering: {}"
+
+#: crates/receiver-core/ui/views/idle.slint:183
+msgctxt "IdleView"
+msgid "Failed to install update: {}"
+msgstr "Klarte ikke å installere oppdatering: {}"
+
+#: crates/receiver-core/ui/views/idle.slint:189
+msgctxt "IdleView"
+msgid "Installed update successfully. Do you want to restart the app now?"
+msgstr "Oppdatering installert. Ønsker du å restarte applikasjonen nå?"
+
+#: crates/receiver-core/ui/views/idle.slint:248
+msgctxt "IdleView"
+msgid ""
+"Your device isn’t connected to a network. Connect to network via LAN or "
+"Wifi to continue."
+msgstr "Enheten din er ikke tilkoblet ett nettverk. Koble til ett nettverk "
+"via LAN eller WiFi for å fortsette"
+
+#: crates/receiver-core/ui/views/loading-media.slint:14
+msgctxt "LoadingMediaView"
+msgid "Loading media..."
+msgstr "Laster media..."
+
+#: crates/receiver-core/ui/views/video-player.slint:175
+msgctxt "SettingsTrackList"
+msgid "Off"
+msgstr "Av"
+
+#: crates/receiver-core/ui/views/video-player.slint:384
+msgctxt "PlaybackControls"
+msgid "LIVE"
+msgstr "DIREKTE"
+
+#: crates/receiver-core/ui/views/video-player.slint:435
+msgctxt "PlaybackControls"
+msgid "Playback settings"
+msgstr "Avspillingsinnstillinger"
+
+#: crates/receiver-core/ui/views/video-player.slint:445
+msgctxt "PlaybackControls"
+msgid "Video"
+msgstr "Video"
+
+#: crates/receiver-core/ui/views/video-player.slint:454
+msgctxt "PlaybackControls"
+msgid "Audio"
+msgstr "Lyd"
+
+#: crates/receiver-core/ui/views/video-player.slint:463
+msgctxt "PlaybackControls"
+msgid "Subtitles"
+msgstr "Undertekster"
+
+#: crates/receiver-core/ui/views/video-player.slint:472
+msgctxt "PlaybackControls"
+msgid "Playback Speed"
+msgstr "Avspillingshastighet"
+
+#: crates/receiver-core/ui/views/video-player.slint:489
+msgctxt "PlaybackControls"
+msgid "Video track"
+msgstr "Video spor"
+
+#: crates/receiver-core/ui/views/video-player.slint:514
+msgctxt "PlaybackControls"
+msgid "Audio track"
+msgstr "Lyd spor"
+
+#: crates/receiver-core/ui/views/video-player.slint:539
+msgctxt "PlaybackControls"
+msgid "Subtitle track"
+msgstr "Undertekst spor"
+
+#: crates/receiver-core/ui/views/video-player.slint:574
+msgctxt "PlaybackControls"
+msgid "Playback speed"
+msgstr "Avspillingshastighet"
+
+#: crates/receiver-core/ui/main.slint:35
+msgctxt "MainWindow"
+msgid "FCast Receiver"
+msgstr "FCast Mottaker"
