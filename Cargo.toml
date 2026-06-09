@@ -43,7 +43,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
 env_logger = "0.11.8"
-mdns-sd = "0.20"
+mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "edaf667f35e6ec9923a7e2a309e11a778473f88e" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -57,7 +57,7 @@ uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
 smallvec = { version = "1", features = ["serde"] }
 smol_str = { version = "0.3", features = ["serde"] }
-toml_edit = { version = "0.24", features = ["serde"] }
+toml_edit = { version = "0.25", features = ["serde"] }
 futures = "0.3"
 lazy_static = "1.5"
 rand = "0.10"
@@ -71,6 +71,7 @@ bindgen = "0.72"
 webbrowser = "1"
 glow = "0.17"
 libloading = "0.9.0"
+directories = "6.0.0"
 
 [profile.release]
 lto = "fat"

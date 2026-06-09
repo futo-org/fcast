@@ -41,6 +41,8 @@ hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }
 libplacebo.path = "../libplacebo"
+toml_edit.workspace = true
+directories.workspace = true
 
 # RAOP
 rtsp-types = "0.1"
