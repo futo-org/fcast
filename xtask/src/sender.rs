@@ -253,7 +253,7 @@ impl SenderArgs {
                             // AndroidAbiTarget::X64,
                             // AndroidAbiTarget::X86,
                             AndroidAbiTarget::Arm64,
-                            AndroidAbiTarget::Arm32,
+                            // AndroidAbiTarget::Arm32,
                         ]);
 
                         for target in targets {

@@ -1,38 +1,4 @@
-
-# Run command: `cirrus run buildReceiverMac --artifacts-dir receivers/electron/out`
-build_electron_receiver_task:
-  name: buildReceiverMac
-  macos_instance:
-    image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
-  buildReceiverMac_script:
-    # Local
-    # - source .secure_files/.env
-
-    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
-    - sudo security add-certificates -k /Library/Keychains/System.keychain ./.secure_files/developerID_application.cer
-    - security unlock-keychain -p "admin" ~/Library/Keychains/login.keychain
-    - security import ./.secure_files/Certificates.p12 -k ~/Library/Keychains/login.keychain -P "$FCAST_CERTIFICATES_PASSWORD" -T /usr/bin/codesign
-    # Keychain ignores access control, causing to prompt for access and failing in CI environments...: https://stackoverflow.com/a/40039594
-    - "security set-key-partition-list -S apple-tool:,apple: -s -k admin ~/Library/Keychains/login.keychain"
-
-    - mkdir -p ~/.ssh/
-    - cp ./.secure_files/id_ed25519 ~/.ssh/id_ed25519
-    - cp ./.secure_files/id_ed25519.pub ~/.ssh/id_ed25519.pub
-    - chmod 700 ~/.ssh/
-    - chmod 600 ~/.ssh/id_ed25519
-    - chmod 600 ~/.ssh/id_ed25519.pub
-
-    - cd receivers/electron
-    - npm install
-    - npm rebuild
-    - npm run build
-    - npm run make -- --platform="darwin" --arch="arm64"
-    - npm run make -- --platform="darwin" --arch="x64"
-    - scp -o StrictHostKeyChecking=no -r out/make/* root@$FCAST_DO_RUNNER_IP:/artifacts/
-    - tar -czf artifacts.tar out/make/
-  binary_artifacts:
-    path: receivers/electron/artifacts.tar
-
+# TODO: parallelize
 desktop_sender_task:
   name: buildSenderMacosArm64
   macos_instance:
@@ -75,6 +41,7 @@ sender_sdk_csharp_task:
   binary_artifacts:
     path: target/*-apple-darwin/release/libfcast_sender_sdk.dylib
 
+# TODO: parallelize
 desktop_receiver_task:
   name: buildReceiverMacosArm64
   macos_instance:
