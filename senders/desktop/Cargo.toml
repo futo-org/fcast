@@ -26,7 +26,7 @@ tracing-panic.workspace = true
 futures.workspace = true
 gst-plugin-rtp.workspace = true
 webbrowser = "1.0.6"
-directories = "6.0.0"
+directories.workspace = true
 toml_edit.workspace = true
 fcast-protocol = { path = "../../crates/fcast-protocol" }
 mcore.path = "../../crates/mirroring-core/"

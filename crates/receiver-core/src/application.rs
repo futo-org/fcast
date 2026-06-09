@@ -44,7 +44,7 @@ use crate::{
     utils::{current_time_millis, map_to_header_map},
 };
 #[cfg(not(target_os = "android"))]
-use crate::{CliArgs, mdns};
+use crate::{Settings, mdns};
 
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(700);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -116,7 +116,7 @@ pub struct Application {
     update: Option<app_updater::Release>,
     gcast_tx: GCastUpdateSender,
     #[cfg(not(target_os = "android"))]
-    cli_args: CliArgs,
+    settings: Settings,
     window_visible_before_playing: Option<bool>,
     window_fullscreen_before_playing: Option<bool>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -134,7 +134,7 @@ impl Application {
         video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         gl_context: crate::graphics::GlContext,
-        #[cfg(not(target_os = "android"))] cli_args: CliArgs,
+        #[cfg(not(target_os = "android"))] settings: Settings,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         // Seems better than souphttpsrc
@@ -208,10 +208,10 @@ impl Application {
         let (updates_tx, _) = broadcast::channel(10);
 
         #[cfg(not(target_os = "android"))]
-        let mdns = mdns::start_daemon(&msg_tx, &cli_args)?;
+        let mdns = mdns::start_daemon(&msg_tx, &settings)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
-            !cli_args.no_google_cast
+            !settings.cli.no_google_cast
         } else {
             true
         };
@@ -315,7 +315,7 @@ impl Application {
             update: None,
             gcast_tx,
             #[cfg(not(target_os = "android"))]
-            cli_args,
+            settings,
             window_visible_before_playing: None,
             window_fullscreen_before_playing: None,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -692,7 +692,7 @@ impl Application {
 
         self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
         #[cfg(not(target_os = "android"))]
-        if !self.cli_args.no_fullscreen_player {
+        if !self.settings.cli.no_fullscreen_player {
             // If the window was hidden, it takes some time before it can be fullscreened.
             self.gui.wait_for_is_visible();
             self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
@@ -1231,7 +1231,7 @@ impl Application {
         match event {
             Raop::ConfigAvailable(config) => {
                 let run_raop = if cfg!(not(target_os = "android")) {
-                    !self.cli_args.no_raop
+                    !self.settings.cli.no_raop
                 } else {
                     true
                 };
@@ -1655,7 +1655,7 @@ impl Application {
         tokio::pin!(listener_stream);
 
         #[cfg(all(target_os = "linux", feature = "systray"))]
-        let _tray = if self.cli_args.no_systray {
+        let _tray = if self.settings.cli.no_systray {
             None
         } else {
             use ksni::TrayMethods;
@@ -1670,7 +1670,7 @@ impl Application {
         };
 
         #[cfg(not(target_os = "android"))]
-        if self.cli_args.fullscreen {
+        if self.settings.cli.fullscreen {
             self.gui.set_fullscreen(true);
         }
 

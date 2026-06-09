@@ -12,6 +12,8 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
 
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::{
     collections::HashSet,
     rc::Rc,
@@ -102,6 +104,80 @@ impl GCastUpdateSender {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct DiscoverySettings {
+    /// A regex for excluding network interface names to broadcast to.
+    pub exclude_interfaces: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SettingsFile {
+    pub discovery: Option<DiscoverySettings>,
+}
+
+impl SettingsFile {
+    async fn try_load(cli: &CliArgs) -> Option<Self> {
+        let base_dirs = directories::BaseDirs::new();
+        let paths = [
+            cli.settings_file_path
+                .as_ref()
+                .map(|p| PathBuf::try_from(p).ok())
+                .flatten(),
+            base_dirs
+                .as_ref()
+                .map(|b| b.config_dir().to_path_buf().join("fcast-receiver.toml")),
+            base_dirs.as_ref().map(|b| {
+                b.config_dir()
+                    .to_path_buf()
+                    .join("fcast-receiver")
+                    .join("config.toml")
+            }),
+            #[cfg(target_os = "linux")]
+            Some(PathBuf::from("/etc").join("fcast-receiver.toml")),
+            #[cfg(target_os = "linux")]
+            Some(
+                PathBuf::from("/etc")
+                    .join("fcast-receiver")
+                    .join("config.toml"),
+            ),
+        ];
+
+        for path in paths {
+            let Some(path) = path else {
+                continue;
+            };
+            if !path.exists() {
+                continue;
+            };
+
+            let settings_str = match tokio::fs::read_to_string(&path).await {
+                Ok(s) => s,
+                Err(err) => {
+                    error!(?err, ?path, "Failed to read from file");
+                    continue;
+                }
+            };
+
+            match toml_edit::de::from_str::<SettingsFile>(&settings_str) {
+                Ok(settings) => {
+                    info!(?path, ?settings, "Loaded settings from file");
+                    return Some(settings);
+                }
+                Err(err) => {
+                    error!(
+                        ?err,
+                        ?path,
+                        settings_str,
+                        "Failed to deserialize settings file"
+                    );
+                }
+            }
+        }
+
+        None
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 #[derive(clap::Parser)]
 #[command(name = "FCast Receiver")]
@@ -137,6 +213,9 @@ pub struct CliArgs {
     /// Visualize clipped pixels from tone-mapping
     #[arg(long, default_value_t = false)]
     visualize_hdr_clipping: bool,
+    /// Path to the settings file to use
+    #[arg(long)]
+    settings_file_path: Option<String>,
 }
 
 impl CliArgs {
@@ -147,6 +226,11 @@ impl CliArgs {
             show_clipping: self.visualize_hdr_clipping,
         }
     }
+}
+
+pub struct Settings {
+    pub cli: CliArgs,
+    pub file: Option<SettingsFile>,
 }
 
 /// Run the main app.
@@ -549,6 +633,12 @@ pub fn run<S: VideoSink + 'static>(
 
             *slint_sink_mutex.lock() = Some(slint_sink);
 
+            let settings_file = SettingsFile::try_load(&cli_args).await;
+            let settings = Settings {
+                cli: cli_args,
+                file: settings_file,
+            };
+
             application::Application::new(
                 gui,
                 slint_appsink,
@@ -559,7 +649,7 @@ pub fn run<S: VideoSink + 'static>(
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 gst_gl_contexts,
                 #[cfg(not(target_os = "android"))]
-                cli_args,
+                settings,
             )
             .await
             .unwrap()
