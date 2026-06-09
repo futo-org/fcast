@@ -1,5 +1,5 @@
-buildReceiverDesktopMacosAarch64:
-  stage: receiverExperimental
+build_receiver_desktop_macos_aarch64:
+  stage: receiver_desktop
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
     - macscript
@@ -11,15 +11,15 @@ buildReceiverDesktopMacosAarch64:
   before_script:
     - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
   script:
-    - cirrus run buildReceiverMacosArm64 --artifacts-dir . --env-file .cienv
+    - cirrus run build_receiver_macos_aarch64 --artifacts-dir . --env-file .cienv
   artifacts:
     untracked: false
     when: on_success
     access: all
     expire_in: "3 days"
     paths:
-      - buildReceiverMacosArm64/binary/target/fcast-receiver-*.dmg
-      - buildReceiverMacosArm64/binary/target/fcast-receiver-*.tar.gz
+      - build_receiver_macos_aarch64/binary/target/fcast-receiver-*.dmg
+      - build_receiver_macos_aarch64/binary/target/fcast-receiver-*.tar.gz
   when: manual
 
 variables:
@@ -34,7 +34,7 @@ variables:
   - export PROXMOX_AUTH="PVEAPIToken=${PROXMOX_USER}!${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
 
 provision_windows_vm_receiver:
-  stage: receiverExperimental
+  stage: receiver_windows
   image: alpine:latest
   when: manual
   tags:
@@ -128,7 +128,7 @@ provision_windows_vm_receiver:
       dotenv: provision.env
 
 build_receiver_for_win_x64:
-  stage: receiverExperimental
+  stage: receiver_windows
   image: alpine:latest
   tags:
     - proxmoxshell
@@ -212,11 +212,12 @@ build_receiver_for_win_x64:
     when: on_success
     access: all
     expire_in: "3 days"
+    allow_failure: true
     paths:
       - ./*.msi
 
 cleanup_vm_receiver:
-  stage: receiverExperimental
+  stage: receiver_windows
   image: alpine:latest
   tags:
     - proxmoxshell
