@@ -27,7 +27,7 @@ mod application;
 #[cfg(target_os = "linux")]
 mod dmabuf;
 #[cfg(target_os = "linux")]
-mod egl;
+pub mod egl;
 mod fcast;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;

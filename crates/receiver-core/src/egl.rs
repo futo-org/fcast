@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::{c_char, c_void};
 
 use drm_fourcc::{DrmFormat, DrmFourcc, DrmModifier};
 use tracing::error;
@@ -42,6 +43,56 @@ pub fn get_extensions(egl: &glutin_egl_sys::egl::Egl) -> HashSet<Extension> {
 pub enum EglError {
     #[error("failed to perform query")]
     QueryFailed,
+}
+
+pub fn get_importable_modifiers(fourcc: u32) -> Vec<u64> {
+    ensure_init();
+
+    let display = unsafe { egl_sys::bindings::GetCurrentDisplay() };
+    if display.is_null() {
+        return Vec::new();
+    }
+
+    let mut num = 0i32;
+    let ok = unsafe {
+        egl_sys::bindings::QueryDmaBufModifiersEXT(
+            display,
+            fourcc as i32,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut num,
+        )
+    };
+    if ok != 1 || num == 0 {
+        return Vec::new();
+    }
+
+    let mut mods: Vec<u64> = Vec::with_capacity(num as usize);
+    let mut external: Vec<egl_sys::bindings::types::EGLBoolean> = Vec::with_capacity(num as usize);
+    let ok = unsafe {
+        egl_sys::bindings::QueryDmaBufModifiersEXT(
+            display,
+            fourcc as i32,
+            num,
+            mods.as_mut_ptr(),
+            external.as_mut_ptr(),
+            &mut num,
+        )
+    };
+    if ok != 1 {
+        return Vec::new();
+    }
+    unsafe {
+        mods.set_len(num as usize);
+        external.set_len(num as usize);
+    }
+
+    mods.into_iter()
+        .zip(external)
+        .filter(|&(_, external_only)| external_only == 0)
+        .map(|(modifier, _)| modifier)
+        .collect()
 }
 
 pub fn get_supported_dma_drm_formats(

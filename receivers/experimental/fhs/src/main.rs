@@ -421,7 +421,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
             });
 
             unsafe {
-                fl_wait_for_vsync_finished(self.window.client.client, damage_seq, 3.0);
+                fl_wait_for_vsync_finished(self.window.client.client, damage_seq, 0.15);
             };
         }
 
