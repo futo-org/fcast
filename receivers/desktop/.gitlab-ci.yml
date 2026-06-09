@@ -166,22 +166,20 @@ build_receiver_for_win_x64:
         }
 
         Start-Job -ScriptBlock {
-          git clone --recursive --depth=1 "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
-          cd fcast-receiver-windows-build-deps
-          Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
-        }
-
-        Start-Job -ScriptBlock {
           rustup self update
           rustup install nightly
           rustup default nightly
         }
 
+        git clone --recursive --depth=1 "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
         git clone --recursive --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
 
         Get-Job | Wait-Job
         Get-Job | Receive-Job
         Get-Job | Remove-Job
+
+        cd fcast-receiver-windows-build-deps
+        Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
 
         \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\bin\NASM"
         \$env:PATH += ";C:\Program Files\CMake\bin"
