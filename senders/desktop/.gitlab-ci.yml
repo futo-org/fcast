@@ -11,6 +11,7 @@ buildSenderForMacosArm64:
     untracked: false
     when: on_success
     access: all
+    expire_in: "3 days"
     paths:
       - buildSenderMacosArm64/binary/target/fcast-sender-*.dmg
       - buildSenderMacosArm64/binary/target/fcast-sender-*.tar.gz
@@ -181,6 +182,7 @@ builSenderForWinX64:
     untracked: false
     when: on_success
     access: all
+    expire_in: "3 days"
     paths:
       - ./*.msi
 

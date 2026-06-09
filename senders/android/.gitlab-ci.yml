@@ -53,7 +53,7 @@ build_sender_android:
     untracked: false
     when: on_success
     access: all
-    expire_in: "30 days"
+    expire_in: "3 days"
     paths:
       - senders/android/$ANDROID_VERSION_CODE/fcast-sender-release.apk
   when: manual
