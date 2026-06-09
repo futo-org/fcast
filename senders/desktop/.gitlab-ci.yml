@@ -1,4 +1,4 @@
-buildSenderForMacosArm64:
+build_sender_macos_aarch64:
   stage: senders
   image: ghcr.io/cirruslabs/macos-ventura-xcode@sha256:3380f24929d01a7ac48a554dd242340739387822cf1cb0d96be839ef91b89daf
   tags:
@@ -6,15 +6,15 @@ buildSenderForMacosArm64:
   before_script:
     - env | grep -E '^(CI_|FCAST_|R2_|CLOUDFLARE_|AWS_|CERT_)' > .cienv
   script:
-    - cirrus run buildSenderMacosArm64 --artifacts-dir . --env-file .cienv
+    - cirrus run build_sender_macos_aarch64 --artifacts-dir . --env-file .cienv
   artifacts:
     untracked: false
     when: on_success
     access: all
     expire_in: "3 days"
     paths:
-      - buildSenderMacosArm64/binary/target/fcast-sender-*.dmg
-      - buildSenderMacosArm64/binary/target/fcast-sender-*.tar.gz
+      - build_sender_macos_aarch64/binary/target/fcast-sender-*.dmg
+      - build_sender_macos_aarch64/binary/target/fcast-sender-*.tar.gz
   when: manual
 
 variables:
@@ -29,7 +29,7 @@ variables:
   - export PROXMOX_AUTH="PVEAPIToken=${PROXMOX_USER}!${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
 
 provision_windows_vm:
-  stage: senders
+  stage: sender_windows
   image: alpine:latest
   when: manual
   tags:
@@ -122,12 +122,12 @@ provision_windows_vm:
     reports:
       dotenv: provision.env
 
-builSenderForWinX64:
-  stage: senders
+buil_sender_win_x64:
+  stage: sender_windows
   image: alpine:latest
   tags:
     - proxmoxshell
-  when: manual
+  allow_failure: true
   needs:
     - job: provision_windows_vm
       artifacts: true
@@ -187,15 +187,14 @@ builSenderForWinX64:
       - ./*.msi
 
 cleanup_vm:
-  stage: senders
+  stage: sender_windows
   image: alpine:latest
   tags:
     - proxmoxshell
   needs:
     - job: provision_windows_vm
       artifacts: true
-    - job: builSenderForWinX64
-  when: manual
+    - job: buil_sender_win_x64
   before_script:
     - *proxmox_auth
   script:

@@ -1,12 +1,14 @@
 stages:
   - buildDockerContainers
   - receiverAndroid
-  - receiverExperimental
+  - receiver_desktop
+  - receiver_windows
   - buildWebOSReceiver
   - buildTizenOSReceiver
   - buildSenderSDK
   - testSDK
   - senders
+  - sender_windows
   - website
 
 variables:
