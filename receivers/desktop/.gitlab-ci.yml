@@ -27,7 +27,8 @@ variables:
   PROXMOX_NODE: "green"
   TEMPLATE_VMID: "101"  # Source VM/template ID to clone
   VM_NAME: "ci-runner-${CI_PIPELINE_ID}"
-  CLONE_TYPE: "1"  # 0 = linked, 1 = full
+  # CLONE_TYPE: "1"  # 0 = linked, 1 = full
+  CLONE_TYPE: "0"  # 0 = linked, 1 = full
 
 .proxmox_auth: &proxmox_auth
   # Build auth header for Proxmox API
@@ -180,6 +181,7 @@ build_receiver_for_win_x64:
 
         cd fcast-receiver-windows-build-deps
         Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
+        cd ..
 
         \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\bin\NASM"
         \$env:PATH += ";C:\Program Files\CMake\bin"
