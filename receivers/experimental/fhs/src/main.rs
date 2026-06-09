@@ -12,7 +12,7 @@ use std::{
     ptr::null,
     rc::{Rc, Weak},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -202,19 +202,13 @@ type Job = Box<dyn FnOnce() + Send>;
 struct LoopProxy {
     job_sender: mpsc::Sender<Job>,
     quit_event_loop: Arc<AtomicBool>,
-    client: ClientPtr,
 }
 
 impl LoopProxy {
-    pub fn new(
-        job_sender: mpsc::Sender<Job>,
-        quit_event_loop: Arc<AtomicBool>,
-        client: ClientPtr,
-    ) -> Self {
+    pub fn new(job_sender: mpsc::Sender<Job>, quit_event_loop: Arc<AtomicBool>) -> Self {
         Self {
             job_sender: job_sender,
             quit_event_loop: quit_event_loop,
-            client: client,
         }
     }
 }
@@ -421,7 +415,7 @@ impl slint::platform::Platform for FiatLuxPlatform {
             });
 
             unsafe {
-                fl_wait_for_vsync_finished(self.window.client.client, damage_seq, 3.0);
+                fl_wait_for_vsync_finished(self.window.client.client, damage_seq, 0.15);
             };
         }
 
@@ -432,7 +426,6 @@ impl slint::platform::Platform for FiatLuxPlatform {
         Some(Box::new(LoopProxy::new(
             self.job_sender.clone(),
             self.quit_event_loop.clone(),
-            ClientPtr(self.window.client.client),
         )))
     }
 }
