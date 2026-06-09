@@ -58,8 +58,8 @@ desktop_receiver_task:
     - git lfs pull
     - cd ..
 
-    - sudo installer -pkg deps/gst-1.0-*-universal.pkg -target / &
-    - sudo installer -pkg deps/gst-1.0-devel-*-universal.pkg -target / &
+    - sudo installer -pkg deps/gstreamer-1.0-1.28.3-universal.pkg -target / &
+    - sudo installer -pkg deps/gstreamer-1.0-devel-1.28.3-universal.pkg -target / &
 
     - curl --silent
       "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
