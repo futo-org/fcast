@@ -118,15 +118,41 @@ impl FhsPixmapSink {
                 "no importable (non external_only) modifiers for fourcc {fourcc:#010x}"
             ));
         }
+        debug!(
+            "ensure_target fourcc={fourcc:#010x} ({}x{}) format={:?} egl-importable modifiers={:#018x?}",
+            width, height, format, modifiers
+        );
 
         if self.gbm.is_none() {
             self.gbm = Some(GbmAllocator::new(self.client)?);
         }
-        let bo = self
-            .gbm
-            .as_ref()
-            .unwrap()
-            .create_bo(width, height, fourcc, &modifiers)?;
+        let gbm = self.gbm.as_ref().unwrap();
+        // libplacebo's single-tex dma-buf import only carries plane 0, so multi-plane modifiers
+        // (for example AMD with DCC) fail with EGL_BAD_MATCH.
+        // Probe each modifier in preference order and pick the first that produces a single-plane BO.
+        let mut bo: *mut gbm_bo = ptr::null_mut();
+        for &m in &modifiers {
+            let candidate = match gbm.create_bo(width, height, fourcc, &[m]) {
+                Ok(b) => b,
+                Err(err) => {
+                    debug!("modifier {m:#018x} not allocatable: {err}");
+                    continue;
+                }
+            };
+            let plane_count = unsafe { gbm_bo_get_plane_count(candidate) };
+            if plane_count == 1 {
+                debug!("chosen modifier {m:#018x}");
+                bo = candidate;
+                break;
+            }
+            debug!("skipping multi-plane modifier {m:#018x} (plane_count={plane_count})");
+            unsafe { gbm_bo_destroy(candidate) };
+        }
+        if bo.is_null() {
+            return Err(anyhow!(
+                "no single-plane importable modifier could be allocated for fourcc {fourcc:#010x}"
+            ));
+        }
 
         match self.import_and_register(pl_ctx, bo, fmt, fourcc, width, height, format) {
             Ok(target) => {
@@ -161,6 +187,12 @@ impl FhsPixmapSink {
         if fd < 0 {
             return Err(anyhow!("gbm_bo_get_fd failed"));
         }
+        let plane_count = unsafe { gbm_bo_get_plane_count(bo) };
+        debug!(
+            "import_and_register: fourcc={fourcc:#010x} {width}x{height} format={format:?} stride={stride} offset={offset} modifier={modifier:#018x} plane_count={plane_count}"
+        );
+
+        let fmt_caps = unsafe { (*fmt).caps as u32 };
 
         let mut shared_mem: pl_shared_mem = unsafe { std::mem::zeroed() };
         shared_mem.handle.fd = fd;
@@ -177,8 +209,8 @@ impl FhsPixmapSink {
             sampleable: true,
             renderable: true,
             storable: false,
-            blit_src: false,
-            blit_dst: false,
+            blit_src: fmt_caps & pl_fmt_caps::PL_FMT_CAP_BLITTABLE as u32 != 0,
+            blit_dst: fmt_caps & pl_fmt_caps::PL_FMT_CAP_BLITTABLE as u32 != 0,
             host_writable: false,
             host_readable: false,
             export_handle: 0,
@@ -404,6 +436,7 @@ unsafe extern "C" {
     fn gbm_bo_get_modifier(bo: *mut gbm_bo) -> u64;
     fn gbm_bo_get_stride(bo: *mut gbm_bo) -> u32;
     fn gbm_bo_get_offset(bo: *mut gbm_bo, plane: c_int) -> u32;
+    fn gbm_bo_get_plane_count(bo: *mut gbm_bo) -> c_int;
 }
 
 struct GbmAllocator {
@@ -427,7 +460,10 @@ impl GbmAllocator {
         } else {
             unsafe {
                 let path = (*render_device_path_resp).render_device_path;
-                String::from_raw_parts(path.ptr, path.len as usize, path.len as usize)
+                let slice = std::slice::from_raw_parts(path.ptr, path.len as usize);
+                std::str::from_utf8(slice)
+                    .map_err(|e| anyhow!("invalid utf-8 in render device path: {e}"))?
+                    .to_string()
             }
         };
         unsafe {
