@@ -194,7 +194,7 @@ cleanup_vm:
   needs:
     - job: provision_windows_vm
       artifacts: true
-    - job: builSenderForWinX64
+    - job: buil_sender_win_x64
   before_script:
     - *proxmox_auth
   script:
