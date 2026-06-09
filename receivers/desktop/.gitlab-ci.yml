@@ -132,7 +132,7 @@ build_receiver_for_win_x64:
   image: alpine:latest
   tags:
     - proxmoxshell
-  when: manual
+  allow_failure: true
   needs:
     - job: provision_windows_vm_receiver
       artifacts: true
@@ -212,7 +212,6 @@ build_receiver_for_win_x64:
     when: on_success
     access: all
     expire_in: "3 days"
-    allow_failure: true
     paths:
       - ./*.msi
 
@@ -225,7 +224,6 @@ cleanup_vm_receiver:
     - job: provision_windows_vm_receiver
       artifacts: true
     - job: build_receiver_for_win_x64
-  when: manual
   before_script:
     - *proxmox_auth
   script:
