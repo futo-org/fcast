@@ -340,7 +340,7 @@ impl VideoSink for FhsPixmapSink {
             )
             .map_err(|err| anyhow!("placebo render failed: {err}"))?;
 
-        unsafe { pl_gpu_finish(placebo.gpu()) };
+        unsafe { pl_gpu_flush(placebo.gpu()) };
 
         if is_hdr {
             let need_update = self
