@@ -28,7 +28,8 @@ parking_lot.workspace = true
 image_swizzle.workspace = true
 bytes.workspace = true
 gst-plugin-reqwest = { rev = "06c29061365d9ba19956540da47abf8dffea7d31", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
-gst-plugin-webrtc = { workspace = true, features = [ "static", "whep-client" ] }
+# gst-plugin-webrtc = { workspace = true, features = [ "static", "whep-client" ] }
+gst-plugin-webrtc = { workspace = true, features = [ "static" ] }
 gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true

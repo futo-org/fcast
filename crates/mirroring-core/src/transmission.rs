@@ -18,8 +18,8 @@ use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 const MEGA_BIT: u32 = 1024 * 1024;
 const WHEP_MIN_BITRATE: u32 = MEGA_BIT / 2;
-const WHEP_START_BITRATE: u32 = MEGA_BIT * 4;
-const WHEP_MAX_BITRATE: u32 = MEGA_BIT * 48;
+const WHEP_START_BITRATE: u32 = MEGA_BIT * 8;
+const WHEP_MAX_BITRATE: u32 = MEGA_BIT * 6;
 
 fn addr_to_url_string(addr: IpAddr) -> String {
     match addr {
@@ -388,26 +388,28 @@ fn create_webrtcsink(
     let sink = gstrswebrtc::webrtcsink::BaseWebRTCSink::with_signaller(
         gstrswebrtc::signaller::Signallable::from(signaller),
     );
-    sink.set_property("min-bitrate", WHEP_MIN_BITRATE);
-    sink.set_property("start-bitrate", WHEP_START_BITRATE);
-    sink.set_property("max-bitrate", WHEP_MAX_BITRATE);
+    // sink.set_property("min-bitrate", WHEP_MIN_BITRATE);
+    // sink.set_property("start-bitrate", WHEP_START_BITRATE);
+    // sink.set_property("max-bitrate", WHEP_MAX_BITRATE);
     sink.set_property_from_str("enable-mitigation-modes", "downsampled");
     sink.set_property_from_str("stun-server", ""); // We don't care about internet connections
+    sink.set_property_from_str("congestion-control", "disabled");
     // NOTE: we ask for VP8 only because it's widely available and having few possible formats
     //       reduces the startup time before streaming
-    sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
+    // sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
+    sink.set_property("video-caps", gst::Caps::builder("video/x-h264").build());
 
-    sink.connect("encoder-setup", false, |values| {
-        let encoder = values[3].get::<gst::Element>().unwrap();
-        if let Some(factory) = encoder.factory()
-            && factory.name() == "vp8enc"
-        {
-            encoder.set_property("static-threshold", 100i32);
-            encoder.set_property("max-intra-bitrate", 3500i32);
-        }
+    // sink.connect("encoder-setup", false, |values| {
+    //     let encoder = values[3].get::<gst::Element>().unwrap();
+    //     if let Some(factory) = encoder.factory()
+    //         && factory.name() == "vp8enc"
+    //     {
+    //         encoder.set_property("static-threshold", 100i32);
+    //         // encoder.set_property("max-intra-bitrate", 3500i32);
+    //     }
 
-        Some(false.to_value())
-    });
+    //     Some(false.to_value())
+    // });
 
     Ok(sink)
 }

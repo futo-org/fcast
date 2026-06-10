@@ -38,7 +38,7 @@ gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] 
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
 gst-plugin-rtp = { version = "0.15", features = [ "static" ] }
-gst-plugin-webrtc = { rev = "06c29061365d9ba19956540da47abf8dffea7d31", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
+gst-plugin-webrtc = { rev = "8abc83348da31ca8f7a7c21ff79579ebfe76d717", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
 serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
