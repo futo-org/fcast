@@ -1,18 +1,6 @@
-use anyhow::Result;
-// #[cfg(any(target_os = "macos", target_os = "windows"))]
-// use gst_gl::GLVideoFrameExt;
-use parking_lot::Mutex;
-use smallvec::SmallVec;
-use std::sync::{
-    Arc,
-    atomic::{self, AtomicBool, AtomicU32, Ordering},
-};
-
-use gst::prelude::*;
+use gst::glib;
 use gst_video::prelude::*;
-use tracing::{debug, error};
-
-use crate::fcasttextoverlay::meta_imp::TextFormat;
+use smallvec::SmallVec;
 
 pub enum Resource<T> {
     Eos,
@@ -22,14 +10,13 @@ pub enum Resource<T> {
 }
 
 #[cfg_attr(target_os = "linux", allow(clippy::large_enum_variant))]
-pub enum RawFrameData {
+pub enum FrameData {
     SystemMemory {
         frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
     },
     #[cfg(target_os = "linux")]
     DmaBuf {
         buffer: gst::Buffer,
-        info: gst_video::VideoInfo,
         dma_info: gst_video::VideoInfoDmaDrm,
     },
     #[cfg(target_os = "macos")]
@@ -39,12 +26,12 @@ pub enum RawFrameData {
     },
 }
 
-impl RawFrameData {
+impl FrameData {
     pub fn width(&self) -> u32 {
         match self {
             Self::SystemMemory { frame } => frame.width(),
             #[cfg(target_os = "linux")]
-            Self::DmaBuf { info, .. } => info.width(),
+            Self::DmaBuf { dma_info, .. } => dma_info.width(),
             #[cfg(target_os = "macos")]
             Self::Gl { info, .. } => info.width(),
         }
@@ -54,14 +41,14 @@ impl RawFrameData {
         match self {
             Self::SystemMemory { frame } => frame.height(),
             #[cfg(target_os = "linux")]
-            Self::DmaBuf { info, .. } => info.height(),
+            Self::DmaBuf { dma_info, .. } => dma_info.height(),
             #[cfg(target_os = "macos")]
             Self::Gl { info, .. } => info.height(),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Coordinate {
     pub x: f32,
     pub y: f32,
@@ -76,7 +63,7 @@ impl From<gst_video::VideoMasteringDisplayInfoCoordinate> for Coordinate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct MasteringDisplayInfo {
     /// The xy coordinates of primaries in the CIE 1931 color space.
     ///
@@ -90,7 +77,7 @@ pub struct MasteringDisplayInfo {
     pub min_display_mastering_luminance: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct ContentLightLevel {
     /// The maximum content light level in nits
     pub max_content_light_level: u16,
@@ -98,15 +85,13 @@ pub struct ContentLightLevel {
     pub max_frame_average_light_level: u16,
 }
 
-pub struct RawFrame {
-    pub data: RawFrameData,
+pub struct Frame {
+    pub data: FrameData,
     pub mastering_display_info: Option<MasteringDisplayInfo>,
     pub content_light_level: Option<ContentLightLevel>,
+    pub subtitles: Resource<SmallVec<[String; 3]>>,
+    pub overlays: Resource<SmallVec<[Overlay; 3]>>,
 }
-
-pub type Overlays = Arc<Mutex<Option<Option<SmallVec<[Overlay; 3]>>>>>;
-pub type Subtitles = Arc<Mutex<Option<Option<SmallVec<[String; 3]>>>>>;
-pub type Frame = RawFrame;
 
 #[derive(Debug)]
 pub struct Overlay {
@@ -117,39 +102,22 @@ pub struct Overlay {
     pub render_height: u32,
 }
 
-pub struct SlintOpenGLSink {
-    pub appsink: gst_app::AppSink,
-    next_frame: Arc<Mutex<Option<Frame>>>,
-    next_overlays: Overlays,
-    next_subtitles: Subtitles,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub gst_gl_context: Option<gst_gl::GLContext>,
-    pub is_eos: Arc<AtomicBool>,
-    pub window_width: Arc<AtomicU32>,
-    pub window_height: Arc<AtomicU32>,
-}
+pub mod imp {
+    use std::sync::{
+        Arc, LazyLock,
+        atomic::{self, AtomicBool},
+    };
 
-impl SlintOpenGLSink {
-    pub fn new() -> Result<Self> {
-        let appsink = gst_app::AppSink::builder()
-            .caps(&Self::get_caps())
-            .enable_last_sample(false)
-            .max_buffers(1u32)
-            .property("emit-signals", true)
-            .build();
+    use crate::fcasttextoverlay::meta_imp::TextFormat;
+    use gst::{glib, prelude::*, subclass::prelude::*};
+    use gst_base::{prelude::*, subclass::prelude::*};
+    use gst_video::{prelude::*, subclass::prelude::*};
+    use parking_lot::Mutex;
+    use smallvec::SmallVec;
 
-        Ok(Self {
-            appsink,
-            next_frame: Default::default(),
-            next_overlays: Default::default(),
-            next_subtitles: Default::default(),
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            gst_gl_context: None,
-            is_eos: Arc::new(AtomicBool::new(false)),
-            window_width: Arc::new(AtomicU32::new(0)),
-            window_height: Arc::new(AtomicU32::new(0)),
-        })
-    }
+    use crate::video::Overlay;
+
+    use super::Resource;
 
     fn get_caps() -> gst::Caps {
         let mut caps = gst::Caps::new_empty();
@@ -180,17 +148,9 @@ impl SlintOpenGLSink {
                     gst_allocators::CAPS_FEATURE_MEMORY_DMABUF,
                     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
                 ]),
-                // #[cfg(target_os = "macos")]
-                // gst::CapsFeatures::new([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY]),
-                // #[cfg(target_os = "macos")]
-                // gst::CapsFeatures::new([
-                //     gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY,
-                //     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
-                // ]),
             ] {
                 let mut these_caps = gst_video::VideoCapsBuilder::new()
                     .features(features.iter())
-                    // .pixel_aspect_ratio(gst::Fraction::new(1, 1))
                     .width_range(1..i32::MAX)
                     .height_range(1..i32::MAX);
                 #[cfg(target_os = "linux")]
@@ -200,19 +160,7 @@ impl SlintOpenGLSink {
                     these_caps = these_caps.format_list(formats);
                 }
 
-                #[cfg(target_os = "macos")]
-                if features.contains(gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY) {
-                    these_caps = these_caps.format_list([
-                        gst_video::VideoFormat::Nv12,
-                        gst_video::VideoFormat::Ayuv64,
-                        gst_video::VideoFormat::P01010le,
-                    ]);
-                    // these_caps = these_caps.field("texture-target", "rectangle");
-                } else {
-                    these_caps = these_caps.format_list(formats);
-                }
-
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(not(any(target_os = "linux")))]
                 {
                     these_caps = these_caps.format_list(formats);
                 }
@@ -241,382 +189,422 @@ impl SlintOpenGLSink {
         }
     }
 
-    pub fn video_sink(&self) -> gst::Element {
-        self.appsink.clone().upcast()
+    static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+        gst::DebugCategory::new(
+            "fcastvideosink",
+            gst::DebugColorFlags::empty(),
+            Some("FCast video sink"),
+        )
+    });
+
+    enum VideoInfo {
+        DmaDrm(gst_video::VideoInfoDmaDrm),
+        Normal(gst_video::VideoInfo),
     }
 
-    fn handle_new_sample<F>(
-        sample: gst::Sample,
-        next_frame_ref: &Arc<Mutex<Option<Frame>>>,
-        next_overlays_ref: &Overlays,
-        next_subtitles_ref: &Subtitles,
-        next_frame_available_notifier: &Arc<F>,
-        is_eos: &Arc<AtomicBool>,
-        #[cfg(target_os = "linux")] dma_info: &Arc<Mutex<Option<gst_video::VideoInfoDmaDrm>>>,
-    ) -> Result<gst::FlowSuccess, gst::FlowError>
-    where
-        F: Fn() + Send + Sync + 'static,
-    {
-        is_eos.store(false, atomic::Ordering::Relaxed);
+    #[derive(Clone, Default, Debug, glib::Boxed)]
+    #[boxed_type(name = "FCastDrmFormats")]
+    pub struct DrmFormats(pub Arc<std::collections::HashSet<drm_fourcc::DrmFormat>>);
 
-        #[allow(unused_mut)]
-        let mut buffer = sample.buffer_owned().ok_or(gst::FlowError::Error)?;
-
-        #[cfg(target_os = "macos")]
-        let mut is_gl = false;
-
-        #[cfg(target_os = "macos")]
-        if let Some(context) = (buffer.n_memory() > 0)
-            .then(|| buffer.peek_memory(0))
-            .and_then(|m| m.downcast_memory_ref::<gst_gl::GLBaseMemory>())
-            .map(|m| m.context())
-        {
-            let context = context.clone();
-            if let Some(meta) = buffer.meta::<gst_gl::GLSyncMeta>() {
-                meta.set_sync_point(&context);
-            } else {
-                let buffer = buffer.make_mut();
-                let meta = gst_gl::GLSyncMeta::add(buffer, &context);
-                meta.set_sync_point(&context);
-            }
-            is_gl = true;
-        }
-
-        let Some(caps) = sample.caps() else {
-            error!("Got invalid caps");
-            return Err(gst::FlowError::NotNegotiated);
-        };
-
-        let Some(info) = gst_video::VideoInfo::from_caps(caps).ok() else {
-            error!("Got invalid caps");
-            return Err(gst::FlowError::NotNegotiated);
-        };
-
-        let mastering_display_info = gst_video::VideoMasteringDisplayInfo::from_caps(caps)
-            .map(|mdi| MasteringDisplayInfo {
-                display_primaries: mdi.display_primaries().map(Coordinate::from),
-                white_point: mdi.white_point().into(),
-                max_display_mastering_luminance: mdi.max_display_mastering_luminance(),
-                min_display_mastering_luminance: mdi.min_display_mastering_luminance(),
-            })
-            .ok();
-
-        let content_light_level = gst_video::VideoContentLightLevel::from_caps(caps)
-            .map(|cll| ContentLightLevel {
-                max_content_light_level: cll.max_content_light_level(),
-                max_frame_average_light_level: cll.max_frame_average_light_level(),
-            })
-            .ok();
-
-        // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/video/gtk4/src/sink/frame.rs?ref_type=heads
-        let overlays: SmallVec<[Overlay; 3]> = buffer
-            .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
-            .flat_map(|meta| {
-                meta.overlay()
-                    .iter()
-                    .filter_map(|rect| {
-                        let buffer = rect
-                            .pixels_unscaled_argb(gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA);
-                        let (x, y, render_width, render_height) = rect.render_rectangle();
-
-                        let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
-
-                        if vmeta.format() != gst_video::VideoFormat::Bgra {
-                            return None;
-                        }
-
-                        let info = gst_video::VideoInfo::builder(
-                            vmeta.format(),
-                            vmeta.width(),
-                            vmeta.height(),
-                        )
-                        .build()
-                        .unwrap();
-
-                        let frame =
-                            gst_video::VideoFrame::from_buffer_readable(buffer, &info).ok()?;
-
-                        let Ok(plane) = frame.plane_data(0) else {
-                            return None;
-                        };
-
-                        let mut pix_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-                            frame.width(),
-                            frame.height(),
-                        );
-                        image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
-
-                        Some(Overlay {
-                            pix_buffer,
-                            x,
-                            y,
-                            render_width,
-                            render_height,
-                        })
-                    })
-                    .collect::<SmallVec<[_; 3]>>()
-            })
-            .collect();
-
-        if !overlays.is_empty() {
-            *next_overlays_ref.lock() = Some(Some(overlays));
-        } else {
-            *next_overlays_ref.lock() = None;
-        }
-
-        if let Some(meta) = buffer.meta::<crate::fcasttextoverlay::FCastVideoTextOverlayMeta>() {
-            let (format, text) = meta.get();
-
-            fn split_subs(subs: &str) -> Option<Option<SmallVec<[String; 3]>>> {
-                Some(Some(subs.lines().map(String::from).collect()))
-            }
-
-            match format {
-                TextFormat::Utf8 => *next_subtitles_ref.lock() = split_subs(text),
-                TextFormat::PangoMarkup => match pango::parse_markup(text, '\0') {
-                    Ok((_, text, _)) => *next_subtitles_ref.lock() = split_subs(&text),
-                    Err(err) => error!(?err, "Failed to parse subtitles as pango markup"),
-                },
-            }
-        } else {
-            *next_subtitles_ref.lock() = None;
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let dma_info = dma_info.lock();
-            if let Some(dma_info) = dma_info.as_ref() {
-                let data = RawFrameData::DmaBuf {
-                    buffer,
-                    info,
-                    dma_info: dma_info.clone(),
-                };
-                *next_frame_ref.lock() = Some(RawFrame {
-                    data,
-                    mastering_display_info,
-                    content_light_level,
-                });
-
-                next_frame_available_notifier();
-
-                return Ok(gst::FlowSuccess::Ok);
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        if is_gl {
-            let data = RawFrameData::Gl { buffer, info };
-            *next_frame_ref.lock() = Some(RawFrame {
-                data,
-                mastering_display_info,
-                content_light_level,
-            });
-            return Ok(gst::FlowSuccess::Ok);
-        }
-
-        match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
-            Ok(frame) => {
-                let data = RawFrameData::SystemMemory { frame };
-                *next_frame_ref.lock() = Some(RawFrame {
-                    data,
-                    mastering_display_info,
-                    content_light_level,
-                });
-            }
-            Err(err) => {
-                error!(?err, "Failed to create video frame");
-            }
-        }
-
-        next_frame_available_notifier();
-
-        Ok(gst::FlowSuccess::Ok)
+    #[derive(Clone, Debug, glib::Boxed)]
+    #[boxed_type(name = "FCastWindowResolution")]
+    pub struct WindowResolution {
+        pub width: u32,
+        pub height: u32,
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn set_drm_formats(
-        &mut self,
-        drm_formats: &std::collections::HashSet<drm_fourcc::DrmFormat>,
-    ) {
-        let mut caps = Self::get_caps();
-        #[cfg(target_os = "linux")]
-        Self::add_drm_formats_to_caps(&mut caps, drm_formats);
-        self.appsink.set_caps(Some(&caps));
+    #[derive(Clone, Debug, Default, glib::Boxed)]
+    #[boxed_type(name = "FCastAtomicBoolBox")]
+    pub struct AtomicBoolBox(pub Arc<AtomicBool>);
+
+    /// When the inner option is `None` the sink EOS.
+    #[derive(Clone, Default, glib::Boxed)]
+    #[boxed_type(name = "FCastVideoPayloadHandle")]
+    pub struct VideoPayloadHandle(pub Arc<Mutex<Option<Option<super::Frame>>>>);
+
+    #[derive(Default)]
+    struct Config {
+        video_info: Option<VideoInfo>,
+        mastering_display_info: Option<super::MasteringDisplayInfo>,
+        content_light_level: Option<super::ContentLightLevel>,
+        has_overlay: bool,
     }
 
-    pub fn connect<F>(&mut self, next_frame_available_notifier: F) -> Result<()>
-    where
-        F: Fn() + Send + Sync + 'static,
-    {
-        debug!("Creating connection between UI and sink");
+    #[derive(Default)]
+    pub struct FSink {
+        config: Mutex<Config>,
+        cached_caps: Mutex<Option<gst::Caps>>,
+        window_resolution: Mutex<Option<WindowResolution>>,
+        window_resized: AtomicBool,
+        is_eos: AtomicBoolBox,
+        payload_handle: VideoPayloadHandle,
+    }
 
-        let next_frame_ref = Arc::clone(&self.next_frame);
-        let next_frame_available_notifier = Arc::new(next_frame_available_notifier);
-        let is_eos_ref = Arc::clone(&self.is_eos);
-        let next_overlays_ref = Arc::clone(&self.next_overlays);
-        let next_subtitles_ref = Arc::clone(&self.next_subtitles);
-        let window_width = Arc::clone(&self.window_width);
-        let window_height = Arc::clone(&self.window_height);
-        #[cfg(target_os = "linux")]
-        let dma_info = Arc::new(Mutex::new(None::<gst_video::VideoInfoDmaDrm>));
-        // TODO: create an element instead of using an appsink which has more boilerplate at this point
-        self.appsink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .propose_allocation(move |_, allocation| {
-                    allocation.add_allocation_meta::<gst_video::VideoMeta>(None);
+    #[glib::object_subclass]
+    impl ObjectSubclass for FSink {
+        const NAME: &'static str = "FCastVideoSink";
+        type Type = super::FSink;
+        type ParentType = gst_video::VideoSink;
+    }
 
-                    let width = window_width.load(Ordering::Relaxed);
-                    let height = window_height.load(Ordering::Relaxed);
-                    debug!(
-                        width,
-                        height, "Setting window width and height for overlay meta"
-                    );
-
-                    let overlay_meta = if width > 0 && height > 0 {
-                        Some(
-                            gst::Structure::builder("GstVideoOverlayCompositionMeta")
-                                .field("width", width)
-                                .field("height", height)
-                                .build(),
-                        )
-                    } else {
-                        None
-                    };
-
-                    allocation.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(
-                        overlay_meta.as_deref(),
-                    );
-
-                    true
-                })
-                .new_event({
+    impl ObjectImpl for FSink {
+        fn properties() -> &'static [glib::ParamSpec] {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+                vec![
                     #[cfg(target_os = "linux")]
-                    let dma_info = Arc::clone(&dma_info);
-                    #[allow(unused_variables)]
-                    move |appsink| {
-                        #[cfg(target_os = "linux")]
-                        {
-                            let obj = appsink.pull_object().unwrap();
-                            if let Some(event) = obj.downcast_ref::<gst::Event>()
-                                && let gst::EventView::Caps(event) = event.view()
-                            {
-                                *dma_info.lock() =
-                                    gst_video::VideoInfoDmaDrm::from_caps(event.caps()).ok();
+                    glib::ParamSpecBoxed::builder::<DrmFormats>("drm-formats")
+                        .nick("DRM formats")
+                        .write_only()
+                        .build(),
+                    glib::ParamSpecBoxed::builder::<WindowResolution>("window-resolution")
+                        .nick("Window resolution")
+                        .write_only()
+                        .build(),
+                    glib::ParamSpecBoxed::builder::<AtomicBoolBox>("is-eos")
+                        .nick("Is end of stream")
+                        .read_only()
+                        .build(),
+                    glib::ParamSpecBoxed::builder::<VideoPayloadHandle>("payload-handle")
+                        .nick("Payload handle")
+                        .read_only()
+                        .build(),
+                ]
+            });
+
+            PROPERTIES.as_ref()
+        }
+
+        fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            match pspec.name() {
+                "is-eos" => self.is_eos.to_value(),
+                "payload-handle" => self.payload_handle.to_value(),
+                _ => unreachable!(),
+            }
+        }
+
+        fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            match pspec.name() {
+                #[cfg(target_os = "linux")]
+                "drm-formats" => {
+                    let formats: DrmFormats = value.get().expect("type checked upstream");
+                    let mut caps = get_caps();
+                    add_drm_formats_to_caps(&mut caps, &formats.0);
+                    *self.cached_caps.lock() = Some(caps);
+                }
+                "window-resolution" => {
+                    let resolution: WindowResolution = value.get().expect("type checked upstream");
+                    *self.window_resolution.lock() = Some(resolution);
+                    self.window_resized.store(true, atomic::Ordering::SeqCst);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        fn signals() -> &'static [glib::subclass::Signal] {
+            static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> =
+                LazyLock::new(|| vec![glib::subclass::Signal::builder("frame-available").build()]);
+
+            SIGNALS.as_ref()
+        }
+    }
+
+    impl GstObjectImpl for FSink {}
+
+    impl ElementImpl for FSink {
+        fn pad_templates() -> &'static [gst::PadTemplate] {
+            static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
+                vec![
+                    gst::PadTemplate::new(
+                        "sink",
+                        gst::PadDirection::Sink,
+                        gst::PadPresence::Always,
+                        &get_caps(),
+                    )
+                    .unwrap(),
+                ]
+            });
+
+            PAD_TEMPLATES.as_ref()
+        }
+
+        fn change_state(
+            &self,
+            transition: gst::StateChange,
+        ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+            match transition {
+                gst::StateChange::PausedToReady => {
+                    let mut config = self.config.lock();
+                    config.video_info.take();
+                    config.mastering_display_info.take();
+                    config.content_light_level.take();
+                    config.has_overlay = false;
+                    self.is_eos.0.store(true, atomic::Ordering::Relaxed);
+                    self.payload_handle.0.lock().replace(None);
+                    self.obj().emit_by_name::<()>("frame-available", &[]);
+                }
+                _ => (),
+            }
+
+            self.parent_change_state(transition)
+        }
+    }
+
+    impl BaseSinkImpl for FSink {
+        fn caps(&self, filter: Option<&gst::Caps>) -> Option<gst::Caps> {
+            let cached_caps = self.cached_caps.lock().clone();
+            let mut tmp_caps = cached_caps.unwrap_or_else(|| {
+                let templ = Self::pad_templates();
+                templ[0].caps().clone()
+            });
+
+            gst::debug!(CAT, imp = self, "Advertising our own caps: {tmp_caps:?}");
+
+            if let Some(filter_caps) = filter {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Intersecting with filter caps: {filter_caps:?}",
+                );
+
+                tmp_caps =
+                    filter_caps.intersect_with_mode(&tmp_caps, gst::CapsIntersectMode::First);
+            };
+
+            gst::debug!(CAT, imp = self, "Returning caps: {tmp_caps:?}");
+            Some(tmp_caps)
+        }
+
+        fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
+            let mut config = self.config.lock();
+
+            #[cfg(target_os = "linux")]
+            {
+                config.video_info = gst_video::VideoInfoDmaDrm::from_caps(caps)
+                    .map(VideoInfo::DmaDrm)
+                    .ok();
+            }
+
+            if config.video_info.is_none() {
+                config.video_info = Some(
+                    gst_video::VideoInfo::from_caps(caps)
+                        .map(VideoInfo::Normal)
+                        .map_err(|_| gst::loggable_error!(CAT, "Invalid caps"))?,
+                );
+            }
+
+            config.mastering_display_info = gst_video::VideoMasteringDisplayInfo::from_caps(caps)
+                .map(|mdi| super::MasteringDisplayInfo {
+                    display_primaries: mdi.display_primaries().map(super::Coordinate::from),
+                    white_point: mdi.white_point().into(),
+                    max_display_mastering_luminance: mdi.max_display_mastering_luminance(),
+                    min_display_mastering_luminance: mdi.min_display_mastering_luminance(),
+                })
+                .ok();
+
+            config.content_light_level = gst_video::VideoContentLightLevel::from_caps(caps)
+                .map(|cll| super::ContentLightLevel {
+                    max_content_light_level: cll.max_content_light_level(),
+                    max_frame_average_light_level: cll.max_frame_average_light_level(),
+                })
+                .ok();
+
+            config.has_overlay = caps
+                .features(0)
+                .unwrap()
+                .contains(gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
+
+            Ok(())
+        }
+
+        fn propose_allocation(
+            &self,
+            query: &mut gst::query::Allocation,
+        ) -> Result<(), gst::LoggableError> {
+            query.add_allocation_meta::<gst_video::VideoMeta>(None);
+
+            let overlay_meta = if let Some(win) = self.window_resolution.lock().as_ref() {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Setting window width and height for overlay meta {win:?}"
+                );
+                Some(
+                    gst::Structure::builder("GstVideoOverlayCompositionMeta")
+                        .field("width", win.width)
+                        .field("height", win.height)
+                        .build(),
+                )
+            } else {
+                None
+            };
+
+            query.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(
+                overlay_meta.as_deref(),
+            );
+
+            Ok(())
+        }
+
+        // TODO: handle rotation?
+        //       https://github.com/GStreamer/gst-plugins-rs/blob/e5ff6f0a272e179d4472acf037273367c6e8511b/video/gtk4/src/sink/imp.rs#L759
+        // fn event(&self, event: gst::Event) -> bool {
+        //     match event.view() {
+        //         gst::EventView::StreamStart(_) => {}
+        //         _ => (),
+        //     }
+
+        //     self.parent_event(event)
+        // }
+    }
+
+    impl VideoSinkImpl for FSink {
+        fn show_frame(&self, buffer: &gst::Buffer) -> Result<gst::FlowSuccess, gst::FlowError> {
+            let reconfigure = self.window_resized.swap(false, atomic::Ordering::SeqCst)
+                && self.config.lock().has_overlay;
+            if reconfigure {
+                gst::info!(CAT, imp = self, "Window size changed, needs to reconfigure");
+                let obj = self.obj();
+                obj.sink_pad()
+                    .push_event(gst::event::Reconfigure::builder().build());
+            }
+
+            if buffer.n_memory() == 0 {
+                gst::trace!(
+                    CAT,
+                    imp = self,
+                    "Empty buffer, nothing to render. Returning."
+                );
+                return Ok(gst::FlowSuccess::Ok);
+            };
+
+            self.is_eos.0.store(false, atomic::Ordering::Relaxed);
+            let buffer = buffer.clone();
+
+            let overlays: SmallVec<[Overlay; 3]> = buffer
+                .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
+                .flat_map(|meta| {
+                    meta.overlay()
+                        .iter()
+                        .filter_map(|rect| {
+                            let buffer = rect.pixels_unscaled_argb(
+                                gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA,
+                            );
+                            let (x, y, render_width, render_height) = rect.render_rectangle();
+
+                            let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
+
+                            if vmeta.format() != gst_video::VideoFormat::Bgra {
+                                return None;
+                            }
+
+                            let info = gst_video::VideoInfo::builder(
+                                vmeta.format(),
+                                vmeta.width(),
+                                vmeta.height(),
+                            )
+                            .build()
+                            .unwrap();
+
+                            let frame =
+                                gst_video::VideoFrame::from_buffer_readable(buffer, &info).ok()?;
+
+                            let Ok(plane) = frame.plane_data(0) else {
+                                return None;
+                            };
+
+                            let mut pix_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                                frame.width(),
+                                frame.height(),
+                            );
+                            image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
+
+                            Some(Overlay {
+                                pix_buffer,
+                                x,
+                                y,
+                                render_width,
+                                render_height,
+                            })
+                        })
+                        .collect::<SmallVec<[_; 3]>>()
+                })
+                .collect();
+            let overlays = if !overlays.is_empty() {
+                Resource::New(overlays)
+            } else {
+                Resource::Cleared
+            };
+
+            let mut subtitles = Resource::Cleared;
+            if let Some(meta) = buffer.meta::<crate::fcasttextoverlay::FCastVideoTextOverlayMeta>()
+            {
+                let (format, text) = meta.get();
+
+                fn split_subs(subs: &str) -> SmallVec<[String; 3]> {
+                    subs.lines().map(String::from).collect()
+                }
+
+                match format {
+                    TextFormat::Utf8 => subtitles = Resource::New(split_subs(text)),
+                    TextFormat::PangoMarkup => match pango::parse_markup(text, '\0') {
+                        Ok((_, text, _)) => subtitles = Resource::New(split_subs(&text)),
+                        Err(err) => gst::error!(
+                            CAT,
+                            imp = self,
+                            "Failed to parse subtitles as pango markup err={err:?}"
+                        ),
+                    },
+                }
+            }
+
+            let config = self.config.lock();
+            let mdi = config.mastering_display_info;
+            let cll = config.content_light_level;
+            if let Some(video_info) = config.video_info.as_ref() {
+                let data = match video_info {
+                    VideoInfo::DmaDrm(dma_info) => super::FrameData::DmaBuf {
+                        buffer,
+                        dma_info: dma_info.clone(),
+                    },
+                    VideoInfo::Normal(info) => {
+                        match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
+                            Ok(frame) => super::FrameData::SystemMemory { frame },
+                            Err(err) => {
+                                gst::error!(
+                                    CAT,
+                                    imp = self,
+                                    "Failed to create video frame: {err:?}"
+                                );
+                                return Err(gst::FlowError::Flushing);
                             }
                         }
-
-                        false
                     }
-                })
-                .new_preroll({
-                    let next_frame_ref = Arc::clone(&next_frame_ref);
-                    let next_overlays_ref = Arc::clone(&self.next_overlays);
-                    let next_subtitles_ref = Arc::clone(&self.next_subtitles);
-                    let next_frame_available_notifier = Arc::clone(&next_frame_available_notifier);
-                    let is_eos = Arc::clone(&is_eos_ref);
-                    #[cfg(target_os = "linux")]
-                    let dma_info = Arc::clone(&dma_info);
-                    move |appsink| {
-                        let sample = appsink
-                            .pull_preroll()
-                            .map_err(|_| gst::FlowError::Flushing)?;
-                        if !is_eos.load(atomic::Ordering::Relaxed) {
-                            Self::handle_new_sample(
-                                sample,
-                                &next_frame_ref,
-                                &next_overlays_ref,
-                                &next_subtitles_ref,
-                                &next_frame_available_notifier,
-                                &is_eos,
-                                #[cfg(target_os = "linux")]
-                                &dma_info,
-                            )
-                        } else {
-                            Ok(gst::FlowSuccess::Ok)
-                        }
-                    }
-                })
-                .new_sample({
-                    let is_eos = Arc::clone(&is_eos_ref);
-                    #[cfg(target_os = "linux")]
-                    let dma_info = Arc::clone(&dma_info);
-                    move |appsink| {
-                        let sample = appsink
-                            .pull_sample()
-                            .map_err(|_| gst::FlowError::Flushing)?;
-                        Self::handle_new_sample(
-                            sample,
-                            &next_frame_ref,
-                            &next_overlays_ref,
-                            &next_subtitles_ref,
-                            &next_frame_available_notifier,
-                            &is_eos,
-                            #[cfg(target_os = "linux")]
-                            &dma_info,
-                        )
-                    }
-                })
-                .eos(move |_| {
-                    is_eos_ref.store(true, atomic::Ordering::Relaxed);
-                })
-                .build(),
-        );
+                };
 
-        Ok(())
-    }
+                let frame = super::Frame {
+                    data,
+                    mastering_display_info: mdi,
+                    content_light_level: cll,
+                    subtitles,
+                    overlays,
+                };
 
-    pub fn fetch_next_frame(&self) -> Resource<Frame> {
-        if self.is_eos.load(atomic::Ordering::Relaxed) {
-            return Resource::Eos;
-        }
-
-        if let Some(frame) = self.next_frame.lock().take() {
-            #[cfg(target_os = "macos")]
-            if let RawFrameData::Gl { buffer, .. } = &frame.data {
-                let sync_meta = buffer.meta::<gst_gl::GLSyncMeta>().unwrap();
-                sync_meta.wait(self.gst_gl_context.as_ref().unwrap());
+                self.payload_handle.0.lock().replace(Some(frame));
+                self.obj().emit_by_name::<()>("frame-available", &[]);
             }
 
-            Resource::New(frame)
-        } else {
-            Resource::Unchanged
+            Ok(gst::FlowSuccess::Ok)
         }
     }
+}
 
-    pub fn fetch_next_overlays(&self) -> Resource<SmallVec<[Overlay; 3]>> {
-        if self.is_eos.load(atomic::Ordering::Relaxed) {
-            return Resource::Eos;
-        }
+glib::wrapper! {
+    pub struct FSink(ObjectSubclass<imp::FSink>)
+        @extends gst_video::VideoSink, gst_base::BaseSink, gst::Element, gst::Object;
+}
 
-        match self.next_overlays.lock().as_mut() {
-            Some(overlays) => match overlays.take() {
-                Some(o) => Resource::New(o),
-                None => Resource::Unchanged,
-            },
-            None => Resource::Cleared,
-        }
-    }
-
-    pub fn fetch_next_subtitles(&self) -> Resource<SmallVec<[String; 3]>> {
-        if self.is_eos.load(atomic::Ordering::Relaxed) {
-            return Resource::Eos;
-        }
-
-        match self.next_subtitles.lock().as_mut() {
-            Some(subs) => match subs.take() {
-                Some(s) => Resource::New(s),
-                None => Resource::Unchanged,
-            },
-            None => Resource::Cleared,
-        }
-    }
-
-    pub fn release_state(&mut self) {
-        debug!("Releasing state");
-        self.next_frame.lock().take();
-        self.next_overlays.lock().take();
-        self.next_subtitles.lock().take();
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        self.gst_gl_context.take();
+impl FSink {
+    pub fn new() -> Self {
+        gst::Object::builder().build().unwrap()
     }
 }

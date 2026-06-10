@@ -533,18 +533,16 @@ impl PlaceboContext {
     pub fn render_frame(
         &mut self,
         swframe: &libplacebo::SwapchainFrame,
-        frame: &crate::video::RawFrame,
+        frame: &crate::video::Frame,
     ) -> std::result::Result<(), RenderFrameError> {
         match &frame.data {
-            crate::video::RawFrameData::SystemMemory { frame } => {
-                self.render_sysmem(swframe, &frame)
-            }
+            crate::video::FrameData::SystemMemory { frame } => self.render_sysmem(swframe, &frame),
             #[cfg(target_os = "linux")]
-            crate::video::RawFrameData::DmaBuf {
+            crate::video::FrameData::DmaBuf {
                 buffer, dma_info, ..
             } => self.render_dmabuf(swframe, &buffer, &dma_info),
             #[cfg(target_os = "macos")]
-            crate::video::RawFrameData::Gl { .. } => Ok(()),
+            crate::video::FrameData::Gl { .. } => Ok(()),
         }
     }
 
@@ -555,7 +553,7 @@ impl PlaceboContext {
         destination_width: i32,
         destination_height: i32,
         destination_color: pl_color_space,
-        source_frame: &crate::video::RawFrame,
+        source_frame: &crate::video::Frame,
     ) -> std::result::Result<(), RenderFrameError> {
         let mut destination_frame: pl_frame = unsafe { std::mem::zeroed() };
         destination_frame.num_planes = 1;
@@ -583,10 +581,10 @@ impl PlaceboContext {
         };
 
         match &source_frame.data {
-            crate::video::RawFrameData::SystemMemory { frame } => {
+            crate::video::FrameData::SystemMemory { frame } => {
                 self.render_sysmem_to_frame(&mut destination_frame, &frame)
             }
-            crate::video::RawFrameData::DmaBuf {
+            crate::video::FrameData::DmaBuf {
                 buffer, dma_info, ..
             } => self.render_dmabuf_to_frame(&mut destination_frame, &buffer, &dma_info),
         }

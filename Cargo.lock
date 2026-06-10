@@ -7855,7 +7855,6 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
- "gstreamer-gl",
  "gstreamer-gl-egl",
  "gstreamer-tag",
  "gstreamer-video",
