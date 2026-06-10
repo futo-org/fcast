@@ -2,8 +2,6 @@ use anyhow::Result;
 use fcast::SessionId;
 use fcast_protocol::SetVolumeMessage;
 use gst::prelude::*;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use gst_gl::prelude::*;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
@@ -12,14 +10,10 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
 
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
-use std::{
-    collections::HashSet,
-    rc::Rc,
-    sync::{Arc, atomic::Ordering},
-    time::Duration,
-};
+use std::{rc::Rc, sync::Arc, time::Duration};
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
 
 #[cfg(not(target_os = "android"))]
 pub use clap;
@@ -34,8 +28,6 @@ mod fcast;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod gcast;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-mod graphics;
 mod gstreamer;
 mod gui;
 mod image;
@@ -67,8 +59,6 @@ pub use video_sink::{SwapchainSink, VideoSink};
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use graphics::GraphicsContext;
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
@@ -246,6 +236,8 @@ pub fn run<S: VideoSink + 'static>(
 
     let start = std::time::Instant::now();
 
+    let ui = MainWindow::new()?;
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(num_cpus::get().min(4))
@@ -270,9 +262,6 @@ pub fn run<S: VideoSink + 'static>(
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let gst_gl_contexts = graphics::GlContext::new();
-
     let (msg_tx, event_rx) = mpsc::unbounded_channel::<Message>();
     let msg_tx = MessageSender::new(msg_tx);
     let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
@@ -289,9 +278,7 @@ pub fn run<S: VideoSink + 'static>(
         }
     });
 
-    let slint_sink_mutex = Arc::new(parking_lot::Mutex::new(None::<video::SlintOpenGLSink>));
-
-    let ui = MainWindow::new()?;
+    let sink_mutex = Arc::new(parking_lot::Mutex::new(None::<video::FSink>));
 
     let bridge = ui.global::<Bridge>();
 
@@ -306,32 +293,24 @@ pub fn run<S: VideoSink + 'static>(
     let (renderer_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
     ui.window().set_rendering_notifier({
         let ui_weak = ui.as_weak();
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let gst_gl_contexts = gst_gl_contexts.clone();
         #[cfg(not(target_os = "android"))]
         let mut start_fullscreen = Some(cli_args.fullscreen);
         let mut prev_size = (0, 0);
-        let mut slint_sink = None;
-        let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let mut graphics_context = GraphicsContext::None;
+        let mut sink = None;
         let msg_tx = msg_tx.clone();
         let mut renderer = None;
         let mut pl_context = None;
-        let mut cached_frame = None;
         #[cfg(target_os = "linux")]
         let mut drm_formats = HashSet::new();
         let gui_is_visible = gui_is_visible.clone();
         let mut video_sink = video_sink;
+        let sink_mutex = Arc::clone(&sink_mutex);
+        let mut payload_handle = None::<video::imp::VideoPayloadHandle>;
+        let mut cached_frame = None;
         move |state, graphics_api| match state {
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
                 let ui_weak = ui_weak.clone();
-
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                {
-                    graphics_context = GraphicsContext::from_slint(graphics_api).unwrap();
-                }
 
                 #[cfg(not(target_os = "android"))]
                 if let Some(fullscreen) = start_fullscreen.take() {
@@ -446,47 +425,44 @@ pub fn run<S: VideoSink + 'static>(
                     }
                 }
 
-                let Some(slint_sink) = slint_sink.as_mut() else {
-                    #[allow(unused_mut)]
-                    if let Some(mut sink) = slint_sink_mutex.lock().take() {
+                let Some(sink) = sink.as_mut() else {
+                    if let Some(new_sink) = sink_mutex.lock().take() {
                         #[cfg(target_os = "linux")]
-                        sink.set_drm_formats(&drm_formats);
-                        slint_sink = Some(sink);
+                        new_sink.set_property(
+                            "drm-formats",
+                            video::imp::DrmFormats(Arc::new(drm_formats.clone())),
+                        );
+                        payload_handle = Some(new_sink.property("payload-handle"));
+                        sink = Some(new_sink);
                     }
                     return;
                 };
 
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                if let Some((gst_gl_context, gst_gl_display)) = graphics_context.get_gst_contexts()
-                {
-                    gst_gl_context
-                        .activate(true)
-                        .expect("could not activate GStreamer GL context");
-                    gst_gl_context
-                        .fill_info()
-                        .expect("failed to fill GL info for wrapped context");
-
-                    slint_sink.gst_gl_context = Some(gst_gl_context.clone());
-
-                    gst_gl_contexts.set_contexts(gst_gl_display, gst_gl_context);
-                }
-
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                {
-                    graphics_context = GraphicsContext::Initialized;
+                if let Some(payload_handle) = &payload_handle {
+                    if let Some(pay) = payload_handle.0.lock().take() {
+                        match pay {
+                            Some(frame) => cached_frame = Some(frame),
+                            // EOS
+                            None => {
+                                cached_frame = None;
+                                bridge.set_overlays(slint::ModelRc::default());
+                                bridge.set_subtitles(slint::ModelRc::default());
+                            }
+                        }
+                    }
                 }
 
                 let new_size = ui.window().size();
                 let new_size = (new_size.width, new_size.height);
                 if new_size != prev_size {
-                    slint_sink.window_width.store(new_size.0, Ordering::Relaxed);
-                    slint_sink
-                        .window_height
-                        .store(new_size.1, Ordering::Relaxed);
+                    sink.set_property(
+                        "window-resolution",
+                        video::imp::WindowResolution {
+                            width: new_size.0,
+                            height: new_size.1,
+                        },
+                    );
                     prev_size = new_size;
-                    if let Some(sink_pad) = slint_sink.appsink.static_pad("sink") {
-                        sink_pad.push_event(gst::event::Reconfigure::builder().build());
-                    }
                 }
 
                 if let Some(renderer) = renderer.as_mut() {
@@ -503,61 +479,52 @@ pub fn run<S: VideoSink + 'static>(
                     }
                 }
 
-                match slint_sink.fetch_next_frame() {
-                    video::Resource::Eos | video::Resource::Cleared => {
-                        if cached_frame.is_some()
-                            && let Some(placebo) = pl_context.as_mut()
+                if let Some(frame) = cached_frame.as_mut() {
+                    bridge.set_video_frame_width(frame.data.width() as i32);
+                    bridge.set_video_frame_height(frame.data.height() as i32);
+                    if let Some(placebo) = pl_context.as_mut()
+                        && let Some(renderer) = renderer.as_ref()
+                    {
+                        if let Err(err) = video_sink.render(placebo, &renderer.gl, frame, prev_size)
                         {
-                            video_sink.flush_cache(placebo);
+                            error!(?err, "video sink render failed");
                         }
-                        cached_frame.take();
                     }
-                    video::Resource::Unchanged => (),
-                    video::Resource::New(frame) => {
-                        bridge.set_video_frame_width(frame.data.width() as i32);
-                        bridge.set_video_frame_height(frame.data.height() as i32);
-                        cached_frame = Some(frame);
-                    }
-                }
 
-                match slint_sink.fetch_next_overlays() {
-                    video::Resource::Eos | video::Resource::Cleared => {
-                        bridge.set_overlays(slint::ModelRc::default());
+                    let overlays =
+                        std::mem::replace(&mut frame.overlays, video::Resource::Unchanged);
+                    match overlays {
+                        video::Resource::Eos | video::Resource::Cleared => {
+                            bridge.set_overlays(slint::ModelRc::default());
+                        }
+                        video::Resource::Unchanged => (),
+                        video::Resource::New(overlays) => {
+                            let overlays: VecModel<UiSubOverlay> = overlays
+                                .into_iter()
+                                .map(|overlay| UiSubOverlay {
+                                    img: slint::Image::from_rgba8(overlay.pix_buffer),
+                                    x: overlay.x as f32,
+                                    y: overlay.y as f32,
+                                    render_width: overlay.render_width as f32,
+                                    render_height: overlay.render_height as f32,
+                                })
+                                .collect();
+                            bridge.set_overlays(Rc::new(overlays).into());
+                        }
                     }
-                    video::Resource::Unchanged => (),
-                    video::Resource::New(overlays) => {
-                        let overlays: VecModel<UiSubOverlay> = overlays
-                            .into_iter()
-                            .map(|overlay| UiSubOverlay {
-                                img: slint::Image::from_rgba8(overlay.pix_buffer),
-                                x: overlay.x as f32,
-                                y: overlay.y as f32,
-                                render_width: overlay.render_width as f32,
-                                render_height: overlay.render_height as f32,
-                            })
-                            .collect();
-                        bridge.set_overlays(Rc::new(overlays).into());
-                    }
-                }
 
-                match slint_sink.fetch_next_subtitles() {
-                    video::Resource::Eos | video::Resource::Cleared => {
-                        bridge.set_subtitles(slint::ModelRc::default());
-                    }
-                    video::Resource::Unchanged => (),
-                    video::Resource::New(subs) => {
-                        let subs: VecModel<slint::SharedString> =
-                            subs.into_iter().map(|s| s.to_shared_string()).collect();
-                        bridge.set_subtitles(Rc::new(subs).into());
-                    }
-                }
-
-                if let Some(frame) = cached_frame.as_ref()
-                    && let Some(placebo) = pl_context.as_mut()
-                    && let Some(renderer) = renderer.as_ref()
-                {
-                    if let Err(err) = video_sink.render(placebo, &renderer.gl, frame, prev_size) {
-                        error!(?err, "video sink render failed");
+                    let subtitles =
+                        std::mem::replace(&mut frame.subtitles, video::Resource::Unchanged);
+                    match subtitles {
+                        video::Resource::Eos | video::Resource::Cleared => {
+                            bridge.set_subtitles(slint::ModelRc::default());
+                        }
+                        video::Resource::Unchanged => (),
+                        video::Resource::New(subs) => {
+                            let subs: VecModel<slint::SharedString> =
+                                subs.into_iter().map(|s| s.to_shared_string()).collect();
+                            bridge.set_subtitles(Rc::new(subs).into());
+                        }
                     }
                 }
             }
@@ -574,12 +541,7 @@ pub fn run<S: VideoSink + 'static>(
                     }
                 }
 
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                gst_gl_contexts.deactivate_and_clear();
-
-                if let Some(sink) = slint_sink.as_mut() {
-                    sink.release_state();
-                }
+                cached_frame.take();
 
                 if let Some(placebo) = pl_context.as_mut() {
                     video_sink.teardown(placebo);
@@ -615,23 +577,23 @@ pub fn run<S: VideoSink + 'static>(
     runtime.spawn({
         let ui_weak = ui.as_weak();
         let msg_tx = msg_tx.clone();
-        let slint_sink_mutex = Arc::clone(&slint_sink_mutex);
         async move {
             gstreamer::init_and_load_plugins();
 
-            let mut slint_sink = video::SlintOpenGLSink::new().unwrap();
-            let slint_appsink = slint_sink.video_sink();
-            let video_sink_is_eos = Arc::clone(&slint_sink.is_eos);
-            let request_redraw_cb = move || {
+            let sink = video::FSink::new();
+            let video_sink_is_eos: video::imp::AtomicBoolBox = sink.property("is-eos");
+            sink.connect("frame-available", false, move |_| {
                 ui_weak
                     .upgrade_in_event_loop(move |ui| {
                         ui.window().request_redraw();
                     })
                     .unwrap();
-            };
-            slint_sink.connect(request_redraw_cb).unwrap();
 
-            *slint_sink_mutex.lock() = Some(slint_sink);
+                None
+            });
+
+            let elem = sink.clone();
+            *sink_mutex.lock() = Some(sink);
 
             let settings_file = SettingsFile::try_load(&cli_args).await;
             let settings = Settings {
@@ -641,13 +603,11 @@ pub fn run<S: VideoSink + 'static>(
 
             application::Application::new(
                 gui,
-                slint_appsink,
+                elem.upcast(),
                 msg_tx,
-                video_sink_is_eos,
+                video_sink_is_eos.0,
                 #[cfg(target_os = "android")]
                 android_app,
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                gst_gl_contexts,
                 #[cfg(not(target_os = "android"))]
                 settings,
             )

@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::ffi::{c_char, c_void};
 
 use drm_fourcc::{DrmFormat, DrmFourcc, DrmModifier};
 use tracing::error;

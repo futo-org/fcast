@@ -1,13 +1,13 @@
 use anyhow::{Result, anyhow};
 
-use crate::{placebo::PlaceboContext, video::RawFrame};
+use crate::{placebo::PlaceboContext, video::Frame};
 
 pub trait VideoSink {
     fn render(
         &mut self,
         placebo: &mut PlaceboContext,
         gl: &glow::Context,
-        frame: &RawFrame,
+        frame: &Frame,
         target_size: (u32, u32),
     ) -> Result<()>;
 
@@ -35,7 +35,7 @@ impl VideoSink for SwapchainSink {
         &mut self,
         placebo: &mut PlaceboContext,
         _gl: &glow::Context,
-        frame: &RawFrame,
+        frame: &Frame,
         target_size: (u32, u32),
     ) -> Result<()> {
         if target_size != self.size {

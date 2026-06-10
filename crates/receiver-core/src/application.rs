@@ -119,8 +119,6 @@ pub struct Application {
     settings: Settings,
     window_visible_before_playing: Option<bool>,
     window_fullscreen_before_playing: Option<bool>,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    gl_context: crate::graphics::GlContext,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
@@ -132,8 +130,6 @@ impl Application {
         appsink: gst::Element,
         msg_tx: MessageSender,
         video_sink_is_eos: Arc<AtomicBool>,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        gl_context: crate::graphics::GlContext,
         #[cfg(not(target_os = "android"))] settings: Settings,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
@@ -157,12 +153,7 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(
-            appsink,
-            msg_tx.clone(),
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            gl_context.clone(),
-        )?;
+        let player = player::Player::new(appsink, msg_tx.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -318,8 +309,6 @@ impl Application {
             settings,
             window_visible_before_playing: None,
             window_fullscreen_before_playing: None,
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            gl_context,
             image_downloader,
             image_decoder,
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(

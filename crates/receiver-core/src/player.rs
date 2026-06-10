@@ -623,12 +623,7 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(
-        video_sink: gst::Element,
-        msg_tx: MessageSender,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        gl_context: crate::graphics::GlContext,
-    ) -> Result<Self> {
+    pub fn new(video_sink: gst::Element, msg_tx: MessageSender) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let playbin = gst::ElementFactory::make("playbin3")
             .property("video-sink", video_sink)
@@ -670,13 +665,7 @@ impl Player {
         let playbin_weak = playbin.downgrade();
         let msg_tx_c = msg_tx.clone();
         bus.set_sync_handler(move |_, msg| {
-            Self::handle_messsage(
-                &playbin_weak,
-                &msg_tx_c,
-                msg,
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                &gl_context,
-            );
+            Self::handle_messsage(&playbin_weak, &msg_tx_c, msg);
             gst::BusSyncReply::Drop
         });
 
@@ -809,25 +798,10 @@ impl Player {
         playbin_weak: &gst::glib::WeakRef<gst::Element>,
         msg_tx: &MessageSender,
         msg: &gst::Message,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        gl_context: &crate::graphics::GlContext,
     ) {
         use gst::MessageView;
 
         let msg = match msg.view() {
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            MessageView::NeedContext(ctx) => {
-                let typ = ctx.context_type();
-                debug!(typ, "Need context");
-                if let Some(element) = msg
-                    .src()
-                    .and_then(|source| source.downcast_ref::<gst::Element>())
-                {
-                    gl_context.handle_need_context_msg(typ, element);
-                }
-
-                return;
-            }
             MessageView::Eos(_) => PlayerEvent::EndOfStream,
             MessageView::Error(error) => PlayerEvent::Error(error.error().message().to_string()),
             MessageView::Warning(warning) => {

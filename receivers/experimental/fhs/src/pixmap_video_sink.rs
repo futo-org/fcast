@@ -13,7 +13,7 @@ use rcore::{
     libplacebo::libplacebo_sys::*,
     placebo::PlaceboContext,
     tracing::{debug, warn},
-    video::{RawFrame, RawFrameData},
+    video::{RawFrame, FrameData},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -523,8 +523,8 @@ impl Drop for GbmAllocator {
 
 fn frame_video_colorimetry(frame: &RawFrame) -> gst_video::VideoColorimetry {
     match &frame.data {
-        RawFrameData::SystemMemory { frame } => frame.info().colorimetry(),
-        RawFrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry(),
+        FrameData::SystemMemory { frame } => frame.info().colorimetry(),
+        FrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry(),
     }
 }
 
