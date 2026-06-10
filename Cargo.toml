@@ -43,7 +43,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
 env_logger = "0.11.8"
-mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "edaf667f35e6ec9923a7e2a309e11a778473f88e" }
+mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "daaae85d004002eb527ea242ba3a94f44190756c" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
