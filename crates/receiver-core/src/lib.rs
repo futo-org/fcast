@@ -2,8 +2,6 @@ use anyhow::Result;
 use fcast::SessionId;
 use fcast_protocol::SetVolumeMessage;
 use gst::prelude::*;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use gst_gl::prelude::*;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
 use slint::{ToSharedString, VecModel};
@@ -12,9 +10,10 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
 
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
-use std::{collections::HashSet, rc::Rc, sync::Arc, time::Duration};
+use std::{rc::Rc, sync::Arc, time::Duration};
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
 
 #[cfg(not(target_os = "android"))]
 pub use clap;
@@ -60,8 +59,6 @@ pub use video_sink::{SwapchainSink, VideoSink};
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use graphics::GraphicsContext;
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
@@ -314,11 +311,6 @@ pub fn run<S: VideoSink + 'static>(
             slint::RenderingState::RenderingSetup => {
                 debug!("Got graphics API: {graphics_api:?}");
                 let ui_weak = ui_weak.clone();
-
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                {
-                    graphics_context = GraphicsContext::from_slint(graphics_api).unwrap();
-                }
 
                 #[cfg(not(target_os = "android"))]
                 if let Some(fullscreen) = start_fullscreen.take() {

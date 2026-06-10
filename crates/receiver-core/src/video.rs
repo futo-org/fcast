@@ -198,10 +198,12 @@ pub mod imp {
     });
 
     enum VideoInfo {
+        #[cfg(target_os = "linux")]
         DmaDrm(gst_video::VideoInfoDmaDrm),
         Normal(gst_video::VideoInfo),
     }
 
+    #[cfg(target_os = "linux")]
     #[derive(Clone, Default, Debug, glib::Boxed)]
     #[boxed_type(name = "FCastDrmFormats")]
     pub struct DrmFormats(pub Arc<std::collections::HashSet<drm_fourcc::DrmFormat>>);
@@ -562,6 +564,7 @@ pub mod imp {
             let cll = config.content_light_level;
             if let Some(video_info) = config.video_info.as_ref() {
                 let data = match video_info {
+                    #[cfg(target_os = "linux")]
                     VideoInfo::DmaDrm(dma_info) => super::FrameData::DmaBuf {
                         buffer,
                         dma_info: dma_info.clone(),
