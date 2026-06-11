@@ -243,7 +243,7 @@ component PlaybackControls inherits Rectangle {
     property <bool> is-changing-volume: false;
     property <float> background-height: 100%;
     property <float> elems-opacity: 0%;
-    property <bool> show-elems: true;
+    property <bool> is-visible: false;
     property <bool> show-settings: false;
     property <SettingsPage> current-settings-page: SettingsPage.Start;
 
@@ -255,6 +255,8 @@ component PlaybackControls inherits Rectangle {
     }
 
     VerticalLayout {
+        visible: background-height < 100%;
+
         Rectangle {
             background: @linear-gradient(0deg, rgba(0, 0, 0, 0.0), rgba(0, 0, 0, 0.8) 100%);
         }
@@ -269,15 +271,20 @@ component PlaybackControls inherits Rectangle {
     }
 
     public function show() {
-        show-elems = true;
+        tim.restart();
+        if is-visible {
+            return;
+        }
+
+        is-visible = true;
         background-height = 20%;
         elems-opacity = 100%;
         tim.running = true;
-        tim.restart();
         suggested-cursor = MouseCursor.default;
     }
 
     public function close() {
+        is-visible = false;
         background-height = 100%;
         elems-opacity = 0%;
         tim.running = false;
@@ -303,6 +310,14 @@ component PlaybackControls inherits Rectangle {
 
         focus := FocusScope {
             capture-key-pressed(event) => Bridge.capture-key-pressed(event);
+
+            focus-changed-event(event) => {
+                if (event == FocusReason.window-activation && is-visible) {
+                    root.close();
+                }
+            }
+
+            init => self.focus();
         }
     }
 
@@ -313,8 +328,7 @@ component PlaybackControls inherits Rectangle {
         spacing: 5px;
 
         if Bridge.ui-mode == UiMode.Full: HorizontalLayout {
-            opacity: elems-opacity;
-            visible: show-elems;
+            visible: elems-opacity > 0;
 
             Rectangle { }
 
@@ -332,11 +346,12 @@ component PlaybackControls inherits Rectangle {
 
         ctrl-layout := Rectangle {
             height: self.preferred-height * elems-opacity;
+            visible: is-visible;
 
             VerticalLayout {
                 HorizontalLayout {
                     opacity: elems-opacity;
-                    visible: show-elems;
+                    visible: is-visible;
                     padding: 10px;
                     padding-bottom: 15px;
 
@@ -392,8 +407,8 @@ component PlaybackControls inherits Rectangle {
 
                 ScrubbyMcScrub {
                     opacity: elems-opacity;
-                    visible: show-elems;
-                    height: show-elems ? self.preferred-height : 0px;
+                    visible: is-visible;
+                    height: is-visible ? self.preferred-height : 0px;
                 }
 
                 if Bridge.ui-mode == UiMode.Full: Rectangle {
@@ -402,7 +417,7 @@ component PlaybackControls inherits Rectangle {
 
                 if Bridge.ui-mode == UiMode.Full: ButtonControls {
                     opacity: elems-opacity;
-                    visible: show-elems;
+                    visible: is-visible;
 
                     show-settings => {
                         show-settings = true;
@@ -413,9 +428,11 @@ component PlaybackControls inherits Rectangle {
     }
 
     HorizontalLayout {
+        visible: settings-side-bar.width > 0px;
+
         Rectangle {}
 
-        Rectangle {
+        settings-side-bar := Rectangle {
             background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
             border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
             border-width: 1px;
