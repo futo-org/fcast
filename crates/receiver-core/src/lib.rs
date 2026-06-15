@@ -10,10 +10,9 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
 
-use std::path::PathBuf;
-use std::{rc::Rc, sync::Arc, time::Duration};
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
+use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 #[cfg(not(target_os = "android"))]
 pub use clap;
@@ -206,6 +205,9 @@ pub struct CliArgs {
     /// Path to the settings file to use
     #[arg(long)]
     settings_file_path: Option<String>,
+    /// Run without a GUI
+    #[arg(long, default_value_t = false)]
+    pub headless: bool,
 }
 
 impl CliArgs {
@@ -232,11 +234,9 @@ pub fn run<S: VideoSink + 'static>(
     #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Message>,
     video_sink: S,
 ) -> Result<()> {
-    logging::init(cli_args.loglevel);
-
     let start = std::time::Instant::now();
 
-    let ui = MainWindow::new()?;
+    logging::init(cli_args.loglevel);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -278,280 +278,299 @@ pub fn run<S: VideoSink + 'static>(
         }
     });
 
+    let is_headless = cli_args.headless;
+
     let sink_mutex = Arc::new(parking_lot::Mutex::new(None::<video::FSink>));
-
-    let bridge = ui.global::<Bridge>();
-
-    let pl_log = libplacebo::Log::new().unwrap();
-    let render_opts = cli_args.rendering_options();
+    let ui = if is_headless {
+        None
+    } else {
+        Some(MainWindow::new()?)
+    };
 
     let gui_is_visible = gui::GuiIsVisible::new();
+    let mut renderer_tx = None;
+    if let Some(ui) = &ui {
+        let pl_log = libplacebo::Log::new().unwrap();
+        let render_opts = cli_args.rendering_options();
 
-    #[cfg(debug_assertions)]
-    bridge.set_is_debugging(true);
+        #[cfg(debug_assertions)]
+        ui.global::<Bridge>().set_is_debugging(true);
 
-    let (renderer_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
-    ui.window().set_rendering_notifier({
-        let ui_weak = ui.as_weak();
-        #[cfg(not(target_os = "android"))]
-        let mut start_fullscreen = Some(cli_args.fullscreen);
-        let mut prev_size = (0, 0);
-        let mut sink = None;
-        let msg_tx = msg_tx.clone();
-        let mut renderer = None;
-        let mut pl_context = None;
-        #[cfg(target_os = "linux")]
-        let mut drm_formats = HashSet::new();
-        let gui_is_visible = gui_is_visible.clone();
-        let mut video_sink = video_sink;
-        let sink_mutex = Arc::clone(&sink_mutex);
-        let mut payload_handle = None::<video::imp::VideoPayloadHandle>;
-        let mut cached_frame = None;
-        move |state, graphics_api| match state {
-            slint::RenderingState::RenderingSetup => {
-                debug!("Got graphics API: {graphics_api:?}");
-                let ui_weak = ui_weak.clone();
+        let (renderer_chan_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
+        renderer_tx = Some(renderer_chan_tx);
+        ui.window().set_rendering_notifier({
+            let ui_weak = ui.as_weak();
+            #[cfg(not(target_os = "android"))]
+            let mut start_fullscreen = Some(cli_args.fullscreen);
+            let mut prev_size = (0, 0);
+            let mut sink = None;
+            let msg_tx = msg_tx.clone();
+            let mut renderer = None;
+            let mut pl_context = None;
+            #[cfg(target_os = "linux")]
+            let mut drm_formats = HashSet::new();
+            let gui_is_visible = gui_is_visible.clone();
+            let mut video_sink = video_sink;
+            let sink_mutex = Arc::clone(&sink_mutex);
+            let mut payload_handle = None::<video::imp::VideoPayloadHandle>;
+            let mut cached_frame = None;
+            move |state, graphics_api| match state {
+                slint::RenderingState::RenderingSetup => {
+                    debug!("Got graphics API: {graphics_api:?}");
+                    let ui_weak = ui_weak.clone();
 
-                #[cfg(not(target_os = "android"))]
-                if let Some(fullscreen) = start_fullscreen.take() {
-                    ui_weak
-                        .upgrade()
-                        .unwrap()
-                        .window()
-                        .set_fullscreen(fullscreen);
-                }
+                    #[cfg(not(target_os = "android"))]
+                    if let Some(fullscreen) = start_fullscreen.take() {
+                        ui_weak
+                            .upgrade()
+                            .unwrap()
+                            .window()
+                            .set_fullscreen(fullscreen);
+                    }
 
-                if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api {
-                    #[cfg(target_os = "linux")]
-                    {
-                        egl::ensure_init();
-                        let egl = glutin_egl_sys::egl::Egl::load_with(|symbol| {
-                            get_proc_address(&std::ffi::CString::new(symbol).unwrap())
-                        });
+                    if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api {
+                        #[cfg(target_os = "linux")]
+                        {
+                            egl::ensure_init();
+                            let egl = glutin_egl_sys::egl::Egl::load_with(|symbol| {
+                                get_proc_address(&std::ffi::CString::new(symbol).unwrap())
+                            });
 
-                        let display = unsafe { egl.GetCurrentDisplay() };
-                        let err = unsafe { egl.GetError() };
-                        if !display.is_null() && err == glutin_egl_sys::egl::SUCCESS as i32 {
-                            pl_context = unsafe {
-                                Some(
-                                    crate::placebo::PlaceboContext::new_egl(
-                                        &pl_log,
-                                        &render_opts,
-                                        display as *mut _,
-                                        egl.GetCurrentContext() as *mut _,
+                            let display = unsafe { egl.GetCurrentDisplay() };
+                            let err = unsafe { egl.GetError() };
+                            if !display.is_null() && err == glutin_egl_sys::egl::SUCCESS as i32 {
+                                pl_context = unsafe {
+                                    Some(
+                                        crate::placebo::PlaceboContext::new_egl(
+                                            &pl_log,
+                                            &render_opts,
+                                            display as *mut _,
+                                            egl.GetCurrentContext() as *mut _,
+                                        )
+                                        .unwrap(),
                                     )
-                                    .unwrap(),
-                                )
-                            };
+                                };
 
-                            let extensions = egl::get_extensions(&egl);
-                            if extensions.contains(&egl::Extension::ImageDmaBufImport)
-                                && extensions.contains(&egl::Extension::ImageDmaBufImportModifiers)
-                            {
-                                match egl::get_supported_dma_drm_formats(display) {
-                                    Ok(formats) => {
-                                        debug!(
-                                            formats = formats
-                                                .iter()
-                                                .map(|fmt| format!(
-                                                    "{}:{:?}",
-                                                    fmt.code, fmt.modifier
-                                                ))
-                                                .collect::<Vec<_>>()
-                                                .join(" "),
-                                            "Got supported DMA DRM formats"
-                                        );
-                                        drm_formats = formats;
-                                    }
-                                    Err(err) => {
-                                        error!(?err, "Failed to get supported DMA DRM formats");
+                                let extensions = egl::get_extensions(&egl);
+                                if extensions.contains(&egl::Extension::ImageDmaBufImport)
+                                    && extensions
+                                        .contains(&egl::Extension::ImageDmaBufImportModifiers)
+                                {
+                                    match egl::get_supported_dma_drm_formats(display) {
+                                        Ok(formats) => {
+                                            debug!(
+                                                formats = formats
+                                                    .iter()
+                                                    .map(|fmt| format!(
+                                                        "{}:{:?}",
+                                                        fmt.code, fmt.modifier
+                                                    ))
+                                                    .collect::<Vec<_>>()
+                                                    .join(" "),
+                                                "Got supported DMA DRM formats"
+                                            );
+                                            drm_formats = formats;
+                                        }
+                                        Err(err) => {
+                                            error!(?err, "Failed to get supported DMA DRM formats");
+                                        }
                                     }
                                 }
+                            } else {
+                                pl_context = Some(
+                                    crate::placebo::PlaceboContext::new(&pl_log, &render_opts)
+                                        .unwrap(),
+                                );
                             }
-                        } else {
+                        }
+
+                        #[cfg(not(target_os = "linux"))]
+                        {
                             pl_context = Some(
                                 crate::placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
                             );
                         }
+
+                        let gl = unsafe {
+                            glow::Context::from_loader_function_cstr(|s| get_proc_address(s))
+                        };
+                        match opengl::Renderer::new(gl) {
+                            Ok(r) => renderer = Some(r),
+                            Err(err) => error!(?err, "Failed to create renderer"),
+                        }
                     }
 
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        pl_context = Some(
-                            crate::placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
-                        );
-                    }
-
-                    let gl = unsafe {
-                        glow::Context::from_loader_function_cstr(|s| get_proc_address(s))
-                    };
-                    match opengl::Renderer::new(gl) {
-                        Ok(r) => renderer = Some(r),
-                        Err(err) => error!(?err, "Failed to create renderer"),
-                    }
+                    gui_is_visible.set(true);
                 }
+                slint::RenderingState::BeforeRendering => {
+                    let Some(ui) = ui_weak.upgrade() else {
+                        error!("Failed to upgrade ui");
+                        return;
+                    };
 
-                gui_is_visible.set(true);
-            }
-            slint::RenderingState::BeforeRendering => {
-                let Some(ui) = ui_weak.upgrade() else {
-                    error!("Failed to upgrade ui");
-                    return;
-                };
+                    let bridge = ui.global::<Bridge>();
 
-                let bridge = ui.global::<Bridge>();
-
-                while let Ok(msg) = renderer_rx.try_recv() {
-                    if let Some(renderer) = renderer.as_mut() {
-                        match msg {
-                            gui::RendererMessage::CreateBluredAudioTrackCover(img) => {
-                                let (width, height) = img.image.dimensions();
-                                match renderer.blur_rgba8_image(img.image.as_raw(), width, height) {
-                                    Ok(tex) => {
-                                        bridge.set_blured_audio_track_cover(CompoundImage {
-                                            img: tex.to_borrowed_slint_image(),
-                                            rotation: image::orientation_to_degs(img.orientation),
-                                        });
-                                        renderer.blured_audio_cover = Some(tex);
+                    while let Ok(msg) = renderer_rx.try_recv() {
+                        if let Some(renderer) = renderer.as_mut() {
+                            match msg {
+                                gui::RendererMessage::CreateBluredAudioTrackCover(img) => {
+                                    let (width, height) = img.image.dimensions();
+                                    match renderer.blur_rgba8_image(
+                                        img.image.as_raw(),
+                                        width,
+                                        height,
+                                    ) {
+                                        Ok(tex) => {
+                                            bridge.set_blured_audio_track_cover(CompoundImage {
+                                                img: tex.to_borrowed_slint_image(),
+                                                rotation: image::orientation_to_degs(
+                                                    img.orientation,
+                                                ),
+                                            });
+                                            renderer.blured_audio_cover = Some(tex);
+                                        }
+                                        Err(err) => {
+                                            error!(?err, "Failed to blur audio track cover")
+                                        }
                                     }
-                                    Err(err) => error!(?err, "Failed to blur audio track cover"),
+                                }
+                                gui::RendererMessage::ClearBluredAudioTrackCover => {
+                                    bridge.set_blured_audio_track_cover(CompoundImage::default());
+                                    renderer.blured_audio_cover.take();
                                 }
                             }
-                            gui::RendererMessage::ClearBluredAudioTrackCover => {
-                                bridge.set_blured_audio_track_cover(CompoundImage::default());
-                                renderer.blured_audio_cover.take();
+                        }
+                    }
+
+                    let Some(sink) = sink.as_mut() else {
+                        if let Some(new_sink) = sink_mutex.lock().take() {
+                            #[cfg(target_os = "linux")]
+                            new_sink.set_property(
+                                "drm-formats",
+                                video::imp::DrmFormats(Arc::new(drm_formats.clone())),
+                            );
+                            payload_handle = Some(new_sink.property("payload-handle"));
+                            sink = Some(new_sink);
+                        }
+                        return;
+                    };
+
+                    if let Some(payload_handle) = &payload_handle {
+                        if let Some(pay) = payload_handle.0.lock().take() {
+                            match pay {
+                                Some(frame) => cached_frame = Some(frame),
+                                // EOS
+                                None => {
+                                    cached_frame = None;
+                                    bridge.set_overlays(slint::ModelRc::default());
+                                    bridge.set_subtitles(slint::ModelRc::default());
+                                }
                             }
                         }
                     }
-                }
 
-                let Some(sink) = sink.as_mut() else {
-                    if let Some(new_sink) = sink_mutex.lock().take() {
-                        #[cfg(target_os = "linux")]
-                        new_sink.set_property(
-                            "drm-formats",
-                            video::imp::DrmFormats(Arc::new(drm_formats.clone())),
+                    let new_size = ui.window().size();
+                    let new_size = (new_size.width, new_size.height);
+                    if new_size != prev_size {
+                        sink.set_property(
+                            "window-resolution",
+                            video::imp::WindowResolution {
+                                width: new_size.0,
+                                height: new_size.1,
+                            },
                         );
-                        payload_handle = Some(new_sink.property("payload-handle"));
-                        sink = Some(new_sink);
+                        prev_size = new_size;
                     }
-                    return;
-                };
 
-                if let Some(payload_handle) = &payload_handle {
-                    if let Some(pay) = payload_handle.0.lock().take() {
-                        match pay {
-                            Some(frame) => cached_frame = Some(frame),
-                            // EOS
-                            None => {
-                                cached_frame = None;
+                    if let Some(renderer) = renderer.as_mut() {
+                        use glow::HasContext;
+                        let clear_color = video_sink.get_clear_color();
+                        unsafe {
+                            renderer.gl.clear_color(
+                                clear_color[0],
+                                clear_color[1],
+                                clear_color[2],
+                                clear_color[3],
+                            );
+                            renderer.gl.clear(glow::COLOR_BUFFER_BIT);
+                        }
+                    }
+
+                    if let Some(frame) = cached_frame.as_mut() {
+                        bridge.set_video_frame_width(frame.data.width() as i32);
+                        bridge.set_video_frame_height(frame.data.height() as i32);
+                        if let Some(placebo) = pl_context.as_mut()
+                            && let Some(renderer) = renderer.as_ref()
+                        {
+                            if let Err(err) =
+                                video_sink.render(placebo, &renderer.gl, frame, prev_size)
+                            {
+                                error!(?err, "video sink render failed");
+                            }
+                        }
+
+                        let overlays =
+                            std::mem::replace(&mut frame.overlays, video::Resource::Unchanged);
+                        match overlays {
+                            video::Resource::Eos | video::Resource::Cleared => {
                                 bridge.set_overlays(slint::ModelRc::default());
+                            }
+                            video::Resource::Unchanged => (),
+                            video::Resource::New(overlays) => {
+                                let overlays: VecModel<UiSubOverlay> = overlays
+                                    .into_iter()
+                                    .map(|overlay| UiSubOverlay {
+                                        img: slint::Image::from_rgba8(overlay.pix_buffer),
+                                        x: overlay.x as f32,
+                                        y: overlay.y as f32,
+                                        render_width: overlay.render_width as f32,
+                                        render_height: overlay.render_height as f32,
+                                    })
+                                    .collect();
+                                bridge.set_overlays(Rc::new(overlays).into());
+                            }
+                        }
+
+                        let subtitles =
+                            std::mem::replace(&mut frame.subtitles, video::Resource::Unchanged);
+                        match subtitles {
+                            video::Resource::Eos | video::Resource::Cleared => {
                                 bridge.set_subtitles(slint::ModelRc::default());
                             }
+                            video::Resource::Unchanged => (),
+                            video::Resource::New(subs) => {
+                                let subs: VecModel<slint::SharedString> =
+                                    subs.into_iter().map(|s| s.to_shared_string()).collect();
+                                bridge.set_subtitles(Rc::new(subs).into());
+                            }
                         }
                     }
                 }
+                slint::RenderingState::RenderingTeardown => {
+                    gui_is_visible.set(false);
 
-                let new_size = ui.window().size();
-                let new_size = (new_size.width, new_size.height);
-                if new_size != prev_size {
-                    sink.set_property(
-                        "window-resolution",
-                        video::imp::WindowResolution {
-                            width: new_size.0,
-                            height: new_size.1,
-                        },
-                    );
-                    prev_size = new_size;
+                    let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
+
+                    msg_tx.send(Message::GuiWindowClosed(feedback_tx));
+                    match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
+                        Ok(_) => debug!("Player shutdown successfully"),
+                        Err(err) => {
+                            error!(?err, "Failed to receive feedback of player shutdown")
+                        }
+                    }
+
+                    cached_frame.take();
+
+                    if let Some(placebo) = pl_context.as_mut() {
+                        video_sink.teardown(placebo);
+                    }
+
+                    pl_context.take();
                 }
-
-                if let Some(renderer) = renderer.as_mut() {
-                    use glow::HasContext;
-                    let clear_color = video_sink.get_clear_color();
-                    unsafe {
-                        renderer.gl.clear_color(
-                            clear_color[0],
-                            clear_color[1],
-                            clear_color[2],
-                            clear_color[3],
-                        );
-                        renderer.gl.clear(glow::COLOR_BUFFER_BIT);
-                    }
-                }
-
-                if let Some(frame) = cached_frame.as_mut() {
-                    bridge.set_video_frame_width(frame.data.width() as i32);
-                    bridge.set_video_frame_height(frame.data.height() as i32);
-                    if let Some(placebo) = pl_context.as_mut()
-                        && let Some(renderer) = renderer.as_ref()
-                    {
-                        if let Err(err) = video_sink.render(placebo, &renderer.gl, frame, prev_size)
-                        {
-                            error!(?err, "video sink render failed");
-                        }
-                    }
-
-                    let overlays =
-                        std::mem::replace(&mut frame.overlays, video::Resource::Unchanged);
-                    match overlays {
-                        video::Resource::Eos | video::Resource::Cleared => {
-                            bridge.set_overlays(slint::ModelRc::default());
-                        }
-                        video::Resource::Unchanged => (),
-                        video::Resource::New(overlays) => {
-                            let overlays: VecModel<UiSubOverlay> = overlays
-                                .into_iter()
-                                .map(|overlay| UiSubOverlay {
-                                    img: slint::Image::from_rgba8(overlay.pix_buffer),
-                                    x: overlay.x as f32,
-                                    y: overlay.y as f32,
-                                    render_width: overlay.render_width as f32,
-                                    render_height: overlay.render_height as f32,
-                                })
-                                .collect();
-                            bridge.set_overlays(Rc::new(overlays).into());
-                        }
-                    }
-
-                    let subtitles =
-                        std::mem::replace(&mut frame.subtitles, video::Resource::Unchanged);
-                    match subtitles {
-                        video::Resource::Eos | video::Resource::Cleared => {
-                            bridge.set_subtitles(slint::ModelRc::default());
-                        }
-                        video::Resource::Unchanged => (),
-                        video::Resource::New(subs) => {
-                            let subs: VecModel<slint::SharedString> =
-                                subs.into_iter().map(|s| s.to_shared_string()).collect();
-                            bridge.set_subtitles(Rc::new(subs).into());
-                        }
-                    }
-                }
+                _ => (),
             }
-            slint::RenderingState::RenderingTeardown => {
-                gui_is_visible.set(false);
-
-                let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
-
-                msg_tx.send(Message::GuiWindowClosed(feedback_tx));
-                match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
-                    Ok(_) => debug!("Player shutdown successfully"),
-                    Err(err) => {
-                        error!(?err, "Failed to receive feedback of player shutdown")
-                    }
-                }
-
-                cached_frame.take();
-
-                if let Some(placebo) = pl_context.as_mut() {
-                    video_sink.teardown(placebo);
-                }
-
-                pl_context.take();
-            }
-            _ => (),
-        }
-    })?;
+        })?;
+    }
 
     #[cfg(all(
         not(any(target_os = "android", target_os = "linux")),
@@ -565,35 +584,43 @@ pub fn run<S: VideoSink + 'static>(
         None
     };
 
-    let (gui_tx, gui_rx) = mpsc::unbounded_channel::<gui::UpdateGuiCommand>();
-
-    gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx);
+    let gui_tx = if let Some(ui) = &ui {
+        let (gui_tx, gui_rx) = mpsc::unbounded_channel::<gui::UpdateGuiCommand>();
+        gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx.unwrap());
+        Some(gui_tx)
+    } else {
+        None
+    };
 
     let gui = GuiController::new(gui_tx, gui_is_visible.clone());
 
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
     let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
-    runtime.spawn({
-        let ui_weak = ui.as_weak();
+    let event_loop_jh = runtime.spawn({
+        let ui_weak = ui.as_ref().map(|ui| ui.as_weak());
         let msg_tx = msg_tx.clone();
         async move {
             gstreamer::init_and_load_plugins();
 
-            let sink = video::FSink::new();
-            let video_sink_is_eos: video::imp::AtomicBoolBox = sink.property("is-eos");
-            sink.connect("frame-available", false, move |_| {
-                ui_weak
-                    .upgrade_in_event_loop(move |ui| {
-                        ui.window().request_redraw();
-                    })
-                    .unwrap();
+            let video_sink_elem = if let Some(ui_weak) = ui_weak {
+                let sink = video::FSink::new();
+                sink.connect("frame-available", false, move |_| {
+                    ui_weak
+                        .upgrade_in_event_loop(move |ui| {
+                            ui.window().request_redraw();
+                        })
+                        .unwrap();
 
+                    None
+                });
+
+                let video_sink_elem = sink.clone();
+                *sink_mutex.lock() = Some(sink);
+                Some(video_sink_elem)
+            } else {
                 None
-            });
-
-            let elem = sink.clone();
-            *sink_mutex.lock() = Some(sink);
+            };
 
             let settings_file = SettingsFile::try_load(&cli_args).await;
             let settings = Settings {
@@ -603,9 +630,8 @@ pub fn run<S: VideoSink + 'static>(
 
             application::Application::new(
                 gui,
-                elem.upcast(),
+                video_sink_elem.map(|e| e.upcast()),
                 msg_tx,
-                video_sink_is_eos.0,
                 #[cfg(target_os = "android")]
                 android_app,
                 #[cfg(not(target_os = "android"))]
@@ -619,39 +645,54 @@ pub fn run<S: VideoSink + 'static>(
         }
     });
 
-    gui::register_callbacks(&ui, &bridge, msg_tx.clone());
-
-    info!(initialized_in = ?start.elapsed());
-
     #[cfg(not(target_os = "android"))]
-    runtime.spawn(async {
-        if let Err(err) = tokio::signal::ctrl_c().await {
-            error!(?err, "Failed to listen for ctrl+c event");
-        } else {
-            debug!("Got Ctrl+C");
-            let _ = slint::quit_event_loop();
+    runtime.spawn({
+        let msg_tx = msg_tx.clone();
+        async move {
+            if let Err(err) = tokio::signal::ctrl_c().await {
+                error!(?err, "Failed to listen for ctrl+c event");
+            } else {
+                debug!("Got Ctrl+C");
+                if is_headless {
+                    msg_tx.send(Message::Quit);
+                } else {
+                    let _ = slint::quit_event_loop();
+                }
+            }
         }
     });
 
-    #[cfg(any(target_os = "android", not(feature = "systray")))]
-    ui.run()?;
+    if let Some(ui) = ui {
+        gui::register_callbacks(&ui, msg_tx.clone());
+        info!(initialized_in = ?start.elapsed());
 
-    #[cfg(feature = "systray")]
-    if no_systray {
+        #[cfg(any(target_os = "android", not(feature = "systray")))]
         ui.run()?;
-    } else {
-        if !no_main_window {
-            ui.show()?;
+
+        #[cfg(feature = "systray")]
+        if no_systray {
+            ui.run()?;
+        } else {
+            if !no_main_window {
+                ui.show()?;
+            }
+            slint::run_event_loop_until_quit()?;
         }
-        slint::run_event_loop_until_quit()?;
+
+        info!("Shutting down...");
+
+        runtime.block_on(async move {
+            msg_tx.send(Message::Quit);
+            let _ = fin_rx.await;
+        });
+    } else {
+        info!(initialized_in = ?start.elapsed());
+        runtime.block_on(async move {
+            if let Err(err) = event_loop_jh.await {
+                error!(?err, "Failed to join event loop task");
+            }
+        });
     }
-
-    info!("Shutting down...");
-
-    runtime.block_on(async move {
-        msg_tx.send(Message::Quit);
-        let _ = fin_rx.await;
-    });
 
     Ok(())
 }

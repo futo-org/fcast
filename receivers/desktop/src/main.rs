@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     let _ = enable_ansi_support::enable_ansi_support();
 
-    if std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent) {
+    if !args.headless && std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent) {
         let selector = rcore::slint::BackendSelector::new();
         #[cfg(not(target_os = "windows"))]
         let selector = selector.require_opengl_with_version(3, 30);

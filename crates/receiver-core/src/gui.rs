@@ -13,7 +13,8 @@ use slint::{ComponentHandle, SharedString, ToSharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error};
 
-pub fn register_callbacks(ui: &MainWindow, bridge: &Bridge, msg_tx: MessageSender) {
+pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
+    let bridge = ui.global::<Bridge>();
     bridge.on_resume_or_pause({
         let msg_tx = msg_tx.clone();
         move || {
@@ -277,7 +278,7 @@ impl GuiIsVisible {
 }
 
 pub struct GuiController {
-    pub tx: UnboundedSender<UpdateGuiCommand>,
+    pub tx: Option<UnboundedSender<UpdateGuiCommand>>,
     playback_state: GuiPlaybackState,
     playback_rate: f32,
     is_live: bool,
@@ -285,7 +286,7 @@ pub struct GuiController {
 }
 
 impl GuiController {
-    pub fn new(tx: UnboundedSender<UpdateGuiCommand>, is_visible: GuiIsVisible) -> Self {
+    pub fn new(tx: Option<UnboundedSender<UpdateGuiCommand>>, is_visible: GuiIsVisible) -> Self {
         Self {
             tx,
             playback_state: GuiPlaybackState::default(),
@@ -296,7 +297,9 @@ impl GuiController {
     }
 
     fn send(&self, cmd: UpdateGuiCommand) {
-        if let Err(err) = self.tx.send(cmd) {
+        if let Some(tx) = &self.tx
+            && let Err(err) = tx.send(cmd)
+        {
             error!(?err, "Failed to send update gui command");
         }
     }
