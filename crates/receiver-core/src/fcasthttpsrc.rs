@@ -64,10 +64,10 @@ mod imp {
         }
     }
 
-    const REQWEST_CLIENT_CONTEXT: &str = "gst.reqwest.client";
+    const REQWEST_CLIENT_CONTEXT: &str = "fcast.reqwest.client";
 
     #[derive(Clone, Debug, glib::Boxed)]
-    #[boxed_type(name = "GstReqwestClientContext")]
+    #[boxed_type(name = "FCastReqwestClientContext")]
     struct ClientContext(Arc<ClientContextInner>);
 
     #[derive(Debug)]
