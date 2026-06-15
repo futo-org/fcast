@@ -4,6 +4,7 @@
 
  - Downgrade session version if sender is higher than receiver instead of rejecting the connection
  - Fix subtitles flickering in certain situations
+ - Added `--headless` option to run without a GUI and only play audio
 
 ## 3.0.1 - 2026-06-02
 

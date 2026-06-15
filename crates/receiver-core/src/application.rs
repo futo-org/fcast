@@ -1,10 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -93,7 +90,6 @@ pub struct Application {
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
     have_audio_track_cover: bool,
-    video_sink_is_eos: Arc<AtomicBool>,
     current_play_data: Option<v3::PlayMessage>,
     have_media_info: bool,
     current_thumbnail_id: image::ImageId,
@@ -127,9 +123,8 @@ pub struct Application {
 impl Application {
     pub async fn new(
         gui: GuiController,
-        appsink: gst::Element,
+        video_sink: Option<gst::Element>,
         msg_tx: MessageSender,
-        video_sink_is_eos: Arc<AtomicBool>,
         #[cfg(not(target_os = "android"))] settings: Settings,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
@@ -153,7 +148,7 @@ impl Application {
             amcaudiodec.set_rank(gst::Rank::NONE);
         }
 
-        let player = player::Player::new(appsink, msg_tx.clone())?;
+        let player = player::Player::new(video_sink, msg_tx.clone())?;
 
         let headers = Arc::new(Mutex::new(None::<HashMap<String, String>>));
 
@@ -282,7 +277,6 @@ impl Application {
             on_playing_command_queue: SmallVec::new(),
             current_image_id: 0,
             have_audio_track_cover: false,
-            video_sink_is_eos,
             current_play_data: None,
             have_media_info: false,
             pending_thumbnail: None,
@@ -401,8 +395,6 @@ impl Application {
         self.current_play_data = None;
         self.have_media_info = false;
         self.pending_thumbnail = None;
-        self.video_sink_is_eos
-            .store(true, atomic::Ordering::Relaxed);
         self.have_media_title = false;
         self.last_position_updated = -1.0;
         *self.current_request_headers.lock() = None;
@@ -688,11 +680,12 @@ impl Application {
         }
 
         let mut media_title = None;
-        if let Some(v3::MetadataObject::Generic {
-            thumbnail_url: Some(thumbnail_url),
-            title,
-            ..
-        }) = media_item.metadata.as_ref()
+        if !self.settings.cli.headless
+            && let Some(v3::MetadataObject::Generic {
+                thumbnail_url: Some(thumbnail_url),
+                title,
+                ..
+            }) = media_item.metadata.as_ref()
         {
             media_title = title.clone();
             self.have_audio_track_cover = true;
@@ -737,9 +730,6 @@ impl Application {
         if let Some(title) = media_title {
             self.gui.set_media_title(title);
         }
-
-        self.video_sink_is_eos
-            .store(true, atomic::Ordering::Relaxed);
 
         self.current_media_item_id += 1;
 
@@ -1034,7 +1024,8 @@ impl Application {
                 self.current_duration = self.player.get_duration();
             }
             player::PlayerEvent::Tags(tags) => {
-                if !self.have_audio_track_cover
+                if !self.settings.cli.headless
+                    && !self.have_audio_track_cover
                     && let Some(cover) = tags.get::<gst::tags::Image>()
                     && let Some(buffer) = cover.get().buffer()
                     && let Ok(buffer) = buffer.map_readable()
@@ -1321,64 +1312,65 @@ impl Application {
                     return Ok(false);
                 };
 
-                let gui_tx = self.gui.tx.clone();
-                tokio::spawn(async move {
-                    let res = app_updater::download_update(UPDATER_BASE_URL, &update, {
-                        let gui_tx = gui_tx.clone();
-                        move |progress, total| {
-                            let progress_percent = if total == 0 {
-                                0.0
-                            } else {
-                                progress as f64 / total as f64
-                            } * 100.0;
+                if let Some(gui_tx) = self.gui.tx.clone() {
+                    tokio::spawn(async move {
+                        let res = app_updater::download_update(UPDATER_BASE_URL, &update, {
+                            let gui_tx = gui_tx.clone();
+                            move |progress, total| {
+                                let progress_percent = if total == 0 {
+                                    0.0
+                                } else {
+                                    progress as f64 / total as f64
+                                } * 100.0;
 
-                            let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateDownloadProgress(
-                                progress_percent as i32,
-                            ));
-                        }
-                    })
-                    .await;
+                                let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateDownloadProgress(
+                                    progress_percent as i32,
+                                ));
+                            }
+                        })
+                        .await;
 
-                    let update_file = match res {
-                        Ok(update) => update,
-                        Err(err) => {
+                        let update_file = match res {
+                            Ok(update) => update,
+                            Err(err) => {
+                                let error_msg = err.to_shared_string();
+                                let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
+                                    UiUpdaterState::DownloadFailed,
+                                ));
+                                let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
+                                return;
+                            }
+                        };
+
+                        if let Err(err) = app_updater::install_update(
+                            #[cfg(target_os = "macos")]
+                            "FCast Receiver.app",
+                            update_file,
+                            Box::new(|closure| {
+                                slint::invoke_from_event_loop(move || {
+                                    (closure)();
+                                })
+                                .is_err()
+                            }),
+                        )
+                        .await
+                        {
+                            error!(?err, "Failed to install update");
                             let error_msg = err.to_shared_string();
                             let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                                UiUpdaterState::DownloadFailed,
+                                UiUpdaterState::InstallFailed,
                             ));
                             let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
                             return;
                         }
-                    };
 
-                    if let Err(err) = app_updater::install_update(
-                        #[cfg(target_os = "macos")]
-                        "FCast Receiver.app",
-                        update_file,
-                        Box::new(|closure| {
-                            slint::invoke_from_event_loop(move || {
-                                (closure)();
-                            })
-                            .is_err()
-                        }),
-                    )
-                    .await
-                    {
-                        error!(?err, "Failed to install update");
-                        let error_msg = err.to_shared_string();
+                        debug!(?update, "Successfully updated");
+
                         let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                            UiUpdaterState::InstallFailed,
+                            UiUpdaterState::InstallSuccessful,
                         ));
-                        let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
-                        return;
-                    }
-
-                    debug!(?update, "Successfully updated");
-
-                    let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                        UiUpdaterState::InstallSuccessful,
-                    ));
-                });
+                    });
+                }
             }
             message::AppUpdate::RestartApp => {
                 debug!("Restarting app...");

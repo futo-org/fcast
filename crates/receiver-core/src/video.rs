@@ -215,10 +215,6 @@ pub mod imp {
         pub height: u32,
     }
 
-    #[derive(Clone, Debug, Default, glib::Boxed)]
-    #[boxed_type(name = "FCastAtomicBoolBox")]
-    pub struct AtomicBoolBox(pub Arc<AtomicBool>);
-
     /// When the inner option is `None` the sink EOS.
     #[derive(Clone, Default, glib::Boxed)]
     #[boxed_type(name = "FCastVideoPayloadHandle")]
@@ -238,7 +234,6 @@ pub mod imp {
         cached_caps: Mutex<Option<gst::Caps>>,
         window_resolution: Mutex<Option<WindowResolution>>,
         window_resized: AtomicBool,
-        is_eos: AtomicBoolBox,
         payload_handle: VideoPayloadHandle,
     }
 
@@ -262,10 +257,6 @@ pub mod imp {
                         .nick("Window resolution")
                         .write_only()
                         .build(),
-                    glib::ParamSpecBoxed::builder::<AtomicBoolBox>("is-eos")
-                        .nick("Is end of stream")
-                        .read_only()
-                        .build(),
                     glib::ParamSpecBoxed::builder::<VideoPayloadHandle>("payload-handle")
                         .nick("Payload handle")
                         .read_only()
@@ -278,7 +269,6 @@ pub mod imp {
 
         fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
             match pspec.name() {
-                "is-eos" => self.is_eos.to_value(),
                 "payload-handle" => self.payload_handle.to_value(),
                 _ => unreachable!(),
             }
@@ -340,7 +330,6 @@ pub mod imp {
                     config.mastering_display_info.take();
                     config.content_light_level.take();
                     config.has_overlay = false;
-                    self.is_eos.0.store(true, atomic::Ordering::Relaxed);
                     self.payload_handle.0.lock().replace(None);
                     self.obj().emit_by_name::<()>("frame-available", &[]);
                 }
@@ -479,7 +468,6 @@ pub mod imp {
                 return Ok(gst::FlowSuccess::Ok);
             };
 
-            self.is_eos.0.store(false, atomic::Ordering::Relaxed);
             let buffer = buffer.clone();
 
             let overlays: SmallVec<[Overlay; 3]> = buffer
