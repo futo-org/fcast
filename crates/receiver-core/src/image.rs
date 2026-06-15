@@ -313,7 +313,7 @@ impl<'a> DecoderContext<'a> {
                 );
                 self.handle_still(decoder)?;
             }
-            #[cfg(all(feature = "desktop", target_os = "linux"))]
+            #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
             ExtendedImageFormat::Heif => {
                 let reader = non_fatal!(ImageReader::new(img_data).with_guessed_format(), "HEIF");
                 let decoder = non_fatal!(reader.into_decoder(), "HEIF");
@@ -355,7 +355,7 @@ impl Decoder {
         let span = debug_span!("image-decoder");
         let _entered = span.enter();
 
-        #[cfg(all(feature = "desktop", target_os = "linux"))]
+        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
         libheif_rs::integration::image::register_all_decoding_hooks();
         hayro_jpeg2000::integration::register_decoding_hook();
         jxl_oxide::integration::register_image_decoding_hook();
@@ -376,7 +376,7 @@ pub enum ExtendedImageFormat {
     ImageLib(ImageFormat),
     JpegXl,
     Jpeg2000,
-    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
     Heif,
 }
 
@@ -428,7 +428,7 @@ impl Downloader {
                 "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
                     ExtendedImageFormat::Jpeg2000
                 }
-                #[cfg(all(feature = "desktop", target_os = "linux"))]
+                #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
                 "image/heif" | "image/heic" => ExtendedImageFormat::Heif,
                 _ => {
                     return Err(DownloadImageError::UnsupportedContentType(
