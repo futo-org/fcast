@@ -45,20 +45,16 @@
   <launchable type="desktop-id">org.fcast.Receiver.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Receiver/main.png</image>
-      <caption>The main window of the FCast Receiver showing the connection information and a loading spinner.</caption>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/blob/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/playing_video.png</image>
+      <caption>The player window of the FCast Receiver showing video content playing with media controls shown.</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Receiver/main_connected.png</image>
-      <caption>The main window of the FCast Receiver showing a device has been connected.</caption>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/blob/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/playing_audio.png</image>
+      <caption>The player window of the FCast Receiver showing audio content playing.</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Receiver/player1.png</image>
-      <caption>The player window of the FCast Receiver showing content playing with media controls shown.</caption>
-    </screenshot>
-    <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/master/.flatpak/screenshots/org.fcast.Receiver/player2.png</image>
-      <caption>The player window of the FCast Receiver showing content playing with media controls hidden.</caption>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/blob/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/idle.png</image>
+      <caption>The main window of the FCast Receiver showing the connection information.</caption>
     </screenshot>
   </screenshots>
 </component>
