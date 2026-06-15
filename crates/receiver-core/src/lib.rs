@@ -12,7 +12,12 @@ use tracing::{debug, error, info};
 
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
-use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    rc::Rc,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 #[cfg(not(target_os = "android"))]
 pub use clap;
@@ -24,6 +29,7 @@ mod dmabuf;
 #[cfg(target_os = "linux")]
 pub mod egl;
 mod fcast;
+mod fcasthttpsrc;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod gcast;
@@ -78,6 +84,15 @@ macro_rules! log_if_err {
         }
     };
 }
+
+pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(num_cpus::get().min(4))
+        .thread_name("main-async-worker")
+        .build()
+        .unwrap()
+});
 
 slint::include_modules!();
 
@@ -238,13 +253,6 @@ pub fn run<S: VideoSink + 'static>(
 
     logging::init(cli_args.loglevel);
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(num_cpus::get().min(4))
-        .thread_name("main-async-worker")
-        .build()
-        .unwrap();
-
     #[cfg(target_os = "linux")]
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         error!(
@@ -267,7 +275,7 @@ pub fn run<S: VideoSink + 'static>(
     let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
 
     #[cfg(target_os = "android")]
-    runtime.spawn({
+    RUNTIME.spawn({
         let msg_tx = msg_tx.clone();
         async move {
             while let Some(event) = platform_event_rx.recv().await {
@@ -597,7 +605,7 @@ pub fn run<S: VideoSink + 'static>(
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
     let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
-    let event_loop_jh = runtime.spawn({
+    let event_loop_jh = RUNTIME.spawn({
         let ui_weak = ui.as_ref().map(|ui| ui.as_weak());
         let msg_tx = msg_tx.clone();
         async move {
@@ -646,7 +654,7 @@ pub fn run<S: VideoSink + 'static>(
     });
 
     #[cfg(not(target_os = "android"))]
-    runtime.spawn({
+    RUNTIME.spawn({
         let msg_tx = msg_tx.clone();
         async move {
             if let Err(err) = tokio::signal::ctrl_c().await {
@@ -681,13 +689,13 @@ pub fn run<S: VideoSink + 'static>(
 
         info!("Shutting down...");
 
-        runtime.block_on(async move {
+        RUNTIME.block_on(async move {
             msg_tx.send(Message::Quit);
             let _ = fin_rx.await;
         });
     } else {
         info!(initialized_in = ?start.elapsed());
-        runtime.block_on(async move {
+        RUNTIME.block_on(async move {
             if let Err(err) = event_loop_jh.await {
                 error!(?err, "Failed to join event loop task");
             }

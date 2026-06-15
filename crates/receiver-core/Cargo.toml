@@ -27,7 +27,6 @@ smallvec.workspace = true
 parking_lot.workspace = true
 image_swizzle.workspace = true
 bytes.workspace = true
-gst-plugin-reqwest = { rev = "06c29061365d9ba19956540da47abf8dffea7d31", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
 gst-plugin-webrtc = { workspace = true, features = [ "static", "whep-client" ] }
 gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
@@ -42,6 +41,8 @@ oneshot = { version = "0.2", features = ["std"] }
 libplacebo.path = "../libplacebo"
 toml_edit.workspace = true
 directories.workspace = true
+headers = "0.4"
+mime = "0.3"
 
 # RAOP
 rtsp-types = "0.1"
@@ -98,7 +99,7 @@ objc2-app-kit = "0.3.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
-reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls", "gzip", "cookies" ] }
 ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
@@ -116,10 +117,10 @@ tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
 jni = "0.21.1"
-reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-reqwest = { version = "0.13", features = [ "native-tls" ] }
+reqwest = { version = "0.13", features = [ "native-tls", "gzip", "cookies" ] }
 app-updater = { path = "../app-updater"}
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
 receiver-resources.path = "../receiver-resources"

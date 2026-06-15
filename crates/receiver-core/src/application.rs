@@ -128,11 +128,6 @@ impl Application {
         #[cfg(not(target_os = "android"))] settings: Settings,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
-        // Seems better than souphttpsrc
-        if let Some(reqwest_src) = registry.lookup_feature("reqwesthttpsrc") {
-            reqwest_src.set_rank(gst::Rank::PRIMARY + 1);
-        }
-
         for nv_feature in registry.features_by_plugin("nvcodec") {
             if let Some(elem) = nv_feature.downcast_ref::<gst::ElementFactory>()
                 && elem.has_type(gst::ElementFactoryType::DECODER)
@@ -1323,9 +1318,10 @@ impl Application {
                                     progress as f64 / total as f64
                                 } * 100.0;
 
-                                let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateDownloadProgress(
-                                    progress_percent as i32,
-                                ));
+                                let _ =
+                                    gui_tx.send(gui::UpdateGuiCommand::SetUpdateDownloadProgress(
+                                        progress_percent as i32,
+                                    ));
                             }
                         })
                         .await;
@@ -1337,7 +1333,8 @@ impl Application {
                                 let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
                                     UiUpdaterState::DownloadFailed,
                                 ));
-                                let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
+                                let _ =
+                                    gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
                                 return;
                             }
                         };
