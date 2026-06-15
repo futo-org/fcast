@@ -1263,7 +1263,6 @@ mod tests {
                 // Bind the server, retrieve the local port that was selected in the end and set this as
                 // the location property on the source
                 let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let local_addr = listener.local_addr().unwrap();
 
                 local_addr_sender.send(local_addr).unwrap();
