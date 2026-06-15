@@ -26,6 +26,13 @@ impl BoolLock {
     }
 }
 
+struct PlaybinFlags {}
+
+impl PlaybinFlags {
+    const AUDIO_AND_VIDEO: &'static str = "buffering+soft-volume+text+audio+video";
+    const AUDIO_ONLY: &'static str = "soft-volume+audio";
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PlayerState {
     Paused,
@@ -623,17 +630,20 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(video_sink: gst::Element, msg_tx: MessageSender) -> Result<Self> {
+    pub fn new(video_sink: Option<gst::Element>, msg_tx: MessageSender) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
-        let playbin = gst::ElementFactory::make("playbin3")
-            .property("video-sink", video_sink)
-            .property("audio-filter", scaletempo)
-            // .property_from_str(
-            //     "flags",
-            //     "deinterlace+buffering+soft-volume+text+audio+video",
-            // )
-            // .property("instant-uri", true)
-            .build()?;
+        let playbin = {
+            let mut builder =
+                gst::ElementFactory::make("playbin3").property("audio-filter", scaletempo);
+            if let Some(video_sink) = video_sink {
+                builder = builder
+                    .property("video-sink", video_sink)
+                    .property_from_str("flags", PlaybinFlags::AUDIO_AND_VIDEO);
+            } else {
+                builder = builder.property_from_str("flags", PlaybinFlags::AUDIO_ONLY);
+            }
+            builder.build()?
+        };
 
         playbin.connect_notify(Some("volume"), {
             let msg_tx = msg_tx.clone();
