@@ -1,6 +1,6 @@
 # FCast Receiver Changelog
 
-## 3.0.2 - UNRELEASED
+## 3.0.2 - 2026-06-16
 
  - Downgrade session version if sender is higher than receiver instead of rejecting the connection
  - Fix subtitles flickering in certain situations
