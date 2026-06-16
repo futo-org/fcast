@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-receiver"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
@@ -7815,7 +7815,7 @@ dependencies = [
 
 [[package]]
 name = "receiver-core"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "aes",
  "alac",
