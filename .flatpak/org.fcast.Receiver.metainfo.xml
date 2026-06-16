@@ -25,11 +25,13 @@
   <content_rating type="oars-1.1" />
   <releases>
     <release version="3.0.2" date="2026-06-16">
-      <ul>
-        <li>Downgrade session version if sender is higher than receiver instead of rejecting the connection</li>
-        <li>Fix subtitles flickering in certain situations</li>
-        <li>Added `--headless` option to run without a GUI and only play audio</li>
-      </ul>
+      <description>
+        <ul>
+            <li>Downgrade session version if sender is higher than receiver instead of rejecting the connection</li>
+            <li>Fix subtitles flickering in certain situations</li>
+            <li>Added `--headless` option to run without a GUI and only play audio</li>
+        </ul>
+      </description>
     </release>
     <release version="3.0.1" date="2026-06-02">
     </release>
