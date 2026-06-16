@@ -53,15 +53,15 @@
   <launchable type="desktop-id">org.fcast.Receiver.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/blob/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/playing_video.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/playing_video.png</image>
       <caption>The player window of the FCast Receiver showing video content playing with media controls shown.</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/blob/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/playing_audio.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/playing_audio.png</image>
       <caption>The player window of the FCast Receiver showing audio content playing.</caption>
     </screenshot>
     <screenshot>
-      <image>https://gitlab.futo.org/videostreaming/fcast/-/blob/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/idle.png</image>
+      <image>https://gitlab.futo.org/videostreaming/fcast/-/raw/ac857488fa964377d4d71fcbc4123049ceeaa16b/.flatpak/screenshots/org.fcast.Receiver/idle.png</image>
       <caption>The main window of the FCast Receiver showing the connection information.</caption>
     </screenshot>
   </screenshots>
