@@ -153,8 +153,6 @@ impl StateMachine {
     #[must_use]
     #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
     fn seek_internal(&mut self, mut seek: Seek, target_state: Option<gst::State>) -> Option<Seek> {
-        // tracing::info!("<<TEST>> assert_eq!(sm.seek_internal({seek:?}, {target_state:?}), TODO);");
-
         if self.is_live {
             warn!("Cannot seek when source is live");
             return None;
@@ -214,8 +212,6 @@ impl StateMachine {
 
     #[must_use]
     fn set_playback_state(&mut self, state: RunningState) -> Option<gst::State> {
-        // #[rustfmt::skip] tracing::info!("<<TEST>> assert_eq!(sm.set_playback_state(RunningState::{state:?}), TODO);");
-
         let next_state: gst::State = state.into();
         match &mut self.state {
             State::Stopped => {
@@ -245,8 +241,6 @@ impl StateMachine {
 
     #[must_use]
     fn buffering(&mut self, new_percent: i32) -> BufferingStateResult {
-        // tracing::info!("<<TEST>> assert_eq!(sm.buffering({new_percent}), TODO);");
-
         match &mut self.state {
             State::Stopped | State::PendingUriChange => {
                 self.state = State::Buffering {
@@ -355,8 +349,6 @@ impl StateMachine {
         pending: gst::State,
     ) -> StateChangeResult {
         debug!(?new, ?pending, state = ?self.state, "State changed");
-        // #[rustfmt::skip] tracing::info!("<<TEST>> assert_eq!(sm.state_changed(gs!({_old:?}), gs!({new:?}), gs!({pending:?})), TODO);");
-
         self.current_state = new;
 
         match &mut self.state {
@@ -833,10 +825,6 @@ impl Player {
                     current: change.current(),
                     pending: change.pending(),
                 }
-            }
-            MessageView::Element(_element) => {
-                // TODO: handle redirects?
-                return;
             }
             MessageView::DurationChanged(_) => PlayerEvent::DurationChanged,
             MessageView::RequestState(state) => {

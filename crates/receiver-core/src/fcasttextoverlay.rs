@@ -191,7 +191,6 @@ mod imp {
     }
 
     enum WaitForTextResult {
-        // TODO: can it be a ref?
         Have(Option<gst::Buffer>),
         Waiting,
         Flushing,
