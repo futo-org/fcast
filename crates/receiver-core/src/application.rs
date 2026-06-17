@@ -688,17 +688,15 @@ impl Application {
             let this_id = self.current_image_download_id;
             let url = thumbnail_url.clone();
             self.pending_thumbnail_download = Some(this_id);
-            let headers = self.current_request_headers.lock().clone();
+            let headers = media_item.headers.clone();
             self.image_downloader.queue_download(this_id, url, headers);
         }
-
-        *self.current_request_headers.lock() = media_item.headers.clone();
 
         let mut is_image = false;
         if container.starts_with("image/") {
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
-            let headers = self.current_request_headers.lock().clone();
+            let headers = media_item.headers.clone();
             is_image = true;
             self.image_downloader.queue_download(id, url, headers);
         } else {
@@ -739,6 +737,7 @@ impl Application {
             });
         }
         self.is_loading_media = true;
+        *self.current_request_headers.lock() = media_item.headers.clone();
 
         self.screensaver_inhibitor.inhibit("Media playback");
 
