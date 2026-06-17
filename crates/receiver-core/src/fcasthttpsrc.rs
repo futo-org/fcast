@@ -236,7 +236,7 @@ mod imp {
 
             gst::debug!(CAT, imp = self, "Creating new request for {}", uri);
 
-            let settings = self.settings.lock().clone();
+            let settings = self.settings.lock();
 
             let req = self.ensure_client()?.0.client.get(uri.clone());
 
@@ -347,12 +347,14 @@ mod imp {
 
             let req = if let Some(ref user_id) = settings.user_id {
                 // HTTP auth available
-                req.basic_auth(user_id, settings.user_pw)
+                req.basic_auth(user_id, settings.user_pw.clone())
             } else {
                 req
             };
 
             gst::debug!(CAT, imp = self, "Sending new request: {:?}", req);
+
+            drop(settings);
 
             let future = async {
                 req.send().await.map_err(|err| {
