@@ -13,15 +13,15 @@ mod build {
     const TAG: &str = "v7.360.1";
 
     macro_rules! runner {
-        ($cmd:expr, $($arg:expr),*) => {
-            Command::new($cmd)
+        ($cmd:expr, $($arg:expr),*) => {{
+            let status = Command::new($cmd)
                 $(.arg($arg))*
                 .stderr(Stdio::inherit())
                 .stdout(Stdio::inherit())
-                .output()
-                .expect(concat!($cmd, " failed"));
-
-        };
+                .status()
+                .expect(concat!($cmd, " failed to spawn"));
+            assert!(status.success(), concat!($cmd, " exited with a failure status"));
+        }};
     }
 
     pub fn build_from_src(
@@ -37,6 +37,17 @@ mod build {
         let source = PathBuf::from(env::var("OUT_DIR").unwrap()).join("libplacebo");
         let build_path = source.join(build_dir);
         let release_path = source.join(release_dir);
+
+        fn apply_patch(root: &Path, patch_path: &Path) {
+            let status = Command::new("patch")
+                .current_dir(root)
+                .arg("-p1")
+                .arg("-i")
+                .arg(patch_path)
+                .status()
+                .expect(concat!("patch failed to spawn"));
+            assert!(status.success(), "patch exited with a failure status");
+        }
 
         fn copy_dir(dst: &PathBuf, root: &Path) {
             fs::create_dir_all(dst).unwrap();
@@ -60,7 +71,12 @@ mod build {
             }
         }
 
+        // Remove possible stale files
+        let _ = fs::remove_dir_all(&source);
         copy_dir(&source, &libplacebo_source);
+        let rgb10a2_patch_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("patches/opengl-rgb10a2.patch");
+        apply_patch(&source, &rgb10a2_patch_path);
 
         runner!(
             "meson",
@@ -99,6 +115,8 @@ fn format_write(builder: bindgen::Builder) -> String {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=patches/opengl-rgb10a2.patch");
+
     unsafe { std::env::set_var("SYSTEM_DEPS_LIBPLACEBO_BUILD_INTERNAL", "always") };
 
     let libs = system_deps::Config::new()
