@@ -561,13 +561,21 @@ impl PlaceboContext {
         destination_frame.planes[0].texture = destination_tex;
         destination_frame.planes[0].components = 4;
         destination_frame.planes[0].component_mapping = [0, 1, 2, 3];
+        let depth = unsafe {
+            let fmt = (*destination_tex).params.format;
+            if fmt.is_null() {
+                8
+            } else {
+                (*fmt).component_depth.iter().copied().max().unwrap_or(8)
+            }
+        };
         destination_frame.repr = pl_color_repr {
             sys: pl_color_system::PL_COLOR_SYSTEM_RGB,
             levels: pl_color_levels::PL_COLOR_LEVELS_FULL,
             alpha: pl_alpha_mode::PL_ALPHA_NONE,
             bits: pl_bit_encoding {
-                sample_depth: 8,
-                color_depth: 8,
+                sample_depth: depth,
+                color_depth: depth,
                 bit_shift: 0,
             },
             dovi: ptr::null(),

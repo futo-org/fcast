@@ -1,0 +1,77 @@
+commit 9ee20c8c0734cac9fe0ce4cbc00add632f7a2c3f
+Author: dec05eba <dec05eba@protonmail.com>
+Date:   Thu Jun 18 16:45:48 2026 +0200
+
+    opengl/formats: support rgb10a2
+
+diff --git a/src/opengl/formats.c b/src/opengl/formats.c
+index 94154448..61314867 100644
+--- a/src/opengl/formats.c
++++ b/src/opengl/formats.c
+@@ -37,6 +37,7 @@ static bool supported_fourcc(struct pl_gl *p, EGLint fourcc)
+         .caps = (enum pl_fmt_caps) (_caps),          \
+         .sample_order = {0, 1, 2, 3},                \
+         .component_depth = {bits, bits, bits, bits}, \
++        .texel_align = (bits) / 8,                   \
+     }
+ 
+ // Convenience to make the names simpler
+@@ -95,6 +96,7 @@ const struct gl_format formats_bgra8[] = {
+         .caps               = S|L|F|V,
+         .sample_order       = {2, 1, 0, 3},
+         .component_depth    = {8, 8, 8, 8},
++        .texel_align        = 1,
+     }},
+ };
+ 
+@@ -105,6 +107,18 @@ const struct gl_format formats_norm16[] = {
+     {GL_RGBA16,         RGBA,  U16, FMT("rgba16",  16, UNORM, S|L|F|V)},
+ };
+ 
++// Packed 10-bit RGB with 2-bit alpha
++const struct gl_format formats_rgb10a2[] = {
++    {GL_RGB10_A2,       RGBA,  GL_UNSIGNED_INT_2_10_10_10_REV, {
++        .name               = "rgb10a2",
++        .type               = PL_FMT_UNORM,
++        .caps               = S|L|F,
++        .sample_order       = {0, 1, 2, 3},
++        .component_depth    = {10, 10, 10, 2},
++        .texel_align        = 4,
++    }},
++};
++
+ // Renderable version of rgb16
+ const struct gl_format formats_rgb16_fbo[] = {
+     {GL_RGB16,          RGB,   U16, FMT("rgb16",   16, UNORM, S|L|F|V)},
+@@ -284,6 +298,7 @@ static void add_format(pl_gpu pgpu, const struct gl_format *gl_fmt)
+         break;
+     case GL_INT:
+     case GL_UNSIGNED_INT:
++    case GL_UNSIGNED_INT_2_10_10_10_REV:
+     case GL_FLOAT:
+         size = 4;
+         break;
+@@ -293,7 +308,6 @@ static void add_format(pl_gpu pgpu, const struct gl_format *gl_fmt)
+ 
+     // Host visible representation
+     fmt->texel_size = fmt->num_components * size;
+-    fmt->texel_align = 1;
+     for (int i = 0; i < fmt->num_components; i++)
+         fmt->host_bits[i] = size * 8;
+ 
+@@ -449,6 +463,7 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
+         DO_FORMATS(formats_norm8);
+         DO_FORMATS(formats_bgra8);
+         DO_FORMATS(formats_norm16);
++        DO_FORMATS(formats_rgb10a2);
+         DO_FORMATS(formats_rgb16_fbo);
+         DO_FORMATS(formats_float32);
+         DO_FORMATS(formats_float16);
+@@ -486,6 +501,7 @@ bool gl_setup_formats(struct pl_gpu_t *gpu)
+         // GLES 3.0 has some basic formats, with framebuffers for float16
+         // depending on GL_EXT_color_buffer_(half_)float support
+         DO_FORMATS(formats_norm8);
++        DO_FORMATS(formats_rgb10a2);
+         if (pl_opengl_has_ext(p->gl, "GL_EXT_texture_norm16")) {
+             DO_FORMATS(formats_norm16);
+             DO_FORMATS(formats_rgb16_fallback);

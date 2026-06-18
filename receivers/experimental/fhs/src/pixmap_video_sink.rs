@@ -13,20 +13,20 @@ use rcore::{
     libplacebo::libplacebo_sys::*,
     placebo::PlaceboContext,
     tracing::{debug, warn},
-    video::{RawFrame, FrameData},
+    video::{Frame, FrameData},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TargetFormat {
     Rgba8,
-    Rgba16F,
+    Rgb10A2,
 }
 
 impl TargetFormat {
     fn pl_name(self) -> &'static str {
         match self {
             TargetFormat::Rgba8 => "rgba8",
-            TargetFormat::Rgba16F => "rgba16hf",
+            TargetFormat::Rgb10A2 => "rgb10a2",
         }
     }
 }
@@ -112,12 +112,15 @@ impl FhsPixmapSink {
             ));
         }
 
-        let modifiers = rcore::egl::get_importable_modifiers(fourcc);
+        let mut modifiers = rcore::egl::get_importable_modifiers(fourcc);
         if modifiers.is_empty() {
             return Err(anyhow!(
                 "no importable (non external_only) modifiers for fourcc {fourcc:#010x}"
             ));
         }
+        // Try linear (0) last, a linear full-screen scanout plane has the worst
+        // bandwidth cost and can exceed the bandwidth limit for direct scanout
+        modifiers.sort_by_key(|&m| u64::from(m == 0));
         debug!(
             "ensure_target fourcc={fourcc:#010x} ({}x{}) format={:?} egl-importable modifiers={:#018x?}",
             width, height, format, modifiers
@@ -157,7 +160,6 @@ impl FhsPixmapSink {
         match self.import_and_register(pl_ctx, bo, fmt, fourcc, width, height, format) {
             Ok(target) => {
                 self.target = Some(target);
-                self.hdr_metadata = None;
                 Ok(())
             }
             Err(err) => {
@@ -309,7 +311,7 @@ impl VideoSink for FhsPixmapSink {
         &mut self,
         placebo: &mut PlaceboContext,
         gl: &glow::Context,
-        frame: &RawFrame,
+        frame: &Frame,
         target_size: (u32, u32),
     ) -> Result<()> {
         let (target_width, target_height) = target_size;
@@ -319,8 +321,8 @@ impl VideoSink for FhsPixmapSink {
         let is_hlg = matches!(transfer, gst_video::VideoTransferFunction::AribStdB67);
         let is_hdr = is_pq || is_hlg;
 
-        let format = if is_hdr {
-            TargetFormat::Rgba16F
+        let format = if frame_bit_depth(frame) > 8 {
+            TargetFormat::Rgb10A2
         } else {
             TargetFormat::Rgba8
         };
@@ -328,7 +330,8 @@ impl VideoSink for FhsPixmapSink {
         self.ensure_target(placebo, target_width, target_height, format)?;
         let target = self.target.as_ref().expect("target exists after ensure");
 
-        let (target_color, new_hdr_metadata) = build_target_color(frame, is_pq, is_hlg);
+        let (target_color, new_hdr_metadata) =
+            build_target_color(frame, colorimetry, is_pq, is_hlg);
 
         placebo
             .render_frame_to_tex(
@@ -521,56 +524,96 @@ impl Drop for GbmAllocator {
     }
 }
 
-fn frame_video_colorimetry(frame: &RawFrame) -> gst_video::VideoColorimetry {
+fn frame_video_colorimetry(frame: &Frame) -> gst_video::VideoColorimetry {
     match &frame.data {
         FrameData::SystemMemory { frame } => frame.info().colorimetry(),
         FrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry(),
     }
 }
 
+fn frame_bit_depth(frame: &Frame) -> u32 {
+    let depth = match &frame.data {
+        FrameData::SystemMemory { frame } => {
+            frame.info().format_info().depth().iter().copied().max()
+        }
+        FrameData::DmaBuf { dma_info, .. } => dma_info
+            .to_video_info()
+            .ok()
+            .and_then(|info| info.format_info().depth().iter().copied().max()),
+    };
+    depth.unwrap_or(8)
+}
+
+fn gst_primaries_to_pl_primaries(
+    primaries: gst_video::VideoColorPrimaries,
+    is_hdr: bool,
+) -> pl_color_primaries {
+    match primaries {
+        gst_video::VideoColorPrimaries::Bt709 => pl_color_primaries::PL_COLOR_PRIM_BT_709,
+        gst_video::VideoColorPrimaries::Bt2020 => pl_color_primaries::PL_COLOR_PRIM_BT_2020,
+        gst_video::VideoColorPrimaries::Smpterp431 => pl_color_primaries::PL_COLOR_PRIM_DCI_P3,
+        gst_video::VideoColorPrimaries::Smpteeg432 => pl_color_primaries::PL_COLOR_PRIM_DISPLAY_P3,
+        _ => {
+            if is_hdr {
+                pl_color_primaries::PL_COLOR_PRIM_BT_2020
+            } else {
+                pl_color_primaries::PL_COLOR_PRIM_BT_709
+            }
+        }
+    }
+}
+
+fn gst_primaries_to_fl_primaries(
+    primaries: gst_video::VideoColorPrimaries,
+    is_hdr: bool,
+) -> fl_protocol_Primaries {
+    match primaries {
+        gst_video::VideoColorPrimaries::Bt709 => fl_protocol_Primaries_fl_protocol_Primaries_bt_709,
+        gst_video::VideoColorPrimaries::Bt2020 => {
+            fl_protocol_Primaries_fl_protocol_Primaries_bt_2020
+        }
+        gst_video::VideoColorPrimaries::Smpterp431 => {
+            fl_protocol_Primaries_fl_protocol_Primaries_dci_p3
+        }
+        gst_video::VideoColorPrimaries::Smpteeg432 => {
+            fl_protocol_Primaries_fl_protocol_Primaries_display_p3
+        }
+        _ => {
+            if is_hdr {
+                fl_protocol_Primaries_fl_protocol_Primaries_bt_2020
+            } else {
+                fl_protocol_Primaries_fl_protocol_Primaries_bt_709
+            }
+        }
+    }
+}
+
 fn build_target_color(
-    frame: &RawFrame,
+    frame: &Frame,
+    colorimetry: gst_video::VideoColorimetry,
     is_pq: bool,
     is_hlg: bool,
 ) -> (pl_color_space, fl_protocol_HdrMetadata) {
     let is_hdr = is_pq || is_hlg;
 
-    let pl_primaries = if is_hdr {
-        pl_color_primaries::PL_COLOR_PRIM_BT_2020
-    } else {
-        pl_color_primaries::PL_COLOR_PRIM_BT_709
-    };
+    let pl_primaries = gst_primaries_to_pl_primaries(colorimetry.primaries(), is_hdr);
 
-    let pl_transfer = if is_pq {
+    // Render HDR to PQ even when the source is HLG because the display server
+    // can't direct scanout HLG sources (color values outside [0,1] range)
+    let pl_transfer = if is_hdr {
         pl_color_transfer::PL_COLOR_TRC_PQ
-    } else if is_hlg {
-        pl_color_transfer::PL_COLOR_TRC_HLG
     } else {
         pl_color_transfer::PL_COLOR_TRC_SRGB
     };
 
-    let color_space = pl_color_space {
-        primaries: pl_primaries,
-        transfer: pl_transfer,
-        // Keep default values for hdr so the renderer treats luminance as unknown
-        // and preserves the soruce dynamic range
-        hdr: unsafe { std::mem::zeroed() },
-    };
-
     let mut hdr_metadata: fl_protocol_HdrMetadata = unsafe { std::mem::zeroed() };
-    hdr_metadata.transfer_function = if is_pq {
+    hdr_metadata.transfer_function = if is_hdr {
         fl_protocol_TransferFunction_fl_protocol_TransferFunction_pq
-    } else if is_hlg {
-        fl_protocol_TransferFunction_fl_protocol_TransferFunction_hlg
     } else {
         fl_protocol_TransferFunction_fl_protocol_TransferFunction_srgb
     } as u8;
 
-    hdr_metadata.primaries = if is_hdr {
-        fl_protocol_Primaries_fl_protocol_Primaries_bt_2020
-    } else {
-        fl_protocol_Primaries_fl_protocol_Primaries_bt_709
-    } as u8;
+    hdr_metadata.primaries = gst_primaries_to_fl_primaries(colorimetry.primaries(), is_hdr) as u8;
 
     if is_hdr {
         let mut have_valid_mastering = false;
@@ -616,6 +659,18 @@ fn build_target_color(
             hdr_metadata.max_mastering_luminance = 1000.0;
             hdr_metadata.min_mastering_luminance = 0.005;
         }
+    }
+
+    let mut color_space = pl_color_space {
+        primaries: pl_primaries,
+        transfer: pl_transfer,
+        // Zeroed hdr = luminance unknown: for PQ sources libplacebo preserves the
+        // source dynamic range untouched (the server does the tonemap).
+        hdr: unsafe { std::mem::zeroed() },
+    };
+    if is_hlg {
+        color_space.hdr.max_luma = hdr_metadata.max_mastering_luminance;
+        color_space.hdr.min_luma = PL_COLOR_HDR_BLACK as f32;
     }
 
     (color_space, hdr_metadata)
