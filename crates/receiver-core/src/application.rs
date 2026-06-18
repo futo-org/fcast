@@ -157,7 +157,7 @@ impl Application {
                 let name = elem.factory()?.name();
                 match name.as_str() {
                     "rtspsrc" | "webrtcbin" => elem.set_property("latency", 75u32),
-                    "reqwesthttpsrc" => {
+                    "fcasthttpsrc" => {
                         let mut did_set_user_agent = false;
                         if let Some(ref headers) = *headers.lock() {
                             let mut extra_headers_builder =
