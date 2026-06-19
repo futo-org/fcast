@@ -3750,6 +3750,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-check"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca00e318412c20405c6e0817cb330b706d128c779c9ec613fa2b53e4daf55c7"
+dependencies = [
+ "glib 0.22.7",
+ "gstreamer 0.25.2",
+ "gstreamer-check-sys",
+]
+
+[[package]]
+name = "gstreamer-check-sys"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a15eb052477932b64993509db62a2b5fbfd88a1203d249e871ad5d7bc052508"
+dependencies = [
+ "glib-sys 0.22.6",
+ "gobject-sys 0.22.6",
+ "gstreamer-sys 0.25.2",
+ "libc",
+ "system-deps 7.0.8",
+]
+
+[[package]]
 name = "gstreamer-gl"
 version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7844,6 +7868,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
+ "gstreamer-check",
  "gstreamer-gl-egl",
  "gstreamer-tag",
  "gstreamer-video",

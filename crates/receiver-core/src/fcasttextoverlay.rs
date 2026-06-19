@@ -328,7 +328,7 @@ mod imp {
                     let vid_running_time_end = generic_to_time(state.segment.to_running_time(end));
 
                     if vid_running_time
-                        .map(|vid_end| text_running_time_end < vid_end)
+                        .map(|vid_start| text_running_time_end <= vid_start)
                         .unwrap_or(false)
                     {
                         gst::debug!(CAT, imp = self, "text buffer too old, popping");
@@ -961,4 +961,137 @@ pub fn plugin_init() -> Result<(), glib::BoolError> {
         gst::Rank::PRIMARY,
         FCastTextOverlay::static_type(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use gst::prelude::*;
+
+    use super::FCastVideoTextOverlayMeta;
+
+    fn init() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            gst::init().unwrap();
+            super::plugin_init().unwrap();
+        });
+    }
+
+    fn video_src_caps() -> gst::Caps {
+        gst_video::VideoCapsBuilder::new()
+            .format(gst_video::VideoFormat::Rgba)
+            .width(320)
+            .height(240)
+            .framerate(gst::Fraction::new(30, 1))
+            .build()
+    }
+
+    fn text_src_caps() -> gst::Caps {
+        gst::Caps::builder("text/x-raw")
+            .field("format", "utf8")
+            .build()
+    }
+
+    fn new_video_buffer(pts: gst::ClockTime) -> gst::Buffer {
+        let mut buffer = gst::Buffer::with_size(320 * 240 * 4).unwrap();
+        {
+            let buffer = buffer.get_mut().unwrap();
+            buffer.set_pts(pts);
+            buffer.set_duration(gst::ClockTime::mul_div_round(gst::ClockTime::SECOND, 1, 30));
+        }
+        buffer
+    }
+
+    fn new_text_buffer(txt: &str, pts: gst::ClockTime, dur: gst::ClockTime) -> gst::Buffer {
+        let mut buffer = gst::Buffer::from_mut_slice(txt.as_bytes().to_vec());
+        {
+            let buffer = buffer.get_mut().unwrap();
+            buffer.set_pts(pts);
+            buffer.set_duration(dur);
+        }
+        buffer
+    }
+
+    #[test]
+    fn test_basic_passthrough() {
+        init();
+
+        let mut harness =
+            gst_check::Harness::with_padnames("fcasttextoverlay", Some("video_sink"), Some("src"));
+
+        harness.set_src_caps(video_src_caps());
+        harness.play();
+
+        let out = harness
+            .push_and_pull(new_video_buffer(gst::ClockTime::ZERO))
+            .unwrap();
+
+        assert_eq!(out.pts(), Some(gst::ClockTime::ZERO));
+        assert!(out.meta::<FCastVideoTextOverlayMeta>().is_none());
+    }
+
+    #[test]
+    fn test_basic_video_with_subtitle() {
+        init();
+
+        let mut harness =
+            gst_check::Harness::with_padnames("fcasttextoverlay", Some("video_sink"), Some("src"));
+
+        let element = harness.element().unwrap();
+        let mut text_harness = gst_check::Harness::with_element(&element, Some("text_sink"), None);
+
+        harness.set_src_caps(video_src_caps());
+        text_harness.set_src_caps(text_src_caps());
+
+        harness.play();
+        text_harness.play();
+
+        text_harness
+            .push(new_text_buffer(
+                "Hello",
+                gst::ClockTime::ZERO,
+                gst::ClockTime::from_seconds(1),
+            ))
+            .unwrap();
+
+        let out = harness
+            .push_and_pull(new_video_buffer(gst::ClockTime::ZERO))
+            .unwrap();
+
+        let meta = out.meta::<FCastVideoTextOverlayMeta>().unwrap();
+        let (format, text) = meta.get();
+        assert_eq!(text, "Hello");
+        assert!(matches!(format, super::meta_imp::TextFormat::Utf8));
+    }
+
+    #[test]
+    fn subtitle_not_shown_at_exact_end_boundary() {
+        init();
+
+        let mut harness =
+            gst_check::Harness::with_padnames("fcasttextoverlay", Some("video_sink"), Some("src"));
+        let element = harness.element().unwrap();
+        let mut text_harness = gst_check::Harness::with_element(&element, Some("text_sink"), None);
+
+        harness.set_src_caps(video_src_caps());
+        text_harness.set_src_caps(text_src_caps());
+        harness.play();
+        text_harness.play();
+
+        text_harness
+            .push(new_text_buffer(
+                "Hello",
+                gst::ClockTime::ZERO,
+                gst::ClockTime::from_seconds(1),
+            ))
+            .unwrap();
+
+        let out = harness
+            .push_and_pull(new_video_buffer(gst::ClockTime::SECOND))
+            .unwrap();
+
+        assert!(out.meta::<FCastVideoTextOverlayMeta>().is_none());
+    }
 }
