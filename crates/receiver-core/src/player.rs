@@ -219,10 +219,10 @@ impl StateMachine {
                 return None;
             }
             State::PendingUriChange => (),
-            State::Buffering { target_state, .. } => *target_state = next_state,
-            State::Changing { target_state, .. } => if *target_state != next_state {},
-            State::SeekAsync { target_state, .. } => *target_state = next_state,
-            State::Seeking { target_state, .. } => *target_state = next_state,
+            State::Buffering { target_state, .. }
+            | State::Changing { target_state, .. }
+            | State::SeekAsync { target_state, .. }
+            | State::Seeking { target_state, .. } => *target_state = next_state,
             State::Running {
                 state: current_state,
             } => {
@@ -1477,7 +1477,7 @@ mod tests {
         assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(VoidPending)), StateChangeResult::NewPlaybackState(PlaybackState::Paused));
         assert_eq!(sm.set_playback_state(RunningState::Playing), Some(gst::State::Playing));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
-        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+        assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.state, State::Changing { target_state: gst::State::Playing, pending_seek: None });
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::NewPlaybackState(PlaybackState::Playing));
         assert_eq!(sm.state, State::Running { state: RunningState::Playing });
@@ -1492,5 +1492,25 @@ mod tests {
         assert_eq!(sm.state, State::Running { state: RunningState::Paused });
         assert_eq!(sm.set_playback_state(RunningState::Paused), None);
         assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn changing_state_honors_latest_request() {
+        let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Ready), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.set_playback_state(rs!(Playing)), Some(gs!(Playing)));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) });
+        assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Paused), pending_seek: None });
+        assert_eq!(sm.set_playback_state(rs!(Playing)), None);
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Playing), pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)));
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Playing), pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) });
     }
 }
