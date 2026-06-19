@@ -5910,14 +5910,13 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.20.0"
-source = "git+https://github.com/MAlba124/mdns-sd.git?rev=daaae85d004002eb527ea242ba3a94f44190756c#daaae85d004002eb527ea242ba3a94f44190756c"
+source = "git+https://github.com/MAlba124/mdns-sd.git?rev=9123c110435fdb50068062a92c170c203da2f520#9123c110435fdb50068062a92c170c203da2f520"
 dependencies = [
  "fastrand",
  "flume",
  "if-addrs",
  "log",
  "mio",
- "regex",
  "socket-pktinfo",
  "socket2",
 ]
@@ -7875,6 +7874,7 @@ dependencies = [
  "rand 0.10.1",
  "rcgen",
  "receiver-resources",
+ "regex",
  "remote-pipeline-dbg",
  "reqwest 0.13.4",
  "rsa",

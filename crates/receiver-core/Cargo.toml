@@ -43,6 +43,7 @@ toml_edit.workspace = true
 directories.workspace = true
 headers = "0.4"
 mime = "0.3"
+regex.workspace = true
 
 # RAOP
 rtsp-types = "0.1"

@@ -31,7 +31,7 @@ pub fn start_daemon(
         .as_ref()
         .map(|s| s.discovery.as_ref().map(|d| d.exclude_interfaces.as_ref()))
     {
-        match mdns_sd::regex::Regex::new(excluded_interfaces) {
+        match regex::Regex::new(excluded_interfaces) {
             Ok(re) => {
                 if let Ok(ifaces) = &ifaces {
                     set_ips_msg = Some(Mdns::SetIps(
@@ -42,7 +42,8 @@ pub fn start_daemon(
                             .collect(),
                     ))
                 }
-                if let Err(err) = daemon.disable_interface(mdns_sd::IfKind::NameRegex(re)) {
+                let rule = mdns_sd::CustomIfKind::new(move |iface| re.is_match(&iface.name));
+                if let Err(err) = daemon.disable_interface(mdns_sd::IfKind::Custom(rule)) {
                     error!(?err, "Failed to disable interface");
                 }
             }

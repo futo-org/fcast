@@ -43,7 +43,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
 env_logger = "0.11.8"
-mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "daaae85d004002eb527ea242ba3a94f44190756c" }
+mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "9123c110435fdb50068062a92c170c203da2f520" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -72,6 +72,7 @@ webbrowser = "1"
 glow = "0.17"
 libloading = "0.9.0"
 directories = "6.0.0"
+regex = "1.12"
 
 [profile.release]
 lto = "fat"
