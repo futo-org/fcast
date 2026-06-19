@@ -272,9 +272,9 @@ impl Renderer {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl.uniform_1_i32(Some(&self.blur.input_texture), 0);
 
-            let iters = 12;
+            let iters = 10;
             for i in 0..iters {
-                let radius = (iters - i - 1) as f32 * 1.5;
+                let frac = (iters - i) as f32 / iters as f32 * 0.035;
 
                 result_framebuffer.set_texture_and_bind(&result_texture)?;
 
@@ -284,8 +284,8 @@ impl Renderer {
                     .bind_texture(glow::TEXTURE_2D, Some(input_texture.inner));
 
                 let (dir_x, dir_y) = match i % 2 == 0 {
-                    true => (radius, 0.0),
-                    false => (0.0, radius),
+                    true => (frac * width as f32, 0.0),
+                    false => (0.0, frac * height as f32),
                 };
                 self.gl
                     .uniform_2_f32(Some(&self.blur.direction), dir_x, dir_y);
