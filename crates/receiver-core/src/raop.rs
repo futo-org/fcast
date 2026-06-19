@@ -1642,7 +1642,7 @@ impl DmapTag {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct RaopMetadata {
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -1656,7 +1656,7 @@ impl RaopMetadata {
         };
 
         let mut i = 8;
-        while i < dmap.len() - 8 {
+        while i < dmap.len().saturating_sub(8) {
             let tag = &dmap[i..i + 4];
             i += 4;
             let l = &dmap[i..i + 4];
@@ -1688,5 +1688,21 @@ impl RaopMetadata {
         }
 
         Ok(metadata)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_empty_metadata() {
+        assert_eq!(
+            RaopMetadata::parse_from_dmap(b"").unwrap(),
+            RaopMetadata {
+                title: None,
+                artist: None,
+            }
+        );
     }
 }
