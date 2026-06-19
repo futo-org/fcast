@@ -458,12 +458,12 @@ mod imp {
 
             if end.is_none() {
                 if let Some(info) = state.info.as_ref() {
-                    end = Some(
-                        start
-                            + gst::ClockTime::from_seconds_f64(
-                                info.fps().numer() as f64 / info.fps().denom() as f64,
-                            ),
-                    );
+                    let fps = info.fps();
+                    let mut guessed_end = start;
+                    guessed_end += gst::ClockTime::SECOND
+                        .mul_div_round(fps.denom() as u64, fps.numer() as u64)
+                        .unwrap_or(gst::ClockTime::SECOND);
+                    end = Some(guessed_end);
                 } else {
                     end = Some(start + gst::ClockTime::from_seconds(1));
                 }
