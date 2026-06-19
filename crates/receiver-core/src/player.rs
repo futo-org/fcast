@@ -588,8 +588,9 @@ pub fn stream_title(stream: &gst::Stream) -> String {
             }
             let title = title.get();
             if !title.is_empty() {
-                res += &title[0..title.len().min(16)];
-                if title.len() >= 16 {
+                let mut chars = title.chars();
+                res.extend(chars.by_ref().take(16));
+                if chars.next().is_some() {
                     res += "...";
                 }
             }
