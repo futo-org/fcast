@@ -81,6 +81,7 @@ mod build {
         runner!(
             "meson",
             "setup",
+            "-Dbuildtype=release",
             "-Ddefault_library=static",
             "-Dglslang=disabled",
             "-Dvulkan=disabled",
