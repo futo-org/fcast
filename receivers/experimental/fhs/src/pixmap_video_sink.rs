@@ -42,23 +42,70 @@ struct Target {
 
 pub struct FhsPixmapSink {
     client: *mut fl_Client,
-    target: Option<Target>,
-    gbm: Option<GbmAllocator>,
+    targets: [Option<Target>; 2], // Double-buffering
+    current_target_index: usize,
+    gbm: GbmAllocator,
     hdr_metadata: Option<fl_protocol_HdrMetadata>,
     surface_id: fl_protocol_SurfaceId,
     surface_has_hdr_metadata: bool,
 }
 
 impl FhsPixmapSink {
-    pub fn new(client: *mut fl_Client, surface_id: fl_protocol_SurfaceId) -> Self {
-        Self {
+    pub fn new(client: *mut fl_Client, surface_id: fl_protocol_SurfaceId) -> Result<Self> {
+        Ok(Self {
             client,
-            target: None,
-            gbm: None,
+            targets: [None, None],
+            current_target_index: 0,
+            gbm: GbmAllocator::new(client)?,
             hdr_metadata: None,
             surface_id,
             surface_has_hdr_metadata: false,
+        })
+    }
+
+    fn create_single_plane_gbm_bo(
+        &self,
+        width: u32,
+        height: u32,
+        fourcc: u32,
+    ) -> Result<*mut gbm_bo> {
+        let mut modifiers = rcore::egl::get_importable_modifiers(fourcc);
+        if modifiers.is_empty() {
+            return Err(anyhow!(
+                "no importable (non external_only) modifiers for fourcc {fourcc:#010x}"
+            ));
         }
+        // Try linear (0) last, a linear full-screen scanout plane has the worst
+        // bandwidth cost and can exceed the bandwidth limit for direct scanout
+        modifiers.sort_by_key(|&m| u64::from(m == 0));
+        debug!(
+            "fourcc={fourcc:#010x} ({width}x{height}) egl-importable modifiers={modifiers:#018x?}"
+        );
+
+        // libplacebo's single-tex dma-buf import only carries plane 0, so multi-plane modifiers
+        // (for example AMD with DCC) fail with EGL_BAD_MATCH.
+        // Probe each modifier in preference order and pick the first that produces a single-plane BO.
+        for &modifier in &modifiers {
+            let candidate = match self.gbm.create_bo(width, height, fourcc, &[modifier]) {
+                Ok(b) => b,
+                Err(err) => {
+                    debug!("modifier {modifier:#018x} not allocatable: {err}");
+                    continue;
+                }
+            };
+
+            let plane_count = unsafe { gbm_bo_get_plane_count(candidate) };
+            if plane_count == 1 {
+                debug!("chosen modifier {modifier:#018x}");
+                return Ok(candidate);
+            }
+            debug!("skipping multi-plane modifier {modifier:#018x} (plane_count={plane_count})");
+            unsafe { gbm_bo_destroy(candidate) };
+        }
+
+        return Err(anyhow!(
+            "no single-plane importable modifier could be allocated for fourcc {fourcc:#010x}"
+        ));
     }
 
     fn ensure_target(
@@ -68,7 +115,7 @@ impl FhsPixmapSink {
         height: u32,
         format: TargetFormat,
     ) -> Result<()> {
-        if let Some(t) = &self.target
+        if let Some(t) = &self.targets[self.current_target_index]
             && t.width == width
             && t.height == height
             && t.format == format
@@ -76,7 +123,10 @@ impl FhsPixmapSink {
             return Ok(());
         }
 
-        self.destroy_target(pl_ctx);
+        if let Some(target) = self.targets[self.current_target_index].take() {
+            self.destroy_target(pl_ctx, &target);
+            self.targets[self.current_target_index] = None;
+        }
 
         let gpu = pl_ctx.gpu();
         unsafe {
@@ -112,54 +162,11 @@ impl FhsPixmapSink {
             ));
         }
 
-        let mut modifiers = rcore::egl::get_importable_modifiers(fourcc);
-        if modifiers.is_empty() {
-            return Err(anyhow!(
-                "no importable (non external_only) modifiers for fourcc {fourcc:#010x}"
-            ));
-        }
-        // Try linear (0) last, a linear full-screen scanout plane has the worst
-        // bandwidth cost and can exceed the bandwidth limit for direct scanout
-        modifiers.sort_by_key(|&m| u64::from(m == 0));
-        debug!(
-            "ensure_target fourcc={fourcc:#010x} ({}x{}) format={:?} egl-importable modifiers={:#018x?}",
-            width, height, format, modifiers
-        );
-
-        if self.gbm.is_none() {
-            self.gbm = Some(GbmAllocator::new(self.client)?);
-        }
-        let gbm = self.gbm.as_ref().unwrap();
-        // libplacebo's single-tex dma-buf import only carries plane 0, so multi-plane modifiers
-        // (for example AMD with DCC) fail with EGL_BAD_MATCH.
-        // Probe each modifier in preference order and pick the first that produces a single-plane BO.
-        let mut bo: *mut gbm_bo = ptr::null_mut();
-        for &m in &modifiers {
-            let candidate = match gbm.create_bo(width, height, fourcc, &[m]) {
-                Ok(b) => b,
-                Err(err) => {
-                    debug!("modifier {m:#018x} not allocatable: {err}");
-                    continue;
-                }
-            };
-            let plane_count = unsafe { gbm_bo_get_plane_count(candidate) };
-            if plane_count == 1 {
-                debug!("chosen modifier {m:#018x}");
-                bo = candidate;
-                break;
-            }
-            debug!("skipping multi-plane modifier {m:#018x} (plane_count={plane_count})");
-            unsafe { gbm_bo_destroy(candidate) };
-        }
-        if bo.is_null() {
-            return Err(anyhow!(
-                "no single-plane importable modifier could be allocated for fourcc {fourcc:#010x}"
-            ));
-        }
+        let bo = self.create_single_plane_gbm_bo(width, height, fourcc)?;
 
         match self.import_and_register(pl_ctx, bo, fmt, fourcc, width, height, format) {
             Ok(target) => {
-                self.target = Some(target);
+                self.targets[self.current_target_index] = Some(target);
                 Ok(())
             }
             Err(err) => {
@@ -273,13 +280,6 @@ impl FhsPixmapSink {
             "Created pixmap-backed render target (gbm import)"
         );
 
-        unsafe {
-            fl_discard_reply(
-                self.client,
-                fl_set_surface_pixmap(self.client, self.surface_id, pixmap_id).value,
-            );
-        }
-
         Ok(Target {
             tex,
             bo,
@@ -290,10 +290,7 @@ impl FhsPixmapSink {
         })
     }
 
-    fn destroy_target(&mut self, pl_ctx: &PlaceboContext) {
-        let Some(target) = self.target.take() else {
-            return;
-        };
+    fn destroy_target(&mut self, pl_ctx: &PlaceboContext, target: &Target) {
         unsafe {
             fl_discard_reply(
                 self.client,
@@ -302,6 +299,15 @@ impl FhsPixmapSink {
             let mut tex = target.tex;
             pl_tex_destroy(pl_ctx.gpu(), &mut tex);
             gbm_bo_destroy(target.bo);
+        }
+    }
+
+    fn destroy_targets(&mut self, pl_ctx: &PlaceboContext) {
+        for i in 0..self.targets.len() {
+            let Some(target) = self.targets[i].take() else {
+                continue;
+            };
+            self.destroy_target(pl_ctx, &target);
         }
     }
 }
@@ -328,7 +334,9 @@ impl VideoSink for FhsPixmapSink {
         };
 
         self.ensure_target(placebo, target_width, target_height, format)?;
-        let target = self.target.as_ref().expect("target exists after ensure");
+        let target = self.targets[self.current_target_index]
+            .as_ref()
+            .expect("target exists after ensure");
 
         let (target_color, new_hdr_metadata) =
             build_target_color(frame, colorimetry, is_pq, is_hlg);
@@ -344,6 +352,13 @@ impl VideoSink for FhsPixmapSink {
             .map_err(|err| anyhow!("placebo render failed: {err}"))?;
 
         unsafe { pl_gpu_flush(placebo.gpu()) };
+
+        unsafe {
+            fl_discard_reply(
+                self.client,
+                fl_set_surface_pixmap(self.client, self.surface_id, target.pixmap_id).value,
+            );
+        }
 
         if is_hdr {
             let need_update = self
@@ -397,6 +412,7 @@ impl VideoSink for FhsPixmapSink {
             gl.viewport(0, 0, target_width as i32, target_height as i32);
         }
 
+        self.current_target_index = (self.current_target_index + 1) % self.targets.len();
         Ok(())
     }
 
@@ -405,7 +421,7 @@ impl VideoSink for FhsPixmapSink {
     }
 
     fn teardown(&mut self, placebo: &mut PlaceboContext) {
-        self.destroy_target(placebo);
+        self.destroy_targets(placebo);
     }
 }
 
