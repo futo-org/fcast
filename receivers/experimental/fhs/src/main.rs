@@ -440,6 +440,6 @@ fn main() -> Result<()> {
 
     rcore::run(
         cli_args,
-        pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_surface_id),
+        pixmap_video_sink::FhsPixmapSink::new(client_ptr, video_surface_id)?,
     )
 }
