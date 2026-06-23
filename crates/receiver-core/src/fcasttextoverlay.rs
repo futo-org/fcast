@@ -995,13 +995,32 @@ mod tests {
     }
 
     fn new_video_buffer(pts: gst::ClockTime) -> gst::Buffer {
-        let mut buffer = gst::Buffer::with_size(320 * 240 * 4).unwrap();
+        new_video_buffer_with_duration(
+            pts,
+            gst::ClockTime::mul_div_round(gst::ClockTime::SECOND, 1, 30).unwrap(),
+        )
+    }
+
+    fn new_video_buffer_with_duration(
+        pts: gst::ClockTime,
+        duration: gst::ClockTime,
+    ) -> gst::Buffer {
+        let mut buffer = gst::Buffer::with_size(8 * 8 * 4).unwrap();
         {
             let buffer = buffer.get_mut().unwrap();
             buffer.set_pts(pts);
-            buffer.set_duration(gst::ClockTime::mul_div_round(gst::ClockTime::SECOND, 1, 30));
+            buffer.set_duration(duration);
         }
         buffer
+    }
+
+    fn assert_subtitle(out: &gst::Buffer, expected: &str) {
+        let meta = out
+            .meta::<FCastVideoTextOverlayMeta>()
+            .expect("expected subtitle meta on output buffer");
+        let (format, text) = meta.get();
+        assert_eq!(text, expected);
+        assert!(matches!(format, super::meta_imp::TextFormat::Utf8));
     }
 
     fn new_text_buffer(txt: &str, pts: gst::ClockTime, dur: gst::ClockTime) -> gst::Buffer {
@@ -1060,10 +1079,7 @@ mod tests {
             .push_and_pull(new_video_buffer(gst::ClockTime::ZERO))
             .unwrap();
 
-        let meta = out.meta::<FCastVideoTextOverlayMeta>().unwrap();
-        let (format, text) = meta.get();
-        assert_eq!(text, "Hello");
-        assert!(matches!(format, super::meta_imp::TextFormat::Utf8));
+        assert_subtitle(&out, "Hello");
     }
 
     #[test]
@@ -1092,6 +1108,96 @@ mod tests {
             .push_and_pull(new_video_buffer(gst::ClockTime::SECOND))
             .unwrap();
 
+        assert!(out.meta::<FCastVideoTextOverlayMeta>().is_none());
+    }
+
+    #[test]
+    fn test_multiple_frames_and_subs() {
+        init();
+
+        let mut harness =
+            gst_check::Harness::with_padnames("fcasttextoverlay", Some("video_sink"), Some("src"));
+        let element = harness.element().unwrap();
+        let mut text_harness = gst_check::Harness::with_element(&element, Some("text_sink"), None);
+
+        harness.set_src_caps(video_src_caps());
+        text_harness.set_src_caps(text_src_caps());
+        harness.play();
+        text_harness.play();
+
+        // 100ms video frames; subtitles cover only some intervals.
+        let frame_dur = gst::ClockTime::from_mseconds(100);
+
+        // Subtitle "One" covers [0ms, 300ms). Only one text buffer can be queued at
+        // a time, so we push it, then drain every video frame inside its window
+        // before the next subtitle.
+        text_harness
+            .push(new_text_buffer(
+                "One",
+                gst::ClockTime::ZERO,
+                gst::ClockTime::from_mseconds(300),
+            ))
+            .unwrap();
+
+        for i in 0..3u64 {
+            let out = harness
+                .push_and_pull(new_video_buffer_with_duration(
+                    gst::ClockTime::from_mseconds(i * 100),
+                    frame_dur,
+                ))
+                .unwrap();
+            assert_subtitle(&out, "One");
+        }
+
+        // Frame at exactly 300ms is at the end boundary: "One" no longer applies and
+        // gets popped, so this frame carries no meta.
+        let out = harness
+            .push_and_pull(new_video_buffer_with_duration(
+                gst::ClockTime::from_mseconds(300),
+                frame_dur,
+            ))
+            .unwrap();
+        assert!(out.meta::<FCastVideoTextOverlayMeta>().is_none());
+
+        // Gap frame at 350ms with no active subtitle.
+        let out = harness
+            .push_and_pull(new_video_buffer_with_duration(
+                gst::ClockTime::from_mseconds(350),
+                frame_dur,
+            ))
+            .unwrap();
+        assert!(out.meta::<FCastVideoTextOverlayMeta>().is_none());
+
+        // Subtitle "Two" covers [400ms, 600ms).
+        text_harness
+            .push(new_text_buffer(
+                "Two",
+                gst::ClockTime::from_mseconds(400),
+                gst::ClockTime::from_mseconds(200),
+            ))
+            .unwrap();
+
+        for i in 4..6u64 {
+            let out = harness
+                .push_and_pull(new_video_buffer_with_duration(
+                    gst::ClockTime::from_mseconds(i * 100),
+                    frame_dur,
+                ))
+                .unwrap();
+            assert_subtitle(&out, "Two");
+        }
+
+        // No further subtitles: signal text EOS so the video chain does not block
+        // waiting for a future text buffer once "Two" expires.
+        text_harness.push_event(gst::event::Eos::new());
+
+        // Frame at 600ms: "Two" window ended -> no meta.
+        let out = harness
+            .push_and_pull(new_video_buffer_with_duration(
+                gst::ClockTime::from_mseconds(600),
+                frame_dur,
+            ))
+            .unwrap();
         assert!(out.meta::<FCastVideoTextOverlayMeta>().is_none());
     }
 }
