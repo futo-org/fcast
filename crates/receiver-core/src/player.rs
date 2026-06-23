@@ -136,14 +136,12 @@ impl StateMachine {
     }
 
     fn queue_seek(&mut self, seek: Seek) {
-        // tracing::info!("<<TEST>> sm.queue_seek({seek:?});");
-
         let target_state = match self.state {
             State::Buffering { target_state, .. }
             | State::Changing { target_state, .. }
             | State::SeekAsync { target_state, .. }
             | State::Seeking { target_state, .. } => target_state,
-            // TODO: playling variants?
+            State::Running { state } => state.into(),
             _ => gst::State::Paused,
         };
 
@@ -241,6 +239,10 @@ impl StateMachine {
 
     #[must_use]
     fn buffering(&mut self, new_percent: i32) -> BufferingStateResult {
+        if new_percent >= 100 && !matches!(self.state, State::Buffering { .. }) {
+            return BufferingStateResult::Buffering;
+        }
+
         match &mut self.state {
             State::Stopped | State::PendingUriChange => {
                 self.state = State::Buffering {
@@ -375,7 +377,10 @@ impl StateMachine {
                 }
             }
             State::Buffering { pending_seek, .. } => {
-                if new == gst::State::Paused && pending == gst::State::VoidPending {
+                if new == gst::State::Paused
+                    && pending == gst::State::VoidPending
+                    && matches!(pending_seek, Some(PendingSeek::Waiting))
+                {
                     *pending_seek = None;
                 }
 
@@ -388,31 +393,27 @@ impl StateMachine {
                 if new == *target_state {
                     if let Some(seek) = pending_seek.as_ref() {
                         let seek = *seek;
-                        // TODO: handle seek...
                         let target_state = *target_state;
                         if let Some(seek) = self.seek_internal(seek, Some(target_state)) {
                             return StateChangeResult::Seek(seek);
-                        } else {
-                            todo!()
                         }
-                    } else {
-                        match new {
-                            gst::State::VoidPending | gst::State::Null | gst::State::Ready => {
-                                self.state = State::Stopped;
-                                return StateChangeResult::NewPlaybackState(PlaybackState::Idle);
-                            }
-                            gst::State::Paused => {
-                                self.state = State::Running {
-                                    state: RunningState::Paused,
-                                };
-                                return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
-                            }
-                            gst::State::Playing => {
-                                self.state = State::Running {
-                                    state: RunningState::Playing,
-                                };
-                                return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
-                            }
+                    }
+                    match new {
+                        gst::State::VoidPending | gst::State::Null | gst::State::Ready => {
+                            self.state = State::Stopped;
+                            return StateChangeResult::NewPlaybackState(PlaybackState::Idle);
+                        }
+                        gst::State::Paused => {
+                            self.state = State::Running {
+                                state: RunningState::Paused,
+                            };
+                            return StateChangeResult::NewPlaybackState(PlaybackState::Paused);
+                        }
+                        gst::State::Playing => {
+                            self.state = State::Running {
+                                state: RunningState::Playing,
+                            };
+                            return StateChangeResult::NewPlaybackState(PlaybackState::Playing);
                         }
                     }
                 } else if pending == gst::State::VoidPending {
@@ -493,11 +494,24 @@ impl StateMachine {
     fn seek_failed(&mut self) -> Option<gst::State> {
         match self.state {
             State::Seeking { target_state } => {
-                self.state = State::Changing {
-                    target_state,
-                    pending_seek: None,
-                };
-                Some(target_state)
+                if target_state == self.current_state {
+                    self.state = match target_state {
+                        gst::State::Playing => State::Running {
+                            state: RunningState::Playing,
+                        },
+                        gst::State::Paused => State::Running {
+                            state: RunningState::Paused,
+                        },
+                        _ => State::Stopped,
+                    };
+                    None
+                } else {
+                    self.state = State::Changing {
+                        target_state,
+                        pending_seek: None,
+                    };
+                    Some(target_state)
+                }
             }
             _ => None,
         }
@@ -522,6 +536,19 @@ pub struct Seek {
 impl Seek {
     pub fn new(position: Option<f64>, rate: Option<f64>) -> Self {
         Self { position, rate }
+    }
+
+    /// Largest seek position, in seconds, that converts to a `gst::ClockTime`
+    /// without overflowing. `gst::ClockTime::from_seconds_f64` panics on values
+    /// at or beyond this, as well as on non-finite or negative inputs.
+    const MAX_POSITION_SECS: f64 = u64::MAX as f64 / 1_000_000_000.0;
+
+    fn position_is_safe(seconds: f64) -> bool {
+        seconds.is_finite() && seconds >= 0.0 && seconds < Self::MAX_POSITION_SECS
+    }
+
+    fn rate_is_safe(rate: f64) -> bool {
+        rate.is_finite() && rate != 0.0
     }
 }
 
@@ -949,6 +976,19 @@ impl Player {
     }
 
     fn seek_internal(&mut self, seek: Seek) {
+        if let Some(pos) = seek.position
+            && !Seek::position_is_safe(pos)
+        {
+            warn!(pos, "Ignoring out-of-range seek position");
+            return;
+        }
+        if let Some(rate) = seek.rate
+            && !Seek::rate_is_safe(rate)
+        {
+            warn!(rate, "Ignoring invalid seek rate");
+            return;
+        }
+
         if self.seekable {
             if let Some(seek) = self.state_machine.seek_internal(seek, None) {
                 let _ = self.work_tx.send(Job::Seek(seek));
@@ -1512,5 +1552,239 @@ mod tests {
         assert_eq!(sm.state, State::Changing { target_state: gs!(Playing), pending_seek: None });
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
         assert_eq!(sm.state, State::Running { state: rs!(Playing) });
+    }
+
+    fn playing() -> StateMachine {
+        let mut sm = StateMachine::new();
+        sm.current_state = gst::State::Playing;
+        sm.state = State::Running {
+            state: RunningState::Playing,
+        };
+        sm
+    }
+
+    #[test]
+    fn lone_buffering_100_while_playing_must_not_strand() {
+        let mut sm = playing();
+        let r = sm.buffering(100);
+
+        assert_ne!(
+            r,
+            BufferingStateResult::Started(gst::State::Paused),
+            "buffering(100) while Playing requested a pause -> playback stalls",
+        );
+
+        if let State::Buffering { percent, .. } = sm.state {
+            let _ = sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending));
+            panic!(
+                "stuck in Buffering {{ percent: {percent} }} after a lone \
+                 buffering(100); player_state() will report Buffering forever \
+                 and playback is paused",
+            );
+        }
+    }
+
+    #[test]
+    fn lone_buffering_100_during_uri_change_must_not_strand() {
+        let mut sm = StateMachine::new();
+        sm.state = State::PendingUriChange;
+
+        let r = sm.buffering(100);
+        assert_ne!(
+            r,
+            BufferingStateResult::Started(gst::State::Paused),
+            "buffering(100) during URI change requested a pause",
+        );
+
+        let _ = sm.state_changed(gs!(Ready), gs!(Paused), gs!(VoidPending));
+        let _ = sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending));
+
+        assert!(
+            !matches!(sm.state, State::Buffering { .. }),
+            "stuck in Buffering after startup despite pipeline reaching Playing: {:?}",
+            sm.state,
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn normal_rebuffer_while_playing_recovers() {
+        let mut sm = playing();
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.buffering(40), BufferingStateResult::Buffering);
+        assert_eq!(sm.buffering(100), BufferingStateResult::Finished(Some(gs!(Playing))));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) });
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn rapid_play_pause_toggles_converge_to_last_request() {
+        let mut sm = playing();
+        assert_eq!(sm.set_playback_state(rs!(Paused)), Some(gs!(Paused)));
+        assert_eq!(sm.set_playback_state(rs!(Playing)), None);
+        assert_eq!(sm.set_playback_state(rs!(Paused)), None);
+        assert_eq!(sm.set_playback_state(rs!(Playing)), None);
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Playing), pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) });
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn seek_is_rejected_when_stopped_or_live() {
+        let mut sm = StateMachine::new();
+        assert_eq!(sm.state, State::Stopped);
+        assert_eq!(sm.seek_internal(Seek::new(Some(10.0), None), None), None);
+        assert_eq!(sm.state, State::Stopped, "rejected seek must not mutate state");
+        let mut sm = playing();
+        sm.is_live = true;
+        assert_eq!(sm.seek_internal(Seek::new(Some(10.0), None), None), None);
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) }, "rejected live seek must not mutate state");
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn seek_while_seeking_coalesces() {
+        let mut sm = playing();
+        assert_eq!(sm.seek_internal(Seek::new(Some(10.0), None), None), Some(Seek::new(Some(10.0), Some(1.0))));
+        assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) });
+        assert_eq!(sm.seek_internal(Seek::new(Some(20.0), None), None), None);
+        assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) }, "still exactly one in-flight seek");
+    }
+
+    #[test]
+    fn changing_with_pending_seek_while_live() {
+        let mut sm = StateMachine::new();
+        sm.is_live = true;
+        sm.current_state = gst::State::Paused;
+        sm.state = State::Changing {
+            target_state: gst::State::Paused,
+            pending_seek: Some(Seek::new(Some(1.0), Some(1.0))),
+        };
+        let _ = sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending));
+    }
+
+    #[test]
+    fn async_seek_not_dropped_when_pause_arrives_during_buffering() {
+        let mut sm = StateMachine::new();
+        sm.current_state = gst::State::Playing;
+        sm.state = State::SeekAsync {
+            seek: Seek::new(Some(30.0), Some(1.0)),
+            target_state: gs!(Playing),
+        };
+
+        assert_eq!(sm.buffering(40), BufferingStateResult::Started(gs!(Paused)));
+        assert!(matches!(
+            sm.state,
+            State::Buffering {
+                pending_seek: Some(PendingSeek::Async(_)),
+                ..
+            }
+        ));
+        assert_eq!(
+            sm.state_changed(gs!(Ready), gs!(Paused), gs!(VoidPending)),
+            StateChangeResult::Waiting
+        );
+        assert_eq!(
+            sm.buffering(100),
+            BufferingStateResult::FinishedButWaitingSeek,
+            "queued async seek was silently dropped when Paused arrived mid-buffer",
+        );
+    }
+
+    #[test]
+    fn seek_position_guard_matches_clocktime_panic_boundary() {
+        let must_reject = [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -5.0,
+            1e30,
+            Seek::MAX_POSITION_SECS,
+        ];
+        for v in must_reject {
+            assert!(!Seek::position_is_safe(v), "{v} should be rejected");
+            assert!(
+                std::panic::catch_unwind(|| gst::ClockTime::from_seconds_f64(v)).is_err(),
+                "expected ClockTime to panic on {v}; guard would be too strict/loose",
+            );
+        }
+
+        let must_accept = [0.0, 1.0, 3600.0, 1e9];
+        for v in must_accept {
+            assert!(Seek::position_is_safe(v), "{v} should be accepted");
+            assert!(
+                std::panic::catch_unwind(|| gst::ClockTime::from_seconds_f64(v)).is_ok(),
+                "expected ClockTime to accept {v}",
+            );
+        }
+
+        for bad in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!Seek::rate_is_safe(bad), "rate {bad} should be rejected");
+        }
+        for ok in [1.0, 2.0, 0.5, -1.0] {
+            assert!(Seek::rate_is_safe(ok), "rate {ok} should be accepted");
+        }
+    }
+
+    #[test]
+    fn queue_seek_preserves_playing_target() {
+        let mut sm = playing();
+        sm.queue_seek(Seek::new(Some(5.0), Some(1.0)));
+        assert!(
+            matches!(
+                sm.state,
+                State::SeekAsync {
+                    target_state: gst::State::Playing,
+                    ..
+                }
+            ),
+            "queue_seek while playing must keep target Playing, got {:?}",
+            sm.state,
+        );
+        let mut sm = StateMachine::new();
+        sm.current_state = gst::State::Paused;
+        sm.state = State::Running {
+            state: RunningState::Paused,
+        };
+        sm.queue_seek(Seek::new(Some(5.0), Some(1.0)));
+        assert!(matches!(
+            sm.state,
+            State::SeekAsync {
+                target_state: gst::State::Paused,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn seek_failed_while_paused_must_not_hang() {
+        let mut sm = StateMachine::new();
+        sm.current_state = gst::State::Paused;
+        sm.state = State::Running {
+            state: RunningState::Paused,
+        };
+        assert_eq!(
+            sm.seek_internal(Seek::new(None, Some(1.5)), None),
+            Some(Seek::new(None, Some(1.5)))
+        );
+        assert_eq!(
+            sm.state,
+            State::Seeking {
+                target_state: gs!(Paused)
+            }
+        );
+        let resume = sm.seek_failed();
+        assert_eq!(
+            sm.state,
+            State::Running {
+                state: RunningState::Paused
+            },
+            "seek_failed left a Changing state that can never complete \
+             (target == current_state, no transition will occur): resume={resume:?}",
+        );
     }
 }
