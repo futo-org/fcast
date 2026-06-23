@@ -763,12 +763,17 @@ impl Player {
 
                             let rate = seek.rate.unwrap_or(1.0);
 
-                            debug!(rate, ?position);
+                            let mut flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH;
+                            if rate != 1.0 {
+                                flags |= gst::SeekFlags::TRICKMODE;
+                            }
 
-                            if let Err(err) = if rate >= 0.0 {
+                            debug!(rate, ?position, "Performing seek");
+
+                            let res = if rate >= 0.0 {
                                 playbin.seek(
                                     rate,
-                                    gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH,
+                                    flags,
                                     gst::SeekType::Set,
                                     position,
                                     gst::SeekType::None,
@@ -777,13 +782,15 @@ impl Player {
                             } else {
                                 playbin.seek(
                                     rate,
-                                    gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH,
+                                    flags,
                                     gst::SeekType::Set,
                                     gst::ClockTime::ZERO,
                                     gst::SeekType::End,
                                     position,
                                 )
-                            } {
+                            };
+
+                            if let Err(err) = res {
                                 error!(?err, "Failed to seek");
                                 msg_tx.player(PlayerEvent::SeekFailed);
                             } else {
