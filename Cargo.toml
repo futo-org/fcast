@@ -83,3 +83,9 @@ strip = "debuginfo"
 inherits = "release"
 debug = "full"
 strip = false
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
