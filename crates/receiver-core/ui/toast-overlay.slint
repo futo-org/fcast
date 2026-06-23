@@ -4,6 +4,7 @@ import {
 } from "../../../ui-components/std-widgets.slint";
 import {
     Bridge,
+    Assets,
 } from "globals.slint";
 
 enum ToastVariant {
@@ -46,7 +47,7 @@ component Toast inherits Rectangle {
                 }
 
                 Image {
-                    source: Icons.exclamation-mark;
+                    source: Assets.exclamation-mark;
                     width: 35px;
                 }
             }

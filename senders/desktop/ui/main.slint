@@ -29,6 +29,11 @@ import {
 import "../../../ui-components/fonts/Outfit-Regular.ttf";
 import { CheckBox } from "../../../ui-components/checkbox.slint";
 
+global Assets {
+    out property <image> background: @image-url("../../../ui-components/icons/background-img.png");
+    out property <image> fcast: @image-url("../../../ui-components/icons/fcast-icon.png");
+}
+
 export enum UiAppState {
     Disconnected,
     Connecting,
@@ -720,7 +725,7 @@ component ImageBackground {
     Image {
         width: img-width;
         height: img-height;
-        source: Icons.background;
+        source: Assets.background;
     }
 
     Rectangle {
@@ -2117,7 +2122,7 @@ export component MainWindow inherits Window {
                 spacing: 5px;
 
                 Image {
-                    source: Icons.fcast;
+                    source: Assets.fcast;
                     width: 48px;
                 }
 

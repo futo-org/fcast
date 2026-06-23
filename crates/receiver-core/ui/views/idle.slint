@@ -6,7 +6,7 @@ import {
 import {
     FCastPalette,
 } from "../../../../ui-components/styling.slint";
-import { Bridge, UiUpdaterState } from "../globals.slint";
+import { Bridge, UiUpdaterState, Assets } from "../globals.slint";
 
 component ReceiverInfoEntry inherits HorizontalLayout {
     in property <image> icon <=> i-icon.source;
@@ -49,7 +49,7 @@ component IdleText inherits FText {
 
 export component IdleView inherits Rectangle {
     Image {
-        source: Icons.background-dark;
+        source: Assets.background-dark;
         width: 100%;
         height: 100%;
     }
@@ -239,7 +239,7 @@ export component IdleView inherits Rectangle {
                             }
 
                             Image {
-                                source: Icons.exclamation-mark;
+                                source: Assets.exclamation-mark;
                                 width: 60px;
                             }
                         }
