@@ -28,7 +28,7 @@ fn gst_matrix_to_placebo(matrix: gst_video::VideoColorMatrix) -> pl_color_system
         gst_video::VideoColorMatrix::Bt709 => pl_color_system::PL_COLOR_SYSTEM_BT_709,
         gst_video::VideoColorMatrix::Bt601 => pl_color_system::PL_COLOR_SYSTEM_BT_601,
         gst_video::VideoColorMatrix::Smpte240m => pl_color_system::PL_COLOR_SYSTEM_SMPTE_240M,
-        gst_video::VideoColorMatrix::Bt2020 => pl_color_system::PL_COLOR_SYSTEM_BT_2020_C, // _NC?
+        gst_video::VideoColorMatrix::Bt2020 => pl_color_system::PL_COLOR_SYSTEM_BT_2020_NC,
         gst_video::VideoColorMatrix::Unknown | gst_video::VideoColorMatrix::Fcc | _ => {
             pl_color_system::PL_COLOR_SYSTEM_BT_709
         }
