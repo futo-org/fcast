@@ -9,6 +9,8 @@ use gst_video::prelude::*;
 use libplacebo::{OpenGL, Renderer, Swapchain, SwapchainFrame, libplacebo_sys::*};
 use tracing::{debug, warn};
 
+use crate::video::MasteringDisplayInfo;
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum RenderProfile {
     Fast,
@@ -173,12 +175,24 @@ fn create_pl_frame(
     num_planes: i32,
     info: &gst_video::VideoInfo,
     frame_info: &RenderFrameInfo,
+    mastering_display_info: &Option<MasteringDisplayInfo>,
 ) -> pl_frame {
     let mut frame: pl_frame = unsafe { std::mem::zeroed() };
     frame.num_planes = num_planes;
     frame.repr = frame_info.color_repr;
     frame.color.primaries = frame_info.primaries;
     frame.color.transfer = frame_info.transfer;
+    if let Some(mdi) = mastering_display_info.as_ref() {
+        frame.color.hdr.prim.red = mdi.display_primaries[0].as_pl_cie_xy();
+        frame.color.hdr.prim.green = mdi.display_primaries[1].as_pl_cie_xy();
+        frame.color.hdr.prim.blue = mdi.display_primaries[2].as_pl_cie_xy();
+        frame.color.hdr.prim.white = mdi.white_point.as_pl_cie_xy();
+        let max_luma = mdi.max_luminance_as_nits();
+        if max_luma >= 100.0 {
+            frame.color.hdr.max_luma = max_luma;
+            frame.color.hdr.min_luma = mdi.min_luminance_as_nits();
+        }
+    }
     frame.crop = pl_rect2df {
         x0: 0.0,
         y0: 0.0,
@@ -350,24 +364,26 @@ impl PlaceboContext {
         &mut self,
         destination: &libplacebo::SwapchainFrame,
         source: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
+        mdi: &Option<MasteringDisplayInfo>,
     ) -> std::result::Result<(), RenderFrameError> {
         let mut target = unsafe {
             let mut t = std::mem::zeroed();
             pl_frame_from_swapchain(&mut t, &destination.frame);
             t
         };
-        self.render_sysmem_to_frame(&mut target, source)
+        self.render_sysmem_to_frame(&mut target, source, mdi)
     }
 
     fn render_sysmem_to_frame(
         &mut self,
         destination: &mut pl_frame,
         source: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
+        mdi: &Option<MasteringDisplayInfo>,
     ) -> std::result::Result<(), RenderFrameError> {
         let info = source.info();
         let frame_info = RenderFrameInfo::new(info);
 
-        let mut image = create_pl_frame(source.n_planes() as i32, info, &frame_info);
+        let mut image = create_pl_frame(source.n_planes() as i32, info, &frame_info, mdi);
         if let Err(err) = self.upload_sys_mem(info, &frame_info, source, &mut image) {
             self.flush_texture_cache();
             return Err(err);
@@ -393,13 +409,14 @@ impl PlaceboContext {
         destination: &libplacebo::SwapchainFrame,
         source_buffer: &gst::Buffer,
         source_dma_info: &gst_video::VideoInfoDmaDrm,
+        mdi: &Option<MasteringDisplayInfo>,
     ) -> std::result::Result<(), RenderFrameError> {
         let mut target = unsafe {
             let mut t = std::mem::zeroed();
             pl_frame_from_swapchain(&mut t, &destination.frame);
             t
         };
-        self.render_dmabuf_to_frame(&mut target, source_buffer, source_dma_info)
+        self.render_dmabuf_to_frame(&mut target, source_buffer, source_dma_info, mdi)
     }
 
     #[cfg(target_os = "linux")]
@@ -408,6 +425,7 @@ impl PlaceboContext {
         destination: &mut pl_frame,
         source_buffer: &gst::Buffer,
         source_dma_info: &gst_video::VideoInfoDmaDrm,
+        mdi: &Option<MasteringDisplayInfo>,
     ) -> std::result::Result<(), RenderFrameError> {
         use tracing::error;
 
@@ -456,7 +474,7 @@ impl PlaceboContext {
             .map_err(|_| RenderFrameError::InvalidFormatInfo)?;
         let frame_info = RenderFrameInfo::new(&normal_info);
 
-        let mut image = create_pl_frame(n_planes as i32, &normal_info, &frame_info);
+        let mut image = create_pl_frame(n_planes as i32, &normal_info, &frame_info, mdi);
         for plane_idx in 0..image.num_planes {
             let fmt_fourcc = crate::dmabuf::fourcc_from_plane(plane_idx, dma_drm_fourcc);
             let fmt = unsafe {
@@ -536,11 +554,13 @@ impl PlaceboContext {
         frame: &crate::video::Frame,
     ) -> std::result::Result<(), RenderFrameError> {
         match &frame.data {
-            crate::video::FrameData::SystemMemory { frame } => self.render_sysmem(swframe, &frame),
+            crate::video::FrameData::SystemMemory { frame: v_frame } => {
+                self.render_sysmem(swframe, &v_frame, &frame.mastering_display_info)
+            }
             #[cfg(target_os = "linux")]
             crate::video::FrameData::DmaBuf {
                 buffer, dma_info, ..
-            } => self.render_dmabuf(swframe, &buffer, &dma_info),
+            } => self.render_dmabuf(swframe, &buffer, &dma_info, &frame.mastering_display_info),
             #[cfg(target_os = "macos")]
             crate::video::FrameData::Gl { .. } => Ok(()),
         }
@@ -590,11 +610,16 @@ impl PlaceboContext {
 
         match &source_frame.data {
             crate::video::FrameData::SystemMemory { frame } => {
-                self.render_sysmem_to_frame(&mut destination_frame, &frame)
+                self.render_sysmem_to_frame(&mut destination_frame, &frame, &None /* TODO? */)
             }
             crate::video::FrameData::DmaBuf {
                 buffer, dma_info, ..
-            } => self.render_dmabuf_to_frame(&mut destination_frame, &buffer, &dma_info),
+            } => self.render_dmabuf_to_frame(
+                &mut destination_frame,
+                &buffer,
+                &dma_info,
+                &None, /* TODO? */
+            ),
         }
     }
 

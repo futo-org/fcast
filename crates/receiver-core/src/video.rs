@@ -54,6 +54,15 @@ pub struct Coordinate {
     pub y: f32,
 }
 
+impl Coordinate {
+    pub(crate) fn as_pl_cie_xy(&self) -> libplacebo::libplacebo_sys::pl_cie_xy {
+        libplacebo::libplacebo_sys::pl_cie_xy {
+            x: self.x,
+            y: self.y,
+        }
+    }
+}
+
 impl From<gst_video::VideoMasteringDisplayInfoCoordinate> for Coordinate {
     fn from(value: gst_video::VideoMasteringDisplayInfoCoordinate) -> Self {
         Self {
@@ -75,6 +84,16 @@ pub struct MasteringDisplayInfo {
     pub max_display_mastering_luminance: u32,
     /// The minimum value of display luminance in unit of 0.0001 nit
     pub min_display_mastering_luminance: u32,
+}
+
+impl MasteringDisplayInfo {
+    pub fn max_luminance_as_nits(&self) -> f32 {
+        self.max_display_mastering_luminance as f32 * 0.0001
+    }
+
+    pub fn min_luminance_as_nits(&self) -> f32 {
+        self.min_display_mastering_luminance as f32 * 0.0001
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
