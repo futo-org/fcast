@@ -537,7 +537,9 @@ impl InnerDevice {
                         }
                         shared_state.is_running = new_is_running;
                         if shared_state.is_running {
-                            changed!(volume, status.volume.level, volume_changed);
+                            if let Some(volume_status) = &status.volume {
+                                changed!(volume, volume_status.level, volume_changed);
+                            }
                         } else {
                             self.launch_app().await?;
                         }
