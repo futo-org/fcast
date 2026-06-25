@@ -35,11 +35,6 @@ impl MessageSender {
         self.send(Message::Image(msg));
     }
 
-    #[cfg(feature = "systray")]
-    pub fn tray(&self, msg: Tray) {
-        self.send(Message::Tray(msg));
-    }
-
     #[cfg(not(target_os = "android"))]
     pub fn mdns(&self, msg: Mdns) {
         self.send(Message::Mdns(msg));
@@ -57,13 +52,6 @@ pub enum Mdns {
     IpAdded(IpAddr),
     IpRemoved(IpAddr),
     SetIps(Vec<IpAddr>),
-}
-
-#[cfg(feature = "systray")]
-#[derive(Debug)]
-pub enum Tray {
-    Quit,
-    Toggle,
 }
 
 #[derive(Debug)]
@@ -111,8 +99,6 @@ pub enum Message {
         id: i32,
         variant: UiMediaTrackType,
     },
-    #[cfg(feature = "systray")]
-    Tray(Tray),
     ShouldSetLoadingStatus(MediaItemId),
     Raop(Raop),
     #[cfg(debug_assertions)]

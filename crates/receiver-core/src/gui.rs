@@ -203,9 +203,6 @@ pub enum UpdateGuiCommand {
     ClearAudioCovers,
     ClearCommonPlaybackState,
     SetPlayerType(UiPlayerVariant),
-    // TODO: include hint (e.g. for ensuring window is visibile)
-    #[cfg(feature = "systray")]
-    ToggleWindow,
     SetTracks {
         videos: Option<Vec<UiMediaTrack>>,
         audios: Option<Vec<UiMediaTrack>>,
@@ -376,11 +373,6 @@ impl GuiController {
 
     pub fn set_player_type(&self, typ: UiPlayerVariant) {
         self.send(UpdateGuiCommand::SetPlayerType(typ));
-    }
-
-    #[cfg(feature = "systray")]
-    pub fn toggle_window(&self) {
-        self.send(UpdateGuiCommand::ToggleWindow);
     }
 
     pub fn set_tracks(
@@ -558,17 +550,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_render_subtitles(true);
         }
         UpdateGuiCommand::SetPlayerType(typ) => bridge.set_player_variant(typ),
-        #[cfg(feature = "systray")]
-        UpdateGuiCommand::ToggleWindow => {
-            let window = ui.window();
-            if let Err(err) = if window.is_visible() {
-                window.hide()
-            } else {
-                window.show()
-            } {
-                error!(?err, "Failed to toggle window visibility");
-            }
-        }
         UpdateGuiCommand::SetTracks {
             videos,
             audios,

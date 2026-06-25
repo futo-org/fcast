@@ -26,8 +26,6 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::message;
-#[cfg(feature = "systray")]
-use crate::message::Tray;
 use crate::{
     AppState, FCAST_TCP_PORT, GCastUpdateSender, GuiPlaybackState, MediaItemId, MessageSender,
     UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
@@ -1188,18 +1186,6 @@ impl Application {
         Ok(())
     }
 
-    #[cfg(feature = "systray")]
-    fn handle_tray_event(&mut self, event: Tray) -> Result<bool> {
-        debug!(?event, "Handling tray event");
-
-        match event {
-            Tray::Quit => return Ok(true),
-            Tray::Toggle => self.gui.toggle_window(),
-        }
-
-        Ok(false)
-    }
-
     #[tracing::instrument(skip_all)]
     fn handle_raop_event(&mut self, event: Raop) -> Result<bool> {
         match event {
@@ -1577,10 +1563,6 @@ impl Application {
             Message::NewPlayerEvent(event) => {
                 self.handle_new_player_event(event)?;
             }
-            #[cfg(feature = "systray")]
-            Message::Tray(event) => {
-                return self.handle_tray_event(event);
-            }
             Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
                     self.gui.set_app_state(AppState::LoadingMedia);
@@ -1630,21 +1612,6 @@ impl Application {
 
         #[cfg(target_os = "windows")]
         tokio::pin!(listener_stream);
-
-        #[cfg(all(target_os = "linux", feature = "systray"))]
-        let _tray = if self.settings.cli.no_systray {
-            None
-        } else {
-            use ksni::TrayMethods;
-
-            use crate::linux_tray;
-
-            let tray = linux_tray::LinuxSysTray {
-                msg_tx: self.msg_tx.clone(),
-            };
-
-            Some(tray.disable_dbus_name(true).spawn().await)
-        };
 
         #[cfg(not(target_os = "android"))]
         if self.settings.cli.fullscreen {

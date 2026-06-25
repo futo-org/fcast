@@ -36,14 +36,7 @@ mod gcast;
 mod gstreamer;
 mod gui;
 mod image;
-#[cfg(all(target_os = "linux", feature = "systray"))]
-mod linux_tray;
 mod logging;
-#[cfg(all(
-    not(any(target_os = "android", target_os = "linux")),
-    feature = "systray"
-))]
-mod mac_win_tray;
 #[cfg(not(target_os = "android"))]
 mod mdns;
 mod message;
@@ -293,6 +286,12 @@ pub fn run<S: VideoSink + 'static>(
         None
     } else {
         Some(MainWindow::new()?)
+    };
+    #[cfg(feature = "systray")]
+    let systray = if cli_args.no_systray {
+        None
+    } else {
+        Some(SystemTray::new()?)
     };
 
     let gui_is_visible = gui::GuiIsVisible::new();
@@ -580,18 +579,6 @@ pub fn run<S: VideoSink + 'static>(
         })?;
     }
 
-    #[cfg(all(
-        not(any(target_os = "android", target_os = "linux")),
-        feature = "systray"
-    ))]
-    let _tray_icon = if !cli_args.no_systray {
-        let (tray, ids) = mac_win_tray::create_tray_icon();
-        mac_win_tray::set_event_handler(msg_tx.clone(), ids);
-        Some(tray)
-    } else {
-        None
-    };
-
     let gui_tx = if let Some(ui) = &ui {
         let (gui_tx, gui_rx) = mpsc::unbounded_channel::<gui::UpdateGuiCommand>();
         gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx.unwrap());
@@ -604,7 +591,7 @@ pub fn run<S: VideoSink + 'static>(
 
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
-    let (no_main_window, no_systray) = (cli_args.no_main_window, cli_args.no_systray);
+    let no_main_window = cli_args.no_main_window;
     let event_loop_jh = RUNTIME.spawn({
         let ui_weak = ui.as_ref().map(|ui| ui.as_weak());
         let msg_tx = msg_tx.clone();
@@ -678,14 +665,32 @@ pub fn run<S: VideoSink + 'static>(
         ui.run()?;
 
         #[cfg(feature = "systray")]
-        if no_systray {
-            ui.run()?;
-        } else {
+        if let Some(systray) = systray.as_ref() {
+            let ui_weak = ui.as_weak();
+            systray.on_toggle_window(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let win = ui.window();
+                    if win.is_visible() {
+                        let _ = win.hide();
+                    } else {
+                        let _ = win.show();
+                    }
+                }
+            });
+
+            systray.on_quit(|| {
+                let _ = slint::quit_event_loop();
+            });
+
             if !no_main_window {
                 ui.show()?;
             }
+            systray.show()?;
             slint::run_event_loop_until_quit()?;
+        } else {
+            ui.run()?;
         }
+
 
         info!("Shutting down...");
 
