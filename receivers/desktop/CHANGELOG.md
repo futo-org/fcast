@@ -3,6 +3,7 @@
 ## 3.0.3 - UNRELEASED
 
  - Use the new request headers for image downloads
+ - Enable system tray icon on macOS
 
 ## 3.0.2 - 2026-06-16
 

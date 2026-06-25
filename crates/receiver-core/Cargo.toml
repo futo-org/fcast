@@ -101,15 +101,11 @@ objc2-app-kit = "0.3.2"
 glutin_egl_sys = { version = "0.7.1" }
 rustls = { version = "0.23", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls", "gzip", "cookies" ] }
-ksni = { version = "0.3", default-features = false, features = ["async-io"], optional = true }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 egl-sys.path = "../egl-sys"
 drm-fourcc = "2.2.0"
-
-[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-tray-icon = { version = "0.21.3", default-features = false, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
@@ -141,11 +137,11 @@ default = []
 extra-imgfmt = ["dep:libheif-rs"]
 desktop = [
     "extra-imgfmt",
-    "slint/accessibility",
+    # "slint/accessibility", Disabled because it causes too many allocations during playback
     "slint/backend-winit",
     "slint/renderer-femtovg",
 ]
-systray = ["dep:ksni", "dep:tray-icon"]
+systray = ["slint/system-tray"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 tracy = ["dep:tracing-tracy"]

@@ -74,3 +74,27 @@ export component MainWindow inherits Window {
 
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
 }
+
+export component SystemTray inherits SystemTrayIcon {
+    icon: @image-url("../../../receivers/assets/icons/app/icon144.png");
+    tooltip: "FCast Receiver";
+
+    callback quit();
+    callback toggle-window();
+
+    clicked => toggle-window();
+
+    Menu {
+        MenuItem {
+            title: "Toggle window";
+            activated => toggle-window();
+        }
+
+        MenuSeparator {}
+
+        MenuItem {
+            title: "Quit";
+            activated => quit();
+        }
+    }
+}
