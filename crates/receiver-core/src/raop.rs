@@ -275,6 +275,179 @@ impl Default for FcAlacDec {
     }
 }
 
+mod raopdepay_imp {
+    use std::sync::LazyLock;
+
+    use gst::{glib, subclass::prelude::*};
+    use gst_base::subclass::prelude::*;
+    use parking_lot::Mutex;
+
+    use crate::raop::SAMPLING_RATE;
+
+    /// RAOP audio packets carry a bare RTP header (no CSRC / extension).
+    const RTP_HEADER_SIZE: usize = 12;
+
+    static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+        gst::DebugCategory::new("fcraopdepay", gst::DebugColorFlags::empty(), None)
+    });
+
+    #[derive(Default)]
+    struct State {
+        /// SDP `fmtp`, exposed on the src caps so the ALAC decoder can configure.
+        fmtp: Option<String>,
+    }
+
+    #[derive(Default)]
+    pub struct FcRaopDepay {
+        state: Mutex<State>,
+    }
+
+    impl FcRaopDepay {
+        pub fn set_fmtp(&self, fmtp: &str) {
+            self.state.lock().fmtp = Some(fmtp.to_owned());
+        }
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for FcRaopDepay {
+        const NAME: &'static str = "FcRaopDepay";
+        type Type = super::FcRaopDepay;
+        type ParentType = gst_base::BaseTransform;
+    }
+
+    impl ObjectImpl for FcRaopDepay {}
+    impl GstObjectImpl for FcRaopDepay {}
+
+    impl ElementImpl for FcRaopDepay {
+        fn pad_templates() -> &'static [gst::PadTemplate] {
+            static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
+                let sink_caps = gst::Caps::builder("application/x-rtp")
+                    .field("media", "audio")
+                    .field("clock-rate", SAMPLING_RATE as i32)
+                    .build();
+                let sink_pad_template = gst::PadTemplate::new(
+                    "sink",
+                    gst::PadDirection::Sink,
+                    gst::PadPresence::Always,
+                    &sink_caps,
+                )
+                .unwrap();
+
+                let src_caps = gst::Caps::builder("audio/x-alac").build();
+                let src_pad_template = gst::PadTemplate::new(
+                    "src",
+                    gst::PadDirection::Src,
+                    gst::PadPresence::Always,
+                    &src_caps,
+                )
+                .unwrap();
+
+                vec![src_pad_template, sink_pad_template]
+            });
+
+            PAD_TEMPLATES.as_ref()
+        }
+    }
+
+    impl BaseTransformImpl for FcRaopDepay {
+        const MODE: gst_base::subclass::BaseTransformMode =
+            gst_base::subclass::BaseTransformMode::NeverInPlace;
+        const PASSTHROUGH_ON_SAME_CAPS: bool = false;
+        const TRANSFORM_IP_ON_PASSTHROUGH: bool = false;
+
+        fn transform_caps(
+            &self,
+            direction: gst::PadDirection,
+            _caps: &gst::Caps,
+            filter: Option<&gst::Caps>,
+        ) -> Option<gst::Caps> {
+            let mut result = if direction == gst::PadDirection::Src {
+                gst::Caps::builder("application/x-rtp")
+                    .field("media", "audio")
+                    .field("clock-rate", SAMPLING_RATE as i32)
+                    .build()
+            } else {
+                let mut builder = gst::Caps::builder("audio/x-alac")
+                    .field("channels", 2i32)
+                    .field("rate", SAMPLING_RATE as i32);
+                if let Some(fmtp) = self.state.lock().fmtp.as_ref() {
+                    builder = builder.field(
+                        "sdp-fmtp",
+                        gst::Buffer::from_slice(fmtp.as_bytes().to_vec()),
+                    );
+                }
+                builder.build()
+            };
+
+            if let Some(filter) = filter {
+                result = result.intersect_with_mode(filter, gst::CapsIntersectMode::First);
+            }
+
+            Some(result)
+        }
+
+        fn transform_size(
+            &self,
+            direction: gst::PadDirection,
+            _caps: &gst::Caps,
+            size: usize,
+            _othercaps: &gst::Caps,
+        ) -> Option<usize> {
+            if direction == gst::PadDirection::Sink {
+                size.checked_sub(RTP_HEADER_SIZE)
+            } else {
+                Some(size + RTP_HEADER_SIZE)
+            }
+        }
+
+        fn transform(
+            &self,
+            inbuf: &gst::Buffer,
+            outbuf: &mut gst::BufferRef,
+        ) -> Result<gst::FlowSuccess, gst::FlowError> {
+            let in_map = inbuf.map_readable().map_err(|_| {
+                gst::error!(CAT, imp = self, "Failed to map input buffer");
+                gst::FlowError::Error
+            })?;
+            let data = in_map.as_slice();
+            if data.len() <= RTP_HEADER_SIZE {
+                gst::warning!(CAT, imp = self, "RTP packet too small to depayload");
+                return Err(gst::FlowError::Error);
+            }
+            let payload = &data[RTP_HEADER_SIZE..];
+
+            let mut out_map = outbuf.map_writable().map_err(|_| {
+                gst::error!(CAT, imp = self, "Failed to map output buffer");
+                gst::FlowError::Error
+            })?;
+            if out_map.size() != payload.len() {
+                gst::error!(CAT, imp = self, "Output buffer size mismatch");
+                return Err(gst::FlowError::Error);
+            }
+            out_map.as_mut_slice().copy_from_slice(payload);
+
+            Ok(gst::FlowSuccess::Ok)
+        }
+    }
+}
+
+glib::wrapper! {
+    pub struct FcRaopDepay(ObjectSubclass<raopdepay_imp::FcRaopDepay>) @extends gst_base::BaseTransform, gst::Element, gst::Object;
+}
+
+impl Default for FcRaopDepay {
+    fn default() -> Self {
+        glib::Object::new()
+    }
+}
+
+impl FcRaopDepay {
+    fn set_fmtp(&self, fmtp: &str) {
+        use glib::subclass::prelude::ObjectSubclassIsExt;
+        self.imp().set_fmtp(fmtp);
+    }
+}
+
 fn decode_base64(input: &str) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     if input.ends_with('=') {
@@ -510,10 +683,16 @@ fn ntp_time_now() -> [u8; 8] {
     ]
 }
 
-#[derive(Debug)]
+fn is_no_data_packet(payload: &[u8]) -> bool {
+    payload.len() == 16 && payload[12..16] == [0x00, 0x68, 0x34, 0x00]
+}
+
 struct ServerReceiver {
     player_tx: mpsc::Sender<Command>,
     socket: Arc<UdpSocket>,
+    appsrc: gst_app::AppSrc,
+    cipher: Option<Aes128>,
+    aesiv: Option<Vec<u8>>,
     shutdown: Shutdown,
 }
 
@@ -544,15 +723,38 @@ impl ServerReceiver {
 
             match rtp_types::RtpPacket::parse(&buf[..length]) {
                 Ok(packet) => {
-                    let seq = packet.sequence_number();
-                    let payload = packet.payload().to_vec();
+                    let timestamp = packet.timestamp();
+                    let payload = packet.payload();
+
+                    if payload.len() <= 12 || is_no_data_packet(payload) {
+                        continue;
+                    }
+
+                    let payload = match (&self.cipher, &self.aesiv) {
+                        (Some(cipher), Some(aesiv)) => {
+                            match decrypt_audio_packet(cipher, aesiv, payload) {
+                                Ok(decrypted) => decrypted,
+                                Err(err) => {
+                                    warn!(?err, "Failed to decrypt audio packet");
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => payload.to_vec(),
+                    };
+
+                    let header_len = length - packet.payload().len();
+                    let mut rtp = Vec::with_capacity(header_len + payload.len());
+                    rtp.extend_from_slice(&buf[..header_len]);
+                    rtp.extend_from_slice(&payload);
+
+                    if let Err(err) = self.appsrc.push_buffer(gst::Buffer::from_mut_slice(rtp)) {
+                        debug!(?err, "Dropped audio buffer: pipeline not accepting");
+                        continue;
+                    }
 
                     self.player_tx
-                        .send(Command::PutPacket {
-                            seq,
-                            packet: payload,
-                            timestamp: packet.timestamp(),
-                        })
+                        .send(Command::PutPacket { timestamp })
                         .await?
                 }
                 Err(err) => {
@@ -600,16 +802,6 @@ impl TimingManager {
                         let _receive = duration_from_ntp(&recv_buf[16..24]);
                         let _transmit = duration_from_ntp(&recv_buf[24..32]);
                         let _now = ntp_duration_now();
-
-                        // let (_base_local, _base_remote) = {
-                        //     let l = base_local.unwrap_or(origin);
-                        //     base_local = Some(l);
-                        //     let r = base_remote.unwrap_or(receive);
-                        //     base_remote = Some(r);
-                        //     (l, r)
-                        // };
-
-                        // debug!(?origin, ?receive, ?transmit, diff = ?(now - origin));
                     }
                 }
                 _ = send_interval.tick() => {
@@ -637,7 +829,6 @@ impl TimingManager {
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
-/// Decrypt a RAOP/AirTunes audio payload.
 fn decrypt_audio_packet(cipher: &Aes128, iv: &[u8], packet: &[u8]) -> Result<Vec<u8>, UnpadError> {
     let aeslen = packet.len() & !0xf;
     let iv = GenericArray::from_slice(iv);
@@ -717,8 +908,6 @@ enum Command {
 
     // Internal
     PutPacket {
-        seq: u16,
-        packet: Vec<u8>,
         timestamp: u32,
     },
 }
@@ -741,23 +930,31 @@ impl Player {
         let mut time_start = 0;
         let mut position = 0;
         let mut duration = 0;
-        let mut packet_tx = None;
-
         let pipeline = gst::Pipeline::new();
 
         let appsrc = gst_app::AppSrc::builder()
             .stream_type(gst_app::AppStreamType::Stream)
             .is_live(true)
             .format(gst::Format::Time)
+            .do_timestamp(true)
             .caps(
-                &gst::Caps::builder("audio/x-alac")
-                    .field("channels", 2i32)
-                    .field("rate", SAMPLING_RATE as i32)
-                    .field("stream-format", "raw")
+                &gst::Caps::builder("application/x-rtp")
+                    .field("media", "audio")
+                    .field("clock-rate", SAMPLING_RATE as i32)
+                    .field("encoding-name", "ALAC")
+                    .field("payload", 96i32)
                     .build(),
             )
             .build();
-        let queue = gst::ElementFactory::make("queue").build()?;
+
+        let jitterbuffer = gst::ElementFactory::make("rtpjitterbuffer")
+            .property(
+                "latency",
+                (LATENCY_IN_SAMPLES * 1000 / SAMPLING_RATE) as u32,
+            )
+            .property("do-lost", true)
+            .build()?;
+        let depay = FcRaopDepay::default();
         let alacdec = FcAlacDec::default();
         let convert = gst::ElementFactory::make("audioconvert").build()?;
         let resample = gst::ElementFactory::make("audioresample").build()?;
@@ -766,7 +963,8 @@ impl Player {
 
         let elems = [
             appsrc.upcast_ref(),
-            &queue,
+            &jitterbuffer,
+            depay.upcast_ref(),
             alacdec.upcast_ref(),
             &convert,
             &resample,
@@ -808,17 +1006,7 @@ impl Player {
                         cipher = Some(Aes128::new(key));
                     }
 
-                    appsrc.set_caps(Some(
-                        &gst::Caps::builder("audio/x-alac")
-                            .field("channels", 2i32)
-                            .field("rate", SAMPLING_RATE as i32)
-                            .field("stream-format", "raw")
-                            .field(
-                                "sdp-fmtp",
-                                gst::Buffer::from_slice(payload.fmtp.as_bytes().to_vec()),
-                            )
-                            .build(),
-                    ));
+                    depay.set_fmtp(&payload.fmtp);
 
                     let _ = resp.send(Ok(()));
                 }
@@ -865,6 +1053,9 @@ impl Player {
                     let mut server_receiver = ServerReceiver {
                         socket: server_sock.clone(),
                         player_tx: self.player_tx.clone(),
+                        appsrc: appsrc.clone(),
+                        cipher: cipher.clone(),
+                        aesiv: encryption.as_ref().map(|e| e.aesiv.clone()),
                         shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
                     };
 
@@ -902,59 +1093,14 @@ impl Player {
                 }
                 Command::Record { resp } => {
                     tracing::debug!("Record");
-
-                    let mut rtp_base_time = None;
-                    let (new_samples_tx, samples_rx) =
-                        std::sync::mpsc::sync_channel::<(u32, Vec<u8>)>(64);
-                    appsrc.set_callbacks(
-                        gst_app::AppSrcCallbacks::builder()
-                            .need_data(move |appsrc, _| {
-                                let Ok((timestamp, packet)) = samples_rx.recv() else {
-                                    let _ = appsrc.end_of_stream();
-                                    return;
-                                };
-
-                                let rtp_base_time = if let Some(t) = rtp_base_time {
-                                    t
-                                } else {
-                                    rtp_base_time = Some(timestamp);
-                                    timestamp
-                                };
-
-                                let rtp_time = timestamp - rtp_base_time;
-                                let real_rtp_time = gst::ClockTime::from_seconds_f64(
-                                    rtp_time as f64 / SAMPLING_RATE as f64,
-                                );
-
-                                let pts = real_rtp_time
-                                    + gst::ClockTime::from_seconds_f64(
-                                        LATENCY_IN_SAMPLES as f64 / SAMPLING_RATE as f64,
-                                    );
-
-                                let mut buffer = gst::Buffer::with_size(packet.len()).unwrap();
-                                {
-                                    let buffer = buffer.get_mut().unwrap();
-                                    buffer.set_pts(pts);
-
-                                    let mut map = buffer.map_writable().unwrap();
-                                    let data = map.as_mut_slice();
-                                    data.copy_from_slice(&packet);
-                                }
-                                appsrc.push_buffer(buffer).unwrap();
-                            })
-                            .build(),
-                    );
-                    packet_tx = Some(new_samples_tx);
-
+                    // `ServerReceiver` already feeds `appsrc`; just start playing.
                     pipeline.set_state(gst::State::Playing)?;
-
                     let _ = resp.send(Ok(()));
                 }
                 Command::Teardown { resp } => {
                     _notify_shutdown = None;
                     encryption = None;
                     cipher = None;
-                    let _ = packet_tx.take();
                     pipeline.set_state(gst::State::Null)?;
                     let _ = resp.send(Ok(()));
                 }
@@ -978,6 +1124,8 @@ impl Player {
                 }
                 Command::Flush { payload, resp } => {
                     debug!(?payload, "Flushing");
+                    let _ = appsrc.send_event(gst::event::FlushStart::new());
+                    let _ = appsrc.send_event(gst::event::FlushStop::new(false));
                     let _ = resp.send(Ok(()));
                 }
                 Command::SetProgress { start, curr, end } => {
@@ -986,47 +1134,17 @@ impl Player {
                     position = curr;
                     duration = end;
                 }
-                // TODO: can the decryption be optimized?
-                Command::PutPacket {
-                    seq: _seq,
-                    packet,
-                    timestamp,
-                } => match (&encryption, &cipher) {
-                    (Some(enc), Some(cipher)) => {
-                        fn is_no_data_packet(packet: &[u8]) -> bool {
-                            packet.len() == 16 && packet[12..16] == [0x00, 0x68, 0x34, 0x00]
-                        }
-
-                        if packet.len() <= 12 || is_no_data_packet(&packet) {
-                            continue;
-                        }
-
-                        let result = match decrypt_audio_packet(cipher, &enc.aesiv, &packet) {
-                            Ok(result) => result,
-                            Err(err) => {
-                                warn!(?err, "Failed to decrypt audio packet");
-                                continue;
-                            }
-                        };
-
-                        if let Some(tx) = packet_tx.as_ref() {
-                            tx.send((timestamp, result))?;
-                        }
-
-                        let diff = (timestamp as u64).saturating_sub(position);
-                        if duration > 0 && diff >= SAMPLING_RATE {
-                            position += diff;
-                            send_progress_update(
-                                &self.msg_tx,
-                                position - time_start,
-                                duration - time_start,
-                            );
-                        }
+                Command::PutPacket { timestamp } => {
+                    let diff = (timestamp as u64).saturating_sub(position);
+                    if duration > 0 && diff >= SAMPLING_RATE {
+                        position += diff;
+                        send_progress_update(
+                            &self.msg_tx,
+                            position - time_start,
+                            duration - time_start,
+                        );
                     }
-                    _ => {
-                        warn!("Cannot decrypt packet because crypto state is missing");
-                    }
-                },
+                }
             }
         }
 
