@@ -39,14 +39,14 @@ mod build {
         let release_path = source.join(release_dir);
 
         fn apply_patch(root: &Path, patch_path: &Path) {
-            let status = Command::new("patch")
+            let status = Command::new("git")
                 .current_dir(root)
+                .arg("apply")
                 .arg("-p1")
-                .arg("-i")
                 .arg(patch_path)
                 .status()
-                .expect(concat!("patch failed to spawn"));
-            assert!(status.success(), "patch exited with a failure status");
+                .expect(concat!("`git apply` failed to spawn"));
+            assert!(status.success(), "`git apply` exited with a failure status");
         }
 
         fn copy_dir(dst: &PathBuf, root: &Path) {
