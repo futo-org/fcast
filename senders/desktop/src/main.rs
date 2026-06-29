@@ -2481,7 +2481,6 @@ fn main() -> Result<()> {
         .with(vec_layer)
         .init();
 
-    #[cfg(target_os = "linux")]
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         error!(
             ?err,

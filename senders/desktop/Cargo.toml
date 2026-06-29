@@ -35,6 +35,7 @@ url = "2"
 file-server = { path = "../../crates/file-server" }
 num_cpus.workspace = true
 mimalloc.workspace = true
+rustls = { version = "0.23.36", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 
 [dependencies.fcast-sender-sdk]
 path = "../../sdk/sender/fcast-sender-sdk"
@@ -48,7 +49,6 @@ winresource = "0.1.28"
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.12.1", default-features = false, features = ["async-std"] } # `tokio` breaks slint
 xcb = { version = "1.6.0", features = ["randr", "xlib_xcb"] }
-rustls = { version = "0.23.36", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider" ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

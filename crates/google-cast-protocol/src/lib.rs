@@ -354,7 +354,7 @@ pub struct VolumeStatus {
 pub struct Status {
     pub applications: Option<Vec<Application>>,
     // TODO: `userEq`
-    pub volume: VolumeStatus,
+    pub volume: Option<VolumeStatus>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
