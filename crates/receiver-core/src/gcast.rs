@@ -133,12 +133,12 @@ async fn send_status(
             transport_id: MEDIA_ID.to_owned(),
             universal_app_id: Some(RECEIVER_ID.to_owned()),
         }]),
-        volume: VolumeStatus {
+        volume: Some(VolumeStatus {
             control_type: "attenuation".to_owned(),
             level: 1.0,
             muted: false,
             step_interval: 0.01,
-        },
+        }),
     };
 
     write_channel_message(
@@ -160,12 +160,12 @@ async fn send_empty_status(
 ) -> Result<()> {
     let status = google_cast_protocol::Status {
         applications: None,
-        volume: VolumeStatus {
+        volume: Some(VolumeStatus {
             control_type: "attenuation".to_owned(),
             level: 1.0,
             muted: false,
             step_interval: 0.01,
-        },
+        }),
     };
 
     write_channel_message(
