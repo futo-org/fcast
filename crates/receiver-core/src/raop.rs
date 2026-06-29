@@ -5,7 +5,8 @@
 use aes::{
     Aes128,
     cipher::{
-        BlockDecryptMut, InnerIvInit, KeyInit, block_padding::ZeroPadding,
+        BlockDecryptMut, InnerIvInit, KeyInit,
+        block_padding::{NoPadding, UnpadError},
         generic_array::GenericArray,
     },
 };
@@ -636,6 +637,16 @@ impl TimingManager {
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
+/// Decrypt a RAOP/AirTunes audio payload.
+fn decrypt_audio_packet(cipher: &Aes128, iv: &[u8], packet: &[u8]) -> Result<Vec<u8>, UnpadError> {
+    let aeslen = packet.len() & !0xf;
+    let iv = GenericArray::from_slice(iv);
+    let mut result = packet.to_vec();
+    let decryptor = Aes128CbcDec::inner_iv_init(cipher.clone(), iv);
+    decryptor.decrypt_padded_mut::<NoPadding>(&mut result[..aeslen])?;
+    Ok(result)
+}
+
 #[derive(Debug)]
 struct Encryption {
     aesiv: Vec<u8>,
@@ -986,23 +997,17 @@ impl Player {
                             packet.len() == 16 && packet[12..16] == [0x00, 0x68, 0x34, 0x00]
                         }
 
-                        let len = packet.len();
                         if packet.len() <= 12 || is_no_data_packet(&packet) {
                             continue;
                         }
 
-                        let iv = GenericArray::from_slice(&enc.aesiv);
-                        let mut buffer = packet.clone();
-                        buffer.extend_from_slice(&[0; 16]);
-                        let aeslen = len & !0xf;
-
-                        let buffer_end = (16 * (len / 16)) + 16;
-                        let decryptor = Aes128CbcDec::inner_iv_init(cipher.clone(), iv);
-                        let mut result = decryptor
-                            .decrypt_padded_vec_mut::<ZeroPadding>(&buffer[..buffer_end])
-                            .unwrap();
-
-                        result[aeslen..len].copy_from_slice(&packet[aeslen..len]);
+                        let result = match decrypt_audio_packet(cipher, &enc.aesiv, &packet) {
+                            Ok(result) => result,
+                            Err(err) => {
+                                warn!(?err, "Failed to decrypt audio packet");
+                                continue;
+                            }
+                        };
 
                         if let Some(tx) = packet_tx.as_ref() {
                             tx.send((timestamp, result))?;
@@ -1704,5 +1709,50 @@ mod tests {
                 artist: None,
             }
         );
+    }
+
+    fn encrypt_audio_packet(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::NoPadding};
+        type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+
+        let aeslen = plaintext.len() & !0xf;
+        let mut packet = plaintext.to_vec();
+        Aes128CbcEnc::new(key.into(), iv.into())
+            .encrypt_padded_mut::<NoPadding>(&mut packet[..aeslen], aeslen)
+            .unwrap();
+        packet
+    }
+
+    #[test]
+    fn decrypt_audio_packet_roundtrips_non_block_aligned() {
+        let key = [0x42u8; 16];
+        let iv = [0x24u8; 16];
+
+        let mut plaintext: Vec<u8> = (0..303).map(|i| (i % 251) as u8).collect();
+        plaintext[286] = 0;
+        plaintext[287] = 0;
+
+        let packet = encrypt_audio_packet(&key, &iv, &plaintext);
+        assert_eq!(packet.len(), plaintext.len());
+
+        let cipher = Aes128::new(GenericArray::from_slice(&key));
+        let result = decrypt_audio_packet(&cipher, &iv, &packet).unwrap();
+
+        assert_eq!(result.len(), plaintext.len());
+        assert_eq!(result, plaintext);
+    }
+
+    #[test]
+    fn decrypt_audio_packet_roundtrips_block_aligned() {
+        let key = [0x01u8; 16];
+        let iv = [0u8; 16];
+
+        let plaintext: Vec<u8> = (0..256).map(|i| (i % 251) as u8).collect();
+        let packet = encrypt_audio_packet(&key, &iv, &plaintext);
+
+        let cipher = Aes128::new(GenericArray::from_slice(&key));
+        let result = decrypt_audio_packet(&cipher, &iv, &packet).unwrap();
+
+        assert_eq!(result, plaintext);
     }
 }

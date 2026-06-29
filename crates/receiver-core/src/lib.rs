@@ -691,7 +691,6 @@ pub fn run<S: VideoSink + 'static>(
             ui.run()?;
         }
 
-
         info!("Shutting down...");
 
         RUNTIME.block_on(async move {
