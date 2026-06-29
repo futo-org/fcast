@@ -21,5 +21,9 @@ fn main() -> anyhow::Result<()> {
         selector.select()?;
     }
 
+    if let Err(err) = rcore::slint::set_xdg_app_id("org.fcast.Receiver") {
+        rcore::tracing::warn!(?err, "Failed to set XDG app id");
+    }
+
     rcore::run(args, rcore::SwapchainSink::new())
 }

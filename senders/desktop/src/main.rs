@@ -2497,6 +2497,9 @@ fn main() -> Result<()> {
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
     let ui = MainWindow::new()?;
+    if let Err(err) = slint::set_xdg_app_id("org.fcast.Sender") {
+        warn!(?err, "Failed to set XDG app id");
+    }
 
     let event_loop_jh = runtime.spawn({
         let ui_weak = ui.as_weak();
