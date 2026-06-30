@@ -3,6 +3,13 @@ use anyhow::{Result, anyhow};
 use crate::{placebo::PlaceboContext, video::Frame};
 
 pub trait VideoSink {
+    /// Called once during `RenderingSetup`, on the render/event-loop thread, after the GL and
+    /// libplacebo contexts have been created. This gives the sink a chance to grab native window
+    /// handles (e.g. the Wayland `wl_surface` it needs to parent a subsurface to). The default
+    /// implementation does nothing, which is correct for sinks that render into Slint's own
+    /// surface (e.g. [`SwapchainSink`]).
+    fn setup(&mut self, _window: &slint::Window) {}
+
     fn render(
         &mut self,
         placebo: &mut PlaceboContext,
@@ -11,9 +18,27 @@ pub trait VideoSink {
         target_size: (u32, u32),
     ) -> Result<()>;
 
+    /// Whether [`render`](Self::render) must be called on *every* Slint repaint, or only when the
+    /// frame or target size actually changes. Sinks that composite into Slint's own GL surface
+    /// must return `true`: Slint clears that surface every repaint, so the video has to be redrawn
+    /// each time (e.g. on focus/cursor repaints) or it would vanish. A sink that commits to an
+    /// independent presentation surface (a Wayland subsurface) can return `false` — the compositor
+    /// keeps showing the last committed buffer across Slint repaints, so re-rendering an unchanged
+    /// frame would be wasted GPU work. Default: `true`.
+    fn needs_render_every_repaint(&self) -> bool {
+        true
+    }
+
     fn flush_cache(&mut self, placebo: &mut PlaceboContext) {
         placebo.flush_cache();
     }
+
+    /// Called when the current stream ends (EOS) and there is no longer a frame to display.
+    /// Sinks that own a separate presentation surface (e.g. a Wayland subsurface) must detach
+    /// their last buffer here, otherwise the stale final frame lingers on screen across a
+    /// stop/play transition. Sinks that render into Slint's own surface need do nothing — the
+    /// rendering loop clears that surface every frame. Default: no-op.
+    fn clear(&mut self) {}
 
     fn get_clear_color(&self) -> [f32; 4];
 

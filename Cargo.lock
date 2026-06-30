@@ -7770,6 +7770,7 @@ dependencies = [
  "headers",
  "http-body-util",
  "hyper",
+ "i-slint-backend-winit",
  "if-addrs",
  "image",
  "image_swizzle",
@@ -7791,6 +7792,7 @@ dependencies = [
  "pin-project-lite",
  "plist",
  "rand 0.10.1",
+ "raw-window-handle",
  "rcgen",
  "receiver-resources",
  "regex",
@@ -7823,6 +7825,9 @@ dependencies = [
  "tracing-tracy",
  "url",
  "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]

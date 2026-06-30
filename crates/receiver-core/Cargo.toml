@@ -111,6 +111,13 @@ libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", 
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 egl-sys.path = "../egl-sys"
 drm-fourcc = "2.2.0"
+# Wayland subsurface video sink (prototype), gated by the `wayland-subsurface` feature so
+# non-winit receivers (e.g. fhs) don't pull in winit.
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", features = ["client_system"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+i-slint-backend-winit = { version = "1.17", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
@@ -147,6 +154,15 @@ desktop = [
     "slint/backend-winit",
     "slint/renderer-femtovg",
     "static-gst-plugins",
+    "wayland-subsurface",
+]
+# Experimental Wayland subsurface video sink. Only meaningful on Linux with the winit backend.
+wayland-subsurface = [
+    "dep:wayland-client",
+    "dep:wayland-backend",
+    "dep:wayland-protocols",
+    "dep:raw-window-handle",
+    "dep:i-slint-backend-winit",
 ]
 systray = ["slint/system-tray"]
 kms-backend = ["slint/backend-linuxkms"]

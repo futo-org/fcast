@@ -51,12 +51,16 @@ mod user_agent;
 mod utils;
 pub mod video;
 pub mod video_sink;
+#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+mod wayland_sink;
 
 pub use glow;
 pub use gst;
 pub use gst_video;
 pub use libplacebo;
 pub use video_sink::{SwapchainSink, VideoSink};
+#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+pub use wayland_sink::WaylandSubsurfaceSink;
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -230,6 +234,10 @@ pub struct CliArgs {
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
+    /// Don't forward HDR to the compositor; always tone-map to SDR with libplacebo instead.
+    /// Only affects the experimental Wayland subsurface video sink.
+    #[arg(long, default_value_t = false)]
+    pub disable_hdr_output: bool,
 }
 
 impl CliArgs {
@@ -421,6 +429,12 @@ pub fn run<S: VideoSink + 'static>(
                         }
                     }
 
+                    // Give the sink a chance to grab native window handles (e.g. the Wayland
+                    // surface a subsurface sink parents itself to).
+                    if let Some(ui) = ui_weak.upgrade() {
+                        video_sink.setup(ui.window());
+                    }
+
                     gui_is_visible.set(true);
                 }
                 slint::RenderingState::BeforeRendering => {
@@ -476,13 +490,25 @@ pub fn run<S: VideoSink + 'static>(
                         return;
                     };
 
+                    let mut new_frame = false;
                     if let Some(payload_handle) = &payload_handle {
                         if let Some(pay) = payload_handle.0.lock().take() {
                             match pay {
-                                Some(frame) => cached_frame = Some(frame),
+                                Some(frame) => {
+                                    cached_frame = Some(frame);
+                                    new_frame = true;
+                                }
                                 // EOS
                                 None => {
                                     cached_frame = None;
+                                    video_sink.clear();
+                                    // Purge the libplacebo renderer's carried-over state (notably
+                                    // its adaptive HDR peak-detection estimate) at the stream
+                                    // boundary, as libplacebo recommends when switching sources, so
+                                    // one stream's tone-mapping never bleeds into the next.
+                                    if let Some(placebo) = pl_context.as_mut() {
+                                        video_sink.flush_cache(placebo);
+                                    }
                                     bridge.set_overlays(slint::ModelRc::default());
                                     bridge.set_subtitles(slint::ModelRc::default());
                                 }
@@ -492,7 +518,8 @@ pub fn run<S: VideoSink + 'static>(
 
                     let new_size = ui.window().size();
                     let new_size = (new_size.width, new_size.height);
-                    if new_size != prev_size {
+                    let size_changed = new_size != prev_size;
+                    if size_changed {
                         sink.set_property(
                             "window-resolution",
                             video::imp::WindowResolution {
@@ -520,7 +547,12 @@ pub fn run<S: VideoSink + 'static>(
                     if let Some(frame) = cached_frame.as_mut() {
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
-                        if let Some(placebo) = pl_context.as_mut()
+                        // Only re-render when something actually changed, unless the sink composites
+                        // into Slint's own (per-repaint-cleared) surface and must redraw every time.
+                        // A subsurface sink keeps showing its committed buffer across repaints, so
+                        // skipping unchanged repaints (focus/cursor) avoids wasted GPU work.
+                        if (new_frame || size_changed || video_sink.needs_render_every_repaint())
+                            && let Some(placebo) = pl_context.as_mut()
                             && let Some(renderer) = renderer.as_ref()
                         {
                             if let Err(err) =
@@ -615,11 +647,11 @@ pub fn run<S: VideoSink + 'static>(
             let video_sink_elem = if let Some(ui_weak) = ui_weak {
                 let sink = video::FSink::new();
                 sink.connect("frame-available", false, move |_| {
-                    ui_weak
-                        .upgrade_in_event_loop(move |ui| {
-                            ui.window().request_redraw();
-                        })
-                        .unwrap();
+                    // Ignore failure: the event loop may have already terminated during shutdown
+                    // (or if the Wayland connection was lost). Panicking here just spams the log.
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.window().request_redraw();
+                    });
 
                     None
                 });
