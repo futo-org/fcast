@@ -2,6 +2,7 @@
 name = "desktop-receiver"
 version = "3.0.2"
 edition = "2024"
+license = "GPL-3.0-only"
 
 [dependencies]
 rcore = { package = "receiver-core", path = "../../crates/receiver-core", features = ["desktop"] }
@@ -14,6 +15,7 @@ systray = ["rcore/systray"]
 kms-backend = ["rcore/kms-backend"]
 tracy = ["rcore/tracy"]
 static-gst-plugins = ["rcore/static-gst-plugins"]
+airplay = ["rcore/airplay"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enable-ansi-support = "0.3.1"

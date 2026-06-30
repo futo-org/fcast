@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 
+#[cfg(feature = "airplay")]
+use crate::airplay;
 use crate::{MediaItemId, SenderId, UiMediaTrackType, application::PacketOrigin, player, raop};
 
 #[derive(Clone, Debug)]
@@ -25,6 +27,11 @@ impl MessageSender {
 
     pub fn raop(&self, msg: Raop) {
         self.send(Message::Raop(msg));
+    }
+
+    #[cfg(feature = "airplay")]
+    pub fn airplay(&self, msg: AirPlay) {
+        self.send(Message::AirPlay(msg));
     }
 
     pub fn player(&self, msg: crate::player::PlayerEvent) {
@@ -52,6 +59,40 @@ pub enum Mdns {
     IpAdded(IpAddr),
     IpRemoved(IpAddr),
     SetIps(Vec<IpAddr>),
+}
+
+#[cfg(feature = "airplay")]
+#[derive(Debug)]
+pub enum AirPlay {
+    ConfigAvailable(airplay::Configuration),
+    SenderConnected(tokio::net::TcpStream),
+    /// A mirror video stream was set up; the receiver should start playing the
+    /// `airplay://mirror/<id>` source.
+    MirrorStarted {
+        stream_connection_id: u64,
+    },
+    /// A mirror session ended (TEARDOWN or sender disconnect); the receiver
+    /// should stop playback if this is the session currently playing.
+    MirrorStopped {
+        stream_connection_id: u64,
+    },
+    /// The client stopped sending video (screen locked/asleep); the receiver
+    /// should pause playback of this session.
+    MirrorPaused {
+        stream_connection_id: u64,
+    },
+    /// The client resumed sending video after a pause; the receiver should
+    /// resume playback of this session.
+    MirrorResumed {
+        stream_connection_id: u64,
+    },
+    /// The client changed the volume (SET_PARAMETER); `volume` is the linear
+    /// GStreamer gain (`0.0`..=`1.0`). Applied to the shared player, which now
+    /// decodes the mirror audio.
+    VolumeChanged {
+        stream_connection_id: u64,
+        volume: f32,
+    },
 }
 
 #[derive(Debug)]
@@ -99,6 +140,8 @@ pub enum Message {
     },
     ShouldSetLoadingStatus(MediaItemId),
     Raop(Raop),
+    #[cfg(feature = "airplay")]
+    AirPlay(AirPlay),
     #[cfg(debug_assertions)]
     DumpPipeline,
     #[cfg(any(target_os = "macos", target_os = "windows"))]

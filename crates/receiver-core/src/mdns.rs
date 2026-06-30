@@ -5,6 +5,8 @@ use if_addrs::get_if_addrs;
 use mdns_sd::ServiceDaemon;
 use tracing::error;
 
+#[cfg(feature = "airplay")]
+use crate::{airplay, message::AirPlay};
 use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 
 /// Must be called from a tokio context.
@@ -101,9 +103,16 @@ pub fn start_daemon(
     }
 
     if !settings.cli.no_raop {
-        let (raop_service, raop_config) = raop::service_info(device_name).unwrap();
+        let (raop_service, raop_config) = raop::service_info(device_name.clone()).unwrap();
         daemon.register(raop_service).unwrap();
         msg_tx.raop(Raop::ConfigAvailable(raop_config));
+    }
+
+    #[cfg(feature = "airplay")]
+    if !settings.cli.no_airplay {
+        let (airplay_service, airplay_config) = airplay::service_info(device_name).unwrap();
+        daemon.register(airplay_service).unwrap();
+        msg_tx.airplay(AirPlay::ConfigAvailable(airplay_config));
     }
 
     let msg_tx = msg_tx.clone();

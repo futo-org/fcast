@@ -25,7 +25,7 @@ members = [
     "crates/fiatlux",
     "crates/inhibit-screensaver",
     "crates/get-type-string-derive",
-    "fuzz", "sdk/sender/examples/image-viewer",
+    "fuzz", "sdk/sender/examples/image-viewer", "crates/apple-fairplay",
 ]
 resolver = "2"
 

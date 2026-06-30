@@ -21,6 +21,8 @@ use std::{
 pub use clap;
 pub use slint;
 pub use tracing;
+#[cfg(feature = "airplay")]
+mod airplay;
 mod application;
 #[cfg(target_os = "linux")]
 mod dmabuf;
@@ -206,6 +208,10 @@ pub struct CliArgs {
     /// Disable the RAOP receiver
     #[arg(long, default_value_t = false)]
     no_raop: bool,
+    /// Disable the AirPlay screen-mirroring receiver
+    #[cfg(feature = "airplay")]
+    #[arg(long, default_value_t = false)]
+    no_airplay: bool,
     /// Disable the Google Cast receiver
     #[arg(long, default_value_t = false)]
     no_google_cast: bool,

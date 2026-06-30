@@ -702,6 +702,7 @@ impl Player {
         video_sink: Option<gst::Element>,
         msg_tx: MessageSender,
         fcomp_context: crate::fcompsrc::imp::CompContext,
+        #[cfg(feature = "airplay")] airplay_context: crate::airplay::AirPlayContext,
         // signalling_channel: std::sync::Arc<
         //     parking_lot::Mutex<Option<crate::fwebrtcsrc::SignallingChannel>>,
         // >,
@@ -746,6 +747,8 @@ impl Player {
                 &msg_tx_c,
                 msg,
                 &fcomp_context,
+                #[cfg(feature = "airplay")]
+                &airplay_context,
                 // &signalling_channel,
             );
             gst::BusSyncReply::Drop
@@ -887,6 +890,7 @@ impl Player {
         msg_tx: &MessageSender,
         msg: &gst::Message,
         fcomp_context: &crate::fcompsrc::imp::CompContext,
+        #[cfg(feature = "airplay")] airplay_context: &crate::airplay::AirPlayContext,
         // signalling_channel: &std::sync::Arc<
         //     parking_lot::Mutex<Option<crate::fwebrtcsrc::SignallingChannel>>,
         // >,
@@ -908,6 +912,22 @@ impl Player {
                             let ctx = ctx.get_mut().unwrap();
                             let s = ctx.structure_mut();
                             s.set("context", fcomp_context);
+                        }
+                        element.set_context(&ctx);
+                        return;
+                    }
+                    #[cfg(feature = "airplay")]
+                    if typ == crate::airplay::source::imp::AIRPLAY_CONTEXT {
+                        let mut ctx = gst::Context::new(typ, true);
+                        {
+                            let ctx = ctx.get_mut().unwrap();
+                            let s = ctx.structure_mut();
+                            s.set(
+                                "context",
+                                crate::airplay::source::imp::BoxedAirPlayContext(
+                                    airplay_context.clone(),
+                                ),
+                            );
                         }
                         element.set_context(&ctx);
                         return;

@@ -29,6 +29,8 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::message;
+#[cfg(feature = "airplay")]
+use crate::{airplay, message::AirPlay};
 use crate::{
     AppState, FCAST_TCP_PORT, GCastUpdateSender, GuiPlaybackState, MediaItemId, MessageSender,
     SenderId, UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
@@ -68,6 +70,11 @@ enum ContinueToPlay {
 
 struct RaopServer {
     config: raop::Configuration,
+}
+
+#[cfg(feature = "airplay")]
+struct AirPlayServer {
+    config: airplay::Configuration,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +202,10 @@ enum MediaSource {
     },
     Queue(QueueState),
     Raop,
+    #[cfg_attr(not(feature = "airplay"), allow(dead_code))]
+    AirPlayMirror {
+        stream_connection_id: u64,
+    },
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -209,6 +220,8 @@ pub enum PacketOrigin {
         sender_id: SenderId,
     },
     Raop,
+    #[cfg_attr(not(feature = "airplay"), allow(dead_code))]
+    AirPlay,
 }
 
 impl PacketOrigin {
@@ -292,6 +305,8 @@ pub struct Application {
     current_media_item_id: MediaItemId,
     is_loading_media: bool,
     raop_server: Option<RaopServer>,
+    #[cfg(feature = "airplay")]
+    airplay_server: Option<AirPlayServer>,
     gui: GuiController,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     update: Option<app_updater::Release>,
@@ -305,6 +320,8 @@ pub struct Application {
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     companion_ctx: CompanionContext,
+    #[cfg(feature = "airplay")]
+    airplay_context: airplay::AirPlayContext,
     signalling_channel: Arc<Mutex<Option<fwebrtcsrc::SignallingChannel>>>,
     receiver_info: Arc<crate::ReceiverInfo>,
     fcast_txt_records: HashMap<String, String>,
@@ -335,11 +352,15 @@ impl Application {
         }
 
         let companion_ctx = CompanionContext::new();
+        #[cfg(feature = "airplay")]
+        let airplay_context = airplay::AirPlayContext::new();
         let signalling_channel = Arc::new(Mutex::new(None::<fwebrtcsrc::SignallingChannel>));
         let player = player::Player::new(
             video_sink,
             msg_tx.clone(),
             fcompsrc::imp::CompContext(companion_ctx.clone()),
+            #[cfg(feature = "airplay")]
+            airplay_context.clone(),
             // Arc::clone(&signalling_channel),
         )?;
 
@@ -528,6 +549,8 @@ impl Application {
             current_media_item_id: 0,
             is_loading_media: false,
             raop_server: None,
+            #[cfg(feature = "airplay")]
+            airplay_server: None,
             gui,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             update: None,
@@ -545,6 +568,8 @@ impl Application {
             ),
             tls_acceptor: acceptor,
             companion_ctx,
+            #[cfg(feature = "airplay")]
+            airplay_context,
             signalling_channel,
             receiver_info,
             fcast_txt_records,
@@ -626,7 +651,10 @@ impl Application {
         error!(?origin, ?error, "An error occured");
 
         match origin {
-            PacketOrigin::Gui | PacketOrigin::AutoPlay | PacketOrigin::Raop => (),
+            PacketOrigin::Gui
+            | PacketOrigin::AutoPlay
+            | PacketOrigin::Raop
+            | PacketOrigin::AirPlay => (),
             PacketOrigin::FCast {
                 sender_id,
                 packet_num,
@@ -836,7 +864,7 @@ impl Application {
                 }
             }
             MediaSource::Queue(_) => (),
-            MediaSource::Raop => (),
+            MediaSource::Raop | MediaSource::AirPlayMirror { .. } => (),
         }
     }
 
@@ -857,7 +885,7 @@ impl Application {
             },
             MediaSource::Playlist { content, index } => content.items.get(*index)?.url.as_deref(),
             MediaSource::Queue(queue) => Some(&queue.items.get(queue.current_idx as usize)?.url),
-            MediaSource::Raop => None,
+            MediaSource::Raop | MediaSource::AirPlayMirror { .. } => None,
         }
     }
 
@@ -991,6 +1019,12 @@ impl Application {
                 .to_media_item(),
             MediaSource::Raop => {
                 warn!("Cannot load RAOP source");
+                return Ok(());
+            }
+            MediaSource::AirPlayMirror { .. } => {
+                // The mirror URI is set directly in the MirrorStarted handler,
+                // not through the media-item load path.
+                warn!("Cannot load AirPlay mirror source as a media item");
                 return Ok(());
             }
         };
@@ -1765,7 +1799,9 @@ impl Application {
                                 ),
                             ));
                         }
-                        MediaSource::Playlist { .. } | MediaSource::Raop => (),
+                        MediaSource::Playlist { .. }
+                        | MediaSource::Raop
+                        | MediaSource::AirPlayMirror { .. } => (),
                     }
                 }
             }
@@ -2103,6 +2139,129 @@ impl Application {
         Ok(false)
     }
 
+    #[cfg(feature = "airplay")]
+    fn is_current_airplay_mirror(&self, stream_connection_id: u64) -> bool {
+        matches!(
+            self.current_media.as_ref().map(|m| &m.source),
+            Some(MediaSource::AirPlayMirror { stream_connection_id: id })
+                if *id == stream_connection_id
+        )
+    }
+
+    #[cfg(feature = "airplay")]
+    fn handle_airplay_event(&mut self, event: AirPlay) -> Result<bool> {
+        match event {
+            AirPlay::ConfigAvailable(config) => {
+                let run_airplay = if cfg!(not(target_os = "android")) {
+                    !self.settings.cli.no_airplay
+                } else {
+                    true
+                };
+
+                if run_airplay && self.airplay_server.is_none() {
+                    info!(?config, "Starting airplay server");
+
+                    let msg_tx = self.msg_tx.clone();
+                    tokio::spawn(async move {
+                        // IpV4 only
+                        let listener =
+                            tokio::net::TcpListener::bind(("0.0.0.0", airplay::AIRPLAY_TCP_PORT))
+                                .await
+                                .unwrap();
+
+                        loop {
+                            let (stream, _) = listener.accept().await.unwrap();
+                            msg_tx.airplay(AirPlay::SenderConnected(stream));
+                        }
+                    });
+                    self.airplay_server = Some(AirPlayServer { config });
+                }
+            }
+            AirPlay::SenderConnected(stream) => {
+                let Some(server) = self.airplay_server.as_ref() else {
+                    error!("No airplay server is running");
+                    return Ok(false);
+                };
+
+                let config = server.config.clone();
+                let msg_tx = self.msg_tx.clone();
+                let airplay_context = self.airplay_context.clone();
+                tokio::spawn(async move {
+                    airplay::handle_sender(stream, config, msg_tx, airplay_context).await;
+                });
+            }
+            AirPlay::MirrorStarted {
+                stream_connection_id,
+            } => {
+                let busy_with_other = self
+                    .current_media
+                    .as_ref()
+                    .is_some_and(|m| !matches!(m.source, MediaSource::AirPlayMirror { .. }));
+                if busy_with_other {
+                    warn!(
+                        stream_connection_id,
+                        "Refusing AirPlay mirror: other media is already playing"
+                    );
+                    self.airplay_context.end_session(stream_connection_id);
+                    return Ok(false);
+                }
+
+                let uri = airplay::source::mirror_uri(stream_connection_id);
+                debug!(%uri, "Starting AirPlay mirror playback");
+                self.player.set_uri(&uri);
+                self.player.play();
+                self.current_media = Some(MediaSourceState::new(
+                    PacketOrigin::AirPlay,
+                    MediaSource::AirPlayMirror {
+                        stream_connection_id,
+                    },
+                ));
+                self.gui.set_app_state(AppState::Playing);
+                self.gui.set_player_type(UiPlayerVariant::Video);
+            }
+            AirPlay::MirrorPaused {
+                stream_connection_id,
+            } => {
+                if self.is_current_airplay_mirror(stream_connection_id) {
+                    debug!(stream_connection_id, "Pausing AirPlay mirror playback");
+                    self.player.pause();
+                }
+            }
+            AirPlay::MirrorResumed {
+                stream_connection_id,
+            } => {
+                if self.is_current_airplay_mirror(stream_connection_id) {
+                    debug!(stream_connection_id, "Resuming AirPlay mirror playback");
+                    self.player.play();
+                }
+            }
+            AirPlay::VolumeChanged {
+                stream_connection_id,
+                volume,
+            } => {
+                if self.is_current_airplay_mirror(stream_connection_id) {
+                    debug!(
+                        stream_connection_id,
+                        volume, "Setting AirPlay mirror volume"
+                    );
+                    self.player.set_volume(volume);
+                    self.gui.set_volume(volume);
+                }
+            }
+            AirPlay::MirrorStopped {
+                stream_connection_id,
+            } => {
+                if self.is_current_airplay_mirror(stream_connection_id) {
+                    debug!(stream_connection_id, "Stopping AirPlay mirror playback");
+                    self.stop_playback();
+                    self.gui.set_player_type(UiPlayerVariant::Unknown);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn handle_app_update_event(&mut self, event: message::AppUpdate) -> Result<bool> {
         match event {
@@ -2401,6 +2560,8 @@ impl Application {
                 }
             }
             Message::Raop(event) => return self.handle_raop_event(event),
+            #[cfg(feature = "airplay")]
+            Message::AirPlay(event) => return self.handle_airplay_event(event),
             #[cfg(debug_assertions)]
             Message::DumpPipeline => {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);

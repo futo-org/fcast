@@ -1450,7 +1450,11 @@ impl SessionDriver {
                 Action::Pong => self.write_simple(Opcode::Pong).await?,
                 Action::EndSession => return Ok(true),
                 Action::Op(Operation::SetVolume(volume)) => {
-                    let clamped = if volume.is_nan() { 0.0 } else { volume.clamp(0.0, 1.0) };
+                    let clamped = if volume.is_nan() {
+                        0.0
+                    } else {
+                        volume.clamp(0.0, 1.0)
+                    };
                     if clamped != volume {
                         if let PacketOrigin::FCast { packet_num, .. } = origin {
                             self.send_v4_error(packet_num, v4::flat::ErrorKind::VolumeOutOfRange)
