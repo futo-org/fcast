@@ -383,7 +383,7 @@ mod imp {
             if !res.status().is_success() {
                 match res.status() {
                     StatusCode::NOT_FOUND => {
-                        gst::error!(CAT, imp = self, "Resource not found");
+                        gst::error!(CAT, imp = self, "Resource not found URL={}", res.url());
                         return Err(Some(gst::error_msg!(
                             gst::ResourceError::NotFound,
                             ["Resource '{}' not found", uri]

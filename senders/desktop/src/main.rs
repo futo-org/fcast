@@ -311,6 +311,7 @@ enum SessionSpecificState {
     Idle,
     Mirroring {
         tx_sink: Option<WhepSink>,
+        fakey: Option<mcore::transmission::FSink>,
         video_source_fetcher_tx: Sender<FetchEvent>,
         our_source_url: Option<String>,
         video_sources: Vec<(usize, PreviewPipeline)>,
@@ -565,6 +566,25 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
     video_source_fetcher_tx
 }
 
+// Copy of https://doc.rust-lang.org/std/net/struct.Ipv6Addr.html#method.is_unicast_global to not have to force the use of a nightly toolchain
+// fn ipv6_is_global(v6: std::net::Ipv6Addr) -> bool {
+//     !(v6.is_unspecified()
+//         || v6.is_loopback()
+//         || matches!(v6.segments(), [0, 0, 0, 0, 0, 0xffff, _, _])
+//         || matches!(v6.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
+//         || matches!(v6.segments(), [0x100, 0, 0, 0, _, _, _, _])
+//         || (matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
+//             && !(u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
+//                 || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
+//                 || matches!(v6.segments(), [0x2001, 3, _, _, _, _, _, _])
+//                 || matches!(v6.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
+//                 || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)))
+//         || matches!(v6.segments(), [0x2002, _, _, _, _, _, _, _])
+//         || matches!(v6.segments(), [0x5f00, ..])
+//         || v6.is_unique_local()
+//         || v6.is_unicast_link_local())
+// }
+
 impl Application {
     /// Must be called from a tokio runtime.
     pub fn new(ui_weak: slint::Weak<MainWindow>, event_tx: UnboundedSender<Event>) -> Result<Self> {
@@ -681,13 +701,13 @@ impl Application {
         Ok(())
     }
 
-    fn add_or_update_device(&mut self, mut device_info: DeviceInfo) -> Result<()> {
-        device_info
-            .addresses
-            .retain(|addr| match Into::<std::net::IpAddr>::into(addr) {
-                std::net::IpAddr::V4(_) => true,
-                std::net::IpAddr::V6(v6) => fcast_sender_sdk::ipv6_is_global(v6),
-            });
+    fn add_or_update_device(&mut self, device_info: DeviceInfo) -> Result<()> {
+        // device_info
+        //     .addresses
+        //     .retain(|addr| match Into::<std::net::IpAddr>::into(addr) {
+        //         std::net::IpAddr::V4(_) => true,
+        //         std::net::IpAddr::V6(v6) => ipv6_is_global(v6),
+        //     });
 
         if !device_info.addresses.is_empty() {
             self.devices.insert(device_info.name.clone(), device_info);
@@ -758,6 +778,8 @@ impl Application {
 
     fn update_device_state(&mut self, event: mcore::DeviceEvent) -> Result<()> {
         if let Some(session) = self.session_state.as_mut() {
+            let mut tracks = None;
+            let mut track_selected = None;
             match event {
                 mcore::DeviceEvent::VolumeChanged(new_volume) => session.volume = new_volume,
                 mcore::DeviceEvent::TimeChanged(new_time) => session.time = new_time,
@@ -767,12 +789,23 @@ impl Application {
                         device::PlaybackState::Buffering => UiPlaybackState::Buffering,
                         device::PlaybackState::Playing => UiPlaybackState::Playing,
                         device::PlaybackState::Paused => UiPlaybackState::Paused,
+                        device::PlaybackState::Ended => {
+                            return self.play_next_if_available();
+                        }
                     };
                 }
                 mcore::DeviceEvent::DurationChanged(new_duration) => {
                     session.duration = new_duration
                 }
                 mcore::DeviceEvent::SpeedChanged(new_speed) => session.speed = new_speed,
+                mcore::DeviceEvent::TracksAvailable(new_tracks) => {
+                    debug!("Tracks available {new_tracks:?}");
+                    tracks = Some(new_tracks);
+                }
+                mcore::DeviceEvent::TrackSelected { id, typ } => {
+                    debug!("Track selected id={id:?} typ={typ:?}");
+                    track_selected = Some((id, typ));
+                }
                 _ => (), // Unreachable
             }
 
@@ -802,6 +835,41 @@ impl Application {
                 bridge.set_playback_rate(speed);
                 bridge.set_playback_pos_str(time_str);
                 bridge.set_track_dur_str(dur_str);
+                if let Some(tracks) = tracks {
+                    let mut videos = Vec::new();
+                    let mut audios = Vec::new();
+                    let mut subtitles = Vec::new();
+
+                    for track in tracks {
+                        let dst = match track.typ {
+                            device::MediaTrackType::Video => &mut videos,
+                            device::MediaTrackType::Audio => &mut audios,
+                            device::MediaTrackType::Subtitle => &mut subtitles,
+                        };
+                        let language = isolang::Language::from_639_1(&track.language)
+                            .or_else(|| isolang::Language::from_639_3(&track.language))
+                            .map(|l| l.to_name())
+                            .unwrap_or("Undetermined");
+                        dst.push(UiMediaTrack {
+                            id: track.id as i32,
+                            title: track.title.unwrap_or(String::new()).to_shared_string(),
+                            language: language.to_shared_string(),
+                        });
+                    }
+
+                    bridge.set_video_tracks(Rc::new(slint::VecModel::from(videos)).into());
+                    bridge.set_audio_tracks(Rc::new(slint::VecModel::from(audios)).into());
+                    bridge.set_subtitle_tracks(Rc::new(slint::VecModel::from(subtitles)).into());
+                }
+
+                if let Some((id, track_type)) = track_selected {
+                    let id = id.map(|id| id as i32).unwrap_or(-1);
+                    match track_type {
+                        device::MediaTrackType::Video => bridge.set_current_video_track(id),
+                        device::MediaTrackType::Audio => bridge.set_current_audio_track(id),
+                        device::MediaTrackType::Subtitle => bridge.set_current_subtitle_track(id),
+                    }
+                }
             })?;
         }
 
@@ -1088,17 +1156,33 @@ impl Application {
     ) -> Result<()> {
         path.push(&file_entry.name);
         debug!(?path, "Getting ready to cast");
-        let id = file_server.add_file(path, file_entry.mime_type);
-        let url = file_server.get_url(&(local_addr.into()), &id);
-        device.load(device::LoadRequest::Url {
-            content_type: file_entry.mime_type.to_string(),
-            url,
-            resume_position: None,
-            speed: None,
-            volume: Some(volume),
-            metadata: None,
-            request_headers: None,
-        })?;
+        if device.supports_feature(DeviceFeature::FCompanion) {
+            device.load(device::LoadRequest::CompanionResource {
+                content_type: file_entry.mime_type.to_string(),
+                source: fcast_sender_sdk::device::CompanionSource {
+                    descriptor: fcast_sender_sdk::device::CompanionSourceDescriptor::Path(
+                        path.to_str().unwrap().to_owned(),
+                    ),
+                    content_type: file_entry.mime_type.to_string(),
+                },
+                resume_position: None,
+                speed: None,
+                volume: Some(volume),
+                metadata: None,
+            })?;
+        } else {
+            let id = file_server.add_file(path, file_entry.mime_type);
+            let url = file_server.get_url(&(local_addr.into()), &id);
+            device.load(device::LoadRequest::Url {
+                content_type: file_entry.mime_type.to_string(),
+                url,
+                resume_position: None,
+                speed: None,
+                volume: Some(volume),
+                metadata: None,
+                request_headers: None,
+            })?;
+        }
 
         Ok(())
     }
@@ -1183,6 +1267,7 @@ impl Application {
                 if let Some(session) = self.session_state.as_mut() {
                     match &mut session.specific {
                         SessionSpecificState::Mirroring {
+                            fakey,
                             tx_sink,
                             video_sources,
                             ..
@@ -1207,20 +1292,48 @@ impl Application {
                             #[cfg(not(target_os = "linux"))]
                             let audio_src = None;
 
-                            debug!(?video_src, ?audio_src, "Adding WHEP pipeline");
-                            *tx_sink = Some(
-                                mcore::transmission::WhepSink::from_preview(
-                                    self.event_tx.clone(),
-                                    tokio::runtime::Handle::current(),
-                                    video_src,
-                                    audio_src,
-                                    scale_width,
-                                    scale_height,
-                                    max_framerate,
-                                    self.settings.mirroring().server_port(),
-                                )
-                                .await?,
-                            );
+                            debug!(?video_src, ?audio_src, "Adding pipeline");
+                            if session
+                                .device
+                                .supports_feature(DeviceFeature::FWRTCSignalling)
+                            {
+                                *fakey = Some(
+                                    mcore::transmission::FSink::from_preview(
+                                        mcore::transmission::SinkConfig::FCast,
+                                        self.event_tx.clone(),
+                                        tokio::runtime::Handle::current(),
+                                        video_src,
+                                        audio_src,
+                                        scale_width,
+                                        scale_height,
+                                        max_framerate,
+                                    )
+                                    .await
+                                    .context("Failed to create FCast sink from preview pipeline")?,
+                                );
+                                let signaller = fakey.as_ref().unwrap().signaller.clone();
+                                session
+                                    .device
+                                    .start_mirroring_session(Arc::new(signaller))
+                                    .unwrap();
+                            } else {
+                                *tx_sink = Some(
+                                    mcore::transmission::WhepSink::from_preview(
+                                        mcore::transmission::SinkConfig::Whep {
+                                            server_port: self.settings.mirroring().server_port(),
+                                        },
+                                        self.event_tx.clone(),
+                                        tokio::runtime::Handle::current(),
+                                        video_src,
+                                        audio_src,
+                                        scale_width,
+                                        scale_height,
+                                        max_framerate,
+                                    )
+                                    .await
+                                    .context("Failed to create WHEP sink from preview pipeline")?,
+                                );
+                            }
                         }
                         _ => warn!("Cannot start mirroring in non mirroring session"),
                     }
@@ -1273,10 +1386,12 @@ impl Application {
                                 fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                             };
 
-                            let (content_type, url) = tx_sink
+                            let Some((content_type, url)) = tx_sink
                                 .as_ref()
-                                .unwrap()
-                                .get_play_msg((&addr).into(), bound_port);
+                                .map(|s| s.get_play_msg((&addr).into(), bound_port))
+                            else {
+                                return Ok(ShouldQuit::No);
+                            };
 
                             debug!(content_type, url, "Sending play message");
 
@@ -1523,6 +1638,7 @@ impl Application {
 
                     session.specific = SessionSpecificState::Mirroring {
                         tx_sink: None,
+                        fakey: None,
                         video_source_fetcher_tx,
                         our_source_url: None,
                         video_sources: vec![],
@@ -1759,6 +1875,7 @@ impl Application {
                 let res = if let Some(session) = self.session_state.as_mut() {
                     if force_complete || session.previous_seek.elapsed() >= MIN_TIME_BETWEEN_SEEKS {
                         session.previous_seek = Instant::now();
+                        session.time = seconds;
                         session.device.seek(seconds)
                     } else {
                         return Ok(ShouldQuit::No);
@@ -1829,25 +1946,59 @@ impl Application {
                     )
                     .context("Failed to create preview pipeline")?;
 
-                    let tx_sink = mcore::transmission::WhepSink::from_preview(
-                        self.event_tx.clone(),
-                        tokio::runtime::Handle::current(),
-                        Some(preview),
-                        None,
-                        720,
-                        480,
-                        30,
-                        self.settings.mirroring().server_port(),
-                    )
-                    .await
-                    .context("Failed to create WHEP sink from preview pipeline")?;
+                    if session
+                        .device
+                        .supports_feature(DeviceFeature::FWRTCSignalling)
+                    {
+                        let f_sink = mcore::transmission::FSink::from_preview(
+                            mcore::transmission::SinkConfig::FCast,
+                            self.event_tx.clone(),
+                            tokio::runtime::Handle::current(),
+                            Some(preview),
+                            None,
+                            720,
+                            480,
+                            30,
+                        )
+                        .await
+                        .context("Failed to create FCast sink from preview pipeline")?;
 
-                    session.specific = SessionSpecificState::Mirroring {
-                        tx_sink: Some(tx_sink),
-                        video_source_fetcher_tx,
-                        our_source_url: None,
-                        video_sources: vec![],
-                    };
+                        let signaller = f_sink.signaller.clone();
+                        session.specific = SessionSpecificState::Mirroring {
+                            tx_sink: None,
+                            fakey: Some(f_sink),
+                            video_source_fetcher_tx,
+                            our_source_url: None,
+                            video_sources: vec![],
+                        };
+                        session
+                            .device
+                            .start_mirroring_session(Arc::new(signaller))
+                            .unwrap();
+                    } else {
+                        let whep_sink = mcore::transmission::WhepSink::from_preview(
+                            mcore::transmission::SinkConfig::Whep {
+                                server_port: self.settings.mirroring().server_port(),
+                            },
+                            self.event_tx.clone(),
+                            tokio::runtime::Handle::current(),
+                            Some(preview),
+                            None,
+                            720,
+                            480,
+                            30,
+                        )
+                        .await
+                        .context("Failed to create WHEP sink from preview pipeline")?;
+
+                        session.specific = SessionSpecificState::Mirroring {
+                            tx_sink: Some(whep_sink),
+                            fakey: None,
+                            video_source_fetcher_tx,
+                            our_source_url: None,
+                            video_sources: vec![],
+                        };
+                    }
                 }
             }
             Event::GetSourcesFromUrl(url) => {
@@ -2052,6 +2203,13 @@ impl Application {
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             Event::RestartApplication => (),
+            Event::SelectTrack { id, typ } => {
+                if let Some(session) = &mut self.session_state {
+                    let _ = session
+                        .device
+                        .change_track(if id >= 0 { Some(id as u32) } else { None }, typ);
+                }
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -2438,6 +2596,7 @@ fn create_log_filter(default: LevelFilter) -> tracing_subscriber::filter::Target
     tracing_subscriber::filter::Targets::new()
         .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
         .with_target("mdns_sd", LevelFilter::INFO)
+        .with_target("sctk", LevelFilter::OFF)
         .with_default(default)
 }
 
@@ -2765,6 +2924,22 @@ fn main() -> Result<()> {
         let event_tx = event_tx.clone();
         move || {
             event_tx.send(Event::RestartApplication).unwrap();
+        }
+    });
+
+    bridge.on_select_track({
+        let event_tx = event_tx.clone();
+        move |id, track_type| {
+            event_tx
+                .send(Event::SelectTrack {
+                    id,
+                    typ: match track_type {
+                        UiMediaTrackType::Video => device::MediaTrackType::Video,
+                        UiMediaTrackType::Audio => device::MediaTrackType::Audio,
+                        UiMediaTrackType::Subtitle => device::MediaTrackType::Subtitle,
+                    },
+                })
+                .unwrap();
         }
     });
 

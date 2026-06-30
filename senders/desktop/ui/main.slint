@@ -124,6 +124,18 @@ export enum UiUpdaterState {
     InstallSuccessful,
 }
 
+export struct UiMediaTrack {
+    id: int,
+    title: string,
+    language: string,
+}
+
+export enum UiMediaTrackType {
+    Video,
+    Audio,
+    Subtitle,
+}
+
 export global Bridge {
     in property <string> app-version;
     in property <bool> is-audio-supported: false;
@@ -168,6 +180,12 @@ export global Bridge {
     in-out property <UiMediaFileType> current-media-type;
     in-out property <bool> update-available: false;
     in-out property <UiUpdaterState> updater-state: UiUpdaterState.Idle;
+    in-out property <[UiMediaTrack]> video-tracks;
+    in-out property <[UiMediaTrack]> audio-tracks;
+    in-out property <[UiMediaTrack]> subtitle-tracks;
+    in-out property <int> current-video-track;
+    in-out property <int> current-audio-track;
+    in-out property <int> current-subtitle-track;
 
     public function clear-mirroring-state() {
         selected-video-src = -1;
@@ -204,6 +222,13 @@ export global Bridge {
             clear-yt-dlp-state();
             clear-local-media-state();
             is-connecting-to-manually-inputted-device = false;
+            // TODO: these should be changed on media stop as well
+            video-tracks = [];
+            audio-tracks = [];
+            subtitle-tracks = [];
+            current-video-track = -1;
+            current-audio-track = -1;
+            current-subtitle-track = -1;
         }
         app-state = new-state;
     }
@@ -241,6 +266,7 @@ export global Bridge {
     callback update-settings();
     callback update-application();
     callback restart-application();
+    callback select-track(id: int, track-type: UiMediaTrackType);
 
     pure callback is-device-info-valid(info: string) -> bool;
     pure callback is-valid-url(url: string) -> bool;
@@ -464,7 +490,6 @@ component ConnectView inherits Rectangle {
             }
 
             property <bool> is-showing-manual-connect: false;
-            // property <bool> is-showing-manual-connect: true;
 
             Rectangle {
                 height: 1px;
@@ -980,61 +1005,6 @@ component YtDlpSourceItem inherits Rectangle {
     }
 }
 
-component PlaybackSettingsMenuItem inherits Rectangle {
-    in property <string> label;
-    in property <image> icon;
-
-    callback clicked;
-
-    border-radius: 6px;
-
-    states [
-        hover when i-ta-playback-rate.has-hover: {
-            i-playback-rate-text.color: FCastPalette.foreground;
-            i-playback-rate-arrow-icon.colorize: FCastPalette.foreground;
-            background: FCastPalette.brand-600;
-        }
-    ]
-
-    i-ta-playback-rate := TouchArea {
-        clicked => root.clicked();
-    }
-
-    HorizontalLayout {
-        padding: 8px;
-        padding-top: 14px;
-        padding-bottom: 14px;
-        spacing: 8px;
-
-        VerticalLayout {
-            alignment: center;
-
-            Image {
-                width: 16px;
-                height: 16px;
-                source: icon;
-            }
-        }
-
-        i-playback-rate-text := FText {
-            text: label;
-            color: FCastPalette.neutral-500;
-        }
-
-        Spacer { }
-
-        VerticalLayout {
-            alignment: center;
-
-            i-playback-rate-arrow-icon := Image {
-                width: 4.67px;
-                height: 8px;
-                source: Icons.arrow-right;
-            }
-        }
-    }
-}
-
 component PlaybackRateItem inherits Rectangle {
     in property <float> rate;
     in property <bool> selected;
@@ -1080,6 +1050,164 @@ component PlaybackRateItem inherits Rectangle {
     }
 }
 
+component RoundBackButton inherits Button {
+    icon: Icons.arrow-right;
+    colorize-icon: true;
+    icon-rotation: 180deg;
+    icon-size: 10px;
+    width: 36px;
+    height: 36px;
+}
+
+enum SettingsMenu {
+    Root,
+    Video,
+    Audio,
+    Subtitle,
+    Rate,
+}
+
+component RootSetting inherits Rectangle {
+    in property <string> title <=> txt.text;
+
+    callback clicked <=> ta.clicked;
+
+    border-radius: 6px;
+
+    states [
+        hover when ta.has-hover: {
+            background: FCastPalette.brand-600.transparentize(92%);
+            border-width: 1px;
+            border-color: #1478DC33;
+        }
+    ]
+
+    ta := TouchArea {}
+
+    HorizontalLayout {
+        padding: 8px;
+        alignment: space-between;
+
+        txt := FText {
+            vertical-alignment: center;
+        }
+
+        Rectangle { }
+
+        Image {
+            source: Icons.arrow-right;
+        }
+    }
+}
+
+component TrackList inherits Rectangle {
+    in property <[UiMediaTrack]> tracks;
+    in property <int> currently-selected;
+
+    callback select(UiMediaTrack);
+
+    ListView {
+        for track in tracks: Rectangle {
+            border-radius: 6px;
+
+            states [
+                hover when ta.has-hover: {
+                    background: FCastPalette.brand-600.transparentize(92%);
+                    border-width: 1px;
+                    border-color: #1478DC33;
+                }
+                selected when currently-selected == track.id: {
+                    background: FCastPalette.brand-600.transparentize(92%);
+                }
+            ]
+
+            ta := TouchArea {
+                clicked => select(track);
+            }
+
+            HorizontalBox {
+                FText {
+                    text: track.language + (track.title.is-empty ? "" : " - " + track.title);
+                    overflow: elide;
+                }
+
+                Rectangle {}
+
+                if currently-selected == track.id: Image {
+                    source: Icons.check-tick;
+                }
+            }
+        }
+    }
+}
+
+component SubSetting inherits Rectangle {
+    in property <SettingsMenu> menu;
+
+    callback close <=> close-btn.clicked;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 2px;
+
+        HorizontalBox {
+            close-btn := RoundBackButton {}
+
+            FText {
+                vertical-alignment: center;
+                text: menu == SettingsMenu.Video
+                ? "Video"
+                : menu == SettingsMenu.Audio
+                ? "Audio"
+                : menu == SettingsMenu.Subtitle
+                ? "Subtitle"
+                : "Speed";
+            }
+
+            Rectangle {}
+        }
+
+        if menu == SettingsMenu.Video: TrackList {
+            tracks: Bridge.video-tracks;
+            currently-selected: Bridge.current-video-track;
+            select(track) => Bridge.select-track(track.id, UiMediaTrackType.Video);
+        }
+
+        if menu == SettingsMenu.Audio: TrackList {
+            tracks: Bridge.audio-tracks;
+            currently-selected: Bridge.current-audio-track;
+            select(track) => Bridge.select-track(track.id, UiMediaTrackType.Audio);
+        }
+
+        if menu == SettingsMenu.Subtitle: TrackList {
+            tracks: Bridge.subtitle-tracks;
+            currently-selected: Bridge.current-subtitle-track;
+            select(track) => Bridge.select-track(track.id, UiMediaTrackType.Subtitle);
+        }
+
+        if menu == SettingsMenu.Rate: ListView {
+            property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
+
+            for rate in rates: VerticalLayout {
+                PlaybackRateItem {
+                    rate: rate;
+                    selected: Bridge.playback-rate == rate;
+
+                    clicked => {
+                        Bridge.change-playback-rate(rate);
+                        Bridge.playback-rate = rate;
+                    }
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: #FFFFFF0A;
+                }
+            }
+        }
+    }
+}
+
 component PlaybackControls inherits Rectangle {
     background: FCastPalette.neutral-1200;
 
@@ -1118,13 +1246,8 @@ component PlaybackControls inherits Rectangle {
                 thumb-color: black.transparentize(85%);
                 thumb-border-color: FCastPalette.foreground;
 
-                changed(new-time) => {
-                    Bridge.seek(new-time, false);
-                }
-
-                released(new-time) => {
-                    Bridge.seek(new-time, true);
-                }
+                changed(new-time) => Bridge.seek(new-time, false);
+                released(new-time) => Bridge.seek(new-time, true);
             }
 
             FText {
@@ -1197,118 +1320,72 @@ component PlaybackControls inherits Rectangle {
                 icon-size: 18px;
 
                 clicked => {
-                    i-settings-popup.show();
+                    show-settings = !show-settings;
+                    current-settings-menu = SettingsMenu.Root;
                 }
             }
         }
     }
 
-    i-settings-popup := PopupWindow {
-        width: settings-rect.preferred-width;
-        height: settings-rect.preferred-height;
+    property <bool> show-settings: false;
+    property <SettingsMenu> current-settings-menu: SettingsMenu.Root;
 
-        x: settings-btn.x - self.width + settings-btn.width;
-        y: settings-btn.y - self.height;
-        close-policy: close-on-click-outside;
+    if show-settings: Rectangle {
+        background: FCastPalette.neutral-1100;
+        border-color: FCastPalette.border-subtle;
+        border-width: 2px;
+        y: -self.height;
+        x: parent.width - self.width;
+        width: 300px;
+        height: 350px.min(root.y);
+        border-radius: 8px;
 
-        settings-rect := Rectangle {
-            background: @linear-gradient(180deg, #202022 0%, #0F0F10 100%);
-            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
-            border-width: 1px;
-            border-radius: 6px;
-            forward-focus: inner-fs;
+        TouchArea {}
 
-            inner-fs := FocusScope {
-                VerticalLayout {
-                    padding: 10px;
-                    padding-top: 15px;
+        if current-settings-menu == SettingsMenu.Root: VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
 
-                    HorizontalLayout {
-                        spacing: 10px;
+            if Bridge.video-tracks.length > 0: RootSetting {
+                title: "Video";
 
-                        i-settings-label := LabelText {
-                            text: "Playback settings";
-                        }
-                    }
-
-                    VerticalLayout {
-                        padding-top: 10px;
-                        spacing: 5px;
-
-                        PlaybackSettingsMenuItem {
-                            label: "Playback rate";
-                            icon: Icons.playback-rate;
-
-                            clicked => {
-                                i-pb-rate-popup.show();
-                                i-settings-popup.close();
-                            }
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            background: #FFFFFF0A;
-                        }
-                    }
+                clicked => {
+                    current-settings-menu = SettingsMenu.Video;
                 }
             }
-        }
-    }
 
-    i-pb-rate-popup := PopupWindow {
-        width: pb-rate-rect.preferred-width;
-        height: pb-rate-rect.preferred-height;
+            if Bridge.audio-tracks.length > 0: RootSetting {
+                title: "Audio";
 
-        x: settings-btn.x - self.width + settings-btn.width;
-        y: settings-btn.y - self.height;
-        close-policy: close-on-click-outside;
-
-        pb-rate-rect := Rectangle {
-            background: @linear-gradient(180deg, #202022 0%, #0F0F10 100%);
-            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
-            border-width: 1px;
-            border-radius: 6px;
-            forward-focus: pb-rate-inner-fs;
-
-            pb-rate-inner-fs := FocusScope {
-                VerticalLayout {
-                    padding: 10px;
-                    padding-top: 15px;
-
-                    HorizontalLayout {
-                        spacing: 10px;
-
-                        LabelText {
-                            text: "Playback rate";
-                            font-size: 16px;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    VerticalLayout {
-                        padding-top: 10px;
-                        spacing: 5px;
-
-                        property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
-
-                        for rate in rates: VerticalLayout {
-                            PlaybackRateItem {
-                                rate: rate;
-                                selected: Bridge.playback-rate == rate;
-
-                                clicked => {
-                                    Bridge.change-playback-rate(rate);
-                                    Bridge.playback-rate = rate;
-                                }
-                            }
-
-                            Rectangle {
-                                height: 1px;
-                                background: #FFFFFF0A;
-                            }
-                        }
-                    }
+                clicked => {
+                    current-settings-menu = SettingsMenu.Audio;
                 }
+            }
+
+            if Bridge.subtitle-tracks.length > 0: RootSetting {
+                title: "Subtitle";
+
+                clicked => {
+                    current-settings-menu = SettingsMenu.Subtitle;
+                }
+            }
+
+            RootSetting {
+                title: "Speed";
+
+                clicked => {
+                    current-settings-menu = SettingsMenu.Rate;
+                }
+            }
+
+            Rectangle {}
+        }
+
+        if current-settings-menu != SettingsMenu.Root: SubSetting {
+            menu: current-settings-menu;
+
+            close => {
+                current-settings-menu = SettingsMenu.Root;
             }
         }
     }
@@ -1608,6 +1685,7 @@ component FileEntry inherits Rectangle {
             } else {
                 Bridge.cast-local-media(entry.id);
                 Bridge.current-local-media-id = entry.id;
+                Bridge.current-media-type = entry.type;
             }
         }
     }

@@ -16,6 +16,14 @@ pub struct CastContext {
 impl CastContext {
     #[cfg_attr(feature = "uniffi", uniffi::constructor)]
     pub fn new() -> Result<Self, AsyncRuntimeError> {
+        #[cfg(feature = "fcast")]
+        if tokio_rustls::rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+        {
+            log::error!("Failed to install default crypto provider (ring)");
+        }
+
         Ok(Self {
             runtime: AsyncRuntime::new(Some(1), "cast-context-async-runtime")?,
         })

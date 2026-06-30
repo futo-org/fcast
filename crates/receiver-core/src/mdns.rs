@@ -12,6 +12,7 @@ use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 pub fn start_daemon(
     msg_tx: &crate::MessageSender,
     settings: &crate::Settings,
+    fcast_txt_records: &HashMap<String, String>,
 ) -> Result<ServiceDaemon> {
     let host_name = gethostname::gethostname();
     let host_name = host_name.to_string_lossy();
@@ -42,8 +43,8 @@ pub fn start_daemon(
                             .collect(),
                     ))
                 }
-                let rule = mdns_sd::CustomIfKind::new(move |iface| re.is_match(&iface.name));
-                if let Err(err) = daemon.disable_interface(mdns_sd::IfKind::Custom(rule)) {
+                let rule = mdns_sd::IfPredicate::new(move |iface| re.is_match(&iface.name));
+                if let Err(err) = daemon.disable_interface(mdns_sd::IfKind::Predicate(rule)) {
                     error!(?err, "Failed to disable interface");
                 }
             }
@@ -74,7 +75,7 @@ pub fn start_daemon(
         &format!("{device_name}.local."),
         (), // Auto
         FCAST_TCP_PORT,
-        None::<std::collections::HashMap<String, String>>,
+        fcast_txt_records.to_owned(),
     )?
     .enable_addr_auto();
 

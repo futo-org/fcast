@@ -1,0 +1,106 @@
+import { ListView, VerticalBox, Palette, Button } from "std-widgets.slint";
+
+export struct UiFileEntry {
+    id: int,
+    name: string,
+}
+
+export enum UiDeviceState {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+export global Bridge {
+    in property <[UiFileEntry]> files;
+    in property <[string]> devices: [ "hello" ];
+    in-out property <string> current-device;
+    in-out property <UiDeviceState> device-state: UiDeviceState.Disconnected;
+    in-out property <image> current-preview;
+    in-out property <int> current-img-id: -1;
+
+    callback connect(name: string);
+    callback start-cast(img-id: int);
+}
+
+export component MainWindow inherits Window {
+    preferred-width: 800px;
+    preferred-height: 500px;
+
+    VerticalBox {
+        if Bridge.device-state == UiDeviceState.Disconnected: Text {
+            horizontal-alignment: center;
+            font-weight: 600;
+            text: "Connect to receiver";
+        }
+
+        if Bridge.device-state == UiDeviceState.Disconnected: ListView {
+            for device in Bridge.devices: Rectangle {
+                height: 32px;
+                background: ta.has-hover ? Palette.alternate-background : transparent;
+
+                ta := TouchArea {
+                    clicked => Bridge.connect(device);
+                }
+
+                Text {
+                    text: device;
+                }
+            }
+        }
+
+        if Bridge.device-state == UiDeviceState.Connected && Bridge.current-img-id == -1: ListView {
+            for file in Bridge.files: Rectangle {
+                height: 32px;
+                background: img-ta.has-hover ? Palette.alternate-background : transparent;
+
+                img-ta := TouchArea {
+                    clicked => {
+                        Bridge.start-cast(file.id);
+                        Bridge.current-preview = @image-url("");
+                        Bridge.current-img-id = file.id;
+                    }
+                }
+
+                Text {
+                    text: file.name;
+                }
+            }
+        }
+
+        if Bridge.device-state == UiDeviceState.Connected && Bridge.current-img-id != -1: Rectangle {
+            Image {
+                source: Bridge.current-preview;
+                image-fit: contain;
+                width: 100%;
+                height: 100%;
+            }
+
+            VerticalLayout {
+                HorizontalLayout {
+                    Button {
+                        text: "Previous";
+                        clicked => {
+                            let next-id = Bridge.current-img-id - 1;
+                            Bridge.start-cast(next-id);
+                            Bridge.current-preview = @image-url("");
+                            Bridge.current-img-id = next-id;
+                        }
+                    }
+
+                    Rectangle {}
+
+                    Button {
+                        text: "Next";
+                        clicked => {
+                            let next-id = Bridge.current-img-id + 1;
+                            Bridge.start-cast(next-id);
+                            Bridge.current-preview = @image-url("");
+                            Bridge.current-img-id = next-id;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

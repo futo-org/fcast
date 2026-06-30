@@ -2,20 +2,11 @@
 use tracing::level_filters::LevelFilter;
 
 #[cfg(not(target_os = "android"))]
-fn log_level() -> LevelFilter {
-    match std::env::var("FCAST_LOG") {
-        Ok(level) => match level.to_ascii_lowercase().as_str() {
-            "error" => LevelFilter::ERROR,
-            "warn" => LevelFilter::WARN,
-            "info" => LevelFilter::INFO,
-            "debug" => LevelFilter::DEBUG,
-            "trace" => LevelFilter::TRACE,
-            _ => LevelFilter::OFF,
-        },
-        #[cfg(debug_assertions)]
-        Err(_) => LevelFilter::DEBUG,
-        #[cfg(not(debug_assertions))]
-        Err(_) => LevelFilter::OFF,
+fn default_level() -> LevelFilter {
+    if cfg!(debug_assertions) {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::OFF
     }
 }
 
@@ -30,18 +21,31 @@ pub fn init(loglevel: Option<LevelFilter>) {
 
     #[cfg(not(target_os = "android"))]
     {
-        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-        let log_level = loglevel.unwrap_or(log_level());
-        let filter = tracing_subscriber::filter::Targets::new()
+        use tracing_subscriber::{
+            EnvFilter, filter::Targets, layer::SubscriberExt, util::SubscriberInitExt,
+        };
+
+        let default = loglevel.unwrap_or_else(default_level);
+        let builder = EnvFilter::builder().with_default_directive(default.into());
+        let env_filter = match loglevel {
+            Some(_) => builder.parse_lossy(""),
+            None => builder.with_env_var("FCAST_LOG").from_env_lossy(),
+        };
+
+        let targets = Targets::new()
             .with_target("tracing_gstreamer::callsite", LevelFilter::OFF)
             .with_target("mdns_sd", LevelFilter::INFO)
             .with_target("hyper_util", LevelFilter::INFO)
             .with_target("h2", LevelFilter::INFO)
             .with_target("winit", LevelFilter::INFO)
-            .with_default(log_level);
+            .with_default(LevelFilter::TRACE);
+
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
-        let registry = tracing_subscriber::registry().with(fmt_layer).with(filter);
+        let registry = tracing_subscriber::registry()
+            .with(fmt_layer)
+            .with(env_filter)
+            .with(targets);
         #[cfg(feature = "tracy")]
         let registry = registry.with(tracing_tracy::TracyLayer::default());
         registry.init();
