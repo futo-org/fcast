@@ -1,2 +1,6 @@
 [files]
-extend-exclude = ["website/dist", "receivers/android/app/src/main/res/values-*"]
+extend-exclude = [
+    "website/dist",
+    "receivers/android/app/src/main/res/values-*",
+    "crates/libplacebo-sys/libplacebo",
+]

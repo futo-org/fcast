@@ -1,5 +1,3 @@
-// TODO: create a ytool that doesn't require huge uniffi
-
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -16,6 +14,7 @@ pub mod csharp;
 #[cfg(feature = "uniffi")]
 pub mod kotlin;
 pub mod mdns;
+pub mod protocol;
 pub mod receiver;
 pub mod sender;
 #[cfg(feature = "uniffi")]

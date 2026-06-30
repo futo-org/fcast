@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 
-use crate::{MediaItemId, UiMediaTrackType, fcast::SessionId, player, raop};
+use crate::{MediaItemId, SenderId, UiMediaTrackType, application::PacketOrigin, player, raop};
 
 #[derive(Clone, Debug)]
 pub struct MessageSender(UnboundedSender<Message>);
@@ -19,8 +19,8 @@ impl MessageSender {
         }
     }
 
-    pub fn operation(&self, session_id: crate::SessionId, op: crate::Operation) {
-        self.send(Message::Op { session_id, op })
+    pub fn operation(&self, origin: PacketOrigin, op: crate::Operation) {
+        self.send(Message::Op { origin, op })
     }
 
     pub fn raop(&self, msg: Raop) {
@@ -80,13 +80,11 @@ pub enum AppUpdate {
 pub enum Message {
     Quit,
     SessionFinished,
-    ResumeOrPause,
     SeekPercent(f32),
     ToggleDebug,
     NewPlayerEvent(player::PlayerEvent),
     Op {
-        /// The UI also sends operations with session_id == 0
-        session_id: SessionId,
+        origin: PacketOrigin,
         op: crate::Operation,
     },
     Image(crate::image::Event),
@@ -106,4 +104,16 @@ pub enum Message {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     AppUpdate(AppUpdate),
     GuiWindowClosed(oneshot::Sender<()>),
+    FCastSenderDisconnect(SenderId),
+}
+
+pub(crate) enum ReceiverToFCastSender {
+    Error {
+        kind: fcast_protocol::v4::flat::ErrorKind,
+        packet_num: Option<u32>,
+    },
+    ProgressUpdate {
+        pos: gst::ClockTime,
+        dur: gst::ClockTime,
+    },
 }

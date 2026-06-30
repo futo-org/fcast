@@ -1,6 +1,4 @@
 use anyhow::Result;
-use fcast::SessionId;
-use fcast_protocol::SetVolumeMessage;
 use gst::prelude::*;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
@@ -32,6 +30,8 @@ mod fcast;
 mod fcasthttpsrc;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
+mod fcompsrc;
+mod fwebrtcsrc;
 mod gcast;
 mod gstreamer;
 mod gui;
@@ -39,6 +39,7 @@ mod image;
 mod logging;
 #[cfg(not(target_os = "android"))]
 mod mdns;
+mod media_formats;
 mod message;
 mod opengl;
 pub mod placebo;
@@ -60,6 +61,7 @@ use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
+pub type SenderId = u32;
 
 use message::{Mdns, Message, Raop};
 
@@ -68,6 +70,12 @@ pub const GCAST_TCP_PORT: u16 = 8009;
 pub type MediaItemId = u64;
 
 pub use message::MessageSender;
+
+#[derive(Debug)]
+pub struct ReceiverInfo {
+    pub device_info: fcast_protocol::v4::DeviceInfo,
+    pub supported_formats: media_formats::SupportedFormats,
+}
 
 #[macro_export]
 macro_rules! log_if_err {

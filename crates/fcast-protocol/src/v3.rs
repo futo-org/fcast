@@ -73,20 +73,20 @@ impl<'de> Deserialize<'de> for MetadataObject {
         match type_ {
             0 => {
                 let title = match rest.get("title") {
+                    None | Some(Value::Null) => None,
                     Some(t) => Some(
                         t.as_str()
                             .ok_or(de::Error::custom("`title` is not a string"))?
                             .to_owned(),
                     ),
-                    None => None,
                 };
                 let thumbnail_url = match rest.get("thumbnailUrl") {
+                    None | Some(Value::Null) => None,
                     Some(t) => Some(
                         t.as_str()
                             .ok_or(de::Error::custom("`thumbnailUrl` is not a string"))?
                             .to_owned(),
                     ),
-                    None => None,
                 };
                 Ok(Self::Generic {
                     title,
@@ -149,6 +149,22 @@ pub struct MediaItem {
     /// HTTP request headers to add to the play request Map<string, string>
     pub headers: Option<HashMap<String, String>>,
     pub metadata: Option<MetadataObject>,
+}
+
+impl From<PlayMessage> for MediaItem {
+    fn from(msg: PlayMessage) -> Self {
+        Self {
+            container: msg.container,
+            url: msg.url,
+            content: msg.content,
+            time: msg.time,
+            volume: msg.volume,
+            speed: msg.speed,
+            headers: msg.headers,
+            metadata: msg.metadata,
+            ..Default::default()
+        }
+    }
 }
 
 #[skip_serializing_none]

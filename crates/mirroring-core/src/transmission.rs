@@ -19,7 +19,7 @@ use std::{cell::RefCell, ops::Deref, rc::Rc};
 const MEGA_BIT: u32 = 1024 * 1024;
 const WHEP_MIN_BITRATE: u32 = MEGA_BIT / 2;
 const WHEP_START_BITRATE: u32 = MEGA_BIT * 4;
-const WHEP_MAX_BITRATE: u32 = MEGA_BIT * 48;
+const WHEP_MAX_BITRATE: u32 = MEGA_BIT * 15;
 
 fn addr_to_url_string(addr: IpAddr) -> String {
     match addr {
@@ -340,6 +340,17 @@ fn add_bus_handler(
     Ok(())
 }
 
+fn configure_webrtcsink(sink: &gstrswebrtc::webrtcsink::BaseWebRTCSink) {
+    sink.set_property("min-bitrate", WHEP_MIN_BITRATE);
+    sink.set_property("start-bitrate", WHEP_START_BITRATE);
+    sink.set_property("max-bitrate", WHEP_MAX_BITRATE);
+    sink.set_property_from_str("enable-mitigation-modes", "downsampled");
+    sink.set_property_from_str("stun-server", ""); // We don't care about internet connections
+    // NOTE: we ask for VP8 only because it's widely available and having few possible formats
+    //       reduces the startup time before streaming
+    sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
+}
+
 fn create_webrtcsink(
     server_port: u16,
     rt_handle: tokio::runtime::Handle,
@@ -388,28 +399,30 @@ fn create_webrtcsink(
     let sink = gstrswebrtc::webrtcsink::BaseWebRTCSink::with_signaller(
         gstrswebrtc::signaller::Signallable::from(signaller),
     );
-    sink.set_property("min-bitrate", WHEP_MIN_BITRATE);
-    sink.set_property("start-bitrate", WHEP_START_BITRATE);
-    sink.set_property("max-bitrate", WHEP_MAX_BITRATE);
-    sink.set_property_from_str("enable-mitigation-modes", "downsampled");
-    sink.set_property_from_str("stun-server", ""); // We don't care about internet connections
-    // NOTE: we ask for VP8 only because it's widely available and having few possible formats
-    //       reduces the startup time before streaming
-    sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
-
-    sink.connect("encoder-setup", false, |values| {
-        let encoder = values[3].get::<gst::Element>().unwrap();
-        if let Some(factory) = encoder.factory()
-            && factory.name() == "vp8enc"
-        {
-            encoder.set_property("static-threshold", 100i32);
-            encoder.set_property("max-intra-bitrate", 3500i32);
-        }
-
-        Some(false.to_value())
-    });
+    configure_webrtcsink(&sink);
 
     Ok(sink)
+}
+
+fn create_f_webrtcsink(
+    _rt_handle: tokio::runtime::Handle,
+    _event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
+) -> anyhow::Result<(
+    gstrswebrtc::webrtcsink::BaseWebRTCSink,
+    crate::fsignaller::FSignaller,
+)> {
+    let signaller = crate::fsignaller::FSignaller::default();
+    let signaller_ref = signaller.clone();
+    let sink = gstrswebrtc::webrtcsink::BaseWebRTCSink::with_signaller(
+        gstrswebrtc::signaller::Signallable::from(signaller),
+    );
+    configure_webrtcsink(&sink);
+    Ok((sink, signaller_ref))
+}
+
+pub enum SinkConfig {
+    Whep { server_port: u16 },
+    FCast,
 }
 
 #[cfg(target_os = "linux")]
@@ -455,6 +468,137 @@ pub enum Pipeline {
     Preview(PreviewPipeline),
 }
 
+impl Pipeline {
+    pub fn shutdown(&self) {
+        let pipeline = match self {
+            Pipeline::Simple(p) => p,
+            #[cfg(not(target_os = "android"))]
+            Pipeline::Preview(preview) => &preview.pipeline,
+        };
+        pipeline.call_async(|pipeline| {
+            if let Err(err) = pipeline.set_state(gst::State::Null) {
+                error!("Failed to stop pipeline: {err}");
+            }
+        });
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn sink_from_preview(
+    sink: gstrswebrtc::webrtcsink::BaseWebRTCSink,
+    preview_pipeline: Option<PreviewPipeline>,
+    audio_src: Option<AudioSource>,
+    max_width: u32,
+    max_height: u32,
+    max_framerate: u32,
+    event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
+    rt_handle: tokio::runtime::Handle,
+) -> anyhow::Result<(Pipeline, Option<ExtraAudioContext>)> {
+    if let Some(mut preview_pipeline) = preview_pipeline {
+        let elems = &mut preview_pipeline.elems;
+
+        let capsfilter_src_pad = elems.capsfilter.static_pad("src").unwrap();
+
+        // TODO: it seems that all sources are fine to be set to ready, do we still need to block upstream?
+        let needs_ready = {
+            let name = elems
+                .src
+                .factory()
+                .ok_or(anyhow::anyhow!("Source element is missing factory"))?
+                .name();
+            name == "ximagesrc"
+                || name == "d3d12screencapturesrc"
+                || name == "avfvideosrc"
+                || name == "pipewiresrc"
+                || name == "videotestsrc"
+        };
+
+        if needs_ready {
+            preview_pipeline.pipeline.set_state(gst::State::Ready)?;
+        }
+
+        let block_probe = capsfilter_src_pad
+            .add_probe(gst::PadProbeType::BLOCK, |_, _| gst::PadProbeReturn::Drop)
+            .ok_or(anyhow::anyhow!(
+                "Failed to add blocking probe to capsfilter's src pad"
+            ))?;
+        debug!("Added blocking probe to capsfilter's sink pad");
+
+        if let Some(scale_probe) = elems.scale_probe.take() {
+            elems.caps_sink_pad.remove_probe(scale_probe);
+            debug!("Removed scaling probe from capsfilter");
+        }
+
+        if let Some(appsink) = elems.appsink.take() {
+            elems.capsfilter.unlink(&appsink);
+            preview_pipeline.pipeline.remove(&appsink)?;
+            appsink.set_state(gst::State::Null)?;
+            debug!("Removed appsink");
+        }
+
+        elems.scale_probe = Some(
+            crate::preview::add_scaling_probe(
+                &elems.caps_sink_pad,
+                elems.capsfilter.downgrade(),
+                max_width,
+                max_height,
+            )
+            .unwrap(),
+        );
+        debug!("Added new scaling probe to capsfilter");
+
+        elems.capsfilter.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("framerate", gst::Fraction::new(max_framerate as i32, 1))
+                .field("interlace-mode", "progressive")
+                .field("width", gst::IntRange::new(1, 16383))
+                .field("height", gst::IntRange::new(1, 16383))
+                .build(),
+        );
+
+        preview_pipeline.pipeline.add(&sink)?;
+
+        let sink_video_pad = sink.request_pad_simple("video_%u").unwrap();
+        capsfilter_src_pad.link(&sink_video_pad)?;
+        debug!("Added and synced webrtc sink");
+
+        capsfilter_src_pad.remove_probe(block_probe);
+        debug!("Removed capsfilter blocking probe");
+
+        let mut extra_audio = None;
+        if let Some(audio_src) = audio_src {
+            extra_audio = add_audio_src(&preview_pipeline.pipeline, sink.upcast_ref(), audio_src)?;
+        }
+
+        sink.sync_state_with_parent()?;
+
+        if needs_ready {
+            preview_pipeline.pipeline.set_state(gst::State::Playing)?;
+        }
+
+        add_bus_handler(&preview_pipeline.pipeline, event_tx, rt_handle)?;
+
+        Ok((Pipeline::Preview(preview_pipeline), extra_audio))
+    } else if let Some(audio_src) = audio_src {
+        let pipeline = gst::Pipeline::new();
+
+        pipeline.add(&sink)?;
+
+        let extra_audio = add_audio_src(&pipeline, sink.upcast_ref(), audio_src)?;
+
+        pipeline.call_async(|pipeline| {
+            pipeline.set_state(gst::State::Playing).unwrap();
+        });
+
+        add_bus_handler(&pipeline, event_tx, rt_handle)?;
+
+        Ok((Pipeline::Simple(pipeline), extra_audio))
+    } else {
+        anyhow::bail!("Missing source");
+    }
+}
+
 #[derive(Debug)]
 pub struct WhepSink {
     // pub pipeline: gst::Pipeline,
@@ -467,45 +611,26 @@ pub struct WhepSink {
 
 impl WhepSink {
     #[cfg(target_os = "android")]
-    fn add_video_src(
-        &mut self,
-        pipeline: &gst::Pipeline,
-        sink: &gst::Element,
-        src: VideoSource,
-        _max_width: u32,
-        _max_height: u32,
-        _max_framerate: u32,
-    ) -> anyhow::Result<()> {
-        let VideoSource::Source(appsrc) = src;
-
-        pipeline.add_many([&appsrc])?;
-        gst::Element::link_many([appsrc.upcast_ref(), sink])?;
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "android")]
     pub fn new(
         source_config: SourceConfig,
         event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
         rt_handle: tokio::runtime::Handle,
-        max_width: u32,
-        max_height: u32,
-        max_framerate: u32,
     ) -> anyhow::Result<Self> {
         let pipeline = gst::Pipeline::new();
 
         let sink = create_webrtcsink(0, rt_handle.clone(), event_tx.clone())?;
-        let sink = sink.upcast();
+        let sink = sink.upcast::<gst::Element>();
         pipeline.add(&sink)?;
 
-        let mut self_ = Self {
+        let self_ = Self {
             pipeline: Pipeline::Simple(pipeline.clone()),
         };
 
         match source_config {
             SourceConfig::Video(src) => {
-                self_.add_video_src(&pipeline, &sink, src, max_width, max_height, max_framerate)?
+                let VideoSource::Source(appsrc) = src;
+                pipeline.add_many([&appsrc])?;
+                gst::Element::link_many([appsrc.upcast_ref(), &sink])?;
             }
         }
 
@@ -526,6 +651,7 @@ impl WhepSink {
 
     #[cfg(not(target_os = "android"))]
     pub async fn from_preview(
+        sink_config: SinkConfig,
         event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
         rt_handle: tokio::runtime::Handle,
         preview_pipeline: Option<PreviewPipeline>,
@@ -533,119 +659,27 @@ impl WhepSink {
         max_width: u32,
         max_height: u32,
         max_framerate: u32,
-        server_port: u16,
     ) -> anyhow::Result<Self> {
-        let sink = create_webrtcsink(server_port, rt_handle.clone(), event_tx.clone())?;
-        if let Some(mut preview_pipeline) = preview_pipeline {
-            let elems = &mut preview_pipeline.elems;
-
-            let capsfilter_src_pad = elems.capsfilter.static_pad("src").unwrap();
-
-            // TODO: it seems that all sources are fine to be set to ready, do we still need to block upstream?
-            let needs_ready = {
-                let name = elems
-                    .src
-                    .factory()
-                    .ok_or(anyhow::anyhow!("Source element is missing factory"))?
-                    .name();
-                name == "ximagesrc"
-                    || name == "d3d12screencapturesrc"
-                    || name == "avfvideosrc"
-                    || name == "pipewiresrc"
-                    || name == "videotestsrc"
-            };
-
-            if needs_ready {
-                preview_pipeline.pipeline.set_state(gst::State::Ready)?;
+        let sink = match sink_config {
+            SinkConfig::Whep { server_port } => {
+                create_webrtcsink(server_port, rt_handle.clone(), event_tx.clone())?
             }
-
-            let block_probe = capsfilter_src_pad
-                .add_probe(gst::PadProbeType::BLOCK, |_, _| gst::PadProbeReturn::Drop)
-                .ok_or(anyhow::anyhow!(
-                    "Failed to add blocking probe to capsfilter's src pad"
-                ))?;
-            debug!("Added blocking probe to capsfilter's sink pad");
-
-            if let Some(scale_probe) = elems.scale_probe.take() {
-                elems.caps_sink_pad.remove_probe(scale_probe);
-                debug!("Removed scaling probe from capsfilter");
-            }
-
-            if let Some(appsink) = elems.appsink.take() {
-                elems.capsfilter.unlink(&appsink);
-                preview_pipeline.pipeline.remove(&appsink)?;
-                appsink.set_state(gst::State::Null)?;
-                debug!("Removed appsink");
-            }
-
-            elems.scale_probe = Some(
-                crate::preview::add_scaling_probe(
-                    &elems.caps_sink_pad,
-                    elems.capsfilter.downgrade(),
-                    max_width,
-                    max_height,
-                )
-                .unwrap(),
-            );
-            debug!("Added new scaling probe to capsfilter");
-
-            elems.capsfilter.set_property(
-                "caps",
-                gst::Caps::builder("video/x-raw")
-                    .field("framerate", gst::Fraction::new(max_framerate as i32, 1))
-                    .field("interlace-mode", "progressive")
-                    .field("width", gst::IntRange::new(1, 16383))
-                    .field("height", gst::IntRange::new(1, 16383))
-                    .build(),
-            );
-
-            preview_pipeline.pipeline.add(&sink)?;
-
-            let sink_video_pad = sink.request_pad_simple("video_%u").unwrap();
-            capsfilter_src_pad.link(&sink_video_pad)?;
-            debug!("Added and synced webrtc sink");
-
-            capsfilter_src_pad.remove_probe(block_probe);
-            debug!("Removed capsfilter blocking probe");
-
-            let mut extra_audio = None;
-            if let Some(audio_src) = audio_src {
-                extra_audio =
-                    add_audio_src(&preview_pipeline.pipeline, sink.upcast_ref(), audio_src)?;
-            }
-
-            sink.sync_state_with_parent()?;
-
-            if needs_ready {
-                preview_pipeline.pipeline.set_state(gst::State::Playing)?;
-            }
-
-            add_bus_handler(&preview_pipeline.pipeline, event_tx, rt_handle)?;
-
-            Ok(Self {
-                pipeline: Pipeline::Preview(preview_pipeline),
-                _extra_audio: extra_audio,
-            })
-        } else if let Some(audio_src) = audio_src {
-            let pipeline = gst::Pipeline::new();
-
-            pipeline.add(&sink)?;
-
-            let extra_audio = add_audio_src(&pipeline, sink.upcast_ref(), audio_src)?;
-
-            pipeline.call_async(|pipeline| {
-                pipeline.set_state(gst::State::Playing).unwrap();
-            });
-
-            add_bus_handler(&pipeline, event_tx, rt_handle)?;
-
-            Ok(Self {
-                pipeline: Pipeline::Simple(pipeline),
-                _extra_audio: extra_audio,
-            })
-        } else {
-            anyhow::bail!("Missing audio source");
-        }
+            _ => todo!(),
+        };
+        let (pipeline, _extra_audio) = sink_from_preview(
+            sink,
+            preview_pipeline,
+            audio_src,
+            max_width,
+            max_height,
+            max_framerate,
+            event_tx,
+            rt_handle,
+        )?;
+        Ok(Self {
+            pipeline,
+            _extra_audio,
+        })
     }
 
     pub fn get_play_msg(&self, addr: IpAddr, port: u16) -> (String, String) {
@@ -656,15 +690,93 @@ impl WhepSink {
     }
 
     pub fn shutdown(&mut self) {
-        let pipeline = match &self.pipeline {
-            Pipeline::Simple(pipeline) => pipeline,
-            #[cfg(not(target_os = "android"))]
-            Pipeline::Preview(preview) => &preview.pipeline,
-        };
+        self.pipeline.shutdown();
+    }
+}
+
+#[derive(Debug)]
+pub struct FSink {
+    // pub pipeline: gst::Pipeline,
+    pub pipeline: Pipeline,
+    pub signaller: crate::fsignaller::FSignaller,
+    /// Used to keep connections and similar stuff alive for later use or for keeping RAII guards
+    /// from not prematurely terminating stream sources
+    #[cfg(not(target_os = "android"))]
+    _extra_audio: Option<ExtraAudioContext>,
+}
+
+impl FSink {
+    // TODO: fixme https://github.com/GStreamer/gst-plugins-rs/commit/19b8a0f602e5852c77dd6e8a3e0e536521b1f7aa?
+    #[cfg(target_os = "android")]
+    pub fn new(
+        source_config: SourceConfig,
+        event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
+        rt_handle: tokio::runtime::Handle,
+    ) -> anyhow::Result<Self> {
+        let (sink, signaller) = create_f_webrtcsink(rt_handle.clone(), event_tx.clone())?;
+        let sink = sink.upcast::<gst::Element>();
+        let pipeline = gst::Pipeline::new();
+        pipeline.add(&sink)?;
+
+        match source_config {
+            SourceConfig::Video(src) => {
+                let VideoSource::Source(appsrc) = src;
+                pipeline.add_many([&appsrc])?;
+                gst::Element::link_many([appsrc.upcast_ref(), &sink])?;
+            }
+        }
+
         pipeline.call_async(|pipeline| {
-            if let Err(err) = pipeline.set_state(gst::State::Null) {
-                error!("Failed to stop pipeline: {err}");
+            debug!("Starting pipeline...");
+
+            if let Err(err) = pipeline.set_state(gst::State::Playing) {
+                error!("Failed to start pipeline: {err}");
+            } else {
+                debug!("Pipeline started");
             }
         });
+
+        add_bus_handler(&pipeline, event_tx, rt_handle)?;
+
+        Ok(Self {
+            pipeline: Pipeline::Simple(pipeline),
+            signaller,
+        })
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub async fn from_preview(
+        sink_config: SinkConfig,
+        event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
+        rt_handle: tokio::runtime::Handle,
+        preview_pipeline: Option<PreviewPipeline>,
+        audio_src: Option<AudioSource>,
+        max_width: u32,
+        max_height: u32,
+        max_framerate: u32,
+    ) -> anyhow::Result<Self> {
+        let (sink, signaller) = match sink_config {
+            SinkConfig::FCast => create_f_webrtcsink(rt_handle.clone(), event_tx.clone())?,
+            _ => unreachable!(),
+        };
+        let (pipeline, _extra_audio) = sink_from_preview(
+            sink,
+            preview_pipeline,
+            audio_src,
+            max_width,
+            max_height,
+            max_framerate,
+            event_tx,
+            rt_handle,
+        )?;
+        Ok(Self {
+            pipeline,
+            signaller,
+            _extra_audio,
+        })
+    }
+
+    pub fn shutdown(&mut self) {
+        self.pipeline.shutdown();
     }
 }

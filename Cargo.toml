@@ -24,6 +24,8 @@ members = [
     "crates/fiatlux-sys",
     "crates/fiatlux",
     "crates/inhibit-screensaver",
+    "crates/get-type-string-derive",
+    "fuzz", "sdk/sender/examples/image-viewer",
 ]
 resolver = "2"
 
@@ -38,12 +40,13 @@ gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] 
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
 gst-plugin-rtp = { version = "0.15", features = [ "static" ] }
-gst-plugin-webrtc = { rev = "06c29061365d9ba19956540da47abf8dffea7d31", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
+gst-plugin-webrtc = { rev = "c2dc32fefa6db664143d79ab8cc0ae49b8415ddc", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.25.0" }
 serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
 env_logger = "0.11.8"
-mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "9123c110435fdb50068062a92c170c203da2f520" }
+mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "7523ce8c0603b6c302938cf32940d19bf096eb39" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -71,8 +74,20 @@ bindgen = "0.72"
 webbrowser = "1"
 glow = "0.17"
 libloading = "0.9.0"
+askama = "0.15"
+rustls = { version = "0.23", default-features = false }
+tokio-rustls = { version = "0.26.4", default-features = false }
+rustls-pki-types = "1.14"
+sha2 = "0.11"
+isolang = "2.4.0"
+self_cell = "1.2.2"
 directories = "6.0.0"
 regex = "1.12"
+infer = "0.19.0"
+image = { version = "0.25", default-features = false }
+base64 = "0.22"
+x509-parser = "0.17"
+rcgen = "0.14"
 
 [profile.release]
 lto = "fat"

@@ -1,9 +1,11 @@
-use fcast_sender_sdk::device::{self, DeviceInfo};
+use fcast_sender_sdk::device::{self, DeviceInfo, MediaTrack, MediaTrackType};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 
+pub mod fsignaller;
+pub use fsignaller::FSignaller;
 #[cfg(not(target_os = "android"))]
 pub mod preview;
 pub mod transmission;
@@ -123,6 +125,11 @@ pub enum DeviceEvent {
     PlaybackError(String),
     #[cfg(not(target_os = "android"))]
     Media(device::MediaEvent),
+    TracksAvailable(Vec<MediaTrack>),
+    TrackSelected {
+        id: Option<u32>,
+        typ: MediaTrackType,
+    },
 }
 
 #[cfg(not(target_os = "android"))]
@@ -253,6 +260,11 @@ pub enum Event {
     UpdateApplication,
     #[cfg(not(target_os = "android"))]
     RestartApplication,
+    #[cfg(not(target_os = "android"))]
+    SelectTrack {
+        id: i32,
+        typ: MediaTrackType,
+    },
 
     // Android
     // #[cfg(target_os = "android")]
@@ -362,4 +374,12 @@ impl device::DeviceEventHandler for DeviceHandler {
     }
 
     fn playback_error(&self, _message: String) {}
+
+    fn tracks_available(&self, tracks: Vec<MediaTrack>) {
+        self.send_event(DeviceEvent::TracksAvailable(tracks));
+    }
+
+    fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
+        self.send_event(DeviceEvent::TrackSelected { id, typ });
+    }
 }
