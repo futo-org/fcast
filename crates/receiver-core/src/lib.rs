@@ -233,7 +233,7 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
-    fn rendering_options(&self) -> placebo::RenderingOptions {
+    pub fn rendering_options(&self) -> placebo::RenderingOptions {
         placebo::RenderingOptions {
             profile: self.render_profile,
             visualize_lut: self.visualize_color_mapping_lut,
@@ -721,4 +721,145 @@ pub fn run<S: VideoSink + 'static>(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub struct ExternalVideoHandle {
+    payload_handle: video::imp::VideoPayloadHandle,
+    sink: video::FSink,
+    gui_is_visible: gui::GuiIsVisible,
+    msg_tx: MessageSender,
+    quit: Arc<std::sync::atomic::AtomicBool>,
+    fin_rx: tokio::sync::oneshot::Receiver<()>,
+    event_loop_jh: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(target_os = "linux")]
+impl ExternalVideoHandle {
+    pub fn take_payload(&self) -> Option<Option<video::Frame>> {
+        self.payload_handle.0.lock().take()
+    }
+
+    pub fn set_drm_formats(&self, formats: std::collections::HashSet<drm_fourcc::DrmFormat>) {
+        self.sink
+            .set_property("drm-formats", video::imp::DrmFormats(Arc::new(formats)));
+    }
+
+    pub fn set_window_resolution(&self, width: u32, height: u32) {
+        self.sink.set_property(
+            "window-resolution",
+            video::imp::WindowResolution { width, height },
+        );
+    }
+
+    pub fn set_gui_visible(&self, visible: bool) {
+        self.gui_is_visible.set(visible);
+    }
+
+    pub fn should_quit(&self) -> bool {
+        self.quit.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn send_gui_window_closed_blocking(&self, timeout: Duration) {
+        let (tx, rx) = oneshot::channel::<()>();
+        self.msg_tx.send(Message::GuiWindowClosed(tx));
+        if let Err(err) = rx.recv_timeout(timeout) {
+            error!(?err, "Failed to receive feedback of player shutdown");
+        }
+    }
+
+    /// Quit the application event loop and block until it has drained
+    pub fn shutdown(self) {
+        RUNTIME.block_on(async move {
+            self.msg_tx.send(Message::Quit);
+            let _ = self.fin_rx.await;
+            let _ = self.event_loop_jh.await;
+        });
+    }
+}
+
+/// Like [`run`], but without any slint UI. The caller is responsible for presenting the video.
+///
+/// `frame_available` is invoked on a gstreamer streaming thread whenever a new frame is ready.
+#[cfg(target_os = "linux")]
+pub fn run_with_external_video(
+    cli_args: CliArgs,
+    frame_available: Arc<dyn Fn() + Send + Sync>,
+) -> Result<ExternalVideoHandle> {
+    logging::init(cli_args.loglevel);
+
+    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+        error!(
+            ?err,
+            "Failed to register ring as rustls default crypto provider"
+        );
+    }
+
+    let (msg_tx, event_rx) = mpsc::unbounded_channel::<Message>();
+    let msg_tx = MessageSender::new(msg_tx);
+    let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let gui_is_visible = gui::GuiIsVisible::new();
+    let gui = GuiController::new(None, gui_is_visible.clone());
+    let quit = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let (init_tx, init_rx) =
+        std::sync::mpsc::sync_channel::<(video::FSink, video::imp::VideoPayloadHandle)>(1);
+
+    let event_loop_jh = RUNTIME.spawn({
+        let msg_tx = msg_tx.clone();
+        let frame_available = frame_available.clone();
+        async move {
+            gstreamer::init_and_load_plugins();
+
+            let sink = video::FSink::new();
+            sink.connect("frame-available", false, move |_| {
+                frame_available();
+                None
+            });
+            let payload_handle: video::imp::VideoPayloadHandle = sink.property("payload-handle");
+            let _ = init_tx.send((sink.clone(), payload_handle));
+
+            let settings_file = SettingsFile::try_load(&cli_args).await;
+            let settings = Settings {
+                cli: cli_args,
+                file: settings_file,
+            };
+
+            application::Application::new(gui, Some(sink.upcast()), msg_tx, settings)
+                .await
+                .unwrap()
+                .run_event_loop(event_rx, fin_tx)
+                .await
+                .unwrap();
+        }
+    });
+
+    RUNTIME.spawn({
+        let quit = quit.clone();
+        let frame_available = frame_available.clone();
+        async move {
+            if let Err(err) = tokio::signal::ctrl_c().await {
+                error!(?err, "Failed to listen for ctrl+c event");
+            } else {
+                debug!("Got Ctrl+C");
+                quit.store(true, std::sync::atomic::Ordering::Relaxed);
+                frame_available();
+            }
+        }
+    });
+
+    let (sink, payload_handle) = init_rx
+        .recv()
+        .map_err(|_| anyhow::anyhow!("video sink initialization failed"))?;
+
+    Ok(ExternalVideoHandle {
+        payload_handle,
+        sink,
+        gui_is_visible,
+        msg_tx,
+        quit,
+        fin_rx,
+        event_loop_jh,
+    })
 }

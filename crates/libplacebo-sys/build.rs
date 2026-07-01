@@ -41,6 +41,7 @@ mod build {
         fn apply_patch(root: &Path, patch_path: &Path) {
             let status = Command::new("git")
                 .current_dir(root)
+                .env("GIT_CEILING_DIRECTORIES", root.parent().unwrap_or(root))
                 .arg("apply")
                 .arg("-p1")
                 .arg(patch_path)

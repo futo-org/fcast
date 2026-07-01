@@ -8,6 +8,7 @@ rcore = { package = "receiver-core", path = "../../../crates/receiver-core", fea
 anyhow.workspace = true
 mimalloc.workspace = true
 fiatlux.path = "../../../crates/fiatlux"
+glutin_egl_sys = "0.7.1"
 
 [features]
 default = []
