@@ -2,6 +2,7 @@
 name = "receiver-core"
 version = "3.0.2"
 edition = "2024"
+license = "GPL-3.0-only"
 
 [dependencies]
 tokio.workspace = true
@@ -64,6 +65,11 @@ nom = "7.1"
 gst-audio = { package = "gstreamer-audio", version = "0.25" }
 byte-slice-cast = "1"
 rtp-types = "0.1"
+
+# AirPlay
+plist = { version = "1", optional = true }
+ctr = { version = "0.9", optional = true }
+apple-fairplay = { path = "../apple-fairplay", optional = true }
 
 # Google Cast
 rustls-pki-types.workspace = true
@@ -133,6 +139,7 @@ gst-check = { package = "gstreamer-check", version = "0.25" }
 
 [features]
 default = []
+airplay = ["dep:plist", "dep:ctr", "dep:apple-fairplay"]
 extra-imgfmt = ["dep:libheif-rs"]
 desktop = [
     "extra-imgfmt",

@@ -417,6 +417,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "apple-fairplay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1832,6 +1839,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83cf0d42651b16c6dfe68685716d18480d18a9c39c62d76e8cf3eb6ed5d8bcbf"
 dependencies = [
  "dtor",
+]
+
+[[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
 ]
 
 [[package]]
@@ -7106,6 +7122,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "plist"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "092791278e026273c1b65bbdcfbba3a300f2994c896bd01ab01da613c29c46f1"
+dependencies = [
+ "base64",
+ "indexmap",
+ "quick-xml 0.39.4",
+ "serde",
+ "time",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7706,12 +7735,14 @@ dependencies = [
  "alac",
  "anyhow",
  "app-updater",
+ "apple-fairplay",
  "base64",
  "bitflags 2.13.0",
  "byte-slice-cast",
  "bytes",
  "cbc",
  "clap",
+ "ctr",
  "directories",
  "drm-fourcc",
  "egl-sys",
@@ -7758,6 +7789,7 @@ dependencies = [
  "pango",
  "parking_lot",
  "pin-project-lite",
+ "plist",
  "rand 0.10.1",
  "rcgen",
  "receiver-resources",

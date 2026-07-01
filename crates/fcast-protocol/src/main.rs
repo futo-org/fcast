@@ -47,9 +47,5 @@ fn main() {
         flatbuffer_source: include_str!("../flatbuffers/fcast.fbs").to_owned(),
     };
 
-    std::fs::write(
-        "../../docs/docs/protocol/v4.md",
-        doc.render().unwrap(),
-    )
-    .unwrap();
+    std::fs::write("../../docs/docs/protocol/v4.md", doc.render().unwrap()).unwrap();
 }
