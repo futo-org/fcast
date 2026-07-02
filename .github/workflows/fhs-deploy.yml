@@ -2,7 +2,7 @@ name: FHS Deploy
 
 on:
   push:
-    branches: [master]
+    branches: [fhs]
     paths:
       - 'receivers/experimental/fhs/**'
       - 'crates/receiver-core/**'
