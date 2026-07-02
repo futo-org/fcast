@@ -93,7 +93,7 @@ jobs:
             libheif-devel pango-devel libdrm-devel \
             meson ninja-build \
             gcc gcc-c++ make rustup \
-            clang-libs clang-devel git flatbuffers
+            clang-libs clang-devel git flatbuffers-compiler
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2
