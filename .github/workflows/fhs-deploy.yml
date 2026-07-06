@@ -90,7 +90,7 @@ jobs:
             gstreamer1-plugins-bad-free-devel gstreamer1-plugin-libav \
             libdav1d-devel glib2-devel \
             fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel \
-            libheif-devel pango-devel cairo-devel libdrm-devel \
+            libheif-devel pango-devel cairo-devel cairo-gobject libdrm-devel \
             meson ninja-build \
             gcc gcc-c++ make rustup \
             clang-libs clang-devel git flatbuffers-compiler
