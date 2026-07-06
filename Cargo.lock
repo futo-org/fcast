@@ -1241,6 +1241,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
+name = "cairo-rs"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cc8d9aa793480744cd9a0524fef1a2e197d9eaa0f739cde19d16aba530dcb95"
+dependencies = [
+ "bitflags 2.13.0",
+ "cairo-sys-rs",
+ "glib 0.22.7",
+ "libc",
+]
+
+[[package]]
+name = "cairo-sys-rs"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8b4985713047f5faee02b8db6a6ef32bbb50269ff53c1aee716d1d195b76d54"
+dependencies = [
+ "glib-sys 0.22.6",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2606,9 +2629,12 @@ name = "fhs-receiver"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cairo-rs",
  "fiatlux",
  "glutin_egl_sys",
  "mimalloc",
+ "pango",
+ "pangocairo",
  "receiver-core",
 ]
 
@@ -6842,6 +6868,31 @@ dependencies = [
  "glib-sys 0.22.6",
  "gobject-sys 0.22.6",
  "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "pangocairo"
+version = "0.22.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "738a2ef690f51487814ff7172e0417c8e4fa2d7567571e5eb299d38b47b543ab"
+dependencies = [
+ "cairo-rs",
+ "glib 0.22.7",
+ "pango",
+ "pangocairo-sys",
+]
+
+[[package]]
+name = "pangocairo-sys"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d95cb73468373b9e568abb1afbaf5b42fe6ab9128fc41b5f2adbf69451c3c77f"
+dependencies = [
+ "cairo-sys-rs",
+ "glib-sys 0.22.6",
+ "libc",
+ "pango-sys",
  "system-deps",
 ]
 

@@ -1082,6 +1082,31 @@ impl Player {
         }
 
         self.stream_collection = Some(collection);
+
+        // Testing aid: subtitles are otherwise off until a ChangeTrack message
+        // selects a track. Opt in via FCAST_AUTOSELECT_SUBTITLE to auto-select
+        // the first embedded subtitle stream (kept alongside the first video and
+        // audio streams so those aren't deselected).
+        if std::env::var_os("FCAST_AUTOSELECT_SUBTITLE").is_some() {
+            let first_of = |ty: gst::StreamType| {
+                self.streams
+                    .iter()
+                    .position(|s| s.inner.stream_type().contains(ty))
+                    .map(|idx| idx as u32)
+            };
+            if let Some(subtitle) = first_of(gst::StreamType::TEXT) {
+                debug!("FCAST_AUTOSELECT_SUBTITLE: selecting first subtitle stream");
+                if let Err(err) = self.select_streams(
+                    first_of(gst::StreamType::VIDEO),
+                    first_of(gst::StreamType::AUDIO),
+                    Some(subtitle),
+                ) {
+                    warn!(?err, "Failed to auto-select subtitle stream");
+                }
+            } else {
+                debug!("FCAST_AUTOSELECT_SUBTITLE set but the media has no subtitle stream");
+            }
+        }
     }
 
     pub fn get_duration(&self) -> Option<gst::ClockTime> {
@@ -1296,16 +1321,20 @@ impl Player {
         let mut streams = Vec::new();
 
         for idx in [video, audio, subtitle] {
-            if let Some(idx) = idx
-                && let Some(stream) = self.streams.get(idx as usize)
-                && let Some(id) = stream.inner.stream_id()
-            {
-                streams.push(id);
+            if let Some(idx) = idx {
+                match self.streams.get(idx as usize) {
+                    Some(stream) => match stream.inner.stream_id() {
+                        Some(id) => streams.push(id),
+                        None => warn!(idx, "selected stream has no stream-id; skipping"),
+                    },
+                    None => warn!(idx, "selected stream index out of range"),
+                }
             }
         }
 
         let event = gst::event::SelectStreams::new(streams.iter().map(|s| s.as_str()));
-        self.playbin.send_event(event);
+        let handled = self.playbin.send_event(event);
+        debug!(?streams, handled, "sent SelectStreams");
 
         Ok(())
     }

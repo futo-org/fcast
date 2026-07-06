@@ -270,6 +270,9 @@ pub mod imp {
         window_resolution: Mutex<Option<WindowResolution>>,
         window_resized: AtomicBool,
         payload_handle: VideoPayloadHandle,
+        // Seqnums of the overlay compositions on the previous frame, so unchanged
+        // overlays aren't re-extracted (and re-rendered) every frame.
+        last_overlay_seqnums: Mutex<SmallVec<[u32; 4]>>,
     }
 
     #[glib::object_subclass]
@@ -510,59 +513,78 @@ pub mod imp {
 
             let buffer = buffer.clone();
 
-            let overlays: SmallVec<[Overlay; 3]> = buffer
+            let current_overlay_seqnums: SmallVec<[u32; 4]> = buffer
                 .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
-                .flat_map(|meta| {
-                    meta.overlay()
-                        .iter()
-                        .filter_map(|rect| {
-                            let buffer = rect.pixels_unscaled_argb(
-                                gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA,
-                            );
-                            let (x, y, render_width, render_height) = rect.render_rectangle();
-
-                            let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
-
-                            if vmeta.format() != gst_video::VideoFormat::Bgra {
-                                return None;
-                            }
-
-                            let info = gst_video::VideoInfo::builder(
-                                vmeta.format(),
-                                vmeta.width(),
-                                vmeta.height(),
-                            )
-                            .build()
-                            .unwrap();
-
-                            let frame =
-                                gst_video::VideoFrame::from_buffer_readable(buffer, &info).ok()?;
-
-                            let Ok(plane) = frame.plane_data(0) else {
-                                return None;
-                            };
-
-                            let mut pix_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-                                frame.width(),
-                                frame.height(),
-                            );
-                            image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
-
-                            Some(Overlay {
-                                pix_buffer,
-                                x,
-                                y,
-                                render_width,
-                                render_height,
-                            })
-                        })
-                        .collect::<SmallVec<[_; 3]>>()
-                })
+                .map(|meta| meta.overlay().seqnum())
                 .collect();
-            let overlays = if !overlays.is_empty() {
-                Resource::New(overlays)
-            } else {
-                Resource::Cleared
+
+            let overlays = {
+                let mut last_seqnums = self.last_overlay_seqnums.lock();
+                if !current_overlay_seqnums.is_empty() && *last_seqnums == current_overlay_seqnums {
+                    // The overlay composition(s) are unchanged since the last
+                    // frame; skip re-extracting the (potentially full-frame)
+                    // pixels and let the consumer keep the previous overlays.
+                    Resource::Unchanged
+                } else {
+                    *last_seqnums = current_overlay_seqnums;
+                    let overlays: SmallVec<[Overlay; 3]> = buffer
+                        .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
+                        .flat_map(|meta| {
+                            meta.overlay()
+                                .iter()
+                                .filter_map(|rect| {
+                                    let buffer = rect.pixels_unscaled_argb(
+                                        gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA,
+                                    );
+                                    let (x, y, render_width, render_height) =
+                                        rect.render_rectangle();
+
+                                    let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
+
+                                    if vmeta.format() != gst_video::VideoFormat::Bgra {
+                                        return None;
+                                    }
+
+                                    let info = gst_video::VideoInfo::builder(
+                                        vmeta.format(),
+                                        vmeta.width(),
+                                        vmeta.height(),
+                                    )
+                                    .build()
+                                    .unwrap();
+
+                                    let frame =
+                                        gst_video::VideoFrame::from_buffer_readable(buffer, &info)
+                                            .ok()?;
+
+                                    let Ok(plane) = frame.plane_data(0) else {
+                                        return None;
+                                    };
+
+                                    let mut pix_buffer =
+                                        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                                            frame.width(),
+                                            frame.height(),
+                                        );
+                                    image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
+
+                                    Some(Overlay {
+                                        pix_buffer,
+                                        x,
+                                        y,
+                                        render_width,
+                                        render_height,
+                                    })
+                                })
+                                .collect::<SmallVec<[_; 3]>>()
+                        })
+                        .collect();
+                    if !overlays.is_empty() {
+                        Resource::New(overlays)
+                    } else {
+                        Resource::Cleared
+                    }
+                }
             };
 
             let mut subtitles = Resource::Cleared;

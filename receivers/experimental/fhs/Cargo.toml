@@ -9,6 +9,9 @@ anyhow.workspace = true
 mimalloc.workspace = true
 fiatlux.path = "../../../crates/fiatlux"
 glutin_egl_sys = "0.7.1"
+cairo-rs = "0.22"
+pango = "0.22"
+pangocairo = "0.22"
 
 [features]
 default = []

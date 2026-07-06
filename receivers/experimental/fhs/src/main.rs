@@ -3,7 +3,7 @@ use fiatlux::*;
 use mimalloc::MiMalloc;
 use rcore::{
     VideoSink, clap::Parser, egl, glow, libplacebo, placebo::PlaceboContext, tracing::error,
-    video::Frame,
+    video::{Frame, Resource},
 };
 use std::{
     ffi::{CString, c_char, c_void},
@@ -13,6 +13,7 @@ use std::{
 };
 
 mod pixmap_video_sink;
+mod subtitle_surface;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -46,7 +47,7 @@ impl FiatLux {
             let mut reply: fl_reply_CreateSurface = std::mem::zeroed();
             if !fl_receive_reply_create_surface(
                 client.client,
-                fl_create_surface(client.client, window.window_id, -1),
+                fl_create_surface(client.client, window.window_id, -1, true),
                 &mut reply,
             ) {
                 return Err(anyhow!("Failed to create video surface"));
@@ -142,6 +143,8 @@ fn main() -> Result<()> {
     let drm_formats = egl::get_supported_dma_drm_formats(fl_egl_display)?;
 
     let mut sink = pixmap_video_sink::FhsPixmapSink::new(fl.client.client, fl.video_surface_id)?;
+    let mut subtitles =
+        subtitle_surface::SubtitleSurface::new(fl.client.client, fl.window.window_id)?;
 
     let signal = FrameSignal::new();
     let handle = rcore::run_with_external_video(cli_args, signal.notifier())?;
@@ -179,6 +182,7 @@ fn main() -> Result<()> {
 
         if resized {
             handle.set_window_resolution(size.0, size.1);
+            subtitles.reposition(size);
         }
 
         if handle.should_quit() || unsafe { !fl_is_connected_to_server(fl.client.client) } {
@@ -202,8 +206,34 @@ fn main() -> Result<()> {
                 error!(?err, "video sink render failed");
             }
 
+            if have_new {
+                // Bitmap overlays (the common path) take precedence over plain
+                // text; either is composited onto the subtitle surface. Unchanged
+                // keeps the current (cached) surface so it isn't redrawn per frame.
+                let result = match &frame.overlays {
+                    Resource::New(overlays) => subtitles.set_overlays(overlays, size),
+                    Resource::Unchanged => Ok(()),
+                    Resource::Cleared | Resource::Eos => match &frame.subtitles {
+                        Resource::New(lines) => {
+                            subtitles.set_subtitles(lines, size, fl.window.display_scale)
+                        }
+                        Resource::Unchanged => Ok(()),
+                        Resource::Cleared | Resource::Eos => {
+                            subtitles.clear();
+                            Ok(())
+                        }
+                    },
+                };
+                if let Err(err) = result {
+                    error!(?err, "subtitle surface update failed");
+                }
+            }
+
+            let mut surface_ids = vec![fl.video_surface_id];
+            if let Some(subtitle_surface_id) = subtitles.surface_id() {
+                surface_ids.push(subtitle_surface_id);
+            }
             unsafe {
-                let surface_ids = [fl.video_surface_id];
                 let damage_seq = fl_mark_surfaces_as_damaged(
                     fl.client.client,
                     surface_ids.as_ptr(),
@@ -218,6 +248,7 @@ fn main() -> Result<()> {
 
     handle.set_gui_visible(false);
     handle.send_gui_window_closed_blocking(Duration::from_millis(2500));
+    subtitles.clear();
     sink.teardown(&mut placebo);
     drop(placebo);
     handle.shutdown();

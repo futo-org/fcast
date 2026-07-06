@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CString, c_int, c_uint},
+    ffi::{CString, c_int, c_uint, c_void},
     fs::OpenOptions,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     ptr,
@@ -425,6 +425,7 @@ impl VideoSink for FhsPixmapSink {
     }
 }
 
+const GBM_BO_USE_SCANOUT: u32 = 1 << 0;
 const GBM_BO_USE_RENDERING: u32 = 1 << 2;
 
 #[repr(C)]
@@ -456,15 +457,163 @@ unsafe extern "C" {
     fn gbm_bo_get_stride(bo: *mut gbm_bo) -> u32;
     fn gbm_bo_get_offset(bo: *mut gbm_bo, plane: c_int) -> u32;
     fn gbm_bo_get_plane_count(bo: *mut gbm_bo) -> c_int;
+    fn gbm_bo_map(
+        bo: *mut gbm_bo,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        flags: u32,
+        stride: *mut u32,
+        map_data: *mut *mut c_void,
+    ) -> *mut c_void;
+    fn gbm_bo_unmap(bo: *mut gbm_bo, map_data: *mut c_void);
 }
 
-struct GbmAllocator {
+const GBM_BO_TRANSFER_WRITE: u32 = 2;
+
+const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
+    (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
+}
+
+// R,G,B,A byte order in memory, matching FL_PIXMAP_FORMAT_RGBA8 and cairo output
+// after a B<->R swap.
+const DRM_FORMAT_ABGR8888: u32 = fourcc_code(b'A', b'B', b'2', b'4');
+
+/// A CPU-writable, linear, dma-buf-backed fiatlux pixmap. Used for the subtitle
+/// overlay, which is rasterized on the CPU (no libplacebo involved).
+pub(crate) struct MappablePixmap {
+    client: *mut fl_Client,
+    bo: *mut gbm_bo,
+    pixmap_id: fl_protocol_PixmapId,
+    width: u32,
+    height: u32,
+}
+
+impl MappablePixmap {
+    pub(crate) fn new(
+        client: *mut fl_Client,
+        gbm: &GbmAllocator,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        let fourcc = DRM_FORMAT_ABGR8888;
+        let bo = gbm.create_scanout_bo(width, height, fourcc)?;
+
+        let register = || -> Result<fl_protocol_PixmapId> {
+            let stride = unsafe { gbm_bo_get_stride(bo) };
+            let offset = unsafe { gbm_bo_get_offset(bo, 0) };
+            let modifier = unsafe { gbm_bo_get_modifier(bo) };
+            // libplacebo dup's this on import, and the fiatlux client closes it after sending
+            let fd = unsafe { gbm_bo_get_fd(bo) };
+            if fd < 0 {
+                return Err(anyhow!("gbm_bo_get_fd failed"));
+            }
+
+            let offsets = [offset, 0u32, 0u32, 0u32];
+            let pitches = [stride, 0u32, 0u32, 0u32];
+            let modifiers = [modifier, 0u64, 0u64, 0u64];
+            let fds = [fd];
+
+            unsafe {
+                let seq = fl_create_pixmap_from_dmabuf(
+                    client,
+                    width,
+                    height,
+                    fourcc,
+                    1,
+                    offsets.as_ptr(),
+                    pitches.as_ptr(),
+                    modifiers.as_ptr(),
+                    1,
+                    fds.as_ptr(),
+                );
+                if seq.value == 0 {
+                    drop(OwnedFd::from_raw_fd(fd));
+                    return Err(anyhow!("fl_create_pixmap_from_dmabuf failed"));
+                }
+                let mut reply: fl_reply_CreatePixmapFromDmaBuf = std::mem::zeroed();
+                if !fl_receive_reply_create_pixmap_from_dma_buf(client, seq, &mut reply) {
+                    return Err(anyhow!("fl_create_pixmap_from_dmabuf reply was null"));
+                }
+                Ok(reply.pixmap_id)
+            }
+        };
+
+        match register() {
+            Ok(pixmap_id) => Ok(Self {
+                client,
+                bo,
+                pixmap_id,
+                width,
+                height,
+            }),
+            Err(err) => {
+                unsafe { gbm_bo_destroy(bo) };
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn pixmap_id(&self) -> fl_protocol_PixmapId {
+        self.pixmap_id
+    }
+
+    pub(crate) fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub(crate) fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Maps the buffer and calls `f` with the mapped bytes and the buffer's row
+    /// stride (in bytes). The caller writes R,G,B,A pixels.
+    pub(crate) fn write(&self, f: impl FnOnce(&mut [u8], usize)) -> Result<()> {
+        let mut stride: u32 = 0;
+        let mut map_data: *mut c_void = ptr::null_mut();
+        let ptr = unsafe {
+            gbm_bo_map(
+                self.bo,
+                0,
+                0,
+                self.width,
+                self.height,
+                GBM_BO_TRANSFER_WRITE,
+                &mut stride,
+                &mut map_data,
+            )
+        };
+        if ptr.is_null() || ptr == usize::MAX as *mut c_void {
+            return Err(anyhow!("gbm_bo_map failed"));
+        }
+        let len = stride as usize * self.height as usize;
+        let bytes = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, len) };
+        f(bytes, stride as usize);
+        unsafe { gbm_bo_unmap(self.bo, map_data) };
+        Ok(())
+    }
+}
+
+impl Drop for MappablePixmap {
+    fn drop(&mut self) {
+        unsafe {
+            fl_discard_reply(
+                self.client,
+                fl_destroy_pixmap(self.client, self.pixmap_id).value,
+            );
+            gbm_bo_destroy(self.bo);
+        }
+    }
+}
+
+pub(crate) struct GbmAllocator {
     _drm_fd: OwnedFd,
     device: *mut gbm_device,
 }
 
 impl GbmAllocator {
-    fn new(client: *mut fl_Client) -> Result<Self> {
+    pub(crate) fn new(client: *mut fl_Client) -> Result<Self> {
         let render_device_path_resp = unsafe {
             fl_receive_reply_dri_get_render_device_path(
                 client,
@@ -528,6 +677,30 @@ impl GbmAllocator {
         if bo.is_null() {
             return Err(anyhow!(
                 "gbm_bo_create_with_modifiers2 failed for {width}x{height} fourcc {fourcc:#010x}"
+            ));
+        }
+        Ok(bo)
+    }
+
+    // Linear (modifier 0) so the buffer can be CPU-mapped and written directly,
+    // plus GBM_BO_USE_SCANOUT so gbm allocates a scanout-capable buffer (with the
+    // stride alignment the display controller needs for direct scanout).
+    fn create_scanout_bo(&self, width: u32, height: u32, fourcc: u32) -> Result<*mut gbm_bo> {
+        let modifiers = [0u64];
+        let bo = unsafe {
+            gbm_bo_create_with_modifiers2(
+                self.device,
+                width,
+                height,
+                fourcc,
+                modifiers.as_ptr(),
+                modifiers.len() as c_uint,
+                GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT,
+            )
+        };
+        if bo.is_null() {
+            return Err(anyhow!(
+                "gbm_bo_create_with_modifiers2 (scanout) failed for {width}x{height} fourcc {fourcc:#010x}"
             ));
         }
         Ok(bo)
