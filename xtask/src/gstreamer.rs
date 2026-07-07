@@ -212,6 +212,9 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     (Sub::Bad, "subenc"),
     (Sub::Good, "wavenc"),
     (Sub::Good, "xingmux"),
+    (Sub::Bad, "id3tag"), // id3v2mux/id3mux: ID3 tag *muxer*, encode-side only
+    // audio channel interleave/deinterleave: not autoplugged in playback
+    (Sub::Good, "interleave"),
     // capture / hardware IO / IPC
     (Sub::Bad, "camerabin2"),
     (Sub::Bad, "decklink"),
@@ -221,6 +224,10 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     (Sub::Bad, "shm"),
     (Sub::Bad, "librfb"),
     (Sub::Bad, "unixfd"),
+    // v4l2src/v4l2sink/v4l2radio: pure video capture/output — a cast receiver
+    // never captures. (Linux HW decode comes from `va`, not v4l2, and the
+    // stateless v4l2codecs decoders aren't built.)
+    (Sub::Good, "v4l2"),
     (Sub::Base, "alsa"),
     (Sub::Good, "oss"),
     (Sub::Good, "oss4"),
@@ -304,6 +311,10 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     (Sub::Good, "multifile"),
     (Sub::Good, "multipart"),
     (Sub::Ugly, "realmedia"),
+    // ASF/WMV/WMA (Microsoft, ~1999, deprecated by its own vendor): the asfdemux
+    // plugin also carries rtspwms + rtpasfdepay. Nothing in 2026 produces ASF for
+    // casting; the WMV/WMA avdec_* decoders are dropped from FFMPEG_DECODERS too.
+    (Sub::Ugly, "asfdemux"),
 ];
 
 /// FFmpeg decoders to keep (via gst-libav's `avdec_*`). We disable ALL FFmpeg
@@ -318,13 +329,14 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
 /// Demuxing/parsing is done by native gst elements (qtdemux, matroskademux,
 /// h264parse, …), so FFmpeg demuxers/parsers/protocols aren't needed.
 const FFMPEG_DECODERS: &[&str] = &[
-    // video
+    // video. vc1 is kept: it's also carried in MKV/TS/Blu-ray remuxes (demuxed by
+    // matroskademux/tsdemux), so it's not exclusively an ASF/WMV concern.
     "h264", "hevc", "mpeg2video", "mpeg4", "mpeg1video", "msmpeg4v1", "msmpeg4v2",
-    "msmpeg4v3", "h263", "h263p", "vc1", "wmv1", "wmv2", "wmv3", "vp6", "vp6f", "flv",
+    "msmpeg4v3", "h263", "h263p", "vc1", "vp6", "vp6f", "flv",
     "mjpeg", "prores", "vp8", "vp9",
     // audio
-    "aac", "aac_latm", "ac3", "eac3", "mp3", "mp2", "mp1", "dca", "alac", "wmav1",
-    "wmav2", "wmapro", "wmalossless", "truehd", "mlp", "amrnb", "amrwb",
+    "aac", "aac_latm", "ac3", "eac3", "mp3", "mp2", "mp1", "dca", "alac",
+    "truehd", "mlp", "amrnb", "amrwb",
     // pcm / adpcm (pcm_bluray = LPCM in .m2ts Blu-ray remuxes)
     "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_u8", "pcm_f32le", "pcm_alaw",
     "pcm_mulaw", "pcm_bluray", "adpcm_ima_wav", "adpcm_ms",

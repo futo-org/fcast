@@ -48,7 +48,10 @@ mime = "0.3"
 regex.workspace = true
 gst-webrtc.workspace = true
 self_cell.workspace = true
-image = { workspace = true, features = ["default-formats", "avif-native"] }
+image = { workspace = true, features = [
+    "avif-native", "bmp", "dds", "ff", "gif", "ico",
+    "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
+] }
 
 # RAOP
 rtsp-types = "0.1"

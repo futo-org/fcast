@@ -94,7 +94,7 @@ rcgen = "0.14"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-strip = "debuginfo"
+strip = "symbols"
 
 [profile.release-dbg]
 inherits = "release"
