@@ -86,16 +86,8 @@ const SYSTEM_DEPS: &[&str] = &[
 
 /// Plugins we force ON (hard requirement — meson errors if the dep is missing).
 /// vorbis/theora are native decoders gst-libav deliberately refuses to wrap
-/// (it expects the native plugins to exist). Same story for wavpack
-/// (avdec_wavpack is on the same hardcoded skip list, so the native plugin is
-/// the ONLY WavPack decoder — seen in the wild as A_WAVPACK4 in matroska);
-/// libwavpack comes from the environment on Linux and from its wrapdb wrap on
-/// macOS/Windows (installed on demand, see ensure_wrap).
-const ENABLE_COMMON: &[(Sub, &str)] = &[
-    (Sub::Base, "vorbis"),
-    (Sub::Base, "theora"),
-    (Sub::Good, "wavpack"),
-];
+/// (it expects the native plugins to exist).
+const ENABLE_COMMON: &[(Sub, &str)] = &[(Sub::Base, "vorbis"), (Sub::Base, "theora")];
 
 /// Elements kept from the videoparsersbad plugin (via gst-full-elements). The
 /// plugin itself must stay (h264parse/h265parse are essential), but it also
@@ -119,26 +111,77 @@ const VIDEOPARSERS_ELEMENTS: &[&str] = &[
 /// assrender for styled ASS/SSA subtitles — it attaches overlay-composition
 /// meta, so it slots into the receiver's libplacebo (pl_overlay) subtitle
 /// compositing path instead of burning into frames. Needs libass.
+/// wavpack: avdec_wavpack is on gst-libav's hardcoded skip list, so the native
+/// plugin is the ONLY WavPack decoder (seen in the wild as A_WAVPACK4 in
+/// matroska). libwavpack comes from the environment on Linux; it has no wrapdb
+/// wrap, so the hermetic macOS/Windows builds can't provide it → wavpack is
+/// Linux-only (disabled on mac/win, like srt/assrender).
 const ENABLE_LINUX: &[(Sub, &str)] = &[
     (Sub::Bad, "va"),
     (Sub::Bad, "srt"),
     (Sub::Bad, "assrender"),
+    (Sub::Good, "wavpack"),
 ];
-const DISABLE_LINUX: &[(Sub, &str)] = &[];
+const DISABLE_LINUX: &[(Sub, &str)] = &[(Sub::Base, "gl")];
 
 /// macOS: VideoToolbox decode + CoreAudio/Cocoa output (matches the plugin set
 /// receiver-resources bundles for the dynamic build).
+/// applemedia (VideoToolbox HW decode) hard-depends on the gstgl library at
+/// compile time — its sources (glcontexthelper, videotexturecache-gl) and
+/// `#include <gst/gl/gl.h>` are unconditional, and gstglconfig.h is only
+/// generated when `gl` is built. So `gl` must be enabled here even though the
+/// receiver's own sink is Vulkan/Wayland (glimagesink is never autoplugged).
+/// On macOS gstgl only links system Cocoa/OpenGL frameworks — no external deps.
 const ENABLE_MACOS: &[(Sub, &str)] = &[
     (Sub::Bad, "applemedia"),
     (Sub::Good, "osxaudio"),
     (Sub::Good, "osxvideo"),
+    (Sub::Base, "gl"),
 ];
-const DISABLE_MACOS: &[(Sub, &str)] = &[(Sub::Bad, "va"), (Sub::Good, "pulse")];
+/// macOS static build must link ONLY OS frameworks (the installer verifies via
+/// otool). These plugins each pull an external dylib that has no vendored wrap
+/// (or is a pure encoder / redundant with libav decode), so instead of building
+/// them static we drop the plugin. Everything the receiver actually decodes is
+/// covered by libav + the native vorbis/theora/opus/flac/dav1d plugins.
+const DISABLE_MACOS: &[(Sub, &str)] = &[
+    (Sub::Bad, "va"),
+    (Sub::Good, "pulse"),
+    // encoders (decode-only receiver)
+    (Sub::Bad, "aom"),      // AV1 encode; decode via dav1d
+    (Sub::Bad, "svtav1"),   // AV1 encoder
+    (Sub::Bad, "voaacenc"), // AAC encoder
+    (Sub::Bad, "voamrwbenc"),
+    // audio decoders redundant with libav (see FFMPEG_DECODERS)
+    (Sub::Good, "mpg123"),   // mp3
+    (Sub::Good, "amrnb"),    // opencore-amr
+    (Sub::Good, "amrwbdec"), // opencore-amr
+    (Sub::Good, "speex"),
+    (Sub::Good, "wavpack"),
+    // image decoders (receiver decodes images itself; libtiff/libjpeg drop with these)
+    (Sub::Good, "gdk-pixbuf"),
+    (Sub::Bad, "lcevcdecoder"),
+    (Sub::Bad, "lcevcencoder"),
+    // niche / unused elements dragging external dylibs
+    (Sub::Bad, "zbar"),       // barcode
+    (Sub::Bad, "sbc"),        // bluetooth audio
+    (Sub::Bad, "soundtouch"), // pitch/tempo
+    (Sub::Good, "dv"),        // DV video
+    (Sub::Bad, "rtmp"),
+    (Sub::Bad, "curl"), // http via souphttpsrc / the receiver's own httpsrc
+    (Sub::Bad, "sndfile"),
+    (Sub::Bad, "spandsp"), // dtmf/fax
+    (Sub::Good, "taglib"), // metadata tagging
+    (Sub::Good, "bz2"),    // libbz2 support in matroska (bz2-compressed tracks; no wrap)
+    // no vendored wrap → can't link static on macOS (kept on Linux)
+    (Sub::Bad, "srt"),
+    (Sub::Bad, "assrender"),
+];
 
 /// Windows: WASAPI audio (matches receiver-resources' bundled set). d3d11 etc.
 /// stay `auto`. NOTE: static gst-full on MSVC is upstream-experimental.
 const ENABLE_WINDOWS: &[(Sub, &str)] = &[(Sub::Bad, "wasapi")];
-const DISABLE_WINDOWS: &[(Sub, &str)] = &[(Sub::Bad, "va"), (Sub::Good, "pulse")];
+const DISABLE_WINDOWS: &[(Sub, &str)] =
+    &[(Sub::Bad, "va"), (Sub::Good, "pulse"), (Sub::Base, "gl"), (Sub::Good, "wavpack")];
 
 /// Plugins removed everywhere: unused by a cast receiver, or GPU/vendor codecs
 /// whose companion support library gstreamer-full fails to pull statically.
@@ -153,8 +196,9 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     // orphan / useless (registered-but-unlinked, or metric/gadget)
     (Sub::Bad, "vmaf"),
     (Sub::Bad, "uvcgadget"),
-    // GL + X11 video (receiver uses its own Vulkan/Wayland sink)
-    (Sub::Base, "gl"),
+    // X11 video (receiver uses its own Vulkan/Wayland sink). NOTE: `gl` is NOT
+    // disabled here — macOS's applemedia hard-requires the gstgl library, so it
+    // is disabled per-target (Linux/Windows) and enabled on macOS instead.
     (Sub::Base, "x11"),
     (Sub::Good, "ximagesrc"),
     // image codecs (receiver decodes images itself)
@@ -164,6 +208,11 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     (Sub::Bad, "webp"),
     (Sub::Bad, "jpegformat"),
     (Sub::Bad, "jp2kdecimator"),
+    // SVG decode/overlay: unused (receiver decodes images itself) and, when
+    // librsvg is discoverable, links dynamically against a system/dev-kit
+    // librsvg — defeating the self-contained static build (and its .pc's
+    // Libs.private leaks a bare `-no_compact_unwind` ld flag that breaks clang).
+    (Sub::Bad, "rsvg"),
     // redundant codecs (libav provides decode)
     (Sub::Bad, "openh264"),
     (Sub::Bad, "fdkaac"),
@@ -366,6 +415,37 @@ const FULL_SCOPE_FALLBACK: &[&str] = &[
     "freetype2",
     "fontconfig",
     "expat",
+    // Codec + support libraries the receiver's kept plugins pull in. Without
+    // these, meson resolves them dynamically from whatever pkg-config finds
+    // (on macOS: the GStreamer.framework dev kit), leaving @rpath dylibs that
+    // dangle on user machines. Forcing the wraps builds them static into
+    // gstreamer-full. Dependency names (not wrap filenames) — must match what
+    // each plugin's `dependency('...')` looks up. See each wrap's [provide].
+    "ogg",
+    "vorbis",
+    "vorbisenc",
+    "theora",
+    "theoradec",
+    "theoraenc",
+    "opus",
+    "flac",
+    "dav1d",
+    "libsrtp2",   // srtp plugin (webrtc security)
+    "json-glib-1.0",
+    "graphene-1.0",
+    "graphene-gobject-1.0",
+    "libjpeg", // gstopengl's gloverlay (gl enabled for applemedia) requires it
+    // openssl (glib-networking TLS backend + dtls/srtp). ensure_wrap vendors
+    // the .wrap; forcing it builds libcrypto/libssl static instead of linking
+    // the dev kit's.
+    "openssl",
+    "libcrypto",
+    "libssl",
+    // souphttpsrc stack — http(s) media sources (playbin3/adaptivedemux2).
+    "libsoup-3.0",
+    "libxml-2.0",
+    "libpsl",
+    "libnghttp2",
 ];
 
 /// system-deps entries additionally forced static in scope=Full: the glib the
@@ -662,6 +742,29 @@ fn build_gstreamer(
         }
     }
 
+    // scope=Full must be HERMETIC: everything comes from the vendored wraps or
+    // OS frameworks, nothing from the host. But a rich Homebrew / GStreamer
+    // dev-kit install exposes dozens of optional libs via pkg-config (libde265,
+    // openexr, lcms2, libthai, libidn2, x11, …) that `-Dgst-full-plugins=*` plus
+    // `auto` plugin/feature flags silently detect and link — leaving dynamic
+    // deps that dangle on end-user machines (and whose presence in the final
+    // binary flips depending on --gc-sections, so it "works" on one host and
+    // fails on another). Blank out pkg-config for the whole gstreamer build so
+    // meson can only see the wraps + frameworks: unforced optional deps then
+    // fall back to a wrap where one is vendored, or auto-disable. Empty
+    // PKG_CONFIG_LIBDIR (a real empty dir) also overrides pkg-config's
+    // compiled-in default search path (Homebrew's on this host). The guard is
+    // scoped to this fn — build_receiver restores the env and sets its own
+    // PKG_CONFIG_PATH to resolve the in-tree gstreamer-full.
+    let _pc_isolate = (profile.scope == StaticScope::Full).then(|| {
+        let empty = source.join(".xtask-empty-pkgconfig");
+        let _ = std::fs::create_dir_all(&empty);
+        (
+            sh.push_env("PKG_CONFIG_PATH", ""),
+            sh.push_env("PKG_CONFIG_LIBDIR", empty.as_str()),
+        )
+    });
+
     // Deps always taken from wraps (never the system): the decode-only FFmpeg
     // fork. scope=Full adds the glib/pango closure. NOTE: repeated
     // --force-fallback-for flags override each other — this must stay ONE flag.
@@ -720,6 +823,16 @@ fn build_gstreamer(
         // itself still builds — gst-libav hard-requires the library. Trade-off:
         // gst-libav's avdeinterlace loses its backend; native deinterlace covers it.
         "-DFFmpeg:filters=disabled".into(),
+        // FFmpeg auto-detects system bz2 (compressed-matroska support, extremely
+        // rare) and links it dynamically — no bz2 wrap exists, so drop it.
+        "-DFFmpeg:bzlib=disabled".into(),
+        // AV1 decode is the Rust gst-plugin-dav1d (dav1d-sys, pkg-config). With
+        // rs=disabled nothing in the meson build requests dav1d, so the wrap is
+        // never built and dav1d-sys links the framework's dynamic libdav1d.
+        // Enabling FFmpeg's libdav1d makes meson request dependency('dav1d'),
+        // which force-fallback (see `fallback`) builds static — producing the
+        // libdav1d.a + dav1d-uninstalled.pc that dav1d-sys then links statically.
+        "-DFFmpeg:libdav1d=enabled".into(),
     ];
     for dec in FFMPEG_DECODERS {
         args.push(format!("-DFFmpeg:{dec}_decoder=enabled"));
@@ -764,7 +877,7 @@ fn build_gstreamer(
         // gstreamer-full; gst_init_static_plugins() then registers it via
         // g_io_<module>_load() — https for libsoup/adaptivedemux2 works with
         // no runtime GIO modules. gnutls has no wrap, so use the openssl
-        // backend (openssl comes from wrapdb, see ensure_openssl_wrap).
+        // backend (openssl comes from wrapdb, see ensure_wrap).
         args.push("-Dtls=enabled".into());
         args.push("-Dglib-networking:gnutls=disabled".into());
         args.push("-Dglib-networking:openssl=enabled".into());
@@ -777,12 +890,24 @@ fn build_gstreamer(
         args.push("-Dpango:introspection=disabled".into());
         // openssl: glib-networking's TLS backend (gnutls has no wrap).
         ensure_wrap(sh, source, profile, "openssl")?;
-    }
-
-    // wavpack is force-enabled everywhere (ENABLE_COMMON) but only Linux gets
-    // libwavpack from the environment — mac/win build it from its wrapdb wrap.
-    if os != "linux" {
-        ensure_wrap(sh, source, profile, "wavpack")?;
+        // libnice (WebRTC ICE) picks a DTLS crypto backend; left on `auto` it
+        // prefers gnutls, which it finds via meson's cmake fallback in Homebrew
+        // (pkg-config isolation doesn't cover cmake) and links dynamically —
+        // an @rpath dylib the installer rejects. Force openssl, which resolves
+        // to the static openssl wrap we already build (gnutls has no wrap).
+        args.push("-Dlibnice:crypto-library=openssl".into());
+        // cairo has several `auto` optional features that turn ON whenever the
+        // build host happens to expose the lib (XQuartz, Homebrew, …), pulling
+        // code/deps a macOS/Windows text stack never needs and that break the
+        // build (X11-only sources; a Homebrew lzo with a broken include path).
+        // Force them all off for a deterministic build; pango only needs
+        // cairo's quartz/image surfaces.
+        args.push("-Dcairo:xlib=disabled".into()); // X11 backend (cairo-xlib-screen.c)
+        args.push("-Dcairo:xcb=disabled".into());
+        args.push("-Dcairo:lzo=disabled".into()); // cairo-script compression (Homebrew lzo)
+        args.push("-Dcairo:spectre=disabled".into()); // PS preview (libspectre)
+        args.push("-Dcairo:symbol-lookup=disabled".into()); // binutils/bfd
+        args.push("-Dcairo:tests=disabled".into());
     }
 
     // meson captures PKG_CONFIG_PATH at first setup and ignores env changes on
@@ -801,9 +926,17 @@ fn build_gstreamer(
         Some("--reconfigure") // fresh dir: acts as plain setup
     };
 
-    // clang for cross LTO so the C objects carry LLVM bitcode.
-    let _cc = (profile.lto == Lto::Cross).then(|| sh.push_env("CC", "clang"));
-    let _cxx = (profile.lto == Lto::Cross).then(|| sh.push_env("CXX", "clang++"));
+    // Pin clang/clang++ for the meson build when:
+    //  - cross LTO: the C objects must carry LLVM bitcode, or
+    //  - macOS: the C++ runtime must be libc++. If a non-clang toolchain (a
+    //    Homebrew gcc/g++ on PATH) is picked up instead, C++ wraps like harfbuzz
+    //    resolve their runtime as libstdc++ and emit `-lstdc++`, which doesn't
+    //    exist on macOS (`ld: library 'stdc++' not found`). Apple's `cc`/`c++`
+    //    are already clang, so this is a no-op on a clean host and deterministic
+    //    otherwise. (link_args also rewrites any stray -lstdc++ → -lc++.)
+    let pin_clang = profile.lto == Lto::Cross || target_os(profile) == "macos";
+    let _cc = pin_clang.then(|| sh.push_env("CC", "clang"));
+    let _cxx = pin_clang.then(|| sh.push_env("CXX", "clang++"));
 
     let cross = profile.target.as_ref().map(|t| cross_file(sh, source, t)).transpose()?;
     let cross_args: Vec<String> = cross
@@ -915,9 +1048,28 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
         for dep in SYSTEM_DEPS_FULL_SCOPE {
             guards.push(sh.push_env(format!("SYSTEM_DEPS_{dep}_LINK"), "static"));
         }
+        // dav1d (AV1) is the Rust gst-plugin-dav1d → dav1d-sys, which resolves
+        // dav1d via pkg-config. On macOS that keeps finding the framework's
+        // DYNAMIC libdav1d as a fallback even with our static wrap on
+        // PKG_CONFIG_PATH, leaving an @rpath dylib the installer rejects. And
+        // because SYSTEM_DEPS_DAV1D_LINK + PKG_CONFIG_PATH never change between
+        // builds, cargo caches the first (dynamic) build-script result forever.
+        // Pin dav1d-sys to the static libdav1d.a we built (FFmpeg's libdav1d
+        // wrap): NO_PKG_CONFIG bypasses resolution entirely — dav1d-sys ships
+        // pregenerated bindings so it needs no headers — and these fresh env
+        // vars also change the build-script fingerprint, forcing the re-run.
+        let archives = find_archives(&build.build_dir)?;
+        if let Some(dir) = archives
+            .get("libdav1d.a")
+            .and_then(|a| Utf8Path::new(a).parent())
+        {
+            guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG", "1"));
+            guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_SEARCH_NATIVE", dir.as_str()));
+            guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_LIB", "dav1d"));
+        }
     }
 
-    let link_args = link_args(sh, build)?;
+    let link_args = link_args(sh, build, profile)?;
 
     // cargo rustc scopes the extra link args to the FINAL binary only (RUSTFLAGS
     // would apply them to every crate incl. build scripts / proc-macros).
@@ -974,7 +1126,7 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
 /// once got a mixed static/dynamic-gstreamer binary). Libraries we did NOT
 /// build keep their `-l` and stay dynamic. Also appends the internal helper
 /// libraries gstreamer-full's pkg-config omits.
-fn link_args(sh: &Rc<Shell>, build: &GstBuild) -> Result<Vec<String>> {
+fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<String>> {
     let raw = cmd!(sh, "pkg-config --static --libs gstreamer-full-1.0")
         .read()
         .context(
@@ -984,10 +1136,20 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild) -> Result<Vec<String>> {
 
     // Index every built lib*.a so `-lX` can be rewritten to its abspath.
     let archives = find_archives(&build.build_dir)?;
+    let macos = target_os(profile) == "macos";
 
     let mut out = Vec::new();
     for tok in raw.split_whitespace() {
         if let Some(name) = tok.strip_prefix("-l") {
+            // macOS' C++ runtime is libc++, not libstdc++. A C++ dep whose .pc
+            // was generated against libstdc++ (or picked up from a non-clang
+            // toolchain on the host) drags in `-lstdc++`, which doesn't exist on
+            // macOS — `ld: library 'stdc++' not found`. Rewrite to the platform
+            // runtime; the two are ABI-compatible for the plain link we need.
+            if macos && name == "stdc++" {
+                out.push("-lc++".to_string());
+                continue;
+            }
             let file = format!("lib{name}.a");
             match archives.get(&file) {
                 Some(path) => out.push(path.to_string()),
