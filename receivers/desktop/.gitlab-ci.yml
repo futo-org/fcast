@@ -200,11 +200,6 @@ build_receiver_for_win_x64:
 
         cd fcast
 
-        # No GStreamer dev kit anymore: build-windows-installer builds
-        # gstreamer AND the glib/pango stack statically from source
-        # (auto-cloned at --gst-ref, deps from meson wraps) and links
-        # everything into the binary. pkgconf (from PyPI) is only needed as a
-        # build TOOL (system-deps + the uninstalled .pc files).
         pip3 install meson pkgconf
         \$env:PKG_CONFIG = "pkgconf"
 

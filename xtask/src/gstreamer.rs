@@ -1,23 +1,3 @@
-//! Static GStreamer build + link, integrated into xtask.
-//!
-//! Two phases:
-//!   1. `build_gstreamer` — meson `gst-full` static build against a *provided*
-//!      source tree (no clone), producing `libgstreamer-full-1.0.a` + the build
-//!      tree we link the receiver against (via the generated meson-uninstalled
-//!      .pc files).
-//!   2. `link_args` + `build_receiver` — resolve the gstreamer-full static link
-//!      line, rewrite every `-lgst*` to the in-tree `.a` (so the linker can't
-//!      fall back to a dynamic gstreamer), and `cargo rustc --features
-//!      static-gstreamer -- <link-args>`.
-//!
-//! This is the durable version of scripts/build-static-receiver.sh. It assumes a
-//! sane build environment provides the pkg-config closure (Flatpak SDK, the Nix
-//! flake, brew, …) — it does NOT scavenge /nix/store; that belongs in the flake.
-//!
-//! Phase 1 targets Linux/Flatpak. macOS/Windows reuse the same meson flow with
-//! per-target plugin deltas in [`PluginSet::for_target`]; wire them up once Linux
-//! is validated.
-
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, ValueEnum};
@@ -26,26 +6,22 @@ use xshell::{Shell, cmd};
 
 use crate::sh;
 
-// ---------------------------------------------------------------------------
-// Config as data
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Sub {
+enum Plugins {
     Base,
     Good,
     Bad,
     Ugly,
 }
 
-impl Sub {
+impl Plugins {
     /// meson subproject option prefix, e.g. `gst-plugins-bad`.
     fn prefix(self) -> &'static str {
         match self {
-            Sub::Base => "gst-plugins-base",
-            Sub::Good => "gst-plugins-good",
-            Sub::Bad => "gst-plugins-bad",
-            Sub::Ugly => "gst-plugins-ugly",
+            Plugins::Base => "gst-plugins-base",
+            Plugins::Good => "gst-plugins-good",
+            Plugins::Bad => "gst-plugins-bad",
+            Plugins::Ugly => "gst-plugins-ugly",
         }
     }
 }
@@ -87,7 +63,7 @@ const SYSTEM_DEPS: &[&str] = &[
 /// Plugins we force ON (hard requirement — meson errors if the dep is missing).
 /// vorbis/theora are native decoders gst-libav deliberately refuses to wrap
 /// (it expects the native plugins to exist).
-const ENABLE_COMMON: &[(Sub, &str)] = &[(Sub::Base, "vorbis"), (Sub::Base, "theora")];
+const ENABLE_COMMON: &[(Plugins, &str)] = &[(Plugins::Base, "vorbis"), (Plugins::Base, "theora")];
 
 /// Elements kept from the videoparsersbad plugin (via gst-full-elements). The
 /// plugin itself must stay (h264parse/h265parse are essential), but it also
@@ -116,13 +92,13 @@ const VIDEOPARSERS_ELEMENTS: &[&str] = &[
 /// matroska). libwavpack comes from the environment on Linux; it has no wrapdb
 /// wrap, so the hermetic macOS/Windows builds can't provide it → wavpack is
 /// Linux-only (disabled on mac/win, like srt/assrender).
-const ENABLE_LINUX: &[(Sub, &str)] = &[
-    (Sub::Bad, "va"),
-    (Sub::Bad, "srt"),
-    (Sub::Bad, "assrender"),
-    (Sub::Good, "wavpack"),
+const ENABLE_LINUX: &[(Plugins, &str)] = &[
+    (Plugins::Bad, "va"),
+    (Plugins::Bad, "srt"),
+    (Plugins::Bad, "assrender"),
+    (Plugins::Good, "wavpack"),
 ];
-const DISABLE_LINUX: &[(Sub, &str)] = &[(Sub::Base, "gl")];
+const DISABLE_LINUX: &[(Plugins, &str)] = &[(Plugins::Base, "gl")];
 
 /// macOS: VideoToolbox decode + CoreAudio/Cocoa output (matches the plugin set
 /// receiver-resources bundles for the dynamic build).
@@ -132,251 +108,243 @@ const DISABLE_LINUX: &[(Sub, &str)] = &[(Sub::Base, "gl")];
 /// generated when `gl` is built. So `gl` must be enabled here even though the
 /// receiver's own sink is Vulkan/Wayland (glimagesink is never autoplugged).
 /// On macOS gstgl only links system Cocoa/OpenGL frameworks — no external deps.
-const ENABLE_MACOS: &[(Sub, &str)] = &[
-    (Sub::Bad, "applemedia"),
-    (Sub::Good, "osxaudio"),
-    (Sub::Good, "osxvideo"),
-    (Sub::Base, "gl"),
+const ENABLE_MACOS: &[(Plugins, &str)] = &[
+    (Plugins::Bad, "applemedia"),
+    (Plugins::Good, "osxaudio"),
+    (Plugins::Good, "osxvideo"),
+    (Plugins::Base, "gl"),
 ];
 /// macOS static build must link ONLY OS frameworks (the installer verifies via
 /// otool). These plugins each pull an external dylib that has no vendored wrap
 /// (or is a pure encoder / redundant with libav decode), so instead of building
 /// them static we drop the plugin. Everything the receiver actually decodes is
 /// covered by libav + the native vorbis/theora/opus/flac/dav1d plugins.
-const DISABLE_MACOS: &[(Sub, &str)] = &[
-    (Sub::Bad, "va"),
-    (Sub::Good, "pulse"),
+const DISABLE_MACOS: &[(Plugins, &str)] = &[
+    (Plugins::Bad, "va"),
+    (Plugins::Good, "pulse"),
     // encoders (decode-only receiver)
-    (Sub::Bad, "aom"),      // AV1 encode; decode via dav1d
-    (Sub::Bad, "svtav1"),   // AV1 encoder
-    (Sub::Bad, "voaacenc"), // AAC encoder
-    (Sub::Bad, "voamrwbenc"),
+    (Plugins::Bad, "aom"),      // AV1 encode; decode via dav1d
+    (Plugins::Bad, "svtav1"),   // AV1 encoder
+    (Plugins::Bad, "voaacenc"), // AAC encoder
+    (Plugins::Bad, "voamrwbenc"),
     // audio decoders redundant with libav (see FFMPEG_DECODERS)
-    (Sub::Good, "mpg123"),   // mp3
-    (Sub::Good, "amrnb"),    // opencore-amr
-    (Sub::Good, "amrwbdec"), // opencore-amr
-    (Sub::Good, "speex"),
-    (Sub::Good, "wavpack"),
+    (Plugins::Good, "mpg123"),   // mp3
+    (Plugins::Good, "amrnb"),    // opencore-amr
+    (Plugins::Good, "amrwbdec"), // opencore-amr
+    (Plugins::Good, "speex"),
+    (Plugins::Good, "wavpack"),
     // image decoders (receiver decodes images itself; libtiff/libjpeg drop with these)
-    (Sub::Good, "gdk-pixbuf"),
-    (Sub::Bad, "lcevcdecoder"),
-    (Sub::Bad, "lcevcencoder"),
+    (Plugins::Good, "gdk-pixbuf"),
+    (Plugins::Bad, "lcevcdecoder"),
+    (Plugins::Bad, "lcevcencoder"),
     // niche / unused elements dragging external dylibs
-    (Sub::Bad, "zbar"),       // barcode
-    (Sub::Bad, "sbc"),        // bluetooth audio
-    (Sub::Bad, "soundtouch"), // pitch/tempo
-    (Sub::Good, "dv"),        // DV video
-    (Sub::Bad, "rtmp"),
-    (Sub::Bad, "curl"), // http via souphttpsrc / the receiver's own httpsrc
-    (Sub::Bad, "sndfile"),
-    (Sub::Bad, "spandsp"), // dtmf/fax
-    (Sub::Good, "taglib"), // metadata tagging
-    (Sub::Good, "bz2"),    // libbz2 support in matroska (bz2-compressed tracks; no wrap)
+    (Plugins::Bad, "zbar"),       // barcode
+    (Plugins::Bad, "sbc"),        // bluetooth audio
+    (Plugins::Bad, "soundtouch"), // pitch/tempo
+    (Plugins::Good, "dv"),        // DV video
+    (Plugins::Bad, "rtmp"),
+    (Plugins::Bad, "curl"), // http via souphttpsrc / the receiver's own httpsrc
+    (Plugins::Bad, "sndfile"),
+    (Plugins::Bad, "spandsp"), // dtmf/fax
+    (Plugins::Good, "taglib"), // metadata tagging
+    (Plugins::Good, "bz2"),    // libbz2 support in matroska (bz2-compressed tracks; no wrap)
     // no vendored wrap → can't link static on macOS (kept on Linux)
-    (Sub::Bad, "srt"),
-    (Sub::Bad, "assrender"),
+    (Plugins::Bad, "srt"),
+    (Plugins::Bad, "assrender"),
 ];
 
 /// Windows: WASAPI audio (matches receiver-resources' bundled set). d3d11 etc.
 /// stay `auto`. NOTE: static gst-full on MSVC is upstream-experimental.
-const ENABLE_WINDOWS: &[(Sub, &str)] = &[(Sub::Bad, "wasapi")];
-const DISABLE_WINDOWS: &[(Sub, &str)] =
-    &[(Sub::Bad, "va"), (Sub::Good, "pulse"), (Sub::Base, "gl"), (Sub::Good, "wavpack")];
+const ENABLE_WINDOWS: &[(Plugins, &str)] = &[(Plugins::Bad, "wasapi")];
+const DISABLE_WINDOWS: &[(Plugins, &str)] =
+    &[(Plugins::Bad, "va"), (Plugins::Good, "pulse"), (Plugins::Base, "gl"), (Plugins::Good, "wavpack")];
 
 /// Plugins removed everywhere: unused by a cast receiver, or GPU/vendor codecs
 /// whose companion support library gstreamer-full fails to pull statically.
 /// (Kept intentionally: videofilter, audiobuffersplit, proxy — autoplugged.)
-const DISABLE_COMMON: &[(Sub, &str)] = &[
+const DISABLE_COMMON: &[(Plugins, &str)] = &[
     // vendor GPU codecs
-    (Sub::Bad, "hip"),
-    (Sub::Bad, "nvcodec"),
-    (Sub::Bad, "qsv"),
-    (Sub::Bad, "vulkan"),
-    (Sub::Bad, "amfcodec"), // AMD encode-only; even registers on Linux (dlopen)
+    (Plugins::Bad, "hip"),
+    (Plugins::Bad, "nvcodec"),
+    (Plugins::Bad, "qsv"),
+    (Plugins::Bad, "vulkan"),
+    (Plugins::Bad, "amfcodec"), // AMD encode-only; even registers on Linux (dlopen)
     // orphan / useless (registered-but-unlinked, or metric/gadget)
-    (Sub::Bad, "vmaf"),
-    (Sub::Bad, "uvcgadget"),
+    (Plugins::Bad, "vmaf"),
+    (Plugins::Bad, "uvcgadget"),
     // X11 video (receiver uses its own Vulkan/Wayland sink). NOTE: `gl` is NOT
     // disabled here — macOS's applemedia hard-requires the gstgl library, so it
     // is disabled per-target (Linux/Windows) and enabled on macOS instead.
-    (Sub::Base, "x11"),
-    (Sub::Good, "ximagesrc"),
+    (Plugins::Base, "x11"),
+    (Plugins::Good, "ximagesrc"),
     // image codecs (receiver decodes images itself)
-    (Sub::Good, "jpeg"),
-    (Sub::Good, "png"),
-    (Sub::Bad, "openjpeg"),
-    (Sub::Bad, "webp"),
-    (Sub::Bad, "jpegformat"),
-    (Sub::Bad, "jp2kdecimator"),
+    (Plugins::Good, "jpeg"),
+    (Plugins::Good, "png"),
+    (Plugins::Bad, "openjpeg"),
+    (Plugins::Bad, "webp"),
+    (Plugins::Bad, "jpegformat"),
+    (Plugins::Bad, "jp2kdecimator"),
     // SVG decode/overlay: unused (receiver decodes images itself) and, when
     // librsvg is discoverable, links dynamically against a system/dev-kit
     // librsvg — defeating the self-contained static build (and its .pc's
     // Libs.private leaks a bare `-no_compact_unwind` ld flag that breaks clang).
-    (Sub::Bad, "rsvg"),
+    (Plugins::Bad, "rsvg"),
     // redundant codecs (libav provides decode)
-    (Sub::Bad, "openh264"),
-    (Sub::Bad, "fdkaac"),
+    (Plugins::Bad, "openh264"),
+    (Plugins::Bad, "fdkaac"),
     // vp8/vp9 decode comes from FFmpeg's native decoders; the vpx plugin would
     // drag in the libvpx wrap, which force-builds encoders too (~600s cpu +
     // binary bloat for a decode-only receiver)
-    (Sub::Good, "vpx"),
+    (Plugins::Good, "vpx"),
     // effects / visualizers
-    (Sub::Bad, "gaudieffects"),
-    (Sub::Bad, "audiovisualizers"),
-    (Sub::Bad, "coloreffects"),
-    (Sub::Bad, "geometrictransform"),
-    (Sub::Bad, "videofilters"),
-    (Sub::Bad, "freeverb"),
-    (Sub::Bad, "frei0r"),
-    (Sub::Good, "goom"),
-    (Sub::Good, "goom2k1"),
-    (Sub::Good, "monoscope"),
-    (Sub::Good, "spectrum"),
-    (Sub::Good, "shapewipe"),
-    (Sub::Good, "smpte"),
-    (Sub::Good, "videobox"),
-    (Sub::Good, "videocrop"),
-    (Sub::Good, "videomixer"),
-    (Sub::Good, "cutter"),
-    (Sub::Good, "imagefreeze"),
-    (Sub::Good, "replaygain"),
+    (Plugins::Bad, "gaudieffects"),
+    (Plugins::Bad, "audiovisualizers"),
+    (Plugins::Bad, "coloreffects"),
+    (Plugins::Bad, "geometrictransform"),
+    (Plugins::Bad, "videofilters"),
+    (Plugins::Bad, "freeverb"),
+    (Plugins::Bad, "frei0r"),
+    (Plugins::Good, "goom"),
+    (Plugins::Good, "goom2k1"),
+    (Plugins::Good, "monoscope"),
+    (Plugins::Good, "spectrum"),
+    (Plugins::Good, "shapewipe"),
+    (Plugins::Good, "smpte"),
+    (Plugins::Good, "videobox"),
+    (Plugins::Good, "videocrop"),
+    (Plugins::Good, "videomixer"),
+    (Plugins::Good, "cutter"),
+    (Plugins::Good, "imagefreeze"),
+    (Plugins::Good, "replaygain"),
     // ML / analytics
-    (Sub::Bad, "tensordecoders"),
-    (Sub::Bad, "analyticsoverlay"),
-    (Sub::Bad, "faceoverlay"),
-    (Sub::Bad, "fieldanalysis"),
-    (Sub::Bad, "videosignal"),
-    (Sub::Bad, "bayer"),
+    (Plugins::Bad, "tensordecoders"),
+    (Plugins::Bad, "analyticsoverlay"),
+    (Plugins::Bad, "faceoverlay"),
+    (Plugins::Bad, "fieldanalysis"),
+    (Plugins::Bad, "videosignal"),
+    (Plugins::Bad, "bayer"),
     // audio-processing plugins that drag in the huge webrtc-audio-processing
     // C++ subproject (~700 cpu-seconds of build for features we never use)
-    (Sub::Bad, "webrtcdsp"),
-    (Sub::Bad, "isac"),
+    (Plugins::Bad, "webrtcdsp"),
+    (Plugins::Bad, "isac"),
     // encoders / muxers (decode-only receiver)
-    (Sub::Good, "lame"),
-    (Sub::Bad, "adpcmenc"),
-    (Sub::Bad, "asfmux"),
-    (Sub::Bad, "dvbsubenc"),
-    (Sub::Bad, "mpegpsmux"),
-    (Sub::Bad, "mpegtsmux"),
-    (Sub::Bad, "subenc"),
-    (Sub::Good, "wavenc"),
-    (Sub::Good, "xingmux"),
-    (Sub::Bad, "id3tag"), // id3v2mux/id3mux: ID3 tag *muxer*, encode-side only
+    (Plugins::Good, "lame"),
+    (Plugins::Bad, "adpcmenc"),
+    (Plugins::Bad, "asfmux"),
+    (Plugins::Bad, "dvbsubenc"),
+    (Plugins::Bad, "mpegpsmux"),
+    (Plugins::Bad, "mpegtsmux"),
+    (Plugins::Bad, "subenc"),
+    (Plugins::Good, "wavenc"),
+    (Plugins::Good, "xingmux"),
+    (Plugins::Bad, "id3tag"), // id3v2mux/id3mux: ID3 tag *muxer*, encode-side only
     // audio channel interleave/deinterleave: not autoplugged in playback
-    (Sub::Good, "interleave"),
+    (Plugins::Good, "interleave"),
     // capture / hardware IO / IPC
-    (Sub::Bad, "camerabin2"),
-    (Sub::Bad, "decklink"),
-    (Sub::Bad, "ipcpipeline"),
-    (Sub::Bad, "fbdev"),
-    (Sub::Bad, "kms"),
-    (Sub::Bad, "shm"),
-    (Sub::Bad, "librfb"),
-    (Sub::Bad, "unixfd"),
+    (Plugins::Bad, "camerabin2"),
+    (Plugins::Bad, "decklink"),
+    (Plugins::Bad, "ipcpipeline"),
+    (Plugins::Bad, "fbdev"),
+    (Plugins::Bad, "kms"),
+    (Plugins::Bad, "shm"),
+    (Plugins::Bad, "librfb"),
+    (Plugins::Bad, "unixfd"),
     // v4l2src/v4l2sink/v4l2radio: pure video capture/output — a cast receiver
     // never captures. (Linux HW decode comes from `va`, not v4l2, and the
     // stateless v4l2codecs decoders aren't built.)
-    (Sub::Good, "v4l2"),
-    (Sub::Base, "alsa"),
-    (Sub::Good, "oss"),
-    (Sub::Good, "oss4"),
+    (Plugins::Good, "v4l2"),
+    (Plugins::Base, "alsa"),
+    (Plugins::Good, "oss"),
+    (Plugins::Good, "oss4"),
     // legacy adaptive-streaming plugins: hlsdemux/dashdemux are superseded by
     // adaptivedemux2's hlsdemux2/dashdemux2 (what playbin3 autoplugs), and they
     // are also where hlssink/hlssink2/dashsink live — sinks we never use
-    (Sub::Bad, "hls"),
-    (Sub::Bad, "dash"),
+    (Plugins::Bad, "hls"),
+    (Plugins::Bad, "dash"),
     // test/debug/util elements never autoplugged in playback
-    (Sub::Base, "audiotestsrc"),
-    (Sub::Base, "videotestsrc"),
-    (Sub::Base, "debugutils"),
-    (Sub::Good, "debugutils"),
-    (Sub::Bad, "debugutils"), // fakeaudiosink/fakevideosink/testsrcbin/…
-    (Sub::Good, "effectv"),
-    (Sub::Bad, "audiolatency"),
-    (Sub::Bad, "festival"),
-    (Sub::Bad, "smooth"),
-    (Sub::Bad, "speed"),
-    (Sub::Bad, "interlace"),
-    (Sub::Bad, "codectimestamper"),
-    (Sub::Bad, "codecalpha"),
-    (Sub::Bad, "closedcaption"),
+    (Plugins::Base, "audiotestsrc"),
+    (Plugins::Base, "videotestsrc"),
+    (Plugins::Base, "debugutils"),
+    (Plugins::Good, "debugutils"),
+    (Plugins::Bad, "debugutils"), // fakeaudiosink/fakevideosink/testsrcbin/…
+    (Plugins::Good, "effectv"),
+    (Plugins::Bad, "audiolatency"),
+    (Plugins::Bad, "festival"),
+    (Plugins::Bad, "smooth"),
+    (Plugins::Bad, "speed"),
+    (Plugins::Bad, "interlace"),
+    (Plugins::Bad, "codectimestamper"),
+    (Plugins::Bad, "codecalpha"),
+    (Plugins::Bad, "closedcaption"),
     // bad's `rtp` option gates the rtpmanagerbad plugin (rtpsrc/rtpsink);
     // distinct from good's `rtp` (the depayloaders), which stays enabled
-    (Sub::Bad, "rtp"),
+    (Plugins::Bad, "rtp"),
     // mixing/compositing/encoding infrastructure unused by this receiver
-    (Sub::Base, "adder"),
-    (Sub::Base, "audiomixer"),
-    (Sub::Base, "compositor"),
-    (Sub::Base, "encoding"),
-    (Sub::Base, "rawparse"),
-    (Sub::Base, "videorate"),
-    (Sub::Base, "audiorate"),
-    (Sub::Base, "dsd"),
-    (Sub::Bad, "rawparse"), // gates the legacyrawparse plugin
+    (Plugins::Base, "adder"),
+    (Plugins::Base, "audiomixer"),
+    (Plugins::Base, "compositor"),
+    (Plugins::Base, "encoding"),
+    (Plugins::Base, "rawparse"),
+    (Plugins::Base, "videorate"),
+    (Plugins::Base, "audiorate"),
+    (Plugins::Base, "dsd"),
+    (Plugins::Bad, "rawparse"), // gates the legacyrawparse plugin
     // audio effects / niche audio IO
-    (Sub::Good, "alpha"),
-    (Sub::Good, "apetag"),
-    (Sub::Good, "auparse"),
-    (Sub::Good, "cairo"),
-    (Sub::Good, "dtmf"),
-    (Sub::Good, "equalizer"),
-    (Sub::Good, "jack"),
-    (Sub::Good, "y4m"),
-    (Sub::Bad, "dvb"),
+    (Plugins::Good, "alpha"),
+    (Plugins::Good, "apetag"),
+    (Plugins::Good, "auparse"),
+    (Plugins::Good, "cairo"),
+    (Plugins::Good, "dtmf"),
+    (Plugins::Good, "equalizer"),
+    (Plugins::Good, "jack"),
+    (Plugins::Good, "y4m"),
+    (Plugins::Bad, "dvb"),
     // niche demux/parse/format
-    (Sub::Bad, "transcode"),
-    (Sub::Bad, "bz2"),
-    (Sub::Bad, "aes"),
-    (Sub::Bad, "segmentclip"),
-    (Sub::Bad, "audiofxbad"),
-    (Sub::Bad, "audiomixmatrix"),
-    (Sub::Bad, "gdp"),
-    (Sub::Bad, "midi"),
-    (Sub::Bad, "netsim"),
-    (Sub::Bad, "onvif"),
-    (Sub::Bad, "pcapparse"),
-    (Sub::Bad, "pnm"),
-    (Sub::Bad, "removesilence"),
-    (Sub::Bad, "rist"),
-    (Sub::Bad, "siren"),
-    (Sub::Bad, "videoframe_audiolevel"),
-    (Sub::Bad, "accurip"),
-    (Sub::Bad, "adpcmdec"),
-    (Sub::Bad, "aiff"),
-    (Sub::Bad, "autoconvert"),
-    (Sub::Bad, "insertbin"),
-    (Sub::Bad, "inter"),
-    (Sub::Bad, "ivfparse"),
-    (Sub::Bad, "ivtc"),
-    (Sub::Bad, "mse"),
-    (Sub::Bad, "mxf"),
-    (Sub::Bad, "switchbin"),
-    (Sub::Bad, "timecode"),
-    (Sub::Bad, "vmnc"),
-    (Sub::Bad, "smoothstreaming"),
-    (Sub::Good, "law"),
-    (Sub::Good, "flx"),
-    (Sub::Good, "level"),
-    (Sub::Good, "multifile"),
-    (Sub::Good, "multipart"),
-    (Sub::Ugly, "realmedia"),
+    (Plugins::Bad, "transcode"),
+    (Plugins::Bad, "bz2"),
+    (Plugins::Bad, "aes"),
+    (Plugins::Bad, "segmentclip"),
+    (Plugins::Bad, "audiofxbad"),
+    (Plugins::Bad, "audiomixmatrix"),
+    (Plugins::Bad, "gdp"),
+    (Plugins::Bad, "midi"),
+    (Plugins::Bad, "netsim"),
+    (Plugins::Bad, "onvif"),
+    (Plugins::Bad, "pcapparse"),
+    (Plugins::Bad, "pnm"),
+    (Plugins::Bad, "removesilence"),
+    (Plugins::Bad, "rist"),
+    (Plugins::Bad, "siren"),
+    (Plugins::Bad, "videoframe_audiolevel"),
+    (Plugins::Bad, "accurip"),
+    (Plugins::Bad, "adpcmdec"),
+    (Plugins::Bad, "aiff"),
+    (Plugins::Bad, "autoconvert"),
+    (Plugins::Bad, "insertbin"),
+    (Plugins::Bad, "inter"),
+    (Plugins::Bad, "ivfparse"),
+    (Plugins::Bad, "ivtc"),
+    (Plugins::Bad, "mse"),
+    (Plugins::Bad, "mxf"),
+    (Plugins::Bad, "switchbin"),
+    (Plugins::Bad, "timecode"),
+    (Plugins::Bad, "vmnc"),
+    (Plugins::Bad, "smoothstreaming"),
+    (Plugins::Good, "law"),
+    (Plugins::Good, "flx"),
+    (Plugins::Good, "level"),
+    (Plugins::Good, "multifile"),
+    (Plugins::Good, "multipart"),
+    (Plugins::Ugly, "realmedia"),
     // ASF/WMV/WMA (Microsoft, ~1999, deprecated by its own vendor): the asfdemux
     // plugin also carries rtspwms + rtpasfdepay. Nothing in 2026 produces ASF for
     // casting; the WMV/WMA avdec_* decoders are dropped from FFMPEG_DECODERS too.
-    (Sub::Ugly, "asfdemux"),
+    (Plugins::Ugly, "asfdemux"),
 ];
 
 /// FFmpeg decoders to keep (via gst-libav's `avdec_*`). We disable ALL FFmpeg
 /// decoders/demuxers/protocols and re-enable only these — libavcodec's full
 /// decoder set (hundreds, incl. ancient game codecs) is otherwise dead weight.
-/// vp8/vp9 use FFmpeg's NATIVE decoders (not the libvpx wrappers) — this
-/// replaces the gstvpx plugin + the libvpx wrap subproject entirely (libvpx
-/// bundles encoders we can't use: ~600 cpu-seconds of build + binary bloat).
-/// Deliberately excluded because native gst plugins cover them: av1 (dav1d),
-/// vorbis/theora (native), opus/flac (native). gst-libav also skips registering
-/// avdec for vorbis/theora/wavpack/mp1/mp2/av1 regardless (hardcoded skip lists).
-/// Demuxing/parsing is done by native gst elements (qtdemux, matroskademux,
-/// h264parse, …), so FFmpeg demuxers/parsers/protocols aren't needed.
 const FFMPEG_DECODERS: &[&str] = &[
     // video. vc1 is kept: it's also carried in MKV/TS/Blu-ray remuxes (demuxed by
     // matroskademux/tsdemux), so it's not exclusively an ASF/WMV concern.
@@ -464,10 +432,6 @@ const REQUIRED_BUILD_PC_LINUX: &[&str] = &[
     "srt", "libass", "wavpack",
 ];
 
-// ---------------------------------------------------------------------------
-// Profile
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum StaticScope {
     /// gstreamer + codecs static; glib/pango/OS dynamic. For Linux/Flatpak,
@@ -484,7 +448,7 @@ pub enum StaticScope {
 pub enum Lto {
     /// No LTO beyond the cargo profile default.
     Off,
-    /// Rust-only fat LTO (the `wild` linker is fine).
+    /// Rust-only fat LTO
     Rust,
     /// Cross-language Rust↔C LTO: clang `-Db_lto` on the C side + rustc
     /// `-Clinker-plugin-lto` + `clang -fuse-ld=lld`. Requires rustc's LLVM and
@@ -507,10 +471,6 @@ struct Profile {
     /// Pass --no-default-features to cargo (e.g. no systray on macOS).
     no_default_features: bool,
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 const GST_REPO: &str = "https://gitlab.freedesktop.org/gstreamer/gstreamer.git";
 
@@ -641,20 +601,25 @@ impl GstreamerArgs {
     }
 
     /// `cargo check` the receiver against the static GStreamer.
-    pub fn check(self) -> Result<()> {
-        self.cargo_subcmd("check")
+    /// `extra` is appended to the inner cargo invocation — e.g.
+    /// `--message-format=json` so editors (rustic/eglot) can parse diagnostics.
+    pub fn check(self, extra: Vec<String>, release: bool) -> Result<()> {
+        self.cargo_subcmd("check", extra, release)
     }
 
     /// `cargo clippy` the receiver against the static GStreamer.
-    pub fn clippy(self) -> Result<()> {
-        self.cargo_subcmd("clippy")
+    pub fn clippy(self, extra: Vec<String>, release: bool) -> Result<()> {
+        self.cargo_subcmd("clippy", extra, release)
     }
 
-    fn cargo_subcmd(self, subcmd: &str) -> Result<()> {
+    fn cargo_subcmd(mut self, subcmd: &str, extra: Vec<String>, release: bool) -> Result<()> {
+        // Like `cargo`, check/clippy default to a fast debug build; `--release`
+        // opts into the optimized profile (an explicit `--debug` also forces debug).
+        self.debug = self.debug || !release;
         let Some((sh, profile, build)) = self.prepare()? else {
             return Ok(());
         };
-        receiver_cargo(&sh, &build, &profile, subcmd)
+        receiver_cargo(&sh, &build, &profile, subcmd, &extra)
     }
 }
 
@@ -768,10 +733,6 @@ struct GstBuild {
     /// dir holding the generated *-uninstalled.pc files.
     uninstalled_pc: Utf8PathBuf,
 }
-
-// ---------------------------------------------------------------------------
-// Phase 1: build gstreamer
-// ---------------------------------------------------------------------------
 
 /// Target OS ("linux" | "macos" | "windows"), from `--target` if given, else host.
 fn target_os(profile: &Profile) -> &'static str {
@@ -937,7 +898,7 @@ fn build_gstreamer(
         }
     }
 
-    let (enable_os, disable_os): (&[(Sub, &str)], &[(Sub, &str)]) = match os {
+    let (enable_os, disable_os): (&[(Plugins, &str)], &[(Plugins, &str)]) = match os {
         "macos" => (ENABLE_MACOS, DISABLE_MACOS),
         "windows" => (ENABLE_WINDOWS, DISABLE_WINDOWS),
         _ => (ENABLE_LINUX, DISABLE_LINUX),
@@ -1158,10 +1119,6 @@ fn cross_file(_sh: &Rc<Shell>, _source: &Utf8Path, target: &str) -> Result<Utf8P
     bail!("cross-compiling gstreamer to {target} is not wired up yet (phase 1 = host/Linux)");
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: link the receiver
-// ---------------------------------------------------------------------------
-
 /// Path of the receiver binary a build with `profile` produces.
 fn receiver_bin_path(profile: &Profile) -> Utf8PathBuf {
     let mut bin = Utf8PathBuf::from("target");
@@ -1328,7 +1285,7 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
 
         // Args for the final crate's rustc (after `--`). LTO: cross uses
         // clang/lld (drives the LLVM LTO plugin); rust-only keeps the
-        // workspace's fat LTO + default/wild linker.
+        // workspace's fat LTO.
         let mut rustc_args: Vec<String> = Vec::new();
         if profile.lto == Lto::Cross {
             rustc_args.push("-Clinker-plugin-lto".into());
@@ -1378,11 +1335,15 @@ fn receiver_cargo(
     build: &GstBuild,
     profile: &Profile,
     subcmd: &str,
+    extra: &[String],
 ) -> Result<()> {
     with_receiver_env(sh, build, profile, || {
         let mut cargo: Vec<String> = vec![subcmd.to_owned()];
         cargo.extend(receiver_cargo_flags(profile));
-        println!(">> cargo {subcmd} (static gstreamer) …");
+        cargo.extend(extra.iter().cloned());
+        // Progress chatter goes to stderr so it can't interleave with a
+        // `--message-format=json` stream on stdout that an editor is parsing.
+        eprintln!(">> cargo {subcmd} (static gstreamer) …");
         cmd!(sh, "cargo {cargo...}").run()?;
         Ok(())
     })

@@ -101,21 +101,27 @@ pub fn find_formats() -> (
     let mut subtitles = HashSet::<Subtitle>::new();
     let mut protocols = HashSet::<Protocol>::new();
 
+    const MAX_DUMP_ELEMS: usize = 15;
+    let mut elems_scratch = Vec::with_capacity(MAX_DUMP_ELEMS);
+
     let reg = gst::Registry::get();
     for feat in reg.features(gst::ElementFactory::static_type()) {
         let Some(elem) = feat.downcast_ref::<gst::ElementFactory>() else {
             continue;
         };
 
+        use gst::prelude::GstObjectExt;
+        elems_scratch.push(elem.name());
+        if elems_scratch.len() >= MAX_DUMP_ELEMS {
+            debug!(elems = format!("[{}]", elems_scratch.join(",")));
+            elems_scratch.clear();
+        }
+
         let is_demuxer = elem.has_type(gst::ElementFactoryType::DEMUXER);
         let is_decoder = elem.has_type(gst::ElementFactoryType::DECODER);
         let is_video = elem.has_type(gst::ElementFactoryType::MEDIA_VIDEO);
         let is_audio = elem.has_type(gst::ElementFactoryType::MEDIA_AUDIO);
         let is_subtitle = elem.has_type(gst::ElementFactoryType::MEDIA_SUBTITLE);
-
-        // TODO: remove or refactor
-        use gst::prelude::GstObjectExt;
-        debug!(elem_name = %elem.name());
 
         if is_demuxer {
             let templates = elem.static_pad_templates();
@@ -246,6 +252,10 @@ pub fn find_formats() -> (
     }
 
     audios.insert(Audio::Pcm);
+
+    if !elems_scratch.is_empty() {
+        debug!(elems = ?elems_scratch);
+    }
 
     (containers, videos, audios, subtitles, protocols)
 }

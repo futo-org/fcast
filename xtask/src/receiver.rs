@@ -59,13 +59,26 @@ pub enum ReceiverCommand {
     /// are forwarded to the receiver binary.
     Run(RunStaticArgs),
     /// `cargo check` the desktop receiver against a static GStreamer.
-    Check(crate::gstreamer::GstreamerArgs),
+    Check(CargoSubcmdArgs),
     /// `cargo clippy` the desktop receiver against a static GStreamer.
-    Clippy(crate::gstreamer::GstreamerArgs),
+    Clippy(CargoSubcmdArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller(crate::gstreamer::GstreamerArgs),
     #[cfg(target_os = "macos")]
     BuildMacosInstaller(BuildMacosInstallerArgs),
+}
+
+#[derive(Args)]
+pub struct CargoSubcmdArgs {
+    #[command(flatten)]
+    pub gst: crate::gstreamer::GstreamerArgs,
+    /// Check/lint the release profile instead of the default fast debug build.
+    #[arg(long)]
+    pub release: bool,
+    /// Extra args appended to the inner cargo invocation (everything after `--`),
+    /// e.g. `-- --message-format=json` for editor integration (rustic/eglot).
+    #[arg(last = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -104,13 +117,21 @@ impl ReceiverArgs {
     pub fn run(self) -> Result<()> {
         let sh = sh();
         let root_path = workspace::root_path()?;
+        // Run from the workspace root so the receiver build's relative paths
+        // (target/gstreamer-src, target/<triple>/…) resolve correctly even when
+        // invoked from a subdirectory — e.g. rust-analyzer / rustic launching us
+        // inside a crate. push_dir covers the xshell commands; set_current_dir
+        // covers the std::fs / std::process::Command calls that bypass the shell
+        // (the source-reuse `.git` check and the `run` binary exec).
+        std::env::set_current_dir(&root_path)
+            .map_err(|e| anyhow::anyhow!("chdir to workspace root {root_path}: {e}"))?;
         let _p = sh.push_dir(root_path.clone());
 
         match self.cmd {
             ReceiverCommand::BuildStatic(args) => return args.run(),
             ReceiverCommand::Run(a) => return a.gst.run_binary(a.args, a.release),
-            ReceiverCommand::Check(args) => return args.check(),
-            ReceiverCommand::Clippy(args) => return args.clippy(),
+            ReceiverCommand::Check(a) => return a.gst.check(a.args, a.release),
+            ReceiverCommand::Clippy(a) => return a.gst.clippy(a.args, a.release),
             ReceiverCommand::Android(args) => {
                 let _env_andr_sdk = sh.push_env(
                     "ANDROID_HOME",
