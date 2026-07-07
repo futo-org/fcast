@@ -86,8 +86,16 @@ const SYSTEM_DEPS: &[&str] = &[
 
 /// Plugins we force ON (hard requirement — meson errors if the dep is missing).
 /// vorbis/theora are native decoders gst-libav deliberately refuses to wrap
-/// (it expects the native plugins to exist).
-const ENABLE_COMMON: &[(Sub, &str)] = &[(Sub::Base, "vorbis"), (Sub::Base, "theora")];
+/// (it expects the native plugins to exist). Same story for wavpack
+/// (avdec_wavpack is on the same hardcoded skip list, so the native plugin is
+/// the ONLY WavPack decoder — seen in the wild as A_WAVPACK4 in matroska);
+/// libwavpack comes from the environment on Linux and from its wrapdb wrap on
+/// macOS/Windows (installed on demand, see ensure_wrap).
+const ENABLE_COMMON: &[(Sub, &str)] = &[
+    (Sub::Base, "vorbis"),
+    (Sub::Base, "theora"),
+    (Sub::Good, "wavpack"),
+];
 
 /// Elements kept from the videoparsersbad plugin (via gst-full-elements). The
 /// plugin itself must stay (h264parse/h265parse are essential), but it also
@@ -141,6 +149,7 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     (Sub::Bad, "nvcodec"),
     (Sub::Bad, "qsv"),
     (Sub::Bad, "vulkan"),
+    (Sub::Bad, "amfcodec"), // AMD encode-only; even registers on Linux (dlopen)
     // orphan / useless (registered-but-unlinked, or metric/gadget)
     (Sub::Bad, "vmaf"),
     (Sub::Bad, "uvcgadget"),
@@ -225,6 +234,7 @@ const DISABLE_COMMON: &[(Sub, &str)] = &[
     (Sub::Base, "videotestsrc"),
     (Sub::Base, "debugutils"),
     (Sub::Good, "debugutils"),
+    (Sub::Bad, "debugutils"), // fakeaudiosink/fakevideosink/testsrcbin/…
     (Sub::Good, "effectv"),
     (Sub::Bad, "audiolatency"),
     (Sub::Bad, "festival"),
@@ -315,9 +325,9 @@ const FFMPEG_DECODERS: &[&str] = &[
     // audio
     "aac", "aac_latm", "ac3", "eac3", "mp3", "mp2", "mp1", "dca", "alac", "wmav1",
     "wmav2", "wmapro", "wmalossless", "truehd", "mlp", "amrnb", "amrwb",
-    // pcm / adpcm
+    // pcm / adpcm (pcm_bluray = LPCM in .m2ts Blu-ray remuxes)
     "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_u8", "pcm_f32le", "pcm_alaw",
-    "pcm_mulaw", "adpcm_ima_wav", "adpcm_ms",
+    "pcm_mulaw", "pcm_bluray", "adpcm_ima_wav", "adpcm_ms",
 ];
 
 /// Wraps force-fallbacked in scope=Full so ONE static glib (plus the pango
@@ -359,7 +369,7 @@ const SYSTEM_DEPS_FULL_SCOPE: &[&str] = &["GLIB_2_0", "GOBJECT_2_0", "GIO_2_0", 
 /// plugins from OS frameworks, so no equivalent assertion is needed.
 const REQUIRED_BUILD_PC_LINUX: &[&str] = &[
     "vorbis", "vorbisenc", "theora", "theoradec", "ogg", "libva", "libva-drm", "gudev-1.0",
-    "srt", "libass",
+    "srt", "libass", "wavpack",
 ];
 
 // ---------------------------------------------------------------------------
@@ -753,7 +763,14 @@ fn build_gstreamer(
         args.push("-Dglib:tests=false".into());
         args.push("-Dglib:introspection=disabled".into());
         args.push("-Dpango:introspection=disabled".into());
-        ensure_openssl_wrap(sh, source, profile)?;
+        // openssl: glib-networking's TLS backend (gnutls has no wrap).
+        ensure_wrap(sh, source, profile, "openssl")?;
+    }
+
+    // wavpack is force-enabled everywhere (ENABLE_COMMON) but only Linux gets
+    // libwavpack from the environment — mac/win build it from its wrapdb wrap.
+    if os != "linux" {
+        ensure_wrap(sh, source, profile, "wavpack")?;
     }
 
     // meson captures PKG_CONFIG_PATH at first setup and ignores env changes on
@@ -806,24 +823,23 @@ fn pkg_config_path(sh: &Rc<Shell>) -> String {
     sh.var("PKG_CONFIG_PATH").unwrap_or_default()
 }
 
-/// scope=Full needs an openssl wrap (glib-networking's TLS backend); the
-/// monorepo doesn't vendor one, wrapdb does. `meson wrap install` drops the
-/// .wrap file into <source>/subprojects — the actual source download happens
-/// at setup time like every other wrap.
-fn ensure_openssl_wrap(sh: &Rc<Shell>, source: &Utf8Path, profile: &Profile) -> Result<()> {
-    if source.join("subprojects/openssl.wrap").exists() {
+/// Make sure a wrap the monorepo doesn't vendor is present (from wrapdb).
+/// `meson wrap install` only drops the .wrap file into <source>/subprojects —
+/// the actual source download happens at setup time like every other wrap.
+fn ensure_wrap(sh: &Rc<Shell>, source: &Utf8Path, profile: &Profile, name: &str) -> Result<()> {
+    if source.join(format!("subprojects/{name}.wrap")).exists() {
         return Ok(());
     }
     if profile.offline {
         bail!(
-            "--static-scope full needs subprojects/openssl.wrap (glib-networking TLS \
-             backend); vendor it (`meson wrap install openssl`) before an --offline build"
+            "subprojects/{name}.wrap is required but missing; vendor it \
+             (`meson wrap install {name}`) before an --offline build"
         );
     }
     let _d = sh.push_dir(source);
-    cmd!(sh, "meson wrap install openssl")
+    cmd!(sh, "meson wrap install {name}")
         .run()
-        .context("installing the openssl wrap from wrapdb")?;
+        .with_context(|| format!("installing the {name} wrap from wrapdb"))?;
     Ok(())
 }
 
