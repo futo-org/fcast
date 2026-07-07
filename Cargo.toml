@@ -42,7 +42,8 @@ gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
 gst-plugin-rtp = { version = "0.15", features = [ "static" ] }
 gst-plugin-webrtc = { rev = "c2dc32fefa6db664143d79ab8cc0ae49b8415ddc", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
-gst-webrtc = { package = "gstreamer-webrtc", version = "0.25.0" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
+gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"

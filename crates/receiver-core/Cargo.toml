@@ -19,6 +19,7 @@ fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-base.workspace = true
+gst-pbutils.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 if-addrs = "0.15"
@@ -169,4 +170,6 @@ kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
+# Enable when linking against a fully static gstreamer-full build
+static-gstreamer = []
 fhs = ["extra-imgfmt", "slint/renderer-femtovg"]

@@ -235,8 +235,7 @@ pub struct CliArgs {
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
-    /// Don't forward HDR to the compositor; always tone-map to SDR with libplacebo instead.
-    /// Only affects the experimental Wayland subsurface video sink.
+    /// Force HDR content to be tone-mapped to SDR.
     #[arg(long, default_value_t = false)]
     pub disable_hdr_output: bool,
 }

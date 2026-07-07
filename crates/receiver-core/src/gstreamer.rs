@@ -6,13 +6,27 @@ use tracing::debug;
 use crate::media_formats::*;
 
 pub fn init_and_load_plugins() {
+    #[cfg(feature = "static-gstreamer")]
+    unsafe {
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "");
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
+        std::env::set_var("GST_PLUGIN_PATH_1_0", "");
+        std::env::set_var("GST_PLUGIN_PATH", "");
+        std::env::set_var("GST_REGISTRY_DISABLE", "yes");
+    }
+
     gst::init().unwrap();
     debug!(gstreamer_version = %gst::version_string());
 
-    // TODO: investigate why certain files leads to crashes when this is added
-    // gst::rust_allocator().clone().set_default();
-
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Dynamic-build path only: load the bundled plugin dylibs/DLLs and point
+    // GIO at the bundled TLS module. A static build must NOT do this — the
+    // on-disk plugins would drag in a second glib ("cannot register existing
+    // type"), and TLS is already compiled in (glib-networking's GIO module is
+    // registered by gst_init_static_plugins).
+    #[cfg(all(
+        any(target_os = "windows", target_os = "macos"),
+        not(feature = "static-gstreamer")
+    ))]
     {
         let mut plugin_dir = std::env::current_exe().unwrap();
         plugin_dir.pop();
@@ -98,6 +112,10 @@ pub fn find_formats() -> (
         let is_video = elem.has_type(gst::ElementFactoryType::MEDIA_VIDEO);
         let is_audio = elem.has_type(gst::ElementFactoryType::MEDIA_AUDIO);
         let is_subtitle = elem.has_type(gst::ElementFactoryType::MEDIA_SUBTITLE);
+
+        // TODO: remove or refactor
+        use gst::prelude::GstObjectExt;
+        debug!(elem_name = %elem.name());
 
         if is_demuxer {
             let templates = elem.static_pad_templates();
