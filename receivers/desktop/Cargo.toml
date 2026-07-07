@@ -7,7 +7,6 @@ license = "GPL-3.0-only"
 [dependencies]
 rcore = { package = "receiver-core", path = "../../crates/receiver-core", features = ["desktop"] }
 anyhow.workspace = true
-mimalloc.workspace = true
 
 [features]
 default = ["systray"]

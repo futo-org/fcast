@@ -19,14 +19,6 @@ export enum UiPlayerVariant {
     Raop,
 }
 
-export struct UiSubOverlay {
-    img: image,
-    x: length,
-    y: length,
-    render-width: length,
-    render-height: length,
-}
-
 export struct UiStreamDbg {
     id: string,
     codec: string,
@@ -71,8 +63,6 @@ export global Bridge {
     in property <float> progress-secs;
     in property <float> duration-secs;
     in property <AppState> app-state: AppState.Idle;
-    in property <[UiSubOverlay]> overlays;
-    in property <[string]> subtitles;
     in property <bool> is-live: false;
     in property <string> media-title;
     in property <string> artist-name;
@@ -113,8 +103,18 @@ export global Bridge {
     in-out property <float> volume-set-at: 0.0;
     in-out property <UiUpdaterState> updater-state: UiUpdaterState.None;
     in-out property <bool> render-subtitles: true;
+    // Maintained by the video player's PlaybackControls: true while the controls are drawn over the video.
+    in-out property <bool> controls-overlay-visible: false;
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
+    // Whether any GUI element is (potentially) drawn over the video area.
+    out property <bool> video-obstructed:
+        app-state != AppState.Playing
+        || player-variant != UiPlayerVariant.Video
+        || playback-state != GuiPlaybackState.Playing
+        || controls-overlay-visible
+        || should-show-toast-overlay()
+        || volume-set-at > 0;
 
     callback resume-or-pause();
     callback seek-to-percent(float);
@@ -128,6 +128,9 @@ export global Bridge {
     callback select-playlist-item(idx: int);
     callback perform-app-update();
     callback restart-app();
+    callback video-obstructed-changed(obstructed: bool);
+    callback new-video-frame();
+
     pure callback sec-to-string(sec: int) -> string;
     pure callback sec-float-to-string(sec: float) -> string;
 

@@ -11,6 +11,10 @@ link-cplusplus = "1"
 bindgen.workspace = true
 system-deps = "7.0"
 
+[features]
+default = []
+vulkan = []
+
 [package.metadata.system-deps.libplacebo]
 name = "libplacebo"
 version = "7"

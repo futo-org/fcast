@@ -2,13 +2,6 @@ use gst::glib;
 use gst_video::prelude::*;
 use smallvec::SmallVec;
 
-pub enum Resource<T> {
-    Eos,
-    Cleared,
-    Unchanged,
-    New(T),
-}
-
 #[cfg_attr(target_os = "linux", allow(clippy::large_enum_variant))]
 pub enum FrameData {
     SystemMemory {
@@ -104,17 +97,46 @@ pub struct ContentLightLevel {
     pub max_frame_average_light_level: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rotation {
+    #[default]
+    Rotate0,
+    /// 90° clockwise.
+    Rotate90,
+    Rotate180,
+    /// 270° clockwise
+    Rotate270,
+}
+
 pub struct Frame {
     pub data: FrameData,
     pub mastering_display_info: Option<MasteringDisplayInfo>,
     pub content_light_level: Option<ContentLightLevel>,
-    pub subtitles: Resource<SmallVec<[String; 3]>>,
-    pub overlays: Resource<SmallVec<[Overlay; 3]>>,
+    pub overlays: SmallVec<[Overlay; 3]>,
+    pub overlay_enabled: bool,
+    pub rotation: Rotation,
+}
+
+impl Frame {
+    /// The overlays that should actually be composited this frame: the frame's overlays when
+    /// `overlay_enabled` (the GUI subtitle toggle) is set, otherwise none.
+    pub fn overlays_to_composite(&self) -> &[Overlay] {
+        if self.overlay_enabled {
+            &self.overlays
+        } else {
+            &[]
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct Overlay {
-    pub pix_buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    /// RGBA8 pixel data (tightly packed), `width * height * 4` bytes.
+    pub pixels: Vec<u8>,
+    /// Texture dimensions of `pixels`.
+    pub width: u32,
+    pub height: u32,
+    /// Render rectangle in source-frame (video) pixels.
     pub x: i32,
     pub y: i32,
     pub render_width: u32,
@@ -127,7 +149,6 @@ pub mod imp {
         atomic::{self, AtomicBool},
     };
 
-    use crate::fcasttextoverlay::meta_imp::TextFormat;
     use gst::{glib, prelude::*, subclass::prelude::*};
     use gst_base::{prelude::*, subclass::prelude::*};
     use gst_video::{prelude::*, subclass::prelude::*};
@@ -135,8 +156,6 @@ pub mod imp {
     use smallvec::SmallVec;
 
     use crate::video::Overlay;
-
-    use super::Resource;
 
     fn get_caps() -> gst::Caps {
         let mut caps = gst::Caps::new_empty();
@@ -261,6 +280,21 @@ pub mod imp {
         mastering_display_info: Option<super::MasteringDisplayInfo>,
         content_light_level: Option<super::ContentLightLevel>,
         has_overlay: bool,
+        rotation: super::Rotation,
+    }
+
+    fn rotation_from_tags(tags: &gst::TagListRef) -> Option<super::Rotation> {
+        let orientation = tags.get::<gst::tags::ImageOrientation>()?;
+        Some(match orientation.get() {
+            "rotate-0" => super::Rotation::Rotate0,
+            "rotate-90" => super::Rotation::Rotate90,
+            "rotate-180" => super::Rotation::Rotate180,
+            "rotate-270" => super::Rotation::Rotate270,
+            other => {
+                gst::warning!(CAT, "unsupported image-orientation {other:?}; not rotating");
+                super::Rotation::Rotate0
+            }
+        })
     }
 
     #[derive(Default)]
@@ -364,6 +398,7 @@ pub mod imp {
                     config.mastering_display_info.take();
                     config.content_light_level.take();
                     config.has_overlay = false;
+                    config.rotation = super::Rotation::Rotate0;
                     self.payload_handle.0.lock().replace(None);
                     self.obj().emit_by_name::<()>("frame-available", &[]);
                 }
@@ -476,16 +511,19 @@ pub mod imp {
             Ok(())
         }
 
-        // TODO: handle rotation?
-        //       https://github.com/GStreamer/gst-plugins-rs/blob/e5ff6f0a272e179d4472acf037273367c6e8511b/video/gtk4/src/sink/imp.rs#L759
-        // fn event(&self, event: gst::Event) -> bool {
-        //     match event.view() {
-        //         gst::EventView::StreamStart(_) => {}
-        //         _ => (),
-        //     }
+        fn event(&self, event: gst::Event) -> bool {
+            if let gst::EventView::Tag(ev) = event.view()
+                && let Some(rotation) = rotation_from_tags(ev.tag())
+            {
+                let mut config = self.config.lock();
+                if config.rotation != rotation {
+                    gst::info!(CAT, imp = self, "image-orientation: {rotation:?}");
+                    config.rotation = rotation;
+                }
+            }
 
-        //     self.parent_event(event)
-        // }
+            self.parent_event(event)
+        }
     }
 
     impl VideoSinkImpl for FSink {
@@ -542,14 +580,23 @@ pub mod imp {
                                 return None;
                             };
 
-                            let mut pix_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-                                frame.width(),
-                                frame.height(),
-                            );
-                            image_swizzle::bgra_to_rgba(plane, pix_buffer.make_mut_bytes());
+                            let width = frame.width();
+                            let height = frame.height();
+                            let stride = frame.plane_stride()[0] as usize;
+                            let row_bytes = width as usize * 4;
+                            let mut pixels = Vec::with_capacity(row_bytes * height as usize);
+                            for row in 0..height as usize {
+                                let start = row * stride;
+                                pixels.extend_from_slice(&plane[start..start + row_bytes]);
+                            }
+                            for px in pixels.chunks_exact_mut(4) {
+                                px.swap(0, 2);
+                            }
 
                             Some(Overlay {
-                                pix_buffer,
+                                pixels,
+                                width,
+                                height,
                                 x,
                                 y,
                                 render_width,
@@ -559,37 +606,11 @@ pub mod imp {
                         .collect::<SmallVec<[_; 3]>>()
                 })
                 .collect();
-            let overlays = if !overlays.is_empty() {
-                Resource::New(overlays)
-            } else {
-                Resource::Cleared
-            };
-
-            let mut subtitles = Resource::Cleared;
-            if let Some(meta) = buffer.meta::<crate::fcasttextoverlay::FCastVideoTextOverlayMeta>()
-            {
-                let (format, text) = meta.get();
-
-                fn split_subs(subs: &str) -> SmallVec<[String; 3]> {
-                    subs.lines().map(String::from).collect()
-                }
-
-                match format {
-                    TextFormat::Utf8 => subtitles = Resource::New(split_subs(text)),
-                    TextFormat::PangoMarkup => match pango::parse_markup(text, '\0') {
-                        Ok((_, text, _)) => subtitles = Resource::New(split_subs(&text)),
-                        Err(err) => gst::error!(
-                            CAT,
-                            imp = self,
-                            "Failed to parse subtitles as pango markup err={err:?}"
-                        ),
-                    },
-                }
-            }
 
             let config = self.config.lock();
             let mdi = config.mastering_display_info;
             let cll = config.content_light_level;
+            let rotation = config.rotation;
             if let Some(video_info) = config.video_info.as_ref() {
                 let data = match video_info {
                     #[cfg(target_os = "linux")]
@@ -616,8 +637,9 @@ pub mod imp {
                     data,
                     mastering_display_info: mdi,
                     content_light_level: cll,
-                    subtitles,
                     overlays,
+                    overlay_enabled: true,
+                    rotation,
                 };
 
                 self.payload_handle.0.lock().replace(Some(frame));

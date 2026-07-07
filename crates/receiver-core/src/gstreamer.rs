@@ -41,7 +41,7 @@ pub fn init_and_load_plugins() {
     }
 
     crate::fcastwhepsrcbin::plugin_init().unwrap();
-    crate::fcasttextoverlay::plugin_init().unwrap();
+    // crate::fcasttextoverlay::plugin_init().unwrap();
     crate::fcasthttpsrc::plugin_init().unwrap();
     crate::fcompsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]

@@ -7,3 +7,8 @@ license.workspace = true
 [dependencies]
 libplacebo-sys.path = "../libplacebo-sys"
 tracing.workspace = true
+libloading = { workspace = true, optional = true }
+
+[features]
+default = []
+vulkan = ["libplacebo-sys/vulkan", "dep:libloading"]

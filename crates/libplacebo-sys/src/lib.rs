@@ -6,6 +6,8 @@
 // Lints
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::ptr_offset_with_cast)]
+#![allow(clippy::useless_transmute)]
+#![allow(clippy::too_many_arguments)]
 
 extern crate link_cplusplus;
 

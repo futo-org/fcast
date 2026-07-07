@@ -1,10 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use mimalloc::MiMalloc;
 use rcore::clap::Parser;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> anyhow::Result<()> {
     let args = rcore::CliArgs::parse();
@@ -23,6 +19,14 @@ fn main() -> anyhow::Result<()> {
 
     if let Err(err) = rcore::slint::set_xdg_app_id("org.fcast.Receiver") {
         rcore::tracing::warn!(?err, "Failed to set XDG app id");
+    }
+
+    // Opt into the experimental Wayland subsurface sink with FCAST_VIDEO_SINK=wayland-subsurface.
+    #[cfg(target_os = "linux")]
+    if std::env::var("FCAST_VIDEO_SINK").as_deref() == Ok("wayland-subsurface") {
+        let sink =
+            rcore::WaylandSubsurfaceSink::new(args.disable_hdr_output, args.rendering_options());
+        return rcore::run(args, sink);
     }
 
     rcore::run(args, rcore::SwapchainSink::new())

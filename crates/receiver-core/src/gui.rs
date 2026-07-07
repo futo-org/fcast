@@ -593,7 +593,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         UpdateGuiCommand::ClearImageState => {
             bridge.set_image_preview(CompoundImage::default());
             clear_audio_covers(&bridge, renderer_tx);
-            bridge.set_overlays(slint::ModelRc::default());
             bridge.set_animation_frames(slint::ModelRc::default());
         }
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),

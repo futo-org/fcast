@@ -5,9 +5,9 @@ use if_addrs::get_if_addrs;
 use mdns_sd::ServiceDaemon;
 use tracing::error;
 
+use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 #[cfg(feature = "airplay")]
 use crate::{airplay, message::AirPlay};
-use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 
 /// Must be called from a tokio context.
 #[tracing::instrument(skip_all)]

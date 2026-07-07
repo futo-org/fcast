@@ -29,8 +29,6 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::message;
-#[cfg(feature = "airplay")]
-use crate::{airplay, message::AirPlay};
 use crate::{
     AppState, FCAST_TCP_PORT, GCastUpdateSender, GuiPlaybackState, MediaItemId, MessageSender,
     SenderId, UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
@@ -49,6 +47,8 @@ use crate::{
 };
 #[cfg(not(target_os = "android"))]
 use crate::{Settings, mdns};
+#[cfg(feature = "airplay")]
+use crate::{airplay, message::AirPlay};
 
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
