@@ -14,6 +14,7 @@ pub mod gstreamer;
 pub mod csharp;
 #[cfg(feature = "uniffi")]
 pub mod kotlin;
+#[cfg(feature = "mdns")]
 pub mod mdns;
 pub mod protocol;
 pub mod receiver;

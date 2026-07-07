@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
-use xtask::{android, mdns, protocol, receiver, sender, sh, test_corpus, workspace};
+use xtask::{android, protocol, receiver, sender, sh, test_corpus, workspace};
+#[cfg(feature = "mdns")]
+use xtask::mdns;
 #[cfg(feature = "uniffi")]
 use xtask::{
     csharp, kotlin,
@@ -21,6 +23,7 @@ enum Command {
     Android(android::AndroidArgs),
     Sender(sender::SenderArgs),
     TestCorpus(test_corpus::TestCorpusArgs),
+    #[cfg(feature = "mdns")]
     Mdns(mdns::MdnsArgs),
     Receiver(receiver::ReceiverArgs),
     Test,
@@ -56,6 +59,7 @@ fn main() {
         Command::Android(cmd) => cmd.run().unwrap(),
         Command::Sender(cmd) => cmd.run().unwrap(),
         Command::TestCorpus(cmd) => cmd.run().unwrap(),
+        #[cfg(feature = "mdns")]
         Command::Mdns(cmd) => cmd.run().unwrap(),
         Command::Receiver(cmd) => cmd.run().unwrap(),
         Command::Test => {
