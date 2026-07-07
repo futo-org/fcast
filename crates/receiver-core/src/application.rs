@@ -2300,7 +2300,7 @@ impl Application {
                             Err(err) => {
                                 let error_msg = err.to_shared_string();
                                 let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                                    UiUpdaterState::DownloadFailed,
+                                    crate::UiUpdaterState::DownloadFailed,
                                 ));
                                 let _ =
                                     gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
@@ -2324,7 +2324,7 @@ impl Application {
                             error!(?err, "Failed to install update");
                             let error_msg = err.to_shared_string();
                             let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                                UiUpdaterState::InstallFailed,
+                                crate::UiUpdaterState::InstallFailed,
                             ));
                             let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
                             return;
@@ -2333,7 +2333,7 @@ impl Application {
                         debug!(?update, "Successfully updated");
 
                         let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                            UiUpdaterState::InstallSuccessful,
+                            crate::UiUpdaterState::InstallSuccessful,
                         ));
                     });
                 }
