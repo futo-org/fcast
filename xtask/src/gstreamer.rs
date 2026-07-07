@@ -565,9 +565,9 @@ impl GstreamerArgs {
         self.build().map(|_| ())
     }
 
-    /// Build the static gstreamer (+ receiver unless --gstreamer-only) and
-    /// return the path to the receiver binary. Used by the installer commands.
-    pub fn build(self) -> Result<Option<Utf8PathBuf>> {
+    /// Build (or reuse) the static GStreamer and return the pieces needed to
+    /// drive cargo against it. Returns `Ok(None)` when `--clean` short-circuits.
+    fn prepare(self) -> Result<Option<(Rc<Shell>, Profile, GstBuild)>> {
         let sh = sh();
         if self.clean {
             clean(self.source.as_deref(), self.build_dir.as_deref())?;
@@ -602,10 +602,60 @@ impl GstreamerArgs {
             .unwrap_or_else(|| source.join("builddir-static"));
 
         let build = build_gstreamer(&sh, &source, &build_dir, &profile)?;
-        if self.gstreamer_only {
+        Ok(Some((sh, profile, build)))
+    }
+
+    /// Build the static gstreamer (+ receiver unless --gstreamer-only) and
+    /// return the path to the receiver binary. Used by the installer commands.
+    pub fn build(self) -> Result<Option<Utf8PathBuf>> {
+        let gstreamer_only = self.gstreamer_only;
+        let Some((sh, profile, build)) = self.prepare()? else {
+            return Ok(None);
+        };
+        if gstreamer_only {
             return Ok(None);
         }
         build_receiver(&sh, &build, &profile).map(Some)
+    }
+
+    /// Build the static receiver and execute it, forwarding `args` (everything
+    /// after `--`). Propagates the receiver's own exit code.
+    ///
+    /// Mirrors `cargo run`: a fast dev (debug) build by default; `release` opts
+    /// into the optimized (fat-LTO) build. An explicit `--debug` also forces
+    /// debug and wins over `--release`.
+    pub fn run_binary(mut self, args: Vec<String>, release: bool) -> Result<()> {
+        self.debug = self.debug || !release;
+        let Some((sh, profile, build)) = self.prepare()? else {
+            return Ok(());
+        };
+        let bin = build_receiver(&sh, &build, &profile)?;
+        println!(">> Running {bin} …");
+        let status = std::process::Command::new(bin.as_std_path())
+            .args(&args)
+            .status()
+            .with_context(|| format!("spawning receiver {bin}"))?;
+        match status.code() {
+            Some(0) | None => Ok(()),
+            Some(code) => std::process::exit(code),
+        }
+    }
+
+    /// `cargo check` the receiver against the static GStreamer.
+    pub fn check(self) -> Result<()> {
+        self.cargo_subcmd("check")
+    }
+
+    /// `cargo clippy` the receiver against the static GStreamer.
+    pub fn clippy(self) -> Result<()> {
+        self.cargo_subcmd("clippy")
+    }
+
+    fn cargo_subcmd(self, subcmd: &str) -> Result<()> {
+        let Some((sh, profile, build)) = self.prepare()? else {
+            return Ok(());
+        };
+        receiver_cargo(&sh, &build, &profile, subcmd)
     }
 }
 
@@ -1008,8 +1058,55 @@ fn cross_file(_sh: &Rc<Shell>, _source: &Utf8Path, target: &str) -> Result<Utf8P
 // Phase 2: link the receiver
 // ---------------------------------------------------------------------------
 
-/// Build the receiver against the static gstreamer; returns the binary path.
-fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Utf8PathBuf> {
+/// Path of the receiver binary a build with `profile` produces.
+fn receiver_bin_path(profile: &Profile) -> Utf8PathBuf {
+    let mut bin = Utf8PathBuf::from("target");
+    if let Some(t) = &profile.target {
+        bin.push(t);
+    }
+    bin.push(if profile.debug { "debug" } else { "release" });
+    bin.push(if target_os(profile) == "windows" {
+        "desktop-receiver.exe"
+    } else {
+        "desktop-receiver"
+    });
+    bin
+}
+
+/// Common `--features`/`--target`/profile flags shared by every cargo
+/// invocation that targets the receiver against the static gstreamer.
+fn receiver_cargo_flags(profile: &Profile) -> Vec<String> {
+    let mut flags = Vec::new();
+    if !profile.debug {
+        flags.push("--release".into());
+    }
+    flags.extend([
+        "-p".into(),
+        "desktop-receiver".into(),
+        "--features".into(),
+        "static-gstreamer".into(),
+    ]);
+    if profile.no_default_features {
+        flags.push("--no-default-features".into());
+    }
+    if let Some(t) = &profile.target {
+        flags.push("--target".into());
+        flags.push(t.clone());
+    }
+    flags
+}
+
+/// Set up the environment cargo needs to compile against the static gstreamer
+/// (PKG_CONFIG_PATH to the meson-uninstalled .pc + the sysprof stub, and the
+/// `SYSTEM_DEPS_*_LINK=static` overrides), then run `f` with it in scope. The
+/// same env is used by build/run/check/clippy so their build-script
+/// fingerprints match and cargo's cache is shared between them.
+fn with_receiver_env<T>(
+    sh: &Rc<Shell>,
+    build: &GstBuild,
+    profile: &Profile,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     // Link against the BUILD TREE via meson-uninstalled .pc (the install tree
     // omits per-plugin .pc, so the gstreamer-full aggregate can't resolve there).
     let mut pkg_path = prepend_path(&pkg_config_path(sh), build.uninstalled_pc.as_str());
@@ -1069,54 +1166,67 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
         }
     }
 
-    let link_args = link_args(sh, build, profile)?;
+    f()
+}
 
-    // cargo rustc scopes the extra link args to the FINAL binary only (RUSTFLAGS
-    // would apply them to every crate incl. build scripts / proc-macros).
-    let mut cargo: Vec<String> = vec!["rustc".into()];
-    if !profile.debug {
-        cargo.push("--release".into());
-    }
-    cargo.extend([
-        "-p".into(),
-        "desktop-receiver".into(),
-        "--features".into(),
-        "static-gstreamer".into(),
-    ]);
-    if profile.no_default_features {
-        cargo.push("--no-default-features".into());
-    }
-    if let Some(t) = &profile.target {
-        cargo.push("--target".into());
-        cargo.push(t.clone());
-    }
-    cargo.push("--".into());
+/// Build the receiver against the static gstreamer; returns the binary path.
+fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Utf8PathBuf> {
+    with_receiver_env(sh, build, profile, || {
+        let link_args = link_args(sh, build, profile)?;
 
-    // LTO: cross uses clang/lld (drives the LLVM LTO plugin); rust-only can keep
-    // the workspace's fat LTO + default/wild linker.
-    if profile.lto == Lto::Cross {
-        cargo.push("-Clinker-plugin-lto".into());
-        cargo.push("-Clinker=clang".into());
-        cargo.push("-Clink-arg=-fuse-ld=lld".into());
-    }
-    for a in &link_args {
-        cargo.push(format!("-Clink-arg={a}"));
-    }
+        // cargo rustc scopes the extra link args to the FINAL binary only
+        // (RUSTFLAGS would apply them to every crate incl. build scripts /
+        // proc-macros).
+        let mut cargo: Vec<String> = vec!["rustc".into()];
+        cargo.extend(receiver_cargo_flags(profile));
+        cargo.push("--".into());
 
-    println!(">> Building desktop-receiver (static gstreamer) …");
-    cmd!(sh, "cargo {cargo...}").run()?;
+        // LTO: cross uses clang/lld (drives the LLVM LTO plugin); rust-only can
+        // keep the workspace's fat LTO + default/wild linker.
+        if profile.lto == Lto::Cross {
+            cargo.push("-Clinker-plugin-lto".into());
+            cargo.push("-Clinker=clang".into());
+            cargo.push("-Clink-arg=-fuse-ld=lld".into());
+        }
+        for a in &link_args {
+            cargo.push(format!("-Clink-arg={a}"));
+        }
 
-    let mut bin = Utf8PathBuf::from("target");
-    if let Some(t) = &profile.target {
-        bin.push(t);
-    }
-    bin.push(if profile.debug { "debug" } else { "release" });
-    bin.push(if target_os(profile) == "windows" {
-        "desktop-receiver.exe"
-    } else {
-        "desktop-receiver"
-    });
-    Ok(bin)
+        // The link line carries ~100 `-Clink-arg=<abspath>.a` tokens; echoing it
+        // on every build is pure noise. Print the meaningful cargo flags (up to
+        // `--`) with the rest summarised, and silence xshell's own command echo
+        // with `.quiet()` (this only hides the echoed command, not cargo output).
+        let hidden = cargo.iter().position(|a| a == "--").map_or(0, |i| cargo.len() - i - 1);
+        let shown = cargo
+            .iter()
+            .take_while(|a| a.as_str() != "--")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!(">> Building desktop-receiver (static gstreamer) …");
+        println!(">> cargo {shown} -- <{hidden} link args hidden>");
+        cmd!(sh, "cargo {cargo...}").quiet().run()?;
+        Ok(())
+    })?;
+    Ok(receiver_bin_path(profile))
+}
+
+/// Run `cargo <subcmd>` (e.g. check/clippy) for the receiver against the static
+/// gstreamer. No link args: these subcommands don't produce the final binary,
+/// so only the compile-time env (headers/version via pkg-config) is needed.
+fn receiver_cargo(
+    sh: &Rc<Shell>,
+    build: &GstBuild,
+    profile: &Profile,
+    subcmd: &str,
+) -> Result<()> {
+    with_receiver_env(sh, build, profile, || {
+        let mut cargo: Vec<String> = vec![subcmd.to_owned()];
+        cargo.extend(receiver_cargo_flags(profile));
+        println!(">> cargo {subcmd} (static gstreamer) …");
+        cmd!(sh, "cargo {cargo...}").run()?;
+        Ok(())
+    })
 }
 
 /// Compute the gstreamer-full static link line, rewriting every `-lX` whose
@@ -1140,6 +1250,13 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
 
     let mut out = Vec::new();
     for tok in raw.split_whitespace() {
+        // `-pthread` is a *compile*-time flag that pkg-config repeats for every
+        // static lib in the closure. At link it's a no-op (pthread lives in libc
+        // on modern glibc, and rustc's std links it anyway), so clang emits a
+        // "-pthread unused during compilation" warning for each copy. Drop them.
+        if tok == "-pthread" {
+            continue;
+        }
         if let Some(name) = tok.strip_prefix("-l") {
             // macOS' C++ runtime is libc++, not libstdc++. A C++ dep whose .pc
             // was generated against libstdc++ (or picked up from a non-clang

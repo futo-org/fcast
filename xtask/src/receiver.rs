@@ -55,10 +55,30 @@ pub enum ReceiverCommand {
     /// Build a statically-linked GStreamer from a source tree and link the
     /// desktop receiver against it.
     BuildStatic(crate::gstreamer::GstreamerArgs),
+    /// Build the statically-linked receiver and run it. Arguments after `--`
+    /// are forwarded to the receiver binary.
+    Run(RunStaticArgs),
+    /// `cargo check` the desktop receiver against a static GStreamer.
+    Check(crate::gstreamer::GstreamerArgs),
+    /// `cargo clippy` the desktop receiver against a static GStreamer.
+    Clippy(crate::gstreamer::GstreamerArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller(crate::gstreamer::GstreamerArgs),
     #[cfg(target_os = "macos")]
     BuildMacosInstaller(BuildMacosInstallerArgs),
+}
+
+#[derive(Args)]
+pub struct RunStaticArgs {
+    #[command(flatten)]
+    pub gst: crate::gstreamer::GstreamerArgs,
+    /// Build the receiver in release instead of the default fast debug build
+    /// (receiver side only; GStreamer is controlled by --gst-buildtype).
+    #[arg(long)]
+    pub release: bool,
+    /// Arguments forwarded to the receiver binary (everything after `--`).
+    #[arg(last = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -88,6 +108,9 @@ impl ReceiverArgs {
 
         match self.cmd {
             ReceiverCommand::BuildStatic(args) => return args.run(),
+            ReceiverCommand::Run(a) => return a.gst.run_binary(a.args, a.release),
+            ReceiverCommand::Check(args) => return args.check(),
+            ReceiverCommand::Clippy(args) => return args.clippy(),
             ReceiverCommand::Android(args) => {
                 let _env_andr_sdk = sh.push_env(
                     "ANDROID_HOME",
