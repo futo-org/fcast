@@ -594,8 +594,7 @@ impl GstreamerArgs {
         };
         // meson requires absolute paths for --prefix (and relative build dirs
         // break once we push_dir elsewhere), so canonicalize up front.
-        let source = source
-            .canonicalize_utf8()
+        let source = canonicalize_no_verbatim(&source)
             .with_context(|| format!("canonicalizing source path {source}"))?;
         let build_dir = self
             .build_dir
@@ -701,8 +700,12 @@ fn resolve_source(sh: &Rc<Shell>, gst_ref: &str, offline: bool) -> Result<Utf8Pa
     if offline {
         bail!("--offline requires --source <PATH> (cannot clone without network)");
     }
-    let dir = Utf8PathBuf::from("target/gstreamer-src");
-    if dir.join(".git").exists() {
+    // Absolute path (workspace root + target/…): the shared shell runs git from
+    // the pushed root_path, but std::fs uses the process cwd, which isn't
+    // guaranteed to be the workspace root — a relative path made the two
+    // disagree (git saw the checkout, read_dir didn't → spurious clone).
+    let dir = crate::workspace::root_path()?.join("target/gstreamer-src");
+    if checkout_present(&dir) {
         // Reuse the existing clone — no network. Warn if it's on a different
         // ref than requested so a stale checkout doesn't surprise anyone.
         // A tag checkout is a detached HEAD ("HEAD" from --abbrev-ref), so
@@ -727,9 +730,36 @@ fn resolve_source(sh: &Rc<Shell>, gst_ref: &str, offline: bool) -> Result<Utf8Pa
         }
     } else {
         println!(">> Cloning GStreamer {gst_ref} into {dir} …");
-        cmd!(sh, "git clone --depth 1 --branch {gst_ref} {GST_REPO} {dir}").run()?;
+        if let Err(e) = cmd!(sh, "git clone --depth 1 --branch {gst_ref} {GST_REPO} {dir}").run() {
+            // The presence probe can transiently false-negative on Windows (see
+            // checkout_present); the clone then fails because the dir is in fact
+            // there ("already exists and is not empty"). Reuse it rather than
+            // aborting — only a genuinely-absent dir is a real error.
+            if !checkout_present(&dir) {
+                return Err(e).context("cloning gstreamer source");
+            }
+            println!(">> {dir} already present — reusing existing checkout");
+        }
     }
     Ok(dir)
+}
+
+/// Is the GStreamer checkout present (dir exists and is non-empty)? Retries a
+/// few times: listing this large tree can briefly fail on Windows (AV / open
+/// handles) right after a prior build's heavy I/O. A false "absent" would clone
+/// over a real checkout, so only conclude absence once the retries are spent.
+fn checkout_present(dir: &Utf8Path) -> bool {
+    for i in 0..6 {
+        match std::fs::read_dir(dir) {
+            Ok(mut entries) => return entries.next().is_some(),
+            Err(_) => {
+                if i < 5 {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Result of a successful gstreamer build: the build tree we link against.
@@ -777,9 +807,10 @@ fn build_gstreamer(
     // Assert the build deps are present with an actionable error rather than a
     // cryptic meson failure deep in a subproject.
     if os == "linux" {
+        let pkgcfg = pkg_config_prog(sh);
         let mut missing = Vec::new();
         for pc in REQUIRED_BUILD_PC_LINUX {
-            if cmd!(sh, "pkg-config --exists {pc}").quiet().run().is_err() {
+            if cmd!(sh, "{pkgcfg} --exists {pc}").quiet().run().is_err() {
                 missing.push(*pc);
             }
         }
@@ -892,11 +923,17 @@ fn build_gstreamer(
     // Requires.private and pkgconf does not propagate private include dirs to
     // `--cflags`. On split-prefix systems (Nix) the compiler then can't find
     // ogg.h. Pass the include dirs explicitly; harmless where /usr/include
-    // already covers them.
-    if let Ok(ogg_cflags) = cmd!(sh, "pkg-config --cflags-only-I ogg").quiet().read() {
-        let ogg_cflags = ogg_cflags.trim();
-        if !ogg_cflags.is_empty() {
-            args.push(format!("-Dc_args={ogg_cflags}"));
+    // already covers them. Linux-only: on macOS/Windows ogg/vorbis/theora come
+    // from meson wraps (meson supplies the include dirs itself), and injecting a
+    // system pkg-config path here is both pointless and breaks MSVC — pkg-config
+    // backslash-escapes spaces (`C:/Program\ Files/...`), which `cl` mis-splits.
+    if os == "linux" {
+        let pkgcfg = pkg_config_prog(sh);
+        if let Ok(ogg_cflags) = cmd!(sh, "{pkgcfg} --cflags-only-I ogg").quiet().read() {
+            let ogg_cflags = ogg_cflags.trim();
+            if !ogg_cflags.is_empty() {
+                args.push(format!("-Dc_args={ogg_cflags}"));
+            }
         }
     }
 
@@ -976,17 +1013,74 @@ fn build_gstreamer(
         Some("--reconfigure") // fresh dir: acts as plain setup
     };
 
-    // Pin clang/clang++ for the meson build when:
-    //  - cross LTO: the C objects must carry LLVM bitcode, or
-    //  - macOS: the C++ runtime must be libc++. If a non-clang toolchain (a
-    //    Homebrew gcc/g++ on PATH) is picked up instead, C++ wraps like harfbuzz
-    //    resolve their runtime as libstdc++ and emit `-lstdc++`, which doesn't
-    //    exist on macOS (`ld: library 'stdc++' not found`). Apple's `cc`/`c++`
-    //    are already clang, so this is a no-op on a clean host and deterministic
-    //    otherwise. (link_args also rewrites any stray -lstdc++ → -lc++.)
-    let pin_clang = profile.lto == Lto::Cross || target_os(profile) == "macos";
-    let _cc = pin_clang.then(|| sh.push_env("CC", "clang"));
-    let _cxx = pin_clang.then(|| sh.push_env("CXX", "clang++"));
+    // Compiler selection for the gstreamer C/C++ build.
+    //  - Windows uses MSVC `cl` — the compiler the GStreamer wrap ecosystem
+    //    targets on Windows. Countless meson checks (gstreamer's flex
+    //    `--nounistd`, glib's SSIZE_T, the openssl wrap, …) gate Windows
+    //    behaviour on `cc.get_id() == 'msvc'`, which only `cl` satisfies; clang
+    //    /clang-cl fall through those and break. `cl` is found via the vcvars
+    //    import below.
+    //  - macOS and cross-language LTO use clang/clang++: cross-LTO needs the C
+    //    objects to carry LLVM bitcode, and on macOS the C++ runtime must be
+    //    libc++ — a non-clang toolchain (a Homebrew gcc/g++ on PATH) makes C++
+    //    wraps like harfbuzz resolve libstdc++ and emit `-lstdc++`, which doesn't
+    //    exist on macOS. Apple's cc/c++ are already clang, so this is a no-op on
+    //    a clean host. (link_args also rewrites any stray -lstdc++ → -lc++.)
+    let (cc, cxx) = if os == "windows" {
+        (Some("cl"), Some("cl"))
+    } else if profile.lto == Lto::Cross || os == "macos" {
+        (Some("clang"), Some("clang++"))
+    } else {
+        (None, None)
+    };
+
+    // Assemble the build environment. Each var is pushed exactly once — pushing
+    // the same key twice would clobber it — so PATH is fully composed here first.
+    let mut build_env: Vec<(String, String)> = Vec::new();
+    let mut path = sh.var("PATH").unwrap_or_default();
+
+    // Windows: import the MSVC developer environment from vcvars64 (INCLUDE /
+    // LIB / LIBPATH / PATH). This is what puts `cl` (and dumpbin/link, which
+    // FFmpeg's makedef step needs) on PATH and points the compiler at the
+    // Windows SDK headers (INCLUDE) and libraries (LIB) — meson's
+    // find_library('ws2_32', …) and the SDK includes fail without them.
+    // Imported before CC/CXX so the compiler inherits it.
+    #[cfg(windows)]
+    if os == "windows" {
+        for (k, v) in vcvars_env(sh)? {
+            if k.eq_ignore_ascii_case("PATH") {
+                path = v; // already includes our original PATH plus the MSVC bins
+            } else {
+                build_env.push((k, v));
+            }
+        }
+    }
+
+    // clang (cross-LTO) may need the standalone LLVM bin prepended; `cl` comes
+    // from the vcvars import above, and macOS uses Apple's clang already on PATH.
+    if matches!(cc, Some("clang")) && !on_path(sh, "clang") {
+        let dir = find_llvm_bin()
+            .context("clang not on PATH and no LLVM install found; install LLVM")?;
+        path = prepend_env_path(&path, dir.as_str());
+    }
+
+    build_env.push(("PATH".to_string(), path));
+    let _build_env: Vec<_> = build_env
+        .into_iter()
+        .map(|(k, v)| sh.push_env(k, v))
+        .collect();
+
+    let _cc = cc.map(|c| sh.push_env("CC", c));
+    let _cxx = cxx.map(|c| sh.push_env("CXX", c));
+
+    // Windows' installer-detection heuristic flags `patch.exe` — which meson
+    // runs to apply wrap diff files (e.g. glib's) — as needing UAC elevation,
+    // so CreateProcess fails with `WinError 740` before it can run. RunAsInvoker
+    // forces children to inherit our (unelevated) token instead of trying to
+    // elevate; patch.exe doesn't actually need elevation. Inherited down through
+    // the meson (python) process to its patch.exe grandchild.
+    #[cfg(windows)]
+    let _no_elevate = sh.push_env("__COMPAT_LAYER", "RunAsInvoker");
 
     let cross = profile.target.as_ref().map(|t| cross_file(sh, source, t)).transpose()?;
     let cross_args: Vec<String> = cross
@@ -1016,6 +1110,16 @@ fn build_gstreamer(
 
 fn pkg_config_path(sh: &Rc<Shell>) -> String {
     sh.var("PKG_CONFIG_PATH").unwrap_or_default()
+}
+
+/// The pkg-config program to invoke. Honors `$PKG_CONFIG` (system-deps' knob,
+/// which the Windows CI sets to `pkgconf` — there may be no `pkg-config`
+/// binary), falling back to `pkg-config`.
+fn pkg_config_prog(sh: &Rc<Shell>) -> String {
+    sh.var("PKG_CONFIG")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "pkg-config".to_string())
 }
 
 /// Make sure a wrap the monorepo doesn't vendor is present (from wrapdb).
@@ -1107,9 +1211,38 @@ fn with_receiver_env<T>(
     profile: &Profile,
     f: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
+    // Windows: build the receiver's C deps with clang-cl inside the MSVC dev
+    // environment. libplacebo-sys runs its own meson build, and libplacebo
+    // passes gcc-style flags (-Wundef, -fno-math-errno, …) that `cl` rejects but
+    // clang-cl (the MSVC-compatible clang driver) accepts. GStreamer itself is
+    // built separately with `cl` (its wrap ecosystem keys off the `msvc`
+    // compiler id); both emit MSVC-ABI archives that link together. Needs the
+    // vcvars env (INCLUDE/LIB, headers/libs) plus clang-cl on PATH. Applied here
+    // (not just in build_receiver) so check/clippy/run share the same env.
+    #[cfg(windows)]
+    let _msvc_env: Vec<_> = if target_os(profile) == "windows" {
+        let mut env = vcvars_env(sh)?;
+        // The standalone LLVM installer isn't on PATH by default; prepend it to
+        // the (vcvars) PATH so meson/cc find clang-cl.
+        if !on_path(sh, "clang-cl") {
+            if let Some(dir) = find_llvm_bin() {
+                for (k, v) in env.iter_mut() {
+                    if k.eq_ignore_ascii_case("PATH") {
+                        *v = prepend_env_path(v, dir.as_str());
+                    }
+                }
+            }
+        }
+        env.push(("CC".to_string(), "clang-cl".to_string()));
+        env.push(("CXX".to_string(), "clang-cl".to_string()));
+        env.into_iter().map(|(k, v)| sh.push_env(k, v)).collect()
+    } else {
+        Vec::new()
+    };
+
     // Link against the BUILD TREE via meson-uninstalled .pc (the install tree
     // omits per-plugin .pc, so the gstreamer-full aggregate can't resolve there).
-    let mut pkg_path = prepend_path(&pkg_config_path(sh), build.uninstalled_pc.as_str());
+    let mut pkg_path = prepend_env_path(&pkg_config_path(sh), build.uninstalled_pc.as_str());
 
     // nixpkgs glib workaround, LINK PHASE ONLY: glib-2.0.pc lists
     // `Requires.private: sysprof-capture-4`, but nixpkgs ships neither its .pc
@@ -1120,7 +1253,8 @@ fn with_receiver_env<T>(
     // sysprof-capture-4 as a real optional feature and would try to compile
     // against its (nonexistent) headers. Hence it is created here, scoped to the
     // cargo link, and not in build_gstreamer.
-    if cmd!(sh, "pkg-config --exists sysprof-capture-4").quiet().run().is_err() {
+    let pkgcfg = pkg_config_prog(sh);
+    if cmd!(sh, "{pkgcfg} --exists sysprof-capture-4").quiet().run().is_err() {
         let stub_dir = build.build_dir.join("xtask-pc-stubs");
         std::fs::create_dir_all(&stub_dir).context("creating pc stub dir")?;
         std::fs::write(
@@ -1132,7 +1266,7 @@ fn with_receiver_env<T>(
              Cflags:\n",
         )
         .context("writing sysprof-capture-4 stub")?;
-        pkg_path = prepend_path(&pkg_path, stub_dir.as_str());
+        pkg_path = prepend_env_path(&pkg_path, stub_dir.as_str());
     }
     let _pc = sh.push_env("PKG_CONFIG_PATH", &pkg_path);
 
@@ -1146,22 +1280,33 @@ fn with_receiver_env<T>(
             guards.push(sh.push_env(format!("SYSTEM_DEPS_{dep}_LINK"), "static"));
         }
         // dav1d (AV1) is the Rust gst-plugin-dav1d → dav1d-sys, which resolves
-        // dav1d via pkg-config. On macOS that keeps finding the framework's
-        // DYNAMIC libdav1d as a fallback even with our static wrap on
-        // PKG_CONFIG_PATH, leaving an @rpath dylib the installer rejects. And
-        // because SYSTEM_DEPS_DAV1D_LINK + PKG_CONFIG_PATH never change between
-        // builds, cargo caches the first (dynamic) build-script result forever.
-        // Pin dav1d-sys to the static libdav1d.a we built (FFmpeg's libdav1d
-        // wrap): NO_PKG_CONFIG bypasses resolution entirely — dav1d-sys ships
-        // pregenerated bindings so it needs no headers — and these fresh env
-        // vars also change the build-script fingerprint, forcing the re-run.
+        // dav1d via pkg-config and otherwise picks up the platform's DYNAMIC
+        // libdav1d (an @rpath dylib on macOS, a dav1d.dll import lib on Windows)
+        // — a runtime dep the static build must not have. Pin it to the static
+        // libdav1d.a we already built (FFmpeg's libdav1d wrap): NO_PKG_CONFIG
+        // bypasses resolution entirely (dav1d-sys ships pregenerated bindings so
+        // it needs no headers, and its `dav1d >= 1.5.0` check would otherwise
+        // reject our 1.4.1 — on Windows the gstreamer dav1d.pc on
+        // PKG_CONFIG_PATH also shadows any from-source build). These fresh env
+        // vars also change dav1d-sys's build-script fingerprint, forcing a re-run.
         let archives = find_archives(&build.build_dir)?;
-        if let Some(dir) = archives
-            .get("libdav1d.a")
-            .and_then(|a| Utf8Path::new(a).parent())
-        {
+        if let Some(a) = archives.get("libdav1d.a") {
+            let search = if target_os(profile) == "windows" {
+                // rustc's `static=dav1d` links `dav1d.lib`, but meson named the
+                // archive `libdav1d.a`; hand link.exe a copy under that name.
+                let libdir = build.build_dir.join("xtask-dav1d-lib");
+                std::fs::create_dir_all(&libdir).context("creating dav1d lib dir")?;
+                std::fs::copy(a, libdir.join("dav1d.lib"))
+                    .context("copying libdav1d.a to dav1d.lib")?;
+                libdir
+            } else {
+                Utf8Path::new(a)
+                    .parent()
+                    .map(|p| p.to_owned())
+                    .unwrap_or_else(|| build.build_dir.clone())
+            };
             guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG", "1"));
-            guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_SEARCH_NATIVE", dir.as_str()));
+            guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_SEARCH_NATIVE", search.as_str()));
             guards.push(sh.push_env("SYSTEM_DEPS_DAV1D_LIB", "dav1d"));
         }
     }
@@ -1181,15 +1326,29 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
         cargo.extend(receiver_cargo_flags(profile));
         cargo.push("--".into());
 
-        // LTO: cross uses clang/lld (drives the LLVM LTO plugin); rust-only can
-        // keep the workspace's fat LTO + default/wild linker.
+        // Args for the final crate's rustc (after `--`). LTO: cross uses
+        // clang/lld (drives the LLVM LTO plugin); rust-only keeps the
+        // workspace's fat LTO + default/wild linker.
+        let mut rustc_args: Vec<String> = Vec::new();
         if profile.lto == Lto::Cross {
-            cargo.push("-Clinker-plugin-lto".into());
-            cargo.push("-Clinker=clang".into());
-            cargo.push("-Clink-arg=-fuse-ld=lld".into());
+            rustc_args.push("-Clinker-plugin-lto".into());
+            rustc_args.push("-Clinker=clang".into());
+            rustc_args.push("-Clink-arg=-fuse-ld=lld".into());
         }
         for a in &link_args {
-            cargo.push(format!("-Clink-arg={a}"));
+            rustc_args.push(format!("-Clink-arg={a}"));
+        }
+
+        // Windows caps a command line near 32 KiB; the static link line (dozens
+        // of absolute archive paths) blows past it. Hand the rustc args off via
+        // a `@argfile` (rustc reads one arg per line) so the `cargo` command
+        // line stays short; rustc in turn response-files the linker itself.
+        if target_os(profile) == "windows" {
+            let argfile = build.build_dir.join("xtask-rustc-args.txt");
+            std::fs::write(&argfile, rustc_args.join("\n")).context("writing rustc argfile")?;
+            cargo.push(format!("@{argfile}"));
+        } else {
+            cargo.extend(rustc_args);
         }
 
         // The link line carries ~100 `-Clink-arg=<abspath>.a` tokens; echoing it
@@ -1237,7 +1396,8 @@ fn receiver_cargo(
 /// build keep their `-l` and stay dynamic. Also appends the internal helper
 /// libraries gstreamer-full's pkg-config omits.
 fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<String>> {
-    let raw = cmd!(sh, "pkg-config --static --libs gstreamer-full-1.0")
+    let pkgcfg = pkg_config_prog(sh);
+    let raw = cmd!(sh, "{pkgcfg} --static --libs gstreamer-full-1.0")
         .read()
         .context(
             "resolving gstreamer-full-1.0 statically (a private-dep .pc is missing from \
@@ -1267,8 +1427,12 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
                 out.push("-lc++".to_string());
                 continue;
             }
-            let file = format!("lib{name}.a");
-            match archives.get(&file) {
+            // meson names static libs `lib<name>.a` (Unix) but also `<name>.a`
+            // on MSVC (e.g. `ogg.a`), so a plain `lib`-prefix lookup misses those
+            // and leaves a bare `-l<name>` that link.exe silently ignores. Try
+            // both forms.
+            let candidates = [format!("lib{name}.a"), format!("{name}.a")];
+            match candidates.iter().find_map(|f| archives.get(f)) {
                 Some(path) => out.push(path.to_string()),
                 None => out.push(tok.to_string()), // non-built -l stays dynamic
             }
@@ -1285,15 +1449,35 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
             out.push(path.to_string());
         }
     }
+
+    // Windows: gstreamer's default-enabled dshow / mediafoundation / winks / dmo
+    // plugins reference COM GUID constants (IID_*, CLSID_*, DMOCATEGORY_*, KS*)
+    // that live in Windows SDK GUID libs. gstreamer-full's pkg-config doesn't
+    // propagate them, so name them explicitly — link.exe resolves them from LIB
+    // (set by the vcvars import).
+    if cfg!(windows) {
+        for lib in [
+            "strmiids.lib",       // DirectShow IIDs/CLSIDs
+            "mfuuid.lib",         // Media Foundation IIDs
+            "ksuser.lib",         // KS category/property GUIDs
+            "dmoguids.lib",       // DMO category GUIDs
+            "wmcodecdspuuid.lib", // WM codec DMO CLSIDs
+            "msdmo.lib",          // DMO helper entry points
+        ] {
+            out.push(lib.to_string());
+        }
+    }
     Ok(out)
 }
 
-/// Map `lib*.a` basename -> absolute path, across the build tree.
+/// Map every `.a` basename -> absolute path, across the build tree. Indexes all
+/// archives (not just `lib*.a`) because meson drops the `lib` prefix for some
+/// libs on MSVC (`ogg.a`), and the `-l` rewrite needs to find those too.
 fn find_archives(build_dir: &Utf8Path) -> Result<std::collections::HashMap<String, String>> {
     let mut map = std::collections::HashMap::new();
     for entry in walk(build_dir) {
         if let Some(name) = entry.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("lib") && name.ends_with(".a") {
+            if name.ends_with(".a") {
                 map.entry(name.to_string())
                     .or_insert_with(|| entry.to_string_lossy().into_owned());
             }
@@ -1321,10 +1505,105 @@ fn walk(root: &Utf8Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-fn prepend_path(existing: &str, dir: &str) -> String {
+/// Canonicalize, stripping Windows' `\\?\` extended-length ("verbatim")
+/// prefix. Rust's `canonicalize` returns verbatim paths (`\\?\C:\…`), but
+/// meson (Python) mishandles them: it joins the build dir with a forward-slash
+/// relative path and `open()` rejects the resulting mixed
+/// `\\?\C:\…\meson-private/meson.lock` with EINVAL. A plain `C:\…` path avoids
+/// this. On non-Windows this is just `canonicalize_utf8`.
+fn canonicalize_no_verbatim(path: &Utf8Path) -> Result<Utf8PathBuf> {
+    let canonical = path.canonicalize_utf8()?;
+    #[cfg(windows)]
+    if let Some(rest) = canonical.as_str().strip_prefix(r"\\?\") {
+        // `\\?\UNC\server\share` → `\\server\share`; `\\?\C:\…` → `C:\…`.
+        let stripped = match rest.strip_prefix("UNC\\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => rest.to_string(),
+        };
+        return Ok(Utf8PathBuf::from(stripped));
+    }
+    Ok(canonical)
+}
+
+/// Prepend `dir` to a PATH-style variable using the OS's separator (`;` on
+/// Windows, where `:` would collide with drive letters; `:` elsewhere).
+fn prepend_env_path(existing: &str, dir: &str) -> String {
+    let sep = if cfg!(windows) { ";" } else { ":" };
     if existing.is_empty() {
         dir.to_string()
     } else {
-        format!("{dir}:{existing}")
+        format!("{dir}{sep}{existing}")
     }
+}
+
+/// Is `bin` resolvable on PATH? Probed by running `bin --version`.
+fn on_path(sh: &Rc<Shell>, bin: &str) -> bool {
+    cmd!(sh, "{bin} --version")
+        .quiet()
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .is_ok()
+}
+
+/// Locate a standalone LLVM `bin` dir (the Windows installer doesn't add it to
+/// PATH). None on other platforms / when not installed.
+fn find_llvm_bin() -> Option<Utf8PathBuf> {
+    ["C:/Program Files/LLVM/bin", "C:/Program Files (x86)/LLVM/bin"]
+        .into_iter()
+        .map(Utf8PathBuf::from)
+        .find(|p| p.join("clang.exe").exists())
+}
+
+/// Import the x64 MSVC developer environment by running `vcvars64.bat` and
+/// capturing the environment it sets. Returns the full `NAME=VALUE` set (PATH
+/// included), which the caller applies before building. Errors if Visual Studio
+/// / the Windows SDK isn't installed — a native Windows build can't proceed
+/// without them.
+#[cfg(windows)]
+fn vcvars_env(sh: &Rc<Shell>) -> Result<Vec<(String, String)>> {
+    let vswhere =
+        Utf8PathBuf::from("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe");
+    if !vswhere.exists() {
+        bail!("vswhere.exe not found — install Visual Studio (with the C++ workload) to build on Windows");
+    }
+    let install = cmd!(sh, "{vswhere} -latest -property installationPath")
+        .quiet()
+        .read()?;
+    let install = install.trim();
+    if install.is_empty() {
+        bail!("vswhere found no Visual Studio installation with the C++ workload");
+    }
+    let vcvars = Utf8PathBuf::from(install).join("VC/Auxiliary/Build/vcvars64.bat");
+    if !vcvars.exists() {
+        bail!("vcvars64.bat not found at {vcvars} (install the MSVC C++ build tools)");
+    }
+    // Run vcvars and dump the resulting environment (`set` prints one NAME=VALUE
+    // per line). This goes through a wrapper .bat rather than an inline
+    // `cmd /c "call \"…\" && set"`: cmd.exe doesn't understand the
+    // backslash-escaped quotes the inline arg picks up, so it mangles the nested
+    // quoting. A wrapper file needs no inline quotes. vcvars also wants a
+    // backslash path.
+    let vcvars_win = vcvars.as_str().replace('/', "\\");
+    let wrapper = std::env::temp_dir().join("xtask-vcvars-dump.bat");
+    std::fs::write(
+        &wrapper,
+        format!("@echo off\r\ncall \"{vcvars_win}\" >nul\r\nset\r\n"),
+    )
+    .context("writing vcvars wrapper batch")?;
+    let wrapper = wrapper.to_string_lossy().to_string();
+    let dump = cmd!(sh, "cmd /c {wrapper}")
+        .quiet()
+        .read()
+        .context("running vcvars64.bat to import the MSVC environment")?;
+    let _ = std::fs::remove_file(&wrapper);
+    let env: Vec<(String, String)> = dump
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    if !env.iter().any(|(k, _)| k.eq_ignore_ascii_case("LIB")) {
+        bail!("vcvars64.bat did not set LIB — the Windows SDK may be missing");
+    }
+    Ok(env)
 }

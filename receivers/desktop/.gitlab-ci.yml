@@ -163,6 +163,9 @@ build_receiver_for_win_x64:
           winget install --id=LLVM.LLVM -e --accept-package-agreements --accept-source-agreements
           winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
           winget install --id=Ninja-build.Ninja -e --accept-package-agreements --accept-source-agreements
+          # flatc: fcast-protocol's build.rs runs it to codegen the flatbuffers.
+          # Lands in %LOCALAPPDATA%\Microsoft\WinGet\Links (already on PATH below).
+          winget install --id=Google.flatbuffers -e --accept-package-agreements --accept-source-agreements
         }
 
         Start-Job -ScriptBlock {

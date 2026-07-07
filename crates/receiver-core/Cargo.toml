@@ -30,7 +30,7 @@ smol_str.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
-gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true }
+gst-plugin-dav1d = { git = "https://github.com/MAlba124/gst-plugins-rs.git", rev = "89b30ced61a990b01ea984bbf0acb2bbcb8f166f", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
