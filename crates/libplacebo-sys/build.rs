@@ -78,14 +78,29 @@ mod build {
             .join("patches/opengl-rgb10a2.patch");
         apply_patch(&source, &rgb10a2_patch_path);
 
+        let (vulkan, shaderc, vk_proc_addr) = if cfg!(feature = "vulkan") {
+            (
+                "-Dvulkan=enabled",
+                "-Dshaderc=enabled",
+                "-Dvk-proc-addr=disabled",
+            )
+        } else {
+            (
+                "-Dvulkan=disabled",
+                "-Dshaderc=disabled",
+                "-Dvk-proc-addr=disabled",
+            )
+        };
+
         runner!(
             "meson",
             "setup",
             "-Dbuildtype=release",
             "-Ddefault_library=static",
             "-Dglslang=disabled",
-            "-Dvulkan=disabled",
-            "-Dshaderc=disabled",
+            vulkan,
+            shaderc,
+            vk_proc_addr,
             "-Dd3d11=disabled",
             "-Ddemos=false",
             "-Ddovi=disabled",
@@ -139,6 +154,17 @@ fn main() {
 
     for header in headers {
         builder = builder.clang_arg("-I").clang_arg(header.to_str().unwrap());
+    }
+
+    if cfg!(feature = "vulkan") {
+        builder = builder.clang_arg("-DFCAST_ENABLE_VULKAN");
+        // libplacebo/vulkan.h includes <vulkan/vulkan.h>; use the same vendored headers
+        // the meson build itself prefers, so the bindings match the compiled library.
+        let vk_headers = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("libplacebo/3rdparty/Vulkan-Headers/include");
+        builder = builder
+            .clang_arg("-I")
+            .clang_arg(vk_headers.to_str().unwrap());
     }
 
     builder = builder.default_enum_style(bindgen::EnumVariation::Rust {

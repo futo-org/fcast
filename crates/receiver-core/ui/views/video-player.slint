@@ -18,7 +18,6 @@ import {
     MasterButton,
     ScrubbyMcScrub,
     VolumePreview,
-    SubtitleView,
 } from "../common.slint";
 import {
     FCastPalette,
@@ -249,6 +248,22 @@ component PlaybackControls inherits Rectangle {
 
     forward-focus: focus;
 
+    // True while any part of the controls is drawn over the video. Mirrored into the
+    // Bridge so the video sink knows when its subsurface may sit above the GUI.
+    property <bool> obstructing: is-visible
+        || show-settings
+        || elems-opacity > 0
+        || background-height < 100%
+        || settings-side-bar.width > 0px;
+
+    changed obstructing => {
+        Bridge.controls-overlay-visible = self.obstructing;
+    }
+
+    init => {
+        Bridge.controls-overlay-visible = self.obstructing;
+    }
+
     animate elems-opacity, background-height {
         duration: 200ms;
         easing: ease-out-expo;
@@ -341,8 +356,6 @@ component PlaybackControls inherits Rectangle {
         }
 
         Rectangle { }
-
-        if Bridge.render-subtitles && Bridge.subtitles.length > 0: SubtitleView { }
 
         ctrl-layout := Rectangle {
             height: self.preferred-height * elems-opacity;
@@ -640,28 +653,6 @@ export component VideoPlayerView inherits Rectangle {
     width: 100%;
     height: 100%;
     background: transparent;
-
-    pure function scale() -> length {
-        Math.min(root.height / Bridge.video-frame-height, root.width / Bridge.video-frame-width)
-    }
-
-    pure function frame-x() -> length {
-        root.width / 2 - Bridge.video-frame-width * scale() / 2
-    }
-
-    pure function frame-y() -> length {
-        root.height / 2 - Bridge.video-frame-height * scale() / 2
-    }
-
-    if Bridge.render-subtitles: Rectangle {
-        for overlay in Bridge.overlays: Image {
-            x: frame-x() + (overlay.x * scale() / 1px);
-            y: frame-y() + (overlay.y * scale() / 1px);
-            width: overlay.render-width * scale() / 1px;
-            height: overlay.render-height * scale() / 1px;
-            source: overlay.img;
-        }
-    }
 
     VolumePreview {
         width: 100%;

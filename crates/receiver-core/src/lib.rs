@@ -2,7 +2,6 @@ use anyhow::Result;
 use gst::prelude::*;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
-use slint::{ToSharedString, VecModel};
 use tokio::sync::mpsc::{self, UnboundedSender};
 #[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
@@ -11,6 +10,7 @@ use tracing::{debug, error, info};
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::{
+    cell::RefCell,
     path::PathBuf,
     rc::Rc,
     sync::{Arc, LazyLock},
@@ -30,6 +30,7 @@ mod dmabuf;
 pub mod egl;
 mod fcast;
 mod fcasthttpsrc;
+#[allow(dead_code)]
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod fcompsrc;
@@ -51,12 +52,16 @@ mod user_agent;
 mod utils;
 pub mod video;
 pub mod video_sink;
+#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+mod wayland_sink;
 
 pub use glow;
 pub use gst;
 pub use gst_video;
 pub use libplacebo;
 pub use video_sink::{SwapchainSink, VideoSink};
+#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+pub use wayland_sink::WaylandSubsurfaceSink;
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -230,10 +235,14 @@ pub struct CliArgs {
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
+    /// Don't forward HDR to the compositor; always tone-map to SDR with libplacebo instead.
+    /// Only affects the experimental Wayland subsurface video sink.
+    #[arg(long, default_value_t = false)]
+    pub disable_hdr_output: bool,
 }
 
 impl CliArgs {
-    fn rendering_options(&self) -> placebo::RenderingOptions {
+    pub fn rendering_options(&self) -> placebo::RenderingOptions {
         placebo::RenderingOptions {
             profile: self.render_profile,
             visualize_lut: self.visualize_color_mapping_lut,
@@ -245,6 +254,23 @@ impl CliArgs {
 pub struct Settings {
     pub cli: CliArgs,
     pub file: Option<SettingsFile>,
+}
+
+/// Per-tick video state shared (on the event-loop thread) between the Slint rendering notifier
+/// and the event-loop-clocked handlers (`new-video-frame`, `video-obstructed-changed`). The
+/// split exists because a subsurface sink stacked above the GUI parks winit's redraw loop
+/// (occluded surfaces stop receiving frame callbacks), so frames and obstruction changes must
+/// reach the sink without waiting for a repaint.
+struct VideoTick<S> {
+    video_sink: S,
+    payload_handle: Option<video::imp::VideoPayloadHandle>,
+    cached_frame: Option<video::Frame>,
+    /// Render on the next repaint even without a new payload (a standalone render was skipped
+    /// or failed after the frame had already been taken off the payload slot).
+    force_render: bool,
+    /// A standalone EOS couldn't flush the shared GL placebo context (it isn't current outside
+    /// the rendering notifier); do it on the next repaint tick.
+    pending_gl_flush: bool,
 }
 
 /// Run the main app.
@@ -310,12 +336,21 @@ pub fn run<S: VideoSink + 'static>(
 
     let gui_is_visible = gui::GuiIsVisible::new();
     let mut renderer_tx = None;
+    let mut _obstruction_watchdog = None;
     if let Some(ui) = &ui {
         let pl_log = libplacebo::Log::new().unwrap();
         let render_opts = cli_args.rendering_options();
 
         #[cfg(debug_assertions)]
         ui.global::<Bridge>().set_is_debugging(true);
+
+        let tick = Rc::new(RefCell::new(VideoTick {
+            video_sink,
+            payload_handle: None,
+            cached_frame: None,
+            force_render: false,
+            pending_gl_flush: false,
+        }));
 
         let (renderer_chan_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
         renderer_tx = Some(renderer_chan_tx);
@@ -331,10 +366,8 @@ pub fn run<S: VideoSink + 'static>(
             #[cfg(target_os = "linux")]
             let mut drm_formats = HashSet::new();
             let gui_is_visible = gui_is_visible.clone();
-            let mut video_sink = video_sink;
+            let tick = tick.clone();
             let sink_mutex = Arc::clone(&sink_mutex);
-            let mut payload_handle = None::<video::imp::VideoPayloadHandle>;
-            let mut cached_frame = None;
             move |state, graphics_api| match state {
                 slint::RenderingState::RenderingSetup => {
                     debug!("Got graphics API: {graphics_api:?}");
@@ -421,6 +454,12 @@ pub fn run<S: VideoSink + 'static>(
                         }
                     }
 
+                    // Give the sink a chance to grab native window handles (e.g. the Wayland
+                    // surface a subsurface sink parents itself to).
+                    if let Some(ui) = ui_weak.upgrade() {
+                        tick.borrow_mut().video_sink.setup(ui.window());
+                    }
+
                     gui_is_visible.set(true);
                 }
                 slint::RenderingState::BeforeRendering => {
@@ -463,6 +502,9 @@ pub fn run<S: VideoSink + 'static>(
                         }
                     }
 
+                    let mut tick_ref = tick.borrow_mut();
+                    let t = &mut *tick_ref;
+
                     let Some(sink) = sink.as_mut() else {
                         if let Some(new_sink) = sink_mutex.lock().take() {
                             #[cfg(target_os = "linux")]
@@ -470,21 +512,33 @@ pub fn run<S: VideoSink + 'static>(
                                 "drm-formats",
                                 video::imp::DrmFormats(Arc::new(drm_formats.clone())),
                             );
-                            payload_handle = Some(new_sink.property("payload-handle"));
+                            t.payload_handle = Some(new_sink.property("payload-handle"));
                             sink = Some(new_sink);
                         }
                         return;
                     };
 
-                    if let Some(payload_handle) = &payload_handle {
+                    if std::mem::take(&mut t.pending_gl_flush)
+                        && let Some(placebo) = pl_context.as_mut()
+                    {
+                        t.video_sink.flush_cache(placebo);
+                    }
+
+                    let mut new_frame = false;
+                    if let Some(payload_handle) = &t.payload_handle {
                         if let Some(pay) = payload_handle.0.lock().take() {
                             match pay {
-                                Some(frame) => cached_frame = Some(frame),
+                                Some(frame) => {
+                                    t.cached_frame = Some(frame);
+                                    new_frame = true;
+                                }
                                 // EOS
                                 None => {
-                                    cached_frame = None;
-                                    bridge.set_overlays(slint::ModelRc::default());
-                                    bridge.set_subtitles(slint::ModelRc::default());
+                                    t.cached_frame = None;
+                                    t.video_sink.clear();
+                                    if let Some(placebo) = pl_context.as_mut() {
+                                        t.video_sink.flush_cache(placebo);
+                                    }
                                 }
                             }
                         }
@@ -492,7 +546,8 @@ pub fn run<S: VideoSink + 'static>(
 
                     let new_size = ui.window().size();
                     let new_size = (new_size.width, new_size.height);
-                    if new_size != prev_size {
+                    let size_changed = new_size != prev_size;
+                    if size_changed {
                         sink.set_property(
                             "window-resolution",
                             video::imp::WindowResolution {
@@ -505,7 +560,7 @@ pub fn run<S: VideoSink + 'static>(
 
                     if let Some(renderer) = renderer.as_mut() {
                         use glow::HasContext;
-                        let clear_color = video_sink.get_clear_color();
+                        let clear_color = t.video_sink.get_clear_color();
                         unsafe {
                             renderer.gl.clear_color(
                                 clear_color[0],
@@ -517,52 +572,22 @@ pub fn run<S: VideoSink + 'static>(
                         }
                     }
 
-                    if let Some(frame) = cached_frame.as_mut() {
+                    let force_render = std::mem::take(&mut t.force_render);
+                    if let Some(frame) = t.cached_frame.as_mut() {
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
-                        if let Some(placebo) = pl_context.as_mut()
+                        frame.overlay_enabled = bridge.get_render_subtitles();
+                        if (new_frame
+                            || size_changed
+                            || force_render
+                            || t.video_sink.needs_render_every_repaint())
+                            && let Some(placebo) = pl_context.as_mut()
                             && let Some(renderer) = renderer.as_ref()
                         {
                             if let Err(err) =
-                                video_sink.render(placebo, &renderer.gl, frame, prev_size)
+                                t.video_sink.render(placebo, &renderer.gl, frame, prev_size)
                             {
                                 error!(?err, "video sink render failed");
-                            }
-                        }
-
-                        let overlays =
-                            std::mem::replace(&mut frame.overlays, video::Resource::Unchanged);
-                        match overlays {
-                            video::Resource::Eos | video::Resource::Cleared => {
-                                bridge.set_overlays(slint::ModelRc::default());
-                            }
-                            video::Resource::Unchanged => (),
-                            video::Resource::New(overlays) => {
-                                let overlays: VecModel<UiSubOverlay> = overlays
-                                    .into_iter()
-                                    .map(|overlay| UiSubOverlay {
-                                        img: slint::Image::from_rgba8(overlay.pix_buffer),
-                                        x: overlay.x as f32,
-                                        y: overlay.y as f32,
-                                        render_width: overlay.render_width as f32,
-                                        render_height: overlay.render_height as f32,
-                                    })
-                                    .collect();
-                                bridge.set_overlays(Rc::new(overlays).into());
-                            }
-                        }
-
-                        let subtitles =
-                            std::mem::replace(&mut frame.subtitles, video::Resource::Unchanged);
-                        match subtitles {
-                            video::Resource::Eos | video::Resource::Cleared => {
-                                bridge.set_subtitles(slint::ModelRc::default());
-                            }
-                            video::Resource::Unchanged => (),
-                            video::Resource::New(subs) => {
-                                let subs: VecModel<slint::SharedString> =
-                                    subs.into_iter().map(|s| s.to_shared_string()).collect();
-                                bridge.set_subtitles(Rc::new(subs).into());
                             }
                         }
                     }
@@ -580,10 +605,11 @@ pub fn run<S: VideoSink + 'static>(
                         }
                     }
 
-                    cached_frame.take();
+                    let mut t = tick.borrow_mut();
+                    t.cached_frame.take();
 
                     if let Some(placebo) = pl_context.as_mut() {
-                        video_sink.teardown(placebo);
+                        t.video_sink.teardown(placebo);
                     }
 
                     pl_context.take();
@@ -591,6 +617,99 @@ pub fn run<S: VideoSink + 'static>(
                 _ => (),
             }
         })?;
+
+        // Pushed from MainWindow whenever the GUI starts/stops drawing over the video area.
+        ui.global::<Bridge>().on_video_obstructed_changed({
+            let tick = tick.clone();
+            move |obstructed| {
+                debug!(obstructed, "video obstruction changed");
+                tick.borrow_mut()
+                    .video_sink
+                    .set_video_obstructed(obstructed, true);
+            }
+        });
+
+        // One invocation per decoded frame (proxied from the GStreamer streaming thread).
+        // Normally we just schedule a repaint and let `BeforeRendering` take the frame; while
+        // the sink presents above the (redraw-parked) GUI, render it directly instead.
+        ui.global::<Bridge>().on_new_video_frame({
+            let tick = tick.clone();
+            let ui_weak = ui.as_weak();
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let mut tick_ref = tick.borrow_mut();
+                let t = &mut *tick_ref;
+                let bridge = ui.global::<Bridge>();
+                // Self-clocked means winit's redraw loop may be parked, and with it Slint's
+                // `changed` callbacks (they only run as part of the render/update cycle), so
+                // obstruction changes must be *polled*. Reading the property forces a fresh
+                // evaluation; restacking below re-exposes the GUI and resumes its redraws.
+                if t.video_sink.self_clocked() && bridge.get_video_obstructed() {
+                    t.video_sink.set_video_obstructed(true, true);
+                }
+                if !t.video_sink.self_clocked() {
+                    ui.window().request_redraw();
+                    return;
+                }
+                let Some(next_payload) =
+                    t.payload_handle.as_ref().and_then(|ph| ph.0.lock().take())
+                else {
+                    return;
+                };
+                match next_payload {
+                    // EOS: mirror the repaint path's handling. clear() unmaps the subsurface,
+                    // un-occluding the GUI, so the requested redraw actually fires.
+                    None => {
+                        t.cached_frame = None;
+                        t.video_sink.clear();
+                        t.video_sink.flush_cache_standalone();
+                        t.pending_gl_flush = true;
+                        ui.window().request_redraw();
+                    }
+                    Some(frame) => {
+                        t.cached_frame = Some(frame);
+                        let frame = t.cached_frame.as_mut().unwrap();
+                        bridge.set_video_frame_width(frame.data.width() as i32);
+                        bridge.set_video_frame_height(frame.data.height() as i32);
+                        frame.overlay_enabled = bridge.get_render_subtitles();
+                        let size = ui.window().size();
+                        match t
+                            .video_sink
+                            .render_standalone(frame, (size.width, size.height))
+                        {
+                            Ok(true) => {}
+                            // Raced a restack (or failed): the payload slot is already empty,
+                            // so flag a forced render and fall back to the repaint path.
+                            Ok(false) => {
+                                t.force_render = true;
+                                ui.window().request_redraw();
+                            }
+                            Err(err) => {
+                                error!(?err, "Standalone video render failed");
+                                t.force_render = true;
+                                ui.window().request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Backstop for obstruction changes while the video sits above the GUI but *no frames
+        // are flowing* (e.g. a pause racing the last frame's poll).
+        let watchdog = slint::Timer::default();
+        watchdog.start(slint::TimerMode::Repeated, Duration::from_millis(250), {
+            let tick = tick.clone();
+            let ui_weak = ui.as_weak();
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let mut t = tick.borrow_mut();
+                if t.video_sink.self_clocked() && ui.global::<Bridge>().get_video_obstructed() {
+                    t.video_sink.set_video_obstructed(true, true);
+                }
+            }
+        });
+        _obstruction_watchdog = Some(watchdog);
     }
 
     let gui_tx = if let Some(ui) = &ui {
@@ -615,11 +734,9 @@ pub fn run<S: VideoSink + 'static>(
             let video_sink_elem = if let Some(ui_weak) = ui_weak {
                 let sink = video::FSink::new();
                 sink.connect("frame-available", false, move |_| {
-                    ui_weak
-                        .upgrade_in_event_loop(move |ui| {
-                            ui.window().request_redraw();
-                        })
-                        .unwrap();
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<Bridge>().invoke_new_video_frame();
+                    });
 
                     None
                 });

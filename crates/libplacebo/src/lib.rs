@@ -118,6 +118,134 @@ impl Drop for OpenGL {
     }
 }
 
+#[cfg(feature = "vulkan")]
+pub struct Vulkan {
+    pub vk: pl_vulkan,
+    inst: pl_vk_inst,
+    /// The Vulkan loader; its symbols back the instance/device, so it must outlive them.
+    _loader: libloading::Library,
+}
+
+/// Convert a DRM (major, minor) pair to a `dev_t`, matching glibc's makedev().
+#[cfg(feature = "vulkan")]
+fn makedev(major: u64, minor: u64) -> u64 {
+    ((major & 0xffff_f000) << 32)
+        | ((major & 0x0000_0fff) << 8)
+        | ((minor & 0xffff_ff00) << 12)
+        | (minor & 0x0000_00ff)
+}
+
+/// Find the physical device whose DRM primary or render node is `target` (a `dev_t`), e.g. the
+/// device a Wayland compositor advertised via dmabuf feedback. On multi-GPU systems letting
+/// libplacebo pick a device instead can select a GPU whose exported dmabufs (tiling modifiers)
+/// the compositor cannot import.
+#[cfg(feature = "vulkan")]
+unsafe fn find_phys_device_by_drm(inst: pl_vk_inst, target: u64) -> Option<VkPhysicalDevice> {
+    unsafe {
+        let gpa = (*inst).get_proc_addr?;
+        let instance = (*inst).instance;
+        let enumerate: PFN_vkEnumeratePhysicalDevices =
+            std::mem::transmute(gpa(instance, c"vkEnumeratePhysicalDevices".as_ptr()));
+        let get_props2: PFN_vkGetPhysicalDeviceProperties2 =
+            std::mem::transmute(gpa(instance, c"vkGetPhysicalDeviceProperties2".as_ptr()));
+        let (enumerate, get_props2) = (enumerate?, get_props2?);
+
+        let mut count = 0u32;
+        if enumerate(instance, &mut count, std::ptr::null_mut()) != VkResult::VK_SUCCESS {
+            return None;
+        }
+        let mut devices: Vec<VkPhysicalDevice> = vec![std::ptr::null_mut(); count as usize];
+        if enumerate(instance, &mut count, devices.as_mut_ptr()) != VkResult::VK_SUCCESS {
+            return None;
+        }
+
+        for device in devices.into_iter().take(count as usize) {
+            let mut drm: VkPhysicalDeviceDrmPropertiesEXT = std::mem::zeroed();
+            drm.sType = VkStructureType::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+            let mut props: VkPhysicalDeviceProperties2 = std::mem::zeroed();
+            props.sType = VkStructureType::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props.pNext = &mut drm as *mut _ as *mut c_void;
+            // Drivers skip unknown pNext structs, so this stays zeroed (hasPrimary/hasRender
+            // false) when VK_EXT_physical_device_drm is unsupported.
+            get_props2(device, &mut props);
+
+            let matches = (drm.hasPrimary != 0
+                && makedev(drm.primaryMajor as u64, drm.primaryMinor as u64) == target)
+                || (drm.hasRender != 0
+                    && makedev(drm.renderMajor as u64, drm.renderMinor as u64) == target);
+            if matches {
+                let name = CStr::from_ptr(props.properties.deviceName.as_ptr());
+                tracing::info!(name = ?name, "Matched Vulkan physical device by DRM device");
+                return Some(device);
+            }
+        }
+        tracing::warn!(target, "No Vulkan physical device matches the DRM device");
+        None
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl Vulkan {
+    /// Create a Vulkan-backed libplacebo context. When `drm_device` (a `dev_t`) is given, the
+    /// physical device is chosen by matching its DRM node. Pass the compositor's main device to
+    /// guarantee exported dmabufs are importable on multi-GPU systems.
+    pub fn new(log: &Log, drm_device: Option<u64>) -> Option<Self> {
+        let loader = ["libvulkan.so.1", "libvulkan.so"]
+            .into_iter()
+            .find_map(|name| unsafe { libloading::Library::new(name) }.ok())?;
+        let get_proc_addr: PFN_vkGetInstanceProcAddr = unsafe {
+            loader
+                .get::<unsafe extern "C" fn()>(b"vkGetInstanceProcAddr\0")
+                .ok()
+                .map(|sym| std::mem::transmute(sym.into_raw().into_raw()))
+        };
+        get_proc_addr?;
+
+        unsafe {
+            let mut inst_params = pl_vk_inst_default_params;
+            inst_params.get_proc_addr = get_proc_addr;
+            let mut inst = pl_vk_inst_create(log.log, &inst_params);
+            if inst.is_null() {
+                return None;
+            }
+
+            let mut params = pl_vulkan_default_params;
+            params.instance = (*inst).instance;
+            params.get_proc_addr = (*inst).get_proc_addr;
+            if let Some(target) = drm_device
+                && let Some(device) = find_phys_device_by_drm(inst, target)
+            {
+                params.device = device;
+            }
+            let vk = pl_vulkan_create(log.log, &params);
+            if vk.is_null() {
+                pl_vk_inst_destroy(&mut inst);
+                return None;
+            }
+
+            Some(Self {
+                vk,
+                inst,
+                _loader: loader,
+            })
+        }
+    }
+
+    pub unsafe fn gpu(&self) -> *const pl_gpu_t {
+        unsafe { (*self.vk).gpu }
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl Drop for Vulkan {
+    fn drop(&mut self) {
+        unsafe {
+            pl_vulkan_destroy(&mut self.vk);
+            pl_vk_inst_destroy(&mut self.inst);
+        }
+    }
+}
+
 pub struct Swapchain {
     swapchain: *const pl_swapchain_t,
 }
@@ -192,8 +320,12 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(log: &Log, opengl: &OpenGL) -> Option<Self> {
+        unsafe { Self::new_from_gpu(log, (*opengl.gl).gpu) }
+    }
+
+    pub unsafe fn new_from_gpu(log: &Log, gpu: *const pl_gpu_t) -> Option<Self> {
         unsafe {
-            let renderer = pl_renderer_create(log.log, (*opengl.gl).gpu);
+            let renderer = pl_renderer_create(log.log, gpu);
             if renderer.is_null() {
                 return None;
             }
