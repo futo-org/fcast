@@ -11,6 +11,18 @@ use std::{
 slint::include_modules!();
 
 #[cfg(feature = "gui")]
+fn color(rgba: [u8; 4]) -> slint::Color {
+    slint::Color::from_argb_u8(rgba[3], rgba[0], rgba[1], rgba[2])
+}
+
+/// A missing colour maps to fully transparent (a transparent stroke simply
+/// draws nothing, a transparent fill leaves the shape unfilled).
+#[cfg(feature = "gui")]
+fn brush(rgba: Option<[u8; 4]>) -> slint::Brush {
+    slint::Brush::SolidColor(rgba.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), color))
+}
+
+#[cfg(feature = "gui")]
 fn run(ui_weak: slint::Weak<MainWindow>) {
     let listener = TcpListener::bind("0.0.0.0:3000").unwrap();
     for stream in listener.incoming() {
@@ -37,8 +49,10 @@ fn run(ui_weak: slint::Weak<MainWindow>) {
         let now = chrono::Local::now();
         let (data_buf, source, trigger) = remote_pipeline_dbg::read_graph(stream).unwrap();
 
+        // Let graphviz do the layout only (`-Tjson`), never rasterize. The JSON
+        // is a flat list of draw ops we render as native Slint elements.
         let mut graphviz = Command::new("dot")
-            .arg("-Tgd")
+            .arg("-Tjson")
             .stdout(Stdio::piped())
             .stdin(Stdio::piped())
             .spawn()
@@ -53,25 +67,40 @@ fn run(ui_weak: slint::Weak<MainWindow>) {
             })
             .unwrap();
 
-        let mut image_data = graphviz.wait_with_output().unwrap().stdout;
+        let json = graphviz.wait_with_output().unwrap().stdout;
+        let graph = remote_pipeline_dbg::render::parse(&json).unwrap();
 
-        let width = u16::from_be_bytes([image_data[2], image_data[3]]);
-        let height = u16::from_be_bytes([image_data[4], image_data[5]]);
-        let argb = &mut image_data[11..];
-        assert_eq!(argb.len(), width as usize * height as usize * 4);
-        image_swizzle::argb_to_rgba_inplace(argb);
-        image_swizzle::rgb0_to_bgrx_inplace(argb);
-
-        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-            argb,
-            width as u32,
-            height as u32,
-        );
         ui_weak
             .upgrade_in_event_loop(move |ui| {
                 use slint::ToSharedString;
 
-                let img = slint::Image::from_rgba8(buffer);
+                let paths: Vec<UiGraphPath> = graph
+                    .paths
+                    .iter()
+                    .map(|p| UiGraphPath {
+                        commands: p.commands.as_str().into(),
+                        fill: brush(p.fill),
+                        stroke: brush(p.stroke),
+                        stroke_width: p.stroke_width,
+                    })
+                    .collect();
+                let texts: Vec<UiGraphText> = graph
+                    .texts
+                    .iter()
+                    .map(|t| UiGraphText {
+                        x: t.x,
+                        y: t.y,
+                        size: t.size,
+                        text: t.text.as_str().into(),
+                        color: color(t.color),
+                        align: match t.align {
+                            remote_pipeline_dbg::render::TextAlign::Left => 0,
+                            remote_pipeline_dbg::render::TextAlign::Center => 1,
+                            remote_pipeline_dbg::render::TextAlign::Right => 2,
+                        },
+                    })
+                    .collect();
+
                 let bridge = ui.global::<Bridge>();
                 let dumps = bridge.get_dumps();
                 let model = dumps
@@ -83,7 +112,10 @@ fn run(ui_weak: slint::Weak<MainWindow>) {
                     client: client_addr.to_shared_string(),
                     pipeline: source.to_string().to_shared_string(),
                     trigger: trigger.to_string().to_shared_string(),
-                    graph: img,
+                    width: graph.width,
+                    height: graph.height,
+                    paths: std::rc::Rc::new(slint::VecModel::from(paths)).into(),
+                    texts: std::rc::Rc::new(slint::VecModel::from(texts)).into(),
                 });
                 let idx = model.row_count() as i32;
                 bridge.set_selected_dump(idx - 1);

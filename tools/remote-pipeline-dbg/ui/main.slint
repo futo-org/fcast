@@ -7,12 +7,36 @@ export enum WaitingState {
     Decoding,
 }
 
+// A batch of geometry sharing one fill/stroke, as an SVG path string.
+export struct UiGraphPath {
+    commands: string,
+    fill: brush,
+    stroke: brush,
+    stroke-width: length,
+}
+
+// A single text label anchored at (x, y) in the graph's coordinate space.
+// `align`: 0 = left, 1 = center, 2 = right — the anchor is offset by the
+// label's own rendered width so it never gets clipped to a fixed box.
+export struct UiGraphText {
+    x: length,
+    y: length,
+    size: length,
+    text: string,
+    color: color,
+    align: int,
+}
+
 export struct UiGraphDump {
     title: string,
     client: string,
     pipeline: string,
     trigger: string,
-    graph: image,
+    // Graph bounds (graphviz layout, in points treated as pixels).
+    width: length,
+    height: length,
+    paths: [UiGraphPath],
+    texts: [UiGraphText],
 }
 
 export global Bridge {
@@ -79,7 +103,8 @@ export component MainWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 500px;
 
-    property <percent> scaling: 100%;
+    // Zoom factor applied to the graph canvas (1.0 == 100%).
+    property <float> scaling: 1.0;
 
     VerticalLayout {
         ScrollView {
@@ -169,9 +194,27 @@ export component MainWindow inherits Window {
                 }
             }
 
+            property <UiGraphDump> dump: Bridge.dumps[Bridge.selected-dump];
+            property <float> start-scaling: 1.0;
+
+            // Trackpad pinch-to-zoom (macOS/iOS) and touchscreen gestures.
+            // Mouse-wheel ctrl+scroll zoom is handled by the TouchArea below.
+            ScaleRotateGestureHandler {
+                started => {
+                    start-scaling = scaling;
+                }
+                updated => {
+                    let old-scale = scaling;
+                    scaling = start-scaling * self.scale;
+                    // Keep the pinch centre fixed on screen, matching the
+                    // ctrl+scroll focal-point behaviour.
+                    scroll.viewport-x = (self.center.x + scroll.viewport-x) - (self.center.x * (scaling / old-scale));
+                    scroll.viewport-y = (self.center.y + scroll.viewport-y) - (self.center.y * (scaling / old-scale));
+                }
+
             scroll := ScrollView {
-                viewport-width: img.width * img.transform-scale;
-                viewport-height: img.height * img.transform-scale;
+                viewport-width: canvas.width * scaling;
+                viewport-height: canvas.height * scaling;
 
                 TouchArea {
                     scroll-event(event) => {
@@ -180,7 +223,7 @@ export component MainWindow inherits Window {
                         }
 
                         let old-scale = scaling;
-                        scaling += event.delta-y > 0 ? 5% : -5%;
+                        scaling += event.delta-y > 0 ? 0.05 : -0.05;
                         scroll.viewport-x = (self.mouse-x + scroll.viewport-x) - (self.mouse-x * (scaling / old-scale));
                         scroll.viewport-y = (self.mouse-y + scroll.viewport-y) - (self.mouse-y * (scaling / old-scale));
 
@@ -205,10 +248,48 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                img := Image {
-                    source: Bridge.dumps[Bridge.selected-dump].graph;
+                canvas := Rectangle {
+                    width: dump.width;
+                    height: dump.height;
                     transform-scale: scaling;
+                    // Graphviz assumes a white page; keep it readable regardless
+                    // of the app theme.
+                    background: white;
+
+                    for p in dump.paths: Path {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        // Map the graph's coordinate space 1:1 onto the canvas so
+                        // every path shares one absolute coordinate system.
+                        viewbox-x: 0;
+                        viewbox-y: 0;
+                        viewbox-width: dump.width / 1px;
+                        viewbox-height: dump.height / 1px;
+                        fit: fill;
+
+                        commands: p.commands;
+                        fill: p.fill;
+                        stroke: p.stroke;
+                        stroke-width: p.stroke-width;
+                    }
+
+                    for t in dump.texts: Text {
+                        // Offset the anchor by the label's own width so text is
+                        // left/center/right aligned without a clipping box.
+                        x: t.align == 0
+                            ? t.x
+                            : t.align == 2
+                                ? t.x - self.width
+                                : t.x - self.width / 2;
+                        y: t.y;
+                        text: t.text;
+                        color: t.color;
+                        font-size: t.size;
+                    }
                 }
+            }
             }
         }
     }

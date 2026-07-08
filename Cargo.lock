@@ -4806,15 +4806,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image_swizzle"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f0b4ca70fba5d4987acb89071ddaa6960caebbd285248c8dce39e568993e447"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "imagesize"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7787,7 +7778,8 @@ name = "remote-pipeline-dbg"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "image_swizzle",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
 ]
