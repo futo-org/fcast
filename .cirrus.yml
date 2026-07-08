@@ -51,11 +51,7 @@ desktop_receiver_task:
   macos_instance:
     image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
   buildReceiverMac_script:
-    # No GStreamer dev kit anymore: build-macos-installer builds gstreamer AND
-    # the glib/pango stack statically from source (auto-cloned at --gst-ref,
-    # deps from meson wraps) and links everything into the binary. pkgconf is
-    # only needed as a build TOOL (system-deps + the uninstalled .pc files).
-    - brew install rustup-init meson cmake ninja pkgconf
+    - brew install rustup-init meson cmake ninja pkgconf flatbuffers
       && rustup-init -y
       && rustup target add aarch64-apple-darwin
       && rustup default nightly
