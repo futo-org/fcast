@@ -30,7 +30,7 @@ smol_str.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
-gst-plugin-dav1d = { git = "https://github.com/MAlba124/gst-plugins-rs.git", rev = "89b30ced61a990b01ea984bbf0acb2bbcb8f166f", features = [ "static" ], optional = true }
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
@@ -49,6 +49,7 @@ regex.workspace = true
 gst-webrtc.workspace = true
 self_cell.workspace = true
 image = { workspace = true, features = [
+    "decode",
     "avif-native", "bmp", "dds", "ff", "gif", "ico",
     "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
@@ -107,8 +108,7 @@ objc2-app-kit = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
-rustls = { workspace = true, default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
-reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls", "gzip", "cookies" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
@@ -131,11 +131,12 @@ tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
 jni = "0.21.1"
 reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-reqwest = { version = "0.13", features = [ "native-tls", "gzip", "cookies" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
 app-updater = { path = "../app-updater"}
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 receiver-resources.path = "../receiver-resources"
 
 [build-dependencies]

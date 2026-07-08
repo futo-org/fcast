@@ -40,8 +40,8 @@ gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
-gst-plugin-rtp = { rev = "89b30ced61a990b01ea984bbf0acb2bbcb8f166f", git = "https://github.com/MAlba124/gst-plugins-rs.git", features = [ "static" ] }
-gst-plugin-webrtc = { rev = "89b30ced61a990b01ea984bbf0acb2bbcb8f166f", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
+gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay" ] }
+gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 serde_json = "1.0"
@@ -106,3 +106,7 @@ opt-level = 3
 
 [profile.dev.package."*"]
 debug = "line-tables-only"
+
+# Disable encoders
+[patch.crates-io]
+image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }

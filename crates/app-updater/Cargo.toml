@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-reqwest = { version = "0.13", features = [ "native-tls", "json" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "json" ] }
 ctor = "0.2"
 tempfile = "3.24.0"
 serde = { workspace = true, features = ["derive"] }

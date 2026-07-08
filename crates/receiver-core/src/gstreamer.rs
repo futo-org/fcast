@@ -254,7 +254,7 @@ pub fn find_formats() -> (
     audios.insert(Audio::Pcm);
 
     if !elems_scratch.is_empty() {
-        debug!(elems = ?elems_scratch);
+        debug!(elems = format!("[{}]", elems_scratch.join(",")));
     }
 
     (containers, videos, audios, subtitles, protocols)

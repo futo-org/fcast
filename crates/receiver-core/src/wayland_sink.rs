@@ -1614,9 +1614,9 @@ impl WaylandSubsurfaceSink {
             // render completes. Prototype trade-off: costs one sync per frame.
             unsafe { pl_gpu_finish(pl.gpu()) };
 
-            // Debug aid: FCAST_DUMP_VIDEO_FRAME=<path.png> saves a readback of the first rendered
+            // Debug aid: FCAST_DUMP_VIDEO_FRAME=<path.ppm> saves a readback of the first rendered
             // target, to tell a bad render (dump dirty) from a bad export (dump clean, screen
-            // dirty).
+            // dirty). Hand-rolled binary PPM (alpha dropped): image-rs encoders are compiled out.
             if !self.debug_dumped
                 && let Some(path) = std::env::var_os("FCAST_DUMP_VIDEO_FRAME")
                 && target.format == TargetFormat::Rgba8
@@ -1637,10 +1637,12 @@ impl WaylandSubsurfaceSink {
                 tp.row_pitch = w as usize * 4;
                 tp.ptr = data.as_mut_ptr() as *mut _;
                 if unsafe { pl_tex_download(pl.gpu(), &tp) } {
-                    match image::RgbaImage::from_raw(w, h, data)
-                        .ok_or_else(|| anyhow!("bad buffer size"))
-                        .and_then(|img| img.save(&path).map_err(|e| anyhow!(e)))
-                    {
+                    let mut ppm = Vec::with_capacity(32 + w as usize * h as usize * 3);
+                    ppm.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+                    for px in data.chunks_exact(4) {
+                        ppm.extend_from_slice(&px[..3]);
+                    }
+                    match std::fs::write(&path, &ppm) {
                         Ok(()) => info!(?path, "Dumped rendered video frame"),
                         Err(err) => warn!(?err, "Failed to save frame dump"),
                     }
