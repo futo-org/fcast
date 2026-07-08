@@ -1039,6 +1039,12 @@ impl Player {
 
                 PlayerEvent::AsyncDone
             }
+            MessageView::Element(_) => {
+                if let Ok(msg) = gst_pbutils::MissingPluginMessage::parse(msg) {
+                    error!(detail = %msg.installer_detail(), desc = %msg.description(), "GStreamer missing plugin");
+                }
+                return;
+            }
             _ => return,
         };
 

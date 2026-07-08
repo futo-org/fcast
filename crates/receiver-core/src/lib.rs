@@ -235,8 +235,7 @@ pub struct CliArgs {
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
-    /// Don't forward HDR to the compositor; always tone-map to SDR with libplacebo instead.
-    /// Only affects the experimental Wayland subsurface video sink.
+    /// Force HDR content to be tone-mapped to SDR.
     #[arg(long, default_value_t = false)]
     pub disable_hdr_output: bool,
 }
@@ -286,20 +285,10 @@ pub fn run<S: VideoSink + 'static>(
 
     logging::init(cli_args.loglevel);
 
-    #[cfg(target_os = "linux")]
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+    if let Err(err) = tokio_rustls::rustls::crypto::ring::default_provider().install_default() {
         error!(
             ?err,
             "Failed to register ring as rustls default crypto provider"
-        );
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default()
-    {
-        error!(
-            ?err,
-            "Failed to register aws_lc_rs as rustls default crypto provider"
         );
     }
 
