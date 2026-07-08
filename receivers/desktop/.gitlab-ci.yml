@@ -201,7 +201,7 @@ build_receiver_for_win_x64:
         cd fcast
 
         pip3 install meson pkgconf
-        \$env:PKG_CONFIG = "pkgconf"
+        \$env:PKG_CONFIG = (python -c "import pkgconf; print(pkgconf.get_executable())")
 
         cargo xtask receiver build-windows-installer --gst-ref 1.29.2
       PS
