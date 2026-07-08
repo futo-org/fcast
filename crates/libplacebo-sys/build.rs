@@ -92,8 +92,7 @@ mod build {
             )
         };
 
-        runner!(
-            "meson",
+        let mut setup_args: Vec<&str> = vec![
             "setup",
             "-Dbuildtype=release",
             "-Ddefault_library=static",
@@ -107,11 +106,27 @@ mod build {
             "-Dlcms=disabled",
             "-Dxxhash=disabled",
             "-Dunwind=disabled",
+        ];
+        // MSVC hides <stdatomic.h> behind C11 + an experimental switch; without
+        // both, libplacebo's atomic probe fails and it falls back to a
+        // nonexistent `atomic.lib`. C-only so the C++ (shaderc/glslang) TUs are
+        // unaffected.
+        if cfg!(target_os = "windows") {
+            setup_args.push("-Dc_args=/std:c11 /experimental:c11atomics");
+        }
+        setup_args.extend([
             "--prefix",
             release_path.to_str().unwrap(),
             build_path.to_str().unwrap(),
-            source.to_str().unwrap()
-        );
+            source.to_str().unwrap(),
+        ]);
+        let status = Command::new("meson")
+            .args(&setup_args)
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .status()
+            .expect("meson failed to spawn");
+        assert!(status.success(), "meson setup exited with a failure status");
 
         runner!("ninja", "-C", build_path.to_str().unwrap());
         runner!("meson", "install", "-C", build_path.to_str().unwrap());

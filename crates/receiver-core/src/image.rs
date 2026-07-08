@@ -546,8 +546,6 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
         il!(Dds),
         il!(Bmp),
         il!(Ico),
-        il!(Hdr),
-        il!(OpenExr),
         il!(Farbfeld),
         il!(Avif),
         il!(Qoi),

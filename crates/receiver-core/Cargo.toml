@@ -19,6 +19,7 @@ fast_qr = { version = "0.13", features = [ "svg" ] }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-base.workspace = true
+gst-pbutils.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 if-addrs = "0.15"
@@ -29,7 +30,7 @@ smol_str.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
-gst-plugin-dav1d = { version = "0.15", features = [ "static" ], optional = true }
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
@@ -47,7 +48,11 @@ mime = "0.3"
 regex.workspace = true
 gst-webrtc.workspace = true
 self_cell.workspace = true
-image = { workspace = true, features = ["default-formats", "avif-native"] }
+image = { workspace = true, features = [
+    "decode",
+    "avif-native", "bmp", "dds", "ff", "gif", "ico",
+    "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
+] }
 
 # RAOP
 rtsp-types = "0.1"
@@ -103,8 +108,7 @@ objc2-app-kit = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
-rustls = { workspace = true, default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
-reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "default-tls", "gzip", "cookies" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
@@ -127,11 +131,12 @@ tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
 jni = "0.21.1"
 reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-reqwest = { version = "0.13", features = [ "native-tls", "gzip", "cookies" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
 app-updater = { path = "../app-updater"}
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws_lc_rs", "tls12" ] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 receiver-resources.path = "../receiver-resources"
 
 [build-dependencies]
@@ -169,4 +174,6 @@ kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
 tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
+# Enable when linking against a fully static gstreamer-full build
+static-gstreamer = []
 fhs = ["extra-imgfmt", "slint/renderer-femtovg"]
