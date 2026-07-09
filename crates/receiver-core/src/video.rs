@@ -111,6 +111,13 @@ pub enum Rotation {
     Rotate270,
 }
 
+/// Structure name of the element message the sink posts when a frame carrying
+/// subtitle overlays is rendered/prerolled. Edge-triggered (empty ->
+/// non-empty, re-armed by every flush) so it doesn't spam the bus per frame.
+/// The subtitle-refresh logic in `player` uses it to know the freshly selected
+/// track's cue actually made it to the screen.
+pub const SUBTITLE_OVERLAY_SHOWN_MESSAGE: &str = "fcast-subtitle-overlay-shown";
+
 pub struct Frame {
     pub data: FrameData,
     pub mastering_display_info: Option<MasteringDisplayInfo>,
@@ -344,6 +351,9 @@ pub mod imp {
         window_resolution: Mutex<Option<WindowResolution>>,
         window_resized: AtomicBool,
         payload_handle: VideoPayloadHandle,
+        // Edge detector for the overlay-shown element message (see
+        // `SUBTITLE_OVERLAY_SHOWN_MESSAGE`); reset by flush-stop.
+        had_overlays: AtomicBool,
     }
 
     #[glib::object_subclass]
@@ -576,6 +586,13 @@ pub mod imp {
                 }
             }
 
+            // Re-arm the overlay-shown edge: after a flush the next frame
+            // carrying a cue must post again -- the subtitle refresh listens
+            // for it to learn its flush actually rendered the new cue.
+            if matches!(event.view(), gst::EventView::FlushStop(_)) {
+                self.had_overlays.store(false, atomic::Ordering::SeqCst);
+            }
+
             self.parent_event(event)
         }
     }
@@ -660,6 +677,19 @@ pub mod imp {
                         .collect::<SmallVec<[_; 3]>>()
                 })
                 .collect();
+
+            let has_overlays = !overlays.is_empty();
+            let prev = self
+                .had_overlays
+                .swap(has_overlays, atomic::Ordering::SeqCst);
+            if has_overlays && !prev {
+                let _ = self.obj().post_message(
+                    gst::message::Element::builder(gst::Structure::new_empty(
+                        super::SUBTITLE_OVERLAY_SHOWN_MESSAGE,
+                    ))
+                    .build(),
+                );
+            }
 
             let config = self.config.lock();
             let mdi = config.mastering_display_info;

@@ -1,0 +1,30 @@
+diff --git a/subprojects/gst-plugins-base/gst/playback/gstplaysink.c b/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
+index 3fd7bae..0f29ee2 100644
+--- a/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
++++ b/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
+@@ -4503,6 +4503,14 @@ video_set_blocked (GstPlaySink * playsink, gboolean blocked)
+       playsink->video_block_id =
+           gst_pad_add_probe (opad, GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM,
+           sinkpad_blocked_cb, playsink, NULL);
++      /* Mark the block as pending so ready_to_reconfigure() actually waits
++       * for this pad to block. Without it, the first *other* pad to block
++       * starts the reconfiguration while video data is still flowing; a
++       * buffer in flight during the restructuring gets GST_FLOW_FLUSHING,
++       * which permanently pauses the upstream multiqueue's src task and
++       * stalls playback (there is no flush-stop to revive it). The unblock
++       * path below already does the matching PENDING_FLAG_UNSET. */
++      PENDING_FLAG_SET (playsink, GST_PLAY_SINK_TYPE_VIDEO);
+     } else if (!blocked && playsink->video_block_id) {
+       gst_pad_remove_probe (opad, playsink->video_block_id);
+       PENDING_FLAG_UNSET (playsink, GST_PLAY_SINK_TYPE_VIDEO);
+@@ -4529,6 +4537,10 @@ audio_set_blocked (GstPlaySink * playsink, gboolean blocked)
+       playsink->audio_block_id =
+           gst_pad_add_probe (opad, GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM,
+           sinkpad_blocked_cb, playsink, NULL);
++      /* See video_set_blocked. Text pads stay exempt: subtitle data is
++       * sparse and may never arrive, which would stall reconfiguration
++       * forever (same reasoning as in gst_play_sink_refresh_pad). */
++      PENDING_FLAG_SET (playsink, GST_PLAY_SINK_TYPE_AUDIO);
+     } else if (!blocked && playsink->audio_block_id) {
+       if (playsink->vis_pad_block_id)
+         gst_pad_remove_probe (((GstPlayVisChain *) playsink->vischain)->
