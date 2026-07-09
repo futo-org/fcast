@@ -733,13 +733,12 @@ impl PlaceboContext {
         swframe: &libplacebo::SwapchainFrame,
         frame: &crate::video::Frame,
     ) -> std::result::Result<(), RenderFrameError> {
-        let overlays = frame.overlays_to_composite();
         match &frame.data {
             crate::video::FrameData::SystemMemory { frame: v_frame } => self.render_sysmem(
                 swframe,
                 &v_frame,
                 &frame.mastering_display_info,
-                overlays,
+                &frame.overlays,
                 frame.rotation,
             ),
             #[cfg(target_os = "linux")]
@@ -750,7 +749,7 @@ impl PlaceboContext {
                 &buffer,
                 &dma_info,
                 &frame.mastering_display_info,
-                overlays,
+                &frame.overlays,
                 frame.rotation,
             ),
             #[cfg(target_os = "macos")]
@@ -800,13 +799,12 @@ impl PlaceboContext {
             y1: destination_height as f32,
         };
 
-        let overlays = source_frame.overlays_to_composite();
         match &source_frame.data {
             crate::video::FrameData::SystemMemory { frame } => self.render_sysmem_to_frame(
                 &mut destination_frame,
                 &frame,
                 &None, /* TODO? */
-                overlays,
+                &source_frame.overlays,
                 source_frame.rotation,
             ),
             crate::video::FrameData::DmaBuf {
@@ -816,7 +814,7 @@ impl PlaceboContext {
                 &buffer,
                 &dma_info,
                 &None, /* TODO? */
-                overlays,
+                &source_frame.overlays,
                 source_frame.rotation,
             ),
         }

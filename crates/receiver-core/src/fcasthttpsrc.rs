@@ -1146,6 +1146,7 @@ mod tests {
         INIT.call_once(|| {
             gst::init().unwrap();
             super::plugin_init().unwrap();
+            let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
         });
     }
 

@@ -98,6 +98,24 @@ pub enum Send {
     PauseV4,
     ResumeV4,
     StopV4,
+    ChangeTrack {
+        kind: TrackKind,
+        index: Option<usize>,
+    },
+    ChangeTracks(&'static [(TrackKind, Option<usize>)]),
+    ChangeTrackNoExpect {
+        kind: TrackKind,
+        index: usize,
+    },
+    ChangeTrackRawId {
+        kind: TrackKind,
+        id: u32,
+    },
+    ChangeTrackMismatched {
+        send_as: TrackKind,
+        take_from: TrackKind,
+        index: usize,
+    },
     RawMessage {
         opcode: u8,
         body: &'static [u8],
@@ -149,6 +167,16 @@ pub enum Step {
         samples: usize,
     },
     ExpectClosed,
+    AwaitTracks {
+        video: usize,
+        audio: usize,
+        subtitle: usize,
+    },
+    AssertTrackState {
+        video: Option<usize>,
+        audio: Option<usize>,
+        subtitle: Option<usize>,
+    },
     OpenSecondSender,
     SetSecondSenderInterval {
         millis: u64,
@@ -169,6 +197,13 @@ pub enum QueueMutationKind {
     Insert,
     Remove,
     Select,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackKind {
+    Video = 0,
+    Audio = 1,
+    Subtitle = 2,
 }
 
 pub struct TestCase {
@@ -222,6 +257,14 @@ cases!(
     cast_queue_select_out_of_range_v4,
     cast_queue_remove_current_v4,
     cast_pause_resume_v4,
+    subtitle_change_and_disable_v4,
+    subtitle_change_keeps_playing_v4,
+    subtitle_disable_while_paused_v4,
+    video_disable_with_subs_v4,
+    audio_track_switch_v4,
+    audio_disable_enable_v4,
+    track_change_rejections_v4,
+    rapid_track_changes_v4,
     // cast_video_set_volume_v4,
     cast_video_set_speed_v4,
     cast_seek_v4,
@@ -1001,6 +1044,284 @@ define_test_case!(
         Step::SleepMillis(500),
         send!(Send::PauseV4),
         send!(Send::ResumeV4),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    subtitle_change_and_disable_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        // Switch to the third subtitle track; the receiver must relay a
+        // ChangeTrack echoing the id it actually selected.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(2),
+        }),
+        // Disable subtitles entirely; the receiver must relay a ChangeTrack
+        // with a null id to confirm the track was deselected.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: None,
+        }),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    subtitle_disable_while_paused_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        // Let playback establish with a subtitle cue on screen.
+        Step::SleepMillis(1200),
+        send!(Send::PauseV4),
+        Step::SleepMillis(300),
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: None,
+        }),
+        Step::SleepMillis(500),
+        send!(Send::ResumeV4),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    subtitle_change_keeps_playing_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        // Let playback establish (become seekable and advance a bit).
+        Step::SleepMillis(1200),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(2),
+        }),
+        recv!(Receive::ProgressV4AtLeast(3.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    video_disable_with_subs_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        // Let playback establish with the default selection (video + audio +
+        // first subtitle track).
+        Step::SleepMillis(1200),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Video,
+            index: None,
+        }),
+        Step::SleepMillis(500),
+        Step::AssertTrackState {
+            video: None,
+            audio: Some(0),
+            subtitle: None,
+        },
+        // Audio-only playback must keep advancing.
+        recv!(Receive::ProgressV4AtLeast(3.0)),
+        // Re-enabling video must come back cleanly; subtitles stay off.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Video,
+            index: Some(0),
+        }),
+        Step::SleepMillis(500),
+        Step::AssertTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: None,
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    audio_track_switch_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_multi_track.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        // Switch to the second audio track; the receiver must relay the
+        // change and playback must keep advancing.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Audio,
+            index: Some(1),
+        }),
+        recv!(Receive::ProgressV4AtLeast(3.0)),
+        Step::AssertTrackState {
+            video: Some(0),
+            audio: Some(1),
+            subtitle: Some(0),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    audio_disable_enable_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Audio,
+            index: None,
+        }),
+        recv!(Receive::ProgressV4AtLeast(3.0)),
+        // Re-enabling audio must come back cleanly.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Audio,
+            index: Some(0),
+        }),
+        Step::SleepMillis(500),
+        Step::AssertTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    track_change_rejections_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        Step::SleepMillis(800),
+        // An id that was never advertised must be rejected, not silently
+        // deselect the whole track type.
+        send!(Send::ChangeTrackRawId {
+            kind: TrackKind::Audio,
+            id: 99,
+        }),
+        recv!(Receive::Error(ErrorKind::MalformedBody)),
+        // As must an advertised id of the wrong kind.
+        send!(Send::ChangeTrackMismatched {
+            send_as: TrackKind::Audio,
+            take_from: TrackKind::Video,
+            index: 0,
+        }),
+        recv!(Receive::Error(ErrorKind::MalformedBody)),
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Video,
+            index: None,
+        }),
+        Step::SleepMillis(500),
+        send!(Send::ChangeTrackNoExpect {
+            kind: TrackKind::Subtitle,
+            index: 0,
+        }),
+        recv!(Receive::Error(ErrorKind::InvalidState)),
+        // None of the rejected requests may have disturbed the selection.
+        Step::AssertTrackState {
+            video: None,
+            audio: Some(0),
+            subtitle: None,
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    rapid_track_changes_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_multi_track.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::SleepMillis(1000),
+        // Back-to-back changes of different kinds must compose: the second
+        // selection is rebuilt while the first is still unconfirmed and must
+        // not revert it.
+        send!(Send::ChangeTracks(&[
+            (TrackKind::Audio, Some(1)),
+            (TrackKind::Subtitle, Some(1)),
+        ])),
+        Step::SleepMillis(700),
+        Step::AssertTrackState {
+            video: Some(0),
+            audio: Some(1),
+            subtitle: Some(1),
+        },
         send!(Send::StopV4),
     ]
 );

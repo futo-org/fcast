@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
 use tracing::{debug, debug_span, error, instrument, warn};
@@ -622,6 +622,10 @@ pub enum PlayerEvent {
     },
     RateChanged(f64),
     SeekFailed,
+    /// The element providing the pipeline clock went away (e.g. the audio
+    /// sink after the audio track was deselected). User must call
+    /// `Player::recover_clock()`.
+    ClockLost,
     Error {
         kind: MediaErrorKind,
         message: String,
@@ -639,6 +643,16 @@ enum Job {
     },
     SetUri(String),
     Seek(Seek),
+    /// A flushing seek to the current position that keeps the pipeline in its
+    /// current state. Used only to force a freshly selected sparse subtitle
+    /// track to re-render; deliberately bypasses the seek state machine (which
+    /// forces a Paused round-trip and would hang here because the subtitle
+    /// stream selection is still reconfiguring the pipeline).
+    RefreshSeek,
+    /// Cycle the pipeline through Paused back to Playing so it elects a new
+    /// clock after `ClockLost`. Without this every sink keeps waiting on the
+    /// dead clock and playback stalls.
+    RecoverClock,
     Quit,
 }
 
@@ -685,7 +699,6 @@ pub struct Stream {
 pub struct Player {
     pub playbin: gst::Element,
     volume_lock: BoolLock,
-    selection_lock: BoolLock,
     work_tx: std::sync::mpsc::Sender<Job>,
     pub streams: Vec<Stream>,
     pub current_video_stream: Option<u32>,
@@ -853,6 +866,42 @@ impl Player {
                                     msg_tx.player(PlayerEvent::RateChanged(rate));
                                 }
                             }
+                            Job::RefreshSeek => {
+                                let Some(position) =
+                                    playbin.query_position::<gst::ClockTime>()
+                                else {
+                                    debug!("Skipping subtitle refresh: no position");
+                                    continue;
+                                };
+
+                                // A flushing seek to the current position while
+                                // staying in the current state: it re-emits the
+                                // subtitle cue active *now* and flushes the stale
+                                // one, without the Paused round-trip a normal
+                                // seek performs.
+                                debug!(?position, "Refreshing subtitles via flushing seek");
+                                let res = playbin.seek(
+                                    1.0,
+                                    gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH,
+                                    gst::SeekType::Set,
+                                    position,
+                                    gst::SeekType::None,
+                                    gst::ClockTime::NONE,
+                                );
+                                if let Err(err) = res {
+                                    warn!(?err, "Subtitle refresh seek failed");
+                                }
+                            }
+                            Job::RecoverClock => {
+                                debug!("Recovering from clock loss");
+                                if let Err(err) = playbin.set_state(gst::State::Paused) {
+                                    warn!(?err, "Clock recovery: failed to reach Paused");
+                                    continue;
+                                }
+                                if let Err(err) = playbin.set_state(gst::State::Playing) {
+                                    warn!(?err, "Clock recovery: failed to reach Playing");
+                                }
+                            }
                             Job::Quit => {
                                 break;
                             }
@@ -872,7 +921,6 @@ impl Player {
             playbin,
             // TODO: are these "locks" needed?
             volume_lock: BoolLock::new(),
-            selection_lock: BoolLock::new(),
             work_tx,
             current_video_stream: None,
             current_audio_stream: None,
@@ -1028,6 +1076,7 @@ impl Player {
                     subtitle,
                 }
             }
+            MessageView::ClockLost(_) => PlayerEvent::ClockLost,
             MessageView::AsyncDone(_) => {
                 let Some(playbin) = playbin_weak.upgrade() else {
                     return;
@@ -1087,7 +1136,31 @@ impl Player {
             self.streams.push(stream);
         }
 
+        // Seed the current selection with playbin3's defaults (the first stream
+        // of each type) so a track change that arrives before the initial
+        // `StreamsSelected` message still keeps the other streams selected
+        // instead of dropping them. The real `StreamsSelected` corrects these
+        // the moment it arrives. Only seed slots that are still unset so a
+        // later collection update (e.g. an added subtitle source) never
+        // clobbers a selection the user already made.
+        self.current_video_stream = self
+            .current_video_stream
+            .or_else(|| self.first_stream_of(gst::StreamType::VIDEO));
+        self.current_audio_stream = self
+            .current_audio_stream
+            .or_else(|| self.first_stream_of(gst::StreamType::AUDIO));
+        self.current_subtitle_stream = self
+            .current_subtitle_stream
+            .or_else(|| self.first_stream_of(gst::StreamType::TEXT));
+
         self.stream_collection = Some(collection);
+    }
+
+    fn first_stream_of(&self, ty: gst::StreamType) -> Option<u32> {
+        self.streams
+            .iter()
+            .position(|s| s.inner.stream_type().contains(ty))
+            .map(|idx| idx as u32)
     }
 
     pub fn get_duration(&self) -> Option<gst::ClockTime> {
@@ -1136,6 +1209,19 @@ impl Player {
             position: Some(position),
             rate: None,
         });
+    }
+
+    /// Force a flushing seek to the current position to refresh subtitles.
+    ///
+    /// Subtitle streams are sparse: after switching text tracks the newly
+    /// selected track does not render until its next cue boundary, while the
+    /// previously composited cue stays stuck on screen until then.
+    pub fn refresh_position(&mut self) {
+        if !self.seekable {
+            debug!("Skipping subtitle refresh: stream is not seekable");
+            return;
+        }
+        let _ = self.work_tx.send(Job::RefreshSeek);
     }
 
     pub fn is_seeking(&self) -> bool {
@@ -1216,6 +1302,17 @@ impl Player {
         self.set_state_async(state);
     }
 
+    /// Handle `ClockLost`: the element providing the pipeline clock went away
+    /// (typically the audio sink after the audio track was deselected).
+    pub fn recover_clock(&mut self) {
+        if !matches!(self.player_state(), PlayerState::Playing) {
+            debug!("Ignoring clock loss while not playing");
+            return;
+        }
+        debug!("Pipeline clock lost; cycling through Paused to elect a new one");
+        let _ = self.work_tx.send(Job::RecoverClock);
+    }
+
     #[cfg(debug_assertions)]
     pub fn dump_graph(&self, trigger: remote_pipeline_dbg::Trigger) {
         use remote_pipeline_dbg::{PipelineSource, post_graph};
@@ -1290,13 +1387,18 @@ impl Player {
     }
 
     fn select_streams(
-        &self,
+        &mut self,
         video: Option<u32>,
         audio: Option<u32>,
-        subtitle: Option<u32>,
+        mut subtitle: Option<u32>,
     ) -> Result<()> {
-        if self.selection_lock.is_locked() {
-            bail!("Stream selection is pending");
+        // playsink cannot build a text chain without a video chain (pipeline
+        // error), so a selection without video must never carry a subtitle
+        // stream. Deselecting video therefore implicitly deselects subtitles;
+        // the relayed `TracksSelected` reports that to the senders.
+        if video.is_none() && subtitle.is_some() {
+            debug!("Dropping the subtitle stream from a selection without video");
+            subtitle = None;
         }
 
         let mut streams = Vec::new();
@@ -1310,10 +1412,33 @@ impl Player {
             }
         }
 
+        // An empty selection would trip a GStreamer assertion
+        // (`gst_event_new_select_streams: streams != NULL`) and leave the
+        // pipeline in an undefined state, so refuse to send one.
+        if streams.is_empty() {
+            debug!("Refusing to send an empty stream selection");
+            return Ok(());
+        }
+
         let event = gst::event::SelectStreams::new(streams.iter().map(|s| s.as_str()));
         self.playbin.send_event(event);
 
+        // Track the requested selection right away instead of waiting for
+        // `StreamsSelected`: a second track change arriving before the first
+        // one is confirmed must compose with it, not revert it (each change
+        // rebuilds the full selection from `current_*`). `streams_selected`
+        // overwrites these with whatever the pipeline actually applied.
+        self.current_video_stream = video;
+        self.current_audio_stream = audio;
+        self.current_subtitle_stream = subtitle;
+
         Ok(())
+    }
+
+    pub fn is_stream_of_type(&self, idx: u32, ty: gst::StreamType) -> bool {
+        self.streams
+            .get(idx as usize)
+            .is_some_and(|s| s.inner.stream_type().contains(ty))
     }
 
     pub fn select_video_stream(&mut self, sid: Option<u32>) -> Result<()> {
@@ -1404,8 +1529,6 @@ impl Player {
         audio_sid: Option<&str>,
         subtitle_sid: Option<&str>,
     ) -> (Option<u32>, Option<u32>, Option<u32>) {
-        self.selection_lock.release();
-
         debug!(?video_sid, ?audio_sid, ?subtitle_sid);
 
         self.current_video_stream = None;
@@ -1807,6 +1930,48 @@ mod tests {
         assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) });
         assert_eq!(sm.seek_internal(Seek::new(Some(gst::ClockTime::from_seconds(20)), None), None), None);
         assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) }, "still exactly one in-flight seek");
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn seek_async_stays_parked_until_pipeline_settles_at_paused() {
+        // A seek that has been queued (SeekAsync) is only dispatched once the
+        // pipeline actually settles at Paused/VoidPending. Interim transitions
+        // must leave it parked. If that settle never arrives -- e.g. a seek
+        // issued while a subtitle stream selection is still reconfiguring the
+        // pipeline -- the seek never completes and playback freezes. That is why
+        // the subtitle refresh (Player::refresh_position) uses a direct flushing
+        // seek via Job::RefreshSeek instead of driving this state machine.
+        let mut sm = playing();
+        sm.queue_seek(Seek::new(Some(TEN), Some(1.0)));
+        assert!(matches!(sm.state, State::SeekAsync { target_state: gs!(Playing), .. }));
+        // Reached Paused but still transitioning (pending != VoidPending): parked.
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
+        assert!(matches!(sm.state, State::SeekAsync { .. }), "must stay parked while still transitioning");
+        // Settled at a non-Paused state: still parked (SeekAsync only fires on Paused).
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert!(matches!(sm.state, State::SeekAsync { .. }));
+        // Settled at Paused/VoidPending: the queued seek is finally dispatched.
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(TEN), Some(1.0))));
+        assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) });
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn queued_seek_while_playing_recovers_to_playing() {
+        // The full happy path of a seek issued while playing: park (SeekAsync) ->
+        // dispatch on settle (Seeking) -> re-preroll (Changing) -> back to
+        // Playing. Guards the ordinary seek path we still rely on for user seeks.
+        let mut sm = playing();
+        sm.queue_seek(Seek::new(Some(TEN), Some(1.0)));
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(TEN), Some(1.0))));
+        assert_eq!(sm.state, State::Seeking { target_state: gs!(Playing) });
+        // Seek finished (pipeline re-prerolled to Paused); target is Playing so we
+        // must drive back up rather than stranding in Paused.
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)));
+        assert_eq!(sm.state, State::Changing { target_state: gs!(Playing), pending_seek: None });
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.state, State::Running { state: rs!(Playing) });
     }
 
     #[test]

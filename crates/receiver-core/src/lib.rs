@@ -459,9 +459,15 @@ pub fn run<S: VideoSink + 'static>(
 
                     let bridge = ui.global::<Bridge>();
 
+                    let mut clear_video_overlays = false;
                     while let Ok(msg) = renderer_rx.try_recv() {
+                        if matches!(msg, gui::RendererMessage::ClearVideoOverlays) {
+                            clear_video_overlays = true;
+                            continue;
+                        }
                         if let Some(renderer) = renderer.as_mut() {
                             match msg {
+                                gui::RendererMessage::ClearVideoOverlays => unreachable!(),
                                 gui::RendererMessage::CreateBluredAudioTrackCover(img) => {
                                     let (width, height) = img.image.dimensions();
                                     match renderer.blur_rgba8_image(
@@ -493,6 +499,14 @@ pub fn run<S: VideoSink + 'static>(
 
                     let mut tick_ref = tick.borrow_mut();
                     let t = &mut *tick_ref;
+
+                    if clear_video_overlays
+                        && let Some(frame) = t.cached_frame.as_mut()
+                        && !frame.overlays.is_empty()
+                    {
+                        frame.overlays.clear();
+                        t.force_render = true;
+                    }
 
                     let Some(sink) = sink.as_mut() else {
                         if let Some(new_sink) = sink_mutex.lock().take() {
@@ -565,7 +579,6 @@ pub fn run<S: VideoSink + 'static>(
                     if let Some(frame) = t.cached_frame.as_mut() {
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
-                        frame.overlay_enabled = bridge.get_render_subtitles();
                         if (new_frame
                             || size_changed
                             || force_render
@@ -660,7 +673,6 @@ pub fn run<S: VideoSink + 'static>(
                         let frame = t.cached_frame.as_mut().unwrap();
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
-                        frame.overlay_enabled = bridge.get_render_subtitles();
                         let size = ui.window().size();
                         match t
                             .video_sink

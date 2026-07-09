@@ -506,6 +506,19 @@ impl GstreamerArgs {
         self.build().map(|_| ())
     }
 
+    /// The args you'd get by passing no flags — host target, release GStreamer,
+    /// per-OS scope. Used to drive a cargo subcommand programmatically (e.g.
+    /// `xtask test`) while keeping clap's declared defaults the single source
+    /// of truth (gst_ref, buildtype, …).
+    pub fn with_defaults() -> Self {
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            gst: GstreamerArgs,
+        }
+        <Wrap as clap::Parser>::parse_from(["xtask"]).gst
+    }
+
     /// Build (or reuse) the static GStreamer and return the pieces needed to
     /// drive cargo against it. Returns `Ok(None)` when `--clean` short-circuits.
     fn prepare(self) -> Result<Option<(Rc<Shell>, Profile, GstBuild)>> {
@@ -587,6 +600,28 @@ impl GstreamerArgs {
     /// `cargo clippy` the receiver against the static GStreamer.
     pub fn clippy(self, extra: Vec<String>, release: bool) -> Result<()> {
         self.cargo_subcmd("clippy", extra, release)
+    }
+
+    /// `cargo test` receiver-core against the static GStreamer. Unlike
+    /// check/clippy this LINKS the test binary, so it needs the full
+    /// gstreamer-full link line (see `link_args`) — not just the compile-time
+    /// env. `extra` is forwarded to the inner cargo invocation (e.g. a test
+    /// name filter or `-- --nocapture`).
+    pub fn test(mut self, extra: Vec<String>, release: bool) -> Result<()> {
+        // Like `cargo`, default to a fast debug build; `--release` opts into
+        // the optimized profile (an explicit `--debug` also forces debug).
+        self.debug = self.debug || !release;
+        let Some((sh, mut profile, build)) = self.prepare()? else {
+            return Ok(());
+        };
+        // Force an explicit --target so cargo splits the host/target build
+        // graphs; the link-arg rustflags below then scope to the test binary
+        // (and its target-side deps) and never touch host build scripts or
+        // proc-macros — which must NOT be linked against the gstreamer archives.
+        if profile.target.is_none() {
+            profile.target = Some(host_triple(&sh)?);
+        }
+        receiver_test(&sh, &build, &profile, &extra)
     }
 
     fn cargo_subcmd(mut self, subcmd: &str, extra: Vec<String>, release: bool) -> Result<()> {
@@ -1199,14 +1234,14 @@ fn receiver_bin_path(profile: &Profile) -> Utf8PathBuf {
 
 /// Common `--features`/`--target`/profile flags shared by every cargo
 /// invocation that targets the receiver against the static gstreamer.
-fn receiver_cargo_flags(profile: &Profile) -> Vec<String> {
+fn receiver_cargo_flags(profile: &Profile, package: &str) -> Vec<String> {
     let mut flags = Vec::new();
     if !profile.debug {
         flags.push("--release".into());
     }
     flags.extend([
         "-p".into(),
-        "desktop-receiver".into(),
+        package.to_owned(),
         "--features".into(),
         "static-gstreamer".into(),
     ]);
@@ -1332,7 +1367,7 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
         // cargo rustc scopes the link args to the FINAL binary (RUSTFLAGS
         // would hit every crate incl. build scripts / proc-macros).
         let mut cargo: Vec<String> = vec!["rustc".into()];
-        cargo.extend(receiver_cargo_flags(profile));
+        cargo.extend(receiver_cargo_flags(profile, "desktop-receiver"));
         cargo.push("--".into());
 
         // Args for the final crate's rustc (after `--`). Cross-LTO drives the
@@ -1387,13 +1422,87 @@ fn receiver_cargo(
 ) -> Result<()> {
     with_receiver_env(sh, build, profile, || {
         let mut cargo: Vec<String> = vec![subcmd.to_owned()];
-        cargo.extend(receiver_cargo_flags(profile));
+        cargo.extend(receiver_cargo_flags(profile, "desktop-receiver"));
         cargo.extend(extra.iter().cloned());
         // stderr, so it can't interleave with a `--message-format=json` stream.
         eprintln!(">> cargo {subcmd} (static gstreamer) …");
         cmd!(sh, "cargo {cargo...}").run()?;
         Ok(())
     })
+}
+
+/// `cargo test` the receiver-core crate against the static gstreamer. The test
+/// binary references gstreamer symbols, so it must be linked with the same
+/// gstreamer-full aggregate line as the final receiver binary. `cargo test`
+/// builds several targets (no single `cargo rustc`), so the link args are fed
+/// through a `[target.<triple>].rustflags` config file rather than a scoped
+/// `cargo rustc --` tail: with an explicit `--target`, cargo applies those
+/// flags to the target artifacts only, leaving host build scripts/proc-macros
+/// (which don't reference gstreamer) untouched.
+fn receiver_test(
+    sh: &Rc<Shell>,
+    build: &GstBuild,
+    profile: &Profile,
+    extra: &[String],
+) -> Result<()> {
+    with_receiver_env(sh, build, profile, || {
+        let link_args = link_args(sh, build, profile)?;
+
+        let mut rustflags: Vec<String> = Vec::new();
+        // Cross-LTO drives the LLVM plugin via clang/lld (matches build_receiver);
+        // the default debug test build keeps the workspace linker.
+        if profile.lto == Lto::Cross {
+            rustflags.push("-Clinker-plugin-lto".into());
+            rustflags.push("-Clinker=clang".into());
+            rustflags.push("-Clink-arg=-fuse-ld=lld".into());
+        }
+        for a in &link_args {
+            rustflags.push(format!("-Clink-arg={a}"));
+        }
+
+        // A config file (vs CARGO_TARGET_*_RUSTFLAGS) sidesteps the env
+        // string's space/length limits — the link line is ~100 abspaths — and
+        // renders each flag as a separate TOML array element, so paths with
+        // spaces survive.
+        let triple = profile.target.as_deref().expect("test() always sets a target");
+        let cfg_path = build.build_dir.join("xtask-cargo-test-config.toml");
+        std::fs::write(&cfg_path, cargo_rustflags_config(triple, &rustflags))
+            .context("writing cargo test config")?;
+
+        let mut cargo: Vec<String> = vec!["test".into(), "--config".into(), cfg_path.to_string()];
+        cargo.extend(receiver_cargo_flags(profile, "receiver-core"));
+        // Trailing args go to the libtest harness (filters, --nocapture,
+        // --list, --test-threads), matching plain `cargo test -- …`.
+        if !extra.is_empty() {
+            cargo.push("--".into());
+            cargo.extend(extra.iter().cloned());
+        }
+        eprintln!(">> cargo test (static gstreamer) …");
+        cmd!(sh, "cargo {cargo...}").run()?;
+        Ok(())
+    })
+}
+
+/// Render a cargo config body pinning `[target.<triple>].rustflags`. The triple
+/// key is quoted (harmless for hyphenated triples, and correct should one ever
+/// carry a `.`), and each flag is TOML-escaped for Windows' backslash paths.
+fn cargo_rustflags_config(triple: &str, flags: &[String]) -> String {
+    let escaped: Vec<String> = flags
+        .iter()
+        .map(|f| format!("\"{}\"", f.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    format!("[target.\"{triple}\"]\nrustflags = [{}]\n", escaped.join(", "))
+}
+
+/// The host target triple, parsed from `rustc -vV` (the `host:` line). Used to
+/// force an explicit `--target` on `cargo test` so link-arg rustflags don't
+/// leak into host build scripts/proc-macros.
+fn host_triple(sh: &Rc<Shell>) -> Result<String> {
+    let out = cmd!(sh, "rustc -vV").read().context("running rustc -vV")?;
+    out.lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| anyhow::anyhow!("could not parse host triple from `rustc -vV`"))
 }
 
 /// Compute the gstreamer-full static link line, rewriting every `-lX` whose
