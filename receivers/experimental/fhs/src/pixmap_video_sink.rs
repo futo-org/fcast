@@ -97,6 +97,46 @@ impl FhsPixmapSink {
         Ok(())
     }
 
+    pub fn show_image(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<()> {
+        let pixmap_id = self.upload_rgba(rgba, width, height)?;
+
+        unsafe {
+            fl_discard_reply(
+                self.client,
+                fl_set_surface_pixmap(self.client, self.surface_id, pixmap_id).value,
+            );
+        }
+
+        if self.surface_has_hdr_metadata {
+            unsafe {
+                fl_discard_reply(
+                    self.client,
+                    fl_set_surface_hdr_metadata(self.client, self.surface_id, std::ptr::null())
+                        .value,
+                );
+            }
+            self.hdr_metadata = None;
+            self.surface_has_hdr_metadata = false;
+        }
+
+        self.held.push_back(HeldBuffer {
+            buffer: None,
+            pixmap_id,
+        });
+        while self.held.len() > SCANOUT_HOLD {
+            if let Some(old) = self.held.pop_front() {
+                unsafe {
+                    fl_discard_reply(
+                        self.client,
+                        fl_destroy_pixmap(self.client, old.pixmap_id).value,
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn import_dmabuf(
         &self,
         buffer: &gst::Buffer,

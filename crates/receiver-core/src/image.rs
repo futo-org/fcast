@@ -87,6 +87,18 @@ impl DecodedImage {
     pub fn as_compound(&self) -> CompoundImage {
         CompoundImage::new(to_slint_pixbuf(&self.image), self.orientation)
     }
+
+    pub fn into_upright_rgba(self) -> (Vec<u8>, u32, u32) {
+        let img = match orientation_to_degs(self.orientation) as u32 {
+            90 => imagelib::imageops::rotate90(&self.image),
+            180 => imagelib::imageops::rotate180(&self.image),
+            270 => imagelib::imageops::rotate270(&self.image),
+            _ => self.image,
+        };
+        let width = img.width();
+        let height = img.height();
+        (img.into_raw(), width, height)
+    }
 }
 
 #[derive(Clone, Copy)]

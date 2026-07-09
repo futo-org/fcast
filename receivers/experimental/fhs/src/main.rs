@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use fiatlux::*;
 use mimalloc::MiMalloc;
 use rcore::{
+    ImageAnimationFrame, ImageCommand,
     clap::Parser,
     egl, glow,
     tracing::error,
@@ -11,10 +12,11 @@ use std::{
     ffi::{CString, c_char, c_void},
     ptr::null,
     sync::{Arc, Condvar, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 mod pixmap_video_sink;
+mod placeholder;
 mod subtitle_surface;
 
 #[global_allocator]
@@ -96,6 +98,57 @@ impl FrameSignal {
     }
 }
 
+struct ImageAnimation {
+    frames: Vec<ImageAnimationFrame>,
+    index: usize,
+    next_deadline: Instant,
+}
+
+const PLACEHOLDER_GRACE: Duration = Duration::from_millis(300);
+
+struct PlaceholderState {
+    title: String,
+    artist: String,
+    size: (u32, u32),
+    show_at: Instant,
+    shown: bool,
+}
+
+fn show_audio_placeholder(
+    sink: &mut pixmap_video_sink::FhsPixmapSink,
+    client: *mut fl_Client,
+    surface_id: fl_protocol_SurfaceId,
+    title: &str,
+    artist: &str,
+    size: (u32, u32),
+    scale: f32,
+) {
+    match placeholder::render(title, artist, size.0, size.1, scale) {
+        Ok((rgba, width, height)) => {
+            if let Err(err) = sink.show_image(&rgba, width, height) {
+                error!(?err, "audio placeholder show failed");
+            } else {
+                mark_damaged(client, &[surface_id]);
+            }
+        }
+        Err(err) => error!(?err, "audio placeholder render failed"),
+    }
+}
+
+fn frame_delay(delay_ms: i64) -> Duration {
+    let ms = if delay_ms <= 10 { 100 } else { delay_ms };
+    Duration::from_millis(ms as u64)
+}
+
+fn mark_damaged(client: *mut fl_Client, surface_ids: &[fl_protocol_SurfaceId]) {
+    unsafe {
+        let damage_seq =
+            fl_mark_surfaces_as_damaged(client, surface_ids.as_ptr(), surface_ids.len()).value;
+        fl_discard_reply(client, damage_seq);
+        fl_wait_for_vsync_finished(client, damage_seq, 0.15);
+    }
+}
+
 fn main() -> Result<()> {
     let cli_args = rcore::CliArgs::parse();
 
@@ -152,11 +205,24 @@ fn main() -> Result<()> {
     handle.set_gui_visible(true);
 
     let mut cached_frame: Option<Frame> = None;
+    let mut animation: Option<ImageAnimation> = None;
+    let mut placeholder: Option<PlaceholderState> = None;
     let mut size = (fl.window.width, fl.window.height);
     handle.set_window_resolution(size.0, size.1);
 
     loop {
-        signal.wait_timeout(Duration::from_millis(150));
+        let mut wait = Duration::from_millis(150);
+        if let Some(anim) = &animation
+            && anim.frames.len() > 1
+        {
+            wait = wait.min(anim.next_deadline.saturating_duration_since(Instant::now()));
+        }
+        if let Some(p) = &placeholder
+            && !p.shown
+        {
+            wait = wait.min(p.show_at.saturating_duration_since(Instant::now()));
+        }
+        signal.wait_timeout(wait);
 
         let mut resized = false;
         loop {
@@ -183,6 +249,22 @@ fn main() -> Result<()> {
         if resized {
             handle.set_window_resolution(size.0, size.1);
             subtitles.reposition(size);
+            if let Some(p) = placeholder.as_mut()
+                && p.size != size
+            {
+                p.size = size;
+                if p.shown {
+                    show_audio_placeholder(
+                        &mut sink,
+                        fl.client.client,
+                        fl.video_surface_id,
+                        &p.title,
+                        &p.artist,
+                        size,
+                        fl.window.display_scale,
+                    );
+                }
+            }
         }
 
         if handle.should_quit() || unsafe { !fl_is_connected_to_server(fl.client.client) } {
@@ -195,6 +277,8 @@ fn main() -> Result<()> {
             Some(Some(frame)) => {
                 cached_frame = Some(frame);
                 have_new = true;
+                animation = None;
+                placeholder = None;
             }
             Some(None) => cached_frame = None,
         }
@@ -230,16 +314,106 @@ fn main() -> Result<()> {
             if let Some(subtitle_surface_id) = subtitles.surface_id() {
                 surface_ids.push(subtitle_surface_id);
             }
-            unsafe {
-                let damage_seq = fl_mark_surfaces_as_damaged(
-                    fl.client.client,
-                    surface_ids.as_ptr(),
-                    surface_ids.len(),
-                )
-                .value;
-                fl_discard_reply(fl.client.client, damage_seq);
-                fl_wait_for_vsync_finished(fl.client.client, damage_seq, 0.15);
+            mark_damaged(fl.client.client, &surface_ids);
+        }
+
+        match handle.take_image_update() {
+            Some(ImageCommand::Set {
+                rgba,
+                width,
+                height,
+            }) => {
+                animation = None;
+                placeholder = None;
+                if let Err(err) = sink.show_image(&rgba, width, height) {
+                    error!(?err, "image show failed");
+                } else {
+                    mark_damaged(fl.client.client, &[fl.video_surface_id]);
+                }
             }
+            Some(ImageCommand::SetAnimation { frames }) => {
+                animation = None;
+                placeholder = None;
+                if let Some(first) = frames.first() {
+                    if let Err(err) = sink.show_image(&first.rgba, first.width, first.height) {
+                        error!(?err, "image show failed");
+                    } else {
+                        mark_damaged(fl.client.client, &[fl.video_surface_id]);
+                    }
+                }
+                if frames.len() > 1 {
+                    let next_deadline = Instant::now() + frame_delay(frames[0].delay_ms);
+                    animation = Some(ImageAnimation {
+                        frames,
+                        index: 0,
+                        next_deadline,
+                    });
+                }
+            }
+            Some(ImageCommand::AudioPlaceholder { title, artist }) => {
+                animation = None;
+                match placeholder.as_mut() {
+                    Some(p) if p.title == title && p.artist == artist => {}
+                    Some(p) if p.shown => {
+                        p.title = title;
+                        p.artist = artist;
+                        p.size = size;
+                        show_audio_placeholder(
+                            &mut sink,
+                            fl.client.client,
+                            fl.video_surface_id,
+                            &p.title,
+                            &p.artist,
+                            size,
+                            fl.window.display_scale,
+                        );
+                    }
+                    _ => {
+                        placeholder = Some(PlaceholderState {
+                            title,
+                            artist,
+                            size,
+                            show_at: Instant::now() + PLACEHOLDER_GRACE,
+                            shown: false,
+                        });
+                    }
+                }
+            }
+            Some(ImageCommand::Clear) => {
+                animation = None;
+                placeholder = None;
+            }
+            None => {}
+        }
+
+        if let Some(p) = placeholder.as_mut()
+            && !p.shown
+            && Instant::now() >= p.show_at
+        {
+            p.shown = true;
+            p.size = size;
+            show_audio_placeholder(
+                &mut sink,
+                fl.client.client,
+                fl.video_surface_id,
+                &p.title,
+                &p.artist,
+                size,
+                fl.window.display_scale,
+            );
+        }
+
+        if let Some(anim) = &mut animation
+            && Instant::now() >= anim.next_deadline
+        {
+            anim.index = (anim.index + 1) % anim.frames.len();
+            let frame = &anim.frames[anim.index];
+            if let Err(err) = sink.show_image(&frame.rgba, frame.width, frame.height) {
+                error!(?err, "image show failed");
+            } else {
+                mark_damaged(fl.client.client, &[fl.video_surface_id]);
+            }
+            anim.next_deadline = Instant::now() + frame_delay(frame.delay_ms);
         }
     }
 

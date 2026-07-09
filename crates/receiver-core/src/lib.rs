@@ -58,6 +58,7 @@ pub use gst_allocators;
 pub use gst_video;
 pub use libplacebo;
 pub use video_sink::{SwapchainSink, VideoSink};
+pub use gui::{ImageAnimationFrame, ImageCommand};
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -727,6 +728,7 @@ pub fn run<S: VideoSink + 'static>(
 #[cfg(target_os = "linux")]
 pub struct ExternalVideoHandle {
     payload_handle: video::imp::VideoPayloadHandle,
+    image_rx: std::sync::Mutex<mpsc::UnboundedReceiver<ImageCommand>>,
     sink: video::FSink,
     gui_is_visible: gui::GuiIsVisible,
     msg_tx: MessageSender,
@@ -739,6 +741,15 @@ pub struct ExternalVideoHandle {
 impl ExternalVideoHandle {
     pub fn take_payload(&self) -> Option<Option<video::Frame>> {
         self.payload_handle.0.lock().take()
+    }
+
+    pub fn take_image_update(&self) -> Option<ImageCommand> {
+        let mut rx = self.image_rx.lock().unwrap();
+        let mut last = None;
+        while let Ok(cmd) = rx.try_recv() {
+            last = Some(cmd);
+        }
+        last
     }
 
     pub fn set_drm_formats(&self, formats: std::collections::HashSet<drm_fourcc::DrmFormat>) {
@@ -797,7 +808,9 @@ pub fn run_with_external_video(
     let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
 
     let gui_is_visible = gui::GuiIsVisible::new();
-    let gui = GuiController::new(None, gui_is_visible.clone());
+    let (image_tx, image_rx) = mpsc::unbounded_channel::<ImageCommand>();
+    let mut gui = GuiController::new(None, gui_is_visible.clone());
+    gui.set_image_channel(image_tx);
     let quit = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let (init_tx, init_rx) =
@@ -852,6 +865,7 @@ pub fn run_with_external_video(
 
     Ok(ExternalVideoHandle {
         payload_handle,
+        image_rx: std::sync::Mutex::new(image_rx),
         sink,
         gui_is_visible,
         msg_tx,
