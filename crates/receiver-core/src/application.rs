@@ -237,12 +237,62 @@ impl PacketOrigin {
     }
 }
 
+/// Track ids at or above this value denote external subtitles (see
+/// `ExternalSubtitle::id`) rather than indices into `Player::streams`. Real
+/// stream indices are small, so the high base namespace never collides.
+const EXTERNAL_TRACK_ID_BASE: u32 = 0x1000_0000;
+
+struct ExternalSubtitle {
+    /// Stable id, advertised as this track's `MediaTrack.id`
+    /// (>= `EXTERNAL_TRACK_ID_BASE`). Persists across reloads.
+    id: u32,
+    url: String,
+    name: Option<SmolStr>,
+    requested_by: PacketOrigin,
+}
+
+/// An `AddSubtitleSource` that arrived after the media was loaded but before the pipeline could
+/// answer the seekability query.
+struct PendingSubtitleAdd {
+    url: String,
+    select: bool,
+    name: Option<SmolStr>,
+    origin: PacketOrigin,
+}
+
+/// The external subtitle currently loaded as the pipeline's `suburi` (the only external realized as
+/// a GStreamer stream) together with the selection intent for the reload that attached it.
+struct ActiveExternal {
+    /// The `ExternalSubtitle::id` loaded as the suburi.
+    id: u32,
+    select_on_load: bool,
+    /// Embedded stream id to select when `select_on_load == false` (`None` = show no
+    /// subtitle). Embedded stream ids are stable across reloads of the same media.
+    restore_subtitle_sid: Option<String>,
+}
+
+enum SubtitleTarget {
+    /// A real `Player::streams` index (embedded track, or the active external's own stream), or
+    /// `None` to show no subtitle.
+    Stream(Option<u32>),
+    /// A catalog external not currently loaded as the suburi: selecting it needs a suburi-swapping
+    /// reload.
+    External(u32),
+}
+
 struct MediaSourceState {
     origin: PacketOrigin,
     source: MediaSource,
     image_id: Option<image::ImageId>,
     pending_thumbnail: Option<image::ImageId>,
     pending_thumbnail_download: Option<image::ImageDownloadId>,
+    /// The external subtitle catalog for the current item.
+    external_subtitles: Vec<ExternalSubtitle>,
+    /// Which catalog entry is loaded as the suburi (`None` = none loaded), and the pending reload's
+    /// selection intent.
+    active_external: Option<ActiveExternal>,
+    /// Monotonic id source for `ExternalSubtitle::id` within this item.
+    next_external_id: u32,
 }
 
 impl MediaSourceState {
@@ -253,7 +303,23 @@ impl MediaSourceState {
             image_id: None,
             pending_thumbnail: None,
             pending_thumbnail_download: None,
+            external_subtitles: Vec::new(),
+            active_external: None,
+            next_external_id: 0,
         }
+    }
+
+    /// The catalog entry loaded as the suburi, if any.
+    fn active_external_sub(&self) -> Option<&ExternalSubtitle> {
+        let active = self.active_external.as_ref()?;
+        self.external_subtitles.iter().find(|s| s.id == active.id)
+    }
+
+    /// Drop every external subtitle (external subtitles are per-item). The id counter keeps
+    /// advancing so a stale id from the previous item can never alias a new one.
+    fn clear_external_subtitles(&mut self) {
+        self.external_subtitles.clear();
+        self.active_external = None;
     }
 }
 
@@ -273,11 +339,6 @@ impl FCastSenderHandle {
     }
 }
 
-struct OnMediaLoadedOperation {
-    seek_position: gst::ClockTime,
-    seek_rate: f32,
-}
-
 pub struct Application {
     #[cfg(target_os = "android")]
     android_app: slint::android::AndroidApp,
@@ -289,7 +350,12 @@ pub struct Application {
     debug_mode: bool,
     player: player::Player,
     current_duration: Option<gst::ClockTime>,
-    on_playing_command: Option<OnMediaLoadedOperation>,
+    pending_subtitle_adds: Vec<PendingSubtitleAdd>,
+    pending_subtitle_add_epoch: u64,
+    last_progress_broadcast: Option<Instant>,
+    last_volume_cmd: Option<Instant>,
+    pending_seek_op: Option<(PacketOrigin, gst::ClockTime)>,
+    pending_seek_epoch: u64,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
     have_audio_track_cover: bool,
@@ -533,7 +599,12 @@ impl Application {
             debug_mode: false,
             player,
             current_duration: None,
-            on_playing_command: None,
+            pending_subtitle_adds: Vec::new(),
+            pending_subtitle_add_epoch: 0,
+            last_progress_broadcast: None,
+            last_volume_cmd: None,
+            pending_seek_op: None,
+            pending_seek_epoch: 0,
             current_image_id: 0,
             have_audio_track_cover: false,
             current_media: None,
@@ -581,6 +652,52 @@ impl Application {
         self.updates_tx.receiver_count() > 0
     }
 
+    fn broadcast_volume(&mut self, volume: f32) {
+        debug!(volume, "Broadcasting volume");
+        if self.should_broadcast() {
+            let update = VolumeUpdateMessage {
+                generation_time: current_time_millis(),
+                volume: volume as f64,
+            };
+
+            let msg = ReceiverToSenderMessage::LegacyTranslatable {
+                op: Opcode::VolumeUpdate,
+                msg: TranslatableMessage::VolumeUpdate(update),
+            };
+            let _ = self.updates_tx.send(Arc::new(msg));
+            self.last_sent_update = Instant::now();
+
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::VolumeChanged(volume),
+            ));
+        }
+
+        self.gcast_tx
+            .send(gcast::StatusUpdate::Volume(volume as f64));
+    }
+
+    /// Relay a playback rate to all senders (progress update + v4
+    /// PlaybackRateChanged).
+    fn broadcast_rate(&mut self, rate: f32) -> Result<()> {
+        self.notify_updates(true)?;
+        if self.updates_tx.strong_count() > 0 {
+            let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                fcast::V4Message::PlaybackRateChanged(rate),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Apply a volume command and confirm the accepted (clamped) value to
+    /// senders immediately.
+    fn set_volume_cmd(&mut self, volume: f32) {
+        let clamped = volume.clamp(0.0, 1.0);
+        self.player.set_volume(clamped);
+        self.gui.set_volume(clamped);
+        self.last_volume_cmd = Some(Instant::now());
+        self.broadcast_volume(clamped);
+    }
+
     fn broadcast_update(&self, msg: ReceiverToSenderMessage) {
         let _ = self.updates_tx.send(Arc::new(msg)).is_err();
     }
@@ -609,7 +726,16 @@ impl Application {
         self.gui
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
 
-        if self.should_broadcast() {
+        // Discontinuity notification (seek/state edge): bypasses per-sender
+        // intervals on purpose, but the start/seek dance produces bursts of
+        // state edges (observed: 5 within 14ms) — debounce so senders get
+        // one prompt update per discontinuity, not the whole burst.
+        let debounced = self
+            .last_progress_broadcast
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(100));
+        if self.should_broadcast() && !debounced {
+            debug!("Broadcasting v4 progress (interval bypass)");
+            self.last_progress_broadcast = Some(Instant::now());
             self.broadcast_update(ReceiverToSenderMessage::V4(
                 fcast::V4Message::ProgressUpdated {
                     pos: position,
@@ -628,10 +754,11 @@ impl Application {
         let dur = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
         let now = Instant::now();
 
-        for handle in self.fcast_senders.values_mut() {
+        for (sender_id, handle) in self.fcast_senders.iter_mut() {
             if now.duration_since(handle.last_progress_update) < handle.progress_interval {
                 continue;
             }
+            debug!(sender_id, interval = ?handle.progress_interval, "per-sender progress");
             handle.last_progress_update = now;
             let _ = handle
                 .msg_tx
@@ -745,7 +872,11 @@ impl Application {
         preserve_playlist: PreservePlaylist,
     ) {
         self.current_duration = None;
-        self.on_playing_command = None;
+        // Parked subtitle adds and seeks target the media that is going
+        // away. (The player's own per-load state — the text-restore dance,
+        // held seeks, parked deselects — is reset by `Player::stop` below.)
+        self.reject_pending_subtitle_adds();
+        self.drop_pending_seek();
         self.have_audio_track_cover = false;
         self.have_media_info = false;
         self.have_media_title = false;
@@ -966,7 +1097,11 @@ impl Application {
     }
 
     fn load_media(&mut self) {
-        if let Err(err) = self.load_current_media_item() {
+        self.load_media_impl(None);
+    }
+
+    fn load_media_impl(&mut self, reload: Option<player::RestorePoint>) {
+        if let Err(err) = self.load_current_media_item(reload) {
             error!(?err, "Failed to load media");
             if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
                 self.send_error(origin, load_media_error_kind(&err));
@@ -974,7 +1109,35 @@ impl Application {
         }
     }
 
-    fn load_current_media_item(&mut self) -> std::result::Result<(), LoadMediaError> {
+    /// Reload the current media item (e.g. to apply a changed `suburi`) and
+    /// come back to where playback was: same position, same rate, and Paused
+    /// if it was paused. This is a full pipeline reload — `suburi` has no
+    /// in-place path — so the sender observes a short buffering blip.
+    fn reload_preserving_position(
+        &mut self,
+        position: Option<gst::ClockTime>,
+        rate: f32,
+        was_paused: bool,
+    ) {
+        // The player holds the snapshot as the restore seek that fires after
+        // preroll (instead of the item's start_time), re-pauses once the
+        // restore completes, and watches for the external text stream to
+        // appear (see `Player::load` and the `LoadKind::Reload` handling).
+        self.load_media_impl(Some(player::RestorePoint {
+            position: position.unwrap_or(gst::ClockTime::ZERO),
+            rate,
+        }));
+        // A pause that was in effect before the reload is re-applied only
+        // once the whole restore sequence settles.
+        if was_paused {
+            self.player.set_pause_after_restore();
+        }
+    }
+
+    fn load_current_media_item(
+        &mut self,
+        reload: Option<player::RestorePoint>,
+    ) -> std::result::Result<(), LoadMediaError> {
         let current_media = self.current_media.as_ref().ok_or(LoadMediaError::NoItem)?;
         // TODO: this shouldn't be v3 item
         let item = match &current_media.source {
@@ -1064,8 +1227,6 @@ impl Application {
             is_for_sure_live = true;
         }
 
-        self.on_playing_command = None;
-
         let player_variant = if container.starts_with("image/") {
             UiPlayerVariant::Image
         } else if container.starts_with("audio/")
@@ -1127,16 +1288,47 @@ impl Application {
             self.image_downloader
                 .queue_download(id, url.clone(), headers.clone());
         } else {
-            self.player.set_uri(&url);
+            // The active external (if any) rides along as the suburi; the
+            // text-restore intent snapshots what its selection must end on
+            // (see `player::TextIntent`).
+            let active = self
+                .current_media
+                .as_ref()
+                .and_then(|m| m.active_external.as_ref());
+            let external_sub_url = self
+                .current_media
+                .as_ref()
+                .and_then(|m| m.active_external_sub())
+                .map(|s| s.url.clone());
+            let intent = match active {
+                Some(active) if external_sub_url.is_some() => {
+                    if active.select_on_load {
+                        player::TextIntent::ExternalSelect
+                    } else {
+                        player::TextIntent::ExternalAttached {
+                            restore_sid: active.restore_subtitle_sid.clone(),
+                        }
+                    }
+                }
+                _ => player::TextIntent::Plain,
+            };
+            let kind = match reload {
+                Some(restore) => player::LoadKind::Reload { restore },
+                None => player::LoadKind::Fresh {
+                    start: (!is_for_sure_live).then_some(player::RestorePoint {
+                        position: start_position,
+                        rate: playback_rate,
+                    }),
+                },
+            };
+            self.player
+                .load(&url, external_sub_url.as_deref(), intent, kind);
             if let Some(volume) = volume {
-                self.player.set_volume(volume);
-            }
-
-            if !is_for_sure_live {
-                self.on_playing_command = Some(OnMediaLoadedOperation {
-                    seek_position: start_position,
-                    seek_rate: playback_rate,
-                });
+                // Command path: stamp the echo window so the pipeline's
+                // stale read-back notifies don't get relayed as external
+                // changes (the confirm comes from the Load relay itself).
+                self.player.set_volume(volume.clamp(0.0, 1.0));
+                self.last_volume_cmd = Some(Instant::now());
             }
         }
 
@@ -1271,6 +1463,11 @@ impl Application {
         debug!(?index, "Selecting queue item");
         queue.current_idx = index;
 
+        // External subtitles are per-item; don't carry them over to the next.
+        if let Some(media) = self.current_media.as_mut() {
+            media.clear_external_subtitles();
+        }
+
         self.load_media();
 
         if relay {
@@ -1377,13 +1574,28 @@ impl Application {
 
     fn pause(&mut self) {
         if self.is_playing() {
+            // A pause landing while a load is in flight would be stomped by
+            // the collection-time auto-play (loads always go through Playing;
+            // see `Player::set_pause_after_restore`). Record the intent so
+            // the restore path returns to Paused once the load settles; an
+            // explicit resume or the next load clears it.
+            if self.is_loading_media {
+                self.player.set_pause_after_restore();
+            }
             self.player.pause();
         }
     }
 
     fn resume(&mut self) {
+        // An explicit resume overrides a pending return-to-Paused from a
+        // reload that started while paused.
+        self.player.clear_pause_after_restore();
         if self.is_playing() {
             self.player.play();
+            // A parked paused-deselect applies once the pipeline actually
+            // reaches steady PLAYING (the started_playing state edge) —
+            // applying it here would race an immediately-following Stop
+            // into the teardown (observed wedge).
         }
     }
 
@@ -1491,17 +1703,47 @@ impl Application {
             }
             Operation::Seek(time) => {
                 if self.is_playing() {
-                    match self.current_duration {
-                        Some(duration) if duration > gst::ClockTime::ZERO && time > duration => {
-                            self.send_error(origin, ErrorKind::SeekOutOfRange);
-                            self.player.seek(duration);
+                    if !self.player.seekable_known {
+                        // Tracks are advertised well before the pipeline can answer the seekability
+                        // query; in that window the duration for the range check is unknown too,
+                        // and the player would silently drop the seek. Park it (last seek wins) and
+                        // apply it once the query resolves.
+                        debug!(
+                            ?time,
+                            "Parking the seek until the seekability query resolves"
+                        );
+                        self.pending_seek_op = Some((origin, time));
+                        self.pending_seek_epoch += 1;
+                        let epoch = self.pending_seek_epoch;
+                        let msg_tx = self.msg_tx.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Self::PENDING_SEEK_TIMEOUT).await;
+                            msg_tx.send(Message::PendingSeekCheck { epoch });
+                        });
+                    } else {
+                        match self.current_duration {
+                            Some(duration)
+                                if duration > gst::ClockTime::ZERO && time > duration =>
+                            {
+                                self.send_error(origin, ErrorKind::SeekOutOfRange);
+                                self.player.seek(duration);
+                            }
+                            _ => self.player.seek(time),
                         }
-                        _ => self.player.seek(time),
                     }
                 }
             }
             Operation::SetSpeed(rate) => {
-                self.player.set_rate(rate);
+                // An idempotent speed set performs no rate-changing seek and thus emits no
+                // RateChanged from the pipeline — but the sender still expects a
+                // confirmation. Confirm directly; real changes are confirmed by the pipeline's
+                // RateChanged.
+                if (self.player.rate() - rate as f64).abs() < 1e-9 {
+                    debug!(rate, "Speed unchanged; re-emitting the confirmation");
+                    self.broadcast_rate(rate)?;
+                } else {
+                    self.player.set_rate(rate);
+                }
             }
             Operation::SetPlaylistItem(msg) => {
                 debug!(?msg, "Set playlist item");
@@ -1519,12 +1761,16 @@ impl Application {
                     return Ok(false);
                 }
 
+                // External subtitles are per-item; drop on item change.
+                if let Some(media) = self.current_media.as_mut() {
+                    media.clear_external_subtitles();
+                }
+
                 self.load_media();
                 self.gui.set_playlist_index(new_index as i32);
             }
             Operation::SetVolume(volume) => {
-                self.player.set_volume(volume);
-                self.gui.set_volume(volume);
+                self.set_volume_cmd(volume);
             }
             Operation::StartMirroringSession {
                 tx: client_tx,
@@ -1553,14 +1799,10 @@ impl Application {
             }
             Operation::SetPlaybackState(state) => match state {
                 fcast_protocol::v4::PlaybackState::Paused => {
-                    if self.is_playing() {
-                        self.player.pause();
-                    }
+                    self.pause();
                 }
                 fcast_protocol::v4::PlaybackState::Playing => {
-                    if self.is_playing() {
-                        self.player.play();
-                    }
+                    self.resume();
                 }
                 fcast_protocol::v4::PlaybackState::Idle
                 | fcast_protocol::v4::PlaybackState::Ended => {
@@ -1574,10 +1816,17 @@ impl Application {
             Operation::ChangeTrack { id, typ } => {
                 debug!(id, ?typ, "changing track");
 
+                // Subtitles have their own path: ids can name an external
+                // subtitle (a virtual track not present in `Player::streams`).
+                if matches!(typ, v4::flat::MediaTrackType::Subtitle) {
+                    self.change_subtitle_track(origin, id);
+                    return Ok(false);
+                }
+
                 let stream_type = match typ {
                     v4::flat::MediaTrackType::Video => gst::StreamType::VIDEO,
                     v4::flat::MediaTrackType::Audio => gst::StreamType::AUDIO,
-                    v4::flat::MediaTrackType::Subtitle => gst::StreamType::TEXT,
+                    v4::flat::MediaTrackType::Subtitle => unreachable!(),
                     _ => {
                         error!(?typ, "Unknown track type");
                         self.send_error(origin, ErrorKind::MalformedBody);
@@ -1593,26 +1842,12 @@ impl Application {
                     return Ok(false);
                 }
 
-                // playsink cannot present a text stream without a video
-                // stream, so selecting a subtitle while video is deselected
-                // would either error the pipeline or be silently dropped.
-                // Report it as unsatisfiable instead.
-                if matches!(typ, v4::flat::MediaTrackType::Subtitle)
-                    && id.is_some()
-                    && self.player.current_video_stream.is_none()
-                {
-                    error!("Cannot select a subtitle track while video is disabled");
-                    self.send_error(origin, ErrorKind::InvalidState);
-                    return Ok(false);
-                }
-
                 // Latest-wins and serialized against other track operations in
                 // the player (see player::TrackOps); the subtitle re-emit
                 // flush is scheduled there too.
                 let kind = match typ {
                     v4::flat::MediaTrackType::Video => player::TrackKind::Video,
                     v4::flat::MediaTrackType::Audio => player::TrackKind::Audio,
-                    v4::flat::MediaTrackType::Subtitle => player::TrackKind::Subtitle,
                     _ => unreachable!(),
                 };
                 if self.player.request_track_change(kind, id) {
@@ -1621,6 +1856,9 @@ impl Application {
                     // old cue reads as broken, especially while paused).
                     self.gui.clear_video_overlays();
                 }
+            }
+            Operation::AddSubtitleSource { url, select, name } => {
+                return self.add_subtitle_source(origin, url, select, name);
             }
             Operation::SelectQueueItem(position) => {
                 self.play_queue_item(origin, position, true);
@@ -1725,12 +1963,505 @@ impl Application {
     }
 
     fn on_media_info_updated(&mut self) {
-        if self.player.seekable
-            && let Some(cmd) = self.on_playing_command.take()
-        {
-            self.player
-                .seek_and_set_rate(cmd.seek_position, cmd.seek_rate);
+        // An `AddSubtitleSource` may be parked waiting for the seekability
+        // query this update may have just resolved.
+        self.maybe_apply_pending_subtitle_adds();
+
+        // While an external subtitle's text stream is still pending, hold the
+        // start/restore seek AND the parked sender seek: a flushing seek
+        // while the pipeline is still prerolling or while the subtitle
+        // source is activating either wedges the preroll or errors the
+        // pipeline (both observed). The player releases its held seek once
+        // the pipeline settles, or the dance's timeout fails the subtitle
+        // source if the text stream never materializes.
+        if self.player.subtitle_phase() == player::SubtitlePhase::ExternalInFlight {
+            return;
         }
+        self.player.maybe_run_start_seek();
+        // After the start seek, so a sender seek that raced the load wins.
+        self.maybe_apply_pending_seek();
+    }
+
+    /// Map a selected subtitle stream index to the id senders should see: the
+    /// active external's STABLE id when its own stream is selected (so it
+    /// matches `TracksAvailable`), otherwise the raw stream index unchanged.
+    fn advertised_subtitle_id(&self, subtitle_sid: Option<u32>) -> Option<u32> {
+        let active_id = self
+            .current_media
+            .as_ref()
+            .and_then(|m| m.active_external.as_ref())
+            .map(|a| a.id);
+        if let (Some(active_id), Some(sid)) = (active_id, subtitle_sid)
+            && self.player.external_subtitle_track_idx() == Some(sid)
+        {
+            Some(active_id)
+        } else {
+            subtitle_sid
+        }
+    }
+
+    /// How long a parked `AddSubtitleSource` may wait for the seekability
+    /// query to resolve before it is rejected with `InvalidState`.
+    const PENDING_SUBTITLE_ADD_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Handle `AddSubtitleSource`. If the media is loaded but the pipeline
+    /// hasn't answered the seekability query yet (tracks are advertised off
+    /// the first stream collection, well before the query can succeed at
+    /// preroll completion — seconds apart on a slow preroll), the op is
+    /// parked and replayed once seekability is known instead of being
+    /// spuriously rejected.
+    fn add_subtitle_source(
+        &mut self,
+        origin: PacketOrigin,
+        url: String,
+        select: bool,
+        name: Option<SmolStr>,
+    ) -> Result<bool> {
+        debug!(url, select, ?name, "adding external subtitle source");
+
+        // Preconditions: an active, non-live, seekable, fully loaded
+        // media item. Selecting an external needs a reload+seek
+        // (`suburi` only applies at load time), impossible on a
+        // live/unseekable stream; and an in-flight load would be
+        // raced.
+        let src_supported = match self.current_media.as_ref().map(|m| &m.source) {
+            Some(MediaSource::Single(_) | MediaSource::Playlist { .. } | MediaSource::Queue(_)) => {
+                true
+            }
+            Some(MediaSource::Raop | MediaSource::AirPlayMirror { .. }) | None => false,
+        };
+        if !src_supported || self.is_loading_media {
+            error!("Cannot add a subtitle source: no compatible media is loaded");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return Ok(false);
+        }
+        if self.player.is_live() {
+            error!("Cannot add a subtitle source to a live stream");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return Ok(false);
+        }
+        if !self.player.seekable {
+            if !self.player.seekable_known {
+                // Not unseekable — just not answerable yet. Park the op;
+                // `on_media_info_updated` replays it once the query
+                // resolves, and the check timer bounds the wait.
+                debug!("Parking the subtitle source until the seekability query resolves");
+                self.pending_subtitle_adds.push(PendingSubtitleAdd {
+                    url,
+                    select,
+                    name,
+                    origin,
+                });
+                let epoch = self.pending_subtitle_add_epoch;
+                let item = self.current_media_item_id;
+                let msg_tx = self.msg_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Self::PENDING_SUBTITLE_ADD_TIMEOUT).await;
+                    msg_tx.send(Message::PendingSubtitleAddCheck { item, epoch });
+                });
+                return Ok(false);
+            }
+            error!("Cannot add a subtitle source to an unseekable stream");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return Ok(false);
+        }
+
+        // Assign a stable id and add it to the catalog.
+        let Some(media) = self.current_media.as_mut() else {
+            self.send_error(origin, ErrorKind::InvalidState);
+            return Ok(false);
+        };
+        let id = EXTERNAL_TRACK_ID_BASE + media.next_external_id;
+        media.next_external_id += 1;
+        media.external_subtitles.push(ExternalSubtitle {
+            id,
+            url,
+            name,
+            requested_by: origin,
+        });
+
+        if !select {
+            // Attached but not selected: it becomes a real pipeline
+            // stream only once selected. For now just advertise the
+            // new virtual track — no reload, seamless.
+            debug!(id, "Attached external subtitle (unselected)");
+            self.update_tracks(true);
+            return Ok(false);
+        }
+
+        // Select it now: reload with it as the suburi.
+        let position = self.player.get_position();
+        let rate = self.player.rate() as f32;
+        let was_paused = self.player.player_state() == PlayerState::Paused;
+        if let Some(media) = self.current_media.as_mut() {
+            media.active_external = Some(ActiveExternal {
+                id,
+                select_on_load: true,
+                restore_subtitle_sid: None,
+            });
+        }
+        self.reload_preserving_position(position, rate, was_paused);
+        Ok(false)
+    }
+
+    /// Replay `AddSubtitleSource` ops parked while the seekability query was
+    /// unresolved. No-op until it resolves; called whenever media info
+    /// updates.
+    fn maybe_apply_pending_subtitle_adds(&mut self) {
+        if self.pending_subtitle_adds.is_empty() || !self.player.seekable_known {
+            return;
+        }
+        self.pending_subtitle_add_epoch += 1;
+        let adds = std::mem::take(&mut self.pending_subtitle_adds);
+        for add in adds {
+            debug!(url = add.url, "Applying a parked subtitle source");
+            let _ = self.add_subtitle_source(add.origin, add.url, add.select, add.name);
+        }
+    }
+
+    /// Drop parked subtitle adds, rejecting them to their senders: the media
+    /// they targeted is being replaced or playback is stopping.
+    fn reject_pending_subtitle_adds(&mut self) {
+        if self.pending_subtitle_adds.is_empty() {
+            return;
+        }
+        self.pending_subtitle_add_epoch += 1;
+        for add in std::mem::take(&mut self.pending_subtitle_adds) {
+            self.send_error(add.origin, ErrorKind::InvalidState);
+        }
+    }
+
+    /// How long a parked `Seek` may wait for the seekability query to
+    /// resolve before it is dropped.
+    const PENDING_SEEK_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Apply a `Seek` parked while the seekability query was unresolved:
+    /// now that duration and seekability are known, the range check gives
+    /// the right answer (`SeekOutOfRange` for over-long seeks) instead of
+    /// the seek being silently dropped.
+    fn maybe_apply_pending_seek(&mut self) {
+        if !self.player.seekable_known {
+            return;
+        }
+        let Some((origin, time)) = self.pending_seek_op.take() else {
+            return;
+        };
+        self.pending_seek_epoch += 1;
+        debug!(?time, "Applying a parked seek");
+        match self.current_duration {
+            Some(duration) if duration > gst::ClockTime::ZERO && time > duration => {
+                self.send_error(origin, ErrorKind::SeekOutOfRange);
+                self.player.seek(duration);
+            }
+            _ => self.player.seek(time),
+        }
+    }
+
+    /// Drop a parked seek without applying it (media going away or the
+    /// query never resolved).
+    fn drop_pending_seek(&mut self) {
+        if self.pending_seek_op.take().is_some() {
+            self.pending_seek_epoch += 1;
+        }
+    }
+
+    /// Resolve a protocol/GUI subtitle track id into what the pipeline must do.
+    /// Ids `>= EXTERNAL_TRACK_ID_BASE` name an external catalog entry; smaller
+    /// ids are `Player::streams` indices (embedded tracks); `None` is "off".
+    fn resolve_subtitle_target(&self, id: Option<u32>) -> Result<SubtitleTarget, ErrorKind> {
+        let Some(id) = id else {
+            return Ok(SubtitleTarget::Stream(None));
+        };
+        if id >= EXTERNAL_TRACK_ID_BASE {
+            let exists = self
+                .current_media
+                .as_ref()
+                .is_some_and(|m| m.external_subtitles.iter().any(|s| s.id == id));
+            if !exists {
+                return Err(ErrorKind::MalformedBody);
+            }
+            let active_id = self
+                .current_media
+                .as_ref()
+                .and_then(|m| m.active_external.as_ref())
+                .map(|a| a.id);
+            // The active external is realized as a real suburi stream; target
+            // that stream index directly. Any other external (or the active
+            // one before its stream has appeared) needs a suburi swap.
+            if active_id == Some(id)
+                && let Some(idx) = self.player.external_subtitle_track_idx()
+            {
+                Ok(SubtitleTarget::Stream(Some(idx)))
+            } else {
+                Ok(SubtitleTarget::External(id))
+            }
+        } else {
+            if !self.player.is_stream_of_type(id, gst::StreamType::TEXT) {
+                return Err(ErrorKind::MalformedBody);
+            }
+            Ok(SubtitleTarget::Stream(Some(id)))
+        }
+    }
+
+    /// Shared subtitle-change path for both the protocol `ChangeTrack` and the
+    /// GUI `SelectTrack`. `origin` receives any error (a `Gui` origin swallows
+    /// it). Routes external-track selection through a suburi-swapping reload
+    /// and everything else through the existing selection/reload logic.
+    fn change_subtitle_track(&mut self, origin: PacketOrigin, id: Option<u32>) {
+        // An external-subtitle (re)load is still applying its own selection; a
+        // competing change now would race it (mid-preroll selection wedges the
+        // pipeline).
+        let phase = self.player.subtitle_phase();
+        if phase == player::SubtitlePhase::ExternalInFlight {
+            error!("Cannot change subtitles while an external subtitle load is in flight");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return;
+        }
+        let target = match self.resolve_subtitle_target(id) {
+            Ok(t) => t,
+            Err(kind) => {
+                error!(?id, "Invalid subtitle track id");
+                self.send_error(origin, kind);
+                return;
+            }
+        };
+
+        // playsink cannot present a text stream without a video stream, so
+        // selecting any subtitle while video is deselected would error the
+        // pipeline or be silently dropped. Report it as unsatisfiable.
+        let selecting_something = !matches!(target, SubtitleTarget::Stream(None)) && id.is_some();
+        if selecting_something && self.player.current_video_stream.is_none() {
+            error!("Cannot select a subtitle track while video is disabled");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return;
+        }
+
+        // While the plain-load text restore is pending — from the flag-off
+        // preroll until a stability poll confirms the restored selection's
+        // text branch settled — a subtitle change cannot be applied
+        // directly (playsink either won't consume text yet, or is still
+        // wiring the fresh branch, which a competing switch wedges). It
+        // doesn't need to be: park it as the restore target and confirm
+        // now; the restore applies it once the pipeline settles (senders
+        // routinely change tracks right after TracksAvailable, well inside
+        // this window). External targets still need a suburi reload; reject
+        // those like the external-in-flight case above.
+        if phase == player::SubtitlePhase::RestorePending {
+            let stream_idx = match target {
+                SubtitleTarget::External(_) => {
+                    error!("Cannot select an external subtitle while the load is still settling");
+                    self.send_error(origin, ErrorKind::InvalidState);
+                    return;
+                }
+                SubtitleTarget::Stream(idx) => idx,
+            };
+            debug!(
+                ?stream_idx,
+                "Parking the subtitle change as the restore target"
+            );
+            self.player.park_restore_subtitle_override(
+                stream_idx.and_then(|idx| self.player.stream_id_of(idx)),
+            );
+            if stream_idx != self.player.current_subtitle_stream {
+                // A displayed cue (possible once the restore built the
+                // branch) belongs to the outgoing track; the change must
+                // register visually even though it applies at the settle.
+                self.gui.clear_video_overlays();
+            }
+            if self.updates_tx.strong_count() > 0 {
+                let video_sid = self.player.current_video_stream;
+                let audio_sid = self.player.current_audio_stream;
+                let msgs = vec![
+                    v4::MessageBuilder::new()
+                        .change_track(video_sid, v4::flat::MediaTrackType::Video),
+                    v4::MessageBuilder::new()
+                        .change_track(audio_sid, v4::flat::MediaTrackType::Audio),
+                    v4::MessageBuilder::new()
+                        .change_track(stream_idx, v4::flat::MediaTrackType::Subtitle),
+                ];
+                let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                    fcast::V4Message::TracksSelected(msgs),
+                )));
+            }
+            return;
+        }
+
+        match target {
+            SubtitleTarget::External(ext_id) => {
+                debug!(ext_id, "Selecting external subtitle via reload");
+                self.switch_to_external_via_reload(ext_id);
+            }
+            SubtitleTarget::Stream(stream_idx) => {
+                // Switching the external track's selection state (in either
+                // direction) cannot use a plain SELECT_STREAMS; reload instead.
+                if self.subtitle_change_needs_reload(stream_idx) {
+                    debug!(?stream_idx, "Switching the external subtitle via reload");
+                    self.switch_subtitle_via_reload(stream_idx);
+                    return;
+                }
+                // A subtitle DESELECT makes playsink tear down its text
+                // chain, and doing that while the pipeline is paused
+                // deadlocks it (the removal needs the chain's in-flight
+                // pushes to drain, which requires flowing data; observed as
+                // the stress worker-thread wedge). Park the deselect and
+                // apply it at resume, where the teardown is the well-tested
+                // playing path. The stale cue is cleared right away, so
+                // visually the disable is immediate; the selection confirm
+                // reaches senders once it really applies.
+                if stream_idx.is_none() && self.player.player_state() == PlayerState::Paused {
+                    debug!("Parking the subtitle deselect until resume (paused)");
+                    self.player.park_paused_subtitle_deselect();
+                    self.gui.clear_video_overlays();
+                    // The deselect IS accepted (it applies at resume), so
+                    // confirm it to senders now — they expect a prompt
+                    // TracksSelected for their ChangeTrack. The real apply
+                    // re-relays the same state (harmless duplicate).
+                    if self.updates_tx.strong_count() > 0 {
+                        let video_sid = self.player.current_video_stream;
+                        let audio_sid = self.player.current_audio_stream;
+                        let msgs = vec![
+                            v4::MessageBuilder::new()
+                                .change_track(video_sid, v4::flat::MediaTrackType::Video),
+                            v4::MessageBuilder::new()
+                                .change_track(audio_sid, v4::flat::MediaTrackType::Audio),
+                            v4::MessageBuilder::new()
+                                .change_track(None, v4::flat::MediaTrackType::Subtitle),
+                        ];
+                        let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                            fcast::V4Message::TracksSelected(msgs),
+                        )));
+                    }
+                    return;
+                }
+                // A newer selection supersedes a parked deselect.
+                self.player.clear_parked_paused_subtitle_deselect();
+                self.apply_subtitle_stream_change(stream_idx);
+            }
+        }
+    }
+
+    /// Apply a plain (non-reload) subtitle stream selection through
+    /// TrackOps (the player suppresses the re-emit flush itself while an
+    /// external subtitle is attached).
+    fn apply_subtitle_stream_change(&mut self, stream_idx: Option<u32>) {
+        if self.player.change_subtitle_stream(stream_idx) {
+            // The displayed cue belongs to the previous track; clear
+            // it immediately so the change registers visually.
+            self.gui.clear_video_overlays();
+        }
+    }
+
+    /// Whether a subtitle track change to a real stream `target` must go
+    /// through a reload instead of a plain `SELECT_STREAMS`: any change to the
+    /// *active external* track's selection state, in either direction.
+    /// Deactivating the selected external track stalls until decodebin3 has
+    /// drained the suburi stream's queued sparse data in real time (the
+    /// confirmation only arrived at teardown in practice). Activating it is
+    /// racy too: a parked (never consumed) suburi stream first activated
+    /// mid-Playing makes playsink build its text branch through an async
+    /// re-preroll that can block on the sparse stream forever. Changes between
+    /// embedded tracks (or off) while the external track stays unselected are
+    /// plain selections.
+    fn subtitle_change_needs_reload(&self, target: Option<u32>) -> bool {
+        let Some(ext_idx) = self
+            .current_media
+            .as_ref()
+            .and_then(|m| m.active_external.as_ref())
+            .and(self.player.external_subtitle_track_idx())
+        else {
+            return false;
+        };
+        let selected = self.player.current_subtitle_stream == Some(ext_idx);
+        let wants = target == Some(ext_idx);
+        selected != wants
+    }
+
+    /// Switch the active external's selection onto or away from its own track
+    /// by re-driving the reload dance (see `subtitle_change_needs_reload`):
+    /// retarget the `ActiveExternal` so the reload's restore path ends on
+    /// `target` (the external track itself, an embedded track, or none) and
+    /// reload preserving the playback position. The sender's ChangeTrack
+    /// confirmation comes from the reload's final `StreamsSelected` relay.
+    fn switch_subtitle_via_reload(&mut self, target: Option<u32>) {
+        let position = self.player.get_position();
+        let rate = self.player.rate() as f32;
+        let was_paused = self.player.player_state() == PlayerState::Paused;
+        let onto_external = target.is_some() && target == self.player.external_subtitle_track_idx();
+        // Embedded stream ids are stable across reloads of the same media.
+        let target_sid = if onto_external {
+            None
+        } else {
+            target.and_then(|idx| self.player.stream_id_of(idx))
+        };
+
+        if let Some(active) = self
+            .current_media
+            .as_mut()
+            .and_then(|m| m.active_external.as_mut())
+        {
+            active.select_on_load = onto_external;
+            active.restore_subtitle_sid = target_sid;
+        }
+
+        self.reload_preserving_position(position, rate, was_paused);
+    }
+
+    /// Select a different (or not-yet-loaded) external subtitle by making it
+    /// the pipeline's suburi: point `active_external` at it and reload,
+    /// selecting it once the reload prerolls. Swaps out whichever external was
+    /// previously loaded (only one suburi at a time); the others stay in the
+    /// catalog as virtual tracks.
+    fn switch_to_external_via_reload(&mut self, ext_id: u32) {
+        let position = self.player.get_position();
+        let rate = self.player.rate() as f32;
+        let was_paused = self.player.player_state() == PlayerState::Paused;
+
+        if let Some(media) = self.current_media.as_mut() {
+            media.active_external = Some(ActiveExternal {
+                id: ext_id,
+                select_on_load: true,
+                restore_subtitle_sid: None,
+            });
+        }
+
+        self.reload_preserving_position(position, rate, was_paused);
+    }
+
+    /// The active external subtitle failed: a pipeline error from its URL, or
+    /// its text stream never appeared. A failing sub item leaves
+    /// uridecodebin3's play item stuck (preroll never completes), so playback
+    /// cannot simply continue — report `ResourceNotFound` to the requester,
+    /// drop that subtitle from the catalog, and reload the item without a
+    /// suburi, restoring the held snapshot position.
+    fn fail_external_subtitle(&mut self) {
+        let Some(media) = self.current_media.as_mut() else {
+            return;
+        };
+        let Some(active) = media.active_external.take() else {
+            return;
+        };
+        // Remove the failed entry from the catalog (it will not be offered as a
+        // virtual track anymore) and note who to notify.
+        let failed = media
+            .external_subtitles
+            .iter()
+            .position(|s| s.id == active.id)
+            .map(|pos| media.external_subtitles.remove(pos));
+        let Some(failed) = failed else {
+            // Catalog entry already gone; nothing to fail.
+            self.player.clear_external_sub_pending();
+            return;
+        };
+        warn!(
+            url = failed.url,
+            "External subtitle failed; reloading without it"
+        );
+        self.send_error(failed.requested_by, ErrorKind::ResourceNotFound);
+
+        // The original playback snapshot is still parked in the player's
+        // held restore seek; carry it over to the recovery reload.
+        let (position, rate, was_paused) = self.player.take_failed_external_snapshot();
+        self.reload_preserving_position(position, rate, was_paused);
     }
 
     fn update_tracks(&mut self, force_update: bool) {
@@ -1738,44 +2469,83 @@ impl Application {
             return;
         }
 
-        if self.should_broadcast() {
-            let serialized_msg = v4::MessageBuilder::new().tracks_available(
-                self.player
-                    .streams
+        // Every external subtitle is advertised as a subtitle track with its
+        // STABLE id, in catalog order, AFTER the embedded tracks — regardless
+        // of which one is currently loaded as the suburi. This keeps the
+        // advertised order fixed as the selection changes. The active
+        // external is also a real GStreamer stream (the suburi), so it is
+        // skipped in the stream loop to avoid advertising it twice.
+        let active_external_idx = self
+            .current_media
+            .as_ref()
+            .and_then(|m| m.active_external.as_ref())
+            .and(self.player.external_subtitle_track_idx());
+        // (id, name) for every catalog external, in order.
+        let externals: Vec<(u32, Option<SmolStr>)> = self
+            .current_media
+            .as_ref()
+            .map(|m| {
+                m.external_subtitles
                     .iter()
-                    .enumerate()
-                    .filter_map(|(idx, s)| {
-                        let typ = s.inner.stream_type();
+                    .map(|s| (s.id, s.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-                        let metadata = if typ.contains(gst::StreamType::VIDEO) {
-                            Some(v4::MediaTrackMetadata::Video)
-                        } else if typ.contains(gst::StreamType::AUDIO) {
-                            Some(v4::MediaTrackMetadata::Audio)
-                        } else if typ.contains(gst::StreamType::TEXT) {
-                            Some(v4::MediaTrackMetadata::Subtitle)
-                        } else {
-                            return None;
-                        };
+        if self.should_broadcast() {
+            let mut tracks: Vec<v4::MediaTrack> = self
+                .player
+                .streams
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, s)| {
+                    // The active external's own stream is advertised below.
+                    if Some(idx as u32) == active_external_idx {
+                        return None;
+                    }
+                    let typ = s.inner.stream_type();
 
-                        let (title, iso_639) = if let Some(tags) = s.inner.tags() {
-                            (
-                                tags.get::<gst::tags::Title>()
-                                    .map(|t| smol_str::SmolStr::new(t.get())),
-                                tags.get::<gst::tags::LanguageCode>()
-                                    .map(|t| SmolStr::new(t.get())),
-                            )
-                        } else {
-                            (None, None)
-                        };
+                    let metadata = if typ.contains(gst::StreamType::VIDEO) {
+                        Some(v4::MediaTrackMetadata::Video)
+                    } else if typ.contains(gst::StreamType::AUDIO) {
+                        Some(v4::MediaTrackMetadata::Audio)
+                    } else if typ.contains(gst::StreamType::TEXT) {
+                        Some(v4::MediaTrackMetadata::Subtitle)
+                    } else {
+                        return None;
+                    };
 
-                        Some(v4::MediaTrack {
-                            id: idx as u32,
-                            title,
-                            iso_639: iso_639.unwrap_or(SmolStr::new("und")),
-                            metadata,
-                        })
-                    }),
-            );
+                    let (title, iso_639) = if let Some(tags) = s.inner.tags() {
+                        (
+                            tags.get::<gst::tags::Title>()
+                                .map(|t| smol_str::SmolStr::new(t.get())),
+                            tags.get::<gst::tags::LanguageCode>()
+                                .map(|t| SmolStr::new(t.get())),
+                        )
+                    } else {
+                        (None, None)
+                    };
+
+                    Some(v4::MediaTrack {
+                        id: idx as u32,
+                        title,
+                        iso_639: iso_639.unwrap_or(SmolStr::new("und")),
+                        metadata,
+                    })
+                })
+                .collect();
+
+            // All externals, in stable catalog order.
+            for (id, name) in &externals {
+                tracks.push(v4::MediaTrack {
+                    id: *id,
+                    title: name.clone(),
+                    iso_639: SmolStr::new("und"),
+                    metadata: Some(v4::MediaTrackMetadata::Subtitle),
+                });
+            }
+
+            let serialized_msg = v4::MessageBuilder::new().tracks_available(tracks.into_iter());
             self.broadcast_update(ReceiverToSenderMessage::V4(
                 fcast::V4Message::TracksAvailable { serialized_msg },
             ));
@@ -1785,6 +2555,9 @@ impl Application {
         let mut audios = Vec::new();
         let mut subtitles = Vec::new();
         for (idx, stream) in self.player.streams.iter().enumerate() {
+            if Some(idx as u32) == active_external_idx {
+                continue;
+            }
             let typ = stream.inner.stream_type();
             let dst = if typ.contains(gst::StreamType::VIDEO) {
                 Some(&mut videos)
@@ -1802,6 +2575,15 @@ impl Application {
                     name: stream.title.to_shared_string(),
                 });
             }
+        }
+        for (id, name) in &externals {
+            subtitles.push(UiMediaTrack {
+                id: *id as i32,
+                name: name
+                    .as_ref()
+                    .map(|n| n.to_shared_string())
+                    .unwrap_or_else(|| SmolStr::new_inline("External").to_shared_string()),
+            });
         }
 
         self.gui.set_tracks(videos, audios, subtitles);
@@ -1901,29 +2683,16 @@ impl Application {
             player::PlayerEvent::VolumeChanged(volume) => {
                 self.player.volume_changed();
 
-                if self.should_broadcast() {
-                    let update = VolumeUpdateMessage {
-                        generation_time: current_time_millis(),
-                        volume,
-                    };
-
-                    let msg = ReceiverToSenderMessage::LegacyTranslatable {
-                        op: Opcode::VolumeUpdate,
-                        msg: TranslatableMessage::VolumeUpdate(update),
-                    };
-                    self.updates_tx.send(Arc::new(msg))?;
-                    self.last_sent_update = Instant::now();
-
-                    self.broadcast_update(ReceiverToSenderMessage::V4(
-                        fcast::V4Message::VolumeChanged(volume as f32),
-                    ));
+                let echo_window = self
+                    .last_volume_cmd
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(2));
+                debug!(volume, echo_window, "Player volume notify");
+                if !echo_window {
+                    self.broadcast_volume(volume as f32);
                 }
-
-                self.gcast_tx.send(gcast::StatusUpdate::Volume(volume));
             }
             player::PlayerEvent::StreamCollection(collection) => {
-                self.player
-                    .handle_stream_collection(collection, self.msg_tx.clone());
+                self.player.handle_stream_collection(collection);
                 // self.media_loaded_successfully();
 
                 self.player.update_media_info();
@@ -1939,6 +2708,20 @@ impl Application {
                 self.player.play();
 
                 self.update_tracks(true);
+
+                // While the text-flag-off external-subtitle load is still
+                // prerolling, text must be kept OUT of the decodebin3
+                // selection too: media with embedded subtitles gets one
+                // auto-selected during preroll, and a selected text stream
+                // that playsink won't consume (flag off) wedges the preroll
+                // just like a mid-preroll text branch does. That deselect
+                // happens in the `StreamsSelected` handler, NOT here: a
+                // SELECT_STREAMS sent at collection time races decodebin3's
+                // own wiring of that collection (observed under stress: it
+                // killed the main source with a not-linked error). Reacting
+                // only to confirmed selections keeps our events ordered
+                // after decodebin3's.
+                self.player.pump_subtitle_dance(false);
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -1981,6 +2764,13 @@ impl Application {
                         PlayerState::Stopped => fcast_protocol::v4::PlaybackState::Idle,
                     };
                     self.playback_state_changed(v4_state);
+
+                    // A deferred external-subtitle restore step can proceed
+                    // now that the pipeline settled — and must happen before
+                    // `pause_after_restore` flips the state machine into a
+                    // transition again.
+                    self.player.pump_subtitle_dance(false);
+                    self.player.maybe_pause_after_restore();
                 }
 
                 let first_paused = old == gst::State::Ready
@@ -1996,6 +2786,16 @@ impl Application {
                     }
                 }
 
+                // A subtitle deselect parked while paused applies once the
+                // pipeline actually runs (playsink's text-chain teardown
+                // needs flowing data; this is the same proven path as a
+                // deselect sent while playing). If a Stop won the race the
+                // flag was already cleared with the media.
+                if started_playing && self.player.take_parked_paused_subtitle_deselect() {
+                    debug!("Applying the parked subtitle deselect");
+                    self.apply_subtitle_stream_change(None);
+                }
+
                 self.gcast_tx
                     .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
 
@@ -2009,7 +2809,19 @@ impl Application {
                     // pre-rolled
                     self.player.update_media_info();
                     self.on_media_info_updated();
+                    // A deferred external-subtitle step (its collection
+                    // arrived mid-preroll) can proceed now.
+                    self.player.pump_subtitle_dance(false);
                 }
+
+                // Dispatch queued track work LAST: `on_media_info_updated`
+                // above may just have launched the start seek, and a
+                // selection dispatched before it would interleave with the
+                // seek dance (its playsink reconfigure then runs outside
+                // steady PLAYING — an observed permanent wedge). With the
+                // seek already owning the state machine, the pump parks the
+                // work until the dance commits.
+                self.player.poll_track_ops();
             }
             player::PlayerEvent::UriLoaded => {
                 if !self.is_playing() {
@@ -2036,10 +2848,14 @@ impl Application {
                     subtitle.as_deref(),
                     seqnum,
                 );
+                // When the active external's own stream is selected, report it
+                // under the external's STABLE id (matching TracksAvailable), not
+                // its stream index.
+                let subtitle_id = self.advertised_subtitle_id(subtitle_sid);
                 self.gui.set_track_ids(
                     video_sid.map(|i| i as i32).unwrap_or(-1),
                     audio_sid.map(|i| i as i32).unwrap_or(-1),
-                    subtitle_sid.map(|i| i as i32).unwrap_or(-1),
+                    subtitle_id.map(|i| i as i32).unwrap_or(-1),
                 );
 
                 if video.is_some() {
@@ -2055,12 +2871,20 @@ impl Application {
                         v4::MessageBuilder::new()
                             .change_track(audio_sid, v4::flat::MediaTrackType::Audio),
                         v4::MessageBuilder::new()
-                            .change_track(subtitle_sid, v4::flat::MediaTrackType::Subtitle),
+                            .change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
                     ];
                     let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
                         fcast::V4Message::TracksSelected(msgs),
                     )));
                 }
+
+                // The dance hooks run AFTER the relays above (the ordering
+                // is stress-validated): undo a text selection confirmed
+                // during the flag-off external preroll, reconcile a pending
+                // external-subtitle selection against this confirmation, and
+                // let a paused-reload restore that was waiting on it pause
+                // again.
+                self.player.subtitle_dance_streams_selected();
             }
             player::PlayerEvent::SeekFailed => {
                 self.player.seek_failed();
@@ -2070,12 +2894,7 @@ impl Application {
             }
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);
-                self.notify_updates(true)?;
-                if self.updates_tx.strong_count() > 0 {
-                    let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
-                        fcast::V4Message::PlaybackRateChanged(new_rate as f32),
-                    )));
-                }
+                self.broadcast_rate(new_rate as f32)?;
             }
             player::PlayerEvent::Error {
                 kind,
@@ -2084,10 +2903,33 @@ impl Application {
             } => {
                 #[cfg(debug_assertions)]
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
-                if let Some(failed_uri) = &failed_uri
+                let external_sub_failed = self
+                    .player
+                    .error_is_external_subtitle(failed_uri.as_deref());
+                let recent_external_reload = self.player.in_external_reload_grace();
+                if external_sub_failed {
+                    // The subtitle source failed, not the media itself.
+                    // Degrade to playing without subtitles instead of
+                    // stopping.
+                    self.fail_external_subtitle();
+                } else if let Some(failed_uri) = &failed_uri
                     && self.current_item_uri() != Some(failed_uri.as_str())
                 {
                     debug!(failed_uri, "Dropping error from a superseded load");
+                } else if recent_external_reload {
+                    // The reload re-uses the item's URI, so the
+                    // superseded-load check above cannot tell the OLD
+                    // pipeline instance's teardown errors (a wedged suburi
+                    // pipeline dies noisily, sometimes blaming the main URI
+                    // or nothing at all) apart from a genuine failure of the
+                    // fresh load. Tolerate errors briefly after a reload; a
+                    // genuine failure in this window degrades to a hung load
+                    // rather than a spurious fatal error.
+                    warn!(
+                        ?failed_uri,
+                        "Ignoring error right after an external-subtitle reload \
+                         (likely the superseded pipeline instance)"
+                    );
                 } else {
                     self.player.stop();
                     if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
@@ -2276,7 +3118,15 @@ impl Application {
 
                 let uri = airplay::source::mirror_uri(stream_connection_id);
                 debug!(%uri, "Starting AirPlay mirror playback");
-                self.player.set_uri(&uri);
+                // No text-restore dance and no start seek: a mirror stream
+                // is live and has no text streams (the text flag simply
+                // stays off for the session, as before).
+                self.player.load(
+                    &uri,
+                    None,
+                    player::TextIntent::Untracked,
+                    player::LoadKind::Fresh { start: None },
+                );
                 self.player.play();
                 self.current_media = Some(MediaSourceState::new(
                     PacketOrigin::AirPlay,
@@ -2312,8 +3162,7 @@ impl Application {
                         stream_connection_id,
                         volume, "Setting AirPlay mirror volume"
                     );
-                    self.player.set_volume(volume);
-                    self.gui.set_volume(volume);
+                    self.set_volume_cmd(volume);
                 }
             }
             AirPlay::MirrorStopped {
@@ -2690,13 +3539,20 @@ impl Application {
 
                 let sid = if id >= 0 { Some(id as u32) } else { None };
 
+                // Subtitles share the protocol ChangeTrack path (ids may name a
+                // virtual external track, and external switches need a reload).
+                if matches!(variant, UiMediaTrackType::Subtitle) {
+                    self.change_subtitle_track(PacketOrigin::Gui, sid);
+                    return Ok(false);
+                }
+
                 // Latest-wins and serialized against other track operations in
                 // the player (see player::TrackOps): rapid picker changes
                 // can't pile up overlapping playbin re-prerolls.
                 let kind = match variant {
                     UiMediaTrackType::Video => player::TrackKind::Video,
                     UiMediaTrackType::Audio => player::TrackKind::Audio,
-                    UiMediaTrackType::Subtitle => player::TrackKind::Subtitle,
+                    UiMediaTrackType::Subtitle => unreachable!(),
                 };
                 if self.player.request_track_change(kind, sid) {
                     self.gui.clear_video_overlays();
@@ -2708,6 +3564,33 @@ impl Application {
             Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
                     self.gui.set_app_state(AppState::LoadingMedia);
+                }
+            }
+            Message::PendingSubtitleAddCheck { item, epoch } => {
+                // Epoch mismatch means the parked list was already drained
+                // (applied or rejected) since this timer was armed.
+                if epoch == self.pending_subtitle_add_epoch
+                    && !self.pending_subtitle_adds.is_empty()
+                {
+                    warn!(
+                        item,
+                        "Seekability never resolved; rejecting parked subtitle source(s)"
+                    );
+                    self.reject_pending_subtitle_adds();
+                }
+            }
+            Message::PendingSeekCheck { epoch } => {
+                if epoch == self.pending_seek_epoch && self.pending_seek_op.is_some() {
+                    warn!("Seekability never resolved; dropping the parked seek");
+                    self.drop_pending_seek();
+                }
+            }
+            Message::PlayerTimer(event) => {
+                // The dance handles its own timers; the only outcome that
+                // needs the application is a failed external subtitle
+                // (catalog removal + sender error + recovery reload).
+                if self.player.handle_timer(event) == player::TimerAction::ExternalSubtitleFailed {
+                    self.fail_external_subtitle();
                 }
             }
             Message::Raop(event) => return self.handle_raop_event(event),

@@ -218,11 +218,7 @@ pub mod imp {
                 VideoFormat::Gbr12le,
             ];
             #[cfg(target_os = "macos")]
-            let iosurface_formats = [
-                VideoFormat::Nv12,
-                VideoFormat::Bgra,
-                VideoFormat::P01010le,
-            ];
+            let iosurface_formats = [VideoFormat::Nv12, VideoFormat::Bgra, VideoFormat::P01010le];
 
             for features in [
                 #[cfg(target_os = "macos")]

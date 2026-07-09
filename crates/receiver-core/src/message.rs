@@ -139,6 +139,25 @@ pub enum Message {
         variant: UiMediaTrackType,
     },
     ShouldSetLoadingStatus(MediaItemId),
+    /// Bounded wait for a parked `AddSubtitleSource`: the op arrived after
+    /// the load but before the pipeline could answer the seekability query
+    /// (`Player::seekable_known`). If the query still hasn't resolved when
+    /// this fires, the parked adds are rejected with `InvalidState`.
+    PendingSubtitleAddCheck {
+        item: MediaItemId,
+        epoch: u64,
+    },
+    /// Bounded wait for a parked `Seek` (same unresolved-seekability window
+    /// as `PendingSubtitleAddCheck`). If still unresolved when this fires,
+    /// the parked seek is dropped (matching the old silent behavior for
+    /// unseekable streams).
+    PendingSeekCheck {
+        epoch: u64,
+    },
+    /// A subtitle text-restore dance timer fired (see `player::subtitles`);
+    /// routed back through this loop so the dance stays serialized with
+    /// every other player call.
+    PlayerTimer(player::TimerEvent),
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),

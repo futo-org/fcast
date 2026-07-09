@@ -1,0 +1,100 @@
+--- a/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
++++ b/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
+@@ -195,6 +195,10 @@
+   gboolean async_pending;
+   gboolean need_async_start;
+   gboolean reconfigure_pending;
++  /* A text-chain removal was requested while the pipeline was not in
++   * steady PLAYING and has been deferred (see the removal branch in
++   * gst_play_sink_do_reconfigure_locked()). */
++  gboolean text_chain_removal_pending;
+ 
+   GstPlayFlags flags;
+ 
+@@ -3311,6 +3315,7 @@
+ {
+   GstPlayFlags flags;
+   gboolean need_audio, need_video, need_deinterlace, need_vis, need_text;
++  gboolean defer_text_removal;
+ 
+   GST_DEBUG_OBJECT (playsink, "reconfiguring");
+ 
+@@ -3388,6 +3393,21 @@
+   GST_DEBUG_OBJECT (playsink, "audio:%d, video:%d, vis:%d, text:%d", need_audio,
+       need_video, need_vis, need_text);
+ 
++  /* Removing the text chain deactivates its pads, which takes their stream
++   * locks -- held by any in-flight push. Those pushes only complete when
++   * the sinks consume, i.e. in steady PLAYING: in any other state a buffer
++   * that already passed the ghost-pad blocks can sit forever in the video
++   * sink's preroll wait while still holding a text-chain pad lock, and the
++   * removal then deadlocks this reconfigure -- and with it every later
++   * playsink state change (they wait on reconfiguration_in_progress).
++   * Defer the removal, keeping the silenced chain linked in the video
++   * path; the PAUSED->PLAYING transition re-triggers a reconfigure that
++   * performs the real removal under flowing data. */
++  defer_text_removal = !need_text && playsink->textchain != NULL
++      && playsink->textchain->chain.added && playsink->text_pad == NULL
++      && !(GST_STATE (playsink) == GST_STATE_PLAYING
++      && GST_STATE_PENDING (playsink) == GST_STATE_VOID_PENDING);
++
+   /* set up video pipeline */
+   if (need_video) {
+     gboolean raw, async;
+@@ -3528,7 +3548,7 @@
+ 
+     /* if we are not part of vis or subtitles, set the ghostpad target */
+     if (!need_vis && !need_text && (!playsink->textchain
+-            || !playsink->text_pad)) {
++            || !playsink->text_pad) && !defer_text_removal) {
+       GstPad *old_sink_peer = gst_pad_get_peer (playsink->videochain->sinkpad);
+       GstPad *new_peer = NULL;
+ 
+@@ -3989,6 +4009,7 @@
+ 
+   if (need_text) {
+     GST_DEBUG_OBJECT (playsink, "adding text");
++    playsink->text_chain_removal_pending = FALSE;
+     if (!playsink->textchain) {
+       GST_DEBUG_OBJECT (playsink, "creating text chain");
+       playsink->textchain = gen_text_chain (playsink);
+@@ -4064,7 +4085,17 @@
+     /* we have no subtitles/text or we are requested to not show them */
+ 
+     if (playsink->textchain) {
+-      if (playsink->text_pad == NULL) {
++      if (defer_text_removal) {
++        /* See the defer_text_removal computation above: removal is only
++         * safe in steady PLAYING. Keep the silenced chain in the video
++         * path for now. */
++        GST_DEBUG_OBJECT (playsink, "deferring text chain removal");
++        if (playsink->textchain->overlay)
++          g_object_set (G_OBJECT (playsink->textchain->overlay), "silent",
++              TRUE, NULL);
++        playsink->text_chain_removal_pending = TRUE;
++      } else if (playsink->text_pad == NULL) {
++        playsink->text_chain_removal_pending = FALSE;
+         /* Don't hold the lock across state changes (including inside activate_chain) */
+         GST_PLAY_SINK_UNLOCK (playsink);
+ 
+@@ -5301,6 +5332,20 @@
+   switch (transition) {
+     case GST_STATE_CHANGE_READY_TO_PAUSED:
+       break;
++    case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
++      /* Complete a deferred text-chain removal now that data flows again
++       * (see gst_play_sink_do_reconfigure_locked()). Don't clear the flag
++       * here: the reconfigure clears it when the removal actually runs,
++       * and re-defers (keeping the flag) if the state raced back down. */
++      GST_PLAY_SINK_LOCK (playsink);
++      if (playsink->text_chain_removal_pending) {
++        GST_PLAY_SINK_UNLOCK (playsink);
++        GST_DEBUG_OBJECT (playsink, "triggering deferred text chain removal");
++        gst_play_sink_reconfigure (playsink);
++      } else {
++        GST_PLAY_SINK_UNLOCK (playsink);
++      }
++      break;
+     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+       /* FIXME Release audio device when we implement that */
+       playsink->need_async_start = TRUE;

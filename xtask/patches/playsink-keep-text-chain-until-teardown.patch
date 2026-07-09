@@ -1,0 +1,153 @@
+--- a/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
++++ b/subprojects/gst-plugins-base/gst/playback/gstplaysink.c
+@@ -3526,9 +3526,11 @@
+ 
+     GST_PLAY_SINK_LOCK (playsink);
+ 
+-    /* if we are not part of vis or subtitles, set the ghostpad target */
+-    if (!need_vis && !need_text && (!playsink->textchain
+-            || !playsink->text_pad)) {
++    /* if we are not part of vis or subtitles, set the ghostpad target.
++     * An existing text chain stays linked in the video path even when text
++     * is no longer needed: it is only silenced, never removed mid-session
++     * (see the "no text needed" branch below). */
++    if (!need_vis && !need_text && !playsink->textchain) {
+       GstPad *old_sink_peer = gst_pad_get_peer (playsink->videochain->sinkpad);
+       GstPad *new_peer = NULL;
+ 
+@@ -3566,6 +3568,34 @@
+       }
+ 
+       gst_clear_object (&old_sink_peer);
++    } else if (!need_vis && !need_text && playsink->textchain) {
++      /* A kept (silenced) text chain must stay in the video path — and on
++       * a fresh load the stream-synchronizer pads were released at the
++       * last teardown and recreated above, so the routing through the
++       * chain has to be (re)established here: sync -> textchain ->
++       * videochain. Idempotent: peers are checked first. */
++      GstPad *sync_src = need_deinterlace
++          ? playsink->videodeinterlacechain->srcpad
++          : playsink->video_srcpad_stream_synchronizer;
++      GstPad *peer;
++
++      peer = gst_pad_get_peer (sync_src);
++      if (peer != playsink->textchain->videosinkpad) {
++        if (peer)
++          gst_pad_unlink (sync_src, peer);
++        gst_pad_link_full (sync_src, playsink->textchain->videosinkpad,
++            GST_PAD_LINK_CHECK_NOTHING);
++      }
++      gst_clear_object (&peer);
++
++      peer = gst_pad_get_peer (playsink->videochain->sinkpad);
++      if (peer != playsink->textchain->srcpad) {
++        if (peer)
++          gst_pad_unlink (peer, playsink->videochain->sinkpad);
++        gst_pad_link_full (playsink->textchain->srcpad,
++            playsink->videochain->sinkpad, GST_PAD_LINK_CHECK_NOTHING);
++      }
++      gst_clear_object (&peer);
+     }
+   } else {
+     GST_DEBUG_OBJECT (playsink, "no video needed");
+@@ -4064,65 +4094,20 @@
+     /* we have no subtitles/text or we are requested to not show them */
+ 
+     if (playsink->textchain) {
+-      if (playsink->text_pad == NULL) {
+-        /* Don't hold the lock across state changes (including inside activate_chain) */
+-        GST_PLAY_SINK_UNLOCK (playsink);
+-
+-        /* no text pad, remove the chain entirely */
+-        GST_DEBUG_OBJECT (playsink, "removing text chain");
+-        add_chain (GST_PLAY_CHAIN (playsink->textchain), FALSE);
+-        activate_chain (GST_PLAY_CHAIN (playsink->textchain), FALSE);
+-
+-        GST_PLAY_SINK_LOCK (playsink);
+-
+-        if (playsink->text_sinkpad_stream_synchronizer) {
+-          gst_element_release_request_pad (GST_ELEMENT_CAST
+-              (playsink->stream_synchronizer),
+-              playsink->text_sinkpad_stream_synchronizer);
+-          gst_object_unref (playsink->text_sinkpad_stream_synchronizer);
+-          playsink->text_sinkpad_stream_synchronizer = NULL;
+-          gst_object_unref (playsink->text_srcpad_stream_synchronizer);
+-          playsink->text_srcpad_stream_synchronizer = NULL;
+-        }
+-
+-        if (!need_video && playsink->video_pad) {
+-          if (playsink->video_sinkpad_stream_synchronizer) {
+-            gst_element_release_request_pad (GST_ELEMENT_CAST
+-                (playsink->stream_synchronizer),
+-                playsink->video_sinkpad_stream_synchronizer);
+-            gst_object_unref (playsink->video_sinkpad_stream_synchronizer);
+-            playsink->video_sinkpad_stream_synchronizer = NULL;
+-            gst_object_unref (playsink->video_srcpad_stream_synchronizer);
+-            playsink->video_srcpad_stream_synchronizer = NULL;
+-          }
+-
+-          gst_ghost_pad_set_target (GST_GHOST_PAD_CAST (playsink->video_pad),
+-              NULL);
+-        }
+-
+-        if (playsink->text_pad && !playsink->textchain) {
+-          gst_ghost_pad_set_target (GST_GHOST_PAD_CAST (playsink->text_pad),
+-              NULL);
+-        }
+-
+-        GstElement *old_text_sink = NULL;
+-        if (playsink->text_sink) {
+-          old_text_sink = gst_object_ref (playsink->text_sink);
+-        }
+-
+-        if (old_text_sink != NULL) {
+-          GST_PLAY_SINK_UNLOCK (playsink);
+-          gst_element_set_state (old_text_sink, GST_STATE_NULL);
+-          gst_object_unref (old_text_sink);
+-          GST_PLAY_SINK_LOCK (playsink);
+-        }
+-      } else {
+-        /* we have a chain and a textpad, turn the subtitles off */
+-        GST_DEBUG_OBJECT (playsink, "turning off the text");
+-        if (playsink->textchain->overlay)
+-          g_object_set (G_OBJECT (playsink->textchain->overlay), "silent", TRUE,
+-              NULL);
+-      }
++      /* The chain is NOT removed mid-session even when the text pad is
++       * gone: deactivating it takes its pads' stream locks, held by any
++       * in-flight push (a text buffer in the overlay's text/video pairing
++       * wait, or a buffer parked in the downstream sink's sync/preroll
++       * wait). Those pushes only reliably unwind when the sinks flush —
++       * i.e. during the full teardown to READY, where the chain is cleaned
++       * up anyway. Removing it here deadlocked this reconfigure (and with
++       * it every later playsink state change, including that teardown)
++       * whenever the race was lost. Silence the overlay instead and keep
++       * passing video through; a future text pad reuses the chain. */
++      GST_DEBUG_OBJECT (playsink, "turning off the text");
++      if (playsink->textchain->overlay)
++        g_object_set (G_OBJECT (playsink->textchain->overlay), "silent", TRUE,
++            NULL);
+     }
+   }
+   update_av_offset (playsink);
+@@ -5347,6 +5332,20 @@
+       }
+       g_list_free (pads_to_release);
+ 
++      /* The text chain is never removed mid-session (deactivating it with
++       * an in-flight push deadlocks; see the "no text needed" branch in
++       * gst_play_sink_do_reconfigure_locked()) — HERE is the safe teardown
++       * point: all children are at READY, the sinks have flushed, so no
++       * push can hold the chain's stream locks. Removing it now also keeps
++       * stale negotiation state from leaking into the next play item. */
++      if (playsink->textchain) {
++        GST_DEBUG_OBJECT (playsink, "removing text chain at teardown");
++        add_chain (GST_PLAY_CHAIN (playsink->textchain), FALSE);
++        activate_chain (GST_PLAY_CHAIN (playsink->textchain), FALSE);
++        free_chain ((GstPlayChain *) playsink->textchain);
++        playsink->textchain = NULL;
++      }
++
+       if (remove_audio_ssync_queue) {
+         gst_play_sink_remove_audio_ssync_queue (playsink);
+       }

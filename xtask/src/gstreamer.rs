@@ -1,8 +1,8 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, ValueEnum};
 use std::rc::Rc;
-use xshell::{Shell, cmd};
+use xshell::{cmd, Shell};
 
 use crate::sh;
 
@@ -101,21 +101,59 @@ const FULL_ELEMENTS: &[(&str, &[&str])] = &[
     (
         "rtp",
         &[
-            "rtpac3depay", "rtpbvdepay", "rtpceltdepay", "rtpdvdepay",
-            "rtpgstdepay", "rtpilbcdepay", "rtpg722depay", "rtpg723depay",
-            "rtpg726depay", "rtpg729depay", "rtpgsmdepay", "rtpamrdepay",
-            "rtppcmadepay", "rtppcmudepay", "rtpmpadepay", "rtpmparobustdepay",
-            "rtpmpvdepay", "rtpopusdepay", "rtph261depay", "rtph263pdepay",
-            "rtph263depay", "rtph264depay", "rtph265depay", "rtpj2kdepay",
-            "rtpjpegdepay", "rtpklvdepay", "rtpL8depay", "rtpL16depay",
-            "rtpL24depay", "rtpmp1sdepay", "rtpmp2tdepay", "rtpmp4vdepay",
-            "rtpmp4adepay", "rtpmp4gdepay", "rtpqcelpdepay", "rtpsbcdepay",
-            "rtpsirendepay", "rtpspeexdepay", "rtpsv3vdepay", "rtptheoradepay",
-            "rtpvorbisdepay", "rtpvp8depay", "rtpvp9depay", "rtpvrawdepay",
-            "rtpstreamdepay", "rtpisacdepay",
+            "rtpac3depay",
+            "rtpbvdepay",
+            "rtpceltdepay",
+            "rtpdvdepay",
+            "rtpgstdepay",
+            "rtpilbcdepay",
+            "rtpg722depay",
+            "rtpg723depay",
+            "rtpg726depay",
+            "rtpg729depay",
+            "rtpgsmdepay",
+            "rtpamrdepay",
+            "rtppcmadepay",
+            "rtppcmudepay",
+            "rtpmpadepay",
+            "rtpmparobustdepay",
+            "rtpmpvdepay",
+            "rtpopusdepay",
+            "rtph261depay",
+            "rtph263pdepay",
+            "rtph263depay",
+            "rtph264depay",
+            "rtph265depay",
+            "rtpj2kdepay",
+            "rtpjpegdepay",
+            "rtpklvdepay",
+            "rtpL8depay",
+            "rtpL16depay",
+            "rtpL24depay",
+            "rtpmp1sdepay",
+            "rtpmp2tdepay",
+            "rtpmp4vdepay",
+            "rtpmp4adepay",
+            "rtpmp4gdepay",
+            "rtpqcelpdepay",
+            "rtpsbcdepay",
+            "rtpsirendepay",
+            "rtpspeexdepay",
+            "rtpsv3vdepay",
+            "rtptheoradepay",
+            "rtpvorbisdepay",
+            "rtpvp8depay",
+            "rtpvp9depay",
+            "rtpvrawdepay",
+            "rtpstreamdepay",
+            "rtpisacdepay",
             // webrtcbin internals — dropping these breaks WHEP at runtime
-            "rtpredenc", "rtpreddec", "rtpulpfecdec", "rtpulpfecenc",
-            "rtpstorage", "rtphdrextcolorspace",
+            "rtpredenc",
+            "rtpreddec",
+            "rtpulpfecdec",
+            "rtpulpfecenc",
+            "rtpstorage",
+            "rtphdrextcolorspace",
         ],
     ),
     // demux-only containers: qtmux/mp4mux/matroskamux/webmmux/flvmux/avimux
@@ -127,8 +165,12 @@ const FULL_ELEMENTS: &[(&str, &[&str])] = &[
     (
         "ogg",
         &[
-            "oggdemux", "oggparse", "oggaviparse",
-            "ogmaudioparse", "ogmvideoparse", "ogmtextparse",
+            "oggdemux",
+            "oggparse",
+            "oggaviparse",
+            "ogmaudioparse",
+            "ogmvideoparse",
+            "ogmtextparse",
         ],
     ),
     // decode-only codecs: encoders + tag writers never link.
@@ -211,8 +253,12 @@ const DISABLE_MACOS: &[(Plugins, &str)] = &[
 /// Windows: WASAPI audio; d3d11 etc. stay `auto`. NOTE: static gst-full on
 /// MSVC is upstream-experimental.
 const ENABLE_WINDOWS: &[(Plugins, &str)] = &[(Plugins::Bad, "wasapi")];
-const DISABLE_WINDOWS: &[(Plugins, &str)] =
-    &[(Plugins::Bad, "va"), (Plugins::Good, "pulse"), (Plugins::Base, "gl"), (Plugins::Good, "wavpack")];
+const DISABLE_WINDOWS: &[(Plugins, &str)] = &[
+    (Plugins::Bad, "va"),
+    (Plugins::Good, "pulse"),
+    (Plugins::Base, "gl"),
+    (Plugins::Good, "wavpack"),
+];
 
 /// Plugins removed everywhere: unused by a cast receiver, or GPU/vendor codecs
 /// whose companion support library gstreamer-full fails to pull statically.
@@ -457,10 +503,10 @@ const DISABLE_COMMON: &[(Plugins, &str)] = &[
     (Plugins::Good, "dv"),      // DV video
     (Plugins::Bad, "resindvd"), // DVD navigation
     // network paths covered elsewhere
-    (Plugins::Bad, "curl"),     // http via souphttpsrc / the receiver's own httpsrc
-    (Plugins::Bad, "neon"),     // another http source
-    (Plugins::Bad, "rtmp"),     // librtmp; rtmp:// is served by rtmp2 (no external dep)
-    (Plugins::Good, "shout2"),  // icecast streaming sink
+    (Plugins::Bad, "curl"), // http via souphttpsrc / the receiver's own httpsrc
+    (Plugins::Bad, "neon"), // another http source
+    (Plugins::Bad, "rtmp"), // librtmp; rtmp:// is served by rtmp2 (no external dep)
+    (Plugins::Good, "shout2"), // icecast streaming sink
     (Plugins::Bad, "microdns"), // mdns via libmicrodns (receiver uses mdns-sd)
     // misc external-dep leftovers
     (Plugins::Bad, "sndfile"),
@@ -473,15 +519,49 @@ const DISABLE_COMMON: &[(Plugins, &str)] = &[
 /// and only these re-enabled — the full set (hundreds) is dead weight.
 const FFMPEG_DECODERS: &[&str] = &[
     // video. vc1 stays: it's also carried in MKV/TS/Blu-ray remuxes, not just ASF.
-    "h264", "hevc", "mpeg2video", "mpeg4", "mpeg1video", "msmpeg4v1", "msmpeg4v2",
-    "msmpeg4v3", "h263", "h263p", "vc1", "vp6", "vp6f", "flv",
-    "mjpeg", "prores", "vp8", "vp9",
+    "h264",
+    "hevc",
+    "mpeg2video",
+    "mpeg4",
+    "mpeg1video",
+    "msmpeg4v1",
+    "msmpeg4v2",
+    "msmpeg4v3",
+    "h263",
+    "h263p",
+    "vc1",
+    "vp6",
+    "vp6f",
+    "flv",
+    "mjpeg",
+    "prores",
+    "vp8",
+    "vp9",
     // audio
-    "aac", "aac_latm", "ac3", "eac3", "mp3", "mp2", "mp1", "dca", "alac",
-    "truehd", "mlp", "amrnb", "amrwb",
+    "aac",
+    "aac_latm",
+    "ac3",
+    "eac3",
+    "mp3",
+    "mp2",
+    "mp1",
+    "dca",
+    "alac",
+    "truehd",
+    "mlp",
+    "amrnb",
+    "amrwb",
     // pcm / adpcm (pcm_bluray = LPCM in .m2ts Blu-ray remuxes)
-    "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_u8", "pcm_f32le", "pcm_alaw",
-    "pcm_mulaw", "pcm_bluray", "adpcm_ima_wav", "adpcm_ms",
+    "pcm_s16le",
+    "pcm_s16be",
+    "pcm_s24le",
+    "pcm_u8",
+    "pcm_f32le",
+    "pcm_alaw",
+    "pcm_mulaw",
+    "pcm_bluray",
+    "adpcm_ima_wav",
+    "adpcm_ms",
 ];
 
 /// FFmpeg parsers/bsfs that kept decoders `select` internally. The groups are
@@ -531,7 +611,7 @@ const FULL_SCOPE_FALLBACK: &[&str] = &[
     "opus",
     "flac",
     "dav1d",
-    "libsrtp2",   // srtp plugin (webrtc security)
+    "libsrtp2", // srtp plugin (webrtc security)
     "json-glib-1.0",
     "graphene-1.0",
     "graphene-gobject-1.0",
@@ -558,8 +638,17 @@ const SYSTEM_DEPS_FULL_SCOPE: &[&str] = &["GLIB_2_0", "GOBJECT_2_0", "GIO_2_0", 
 /// up front with an actionable error. On mac/win the codecs come from wraps
 /// and the platform plugins from OS frameworks — no assertion needed.
 const REQUIRED_BUILD_PC_LINUX: &[&str] = &[
-    "vorbis", "vorbisenc", "theora", "theoradec", "ogg", "libva", "libva-drm", "gudev-1.0",
-    "srt", "libass", "wavpack",
+    "vorbis",
+    "vorbisenc",
+    "theora",
+    "theoradec",
+    "ogg",
+    "libva",
+    "libva-drm",
+    "gudev-1.0",
+    "srt",
+    "libass",
+    "wavpack",
     // NB the force-enabled webrtc stack (nice/libsrtp2/openssl) is NOT
     // asserted here: the monorepo carries wraps for all three, so meson
     // falls back to building them when the system lacks the .pc.
@@ -884,7 +973,11 @@ fn resolve_source(sh: &Rc<Shell>, gst_ref: &str, offline: bool) -> Result<Utf8Pa
             .read()
             .unwrap_or_default();
         if head.trim() != gst_ref && tag.trim() != gst_ref {
-            let current = if head.trim() == "HEAD" { tag.trim() } else { head.trim() };
+            let current = if head.trim() == "HEAD" {
+                tag.trim()
+            } else {
+                head.trim()
+            };
             println!(
                 ">> Reusing GStreamer checkout at {dir} (on '{current}', requested '{gst_ref}') — \
                  pass --clean first if you want a fresh clone",
@@ -894,7 +987,12 @@ fn resolve_source(sh: &Rc<Shell>, gst_ref: &str, offline: bool) -> Result<Utf8Pa
         }
     } else {
         println!(">> Cloning GStreamer {gst_ref} into {dir} …");
-        if let Err(e) = cmd!(sh, "git clone --depth 1 --branch {gst_ref} {GST_REPO} {dir}").run() {
+        if let Err(e) = cmd!(
+            sh,
+            "git clone --depth 1 --branch {gst_ref} {GST_REPO} {dir}"
+        )
+        .run()
+        {
             // The presence probe can transiently false-negative on Windows
             // (see checkout_present) and the clone then fails on the existing
             // dir — reuse it; only a genuinely-absent dir is a real error.
@@ -1076,7 +1174,11 @@ fn configure_gstreamer(
         "--default-library=static".into(),
         format!(
             "--wrap-mode={}",
-            if profile.offline { "nodownload" } else { "default" }
+            if profile.offline {
+                "nodownload"
+            } else {
+                "default"
+            }
         ),
         format!("--force-fallback-for={}", fallback.join(",")),
         "-Dgst-full-target-type=static_library".into(),
@@ -1089,7 +1191,11 @@ fn configure_gstreamer(
             "-Dgst-full-elements={}",
             FULL_ELEMENTS
                 .iter()
-                .chain(if os == "linux" { FULL_ELEMENTS_LINUX } else { &[] })
+                .chain(if os == "linux" {
+                    FULL_ELEMENTS_LINUX
+                } else {
+                    &[]
+                })
                 .map(|(plugin, elems)| format!("{plugin}:{}", elems.join(",")))
                 .collect::<Vec<_>>()
                 .join(";")
@@ -1364,8 +1470,8 @@ fn configure_gstreamer(
     // clang (cross-LTO) may need the standalone LLVM bin prepended; `cl` comes
     // from the vcvars import above, and macOS uses Apple's clang already on PATH.
     if cc.as_deref().is_some_and(|c| c.ends_with("clang")) && !on_path(sh, "clang") {
-        let dir = find_llvm_bin()
-            .context("clang not on PATH and no LLVM install found; install LLVM")?;
+        let dir =
+            find_llvm_bin().context("clang not on PATH and no LLVM install found; install LLVM")?;
         path = prepend_env_path(&path, dir.as_str());
     }
 
@@ -1418,7 +1524,11 @@ fn configure_gstreamer(
     #[cfg(windows)]
     let _no_elevate = sh.push_env("__COMPAT_LAYER", "RunAsInvoker");
 
-    let cross = profile.target.as_ref().map(|t| cross_file(sh, source, t)).transpose()?;
+    let cross = profile
+        .target
+        .as_ref()
+        .map(|t| cross_file(sh, source, t))
+        .transpose()?;
     let cross_args: Vec<String> = cross
         .iter()
         .flat_map(|f| vec!["--cross-file".to_string(), f.to_string()])
@@ -1426,7 +1536,11 @@ fn configure_gstreamer(
 
     if let Some(reconf) = reconf {
         println!(">> Configuring static GStreamer ({reconf}) …");
-        cmd!(sh, "meson setup {build_dir} {source} {reconf} {native_args...} {cross_args...} {args...}").run()?;
+        cmd!(
+            sh,
+            "meson setup {build_dir} {source} {reconf} {native_args...} {cross_args...} {args...}"
+        )
+        .run()?;
         // Wraps download at setup: patch anything that just appeared. The
         // changed meson.build mtime makes the next `meson compile`
         // regenerate, so a patch landing here still takes effect this build.
@@ -1477,8 +1591,7 @@ fn compile_gstreamer(
 fn spawn_gst_compile(build: &GstBuild) -> Result<std::process::Child> {
     let log_path = build.build_dir.join("xtask-ninja.log");
     println!(">> Building GStreamer in the background … (log: {log_path})");
-    let log =
-        std::fs::File::create(&log_path).with_context(|| format!("creating {log_path}"))?;
+    let log = std::fs::File::create(&log_path).with_context(|| format!("creating {log_path}"))?;
     std::process::Command::new("meson")
         .args(["compile", "-C", build.build_dir.as_str()])
         .stdout(std::process::Stdio::from(log.try_clone()?))
@@ -1490,7 +1603,9 @@ fn spawn_gst_compile(build: &GstBuild) -> Result<std::process::Child> {
 /// Wait for the background compile; on failure surface the log tail. Writes
 /// the stamp only on success (mirrors `compile_gstreamer`).
 fn join_gst_compile(mut child: std::process::Child, build: &GstBuild, stamp: &str) -> Result<()> {
-    let status = child.wait().context("waiting for background meson compile")?;
+    let status = child
+        .wait()
+        .context("waiting for background meson compile")?;
     if !status.success() {
         let log_path = build.build_dir.join("xtask-ninja.log");
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -1536,7 +1651,6 @@ fn prebuild_receiver_deps(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -
         Ok(())
     })
 }
-
 
 fn pkg_config_path(sh: &Rc<Shell>) -> String {
     sh.var("PKG_CONFIG_PATH").unwrap_or_default()
@@ -1768,7 +1882,11 @@ fn with_receiver_env<T>(
     // subprojects treat sysprof-capture-4 as a real optional feature and try
     // to compile against its (nonexistent) headers.
     let pkgcfg = pkg_config_prog(sh);
-    if cmd!(sh, "{pkgcfg} --exists sysprof-capture-4").quiet().run().is_err() {
+    if cmd!(sh, "{pkgcfg} --exists sysprof-capture-4")
+        .quiet()
+        .run()
+        .is_err()
+    {
         let stub_dir = build.build_dir.join("xtask-pc-stubs");
         std::fs::create_dir_all(&stub_dir).context("creating pc stub dir")?;
         std::fs::write(
@@ -1861,7 +1979,10 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
         // The link line carries ~100 `-Clink-arg=<abspath>.a` tokens — echoing
         // it every build is noise. Print the cargo flags up to `--` and
         // summarise the rest; `.quiet()` only hides the echo, not cargo output.
-        let hidden = cargo.iter().position(|a| a == "--").map_or(0, |i| cargo.len() - i - 1);
+        let hidden = cargo
+            .iter()
+            .position(|a| a == "--")
+            .map_or(0, |i| cargo.len() - i - 1);
         let shown = cargo
             .iter()
             .take_while(|a| a.as_str() != "--")
@@ -1929,7 +2050,10 @@ fn receiver_test(
         // string's space/length limits — the link line is ~100 abspaths — and
         // renders each flag as a separate TOML array element, so paths with
         // spaces survive.
-        let triple = profile.target.as_deref().expect("test() always sets a target");
+        let triple = profile
+            .target
+            .as_deref()
+            .expect("test() always sets a target");
         let cfg_path = build.build_dir.join("xtask-cargo-test-config.toml");
         std::fs::write(&cfg_path, cargo_rustflags_config(triple, &rustflags))
             .context("writing cargo test config")?;
@@ -1956,7 +2080,10 @@ fn cargo_rustflags_config(triple: &str, flags: &[String]) -> String {
         .iter()
         .map(|f| format!("\"{}\"", f.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect();
-    format!("[target.\"{triple}\"]\nrustflags = [{}]\n", escaped.join(", "))
+    format!(
+        "[target.\"{triple}\"]\nrustflags = [{}]\n",
+        escaped.join(", ")
+    )
 }
 
 /// The host target triple, parsed from `rustc -vV` (the `host:` line). Used to
@@ -2120,10 +2247,13 @@ fn on_path(sh: &Rc<Shell>, bin: &str) -> bool {
 /// Locate a standalone LLVM `bin` dir (the Windows installer doesn't add it
 /// to PATH); None elsewhere / when not installed.
 fn find_llvm_bin() -> Option<Utf8PathBuf> {
-    ["C:/Program Files/LLVM/bin", "C:/Program Files (x86)/LLVM/bin"]
-        .into_iter()
-        .map(Utf8PathBuf::from)
-        .find(|p| p.join("clang.exe").exists())
+    [
+        "C:/Program Files/LLVM/bin",
+        "C:/Program Files (x86)/LLVM/bin",
+    ]
+    .into_iter()
+    .map(Utf8PathBuf::from)
+    .find(|p| p.join("clang.exe").exists())
 }
 
 /// Import the x64 MSVC developer environment by running `vcvars64.bat` and

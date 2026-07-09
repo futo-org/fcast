@@ -7,6 +7,10 @@ use tracing::{debug, debug_span, error, instrument, warn};
 
 use crate::MessageSender;
 
+mod subtitles;
+
+pub use subtitles::{LoadKind, RestorePoint, SubtitlePhase, TextIntent, TimerAction, TimerEvent};
+
 struct BoolLock(bool);
 
 impl BoolLock {
@@ -31,6 +35,13 @@ struct PlaybinFlags {}
 
 impl PlaybinFlags {
     const AUDIO_AND_VIDEO: &'static str = "buffering+soft-volume+text+audio+video";
+    /// Used while (re)loading ANY media: with the text flag off, playbin3
+    /// never routes a text stream into playsink mid-preroll — which can
+    /// wedge the preroll (external subs reliably, embedded subs as a rare
+    /// subtitleoverlay reconfigure livelock) — and the text branch is built
+    /// exactly once, after the pipeline settles and `Job::EnableText`
+    /// restores the full flags.
+    const AUDIO_AND_VIDEO_NO_TEXT: &'static str = "buffering+soft-volume+audio+video";
     const AUDIO_ONLY: &'static str = "soft-volume+audio";
 }
 
@@ -431,7 +442,17 @@ impl StateMachine {
                 target_state,
                 pending_seek,
             } => {
-                if new == *target_state {
+                // Reaching Paused while the pipeline is still committed
+                // upward to Playing is NOT arrival, even when Paused is the
+                // target: a stale upward transition is in flight (e.g. the
+                // load's original Playing commit arriving after a user Pause
+                // retargeted this change). Settling into Running here let
+                // the overshoot flip the machine to Playing, and the
+                // deferred start seek then cemented it — un-pausing the
+                // user. Wait for the overshoot instead; the `pending ==
+                // VoidPending` branch below then issues the correction.
+                let stale_upward = new == gst::State::Paused && pending == gst::State::Playing;
+                if new == *target_state && !stale_upward {
                     if let Some(seek) = pending_seek.as_ref() {
                         let seek = *seek;
                         let target_state = *target_state;
@@ -629,6 +650,12 @@ const SUBTITLE_REFRESH_RETRIES: u32 = 3;
 /// arrives. Not load-bearing -- completions are seqnum-matched -- this only
 /// stops a pathologically lost message from wedging the queue forever.
 const TRACK_OP_WATCHDOG: Duration = Duration::from_secs(5);
+/// How long the subtitle re-emit flush holds off when a bitmap subtitle
+/// (`subpicture/*`) is involved in the switch: playsink's video-chain
+/// rebuild for the bitmap renderer is signal-less, and a flush inside it
+/// deadlocks the pipeline (observed errors landed within ~100ms of the
+/// selection confirm; this is ~15x that, plus the poll tick on top).
+const SUBPICTURE_REFRESH_DELAY: Duration = Duration::from_millis(1500);
 
 /// Serialized track selection and subtitle refresh.
 ///
@@ -674,6 +701,21 @@ struct TrackOps {
     /// by the sink via `PlayerEvent::SubtitleOverlayShown`); stops the paused
     /// retry loop.
     overlay_seen: bool,
+    /// The latest subtitle request forbade its re-emit flush: while an
+    /// external subtitle (`suburi`) is attached to the play item, ANY flush
+    /// races the text-branch reconfiguration and errors the suburi source
+    /// (pipeline error with the subtitle URL as its `failed_uri`), freezing
+    /// the whole play item — the new track's cue appears at its next cue
+    /// boundary instead. Re-decided by every subtitle request (see
+    /// `suppress_refresh`), cleared by `reset`.
+    refresh_suppressed: bool,
+    /// The re-emit flush must wait this long past the first moment it could
+    /// have dispatched (bitmap subtitle involved — see
+    /// `Player::request_track_change_impl`); converted to
+    /// `refresh_not_before` when the pump first reaches the refresh.
+    refresh_delay: Option<Duration>,
+    /// The deferred re-emit flush may not dispatch before this instant.
+    refresh_not_before: Option<Instant>,
 }
 
 impl TrackOps {
@@ -685,6 +727,9 @@ impl TrackOps {
             refresh_wanted: false,
             refresh_retries_left: 0,
             overlay_seen: false,
+            refresh_suppressed: false,
+            refresh_delay: None,
+            refresh_not_before: None,
         }
     }
 
@@ -698,9 +743,32 @@ impl TrackOps {
         match kind {
             TrackKind::Video => desired.video = id,
             TrackKind::Audio => desired.audio = id,
-            TrackKind::Subtitle => desired.subtitle = id,
+            TrackKind::Subtitle => {
+                desired.subtitle = id;
+                // Each subtitle request re-decides whether its re-emit flush
+                // is allowed and how long it must hold off; `suppress_refresh`
+                // and `defer_refresh` re-apply after this call.
+                self.refresh_suppressed = false;
+                self.refresh_delay = None;
+                self.refresh_not_before = None;
+            }
         }
         self.pending = Some(desired);
+    }
+
+    /// Forbid the re-emit flush for the subtitle selection just composed by
+    /// `request` (external suburi attached; see `refresh_suppressed`).
+    fn suppress_refresh(&mut self) {
+        self.refresh_suppressed = true;
+    }
+
+    /// Hold the re-emit flush back for `delay` past the first moment it
+    /// could have dispatched (selection confirmed, pipeline quiet). Used
+    /// when a bitmap subtitle is involved: the flush must not race
+    /// playsink's video-chain rebuild, which is signal-less — time distance
+    /// is the only available guard.
+    fn defer_refresh(&mut self, delay: Duration) {
+        self.refresh_delay = Some(delay);
     }
 
     /// Drop an in-flight operation whose completion never arrived. A parked
@@ -746,12 +814,13 @@ impl TrackOps {
             && desired != ctx.applied
         {
             if desired.subtitle != ctx.applied.subtitle {
-                if desired.subtitle.is_some() {
+                if desired.subtitle.is_some() && !self.refresh_suppressed {
                     // Enable/switch: re-emit the new track's current cue once
                     // the selection settles.
                     self.refresh_wanted = true;
                     self.refresh_retries_left = SUBTITLE_REFRESH_RETRIES;
                 } else {
+                    // Suppressed (external suburi attached), or:
                     // Disable: no flush (flushing right after the text-branch
                     // teardown can fail allocation renegotiation, observed
                     // with vavp8dec: "DMABuf caps negotiated without
@@ -763,6 +832,21 @@ impl TrackOps {
         }
 
         if self.refresh_wanted {
+            // A deferred refresh (bitmap subtitle involved) starts its clock
+            // at the first moment it could otherwise have dispatched —
+            // selection confirmed and pipeline quiet — so the hold-off
+            // always spans the rebuild that confirmation triggers, however
+            // long the selection itself was parked.
+            if let Some(delay) = self.refresh_delay.take() {
+                self.refresh_not_before = Some(Instant::now() + delay);
+                return None;
+            }
+            if let Some(not_before) = self.refresh_not_before {
+                if Instant::now() < not_before {
+                    return None;
+                }
+                self.refresh_not_before = None;
+            }
             self.refresh_wanted = false;
             self.overlay_seen = false;
             return Some(TrackOpCommand::RefreshSeek);
@@ -831,10 +915,18 @@ impl TrackOps {
     /// separately queued refresh flush would be redundant.
     fn cancel_refresh(&mut self) {
         self.refresh_wanted = false;
+        self.refresh_delay = None;
+        self.refresh_not_before = None;
     }
 
     fn has_dispatchable_work(&self) -> bool {
         self.pending.is_some() || self.refresh_wanted
+    }
+
+    /// Anything queued or still in flight (unconfirmed selection or refresh
+    /// seek).
+    fn is_busy(&self) -> bool {
+        self.has_dispatchable_work() || self.selecting.is_some() || self.refreshing.is_some()
     }
 }
 
@@ -930,7 +1022,10 @@ enum Job {
         target_state: gst::State,
         feedback: Option<oneshot::Sender<()>>,
     },
-    SetUri(String),
+    SetUri {
+        uri: String,
+        suburi: Option<String>,
+    },
     Seek(Seek),
     /// A flushing seek to the current position that keeps the pipeline in its
     /// current state. Used only to force a freshly selected sparse subtitle
@@ -945,6 +1040,10 @@ enum Job {
     /// clock after `ClockLost`. Without this every sink keeps waiting on the
     /// dead clock and playback stalls.
     RecoverClock,
+    /// Restore the text playbin flag after a `SetUri` with a suburi disabled
+    /// it for the duration of the preroll (see
+    /// `PlaybinFlags::AUDIO_AND_VIDEO_NO_TEXT`).
+    EnableText,
     Quit,
 }
 
@@ -992,11 +1091,22 @@ pub struct Player {
     pub playbin: gst::Element,
     volume_lock: BoolLock,
     work_tx: std::sync::mpsc::Sender<Job>,
+    msg_tx: MessageSender,
+    /// The text-restore dance for the current load (see `subtitles`).
+    subtitles: subtitles::SubtitleDance,
     pub streams: Vec<Stream>,
     pub current_video_stream: Option<u32>,
     pub current_audio_stream: Option<u32>,
     pub current_subtitle_stream: Option<u32>,
     pub seekable: bool,
+    /// Whether `seekable` reflects an actual answer from the pipeline. The
+    /// seeking query only succeeds once the pipeline can answer it (around
+    /// preroll completion), which is well after tracks are first advertised
+    /// — until then `seekable == false` merely means "not known yet".
+    pub seekable_known: bool,
+    /// The newest volume requested while a previous change's confirmation
+    /// was still in flight; applied when it arrives (see `set_volume`).
+    pending_volume: Option<f32>,
     state_machine: StateMachine,
     track_ops: TrackOps,
     stream_collection: Option<gst::StreamCollection>,
@@ -1014,6 +1124,7 @@ impl Player {
         // >,
     ) -> Result<Self> {
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
+        let has_video = video_sink.is_some();
         let playbin = {
             let mut builder =
                 gst::ElementFactory::make("playbin3").property("audio-filter", scaletempo);
@@ -1026,6 +1137,61 @@ impl Player {
             }
             builder.build()?
         };
+
+        // Whether decodebin3 may auto-select TEXT streams for the CURRENT
+        // load (our `auto-select-text` decodebin3 patch). Plain loads keep
+        // text out of the selection entirely until the post-settle restore
+        // (any mid-preroll text handling — selected-but-unrouted, or a
+        // deselect racing the initial wiring — can wedge the preroll).
+        // Suburi loads need the auto-select: the brief selection is what
+        // activates the external sub source's play item.
+        let text_autoselect = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        // decodebin3 instances live inside uridecodebin3 and are reused
+        // across loads; remember them so `Job::SetUri` can re-apply the
+        // policy for each load (new instances pick it up on creation).
+        let decodebins: std::sync::Arc<parking_lot::Mutex<Vec<gst::glib::WeakRef<gst::Element>>>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        {
+            fn track_decodebin3(
+                element: &gst::Element,
+                text_autoselect: &std::sync::atomic::AtomicBool,
+                decodebins: &parking_lot::Mutex<Vec<gst::glib::WeakRef<gst::Element>>>,
+            ) {
+                let is_decodebin3 = element.factory().is_some_and(|f| f.name() == "decodebin3");
+                if !is_decodebin3 {
+                    return;
+                }
+                let allow = text_autoselect.load(std::sync::atomic::Ordering::SeqCst);
+                debug!(
+                    name = %element.name(),
+                    allow,
+                    "Applying the text auto-select policy to a decodebin3"
+                );
+                element.set_property("auto-select-text", allow);
+                let mut list = decodebins.lock();
+                list.retain(|w| w.upgrade().is_some());
+                list.push(element.downgrade());
+            }
+
+            let bin = playbin
+                .downcast_ref::<gst::Bin>()
+                .expect("playbin3 is a bin");
+            // Future instances (playbin3 normally reuses one, but be safe)…
+            let text_autoselect_c = text_autoselect.clone();
+            let decodebins_c = decodebins.clone();
+            bin.connect_deep_element_added(move |_, _, element| {
+                track_decodebin3(element, &text_autoselect_c, &decodebins_c);
+            });
+            // …and the one built during playbin3's own construction, which
+            // predates the signal connection.
+            for element in bin
+                .iterate_all_by_element_factory_name("decodebin3")
+                .into_iter()
+                .flatten()
+            {
+                track_decodebin3(&element, &text_autoselect, &decodebins);
+            }
+        }
 
         playbin.connect_notify(Some("volume"), {
             let msg_tx = msg_tx.clone();
@@ -1069,6 +1235,8 @@ impl Player {
                 // Strong ref
                 let playbin = playbin.clone();
                 let msg_tx = msg_tx.clone();
+                let text_autoselect = text_autoselect.clone();
+                let decodebins = decodebins.clone();
                 move || {
                     let span = debug_span!("player");
                     let _entered = span.enter();
@@ -1086,11 +1254,48 @@ impl Player {
                                     debug!(res = ?feedback.send(()), "Sent state change feedback signal");
                                 }
                             }
-                            Job::SetUri(uri) => {
+                            Job::SetUri { uri, suburi } => {
                                 let _ = playbin.set_state(gst::State::Ready);
 
+                                // Text auto-selection policy for this load
+                                // (see the deep-element-added hook): applied
+                                // to the decodebin3s that already exist —
+                                // playbin3 reuses them across loads — before
+                                // the new play item activates.
+                                let allow = suburi.is_some();
+                                text_autoselect
+                                    .store(allow, std::sync::atomic::Ordering::SeqCst);
+                                decodebins.lock().retain(|weak| {
+                                    let Some(dbin) = weak.upgrade() else {
+                                        return false;
+                                    };
+                                    dbin.set_property("auto-select-text", allow);
+                                    true
+                                });
+
+                                if has_video {
+                                    // Keep text streams out of playsink during
+                                    // preroll — a text branch built while the
+                                    // pipeline is not in steady PLAYING can
+                                    // wedge it (subtitleoverlay's reconfigure
+                                    // dance needs flowing data; embedded subs
+                                    // hit this just like external ones). The
+                                    // application restores the flag once the
+                                    // pipeline settles (Job::EnableText).
+                                    playbin.set_property_from_str(
+                                        "flags",
+                                        PlaybinFlags::AUDIO_AND_VIDEO_NO_TEXT,
+                                    );
+                                }
+
                                 playbin.set_property("uri", uri);
-                                playbin.set_property("suburi", None::<String>);
+                                // Must be set HERE, after `uri` and before
+                                // `set_state(Paused)`: `suburi` binds to the next
+                                // *inactive* play item and is silently lost once
+                                // the item is activated by the Ready->Paused
+                                // transition (uridecodebin3 FIXME). Setting it
+                                // from any other thread races that activation.
+                                playbin.set_property("suburi", suburi);
 
                                 if let Ok(success) = playbin.set_state(gst::State::Paused)
                                     && success == gst::StateChangeSuccess::NoPreroll
@@ -1102,9 +1307,17 @@ impl Player {
                                 msg_tx.player(PlayerEvent::UriLoaded);
                             }
                             Job::Seek(seek) => {
-                                let (_, state, _) = playbin.state(None);
+                                // Non-blocking query: a zero timeout returns the
+                                // in-flight transition instead of waiting for it.
+                                // Waiting here (the old `state(None)`) wedged the
+                                // whole worker when a seek arrived mid-preroll
+                                // and the preroll stalled — every later job
+                                // (Stop, SetUri, ...) queued behind it forever.
+                                let (_, state, pending) = playbin.state(gst::ClockTime::ZERO);
 
-                                if state != gst::State::Paused {
+                                if state != gst::State::Paused
+                                    || pending != gst::State::VoidPending
+                                {
                                     msg_tx.player(PlayerEvent::QueueSeek(seek));
                                     let _ = playbin.set_state(gst::State::Paused);
                                     continue;
@@ -1190,6 +1403,14 @@ impl Player {
                                     msg_tx.player(PlayerEvent::SubtitleRefreshFailed { seqnum });
                                 }
                             }
+                            Job::EnableText => {
+                                if has_video {
+                                    playbin.set_property_from_str(
+                                        "flags",
+                                        PlaybinFlags::AUDIO_AND_VIDEO,
+                                    );
+                                }
+                            }
                             Job::RecoverClock => {
                                 debug!("Recovering from clock loss");
                                 if let Err(err) = playbin.set_state(gst::State::Paused) {
@@ -1220,10 +1441,14 @@ impl Player {
             // TODO: are these "locks" needed?
             volume_lock: BoolLock::new(),
             work_tx,
+            msg_tx,
+            subtitles: subtitles::SubtitleDance::new(),
             current_video_stream: None,
             current_audio_stream: None,
             current_subtitle_stream: None,
             seekable: false,
+            seekable_known: false,
+            pending_volume: None,
             state_machine: StateMachine::new(),
             track_ops: TrackOps::new(),
             stream_collection: None,
@@ -1416,13 +1641,10 @@ impl Player {
         }
     }
 
-    pub fn handle_stream_collection(
-        &mut self,
-        collection: gst::StreamCollection,
-        msg_tx: MessageSender,
-    ) {
+    pub fn handle_stream_collection(&mut self, collection: gst::StreamCollection) {
         self.cleanup_stream_collection();
 
+        let msg_tx = self.msg_tx.clone();
         self.stream_collection_notify = Some(collection.connect_stream_notify(
             None,
             move |_collection, _stream, param| {
@@ -1431,6 +1653,16 @@ impl Player {
                 }
             },
         ));
+
+        // Indices into the outgoing stream list are meaningless in the new
+        // one (media can advertise streams across several collections, each
+        // reshuffling the indices), so carry the current selection over by
+        // stream id before rebuilding.
+        let video_sid = self.current_video_stream.and_then(|i| self.stream_id_of(i));
+        let audio_sid = self.current_audio_stream.and_then(|i| self.stream_id_of(i));
+        let subtitle_sid = self
+            .current_subtitle_stream
+            .and_then(|i| self.stream_id_of(i));
 
         self.streams.clear();
 
@@ -1444,21 +1676,22 @@ impl Player {
             self.streams.push(stream);
         }
 
-        // Seed the current selection with playbin3's defaults (the first stream
+        // Remap the carried-over selection onto the new collection, and seed
+        // still-unselected slots with playbin3's defaults (the first stream
         // of each type) so a track change that arrives before the initial
         // `StreamsSelected` message still keeps the other streams selected
         // instead of dropping them. The real `StreamsSelected` corrects these
-        // the moment it arrives. Only seed slots that are still unset so a
-        // later collection update (e.g. an added subtitle source) never
-        // clobbers a selection the user already made.
-        self.current_video_stream = self
-            .current_video_stream
+        // the moment it arrives. Remapping (rather than keeping the raw
+        // index) means a later collection update (e.g. an added subtitle
+        // source) never clobbers a selection the user already made.
+        self.current_video_stream = video_sid
+            .and_then(|sid| Self::find_stream_idx(&sid, &self.streams))
             .or_else(|| self.first_stream_of(gst::StreamType::VIDEO));
-        self.current_audio_stream = self
-            .current_audio_stream
+        self.current_audio_stream = audio_sid
+            .and_then(|sid| Self::find_stream_idx(&sid, &self.streams))
             .or_else(|| self.first_stream_of(gst::StreamType::AUDIO));
-        self.current_subtitle_stream = self
-            .current_subtitle_stream
+        self.current_subtitle_stream = subtitle_sid
+            .and_then(|sid| Self::find_stream_idx(&sid, &self.streams))
             .or_else(|| self.first_stream_of(gst::StreamType::TEXT));
 
         self.stream_collection = Some(collection);
@@ -1485,14 +1718,33 @@ impl Player {
         self.current_audio_stream = None;
         self.current_subtitle_stream = None;
         self.seekable = false;
+        self.seekable_known = false;
         self.volume_lock.release();
+        // A volume queued behind an in-flight confirmation must not be
+        // stranded by the load (volume is not item-scoped): apply it now
+        // that the lock is free.
+        if let Some(volume) = self.pending_volume.take() {
+            self.set_volume(volume);
+        }
         self.track_ops.reset();
     }
 
-    pub fn set_uri(&mut self, uri: &str) {
+    /// Load a new main URI, optionally with an external subtitle URI.
+    ///
+    /// Both properties are applied together on the worker thread, in between
+    /// the Ready and Paused state changes — the only window where playbin3
+    /// reliably honors `suburi` (it binds to the next inactive play item and
+    /// is silently ignored once that item is activated).
+    ///
+    /// Callers go through `load` (`subtitles` module), which also sets up
+    /// the text-restore sequencing for the new item.
+    fn set_uri(&mut self, uri: &str, suburi: Option<&str>) {
         self.clear_state();
         self.state_machine.clear_state();
-        let _ = self.work_tx.send(Job::SetUri(uri.to_string()));
+        let _ = self.work_tx.send(Job::SetUri {
+            uri: uri.to_string(),
+            suburi: suburi.map(str::to_string),
+        });
         self.state_machine.state = State::PendingUriChange;
     }
 
@@ -1504,7 +1756,11 @@ impl Player {
             return;
         }
 
-        if self.seekable {
+        // An unresolved seekability query (`!seekable_known`) is not a
+        // refusal: let the seek through — the state machine queues seeks
+        // that land mid-preroll, so it runs once the pipeline settles. Only
+        // a *known* unseekable stream drops the seek.
+        if self.seekable || !self.seekable_known {
             // A user seek is itself a flushing seek and re-emits the current
             // subtitle cue; a separately queued refresh flush is redundant.
             self.track_ops.cancel_refresh();
@@ -1536,12 +1792,96 @@ impl Player {
     /// displayed subtitle cue became stale -- the caller should clear the
     /// overlay so the change registers visually, even while paused.
     pub fn request_track_change(&mut self, kind: TrackKind, id: Option<u32>) -> bool {
+        self.request_track_change_impl(kind, id, false)
+    }
+
+    /// A subtitle change that must not schedule the re-emit flush: while an
+    /// external subtitle (`suburi`) is attached to the play item, ANY flush
+    /// races the text-branch reconfiguration and errors the suburi source
+    /// (pipeline error with the subtitle URL as its `failed_uri`), freezing
+    /// the whole play item. The new track's cue appears at its next cue
+    /// boundary instead. Same return as `request_track_change`.
+    pub fn request_subtitle_change_no_refresh(&mut self, id: Option<u32>) -> bool {
+        self.request_track_change_impl(TrackKind::Subtitle, id, true)
+    }
+
+    fn request_track_change_impl(
+        &mut self,
+        kind: TrackKind,
+        id: Option<u32>,
+        suppress_refresh: bool,
+    ) -> bool {
         let applied = self.applied_track_selection();
         let stale_cue =
             kind == TrackKind::Subtitle && applied.subtitle.is_some() && id != applied.subtitle;
+        // Bitmap subtitle tracks (`subpicture/*`: PGS, VOBSUB, DVB) are
+        // composited INTO the video chain — subtitleoverlay splices
+        // dvdspu/dvbsuboverlay into the video path — so switching one in or
+        // out rebuilds the video chain itself, not just the text branch.
+        // The re-emit flush racing that (unsignalled) rebuild has wedged
+        // the pipeline for good: the flush broke the decoder's allocation
+        // renegotiation ("DMABuf caps negotiated without VideoMeta"),
+        // FLUSH_START died at a deactivating pad ("Failed to push event"
+        // on vqueue) so the video sink never went flushing, and its
+        // streaming thread kept clock-waiting on the lost-state-frozen
+        // audio clock while holding the stream lock the seek's FLUSH_STOP
+        // needs — deadlocking the worker and every load after it. The
+        // rebuild posts no completion signal, so time distance is the only
+        // guard: defer the flush (both directions) instead of racing it —
+        // the bitmap cue appears ~2s after the switch rather than at its
+        // next cue boundary (for DVB pages, potentially much later).
+        let subpicture_involved = kind == TrackKind::Subtitle
+            && [applied.subtitle, id]
+                .into_iter()
+                .flatten()
+                .any(|idx| self.stream_is_subpicture(idx));
         self.track_ops.request(kind, id, applied);
+        if suppress_refresh {
+            self.track_ops.suppress_refresh();
+        } else if subpicture_involved {
+            self.track_ops.defer_refresh(SUBPICTURE_REFRESH_DELAY);
+        }
         self.pump_track_ops();
         stale_cue
+    }
+
+    /// Whether the stream at `idx` is a bitmap subtitle (`subpicture/*`
+    /// caps), rendered by splicing an overlay element into the video chain.
+    fn stream_is_subpicture(&self, idx: u32) -> bool {
+        self.streams
+            .get(idx as usize)
+            .and_then(|s| s.inner.caps())
+            .and_then(|caps| {
+                caps.structure(0)
+                    .map(|st| st.name().starts_with("subpicture/"))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Immediately send a text deselect, bypassing the serialized `TrackOps`
+    /// queue (which parks work until the pipeline is quiet). Mid-preroll
+    /// external-subtitle use ONLY: with the text playbin flag off, a text
+    /// stream decodebin3 auto-selected mid-preroll wedges the preroll in well
+    /// under 200 ms, so the deselect cannot wait for quiet — the preroll IS
+    /// the noise. The confirming `STREAMS_SELECTED` carries this event's
+    /// seqnum, which `TrackOps` never issued, so the queue ignores it; the
+    /// caller runs its own verify/retry instead
+    /// (see `Application::send_external_preroll_deselect`).
+    pub fn deselect_text_mid_preroll(&mut self) -> Result<()> {
+        let seqnum = gst::Seqnum::next();
+        self.select_streams(
+            self.current_video_stream,
+            self.current_audio_stream,
+            None,
+            seqnum,
+        )
+        .map(drop)
+    }
+
+    /// Whether any serialized track operation is queued or still in flight
+    /// (see `TrackOps`); the reload-restore re-pause waits for this to clear.
+    pub fn has_pending_track_work(&self) -> bool {
+        self.track_ops.is_busy()
     }
 
     /// Tick entry point: run the in-flight watchdog and dispatch pending track
@@ -1646,18 +1986,38 @@ impl Player {
 
     pub fn set_volume(&mut self, volume: f32) {
         if self.volume_lock.is_locked() {
-            warn!("Volume change is pending");
+            // A previous change's confirmation is still in flight. Don't
+            // drop the request (the sender would wait forever for its
+            // confirmation) — remember the latest and apply it on release.
+            debug!(volume, "Volume change pending; queueing");
+            self.pending_volume = Some(volume);
             return;
         }
 
-        self.playbin
-            .set_property("volume", (volume as f64).clamp(0.0, 1.0));
+        let target = (volume as f64).clamp(0.0, 1.0);
+        let current: f64 = self.playbin.property("volume");
+        if (current - target).abs() < 1e-9 {
+            // Setting the property to its current value emits no notify,
+            // so no confirmation would ever be relayed — but senders expect
+            // one for an idempotent set too. Re-emit the notify manually;
+            // it flows through the same VolumeChanged path as a real
+            // change. No lock: nothing is in flight.
+            debug!(volume, "Volume unchanged; re-emitting the confirmation");
+            self.playbin.notify("volume");
+            return;
+        }
 
+        self.playbin.set_property("volume", target);
         self.volume_lock.acquire();
     }
 
     pub fn volume_changed(&mut self) {
         self.volume_lock.release();
+        // Apply the newest request that arrived while the confirmation was
+        // in flight (last one wins).
+        if let Some(volume) = self.pending_volume.take() {
+            self.set_volume(volume);
+        }
     }
 
     pub fn set_rate(&mut self, rate: f32) {
@@ -1674,6 +2034,7 @@ impl Player {
             let dur = self.get_duration();
             debug!(?dur, seekable, "Seek query returned");
             self.seekable = seekable && dur.is_some();
+            self.seekable_known = true;
         }
     }
 
@@ -1712,6 +2073,14 @@ impl Player {
     /// change to the worker thread (off the streaming thread it arrived on).
     pub fn request_state(&self, state: gst::State) {
         self.set_state_async(state);
+    }
+
+    /// Re-enable the text playbin flag after a suburi load (it is disabled
+    /// for the duration of the preroll; see `Job::SetUri`). playbin3 reacts
+    /// by selecting a text stream on its own, confirmed via a
+    /// `StreamsSelected`.
+    pub fn enable_text_flag(&self) {
+        let _ = self.work_tx.send(Job::EnableText);
     }
 
     /// Handle `ClockLost`: the element providing the pipeline clock went away
@@ -1757,6 +2126,11 @@ impl Player {
     }
 
     fn go_to_stopped_state(&mut self, null: Option<oneshot::Sender<()>>) {
+        // Unconditional (unlike the pipeline teardown below, which is
+        // skipped when already stopped): the dance state of an aborted
+        // early load must not leak into the next one, and bumping the
+        // generation kills its armed timers.
+        self.subtitles.reset();
         self.cleanup_stream_collection();
 
         let target = if null.is_some() {
@@ -1862,6 +2236,41 @@ impl Player {
         Ok(true)
     }
 
+    /// The index of the stream with this GStreamer stream id, if advertised.
+    pub fn stream_idx_by_id(&self, sid: &str) -> Option<u32> {
+        Self::find_stream_idx(sid, &self.streams)
+    }
+
+    /// The first advertised TEXT stream, if any — the same stream
+    /// decodebin3's default selection would pick (one stream per type, in
+    /// collection order). Used by the plain-load restore, which suppresses
+    /// that default (`auto-select-text` off) and re-creates it after the
+    /// pipeline settles.
+    pub fn first_text_stream_idx(&self) -> Option<u32> {
+        self.streams
+            .iter()
+            .position(|s| s.inner.stream_type().contains(gst::StreamType::TEXT))
+            .map(|idx| idx as u32)
+    }
+
+    /// Whether the pipeline has no async state transition in progress
+    /// (non-blocking query). Used to hold flushing operations off while
+    /// playsink is still reconfiguring (e.g. building a text branch, which
+    /// posts no bus signal of its own).
+    pub fn is_pipeline_stable(&self) -> bool {
+        let (res, _state, pending) = self.playbin.state(gst::ClockTime::ZERO);
+        res.is_ok() && pending == gst::State::VoidPending
+    }
+
+    /// The GStreamer stream id of the `idx`th advertised stream.
+    pub fn stream_id_of(&self, idx: u32) -> Option<String> {
+        self.streams
+            .get(idx as usize)?
+            .inner
+            .stream_id()
+            .map(|id| id.to_string())
+    }
+
     pub fn is_stream_of_type(&self, idx: u32, ty: gst::StreamType) -> bool {
         self.streams
             .get(idx as usize)
@@ -1916,7 +2325,18 @@ impl Player {
         new: gst::State,
         pending: gst::State,
     ) -> Option<PlaybackState> {
-        let res = match self.state_machine.state_changed(old, new, pending) {
+        // Queued track work is deliberately NOT pumped from here: the
+        // application runs this at the START of its StateChanged handling,
+        // and a Playing commit's cascade may still launch the start/restore
+        // seek (`on_media_info_updated` → `maybe_run_start_seek`) —
+        // a selection dispatched into that one-instant-quiet window then
+        // interleaves with the seek's Playing→Paused→seek→Playing dance and
+        // its playsink reconfigure runs outside steady PLAYING (observed:
+        // a parked video-disable dispatched at the commit wedged the
+        // pipeline for good). The application pumps at the END of the
+        // cascade instead, when the seek — if any — already owns the state
+        // machine.
+        match self.state_machine.state_changed(old, new, pending) {
             StateChangeResult::NewPlaybackState(new_state) => Some(new_state),
             StateChangeResult::Seek(seek) => {
                 let _ = self.work_tx.send(Job::Seek(seek));
@@ -1927,12 +2347,7 @@ impl Player {
                 self.set_state_async(state);
                 None
             }
-        };
-
-        // The pipeline may just have settled; dispatch queued track work.
-        self.pump_track_ops();
-
-        res
+        }
     }
 
     pub fn have_media_info(&self) -> bool {
@@ -2396,6 +2811,30 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn pause_during_load_survives_stale_playing_overshoot() {
+        // A user Pause retargets the load's Changing{Playing} to Paused while
+        // the pipeline's original commit to Playing is still in flight.
+        // Reaching Paused with pending=Playing must NOT count as arrival: the
+        // machine used to settle into Running{Paused}, adopt the overshoot to
+        // Playing (Running follows the pipeline), and the deferred start seek
+        // then cemented Playing — un-pausing the user.
+        let mut sm = StateMachine::new();
+        sm.state = State::Changing { target_state: gs!(Playing), pending_seek: None };
+        // The user pauses mid-load: retargets the in-flight change.
+        assert_eq!(sm.set_playback_state(RunningState::Paused), None);
+        assert!(matches!(sm.state, State::Changing { target_state: gs!(Paused), .. }));
+        // The stale upward commit still delivers Paused-with-pending-Playing…
+        assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
+        assert!(matches!(sm.state, State::Changing { target_state: gs!(Paused), .. }), "must not settle while the overshoot is in flight");
+        // …and overshoots to Playing; the machine must correct, not adopt.
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
+        // The correction lands and only then do we settle — paused.
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), new_ps!(Paused));
+        assert_eq!(sm.state, State::Running { state: rs!(Paused) });
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn queued_seek_while_playing_recovers_to_playing() {
         // The full happy path of a seek issued while playing: park (SeekAsync) ->
         // dispatch on settle (Seeking) -> re-preroll (Changing) -> back to
@@ -2705,6 +3144,58 @@ mod tests {
         let applied = sel(Some(0), Some(1), None);
         ops.streams_selected(sn2);
         assert_eq!(ops.pump(ctx(true, false, applied)), None);
+    }
+
+    #[test]
+    fn suppressed_subtitle_switch_schedules_no_refresh() {
+        let mut ops = TrackOps::new();
+        let applied = sel(Some(0), Some(1), None);
+        // External suburi attached: the app forbids the re-emit flush.
+        ops.request(TrackKind::Subtitle, Some(2), applied);
+        ops.suppress_refresh();
+        assert_eq!(
+            ops.pump(ctx(true, false, applied)),
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(2)
+            )))
+        );
+        let sn = gst::Seqnum::next();
+        ops.selection_dispatched(sn);
+        let applied = sel(Some(0), Some(1), Some(2));
+        ops.streams_selected(sn);
+        // No flush may follow the confirmed selection.
+        assert_eq!(ops.pump(ctx(true, false, applied)), None);
+        assert!(!ops.is_busy());
+    }
+
+    #[test]
+    fn each_subtitle_request_redecides_refresh_suppression() {
+        let mut ops = TrackOps::new();
+        let applied = sel(Some(0), Some(1), None);
+        // A suppressed request parks (pipeline busy)...
+        ops.request(TrackKind::Subtitle, Some(2), applied);
+        ops.suppress_refresh();
+        assert_eq!(ops.pump(ctx(false, false, applied)), None);
+        // ...and is superseded by a plain one: its flush is allowed again.
+        ops.request(TrackKind::Subtitle, Some(3), applied);
+        assert_eq!(
+            ops.pump(ctx(true, false, applied)),
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(3)
+            )))
+        );
+        let sn = gst::Seqnum::next();
+        ops.selection_dispatched(sn);
+        let applied = sel(Some(0), Some(1), Some(3));
+        ops.streams_selected(sn);
+        assert_eq!(
+            ops.pump(ctx(true, false, applied)),
+            Some(TrackOpCommand::RefreshSeek)
+        );
     }
 
     #[test]
