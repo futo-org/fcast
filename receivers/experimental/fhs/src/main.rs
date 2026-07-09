@@ -2,7 +2,9 @@ use anyhow::{Result, anyhow};
 use fiatlux::*;
 use mimalloc::MiMalloc;
 use rcore::{
-    VideoSink, clap::Parser, egl, glow, libplacebo, placebo::PlaceboContext, tracing::error,
+    clap::Parser,
+    egl, glow,
+    tracing::error,
     video::{Frame, Resource},
 };
 use std::{
@@ -98,6 +100,7 @@ fn main() -> Result<()> {
     let cli_args = rcore::CliArgs::parse();
 
     let fl = FiatLux::new()?;
+
     let fl_egl = unsafe { fl_graphics_context_get_egl(fl.gc.gc) };
     let fl_egl_display = unsafe { fl_graphics_context_get_egl_display(fl.gc.gc) };
     let opts = fl_WindowFramebufferOpts { stencil_size: 0 };
@@ -121,28 +124,25 @@ fn main() -> Result<()> {
         let symbol = CString::new(symbol).unwrap();
         unsafe { gl_load_proc(fl_egl, symbol.as_ptr()) }
     });
-
     unsafe {
-        glutin_egl.MakeCurrent(
-            fl_egl_display,
-            std::ptr::null(),
-            std::ptr::null(),
-            egl_context,
-        );
+        glutin_egl.MakeCurrent(fl_egl_display, std::ptr::null(), std::ptr::null(), egl_context);
     }
-
-    let pl_log =
-        libplacebo::Log::new().ok_or_else(|| anyhow!("failed to create libplacebo log"))?;
-    let render_opts = cli_args.rendering_options();
-    let mut placebo =
-        unsafe { PlaceboContext::new_egl(&pl_log, &render_opts, fl_egl_display, egl_context)? };
 
     let gl =
         unsafe { glow::Context::from_loader_function_cstr(|s| gl_load_proc(fl_egl, s.as_ptr())) };
 
+    let egl_image_target: Option<unsafe extern "C" fn(u32, *const c_void)> =
+        unsafe { core::mem::transmute(gl_load_proc(fl_egl, c"glEGLImageTargetTexture2DOES".as_ptr())) };
+
     let drm_formats = egl::get_supported_dma_drm_formats(fl_egl_display)?;
 
-    let mut sink = pixmap_video_sink::FhsPixmapSink::new(fl.client.client, fl.video_surface_id)?;
+    let mut sink = pixmap_video_sink::FhsPixmapSink::new(
+        fl.client.client,
+        fl.video_surface_id,
+        gl,
+        fl_egl_display as *const c_void,
+        egl_image_target,
+    )?;
     let mut subtitles =
         subtitle_surface::SubtitleSurface::new(fl.client.client, fl.window.window_id)?;
 
@@ -202,20 +202,17 @@ fn main() -> Result<()> {
         if (have_new || resized)
             && let Some(frame) = cached_frame.as_ref()
         {
-            if let Err(err) = sink.render(&mut placebo, &gl, frame, size) {
+            if let Err(err) = sink.render(frame) {
                 error!(?err, "video sink render failed");
             }
 
             if have_new {
-                // Bitmap overlays (the common path) take precedence over plain
-                // text; either is composited onto the subtitle surface. Unchanged
-                // keeps the current (cached) surface so it isn't redrawn per frame.
                 let result = match &frame.overlays {
-                    Resource::New(overlays) => subtitles.set_overlays(overlays, size),
+                    Resource::New(overlays) => subtitles.set_overlays(&sink, overlays, size),
                     Resource::Unchanged => Ok(()),
                     Resource::Cleared | Resource::Eos => match &frame.subtitles {
                         Resource::New(lines) => {
-                            subtitles.set_subtitles(lines, size, fl.window.display_scale)
+                            subtitles.set_subtitles(&sink, lines, size, fl.window.display_scale)
                         }
                         Resource::Unchanged => Ok(()),
                         Resource::Cleared | Resource::Eos => {
@@ -249,8 +246,7 @@ fn main() -> Result<()> {
     handle.set_gui_visible(false);
     handle.send_gui_window_closed_blocking(Duration::from_millis(2500));
     subtitles.clear();
-    sink.teardown(&mut placebo);
-    drop(placebo);
+    sink.teardown();
     handle.shutdown();
 
     Ok(())

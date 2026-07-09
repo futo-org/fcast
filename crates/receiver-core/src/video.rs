@@ -270,8 +270,6 @@ pub mod imp {
         window_resolution: Mutex<Option<WindowResolution>>,
         window_resized: AtomicBool,
         payload_handle: VideoPayloadHandle,
-        // Seqnums of the overlay compositions on the previous frame, so unchanged
-        // overlays aren't re-extracted (and re-rendered) every frame.
         last_overlay_seqnums: Mutex<SmallVec<[u32; 4]>>,
     }
 
@@ -521,9 +519,6 @@ pub mod imp {
             let overlays = {
                 let mut last_seqnums = self.last_overlay_seqnums.lock();
                 if !current_overlay_seqnums.is_empty() && *last_seqnums == current_overlay_seqnums {
-                    // The overlay composition(s) are unchanged since the last
-                    // frame; skip re-extracting the (potentially full-frame)
-                    // pixels and let the consumer keep the previous overlays.
                     Resource::Unchanged
                 } else {
                     *last_seqnums = current_overlay_seqnums;

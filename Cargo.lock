@@ -2630,6 +2630,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cairo-rs",
+ "egl-sys",
  "fiatlux",
  "glutin_egl_sys",
  "mimalloc",

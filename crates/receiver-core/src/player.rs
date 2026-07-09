@@ -1083,10 +1083,6 @@ impl Player {
 
         self.stream_collection = Some(collection);
 
-        // Testing aid: subtitles are otherwise off until a ChangeTrack message
-        // selects a track. Opt in via FCAST_AUTOSELECT_SUBTITLE to auto-select
-        // the first embedded subtitle stream (kept alongside the first video and
-        // audio streams so those aren't deselected).
         if std::env::var_os("FCAST_AUTOSELECT_SUBTITLE").is_some() {
             let first_of = |ty: gst::StreamType| {
                 self.streams

@@ -3,19 +3,14 @@ use fiatlux::*;
 use rcore::{tracing::debug, video::Overlay};
 use std::hash::{Hash, Hasher};
 
-use crate::pixmap_video_sink::{GbmAllocator, MappablePixmap};
+use crate::pixmap_video_sink::FhsPixmapSink;
 
-// Renders the active subtitle onto its own fiatlux surface, composited on top of
-// the video. The surface (and its pixmap) only exist while there is something to
-// show. Subtitles arrive either as pre-rendered bitmap overlays (the common case
-// via VideoOverlayCompositionMeta) or as plain text; both are written directly
-// into a linear, mappable dma-buf pixmap (no libplacebo).
 pub struct SubtitleSurface {
     client: *mut fl_Client,
     window_id: fl_protocol_WindowId,
-    gbm: GbmAllocator,
     surface_id: Option<fl_protocol_SurfaceId>,
-    pixmap: Option<MappablePixmap>,
+    pixmap: Option<fl_protocol_PixmapId>,
+    pixmap_size: Option<(u32, u32)>,
     last_key: Option<u64>,
 }
 
@@ -24,9 +19,9 @@ impl SubtitleSurface {
         Ok(Self {
             client,
             window_id,
-            gbm: GbmAllocator::new(client)?,
             surface_id: None,
             pixmap: None,
+            pixmap_size: None,
             last_key: None,
         })
     }
@@ -35,18 +30,17 @@ impl SubtitleSurface {
         self.surface_id
     }
 
-    /// Show pre-rendered bitmap overlays. Empty slice hides the surface.
-    ///
-    /// The caller (via the FSink seqnum dedup) only invokes this when the overlays
-    /// actually change, so there's no per-frame work while a subtitle is static.
-    pub fn set_overlays(&mut self, overlays: &[Overlay], window_size: (u32, u32)) -> Result<()> {
+    pub fn set_overlays(
+        &mut self,
+        sink: &FhsPixmapSink,
+        overlays: &[Overlay],
+        window_size: (u32, u32),
+    ) -> Result<()> {
         if overlays.is_empty() {
             self.clear();
             return Ok(());
         }
 
-        // Composite all overlays into a single pixmap covering their bounding box
-        // (positioning of the surface itself is done by the compositor).
         let min_x = overlays.iter().map(|o| o.x).min().unwrap();
         let min_y = overlays.iter().map(|o| o.y).min().unwrap();
         let max_x = overlays
@@ -78,13 +72,18 @@ impl SubtitleSurface {
         }
 
         debug!(count = overlays.len(), width, height, "subtitle: rendering overlays");
-        self.present(&rgba, width, height, window_size)?;
+        self.present(sink, &rgba, width, height, window_size)?;
         self.last_key = None;
         Ok(())
     }
 
-    /// Show plain-text subtitle lines. Empty slice hides the surface.
-    pub fn set_subtitles(&mut self, lines: &[String], window_size: (u32, u32), scale: f32) -> Result<()> {
+    pub fn set_subtitles(
+        &mut self,
+        sink: &FhsPixmapSink,
+        lines: &[String],
+        window_size: (u32, u32),
+        scale: f32,
+    ) -> Result<()> {
         if lines.is_empty() {
             self.clear();
             return Ok(());
@@ -104,29 +103,20 @@ impl SubtitleSurface {
         debug!(?lines, font_px, max_width, "subtitle: rendering text");
         let text = lines.join("\n");
         let (rgba, width, height) = rasterize_text(&text, font_px, max_width)?;
-        self.present(&rgba, width, height, window_size)?;
+        self.present(sink, &rgba, width, height, window_size)?;
         self.last_key = Some(key);
         Ok(())
     }
 
-    fn present(&mut self, rgba: &[u8], width: u32, height: u32, window_size: (u32, u32)) -> Result<()> {
-        let needs_new = match &self.pixmap {
-            Some(pixmap) => pixmap.width() != width || pixmap.height() != height,
-            None => true,
-        };
-        if needs_new {
-            self.pixmap = None;
-            self.pixmap = Some(MappablePixmap::new(self.client, &self.gbm, width, height)?);
-        }
-        let pixmap = self.pixmap.as_ref().unwrap();
-
-        let row_bytes = width as usize * 4;
-        pixmap.write(|dst, stride| {
-            for y in 0..height as usize {
-                dst[y * stride..y * stride + row_bytes]
-                    .copy_from_slice(&rgba[y * row_bytes..y * row_bytes + row_bytes]);
-            }
-        })?;
+    fn present(
+        &mut self,
+        sink: &FhsPixmapSink,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        window_size: (u32, u32),
+    ) -> Result<()> {
+        let pixmap_id = sink.upload_rgba(rgba, width, height)?;
 
         if self.surface_id.is_none() {
             let surface_id = self.create_surface()?;
@@ -137,24 +127,29 @@ impl SubtitleSurface {
         unsafe {
             fl_discard_reply(
                 self.client,
-                fl_set_surface_pixmap(self.client, self.surface_id.unwrap(), pixmap.pixmap_id())
-                    .value,
+                fl_set_surface_pixmap(self.client, self.surface_id.unwrap(), pixmap_id).value,
             );
         }
+
+        if let Some(old) = self.pixmap.replace(pixmap_id) {
+            unsafe {
+                fl_discard_reply(self.client, fl_destroy_pixmap(self.client, old).value);
+            }
+        }
+        self.pixmap_size = Some((width, height));
 
         self.reposition(window_size);
         Ok(())
     }
 
-    /// Positions the subtitle surface at the bottom-center of the window, raised
-    /// slightly off the bottom edge. No-op if there's no surface yet.
     pub fn reposition(&self, window_size: (u32, u32)) {
-        let (Some(surface_id), Some(pixmap)) = (self.surface_id, self.pixmap.as_ref()) else {
+        let (Some(surface_id), Some((pixmap_w, pixmap_h))) = (self.surface_id, self.pixmap_size)
+        else {
             return;
         };
         let margin = (window_size.1 as f32 * 0.05).round() as i32;
-        let x = ((window_size.0 as i32 - pixmap.width() as i32) / 2).max(0);
-        let y = (window_size.1 as i32 - pixmap.height() as i32 - margin).max(0);
+        let x = ((window_size.0 as i32 - pixmap_w as i32) / 2).max(0);
+        let y = (window_size.1 as i32 - pixmap_h as i32 - margin).max(0);
         unsafe {
             fl_discard_reply(
                 self.client,
@@ -164,6 +159,11 @@ impl SubtitleSurface {
     }
 
     pub fn clear(&mut self) {
+        if let Some(pixmap_id) = self.pixmap.take() {
+            unsafe {
+                fl_discard_reply(self.client, fl_destroy_pixmap(self.client, pixmap_id).value);
+            }
+        }
         if let Some(surface_id) = self.surface_id.take() {
             debug!(surface_id = surface_id.value, "subtitle: destroying surface");
             unsafe {
@@ -173,14 +173,13 @@ impl SubtitleSurface {
                 );
             }
         }
-        self.pixmap = None;
+        self.pixmap_size = None;
         self.last_key = None;
     }
 
     fn create_surface(&self) -> Result<fl_protocol_SurfaceId> {
         unsafe {
             let mut reply: fl_reply_CreateSurface = std::mem::zeroed();
-            // z_index 0: above the video surface (which is at -1)
             if !fl_receive_reply_create_surface(
                 self.client,
                 fl_create_surface(self.client, self.window_id, 0, false),
@@ -199,8 +198,6 @@ impl Drop for SubtitleSurface {
     }
 }
 
-// Rasterizes subtitle text into a tightly-packed R,G,B,A buffer (premultiplied
-// alpha) sized to the text plus padding.
 fn rasterize_text(text: &str, font_px: u32, max_width: u32) -> Result<(Vec<u8>, u32, u32)> {
     use cairo::{Context, Format, ImageSurface, Operator};
 
@@ -257,8 +254,6 @@ fn rasterize_text(text: &str, font_px: u32, max_width: u32) -> Result<(Vec<u8>, 
         let src = &data[y * stride..];
         let dst = &mut rgba[y * row_bytes..];
         for x in 0..width as usize {
-            // cairo ARGB32 is native-endian premultiplied; on little-endian the
-            // bytes are [B, G, R, A]. Swap to R,G,B,A for FL_PIXMAP_FORMAT_RGBA8.
             dst[x * 4] = src[x * 4 + 2];
             dst[x * 4 + 1] = src[x * 4 + 1];
             dst[x * 4 + 2] = src[x * 4];

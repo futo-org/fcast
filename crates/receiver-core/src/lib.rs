@@ -54,6 +54,7 @@ pub mod video_sink;
 
 pub use glow;
 pub use gst;
+pub use gst_allocators;
 pub use gst_video;
 pub use libplacebo;
 pub use video_sink::{SwapchainSink, VideoSink};
@@ -768,7 +769,6 @@ impl ExternalVideoHandle {
         }
     }
 
-    /// Quit the application event loop and block until it has drained
     pub fn shutdown(self) {
         RUNTIME.block_on(async move {
             self.msg_tx.send(Message::Quit);
@@ -778,9 +778,6 @@ impl ExternalVideoHandle {
     }
 }
 
-/// Like [`run`], but without any slint UI. The caller is responsible for presenting the video.
-///
-/// `frame_available` is invoked on a gstreamer streaming thread whenever a new frame is ready.
 #[cfg(target_os = "linux")]
 pub fn run_with_external_video(
     cli_args: CliArgs,

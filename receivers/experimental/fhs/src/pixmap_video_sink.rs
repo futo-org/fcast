@@ -1,245 +1,147 @@
 use std::{
-    ffi::{CString, c_int, c_uint, c_void},
+    collections::VecDeque,
+    ffi::{c_int, c_uint, c_void},
     fs::OpenOptions,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    ptr,
+    os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
 };
 
 use anyhow::{Result, anyhow};
 use fiatlux::*;
 use rcore::{
-    VideoSink, glow,
+    glow::{self, HasContext},
+    gst, gst_allocators,
     gst_video::{self, prelude::*},
-    libplacebo::libplacebo_sys::*,
-    placebo::PlaceboContext,
     tracing::{debug, warn},
     video::{Frame, FrameData},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TargetFormat {
-    Rgba8,
-    Rgb10A2,
-}
+const SCANOUT_HOLD: usize = 3;
 
-impl TargetFormat {
-    fn pl_name(self) -> &'static str {
-        match self {
-            TargetFormat::Rgba8 => "rgba8",
-            TargetFormat::Rgb10A2 => "rgb10a2",
-        }
-    }
-}
+type EglImageTargetTexture2dOes = unsafe extern "C" fn(target: u32, image: *const c_void);
 
-struct Target {
-    tex: pl_tex,
-    bo: *mut gbm_bo,
+struct HeldBuffer {
+    #[allow(dead_code)]
+    buffer: Option<gst::Buffer>,
     pixmap_id: fl_protocol_PixmapId,
-    width: u32,
-    height: u32,
-    format: TargetFormat,
 }
 
 pub struct FhsPixmapSink {
     client: *mut fl_Client,
-    targets: [Option<Target>; 2], // Double-buffering
-    current_target_index: usize,
-    gbm: GbmAllocator,
-    hdr_metadata: Option<fl_protocol_HdrMetadata>,
     surface_id: fl_protocol_SurfaceId,
+    hdr_metadata: Option<fl_protocol_HdrMetadata>,
     surface_has_hdr_metadata: bool,
+    held: VecDeque<HeldBuffer>,
+    gbm: GbmAllocator,
+    gl: glow::Context,
+    egl_display: *const c_void,
+    egl_image_target: Option<EglImageTargetTexture2dOes>,
 }
 
 impl FhsPixmapSink {
-    pub fn new(client: *mut fl_Client, surface_id: fl_protocol_SurfaceId) -> Result<Self> {
+    pub fn new(
+        client: *mut fl_Client,
+        surface_id: fl_protocol_SurfaceId,
+        gl: glow::Context,
+        egl_display: *const c_void,
+        egl_image_target: Option<EglImageTargetTexture2dOes>,
+    ) -> Result<Self> {
         Ok(Self {
             client,
-            targets: [None, None],
-            current_target_index: 0,
-            gbm: GbmAllocator::new(client)?,
-            hdr_metadata: None,
             surface_id,
+            hdr_metadata: None,
             surface_has_hdr_metadata: false,
+            held: VecDeque::new(),
+            gbm: GbmAllocator::new(client)?,
+            gl,
+            egl_display,
+            egl_image_target,
         })
     }
 
-    fn create_single_plane_gbm_bo(
-        &self,
-        width: u32,
-        height: u32,
-        fourcc: u32,
-    ) -> Result<*mut gbm_bo> {
-        let mut modifiers = rcore::egl::get_importable_modifiers(fourcc);
-        if modifiers.is_empty() {
-            return Err(anyhow!(
-                "no importable (non external_only) modifiers for fourcc {fourcc:#010x}"
-            ));
-        }
-        // Try linear (0) last, a linear full-screen scanout plane has the worst
-        // bandwidth cost and can exceed the bandwidth limit for direct scanout
-        modifiers.sort_by_key(|&m| u64::from(m == 0));
-        debug!(
-            "fourcc={fourcc:#010x} ({width}x{height}) egl-importable modifiers={modifiers:#018x?}"
-        );
-
-        // libplacebo's single-tex dma-buf import only carries plane 0, so multi-plane modifiers
-        // (for example AMD with DCC) fail with EGL_BAD_MATCH.
-        // Probe each modifier in preference order and pick the first that produces a single-plane BO.
-        for &modifier in &modifiers {
-            let candidate = match self.gbm.create_bo(width, height, fourcc, &[modifier]) {
-                Ok(b) => b,
-                Err(err) => {
-                    debug!("modifier {modifier:#018x} not allocatable: {err}");
-                    continue;
-                }
-            };
-
-            let plane_count = unsafe { gbm_bo_get_plane_count(candidate) };
-            if plane_count == 1 {
-                debug!("chosen modifier {modifier:#018x}");
-                return Ok(candidate);
+    pub fn render(&mut self, frame: &Frame) -> Result<()> {
+        let (pixmap_id, held_buffer) = match &frame.data {
+            FrameData::DmaBuf { buffer, dma_info } => {
+                (self.import_dmabuf(buffer, dma_info)?, Some(buffer.clone()))
             }
-            debug!("skipping multi-plane modifier {modifier:#018x} (plane_count={plane_count})");
-            unsafe { gbm_bo_destroy(candidate) };
-        }
-
-        return Err(anyhow!(
-            "no single-plane importable modifier could be allocated for fourcc {fourcc:#010x}"
-        ));
-    }
-
-    fn ensure_target(
-        &mut self,
-        pl_ctx: &PlaceboContext,
-        width: u32,
-        height: u32,
-        format: TargetFormat,
-    ) -> Result<()> {
-        if let Some(t) = &self.targets[self.current_target_index]
-            && t.width == width
-            && t.height == height
-            && t.format == format
-        {
-            return Ok(());
-        }
-
-        if let Some(target) = self.targets[self.current_target_index].take() {
-            self.destroy_target(pl_ctx, &target);
-            self.targets[self.current_target_index] = None;
-        }
-
-        let gpu = pl_ctx.gpu();
-        unsafe {
-            if (*gpu).import_caps.tex & pl_handle_type_PL_HANDLE_DMA_BUF as u64 == 0 {
-                return Err(anyhow!(
-                    "libplacebo GPU does not support DMA-BUF tex import"
-                ));
-            }
-        }
-
-        let fmt_name = CString::new(format.pl_name())?;
-        let fmt = unsafe { pl_find_named_fmt(gpu, fmt_name.as_ptr()) };
-        if fmt.is_null() {
-            return Err(anyhow!(
-                "libplacebo has no named format '{}'",
-                format.pl_name()
-            ));
-        }
-
-        let fmt_caps = unsafe { (*fmt).caps as u32 };
-        if fmt_caps & pl_fmt_caps::PL_FMT_CAP_RENDERABLE as u32 == 0 {
-            return Err(anyhow!(
-                "target format '{}' not renderable",
-                format.pl_name()
-            ));
-        }
-
-        let fourcc = unsafe { (*fmt).fourcc };
-        if fourcc == 0 {
-            return Err(anyhow!(
-                "target format '{}' has no DRM fourcc",
-                format.pl_name()
-            ));
-        }
-
-        let bo = self.create_single_plane_gbm_bo(width, height, fourcc)?;
-
-        match self.import_and_register(pl_ctx, bo, fmt, fourcc, width, height, format) {
-            Ok(target) => {
-                self.targets[self.current_target_index] = Some(target);
-                Ok(())
-            }
-            Err(err) => {
-                unsafe { gbm_bo_destroy(bo) };
-                Err(err)
-            }
-        }
-    }
-
-    fn import_and_register(
-        &self,
-        pl_ctx: &PlaceboContext,
-        bo: *mut gbm_bo,
-        fmt: pl_fmt,
-        fourcc: u32,
-        width: u32,
-        height: u32,
-        format: TargetFormat,
-    ) -> Result<Target> {
-        let gpu = pl_ctx.gpu();
-
-        let stride = unsafe { gbm_bo_get_stride(bo) };
-        let offset = unsafe { gbm_bo_get_offset(bo, 0) };
-        let modifier = unsafe { gbm_bo_get_modifier(bo) };
-        // libplacebo dup's this on import, and the fiatlux client closes it after sending
-        let fd = unsafe { gbm_bo_get_fd(bo) };
-        if fd < 0 {
-            return Err(anyhow!("gbm_bo_get_fd failed"));
-        }
-        let plane_count = unsafe { gbm_bo_get_plane_count(bo) };
-        debug!(
-            "import_and_register: fourcc={fourcc:#010x} {width}x{height} format={format:?} stride={stride} offset={offset} modifier={modifier:#018x} plane_count={plane_count}"
-        );
-
-        let fmt_caps = unsafe { (*fmt).caps as u32 };
-
-        let mut shared_mem: pl_shared_mem = unsafe { std::mem::zeroed() };
-        shared_mem.handle.fd = fd;
-        shared_mem.size = stride as usize * height as usize;
-        shared_mem.offset = offset as usize;
-        shared_mem.drm_format_mod = modifier;
-        shared_mem.stride_w = stride as usize;
-
-        let tex_params = pl_tex_params {
-            w: width as i32,
-            h: height as i32,
-            d: 0,
-            format: fmt,
-            sampleable: true,
-            renderable: true,
-            storable: false,
-            blit_src: fmt_caps & pl_fmt_caps::PL_FMT_CAP_BLITTABLE as u32 != 0,
-            blit_dst: fmt_caps & pl_fmt_caps::PL_FMT_CAP_BLITTABLE as u32 != 0,
-            host_writable: false,
-            host_readable: false,
-            export_handle: 0,
-            import_handle: pl_handle_type_PL_HANDLE_DMA_BUF,
-            shared_mem,
-            initial_data: ptr::null(),
-            user_data: ptr::null_mut(),
-            debug_tag: ptr::null(),
+            FrameData::SystemMemory { frame } => (self.import_system_memory(frame)?, None),
         };
 
-        let mut tex: pl_tex = unsafe { pl_tex_create(gpu, &tex_params) };
-        if tex.is_null() {
-            unsafe { drop(OwnedFd::from_raw_fd(fd)) };
-            return Err(anyhow!("pl_tex_create (dma-buf import) failed"));
+        unsafe {
+            fl_discard_reply(
+                self.client,
+                fl_set_surface_pixmap(self.client, self.surface_id, pixmap_id).value,
+            );
         }
 
-        let offsets = [offset, 0u32, 0u32, 0u32];
-        let pitches = [stride, 0u32, 0u32, 0u32];
-        let modifiers = [modifier, 0u64, 0u64, 0u64];
-        let fds = [fd];
+        self.held.push_back(HeldBuffer {
+            buffer: held_buffer,
+            pixmap_id,
+        });
+        while self.held.len() > SCANOUT_HOLD {
+            if let Some(old) = self.held.pop_front() {
+                unsafe {
+                    fl_discard_reply(
+                        self.client,
+                        fl_destroy_pixmap(self.client, old.pixmap_id).value,
+                    );
+                }
+            }
+        }
+
+        let colorimetry = frame_video_colorimetry(frame);
+        let transfer = colorimetry.transfer();
+        let is_pq = matches!(transfer, gst_video::VideoTransferFunction::Smpte2084);
+        let is_hlg = matches!(transfer, gst_video::VideoTransferFunction::AribStdB67);
+        self.update_hdr_metadata(frame, colorimetry, is_pq, is_hlg);
+
+        Ok(())
+    }
+
+    fn import_dmabuf(
+        &self,
+        buffer: &gst::Buffer,
+        dma_info: &gst_video::VideoInfoDmaDrm,
+    ) -> Result<fl_protocol_PixmapId> {
+        let vmeta = buffer
+            .meta::<gst_video::VideoMeta>()
+            .ok_or_else(|| anyhow!("dma-buf frame is missing a VideoMeta"))?;
+        let n_planes = vmeta.n_planes() as usize;
+        if n_planes == 0 || n_planes > 4 {
+            return Err(anyhow!("unsupported dma-buf plane count {n_planes}"));
+        }
+
+        let fourcc = dma_info.fourcc();
+        let modifier = dma_info.modifier();
+        let width = dma_info.width();
+        let height = dma_info.height();
+        let flags = full_color_range_flag(&dma_info.colorimetry());
+        let vmeta_offsets = vmeta.offset();
+        let vmeta_strides = vmeta.stride();
+
+        let mut offsets = [0u32; 4];
+        let mut pitches = [0u32; 4];
+        let modifiers = [modifier; 4];
+        let mut fds: Vec<OwnedFd> = Vec::with_capacity(n_planes);
+
+        for plane in 0..n_planes {
+            let Some((range, skip)) =
+                buffer.find_memory(vmeta_offsets[plane]..(vmeta_offsets[plane] + 1))
+            else {
+                return Err(anyhow!("no memory backs dma-buf plane {plane}"));
+            };
+            let mem = buffer.peek_memory(range.start);
+            let Some(mem) = mem.downcast_memory_ref::<gst_allocators::DmaBufMemory>() else {
+                return Err(anyhow!("dma-buf plane {plane} is not a DmaBufMemory"));
+            };
+            let dup = unsafe { BorrowedFd::borrow_raw(mem.fd()) }
+                .try_clone_to_owned()
+                .map_err(|e| anyhow!("failed to dup dma-buf fd: {e}"))?;
+            offsets[plane] = (mem.offset() + skip) as u32;
+            pitches[plane] = vmeta_strides[plane] as u32;
+            fds.push(dup);
+        }
+
+        let raw_fds: Vec<i32> = fds.iter().map(|fd| fd.as_raw_fd()).collect();
 
         let pixmap_id = unsafe {
             let seq = fl_create_pixmap_from_dmabuf(
@@ -247,120 +149,244 @@ impl FhsPixmapSink {
                 width,
                 height,
                 fourcc,
-                1,
+                n_planes as u8,
+                flags,
                 offsets.as_ptr(),
                 pitches.as_ptr(),
                 modifiers.as_ptr(),
-                1,
-                fds.as_ptr(),
+                raw_fds.len() as u8,
+                raw_fds.as_ptr(),
             );
+            drop(fds);
             if seq.value == 0 {
-                // The client only closes the fd once it has been sent; on a send
-                // failure we still own it.
-                drop(OwnedFd::from_raw_fd(fd));
-                pl_tex_destroy(gpu, &mut tex);
                 return Err(anyhow!("fl_create_pixmap_from_dmabuf failed"));
             }
 
             let mut reply: fl_reply_CreatePixmapFromDmaBuf = std::mem::zeroed();
             if !fl_receive_reply_create_pixmap_from_dma_buf(self.client, seq, &mut reply) {
-                pl_tex_destroy(gpu, &mut tex);
                 return Err(anyhow!("fl_create_pixmap_from_dmabuf reply was null"));
             }
-
             reply.pixmap_id
         };
 
-        debug!(
-            width,
-            height,
-            ?format,
-            fourcc,
-            modifier,
-            "Created pixmap-backed render target (gbm import)"
-        );
-
-        Ok(Target {
-            tex,
-            bo,
-            pixmap_id,
-            width,
-            height,
-            format,
-        })
+        Ok(pixmap_id)
     }
 
-    fn destroy_target(&mut self, pl_ctx: &PlaceboContext, target: &Target) {
-        unsafe {
-            fl_discard_reply(
-                self.client,
-                fl_destroy_pixmap(self.client, target.pixmap_id).value,
-            );
-            let mut tex = target.tex;
-            pl_tex_destroy(pl_ctx.gpu(), &mut tex);
-            gbm_bo_destroy(target.bo);
+    fn import_system_memory(
+        &self,
+        frame: &gst_video::VideoFrame<gst_video::video_frame::Readable>,
+    ) -> Result<fl_protocol_PixmapId> {
+        const YUV420: u32 = fourcc_code(b'Y', b'U', b'1', b'2');
+        const YVU420: u32 = fourcc_code(b'Y', b'V', b'1', b'2');
+        const NV12: u32 = fourcc_code(b'N', b'V', b'1', b'2');
+
+        let info = frame.info();
+        let format = info.format();
+        let fourcc = gst_video::dma_drm_fourcc_from_format(format)
+            .map_err(|_| anyhow!("no DRM fourcc for video format {format:?}"))?;
+        let flags = full_color_range_flag(&info.colorimetry());
+        let width = frame.width();
+        let height = frame.height();
+        let strides = frame.plane_stride();
+
+        if fourcc == YUV420 || fourcc == YVU420 {
+            let (u_plane, v_plane) = if fourcc == YUV420 { (1, 2) } else { (2, 1) };
+            let y = frame.plane_data(0).map_err(|_| anyhow!("missing Y plane"))?;
+            let u = frame
+                .plane_data(u_plane as u32)
+                .map_err(|_| anyhow!("missing U plane"))?;
+            let v = frame
+                .plane_data(v_plane as u32)
+                .map_err(|_| anyhow!("missing V plane"))?;
+            let chroma_w = (width as usize).div_ceil(2);
+            let chroma_h = (height as usize).div_ceil(2);
+            let u_stride = strides[u_plane] as usize;
+            let v_stride = strides[v_plane] as usize;
+            let uv_stride = chroma_w * 2;
+            let mut uv = vec![0u8; uv_stride * chroma_h];
+            for row in 0..chroma_h {
+                let u_row = &u[row * u_stride..];
+                let v_row = &v[row * v_stride..];
+                let dst = &mut uv[row * uv_stride..];
+                for x in 0..chroma_w {
+                    dst[x * 2] = u_row[x];
+                    dst[x * 2 + 1] = v_row[x];
+                }
+            }
+            let planes = plane_uploads(NV12).unwrap();
+            let plane_data = [(y, strides[0] as usize), (uv.as_slice(), uv_stride)];
+            return self.upload(NV12, width, height, &planes, &plane_data, flags);
         }
-    }
 
-    fn destroy_targets(&mut self, pl_ctx: &PlaceboContext) {
-        for i in 0..self.targets.len() {
-            let Some(target) = self.targets[i].take() else {
-                continue;
-            };
-            self.destroy_target(pl_ctx, &target);
+        let planes = plane_uploads(fourcc)
+            .ok_or_else(|| anyhow!("format {format:?} unsupported for gpu upload"))?;
+        let mut plane_data: Vec<(&[u8], usize)> = Vec::with_capacity(planes.len());
+        for plane in 0..planes.len() {
+            let src = frame
+                .plane_data(plane as u32)
+                .map_err(|_| anyhow!("missing plane {plane}"))?;
+            plane_data.push((src, strides[plane] as usize));
         }
-    }
-}
 
-impl VideoSink for FhsPixmapSink {
-    fn render(
-        &mut self,
-        placebo: &mut PlaceboContext,
-        gl: &glow::Context,
-        frame: &Frame,
-        target_size: (u32, u32),
+        self.upload(fourcc, width, height, &planes, &plane_data, flags)
+    }
+
+    pub(crate) fn upload_rgba(
+        &self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<fl_protocol_PixmapId> {
+        let planes = [PlaneUpload {
+            sub_fourcc: DRM_FORMAT_ABGR8888,
+            gl_format: glow::RGBA,
+            gl_type: glow::UNSIGNED_BYTE,
+            bytes_per_pixel: 4,
+            w_shift: 0,
+            h_shift: 0,
+        }];
+        let plane_data = [(rgba, width as usize * 4)];
+        let flags = fl_protocol_PixmapFlags_flags_fl_protocol_PixmapFlags_full_color_range_bit
+            as fl_protocol_PixmapFlags;
+        self.upload(DRM_FORMAT_ABGR8888, width, height, &planes, &plane_data, flags)
+    }
+
+    fn upload(
+        &self,
+        fourcc: u32,
+        width: u32,
+        height: u32,
+        planes: &[PlaneUpload],
+        plane_data: &[(&[u8], usize)],
+        flags: fl_protocol_PixmapFlags,
+    ) -> Result<fl_protocol_PixmapId> {
+        let target = self
+            .egl_image_target
+            .ok_or_else(|| anyhow!("glEGLImageTargetTexture2DOES unavailable"))?;
+        let mut bos: Vec<*mut gbm_bo> = Vec::with_capacity(planes.len());
+        let result = (|| -> Result<fl_protocol_PixmapId> {
+            for (pu, &(src, src_stride)) in planes.iter().zip(plane_data.iter()) {
+                let plane_w = (width + (1 << pu.w_shift) - 1) >> pu.w_shift;
+                let plane_h = (height + (1 << pu.h_shift) - 1) >> pu.h_shift;
+                let alloc_w = plane_w.next_multiple_of(64);
+                let bo = self.gbm.create_scanout_bo(alloc_w, plane_h, pu.sub_fourcc, 1)?;
+                bos.push(bo);
+                self.upload_plane(bo, pu, src, src_stride, plane_w, plane_h, target)?;
+            }
+            create_pixmap_from_plane_bos(self.client, &bos, fourcc, width, height, flags)
+        })();
+        for bo in bos {
+            unsafe { gbm_bo_destroy(bo) };
+        }
+        result
+    }
+
+    fn upload_plane(
+        &self,
+        bo: *mut gbm_bo,
+        pu: &PlaneUpload,
+        src: &[u8],
+        src_stride: usize,
+        plane_w: u32,
+        plane_h: u32,
+        target: EglImageTargetTexture2dOes,
     ) -> Result<()> {
-        let (target_width, target_height) = target_size;
-        let colorimetry = frame_video_colorimetry(frame);
-        let transfer = colorimetry.transfer();
-        let is_pq = matches!(transfer, gst_video::VideoTransferFunction::Smpte2084);
-        let is_hlg = matches!(transfer, gst_video::VideoTransferFunction::AribStdB67);
-        let is_hdr = is_pq || is_hlg;
+        let modifier = unsafe { gbm_bo_get_modifier(bo) };
+        let fd = unsafe { gbm_bo_get_fd(bo) };
+        if fd < 0 {
+            return Err(anyhow!("gbm_bo_get_fd failed"));
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let bo_offset = unsafe { gbm_bo_get_offset(bo, 0) };
+        let bo_stride = unsafe { gbm_bo_get_stride_for_plane(bo, 0) };
 
-        let format = if frame_bit_depth(frame) > 8 {
-            TargetFormat::Rgb10A2
-        } else {
-            TargetFormat::Rgba8
-        };
+        let attribs: [egl_sys::bindings::types::EGLAttrib; 17] = [
+            egl_sys::bindings::WIDTH as isize,
+            plane_w as isize,
+            egl_sys::bindings::HEIGHT as isize,
+            plane_h as isize,
+            egl_sys::bindings::LINUX_DRM_FOURCC_EXT as isize,
+            pu.sub_fourcc as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_FD_EXT as isize,
+            fd.as_raw_fd() as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_OFFSET_EXT as isize,
+            bo_offset as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_PITCH_EXT as isize,
+            bo_stride as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_MODIFIER_LO_EXT as isize,
+            (modifier & 0xffff_ffff) as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_MODIFIER_HI_EXT as isize,
+            (modifier >> 32) as isize,
+            egl_sys::bindings::NONE as isize,
+        ];
 
-        self.ensure_target(placebo, target_width, target_height, format)?;
-        let target = self.targets[self.current_target_index]
-            .as_ref()
-            .expect("target exists after ensure");
-
-        let (target_color, new_hdr_metadata) =
-            build_target_color(frame, colorimetry, is_pq, is_hlg);
-
-        placebo
-            .render_frame_to_tex(
-                target.tex,
-                target.width as i32,
-                target.height as i32,
-                target_color,
-                frame,
+        let image = unsafe {
+            egl_sys::bindings::CreateImage(
+                self.egl_display as egl_sys::bindings::types::EGLDisplay,
+                egl_sys::bindings::NO_CONTEXT,
+                egl_sys::bindings::LINUX_DMA_BUF_EXT,
+                core::ptr::null::<c_void>() as egl_sys::bindings::types::EGLClientBuffer,
+                attribs.as_ptr(),
             )
-            .map_err(|err| anyhow!("placebo render failed: {err}"))?;
-
-        unsafe { pl_gpu_flush(placebo.gpu()) };
-
-        unsafe {
-            fl_discard_reply(
-                self.client,
-                fl_set_surface_pixmap(self.client, self.surface_id, target.pixmap_id).value,
-            );
+        };
+        if image.is_null() {
+            let egl_error = unsafe { egl_sys::bindings::GetError() };
+            return Err(anyhow!(
+                "eglCreateImage failed: egl_error={egl_error:#06x} \
+                 sub_fourcc={:#010x} modifier={modifier:#018x} offset={bo_offset} \
+                 pitch={bo_stride} {plane_w}x{plane_h}",
+                pu.sub_fourcc
+            ));
         }
 
-        if is_hdr {
+        let row_length = (src_stride / pu.bytes_per_pixel) as i32;
+
+        let upload = (|| -> Result<()> {
+            let tex =
+                unsafe { self.gl.create_texture() }.map_err(|e| anyhow!("create_texture: {e}"))?;
+            unsafe {
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                target(glow::TEXTURE_2D, image as *const c_void);
+                self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, row_length);
+                self.gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    plane_w as i32,
+                    plane_h as i32,
+                    pu.gl_format,
+                    pu.gl_type,
+                    glow::PixelUnpackData::Slice(Some(src)),
+                );
+                self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+                self.gl.bind_texture(glow::TEXTURE_2D, None);
+                self.gl.delete_texture(tex);
+            }
+            Ok(())
+        })();
+
+        unsafe {
+            egl_sys::bindings::DestroyImage(
+                self.egl_display as egl_sys::bindings::types::EGLDisplay,
+                image,
+            );
+        }
+        upload?;
+
+        unsafe { self.gl.finish() };
+        Ok(())
+    }
+
+    fn update_hdr_metadata(
+        &mut self,
+        frame: &Frame,
+        colorimetry: gst_video::VideoColorimetry,
+        is_pq: bool,
+        is_hlg: bool,
+    ) {
+        if is_pq || is_hlg {
+            let new_hdr_metadata = build_hdr_metadata(frame, colorimetry, is_pq, is_hlg);
             let need_update = self
                 .hdr_metadata
                 .as_ref()
@@ -379,12 +405,8 @@ impl VideoSink for FhsPixmapSink {
                 unsafe {
                     fl_discard_reply(
                         self.client,
-                        fl_set_surface_hdr_metadata(
-                            self.client,
-                            self.surface_id,
-                            &new_hdr_metadata,
-                        )
-                        .value,
+                        fl_set_surface_hdr_metadata(self.client, self.surface_id, &new_hdr_metadata)
+                            .value,
                     );
                 }
                 self.hdr_metadata = Some(new_hdr_metadata);
@@ -403,30 +425,159 @@ impl VideoSink for FhsPixmapSink {
             self.hdr_metadata = None;
             self.surface_has_hdr_metadata = false;
         }
+    }
 
-        // libplacebo leaves its own FBO + viewport set after the dmabuf render.
-        // Reset framebuffer to the default framebuffer which slint expects.
-        unsafe {
-            use glow::HasContext;
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            gl.viewport(0, 0, target_width as i32, target_height as i32);
+    pub fn teardown(&mut self) {
+        for held in self.held.drain(..) {
+            unsafe {
+                fl_discard_reply(
+                    self.client,
+                    fl_destroy_pixmap(self.client, held.pixmap_id).value,
+                );
+            }
         }
-
-        self.current_target_index = (self.current_target_index + 1) % self.targets.len();
-        Ok(())
-    }
-
-    fn get_clear_color(&self) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
-    }
-
-    fn teardown(&mut self, placebo: &mut PlaceboContext) {
-        self.destroy_targets(placebo);
     }
 }
 
 const GBM_BO_USE_SCANOUT: u32 = 1 << 0;
 const GBM_BO_USE_RENDERING: u32 = 1 << 2;
+
+struct PlaneUpload {
+    sub_fourcc: u32,
+    gl_format: u32,
+    gl_type: u32,
+    bytes_per_pixel: usize,
+    w_shift: u32,
+    h_shift: u32,
+}
+
+fn plane_uploads(fourcc: u32) -> Option<Vec<PlaneUpload>> {
+    const NV12: u32 = fourcc_code(b'N', b'V', b'1', b'2');
+    const P010: u32 = fourcc_code(b'P', b'0', b'1', b'0');
+    const YUV420: u32 = fourcc_code(b'Y', b'U', b'1', b'2');
+    const YVU420: u32 = fourcc_code(b'Y', b'V', b'1', b'2');
+    const R8: u32 = fourcc_code(b'R', b'8', b' ', b' ');
+    const GR88: u32 = fourcc_code(b'G', b'R', b'8', b'8');
+    const R16: u32 = fourcc_code(b'R', b'1', b'6', b' ');
+    const GR1616: u32 = fourcc_code(b'G', b'R', b'3', b'2');
+
+    match fourcc {
+        NV12 => Some(vec![
+            PlaneUpload {
+                sub_fourcc: R8,
+                gl_format: glow::RED,
+                gl_type: glow::UNSIGNED_BYTE,
+                bytes_per_pixel: 1,
+                w_shift: 0,
+                h_shift: 0,
+            },
+            PlaneUpload {
+                sub_fourcc: GR88,
+                gl_format: glow::RG,
+                gl_type: glow::UNSIGNED_BYTE,
+                bytes_per_pixel: 2,
+                w_shift: 1,
+                h_shift: 1,
+            },
+        ]),
+        P010 => Some(vec![
+            PlaneUpload {
+                sub_fourcc: R16,
+                gl_format: glow::RED,
+                gl_type: glow::UNSIGNED_SHORT,
+                bytes_per_pixel: 2,
+                w_shift: 0,
+                h_shift: 0,
+            },
+            PlaneUpload {
+                sub_fourcc: GR1616,
+                gl_format: glow::RG,
+                gl_type: glow::UNSIGNED_SHORT,
+                bytes_per_pixel: 4,
+                w_shift: 1,
+                h_shift: 1,
+            },
+        ]),
+        YUV420 | YVU420 => Some(vec![
+            PlaneUpload {
+                sub_fourcc: R8,
+                gl_format: glow::RED,
+                gl_type: glow::UNSIGNED_BYTE,
+                bytes_per_pixel: 1,
+                w_shift: 0,
+                h_shift: 0,
+            },
+            PlaneUpload {
+                sub_fourcc: R8,
+                gl_format: glow::RED,
+                gl_type: glow::UNSIGNED_BYTE,
+                bytes_per_pixel: 1,
+                w_shift: 1,
+                h_shift: 1,
+            },
+            PlaneUpload {
+                sub_fourcc: R8,
+                gl_format: glow::RED,
+                gl_type: glow::UNSIGNED_BYTE,
+                bytes_per_pixel: 1,
+                w_shift: 1,
+                h_shift: 1,
+            },
+        ]),
+        _ => None,
+    }
+}
+
+fn create_pixmap_from_plane_bos(
+    client: *mut fl_Client,
+    bos: &[*mut gbm_bo],
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    flags: fl_protocol_PixmapFlags,
+) -> Result<fl_protocol_PixmapId> {
+    let mut offsets = [0u32; 4];
+    let mut pitches = [0u32; 4];
+    let mut modifiers = [0u64; 4];
+    let mut fds: Vec<OwnedFd> = Vec::with_capacity(bos.len());
+    for (plane, &bo) in bos.iter().enumerate() {
+        offsets[plane] = unsafe { gbm_bo_get_offset(bo, 0) };
+        pitches[plane] = unsafe { gbm_bo_get_stride_for_plane(bo, 0) };
+        modifiers[plane] = unsafe { gbm_bo_get_modifier(bo) };
+        let fd = unsafe { gbm_bo_get_fd(bo) };
+        if fd < 0 {
+            return Err(anyhow!("gbm_bo_get_fd failed"));
+        }
+        fds.push(unsafe { OwnedFd::from_raw_fd(fd) });
+    }
+    let raw_fds: Vec<i32> = fds.iter().map(|fd| fd.as_raw_fd()).collect();
+
+    unsafe {
+        let seq = fl_create_pixmap_from_dmabuf(
+            client,
+            width,
+            height,
+            fourcc,
+            bos.len() as u8,
+            flags,
+            offsets.as_ptr(),
+            pitches.as_ptr(),
+            modifiers.as_ptr(),
+            raw_fds.len() as u8,
+            raw_fds.as_ptr(),
+        );
+        drop(fds);
+        if seq.value == 0 {
+            return Err(anyhow!("fl_create_pixmap_from_dmabuf failed"));
+        }
+
+        let mut reply: fl_reply_CreatePixmapFromDmaBuf = std::mem::zeroed();
+        if !fl_receive_reply_create_pixmap_from_dma_buf(client, seq, &mut reply) {
+            return Err(anyhow!("fl_create_pixmap_from_dmabuf reply was null"));
+        }
+        Ok(reply.pixmap_id)
+    }
+}
 
 #[repr(C)]
 struct gbm_device {
@@ -454,158 +605,16 @@ unsafe extern "C" {
     fn gbm_bo_destroy(bo: *mut gbm_bo);
     fn gbm_bo_get_fd(bo: *mut gbm_bo) -> c_int;
     fn gbm_bo_get_modifier(bo: *mut gbm_bo) -> u64;
-    fn gbm_bo_get_stride(bo: *mut gbm_bo) -> u32;
     fn gbm_bo_get_offset(bo: *mut gbm_bo, plane: c_int) -> u32;
     fn gbm_bo_get_plane_count(bo: *mut gbm_bo) -> c_int;
-    fn gbm_bo_map(
-        bo: *mut gbm_bo,
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
-        flags: u32,
-        stride: *mut u32,
-        map_data: *mut *mut c_void,
-    ) -> *mut c_void;
-    fn gbm_bo_unmap(bo: *mut gbm_bo, map_data: *mut c_void);
+    fn gbm_bo_get_stride_for_plane(bo: *mut gbm_bo, plane: c_int) -> u32;
 }
-
-const GBM_BO_TRANSFER_WRITE: u32 = 2;
 
 const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
     (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
 }
 
-// R,G,B,A byte order in memory, matching FL_PIXMAP_FORMAT_RGBA8 and cairo output
-// after a B<->R swap.
 const DRM_FORMAT_ABGR8888: u32 = fourcc_code(b'A', b'B', b'2', b'4');
-
-/// A CPU-writable, linear, dma-buf-backed fiatlux pixmap. Used for the subtitle
-/// overlay, which is rasterized on the CPU (no libplacebo involved).
-pub(crate) struct MappablePixmap {
-    client: *mut fl_Client,
-    bo: *mut gbm_bo,
-    pixmap_id: fl_protocol_PixmapId,
-    width: u32,
-    height: u32,
-}
-
-impl MappablePixmap {
-    pub(crate) fn new(
-        client: *mut fl_Client,
-        gbm: &GbmAllocator,
-        width: u32,
-        height: u32,
-    ) -> Result<Self> {
-        let fourcc = DRM_FORMAT_ABGR8888;
-        let bo = gbm.create_scanout_bo(width, height, fourcc)?;
-
-        let register = || -> Result<fl_protocol_PixmapId> {
-            let stride = unsafe { gbm_bo_get_stride(bo) };
-            let offset = unsafe { gbm_bo_get_offset(bo, 0) };
-            let modifier = unsafe { gbm_bo_get_modifier(bo) };
-            // libplacebo dup's this on import, and the fiatlux client closes it after sending
-            let fd = unsafe { gbm_bo_get_fd(bo) };
-            if fd < 0 {
-                return Err(anyhow!("gbm_bo_get_fd failed"));
-            }
-
-            let offsets = [offset, 0u32, 0u32, 0u32];
-            let pitches = [stride, 0u32, 0u32, 0u32];
-            let modifiers = [modifier, 0u64, 0u64, 0u64];
-            let fds = [fd];
-
-            unsafe {
-                let seq = fl_create_pixmap_from_dmabuf(
-                    client,
-                    width,
-                    height,
-                    fourcc,
-                    1,
-                    offsets.as_ptr(),
-                    pitches.as_ptr(),
-                    modifiers.as_ptr(),
-                    1,
-                    fds.as_ptr(),
-                );
-                if seq.value == 0 {
-                    drop(OwnedFd::from_raw_fd(fd));
-                    return Err(anyhow!("fl_create_pixmap_from_dmabuf failed"));
-                }
-                let mut reply: fl_reply_CreatePixmapFromDmaBuf = std::mem::zeroed();
-                if !fl_receive_reply_create_pixmap_from_dma_buf(client, seq, &mut reply) {
-                    return Err(anyhow!("fl_create_pixmap_from_dmabuf reply was null"));
-                }
-                Ok(reply.pixmap_id)
-            }
-        };
-
-        match register() {
-            Ok(pixmap_id) => Ok(Self {
-                client,
-                bo,
-                pixmap_id,
-                width,
-                height,
-            }),
-            Err(err) => {
-                unsafe { gbm_bo_destroy(bo) };
-                Err(err)
-            }
-        }
-    }
-
-    pub(crate) fn pixmap_id(&self) -> fl_protocol_PixmapId {
-        self.pixmap_id
-    }
-
-    pub(crate) fn width(&self) -> u32 {
-        self.width
-    }
-
-    pub(crate) fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// Maps the buffer and calls `f` with the mapped bytes and the buffer's row
-    /// stride (in bytes). The caller writes R,G,B,A pixels.
-    pub(crate) fn write(&self, f: impl FnOnce(&mut [u8], usize)) -> Result<()> {
-        let mut stride: u32 = 0;
-        let mut map_data: *mut c_void = ptr::null_mut();
-        let ptr = unsafe {
-            gbm_bo_map(
-                self.bo,
-                0,
-                0,
-                self.width,
-                self.height,
-                GBM_BO_TRANSFER_WRITE,
-                &mut stride,
-                &mut map_data,
-            )
-        };
-        if ptr.is_null() || ptr == usize::MAX as *mut c_void {
-            return Err(anyhow!("gbm_bo_map failed"));
-        }
-        let len = stride as usize * self.height as usize;
-        let bytes = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, len) };
-        f(bytes, stride as usize);
-        unsafe { gbm_bo_unmap(self.bo, map_data) };
-        Ok(())
-    }
-}
-
-impl Drop for MappablePixmap {
-    fn drop(&mut self) {
-        unsafe {
-            fl_discard_reply(
-                self.client,
-                fl_destroy_pixmap(self.client, self.pixmap_id).value,
-            );
-            gbm_bo_destroy(self.bo);
-        }
-    }
-}
 
 pub(crate) struct GbmAllocator {
     _drm_fd: OwnedFd,
@@ -656,13 +665,17 @@ impl GbmAllocator {
         })
     }
 
-    fn create_bo(
+    fn create_gpu_scanout_bo(
         &self,
         width: u32,
         height: u32,
         fourcc: u32,
         modifiers: &[u64],
+        use_flags: u32,
     ) -> Result<*mut gbm_bo> {
+        if modifiers.is_empty() {
+            return Err(anyhow!("no importable modifiers for fourcc {fourcc:#010x}"));
+        }
         let bo = unsafe {
             gbm_bo_create_with_modifiers2(
                 self.device,
@@ -671,7 +684,7 @@ impl GbmAllocator {
                 fourcc,
                 modifiers.as_ptr(),
                 modifiers.len() as c_uint,
-                GBM_BO_USE_RENDERING,
+                use_flags,
             )
         };
         if bo.is_null() {
@@ -682,28 +695,39 @@ impl GbmAllocator {
         Ok(bo)
     }
 
-    // Linear (modifier 0) so the buffer can be CPU-mapped and written directly,
-    // plus GBM_BO_USE_SCANOUT so gbm allocates a scanout-capable buffer (with the
-    // stride alignment the display controller needs for direct scanout).
-    fn create_scanout_bo(&self, width: u32, height: u32, fourcc: u32) -> Result<*mut gbm_bo> {
-        let modifiers = [0u64];
-        let bo = unsafe {
-            gbm_bo_create_with_modifiers2(
-                self.device,
-                width,
-                height,
-                fourcc,
-                modifiers.as_ptr(),
-                modifiers.len() as c_uint,
-                GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT,
-            )
-        };
-        if bo.is_null() {
-            return Err(anyhow!(
-                "gbm_bo_create_with_modifiers2 (scanout) failed for {width}x{height} fourcc {fourcc:#010x}"
-            ));
+    fn create_scanout_bo(
+        &self,
+        width: u32,
+        height: u32,
+        fourcc: u32,
+        plane_count: usize,
+    ) -> Result<*mut gbm_bo> {
+        let mut modifiers = rcore::egl::get_importable_modifiers(fourcc);
+        if !modifiers.contains(&0) {
+            modifiers.push(0);
         }
-        Ok(bo)
+        modifiers.sort_by_key(|&m| u64::from(m == 0));
+        let flag_sets = [
+            GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT,
+            GBM_BO_USE_SCANOUT,
+            GBM_BO_USE_RENDERING,
+        ];
+        for use_flags in flag_sets {
+            for &modifier in &modifiers {
+                let Ok(bo) =
+                    self.create_gpu_scanout_bo(width, height, fourcc, &[modifier], use_flags)
+                else {
+                    continue;
+                };
+                if unsafe { gbm_bo_get_plane_count(bo) } as usize == plane_count {
+                    return Ok(bo);
+                }
+                unsafe { gbm_bo_destroy(bo) };
+            }
+        }
+        Err(anyhow!(
+            "no importable {plane_count}-plane modifier for fourcc {fourcc:#010x}"
+        ))
     }
 }
 
@@ -720,35 +744,12 @@ fn frame_video_colorimetry(frame: &Frame) -> gst_video::VideoColorimetry {
     }
 }
 
-fn frame_bit_depth(frame: &Frame) -> u32 {
-    let depth = match &frame.data {
-        FrameData::SystemMemory { frame } => {
-            frame.info().format_info().depth().iter().copied().max()
-        }
-        FrameData::DmaBuf { dma_info, .. } => dma_info
-            .to_video_info()
-            .ok()
-            .and_then(|info| info.format_info().depth().iter().copied().max()),
-    };
-    depth.unwrap_or(8)
-}
-
-fn gst_primaries_to_pl_primaries(
-    primaries: gst_video::VideoColorPrimaries,
-    is_hdr: bool,
-) -> pl_color_primaries {
-    match primaries {
-        gst_video::VideoColorPrimaries::Bt709 => pl_color_primaries::PL_COLOR_PRIM_BT_709,
-        gst_video::VideoColorPrimaries::Bt2020 => pl_color_primaries::PL_COLOR_PRIM_BT_2020,
-        gst_video::VideoColorPrimaries::Smpterp431 => pl_color_primaries::PL_COLOR_PRIM_DCI_P3,
-        gst_video::VideoColorPrimaries::Smpteeg432 => pl_color_primaries::PL_COLOR_PRIM_DISPLAY_P3,
-        _ => {
-            if is_hdr {
-                pl_color_primaries::PL_COLOR_PRIM_BT_2020
-            } else {
-                pl_color_primaries::PL_COLOR_PRIM_BT_709
-            }
-        }
+fn full_color_range_flag(colorimetry: &gst_video::VideoColorimetry) -> fl_protocol_PixmapFlags {
+    if colorimetry.range() == gst_video::VideoColorRange::Range0_255 {
+        fl_protocol_PixmapFlags_flags_fl_protocol_PixmapFlags_full_color_range_bit
+            as fl_protocol_PixmapFlags
+    } else {
+        0
     }
 }
 
@@ -777,27 +778,19 @@ fn gst_primaries_to_fl_primaries(
     }
 }
 
-fn build_target_color(
+fn build_hdr_metadata(
     frame: &Frame,
     colorimetry: gst_video::VideoColorimetry,
     is_pq: bool,
     is_hlg: bool,
-) -> (pl_color_space, fl_protocol_HdrMetadata) {
+) -> fl_protocol_HdrMetadata {
     let is_hdr = is_pq || is_hlg;
 
-    let pl_primaries = gst_primaries_to_pl_primaries(colorimetry.primaries(), is_hdr);
-
-    // Render HDR to PQ even when the source is HLG because the display server
-    // can't direct scanout HLG sources (color values outside [0,1] range)
-    let pl_transfer = if is_hdr {
-        pl_color_transfer::PL_COLOR_TRC_PQ
-    } else {
-        pl_color_transfer::PL_COLOR_TRC_SRGB
-    };
-
     let mut hdr_metadata: fl_protocol_HdrMetadata = unsafe { std::mem::zeroed() };
-    hdr_metadata.transfer_function = if is_hdr {
+    hdr_metadata.transfer_function = if is_pq {
         fl_protocol_TransferFunction_fl_protocol_TransferFunction_pq
+    } else if is_hlg {
+        fl_protocol_TransferFunction_fl_protocol_TransferFunction_hlg
     } else {
         fl_protocol_TransferFunction_fl_protocol_TransferFunction_srgb
     } as u8;
@@ -850,19 +843,7 @@ fn build_target_color(
         }
     }
 
-    let mut color_space = pl_color_space {
-        primaries: pl_primaries,
-        transfer: pl_transfer,
-        // Zeroed hdr = luminance unknown: for PQ sources libplacebo preserves the
-        // source dynamic range untouched (the server does the tonemap).
-        hdr: unsafe { std::mem::zeroed() },
-    };
-    if is_hlg {
-        color_space.hdr.max_luma = hdr_metadata.max_mastering_luminance;
-        color_space.hdr.min_luma = PL_COLOR_HDR_BLACK as f32;
-    }
-
-    (color_space, hdr_metadata)
+    hdr_metadata
 }
 
 fn hdr_metadata_equal(a: &fl_protocol_HdrMetadata, b: &fl_protocol_HdrMetadata) -> bool {
