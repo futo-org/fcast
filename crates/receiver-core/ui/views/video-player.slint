@@ -582,15 +582,8 @@ component PlaybackControls inherits Rectangle {
                         selected-id: Bridge.current-subtitle-track;
                         can-be-disabled: true;
                         clicked(id) => {
-                            // HACK: needed until https://gitlab.freedesktop.org/gstreamer/gstreamer/-/work_items/4744 is fixed
-                            if id != -1 {
-                                Bridge.render-subtitles = true;
-                                Bridge.current-subtitle-track = id;
-                                Bridge.select-track(id, UiMediaTrackType.Subtitle);
-                            } else {
-                                Bridge.render-subtitles = false;
-                                Bridge.current-subtitle-track = -1;
-                            }
+                            Bridge.current-subtitle-track = id;
+                            Bridge.select-track(id, UiMediaTrackType.Subtitle);
                         }
                     }
                 }

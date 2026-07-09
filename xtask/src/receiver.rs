@@ -62,6 +62,10 @@ pub enum ReceiverCommand {
     Check(CargoSubcmdArgs),
     /// `cargo clippy` the desktop receiver against a static GStreamer.
     Clippy(CargoSubcmdArgs),
+    /// `cargo test` receiver-core against a static GStreamer (links + runs the
+    /// test binary). Args after `--` are forwarded to the libtest harness,
+    /// e.g. `-- --nocapture` or a test-name filter.
+    Test(CargoSubcmdArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller(crate::gstreamer::GstreamerArgs),
     #[cfg(target_os = "macos")]
@@ -132,6 +136,7 @@ impl ReceiverArgs {
             ReceiverCommand::Run(a) => return a.gst.run_binary(a.args, a.release),
             ReceiverCommand::Check(a) => return a.gst.check(a.args, a.release),
             ReceiverCommand::Clippy(a) => return a.gst.clippy(a.args, a.release),
+            ReceiverCommand::Test(a) => return a.gst.test(a.args, a.release),
             ReceiverCommand::Android(args) => {
                 let _env_andr_sdk = sh.push_env(
                     "ANDROID_HOME",

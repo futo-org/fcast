@@ -23,7 +23,7 @@ use tokio_rustls::{TlsConnector, rustls};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{PlaylistItem, QueueMutationKind, Receive, Send as Op, Step};
+use crate::{PlaylistItem, QueueMutationKind, Receive, Send as Op, Step, TrackKind};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_SETTLE: Duration = Duration::from_secs(8);
@@ -212,6 +212,24 @@ struct Expectations {
     error: Option<v4::flat::ErrorKind>,
     /// Satisfied by a v4 progress update whose position is at least this many seconds.
     progress_v4_at_least: Option<f64>,
+    /// Waiting for a `TracksAvailable` advertising at least this many tracks
+    /// of each kind (indexed by `TrackKind`).
+    await_tracks: Option<[usize; 3]>,
+    /// Waiting for a relayed `ChangeTrack` per kind (indexed by `TrackKind`)
+    /// whose id equals the inner value. That inner option distinguishes a
+    /// specific track (`Some`) from the kind having been disabled (`None`).
+    change_track: [Option<Option<u32>>; 3],
+}
+
+/// Display names per `TrackKind` slot.
+const KIND_NAMES: [&str; 3] = ["Video", "Audio", "Subtitle"];
+
+fn track_kind_to_type(kind: TrackKind) -> v4::flat::MediaTrackType {
+    match kind {
+        TrackKind::Video => v4::flat::MediaTrackType::Video,
+        TrackKind::Audio => v4::flat::MediaTrackType::Audio,
+        TrackKind::Subtitle => v4::flat::MediaTrackType::Subtitle,
+    }
 }
 
 impl Expectations {
@@ -232,6 +250,8 @@ impl Expectations {
             || self.companion_served.is_some()
             || self.error.is_some()
             || self.progress_v4_at_least.is_some()
+            || self.await_tracks.is_some()
+            || self.change_track.iter().any(|c| c.is_some())
     }
 
     fn describe(&self) -> String {
@@ -284,6 +304,18 @@ impl Expectations {
         if let Some(secs) = self.progress_v4_at_least {
             out.push(format!("ProgressV4AtLeast({secs})"));
         }
+        if let Some([v, a, s]) = self.await_tracks {
+            out.push(format!("TracksAvailable(>= {v} video, {a} audio, {s} subtitle)"));
+        }
+        for (slot, expected) in self.change_track.iter().enumerate() {
+            if let Some(expected) = expected {
+                let kind = KIND_NAMES[slot];
+                match expected {
+                    Some(id) => out.push(format!("ChangeTrack({kind}, id={id})")),
+                    None => out.push(format!("ChangeTrack({kind}, disabled)")),
+                }
+            }
+        }
         out.join(", ")
     }
 }
@@ -310,6 +342,12 @@ pub struct Engine<'a> {
     addr: SocketAddr,
     second: Option<Connection>,
     tls_upgraded: bool,
+    /// Ids of the tracks advertised by the most recent `TracksAvailable`,
+    /// per kind (indexed by `TrackKind`).
+    track_ids: [Vec<u32>; 3],
+    /// The most recently relayed `ChangeTrack` id per kind (indexed by
+    /// `TrackKind`). `None` = never relayed; `Some(None)` = kind disabled.
+    last_track_state: [Option<Option<u32>>; 3],
 }
 
 struct CompanionResource {
@@ -358,6 +396,8 @@ impl<'a> Engine<'a> {
             addr: *addr,
             second: None,
             tls_upgraded: false,
+            track_ids: Default::default(),
+            last_track_state: [None; 3],
         })
     }
 
@@ -638,6 +678,54 @@ impl<'a> Engine<'a> {
                     }
                     FlatAction::None
                 }
+                Message::TracksAvailable => {
+                    let tracks = packet
+                        .payload_as_tracks_available()
+                        .ok_or_else(|| anyhow!("malformed TracksAvailable"))?;
+                    let mut ids: [Vec<u32>; 3] = Default::default();
+                    if let Some(list) = tracks.tracks() {
+                        for track in list {
+                            let slot = match track.metadata_type() {
+                                v4::flat::MediaTrackMetadata::Video => TrackKind::Video,
+                                v4::flat::MediaTrackMetadata::Audio => TrackKind::Audio,
+                                v4::flat::MediaTrackMetadata::Subtitle => TrackKind::Subtitle,
+                                _ => continue,
+                            };
+                            ids[slot as usize].push(track.id());
+                        }
+                    }
+                    debug!(?ids, "TracksAvailable track ids");
+                    self.track_ids = ids;
+                    self.check_await_tracks();
+                    FlatAction::None
+                }
+                Message::ChangeTrack => {
+                    let change = packet
+                        .payload_as_change_track()
+                        .ok_or_else(|| anyhow!("malformed ChangeTrack"))?;
+                    let slot = match change.track_type() {
+                        v4::flat::MediaTrackType::Video => TrackKind::Video,
+                        v4::flat::MediaTrackType::Audio => TrackKind::Audio,
+                        v4::flat::MediaTrackType::Subtitle => TrackKind::Subtitle,
+                        typ => bail!("relayed ChangeTrack with unknown track type {typ:?}"),
+                    } as usize;
+                    let id = change.id();
+                    self.last_track_state[slot] = Some(id);
+                    if let Some(expected) = self.expect.change_track[slot] {
+                        if id == expected {
+                            self.expect.change_track[slot] = None;
+                            info!(?id, kind = KIND_NAMES[slot], "track change confirmed");
+                        } else {
+                            debug!(
+                                ?id,
+                                ?expected,
+                                kind = KIND_NAMES[slot],
+                                "ignoring interim ChangeTrack"
+                            );
+                        }
+                    }
+                    FlatAction::None
+                }
                 Message::CompanionHelloResponse => {
                     let id = packet
                         .payload_as_companion_hello_response()
@@ -839,6 +927,42 @@ impl<'a> Engine<'a> {
                     .await?;
             }
             Step::ExpectClosed => self.expect_closed().await?,
+            Step::AwaitTracks {
+                video,
+                audio,
+                subtitle,
+            } => {
+                self.expect.await_tracks = Some([*video, *audio, *subtitle]);
+                // The advertisement may already have arrived while settling an
+                // earlier step; don't wait for a re-broadcast in that case.
+                self.check_await_tracks();
+            }
+            Step::AssertTrackState {
+                video,
+                audio,
+                subtitle,
+            } => {
+                for (kind, expected_idx) in [
+                    (TrackKind::Video, video),
+                    (TrackKind::Audio, audio),
+                    (TrackKind::Subtitle, subtitle),
+                ] {
+                    let slot = kind as usize;
+                    let expected = match expected_idx {
+                        Some(n) => Some(self.advertised_track_id(kind, *n)?),
+                        None => None,
+                    };
+                    let seen = self.last_track_state[slot].ok_or_else(|| {
+                        anyhow!("no ChangeTrack({}) was ever relayed", KIND_NAMES[slot])
+                    })?;
+                    ensure!(
+                        seen == expected,
+                        "last relayed {} track is {seen:?}, expected {expected:?}",
+                        KIND_NAMES[slot]
+                    );
+                }
+                info!(?video, ?audio, ?subtitle, "relayed track state matches");
+            }
             Step::OpenSecondSender => self.open_second_sender().await?,
             Step::SetSecondSenderInterval { millis } => {
                 let micros = Duration::from_millis(*millis).as_micros() as u64;
@@ -1113,6 +1237,56 @@ impl<'a> Engine<'a> {
 
         check_interval("sender A", &a_times[1..], a_expected_ms, tolerance_ms)?;
         check_interval("sender B", &b_times[1..], b_expected_ms, tolerance_ms)?;
+        Ok(())
+    }
+
+    /// Clear the pending `AwaitTracks` expectation if the most recent
+    /// `TracksAvailable` already advertises enough tracks of every kind.
+    fn check_await_tracks(&mut self) {
+        if let Some(min) = self.expect.await_tracks
+            && (0..3).all(|slot| self.track_ids[slot].len() >= min[slot])
+        {
+            self.expect.await_tracks = None;
+            let counts = [
+                self.track_ids[0].len(),
+                self.track_ids[1].len(),
+                self.track_ids[2].len(),
+            ];
+            info!(?counts, "required tracks advertised");
+        }
+    }
+
+    /// The protocol id of the `n`th advertised track of the given kind.
+    fn advertised_track_id(&self, kind: TrackKind, n: usize) -> Result<u32> {
+        let slot = kind as usize;
+        self.track_ids[slot].get(n).copied().ok_or_else(|| {
+            anyhow!(
+                "{} track index {n} out of range ({} advertised); \
+                 run AwaitTracks before acting on tracks",
+                KIND_NAMES[slot],
+                self.track_ids[slot].len()
+            )
+        })
+    }
+
+    /// Send a `ChangeTrack` for the `index`th advertised track of `kind`
+    /// (`None` = disable the kind), optionally expecting the receiver to
+    /// relay the change back.
+    async fn send_change_track(
+        &mut self,
+        kind: TrackKind,
+        index: Option<usize>,
+        expect: bool,
+    ) -> Result<()> {
+        let id = match index {
+            Some(n) => Some(self.advertised_track_id(kind, n)?),
+            None => None,
+        };
+        if expect {
+            self.expect.change_track[kind as usize] = Some(id);
+        }
+        let msg = v4::MessageBuilder::new().change_track(id, track_kind_to_type(kind));
+        self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
         Ok(())
     }
 
@@ -1417,6 +1591,32 @@ impl<'a> Engine<'a> {
             }
             Op::StopV4 => {
                 let msg = v4::MessageBuilder::new().stop_playback();
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::ChangeTrack { kind, index } => {
+                self.send_change_track(*kind, *index, true).await?;
+            }
+            Op::ChangeTracks(changes) => {
+                for (kind, index) in *changes {
+                    self.send_change_track(*kind, *index, true).await?;
+                }
+            }
+            Op::ChangeTrackNoExpect { kind, index } => {
+                self.send_change_track(*kind, Some(*index), false).await?;
+            }
+            Op::ChangeTrackRawId { kind, id } => {
+                let msg =
+                    v4::MessageBuilder::new().change_track(Some(*id), track_kind_to_type(*kind));
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::ChangeTrackMismatched {
+                send_as,
+                take_from,
+                index,
+            } => {
+                let id = self.advertised_track_id(*take_from, *index)?;
+                let msg =
+                    v4::MessageBuilder::new().change_track(Some(id), track_kind_to_type(*send_as));
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
             Op::CompanionHello => {
@@ -1760,7 +1960,7 @@ mod tests {
 
     #[test]
     fn each_expectation_field_marks_pending() {
-        let setters: [fn(&mut Expectations); 16] = [
+        let setters: [fn(&mut Expectations); 20] = [
             |e| e.waiting_opcode = Some(Opcode::Version),
             |e| e.volume = Some((1.0, 0)),
             |e| e.play_update = Some(sample_play()),
@@ -1777,6 +1977,10 @@ mod tests {
             |e| e.companion_served = Some(0),
             |e| e.error = Some(v4::flat::ErrorKind::SeekOutOfRange),
             |e| e.progress_v4_at_least = Some(25.0),
+            |e| e.await_tracks = Some([1, 1, 3]),
+            |e| e.change_track[TrackKind::Video as usize] = Some(Some(0)),
+            |e| e.change_track[TrackKind::Audio as usize] = Some(Some(1)),
+            |e| e.change_track[TrackKind::Subtitle as usize] = Some(None),
         ];
         for set in setters {
             let mut e = Expectations::default();
@@ -1804,6 +2008,8 @@ mod tests {
             companion_served: Some(7),
             error: Some(v4::flat::ErrorKind::VolumeOutOfRange),
             progress_v4_at_least: Some(25.0),
+            await_tracks: Some([1, 1, 3]),
+            change_track: [Some(Some(0)), Some(Some(1)), Some(None)],
         };
 
         let d = e.describe();
@@ -1824,6 +2030,10 @@ mod tests {
             "CompanionResource(7)",
             "Error(VolumeOutOfRange)",
             "ProgressV4AtLeast(25)",
+            "TracksAvailable(>= 1 video, 1 audio, 3 subtitle)",
+            "ChangeTrack(Video, id=0)",
+            "ChangeTrack(Audio, id=1)",
+            "ChangeTrack(Subtitle, disabled)",
         ] {
             assert!(d.contains(needle), "describe() missing {needle:?}: {d}");
         }

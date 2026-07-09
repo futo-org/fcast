@@ -128,6 +128,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
 pub enum RendererMessage {
     CreateBluredAudioTrackCover(DecodedImage),
     ClearBluredAudioTrackCover,
+    ClearVideoOverlays,
 }
 
 #[derive(Debug)]
@@ -203,6 +204,7 @@ pub enum UpdateGuiCommand {
         audio: i32,
         subtitle: i32,
     },
+    ClearVideoOverlays,
     SetConnectionDetails {
         qr_code: IgnoredDebug<QrCodeImage>,
         addrs: String,
@@ -394,6 +396,10 @@ impl GuiController {
         });
     }
 
+    pub fn clear_video_overlays(&self) {
+        self.send(UpdateGuiCommand::ClearVideoOverlays);
+    }
+
     pub fn set_connection_details(&self, qr_code: QrCodeImage, addrs: String) {
         self.send(UpdateGuiCommand::SetConnectionDetails {
             qr_code: qr_code.into(),
@@ -537,7 +543,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         UpdateGuiCommand::ClearCommonPlaybackState => {
             clear_audio_covers(&bridge, renderer_tx);
             set_playback_progress(&bridge, 0.0, 0.0);
-            bridge.set_render_subtitles(true);
         }
         UpdateGuiCommand::SetPlayerType(typ) => bridge.set_player_variant(typ),
         UpdateGuiCommand::SetTracks {
@@ -566,6 +571,10 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_current_video_track(video);
             bridge.set_current_audio_track(audio);
             bridge.set_current_subtitle_track(subtitle);
+        }
+        UpdateGuiCommand::ClearVideoOverlays => {
+            let _ = renderer_tx.send(RendererMessage::ClearVideoOverlays);
+            ui.window().request_redraw();
         }
         UpdateGuiCommand::SetConnectionDetails { qr_code, addrs } => {
             bridge.set_qr_code(slint::Image::from_rgb8(qr_code.0));

@@ -290,6 +290,7 @@ pub struct Application {
     player: player::Player,
     current_duration: Option<gst::ClockTime>,
     on_playing_command: Option<OnMediaLoadedOperation>,
+    pending_subtitle_refresh: bool,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
     have_audio_track_cover: bool,
@@ -534,6 +535,7 @@ impl Application {
             player,
             current_duration: None,
             on_playing_command: None,
+            pending_subtitle_refresh: false,
             current_image_id: 0,
             have_audio_track_cover: false,
             current_media: None,
@@ -1223,6 +1225,17 @@ impl Application {
         Ok(())
     }
 
+    fn video_stream_unavailable(&self) {
+        if !self.is_playing() {
+            debug!("Ignoring old video stream unavailable event");
+            return;
+        };
+
+        debug!("Video stream unavailable");
+
+        self.gui.set_player_type(UiPlayerVariant::Audio);
+    }
+
     fn stop_playback(&mut self) {
         tracing::info!(is_playing = self.is_playing());
         if self.is_playing() {
@@ -1555,10 +1568,10 @@ impl Application {
             Operation::ChangeTrack { id, typ } => {
                 debug!(id, ?typ, "changing track");
 
-                let res = match typ {
-                    v4::flat::MediaTrackType::Video => self.player.select_video_stream(id),
-                    v4::flat::MediaTrackType::Audio => self.player.select_audio_stream(id),
-                    v4::flat::MediaTrackType::Subtitle => self.player.select_subtitle_stream(id),
+                let stream_type = match typ {
+                    v4::flat::MediaTrackType::Video => gst::StreamType::VIDEO,
+                    v4::flat::MediaTrackType::Audio => gst::StreamType::AUDIO,
+                    v4::flat::MediaTrackType::Subtitle => gst::StreamType::TEXT,
                     _ => {
                         error!(?typ, "Unknown track type");
                         self.send_error(origin, ErrorKind::MalformedBody);
@@ -1566,9 +1579,44 @@ impl Application {
                     }
                 };
 
+                if let Some(id) = id
+                    && !self.player.is_stream_of_type(id, stream_type)
+                {
+                    error!(id, ?typ, "Track id is not a track of the requested type");
+                    self.send_error(origin, ErrorKind::MalformedBody);
+                    return Ok(false);
+                }
+
+                // playsink cannot present a text stream without a video
+                // stream, so selecting a subtitle while video is deselected
+                // would either error the pipeline or be silently dropped.
+                // Report it as unsatisfiable instead.
+                if matches!(typ, v4::flat::MediaTrackType::Subtitle)
+                    && id.is_some()
+                    && self.player.current_video_stream.is_none()
+                {
+                    error!("Cannot select a subtitle track while video is disabled");
+                    self.send_error(origin, ErrorKind::InvalidState);
+                    return Ok(false);
+                }
+
+                let res = match typ {
+                    v4::flat::MediaTrackType::Video => self.player.select_video_stream(id),
+                    v4::flat::MediaTrackType::Audio => self.player.select_audio_stream(id),
+                    v4::flat::MediaTrackType::Subtitle => self.player.select_subtitle_stream(id),
+                    _ => unreachable!(),
+                };
+
                 if let Err(err) = res {
                     error!(?err, "Failed to change track");
                     self.send_error(origin, ErrorKind::Internal);
+                } else if matches!(typ, v4::flat::MediaTrackType::Subtitle) {
+                    // Refresh once the selection is actually applied (see the
+                    // StreamsSelected handler), so the sparse subtitle change
+                    // takes effect immediately. Deferring to StreamsSelected
+                    // avoids racing the flush against the still-in-flight stream
+                    // reconfiguration.
+                    self.pending_subtitle_refresh = true;
                 }
             }
             Operation::SelectQueueItem(position) => {
@@ -1979,8 +2027,27 @@ impl Application {
                     audio_sid.map(|i| i as i32).unwrap_or(-1),
                     subtitle_sid.map(|i| i as i32).unwrap_or(-1),
                 );
+
+                // The selection is now applied, so it is safe to act without
+                // racing the reconfiguration.
+                // - Selecting/switching a track: flush at the current position so
+                //   the sparse subtitle track renders its current cue right away.
+                // - Disabling: never seek. Flushing right after the text branch
+                //   teardown can fail allocation renegotiation (observed with
+                //   vavp8dec: "DMABuf caps negotiated without VideoMeta" ->
+                //   not-negotiated -> pipeline error).
+                if std::mem::take(&mut self.pending_subtitle_refresh) {
+                    if subtitle_sid.is_some() {
+                        self.player.refresh_position();
+                    } else {
+                        self.gui.clear_video_overlays();
+                    }
+                }
+
                 if video.is_some() {
                     self.video_stream_available()?;
+                } else {
+                    self.video_stream_unavailable();
                 }
 
                 if self.updates_tx.strong_count() > 0 {
@@ -1999,6 +2066,9 @@ impl Application {
             }
             player::PlayerEvent::SeekFailed => {
                 self.player.seek_failed();
+            }
+            player::PlayerEvent::ClockLost => {
+                self.player.recover_clock();
             }
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);
@@ -2549,6 +2619,11 @@ impl Application {
 
                 if let Err(err) = res {
                     error!(?err, id, ?variant, "Failed to select track");
+                } else if matches!(variant, UiMediaTrackType::Subtitle) {
+                    // See the ChangeTrack handler: refresh once the selection is
+                    // applied (on StreamsSelected), not now, to avoid racing the
+                    // flush against the reconfiguration.
+                    self.pending_subtitle_refresh = true;
                 }
             }
             Message::NewPlayerEvent(event) => {

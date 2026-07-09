@@ -113,20 +113,7 @@ pub struct Frame {
     pub mastering_display_info: Option<MasteringDisplayInfo>,
     pub content_light_level: Option<ContentLightLevel>,
     pub overlays: SmallVec<[Overlay; 3]>,
-    pub overlay_enabled: bool,
     pub rotation: Rotation,
-}
-
-impl Frame {
-    /// The overlays that should actually be composited this frame: the frame's overlays when
-    /// `overlay_enabled` (the GUI subtitle toggle) is set, otherwise none.
-    pub fn overlays_to_composite(&self) -> &[Overlay] {
-        if self.overlay_enabled {
-            &self.overlays
-        } else {
-            &[]
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -638,7 +625,6 @@ pub mod imp {
                     mastering_display_info: mdi,
                     content_light_level: cll,
                     overlays,
-                    overlay_enabled: true,
                     rotation,
                 };
 
