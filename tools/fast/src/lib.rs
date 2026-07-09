@@ -116,6 +116,19 @@ pub enum Send {
         take_from: TrackKind,
         index: usize,
     },
+    /// Attach an external subtitle (served file) to the playing item.
+    AddSubtitleSourceV4 {
+        file_id: u32,
+        select: bool,
+        name: Option<&'static str>,
+    },
+    /// Attach an external subtitle pointing at a well-formed URL that 404s.
+    AddSubtitleSourceFakeUrlV4 {
+        select: bool,
+    },
+    /// `AddSubtitleSource` with an empty URL: the spec gives it no meaning,
+    /// so the receiver must reject it as a malformed body.
+    AddSubtitleSourceEmptyUrlV4,
     RawMessage {
         opcode: u8,
         body: &'static [u8],
@@ -148,6 +161,11 @@ pub enum Receive {
     VolumeChangedV4(f64),
     SpeedChangedV4(f64),
     ProgressV4AtLeast(f64),
+    /// The next v4 progress update with a non-zero position must be at least
+    /// this many seconds. Verifies the position survived a pipeline reload
+    /// (an early low value fails immediately instead of waiting for playback
+    /// to catch up).
+    NextProgressV4AtLeast(f64),
 }
 
 #[derive(Debug)]
@@ -177,9 +195,59 @@ pub enum Step {
         audio: Option<usize>,
         subtitle: Option<usize>,
     },
+    /// Wait until the relayed track state matches AND holds steady for a
+    /// short while. Interim relays during an external-subtitle reload dance
+    /// (e.g. the mid-preroll text deselect) are churn to wait out, not
+    /// failures — and how long the dance takes varies too much for a fixed
+    /// sleep.
+    AwaitTrackState {
+        video: Option<usize>,
+        audio: Option<usize>,
+        subtitle: Option<usize>,
+    },
+    /// The most recent `TracksAvailable` must advertise exactly these many
+    /// tracks of each kind.
+    AssertTrackCounts {
+        video: usize,
+        audio: usize,
+        subtitle: usize,
+    },
+    /// The most recently relayed `PlaybackStateChanged` must match.
+    AssertPlaybackStateV4(fcast_protocol::v4::flat::PlaybackState),
+    /// Wait until the relayed playback state matches AND holds steady for a
+    /// short while. The external-subtitle dance's re-pause lands whenever
+    /// playsink finishes its un-signalled text-branch churn — too variable
+    /// for a fixed sleep followed by a point-in-time assert.
+    AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState),
     OpenSecondSender,
     SetSecondSenderInterval {
         millis: u64,
+    },
+    /// Wait until the second sender has been sent a `TracksAvailable`
+    /// advertising at least these many tracks of each kind.
+    AwaitTracksOnSecondSender {
+        video: usize,
+        audio: usize,
+        subtitle: usize,
+    },
+    /// `AddSubtitleSource` sent from the second sender.
+    AddSubtitleSourceOnSecondSenderV4 {
+        file_id: u32,
+        select: bool,
+        name: Option<&'static str>,
+    },
+    /// `ChangeTrack` sent from the second sender for the `index`th track it
+    /// was advertised (`None` = disable the kind), waiting for the relayed
+    /// confirmation on the second connection.
+    ChangeTrackOnSecondSender {
+        kind: TrackKind,
+        index: Option<usize>,
+    },
+    /// The most recent `ChangeTrack` relayed to the second sender must match.
+    AssertTrackStateOnSecondSender {
+        video: Option<usize>,
+        audio: Option<usize>,
+        subtitle: Option<usize>,
     },
     ExpectLoadOnSecondSender,
     ExpectVolumeOnSecondSender(f64),
@@ -233,6 +301,7 @@ cases!(
     // cast_video_set_volume_v3,
     cast_pause_resume_v2,
     cast_pause_resume_v3,
+    cast_pause_during_load_v2,
     subscribe_media_item_start_1,
     subscribe_media_item_start_2,
     subscribe_media_item_end,
@@ -257,14 +326,27 @@ cases!(
     cast_queue_select_out_of_range_v4,
     cast_queue_remove_current_v4,
     cast_pause_resume_v4,
+    cast_pause_during_load_v4,
     subtitle_change_and_disable_v4,
     subtitle_change_keeps_playing_v4,
+    subtitle_bitmap_change_then_load_v4,
     subtitle_disable_while_paused_v4,
     video_disable_with_subs_v4,
     audio_track_switch_v4,
     audio_disable_enable_v4,
     track_change_rejections_v4,
     rapid_track_changes_v4,
+    external_sub_add_while_playing_v4,
+    external_sub_add_while_paused_v4,
+    external_sub_add_unselected_v4,
+    external_sub_keeps_embedded_selection_v4,
+    external_sub_switch_embedded_external_v4,
+    external_sub_add_two_selected_v4,
+    external_sub_switch_between_externals_v4,
+    external_sub_seek_v4,
+    external_sub_empty_url_malformed_v4,
+    external_sub_add_invalid_url_v4,
+    external_sub_no_media_rejected_v4,
     // cast_video_set_volume_v4,
     cast_video_set_speed_v4,
     cast_seek_v4,
@@ -302,6 +384,7 @@ cases!(
     multi_sender_queue_insert_broadcast_v4,
     multi_sender_queue_remove_broadcast_v4,
     multi_sender_queue_select_broadcast_v4,
+    multi_sender_external_subs_v4,
     seek_v3,
     unsubscribe_event_v3
 );
@@ -518,6 +601,26 @@ define_test_case!(
         Step::SleepMillis(500),
         send!(Send::Pause),
         send!(Send::Resume),
+        send!(Send::Stop),
+    ]
+);
+
+// A pause sent right behind the cast lands while the load is still in
+// flight; the receiver must not let the load's collection-time auto-play
+// swallow it (loads always go through Playing and re-pause afterwards).
+define_test_case!(
+    cast_pause_during_load_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV2 { file_id: 0 }),
+        send!(Send::Pause),
+        // The load's buffering dance posts a transient Paused before the
+        // collection-time auto-play; the pause only counts if it HOLDS.
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Paused),
+        send!(Send::Resume),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         send!(Send::Stop),
     ]
 );
@@ -1048,6 +1151,25 @@ define_test_case!(
     ]
 );
 
+// v4 twin of `cast_pause_during_load_v2`: SetPlaybackState(Paused) racing
+// the load must survive the collection-time auto-play.
+define_test_case!(
+    cast_pause_during_load_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        send!(Send::PauseV4),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Paused),
+        send!(Send::ResumeV4),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
+    ]
+);
+
 define_test_case!(
     subtitle_change_and_disable_v4,
     &[
@@ -1128,6 +1250,54 @@ define_test_case!(
             index: Some(2),
         }),
         recv!(Receive::ProgressV4AtLeast(3.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    subtitle_bitmap_change_then_load_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_vobsub.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // Let playback establish in steady PLAYING and the plain-load text
+        // restore settle (the restore auto-selects the first text stream —
+        // the VOBSUB track — so a direct select would be a no-op).
+        Step::SleepMillis(2000),
+        // Deselect first so the re-select below is a genuine change.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: None,
+        }),
+        Step::SleepMillis(500),
+        // Re-select the VOBSUB track: bitmap subtitles (subpicture/*) are
+        // composited into the VIDEO chain, so playsink splices dvdspu into
+        // the video path — an unsignalled video-chain rebuild. The
+        // subtitle re-emit flush racing that rebuild has deadlocked the
+        // pipeline for good (flush-start lost at a deactivating pad, video
+        // sink clock-waiting on the lost-state-frozen audio clock, seek
+        // thread stuck on the stream lock), killing the player worker.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(0),
+        }),
+        // Long enough for the DEFERRED re-emit flush (selection confirm
+        // + SUBPICTURE_REFRESH_DELAY + a poll tick) to dispatch and settle
+        // inside the observation window.
+        Step::SleepMillis(3500),
+        // A dead worker swallows every later job: prove a follow-up load
+        // still completes.
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 1 }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         send!(Send::StopV4),
     ]
 );
@@ -1323,6 +1493,490 @@ define_test_case!(
             subtitle: Some(1),
         },
         send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_add_while_playing_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        // Let playback establish and advance so position preservation across
+        // the suburi reload is observable (well past the engine's 1.5s
+        // transient-position threshold).
+        recv!(Receive::ProgressV4AtLeast(4.0)),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English (external)"),
+        }),
+        // The reload re-advertises the tracks; the external text stream
+        // arrives in a second stream collection.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // Playback must come back at (or beyond) the pre-add position.
+        recv!(Receive::NextProgressV4AtLeast(3.0)),
+        // The external track must have been selected and confirmed.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_add_while_paused_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1500),
+        send!(Send::PauseV4),
+        Step::SleepMillis(300),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: None,
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // The restore sequence (settle, subtitle selection, settle delay,
+        // position seek, re-pause) takes a while and its tail varies too
+        // much for a fixed sleep — wait for the re-pause to land and hold.
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Paused),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Resuming afterwards must work and playback must advance.
+        send!(Send::ResumeV4),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_add_unselected_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        // "Add but don't show": decodebin3 auto-selects a lone text stream,
+        // so the receiver must deselect it once it appears.
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: false,
+            name: Some("English"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: None,
+        },
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+// Two externals attached one after another (both selected). The second does
+// NOT replace the first — both are advertised, and the most recently selected
+// one (Spanish, index 1) is the active selection.
+define_test_case!(
+    external_sub_add_two_selected_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        serve!("subs/sample_es.srt", 2, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // Let the first add's restore sequence finish: its selection must
+        // land and hold before the second add piles on.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 2,
+            select: true,
+            name: Some("Spanish"),
+        }),
+        // Both externals must now be advertised (English + Spanish).
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        // Spanish (the last selected, advertised at index 1) is active.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(1),
+        },
+        Step::AssertTrackCounts {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+// Attach two externals (one selected, one not), then switch the selection
+// between them and off with ChangeTrack. Both stay advertised throughout;
+// only one is loaded as the suburi at a time.
+define_test_case!(
+    external_sub_switch_between_externals_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        serve!("subs/sample_es.srt", 2, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        // English selected, Spanish attached-but-unselected (seamless, no
+        // reload for the second).
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // The first add's dance must fully land before the second add.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 2,
+            select: false,
+            name: Some("Spanish"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        // English (index 0) stays the active selection (the unselected add
+        // is seamless).
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        // Switch to Spanish (index 1): a suburi-swapping reload.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(1),
+        }),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(1),
+        },
+        Step::AssertTrackCounts {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        // Switch back to English (index 0): another reload.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(0),
+        }),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Playback survived the switching.
+        recv!(Receive::ProgressV4AtLeast(4.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+// An empty subtitle URL has no meaning in the protocol; the receiver must
+// reject it as malformed without disturbing playback.
+define_test_case!(
+    external_sub_empty_url_malformed_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(800),
+        send!(Send::AddSubtitleSourceEmptyUrlV4),
+        recv!(Receive::Error(ErrorKind::MalformedBody)),
+        // Playback is unaffected by the rejected request.
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_keeps_embedded_selection_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        // Let the default selection establish (first embedded subtitle on).
+        Step::SleepMillis(1200),
+        // "Add but don't show" on media WITH embedded subtitles: the reload
+        // must restore the embedded track that was showing, not turn all
+        // subtitles off.
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: false,
+            name: Some("External"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 4,
+        },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Playback must keep advancing after the reload.
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+// The switch AWAY from the external track goes through a receiver-side
+// reload (a plain SELECT_STREAMS would stall until the suburi stream's
+// queued sparse data drained in real time), so that step includes a
+// buffering blip before its ChangeTrack confirmation.
+define_test_case!(
+    external_sub_switch_embedded_external_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        Step::SleepMillis(1200),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("External"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 4,
+        },
+        // The external track (advertised last, after the embedded ones) must
+        // be selected.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(3),
+        },
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        // ChangeTrack must move freely between external and embedded tracks:
+        // to an embedded one (reload: deactivating the external track),
+        // off (plain deselect of the embedded track), and back to the
+        // external one (reload again: activating a parked suburi stream via
+        // plain SELECT_STREAMS mid-playback can wedge the re-preroll).
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(1),
+        }),
+        // The switch away is a full reload + restore; wait for it to land.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(1),
+        },
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: None,
+        }),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: None,
+        },
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(3),
+        }),
+        // The switch back onto the external track reloads as well.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(3),
+        },
+        // No pipeline error or stall from the switching.
+        recv!(Receive::ProgressV4AtLeast(4.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_seek_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Ordinary flushing seeks with the external text branch ACTIVE must
+        // neither error the suburi source nor stall playback.
+        send!(Send::SeekV4(30.0)),
+        recv!(Receive::ProgressV4AtLeast(30.0)),
+        // And the same while paused (seek + resume).
+        send!(Send::PauseV4),
+        Step::SleepMillis(300),
+        send!(Send::SeekV4(60.0)),
+        Step::SleepMillis(500),
+        send!(Send::ResumeV4),
+        recv!(Receive::ProgressV4AtLeast(60.0)),
+        // The external track must still be selected after all the seeking.
+        Step::AssertTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_add_invalid_url_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        // A 404 subtitle URL: the sub source fails without a bus error, so
+        // the receiver must detect the missing text stream via its timeout
+        // and report ResourceNotFound — while the main item keeps playing.
+        send!(Send::AddSubtitleSourceFakeUrlV4 { select: true }),
+        recv!(Receive::Error(ErrorKind::ResourceNotFound)),
+        recv!(Receive::ProgressV4AtLeast(3.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_no_media_rejected_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("subs/sample_en.srt", 0, "application/x-subrip"),
+        // No media is loaded; the receiver must reject the request.
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 0,
+            select: true,
+            name: None,
+        }),
+        recv!(Receive::Error(ErrorKind::InvalidState)),
     ]
 );
 
@@ -1940,6 +2594,111 @@ define_test_case!(
             position: QueuePosition::Back,
         }),
         Step::ExpectQueueMutationOnSecondSender(QueueMutationKind::Select),
+        send!(Send::StopV4),
+    ]
+);
+
+// Two senders share one media session end to end: sender 1 casts and attaches
+// an external subtitle, whose advertisement must be broadcast to sender 2;
+// sender 2 attaches its own external; then each sender selects the track the
+// OTHER peer added (suburi-swapping reloads in both directions, one of them
+// driven by the second connection), with both senders observing every change.
+define_test_case!(
+    multi_sender_external_subs_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        serve!("subs/sample_es.srt", 2, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::ExpectLoadOnSecondSender,
+        Step::SleepMillis(1000),
+        // Sender 1 attaches and selects an external subtitle.
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // The new track must be advertised to sender 2 as well.
+        Step::AwaitTracksOnSecondSender {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // Wait out the add's reload + restore dance: settled with the
+        // external (index 0) selected.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Sender 2 attaches its own external (unselected: a seamless add).
+        Step::AddSubtitleSourceOnSecondSenderV4 {
+            file_id: 2,
+            select: false,
+            name: Some("Spanish"),
+        },
+        // Both senders see both externals advertised.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        Step::AwaitTracksOnSecondSender {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        Step::AssertTrackCounts {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        // Sender 2's add must not have disturbed sender 1's selection.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        // Sender 1 switches onto the peer's track (a suburi-swapping reload).
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(1),
+        }),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(1),
+        },
+        // ...and sender 2 switches back onto the track sender 1 added
+        // (another reload, this time requested over the second connection).
+        Step::ChangeTrackOnSecondSender {
+            kind: TrackKind::Subtitle,
+            index: Some(0),
+        },
+        // Both senders observe the selection sender 2 made.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        Step::AssertTrackStateOnSecondSender {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // All the cross-sender switching must not have wedged playback.
+        recv!(Receive::ProgressV4AtLeast(4.0)),
         send!(Send::StopV4),
     ]
 );

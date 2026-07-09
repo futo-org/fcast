@@ -9,9 +9,9 @@ use clap::Args;
 use xshell::Shell;
 
 pub mod android;
-pub mod gstreamer;
 #[cfg(feature = "uniffi")]
 pub mod csharp;
+pub mod gstreamer;
 #[cfg(feature = "uniffi")]
 pub mod kotlin;
 #[cfg(feature = "mdns")]

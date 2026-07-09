@@ -367,6 +367,11 @@ pub enum Operation {
         id: Option<u32>,
         typ: fcast_protocol::v4::flat::MediaTrackType,
     },
+    AddSubtitleSource {
+        url: String,
+        select: bool,
+        name: Option<smol_str::SmolStr>,
+    },
     SelectQueueItem(v4::QueuePosition),
     RemoveQueueItem(v4::QueuePosition),
     InsertQueueItem(QueueInsertCell),
@@ -993,6 +998,23 @@ impl State {
                 let typ = msg.track_type();
                 Action::Op(Operation::ChangeTrack { id, typ })
             }
+            v4::flat::Message::AddSubtitleSource => {
+                let msg = union!(packet.payload_as_add_subtitle_source());
+                let url = msg.url();
+                if url.is_empty() {
+                    // The spec gives an empty URL no meaning; there is
+                    // nothing to attach.
+                    Action::Error {
+                        kind: v4::flat::ErrorKind::MalformedBody,
+                    }
+                } else {
+                    Action::Op(Operation::AddSubtitleSource {
+                        url: url.to_owned(),
+                        select: msg.select(),
+                        name: msg.name().map(smol_str::SmolStr::new),
+                    })
+                }
+            }
             v4::flat::Message::QueueItemSelected => {
                 let msg = union!(packet.payload_as_queue_item_selected());
                 let position = get_queue_position!(msg);
@@ -1412,7 +1434,7 @@ impl SessionDriver {
             fmts.subtitles.iter().map(|s| s.to_str()),
             fmts.hdrs.iter().map(|s| s.to_str()),
             fmts.images.iter().map(|i| i.to_str()),
-            false,
+            true,
             true,
             0.01,
         );
