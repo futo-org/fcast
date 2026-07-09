@@ -1,0 +1,40 @@
+The assembler debug args are added unconditionally, so release builds
+(buildtype=release, debug=false) pay for DWARF generation in nasm.
+nasm's DWARF output is very slow on the larger SIMD sources: in a
+release build of the decode-only configuration, vp9itxfm.asm alone
+takes 55s (vs seconds without -g) and the 76 asm files sum to ~300s of
+CPU, with vp9itxfm.asm the last target of the whole build.
+
+Gate the debug format on get_option('debug'), matching how the C side
+already behaves, and stop passing bare `-g` to nasm when no debug info
+is wanted (on ELF, bare -g still emits DWARF).
+
+---
+ meson.build | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -2749,7 +2749,11 @@
+ # The only modern debugging format supported by either is DWARF
+ #
+ # nasm and yasm don't support DWARF in the PE format (Windows)
+-if asm_format.startswith('win')
++if not get_option('debug')
++  # No debug info requested; DWARF generation in nasm is also very slow on
++  # the larger SIMD files (tens of seconds per file).
++  debug_format = 'null'
++elif asm_format.startswith('win')
+   if cc.get_define('_MSC_FULL_VER') != ''
+     debug_format = 'cv8'
+   else
+@@ -2775,7 +2779,7 @@
+ elif x86asm_type == 'nasm'
+   if debug_format == 'dwarf'
+     asm_args += ['-g', '-F', 'dwarf']
+-  else
++  elif debug_format != 'null'
+     asm_args += ['-g']
+   endif
+ endif

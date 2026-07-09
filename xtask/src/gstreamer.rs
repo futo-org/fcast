@@ -64,19 +64,103 @@ const SYSTEM_DEPS: &[&str] = &[
 /// gst-libav refuses to wrap these decoders and expects the native plugins.
 const ENABLE_COMMON: &[(Plugins, &str)] = &[(Plugins::Base, "vorbis"), (Plugins::Base, "theora")];
 
-/// Elements kept from videoparsersbad (via gst-full-elements). The plugin must
-/// stay (h264parse/h265parse), but registering only these keeps its niche
-/// sibling parsers (jpeg2000parse, pngparse, …) from ever linking.
-const VIDEOPARSERS_ELEMENTS: &[&str] = &[
-    "av1parse",
-    "h263parse",
-    "h264parse",
-    "h265parse",
-    "h266parse",
-    "mpeg4videoparse",
-    "mpegvideoparse",
-    "vc1parse",
-    "vp9parse",
+/// Element-level whitelists (`-Dgst-full-elements`): a plugin named here
+/// registers ONLY the listed elements — the rest of its element objects are
+/// never referenced, so -ffunction-sections + --gc-sections drop them from
+/// the binary. The plugin still COMPILES fully (this trims size, not build
+/// time). Only valid for plugins using the standard GST_ELEMENT_REGISTER
+/// macros — va (per-device registration) and libav (probes FFmpeg at init)
+/// register dynamically and MUST NOT be listed; their encode/test elements
+/// ride along, not trimmable without patching gst. NB a whitelisted plugin
+/// skips plugin-level init entirely, so its typefinders/device providers are
+/// dropped too (fine here: container typefinds live in typefindfunctions,
+/// and nothing uses GstDeviceMonitor).
+/// CAUTION: a gst bump that adds an element (e.g. a new parser) silently
+/// excludes it — revisit these lists on version bumps.
+const FULL_ELEMENTS: &[(&str, &[&str])] = &[
+    // The plugin must stay (h264parse/h265parse), but registering only these
+    // keeps its niche sibling parsers (jpeg2000parse, pngparse, …) from ever
+    // linking.
+    (
+        "videoparsersbad",
+        &[
+            "av1parse",
+            "h263parse",
+            "h264parse",
+            "h265parse",
+            "h266parse",
+            "mpeg4videoparse",
+            "mpegvideoparse",
+            "vc1parse",
+            "vp9parse",
+        ],
+    ),
+    // Receive-only: keep every depayloader (rtsp:// can carry any codec, so
+    // keep them wholesale) plus the elements webrtcbin instantiates
+    // internally; the ~40 payloaders (~300K .text) never link.
+    (
+        "rtp",
+        &[
+            "rtpac3depay", "rtpbvdepay", "rtpceltdepay", "rtpdvdepay",
+            "rtpgstdepay", "rtpilbcdepay", "rtpg722depay", "rtpg723depay",
+            "rtpg726depay", "rtpg729depay", "rtpgsmdepay", "rtpamrdepay",
+            "rtppcmadepay", "rtppcmudepay", "rtpmpadepay", "rtpmparobustdepay",
+            "rtpmpvdepay", "rtpopusdepay", "rtph261depay", "rtph263pdepay",
+            "rtph263depay", "rtph264depay", "rtph265depay", "rtpj2kdepay",
+            "rtpjpegdepay", "rtpklvdepay", "rtpL8depay", "rtpL16depay",
+            "rtpL24depay", "rtpmp1sdepay", "rtpmp2tdepay", "rtpmp4vdepay",
+            "rtpmp4adepay", "rtpmp4gdepay", "rtpqcelpdepay", "rtpsbcdepay",
+            "rtpsirendepay", "rtpspeexdepay", "rtpsv3vdepay", "rtptheoradepay",
+            "rtpvorbisdepay", "rtpvp8depay", "rtpvp9depay", "rtpvrawdepay",
+            "rtpstreamdepay", "rtpisacdepay",
+            // webrtcbin internals — dropping these breaks WHEP at runtime
+            "rtpredenc", "rtpreddec", "rtpulpfecdec", "rtpulpfecenc",
+            "rtpstorage", "rtphdrextcolorspace",
+        ],
+    ),
+    // demux-only containers: qtmux/mp4mux/matroskamux/webmmux/flvmux/avimux
+    // never link in a playback-only receiver.
+    ("isomp4", &["qtdemux", "rtpxqtdepay"]),
+    ("matroska", &["matroskademux", "matroskaparse"]),
+    ("flv", &["flvdemux"]),
+    ("avi", &["avidemux", "avisubtitle"]),
+    (
+        "ogg",
+        &[
+            "oggdemux", "oggparse", "oggaviparse",
+            "ogmaudioparse", "ogmvideoparse", "ogmtextparse",
+        ],
+    ),
+    // decode-only codecs: encoders + tag writers never link.
+    ("opus", &["opusdec"]),
+    ("theora", &["theoradec", "theoraparse"]),
+    ("vorbis", &["vorbisdec", "vorbisparse", "vorbistag"]),
+    ("flac", &["flacdec"]),
+    // playbin3's rate-change filter is the only audiofx element it autoplugs.
+    ("audiofx", &["scaletempo"]),
+    // network sources — the receiver never streams out, so sinks drop.
+    ("soup", &["souphttpsrc"]),
+    ("rtmp2", &["rtmp2src"]),
+    // playsink/subtitleoverlay render via textoverlay/textrender; the
+    // time/clock debug overlays never link.
+    ("pango", &["textoverlay", "textrender"]),
+];
+
+/// Whitelists for plugins that only exist in the LINUX build (srt/wavpack
+/// are force-enabled there but have no wrap for the hermetic mac/win scope;
+/// pulse is Linux-only). The generator emits gst_element_register_<e> calls
+/// UNCONDITIONALLY for whitelisted elements — naming a plugin that isn't
+/// built is an undefined symbol at link, so these must not reach mac/win.
+/// NB keys are PLUGIN names, not meson option names — the option is `pulse`
+/// but the plugin is `pulseaudio` (a mismatch is a SILENT no-op: the plugin
+/// just registers fully; caught via the runtime element dump).
+const FULL_ELEMENTS_LINUX: &[(&str, &[&str])] = &[
+    ("srt", &["srtsrc", "srtclientsrc", "srtserversrc"]),
+    // decode only; wavpackparse lives in audioparsers, not here.
+    ("wavpack", &["wavpackdec"]),
+    // audio output only (pulsesrc is capture); pulsedeviceprovider drops
+    // with plugin-level init — nothing uses GstDeviceMonitor.
+    ("pulseaudio", &["pulsesink"]),
 ];
 
 /// Linux: VA-API hardware decode; audio via pulse/pipewire (auto). srt is
@@ -90,6 +174,13 @@ const ENABLE_LINUX: &[(Plugins, &str)] = &[
     (Plugins::Bad, "srt"),
     (Plugins::Bad, "assrender"),
     (Plugins::Good, "wavpack"),
+    // Previously `auto`: on an image without libnice/libsrtp devel the webrtc
+    // stack silently drops out of the build and fwebrtcsrc/WHEP breaks at
+    // runtime. Force it on so a missing dep is a configure-time error.
+    (Plugins::Bad, "webrtc"), // webrtcbin — fwebrtcsrc drives it directly
+    (Plugins::Bad, "dtls"),
+    (Plugins::Bad, "srtp"),
+    (Plugins::Bad, "sctp"),
 ];
 const DISABLE_LINUX: &[(Plugins, &str)] = &[(Plugins::Base, "gl")];
 
@@ -111,35 +202,10 @@ const ENABLE_MACOS: &[(Plugins, &str)] = &[
 const DISABLE_MACOS: &[(Plugins, &str)] = &[
     (Plugins::Bad, "va"),
     (Plugins::Good, "pulse"),
-    // encoders (decode-only receiver)
-    (Plugins::Bad, "aom"),      // AV1 encode; decode via dav1d
-    (Plugins::Bad, "svtav1"),   // AV1 encoder
-    (Plugins::Bad, "voaacenc"), // AAC encoder
-    (Plugins::Bad, "voamrwbenc"),
-    // audio decoders redundant with libav (see FFMPEG_DECODERS)
-    (Plugins::Good, "mpg123"),   // mp3
-    (Plugins::Good, "amrnb"),    // opencore-amr
-    (Plugins::Good, "amrwbdec"), // opencore-amr
-    (Plugins::Good, "speex"),
-    (Plugins::Good, "wavpack"),
-    // image decoders (receiver decodes images itself; libtiff/libjpeg drop with these)
-    (Plugins::Good, "gdk-pixbuf"),
-    (Plugins::Bad, "lcevcdecoder"),
-    (Plugins::Bad, "lcevcencoder"),
-    // niche / unused elements dragging external dylibs
-    (Plugins::Bad, "zbar"),       // barcode
-    (Plugins::Bad, "sbc"),        // bluetooth audio
-    (Plugins::Bad, "soundtouch"), // pitch/tempo
-    (Plugins::Good, "dv"),        // DV video
-    (Plugins::Bad, "rtmp"),
-    (Plugins::Bad, "curl"), // http via souphttpsrc / the receiver's own httpsrc
-    (Plugins::Bad, "sndfile"),
-    (Plugins::Bad, "spandsp"), // dtmf/fax
-    (Plugins::Good, "taglib"), // metadata tagging
-    (Plugins::Good, "bz2"),    // libbz2 support in matroska (bz2-compressed tracks; no wrap)
     // no vendored wrap → can't link static on macOS (kept on Linux)
     (Plugins::Bad, "srt"),
     (Plugins::Bad, "assrender"),
+    (Plugins::Good, "wavpack"),
 ];
 
 /// Windows: WASAPI audio; d3d11 etc. stay `auto`. NOTE: static gst-full on
@@ -323,6 +389,84 @@ const DISABLE_COMMON: &[(Plugins, &str)] = &[
     // ASF/WMV/WMA: dead format, nothing casts it; the WMV/WMA avdec_* are
     // dropped from FFMPEG_DECODERS too
     (Plugins::Ugly, "asfdemux"),
+    // ---- hermetic auto-plugin exclusions ----
+    // Everything below has an external dep and sat at meson `auto`: whether it
+    // built (and registered into gstinitstaticplugins.c) depended on which
+    // -devel packages the build image ships. A plugin that registers but does
+    // not link statically fails the final link with
+    // `undefined symbol: gst_plugin_<x>_register` (first hit: lc3 on the
+    // Fedora bootc fhs image). Pin every unneeded one off. Deliberately KEPT
+    // at auto: ttml (Subtitle::Ttml is advertised), rtmp2 (serves the
+    // advertised rtmp:// protocol, no external dep), dvbsuboverlay/dvdspu
+    // (subs in TS captures, no external dep).
+    // encoders (decode-only receiver)
+    (Plugins::Bad, "lc3"),        // Bluetooth LE audio codec (liblc3)
+    (Plugins::Bad, "x265"),       // H.265 encode; rides in via libheif's codec stack
+    (Plugins::Bad, "libde265"),   // H.265 decode, redundant with libav; libheif orbit
+    (Plugins::Bad, "aom"),        // AV1 encode; decode via dav1d
+    (Plugins::Bad, "svtav1"),     // AV1 encoder
+    (Plugins::Bad, "svthevcenc"), // HEVC encoder
+    (Plugins::Bad, "svtjpegxs"),  // JPEG-XS
+    (Plugins::Bad, "faac"),       // AAC encoder
+    (Plugins::Bad, "faad"),       // AAC decode, redundant with libav
+    (Plugins::Bad, "voaacenc"),   // AAC encoder
+    (Plugins::Bad, "voamrwbenc"), // AMR-WB encoder
+    (Plugins::Bad, "mpeg2enc"),   // mjpegtools encoder
+    (Plugins::Bad, "mplex"),      // mjpegtools muxer
+    (Plugins::Good, "twolame"),   // MP2 encoder
+    (Plugins::Bad, "lcevcdecoder"),
+    (Plugins::Bad, "lcevcencoder"),
+    // audio decoders redundant with libav (see FFMPEG_DECODERS)
+    (Plugins::Good, "mpg123"),   // mp3
+    (Plugins::Good, "amrnb"),    // opencore-amr
+    (Plugins::Good, "amrwbdec"), // opencore-amr
+    (Plugins::Good, "speex"),
+    (Plugins::Bad, "dts"), // libdca
+    (Plugins::Bad, "gsm"),
+    // tracker/module/MIDI music formats — never cast
+    (Plugins::Bad, "modplug"),
+    (Plugins::Bad, "musepack"),
+    (Plugins::Bad, "gme"),
+    (Plugins::Bad, "openmpt"),
+    (Plugins::Bad, "wildmidi"),
+    (Plugins::Bad, "fluidsynth"),
+    // image / overlay / analysis
+    (Plugins::Good, "gdk-pixbuf"), // receiver decodes images itself
+    (Plugins::Bad, "openexr"),
+    (Plugins::Bad, "colormanagement"), // lcms2
+    (Plugins::Bad, "zbar"),            // barcode
+    (Plugins::Bad, "zxing"),           // barcode/QR
+    (Plugins::Bad, "qroverlay"),
+    (Plugins::Bad, "iqa"),
+    // audio effects / plugin hosts / TTS / spatializers
+    (Plugins::Bad, "soundtouch"), // pitch/tempo
+    (Plugins::Bad, "spandsp"),    // dtmf/fax
+    (Plugins::Bad, "ladspa"),
+    (Plugins::Bad, "lv2"),
+    (Plugins::Bad, "bs2b"),
+    (Plugins::Bad, "flite"), // text-to-speech
+    (Plugins::Bad, "openal"),
+    // bluetooth audio
+    (Plugins::Bad, "bluez"),
+    (Plugins::Bad, "sbc"),
+    (Plugins::Bad, "ldac"),
+    (Plugins::Bad, "openaptx"),
+    // capture hardware / physical media a receiver never touches
+    (Plugins::Bad, "dc1394"),   // firewire cameras
+    (Plugins::Good, "dv1394"),  // firewire DV
+    (Plugins::Good, "dv"),      // DV video
+    (Plugins::Bad, "resindvd"), // DVD navigation
+    // network paths covered elsewhere
+    (Plugins::Bad, "curl"),     // http via souphttpsrc / the receiver's own httpsrc
+    (Plugins::Bad, "neon"),     // another http source
+    (Plugins::Bad, "rtmp"),     // librtmp; rtmp:// is served by rtmp2 (no external dep)
+    (Plugins::Good, "shout2"),  // icecast streaming sink
+    (Plugins::Bad, "microdns"), // mdns via libmicrodns (receiver uses mdns-sd)
+    // misc external-dep leftovers
+    (Plugins::Bad, "sndfile"),
+    (Plugins::Bad, "teletext"), // zvbi
+    (Plugins::Good, "taglib"),  // metadata tagging
+    (Plugins::Good, "bz2"),     // libbz2 in matroska (bz2-compressed tracks; no wrap)
 ];
 
 /// FFmpeg decoders to keep (gst-libav's `avdec_*`). ALL decoders are disabled
@@ -416,6 +560,9 @@ const SYSTEM_DEPS_FULL_SCOPE: &[&str] = &["GLIB_2_0", "GOBJECT_2_0", "GIO_2_0", 
 const REQUIRED_BUILD_PC_LINUX: &[&str] = &[
     "vorbis", "vorbisenc", "theora", "theoradec", "ogg", "libva", "libva-drm", "gudev-1.0",
     "srt", "libass", "wavpack",
+    // NB the force-enabled webrtc stack (nice/libsrtp2/openssl) is NOT
+    // asserted here: the monorepo carries wraps for all three, so meson
+    // falls back to building them when the system lacks the .pc.
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -522,6 +669,19 @@ impl GstreamerArgs {
     /// Build (or reuse) the static GStreamer and return the pieces needed to
     /// drive cargo against it. Returns `Ok(None)` when `--clean` short-circuits.
     fn prepare(self) -> Result<Option<(Rc<Shell>, Profile, GstBuild)>> {
+        self.prepare_impl(true)
+            .map(|o| o.map(|(sh, profile, build, _)| (sh, profile, build)))
+    }
+
+    /// Like `prepare`, but `compile: false` only CONFIGURES GStreamer (`meson
+    /// setup` — enough for the uninstalled .pc files to exist) and defers
+    /// `meson compile`, returning the deferred stamp; the caller must run
+    /// `compile_gstreamer` (or spawn/join) with it. Lets `build()` overlap the
+    /// ninja build with the receiver's Rust dependency graph.
+    fn prepare_impl(
+        self,
+        compile: bool,
+    ) -> Result<Option<(Rc<Shell>, Profile, GstBuild, Option<String>)>> {
         let sh = sh();
         if self.clean {
             clean(self.source.as_deref(), self.build_dir.as_deref())?;
@@ -554,17 +714,47 @@ impl GstreamerArgs {
             .build_dir
             .unwrap_or_else(|| source.join("builddir-static"));
 
-        let build = build_gstreamer(&sh, &source, &build_dir, &profile)?;
-        Ok(Some((sh, profile, build)))
+        let (build, stamp) = configure_gstreamer(&sh, &source, &build_dir, &profile)?;
+        if compile {
+            compile_gstreamer(&sh, &build, &profile, &stamp)?;
+            Ok(Some((sh, profile, build, None)))
+        } else {
+            Ok(Some((sh, profile, build, Some(stamp))))
+        }
     }
 
     /// Build the static gstreamer (+ receiver unless --gstreamer-only) and
     /// return the path to the receiver binary. Used by the installer commands.
+    ///
+    /// On Linux (scope=Gstreamer) the ninja build and the receiver's Rust
+    /// dependency graph build CONCURRENTLY; only the final bin link needs the
+    /// GStreamer archives, so it runs after the join. Both sides assume all
+    /// cores and briefly oversubscribe — total CPU is unchanged.
     pub fn build(self) -> Result<Option<Utf8PathBuf>> {
         let gstreamer_only = self.gstreamer_only;
-        let Some((sh, profile, build)) = self.prepare()? else {
+        let Some((sh, profile, build, stamp)) = self.prepare_impl(false)? else {
             return Ok(None);
         };
+        let stamp = stamp.expect("prepare_impl(false) always defers the compile");
+        let parallel = !gstreamer_only
+            && target_os(&profile) == "linux"
+            && profile.scope == StaticScope::Gstreamer;
+        if parallel {
+            let child = spawn_gst_compile(&build)?;
+            match prebuild_receiver_deps(&sh, &build, &profile) {
+                Ok(()) => join_gst_compile(child, &build, &stamp)?,
+                Err(e) => {
+                    // Cargo failed: reap ninja (safe to interrupt). No stamp
+                    // is written, so the next run re-checks everything.
+                    let mut child = child;
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(e);
+                }
+            }
+        } else {
+            compile_gstreamer(&sh, &build, &profile, &stamp)?;
+        }
         if gstreamer_only {
             return Ok(None);
         }
@@ -738,6 +928,8 @@ struct GstBuild {
     build_dir: Utf8PathBuf,
     /// dir holding the generated *-uninstalled.pc files.
     uninstalled_pc: Utf8PathBuf,
+    /// the GStreamer source tree (for compile-time env recreation).
+    source: Utf8PathBuf,
 }
 
 /// Target OS ("linux" | "macos" | "windows"), from `--target` if given, else host.
@@ -758,12 +950,15 @@ fn os_from_target(target: Option<&str>) -> &'static str {
     std::env::consts::OS // "linux" | "macos" | "windows"
 }
 
-fn build_gstreamer(
+/// Configure (meson setup) the static GStreamer without compiling. Returns
+/// the build handle plus the config stamp to write after a successful
+/// compile. The uninstalled .pc files exist once this returns.
+fn configure_gstreamer(
     sh: &Rc<Shell>,
     source: &Utf8Path,
     build_dir: &Utf8Path,
     profile: &Profile,
-) -> Result<GstBuild> {
+) -> Result<(GstBuild, String)> {
     if !source.join("meson.build").exists() {
         bail!("{source} does not look like a GStreamer source tree (no meson.build)");
     }
@@ -828,9 +1023,16 @@ fn build_gstreamer(
         "-Dgst-full-plugins=*".into(),
         // Element-level whitelist: plugins named here register ONLY the listed
         // elements (the rest of that plugin's element objects never link).
+        // Generator syntax: plugin:elem,elem;plugin2:elem (see
+        // scripts/generate_init_static_plugins.py).
         format!(
-            "-Dgst-full-elements=videoparsersbad:{}",
-            VIDEOPARSERS_ELEMENTS.join(",")
+            "-Dgst-full-elements={}",
+            FULL_ELEMENTS
+                .iter()
+                .chain(if os == "linux" { FULL_ELEMENTS_LINUX } else { &[] })
+                .map(|(plugin, elems)| format!("{plugin}:{}", elems.join(",")))
+                .collect::<Vec<_>>()
+                .join(";")
         ),
         format!("-Dgst-full-libraries={}", FULL_LIBRARIES.join(",")),
         "-Dlibav=enabled".into(),
@@ -1039,6 +1241,10 @@ fn build_gstreamer(
         ccache_wrap(cxx, &["c++", "g++", "clang++"]),
     );
 
+    // Patch subproject checkouts that already exist so setup sees them;
+    // wraps that setup downloads fresh are covered by the second pass below.
+    apply_subproject_patches(sh, source)?;
+
     // meson captures PKG_CONFIG_PATH and the compilers at first setup and
     // ignores env changes on --reconfigure, so start over when they changed.
     // When NOTHING changed, skip `meson setup` entirely — reconfiguring costs
@@ -1151,19 +1357,113 @@ fn build_gstreamer(
     if let Some(reconf) = reconf {
         println!(">> Configuring static GStreamer ({reconf}) …");
         cmd!(sh, "meson setup {build_dir} {source} {reconf} {native_args...} {cross_args...} {args...}").run()?;
+        // Wraps download at setup: patch anything that just appeared. The
+        // changed meson.build mtime makes the next `meson compile`
+        // regenerate, so a patch landing here still takes effect this build.
+        apply_subproject_patches(sh, source)?;
     } else {
         println!(">> GStreamer configuration unchanged — skipping meson setup");
     }
 
+    Ok((
+        GstBuild {
+            build_dir: build_dir.to_owned(),
+            uninstalled_pc: build_dir.join("meson-uninstalled"),
+            source: source.to_owned(),
+        },
+        stamp,
+    ))
+}
+
+/// `meson compile` + stamp write (only after success, so a failed build
+/// re-runs the setup check next time). Split from `configure_gstreamer` so
+/// `build()` can instead run the compile in the background (spawn/join).
+fn compile_gstreamer(
+    sh: &Rc<Shell>,
+    build: &GstBuild,
+    profile: &Profile,
+    stamp: &str,
+) -> Result<()> {
+    // `meson compile` can trigger a regenerate; scope=Full must not see host
+    // pkg-config then (same isolation and values as configure — no stamp drift).
+    let _pc_isolate = (profile.scope == StaticScope::Full).then(|| {
+        let empty = build.source.join(".xtask-empty-pkgconfig");
+        let _ = std::fs::create_dir_all(&empty);
+        (
+            sh.push_env("PKG_CONFIG_PATH", ""),
+            sh.push_env("PKG_CONFIG_LIBDIR", empty.as_str()),
+        )
+    });
     println!(">> Building GStreamer …");
+    let build_dir = &build.build_dir;
     cmd!(sh, "meson compile -C {build_dir}").run()?;
-
     // Record env + options so the next run can detect changes.
-    stamp_write(build_dir, &stamp)?;
+    stamp_write(build_dir, stamp)
+}
 
-    Ok(GstBuild {
-        build_dir: build_dir.to_owned(),
-        uninstalled_pc: build_dir.join("meson-uninstalled"),
+/// Spawn the GStreamer compile in the background (output → xtask-ninja.log).
+/// Only used on Linux scope=Gstreamer, where the plain process env is
+/// faithful (no pkg-config isolation, no MSVC dev env).
+fn spawn_gst_compile(build: &GstBuild) -> Result<std::process::Child> {
+    let log_path = build.build_dir.join("xtask-ninja.log");
+    println!(">> Building GStreamer in the background … (log: {log_path})");
+    let log =
+        std::fs::File::create(&log_path).with_context(|| format!("creating {log_path}"))?;
+    std::process::Command::new("meson")
+        .args(["compile", "-C", build.build_dir.as_str()])
+        .stdout(std::process::Stdio::from(log.try_clone()?))
+        .stderr(std::process::Stdio::from(log))
+        .spawn()
+        .context("spawning background meson compile")
+}
+
+/// Wait for the background compile; on failure surface the log tail. Writes
+/// the stamp only on success (mirrors `compile_gstreamer`).
+fn join_gst_compile(mut child: std::process::Child, build: &GstBuild, stamp: &str) -> Result<()> {
+    let status = child.wait().context("waiting for background meson compile")?;
+    if !status.success() {
+        let log_path = build.build_dir.join("xtask-ninja.log");
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let tail: Vec<&str> = log.lines().rev().take(50).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        bail!(
+            "GStreamer build failed (full log: {log_path}):\n{}",
+            tail.join("\n")
+        );
+    }
+    stamp_write(&build.build_dir, stamp)
+}
+
+/// While ninja builds GStreamer, pre-build the receiver's Rust dependency
+/// graph. Build scripts only need the uninstalled .pc files (written at
+/// `meson setup`); nothing reads the .a archives until the final `cargo
+/// rustc` link of the bin crate, which `build_receiver` runs after the join.
+/// receiver-core covers every dependency except the bin crate itself. The
+/// features must mirror what the desktop-receiver build enables on rcore —
+/// a mismatch only costs recompilation, never correctness.
+fn prebuild_receiver_deps(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<()> {
+    let mut features = String::from("static-gstreamer,desktop");
+    if !profile.no_default_features {
+        features.push_str(",systray");
+    }
+    let mut flags: Vec<String> = Vec::new();
+    if !profile.debug {
+        flags.push("--release".into());
+    }
+    flags.extend([
+        "-p".into(),
+        "receiver-core".into(),
+        "--features".into(),
+        features,
+    ]);
+    if let Some(t) = &profile.target {
+        flags.push("--target".into());
+        flags.push(t.clone());
+    }
+    with_receiver_env(sh, build, profile, || {
+        println!(">> Pre-building receiver deps (concurrent with GStreamer) …");
+        cmd!(sh, "cargo build {flags...}").run()?;
+        Ok(())
     })
 }
 
@@ -1179,6 +1479,101 @@ fn pkg_config_prog(sh: &Rc<Shell>) -> String {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "pkg-config".to_string())
+}
+
+/// Subproject source patches, applied idempotently around `meson setup`:
+/// (dir under xtask/patches/, wrap name). The target directory comes from
+/// the wrap's `directory =` key so wrap version bumps keep resolving; a
+/// patch that then no longer applies is a HARD error — re-derive it against
+/// the new source instead of silently building unpatched.
+/// NB xtask/patches/gstreamer/ is deliberately not listed: the playbin3
+/// TEXT-flag patch kept there hangs preroll (reference only).
+const SUBPROJECT_PATCHES: &[(&str, &str)] = &[
+    ("ffmpeg", "FFmpeg"),   // no nasm DWARF in release (~300s CPU, tail item)
+    ("libxml2", "libxml2"), // skip tools/tests/examples (~110s CPU)
+    ("flac", "flac"),       // skip the flac/metaflac command-line tools
+    ("libnice", "libnice"), // skip the stund/stunbdc tools
+];
+
+fn apply_subproject_patches(sh: &Rc<Shell>, source: &Utf8Path) -> Result<()> {
+    let patches_root = crate::workspace::root_path()?.join("xtask/patches");
+    for (patch_dir, wrap) in SUBPROJECT_PATCHES {
+        let patch_dir = patches_root.join(patch_dir);
+        if !patch_dir.is_dir() {
+            continue;
+        }
+        let wrap_file = source.join(format!("subprojects/{wrap}.wrap"));
+        let dir_name = std::fs::read_to_string(&wrap_file)
+            .ok()
+            .and_then(|w| {
+                w.lines().find_map(|l| {
+                    let (k, v) = l.split_once('=')?;
+                    (k.trim() == "directory").then(|| v.trim().to_string())
+                })
+            })
+            .unwrap_or_else(|| wrap.to_string());
+        let target = source.join("subprojects").join(&dir_name);
+        if !target.is_dir() {
+            continue; // not downloaded yet — the post-setup pass gets it
+        }
+        let mut patches: Vec<Utf8PathBuf> = Vec::new();
+        for entry in
+            std::fs::read_dir(&patch_dir).with_context(|| format!("reading {patch_dir}"))?
+        {
+            let p = Utf8PathBuf::try_from(entry?.path())
+                .map_err(|e| anyhow::anyhow!("non-UTF8 patch path: {e}"))?;
+            if p.extension() == Some("patch") {
+                patches.push(p);
+            }
+        }
+        patches.sort();
+        // Run from the SOURCE ROOT with --directory: inside a git worktree,
+        // `git apply` resolves patch paths against the repo root and SILENTLY
+        // SKIPS (exit 0!) anything outside the cwd — cd'ing into an extracted
+        // (non-repo) subproject dir therefore no-ops. --directory pins the
+        // prefix explicitly and behaves the same for git checkouts (FFmpeg)
+        // and extracted archives.
+        let dir_arg = format!("--directory=subprojects/{dir_name}");
+        for patch in patches {
+            let _d = sh.push_dir(source);
+            // A patch that applies cleanly in REVERSE is already present.
+            if cmd!(sh, "git apply --check --reverse {dir_arg} {patch}")
+                .quiet()
+                .ignore_stderr()
+                .run()
+                .is_ok()
+            {
+                continue;
+            }
+            cmd!(sh, "git apply {dir_arg} {patch}")
+                .quiet()
+                .run()
+                .with_context(|| {
+                    format!(
+                        "applying {patch} to {target} — if the subproject version \
+                         changed, re-derive the patch against the new source"
+                    )
+                })?;
+            // Belt and suspenders against the silent-skip failure mode: after
+            // a successful apply the reverse-check must pass.
+            if cmd!(sh, "git apply --check --reverse {dir_arg} {patch}")
+                .quiet()
+                .ignore_stderr()
+                .run()
+                .is_err()
+            {
+                bail!(
+                    "{patch} reported success but did not modify {target} \
+                     (git apply silently skipped it)"
+                );
+            }
+            println!(
+                ">> Patched {dir_name}: {}",
+                patch.file_name().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Ensure a wrap the monorepo doesn't vendor is present (from wrapdb).
