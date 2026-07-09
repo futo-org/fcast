@@ -89,7 +89,7 @@ fn gst_transfer_to_placebo(transfer: gst_video::VideoTransferFunction) -> pl_col
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 unsafe fn destroy_textures(gpu: *const pl_gpu_t, num_planes: i32, planes: &mut [pl_plane; 4]) {
     for p in 0..num_planes {
         let mut tex = planes[p as usize].texture;
@@ -118,11 +118,7 @@ impl RenderFrameInfo {
         let transfer = gst_transfer_to_placebo(colorimetry.transfer());
 
         let format_info = info.format_info();
-        let sample_depth = match info.comp_depth(0) {
-            8 => 8,
-            10 | 12 | 16 => 16,
-            _ => unreachable!(),
-        };
+        let sample_depth = if info.comp_depth(0) <= 8 { 8 } else { 16 };
         let color_depth = info.comp_depth(0) as i32;
         let bit_shift = format_info.shift()[0] as i32;
 
@@ -168,6 +164,18 @@ pub enum RenderFrameError {
     #[cfg(target_os = "linux")]
     #[error("failed to create texture from DMABuf")]
     TextureCreation,
+    #[cfg(target_os = "macos")]
+    #[error("buffer memory is not IOSurface-backed")]
+    NotIOSurface,
+    #[cfg(target_os = "macos")]
+    #[error("unsupported IOSurface plane format")]
+    UnsupportedPlaneFormat,
+    #[cfg(target_os = "macos")]
+    #[error("failed to import IOSurface plane into a GL texture")]
+    IOSurfaceImport,
+    #[cfg(target_os = "macos")]
+    #[error("failed to wrap GL texture with libplacebo")]
+    TextureWrap,
     #[error("frame is missing a plane")]
     MissingPlane,
     #[error("failed to upload plane")]
@@ -222,6 +230,9 @@ pub struct PlaceboContext {
     // Reusable textures backing composited overlays
     overlay_textures: Vec<pl_tex>,
     rendering_params: pl_render_params,
+    // Warn-once latch for the IOSurface -> CPU-readback fallback in `render_frame`.
+    #[cfg(target_os = "macos")]
+    iosurface_fallback_warned: bool,
 }
 
 impl PlaceboContext {
@@ -260,6 +271,8 @@ impl PlaceboContext {
             cached_textures: [std::ptr::null(); 4],
             overlay_textures: Vec::new(),
             rendering_params: build_render_params(opts),
+            #[cfg(target_os = "macos")]
+            iosurface_fallback_warned: false,
         })
     }
 
@@ -384,13 +397,31 @@ impl PlaceboContext {
                 priv_: std::ptr::null_mut(),
             };
 
+            // `pl_plane_data` describes components in *memory order* (component_map maps the
+            // n-th component in memory to a color channel). For planar/biplanar YUV memory
+            // order coincides with component index order, but packed formats don't (BGRA
+            // stores B first while B is component 2) — sort by the component's byte offset
+            // into the pixel. The stable sort keeps index order for planar formats where all
+            // offsets are 0. Padding bytes that aren't a component (the X in xRGB/BGRx) are
+            // expressed via component_pad.
+            let poffsets = frame_info.format.poffset();
+            let mut comps = [(0u32, 0u32); 4];
             let mut components = 0;
             for comp_idx in 0..frame.n_components() {
                 if info.comp_plane(comp_idx as u8) == plane_idx as u32 {
-                    plane_data.component_map[components] = comp_idx as i32;
-                    plane_data.component_size[components] = frame_info.sample_depth;
+                    comps[components] = (poffsets[comp_idx as usize], comp_idx);
                     components += 1;
                 }
+            }
+            let comps = &mut comps[..components];
+            comps.sort_by_key(|&(poffset, _)| poffset);
+            let comp_bytes = (frame_info.sample_depth / 8) as u32;
+            let mut next_offset = 0u32;
+            for (slot, &(poffset, comp_idx)) in comps.iter().enumerate() {
+                plane_data.component_map[slot] = comp_idx as i32;
+                plane_data.component_size[slot] = frame_info.sample_depth;
+                plane_data.component_pad[slot] = (poffset.saturating_sub(next_offset) * 8) as i32;
+                next_offset = poffset + comp_bytes;
             }
 
             unsafe {
@@ -728,6 +759,119 @@ impl PlaceboContext {
         Ok(())
     }
 
+    /// Zero-copy render of a VideoToolbox IOSurface frame. Mirrors [`render_dmabuf`]: import each
+    /// plane's IOSurface into a `GL_TEXTURE_RECTANGLE`, wrap it with `pl_opengl_wrap`, then render.
+    ///
+    /// Runs inside `SwapchainSink::render` where Slint's CGL context (the same one libplacebo was
+    /// created against) is current — so no context sharing and no sync meta are needed.
+    #[cfg(target_os = "macos")]
+    fn render_iosurface(
+        &mut self,
+        destination: &libplacebo::SwapchainFrame,
+        source_buffer: &gst::Buffer,
+        info: &gst_video::VideoInfo,
+        mdi: &Option<MasteringDisplayInfo>,
+        overlays: &[Overlay],
+        rotation: Rotation,
+    ) -> std::result::Result<(), RenderFrameError> {
+        let mut target = unsafe {
+            let mut t = std::mem::zeroed();
+            pl_frame_from_swapchain(&mut t, &destination.frame);
+            t
+        };
+        self.render_iosurface_to_frame(&mut target, source_buffer, info, mdi, overlays, rotation)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn render_iosurface_to_frame(
+        &mut self,
+        destination: &mut pl_frame,
+        source_buffer: &gst::Buffer,
+        info: &gst_video::VideoInfo,
+        mdi: &Option<MasteringDisplayInfo>,
+        overlays: &[Overlay],
+        rotation: Rotation,
+    ) -> std::result::Result<(), RenderFrameError> {
+        use smallvec::SmallVec;
+
+        use crate::iosurface;
+
+        let frame_info = RenderFrameInfo::new(info);
+        let n_planes = info.n_planes() as i32;
+
+        let mut image = create_pl_frame(n_planes, info, &frame_info, mdi);
+        image.rotation = rotation_to_pl(rotation);
+
+        // GL texture guards: each backs one `image.planes[i].texture`. They must outlive the
+        // render call and be dropped only after the `pl_tex` wrappers are destroyed (the wrapper
+        // does not own the GL object).
+        let mut plane_textures: SmallVec<[iosurface::PlaneTexture; 4]> = SmallVec::new();
+
+        let import_result = (|| {
+            for plane_idx in 0..n_planes as usize {
+                if plane_idx >= source_buffer.n_memory() {
+                    return Err(RenderFrameError::MissingPlane);
+                }
+                let mem = source_buffer.peek_memory(plane_idx);
+                if !iosurface::is_iosurface_memory(mem) {
+                    return Err(RenderFrameError::NotIOSurface);
+                }
+                let Some((surface, surface_plane)) = iosurface::peek_surface(mem) else {
+                    return Err(RenderFrameError::NotIOSurface);
+                };
+                let Some(gl_format) = iosurface::plane_gl_format(info.format(), plane_idx) else {
+                    return Err(RenderFrameError::UnsupportedPlaneFormat);
+                };
+
+                let plane_tex =
+                    unsafe { iosurface::import_plane(surface, surface_plane, gl_format) }
+                        .ok_or(RenderFrameError::IOSurfaceImport)?;
+
+                let mut wrap_params: pl_opengl_wrap_params = unsafe { std::mem::zeroed() };
+                wrap_params.texture = plane_tex.id;
+                wrap_params.target = iosurface::PlaneTexture::TARGET;
+                wrap_params.iformat = plane_tex.gl_format.pl_iformat;
+                wrap_params.width = plane_tex.width;
+                wrap_params.height = plane_tex.height;
+
+                let tex = unsafe { pl_opengl_wrap(self.gpu(), &wrap_params) };
+                if tex.is_null() {
+                    return Err(RenderFrameError::TextureWrap);
+                }
+                image.planes[plane_idx].texture = tex;
+
+                let mut components = 0;
+                for comp_idx in 0..info.n_components() {
+                    if info.comp_plane(comp_idx as u8) == plane_idx as u32 {
+                        image.planes[plane_idx].component_mapping[components] = comp_idx as i32;
+                        components += 1;
+                    }
+                }
+                image.planes[plane_idx].components = components as i32;
+
+                plane_textures.push(plane_tex);
+            }
+            Ok(())
+        })();
+
+        if let Err(err) = import_result {
+            unsafe { destroy_textures(self.gpu(), n_planes, &mut image.planes) };
+            return Err(err);
+        }
+
+        destination.crop =
+            libplacebo::scale_and_fit(&destination.crop, &rotated_fit_rect(&image.crop, rotation));
+
+        self.render_image_with_overlays(&mut image, destination, overlays);
+
+        // Destroy the pl_tex wrappers first, then drop `plane_textures` (which deletes the GL
+        // textures). Order matters: the wrapper references the GL object.
+        unsafe { destroy_textures(self.gpu(), n_planes, &mut image.planes) };
+        drop(plane_textures);
+
+        Ok(())
+    }
+
     pub fn render_frame(
         &mut self,
         swframe: &libplacebo::SwapchainFrame,
@@ -753,7 +897,37 @@ impl PlaceboContext {
                 frame.rotation,
             ),
             #[cfg(target_os = "macos")]
-            crate::video::FrameData::Gl { .. } => Ok(()),
+            crate::video::FrameData::IOSurface { buffer, info } => {
+                match self.render_iosurface(
+                    swframe,
+                    buffer,
+                    info,
+                    &frame.mastering_display_info,
+                    &frame.overlays,
+                    frame.rotation,
+                ) {
+                    Err(err) => {
+                        if !self.iosurface_fallback_warned {
+                            self.iosurface_fallback_warned = true;
+                            tracing::warn!(
+                                %err,
+                                "IOSurface zero-copy render failed; falling back to CPU readback"
+                            );
+                        }
+                        let v_frame =
+                            gst_video::VideoFrame::from_buffer_readable(buffer.clone(), info)
+                                .map_err(move |_| err)?;
+                        self.render_sysmem(
+                            swframe,
+                            &v_frame,
+                            &frame.mastering_display_info,
+                            &frame.overlays,
+                            frame.rotation,
+                        )
+                    }
+                    ok => ok,
+                }
+            }
         }
     }
 

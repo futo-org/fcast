@@ -39,6 +39,8 @@ mod gcast;
 mod gstreamer;
 mod gui;
 mod image;
+#[cfg(target_os = "macos")]
+mod iosurface;
 mod logging;
 #[cfg(not(target_os = "android"))]
 mod mdns;

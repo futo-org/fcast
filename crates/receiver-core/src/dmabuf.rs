@@ -36,7 +36,6 @@ pub fn fourcc_from_plane(plane: i32, dma_drm_format: DrmFourcc) -> DrmFourcc {
         }
         DrmFourcc::Q401 | DrmFourcc::Q410 => three_plane!(R16, R16, R16),
         DrmFourcc::Bgr233 | DrmFourcc::Rgb332 => DrmFourcc::R8,
-        DrmFourcc::Rgb565 => todo!(),
         DrmFourcc::Rgb565_a8 => two_plane!(Rgb565, R8),
         DrmFourcc::Rgb888_a8
         | DrmFourcc::Rgbx8888_a8
