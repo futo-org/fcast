@@ -2,6 +2,9 @@
 use std::io::Write;
 use std::{fmt::Display, io::Read, net::TcpStream};
 
+#[cfg(feature = "gui")]
+pub mod render;
+
 #[derive(Debug)]
 #[repr(u8)]
 pub enum PipelineSource {

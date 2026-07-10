@@ -710,6 +710,7 @@ impl GstreamerArgs {
         // break once we push_dir elsewhere), so canonicalize up front.
         let source = canonicalize_no_verbatim(&source)
             .with_context(|| format!("canonicalizing source path {source}"))?;
+        apply_gst_patches(&sh, &source, target_os(&profile))?;
         let build_dir = self
             .build_dir
             .unwrap_or_else(|| source.join("builddir-static"));
@@ -906,6 +907,65 @@ fn resolve_source(sh: &Rc<Shell>, gst_ref: &str, offline: bool) -> Result<Utf8Pa
     Ok(dir)
 }
 
+/// Apply the in-repo GStreamer source patches to `source`, idempotently. These fix bugs in the
+/// pinned release that we can't otherwise avoid — see each patch's header.
+///
+/// `xtask/patches/*.patch` apply to every build; `xtask/patches/<target-os>/*.patch` only when
+/// building for that OS, so an OS-specific patch (e.g. applemedia) doesn't dirty a checkout used
+/// for another OS's build and force needless rebuilds.
+///
+/// A reused checkout keeps the applied patch, so a reverse-apply check skips ones already present.
+/// A patch that neither applies nor is already applied (e.g. a user-provided `--source` on a
+/// different ref) is warned about and skipped rather than fatal, so custom source trees still build.
+fn apply_gst_patches(sh: &Rc<Shell>, source: &Utf8Path, os: &str) -> Result<()> {
+    let patches_root = crate::workspace::root_path()?.join("xtask/patches");
+
+    let mut patches: Vec<Utf8PathBuf> = Vec::new();
+    for dir in [patches_root.clone(), patches_root.join(os)] {
+        if !dir.exists() {
+            continue;
+        }
+        patches.extend(
+            std::fs::read_dir(&dir)
+                .with_context(|| format!("reading patches dir {dir}"))?
+                .filter_map(|e| e.ok())
+                .filter_map(|e| Utf8PathBuf::from_path_buf(e.path()).ok())
+                .filter(|p| p.extension() == Some("patch")),
+        );
+    }
+    patches.sort();
+
+    for patch in patches {
+        let name = patch.file_name().unwrap_or("<patch>");
+        // Already applied (reused checkout): reverse-apply must succeed cleanly.
+        if cmd!(sh, "git -C {source} apply --reverse --check {patch}")
+            .quiet()
+            .ignore_stderr()
+            .run()
+            .is_ok()
+        {
+            println!(">> gstreamer patch already applied, skipping: {name}");
+            continue;
+        }
+        // Not applicable to this tree (different ref / already-diverged): warn, don't fail.
+        if cmd!(sh, "git -C {source} apply --check {patch}")
+            .quiet()
+            .ignore_stderr()
+            .run()
+            .is_err()
+        {
+            println!(">> WARNING: gstreamer patch does not apply cleanly, skipping: {name}");
+            continue;
+        }
+        println!(">> Applying gstreamer patch: {name}");
+        cmd!(sh, "git -C {source} apply {patch}")
+            .run()
+            .with_context(|| format!("applying gstreamer patch {name}"))?;
+    }
+
+    Ok(())
+}
+
 /// Is the checkout present (dir exists, non-empty)? Retries: listing this
 /// large tree can briefly fail on Windows (AV / open handles), and a false
 /// "absent" would clone over a real checkout.
@@ -1034,7 +1094,17 @@ fn configure_gstreamer(
                 .collect::<Vec<_>>()
                 .join(";")
         ),
-        format!("-Dgst-full-libraries={}", FULL_LIBRARIES.join(",")),
+        {
+            // macOS zero-copy video needs libgstiosurface-1.0's ABI exposed by
+            // gstreamer-full (its static .a is already built as an applemedia dep; this just
+            // exports the symbols the receiver's hand-written FFI binds). macOS-only: the
+            // library does not exist on linux/windows.
+            let mut full_libraries: Vec<&str> = FULL_LIBRARIES.to_vec();
+            if target_os(profile) == "macos" {
+                full_libraries.push("gstreamer-iosurface-1.0");
+            }
+            format!("-Dgst-full-libraries={}", full_libraries.join(","))
+        },
         "-Dlibav=enabled".into(),
         // subsystems we never need
         "-Drs=disabled".into(),

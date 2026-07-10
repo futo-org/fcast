@@ -1,0 +1,35 @@
+vtdec: list IOSurface caps before plain SystemMemory in the src template
+
+Decoder template order decides the negotiated memory type through playbin:
+playsink's convert bin answers vtdec's caps query by intersecting FILTER-first
+(gstplaysinkconvertbin.c FILTER_CAPS), i.e. the result is ordered by vtdec's own
+template, and gst_vtdec_negotiate() then gst_caps_truncate()s to structure 0.
+With plain SystemMemory listed before memory:IOSurface, the CPU-readback path
+always wins even when the sink prefers (and lists first) IOSurface caps.
+
+Reordering the template mirrors how the va* decoders get zero-copy on Linux
+(their templates list VAMemory/DMABuf before raw SystemMemory), and lets
+IOSurface negotiate through playsink WITHOUT the native-video flag - which
+would disable subtitleoverlay and with it all subtitle rendering. Sinks that
+don't support memory:IOSurface are unaffected: the intersection just falls
+through to the SystemMemory structures. GLMemory stays first, so texture-cache
+consumers (glimagesink) are unaffected too.
+
+diff --git a/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c b/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c
+--- a/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c
++++ b/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c
+@@ -258,12 +258,12 @@
+ #define VIDEO_SRC_CAPS_GL_FORMATS "{ NV12 }"
+ #define VIDEO_SRC_CAPS_VULKAN_FORMATS "{ NV12, BGRA }"
+
+ #define VIDEO_SRC_CAPS_NATIVE                                           \
+     GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_GL_MEMORY,\
+         VIDEO_SRC_CAPS_GL_FORMATS) ", "                                 \
+     "texture-target = (string) rectangle ;"                              \
+-    GST_VIDEO_CAPS_MAKE(VIDEO_SRC_CAPS_NATIVE_FORMATS) ";"              \
+     GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_IOSURFACE,\
+-        VIDEO_SRC_CAPS_NATIVE_FORMATS)
++        VIDEO_SRC_CAPS_NATIVE_FORMATS) ";"                              \
++    GST_VIDEO_CAPS_MAKE(VIDEO_SRC_CAPS_NATIVE_FORMATS)
+
+ #ifdef APPLEMEDIA_MOLTENVK

@@ -2,7 +2,10 @@ use gst::glib;
 use gst_video::prelude::*;
 use smallvec::SmallVec;
 
-#[cfg_attr(target_os = "linux", allow(clippy::large_enum_variant))]
+#[cfg_attr(
+    any(target_os = "linux", target_os = "macos"),
+    allow(clippy::large_enum_variant)
+)]
 pub enum FrameData {
     SystemMemory {
         frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
@@ -13,7 +16,7 @@ pub enum FrameData {
         dma_info: gst_video::VideoInfoDmaDrm,
     },
     #[cfg(target_os = "macos")]
-    Gl {
+    IOSurface {
         buffer: gst::Buffer,
         info: gst_video::VideoInfo,
     },
@@ -26,7 +29,7 @@ impl FrameData {
             #[cfg(target_os = "linux")]
             Self::DmaBuf { dma_info, .. } => dma_info.width(),
             #[cfg(target_os = "macos")]
-            Self::Gl { info, .. } => info.width(),
+            Self::IOSurface { info, .. } => info.width(),
         }
     }
 
@@ -36,7 +39,7 @@ impl FrameData {
             #[cfg(target_os = "linux")]
             Self::DmaBuf { dma_info, .. } => dma_info.height(),
             #[cfg(target_os = "macos")]
-            Self::Gl { info, .. } => info.height(),
+            Self::IOSurface { info, .. } => info.height(),
         }
     }
 }
@@ -108,6 +111,13 @@ pub enum Rotation {
     Rotate270,
 }
 
+/// Structure name of the element message the sink posts when a frame carrying
+/// subtitle overlays is rendered/prerolled. Edge-triggered (empty ->
+/// non-empty, re-armed by every flush) so it doesn't spam the bus per frame.
+/// The subtitle-refresh logic in `player` uses it to know the freshly selected
+/// track's cue actually made it to the screen.
+pub const SUBTITLE_OVERLAY_SHOWN_MESSAGE: &str = "fcast-subtitle-overlay-shown";
+
 pub struct Frame {
     pub data: FrameData,
     pub mastering_display_info: Option<MasteringDisplayInfo>,
@@ -147,20 +157,61 @@ pub mod imp {
     fn get_caps() -> gst::Caps {
         let mut caps = gst::Caps::new_empty();
         {
+            use gst_video::VideoFormat;
             let caps = caps.get_mut().unwrap();
             let formats = [
-                gst_video::VideoFormat::Nv12,
-                gst_video::VideoFormat::I420,
-                gst_video::VideoFormat::P01010le,
-                gst_video::VideoFormat::P012Le,
-                gst_video::VideoFormat::I42010le,
-                gst_video::VideoFormat::I42012le,
-                gst_video::VideoFormat::I42212le,
-                gst_video::VideoFormat::Y444,
-                gst_video::VideoFormat::Y44410le,
-                gst_video::VideoFormat::Y44412le,
+                VideoFormat::Nv12,
+                VideoFormat::Nv21,
+                VideoFormat::Nv16,
+                VideoFormat::Nv24,
+                VideoFormat::P01010le,
+                VideoFormat::P012Le,
+                VideoFormat::P016Le,
+                VideoFormat::I420,
+                VideoFormat::Yv12,
+                VideoFormat::Y41b,
+                VideoFormat::Y42b,
+                VideoFormat::Y444,
+                VideoFormat::A420,
+                VideoFormat::I42010le,
+                VideoFormat::I42012le,
+                VideoFormat::I42210le,
+                VideoFormat::I42212le,
+                VideoFormat::Y44410le,
+                VideoFormat::Y44412le,
+                VideoFormat::Y44416le,
+                VideoFormat::Ayuv,
+                VideoFormat::Vuya,
+                VideoFormat::Rgba,
+                VideoFormat::Rgbx,
+                VideoFormat::Bgra,
+                VideoFormat::Bgrx,
+                VideoFormat::Argb,
+                VideoFormat::Abgr,
+                VideoFormat::Xrgb,
+                VideoFormat::Xbgr,
+                VideoFormat::Rgb,
+                VideoFormat::Bgr,
+                VideoFormat::Gbr,
+                VideoFormat::Gbra,
+                VideoFormat::Gbr10le,
+                VideoFormat::Gbr12le,
             ];
+            #[cfg(target_os = "macos")]
+            let iosurface_formats = [
+                VideoFormat::Nv12,
+                VideoFormat::Bgra,
+                VideoFormat::P01010le,
+            ];
+
             for features in [
+                #[cfg(target_os = "macos")]
+                gst::CapsFeatures::new([crate::iosurface::CAPS_FEATURE_MEMORY_IOSURFACE]),
+                #[cfg(target_os = "macos")]
+                gst::CapsFeatures::new([
+                    crate::iosurface::CAPS_FEATURE_MEMORY_IOSURFACE,
+                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                ]),
                 gst::CapsFeatures::new_empty(),
                 gst::CapsFeatures::new([
                     "memory:SystemMemory",
@@ -185,7 +236,14 @@ pub mod imp {
                     these_caps = these_caps.format_list(formats);
                 }
 
-                #[cfg(not(any(target_os = "linux")))]
+                #[cfg(target_os = "macos")]
+                if features.contains(crate::iosurface::CAPS_FEATURE_MEMORY_IOSURFACE) {
+                    these_caps = these_caps.format_list(iosurface_formats);
+                } else {
+                    these_caps = these_caps.format_list(formats);
+                }
+
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
                     these_caps = these_caps.format_list(formats);
                 }
@@ -241,6 +299,8 @@ pub mod imp {
     enum VideoInfo {
         #[cfg(target_os = "linux")]
         DmaDrm(gst_video::VideoInfoDmaDrm),
+        #[cfg(target_os = "macos")]
+        IOSurface(gst_video::VideoInfo),
         Normal(gst_video::VideoInfo),
     }
 
@@ -291,6 +351,9 @@ pub mod imp {
         window_resolution: Mutex<Option<WindowResolution>>,
         window_resized: AtomicBool,
         payload_handle: VideoPayloadHandle,
+        // Edge detector for the overlay-shown element message (see
+        // `SUBTITLE_OVERLAY_SHOWN_MESSAGE`); reset by flush-stop.
+        had_overlays: AtomicBool,
     }
 
     #[glib::object_subclass]
@@ -430,20 +493,34 @@ pub mod imp {
         fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
             let mut config = self.config.lock();
 
-            #[cfg(target_os = "linux")]
-            {
-                config.video_info = gst_video::VideoInfoDmaDrm::from_caps(caps)
-                    .map(VideoInfo::DmaDrm)
-                    .ok();
-            }
+            gst::debug!(CAT, imp = self, "set_caps: {caps}");
 
-            if config.video_info.is_none() {
-                config.video_info = Some(
-                    gst_video::VideoInfo::from_caps(caps)
-                        .map(VideoInfo::Normal)
-                        .map_err(|_| gst::loggable_error!(CAT, "Invalid caps"))?,
-                );
-            }
+            #[cfg(target_os = "linux")]
+            let zero_copy_info = gst_video::VideoInfoDmaDrm::from_caps(caps)
+                .map(VideoInfo::DmaDrm)
+                .ok();
+
+            #[cfg(target_os = "macos")]
+            let zero_copy_info = if caps
+                .features(0)
+                .is_some_and(|f| f.contains(crate::iosurface::CAPS_FEATURE_MEMORY_IOSURFACE))
+            {
+                gst_video::VideoInfo::from_caps(caps)
+                    .map(VideoInfo::IOSurface)
+                    .ok()
+            } else {
+                None
+            };
+
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let zero_copy_info: Option<VideoInfo> = None;
+
+            config.video_info = Some(match zero_copy_info {
+                Some(info) => info,
+                None => gst_video::VideoInfo::from_caps(caps)
+                    .map(VideoInfo::Normal)
+                    .map_err(|_| gst::loggable_error!(CAT, "Invalid caps"))?,
+            });
 
             config.mastering_display_info = gst_video::VideoMasteringDisplayInfo::from_caps(caps)
                 .map(|mdi| super::MasteringDisplayInfo {
@@ -507,6 +584,13 @@ pub mod imp {
                     gst::info!(CAT, imp = self, "image-orientation: {rotation:?}");
                     config.rotation = rotation;
                 }
+            }
+
+            // Re-arm the overlay-shown edge: after a flush the next frame
+            // carrying a cue must post again -- the subtitle refresh listens
+            // for it to learn its flush actually rendered the new cue.
+            if matches!(event.view(), gst::EventView::FlushStop(_)) {
+                self.had_overlays.store(false, atomic::Ordering::SeqCst);
             }
 
             self.parent_event(event)
@@ -594,6 +678,19 @@ pub mod imp {
                 })
                 .collect();
 
+            let has_overlays = !overlays.is_empty();
+            let prev = self
+                .had_overlays
+                .swap(has_overlays, atomic::Ordering::SeqCst);
+            if has_overlays && !prev {
+                let _ = self.obj().post_message(
+                    gst::message::Element::builder(gst::Structure::new_empty(
+                        super::SUBTITLE_OVERLAY_SHOWN_MESSAGE,
+                    ))
+                    .build(),
+                );
+            }
+
             let config = self.config.lock();
             let mdi = config.mastering_display_info;
             let cll = config.content_light_level;
@@ -605,6 +702,11 @@ pub mod imp {
                         buffer,
                         dma_info: dma_info.clone(),
                     },
+                    #[cfg(target_os = "macos")]
+                    VideoInfo::IOSurface(info) => super::FrameData::IOSurface {
+                        buffer,
+                        info: info.clone(),
+                    },
                     VideoInfo::Normal(info) => {
                         match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
                             Ok(frame) => super::FrameData::SystemMemory { frame },
@@ -614,7 +716,7 @@ pub mod imp {
                                     imp = self,
                                     "Failed to create video frame: {err:?}"
                                 );
-                                return Err(gst::FlowError::Flushing);
+                                return Err(gst::FlowError::Error);
                             }
                         }
                     }
