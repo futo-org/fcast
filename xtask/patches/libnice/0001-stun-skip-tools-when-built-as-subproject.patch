@@ -1,0 +1,24 @@
+stun/tools (stund, stunbdc) is the only unconditional subdir — the
+examples/tests options gate everything else. As a subproject only
+libnice/libstun are consumed, so the standalone STUN daemon and client
+are dead weight in the parent build.
+
+---
+ stun/meson.build | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/stun/meson.build b/stun/meson.build
+--- a/stun/meson.build
++++ b/stun/meson.build
+@@ -34,7 +34,10 @@
+   dependencies: nice_deps,
+   install: false)
+
+-subdir('tools')
++# As a subproject, skip the stund/stunbdc command-line tools.
++if not meson.is_subproject()
++  subdir('tools')
++endif
+
+ if not get_option('tests').disabled()
+   subdir('tests')

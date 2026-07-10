@@ -1,0 +1,28 @@
+As a subproject only the library is consumed. The tools (xmllint,
+xmlcatalog), the test programs and the examples add ~58 compile+link
+jobs (~110s CPU) at the tail of the parent build for artifacts nothing
+uses.
+
+---
+--- a/meson.build
++++ b/meson.build
+@@ -474,6 +474,10 @@
+ 
+ meson.override_dependency('libxml-2.0', xml_dep)
+ 
++# As a subproject only the library is wanted — skip the tools, test
++# programs and examples.
++if not meson.is_subproject()
++
+ ## xmllint tool
+ 
+ xmllint = executable(
+@@ -566,6 +570,8 @@
+ 
+ subdir('example')
+ 
++endif
++
+ if want_docs or want_python
+     subdir('doc')
+ endif
