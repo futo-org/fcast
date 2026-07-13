@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     ffi::{c_int, c_uint, c_void},
     fs::OpenOptions,
     os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
@@ -16,13 +16,20 @@ use rcore::{
 };
 
 const SCANOUT_HOLD: usize = 3;
+const PIXMAP_CACHE_STALE_FRAMES: u64 = 90;
+const PIXMAP_CACHE_MAX: usize = 32;
 
 type EglImageTargetTexture2dOes = unsafe extern "C" fn(target: u32, image: *const c_void);
 
 struct HeldBuffer {
     #[allow(dead_code)]
     buffer: Option<gst::Buffer>,
+    pixmap_id: Option<fl_protocol_PixmapId>,
+}
+
+struct PixmapCacheEntry {
     pixmap_id: fl_protocol_PixmapId,
+    last_used: u64,
 }
 
 pub struct FhsPixmapSink {
@@ -31,6 +38,8 @@ pub struct FhsPixmapSink {
     hdr_metadata: Option<fl_protocol_HdrMetadata>,
     surface_has_hdr_metadata: bool,
     held: VecDeque<HeldBuffer>,
+    pixmap_cache: HashMap<u64, PixmapCacheEntry>,
+    pixmap_cache_gen: u64,
     gbm: GbmAllocator,
     gl: glow::Context,
     egl_display: *const c_void,
@@ -51,6 +60,8 @@ impl FhsPixmapSink {
             hdr_metadata: None,
             surface_has_hdr_metadata: false,
             held: VecDeque::new(),
+            pixmap_cache: HashMap::new(),
+            pixmap_cache_gen: 0,
             gbm: GbmAllocator::new(client)?,
             gl,
             egl_display,
@@ -59,34 +70,26 @@ impl FhsPixmapSink {
     }
 
     pub fn render(&mut self, frame: &Frame) -> Result<()> {
-        let (pixmap_id, held_buffer) = match &frame.data {
+        let held = match &frame.data {
             FrameData::DmaBuf { buffer, dma_info } => {
-                (self.import_dmabuf(buffer, dma_info)?, Some(buffer.clone()))
-            }
-            FrameData::SystemMemory { frame } => (self.import_system_memory(frame)?, None),
-        };
-
-        unsafe {
-            fl_discard_reply(
-                self.client,
-                fl_set_surface_pixmap(self.client, self.surface_id, pixmap_id).value,
-            );
-        }
-
-        self.held.push_back(HeldBuffer {
-            buffer: held_buffer,
-            pixmap_id,
-        });
-        while self.held.len() > SCANOUT_HOLD {
-            if let Some(old) = self.held.pop_front() {
-                unsafe {
-                    fl_discard_reply(
-                        self.client,
-                        fl_destroy_pixmap(self.client, old.pixmap_id).value,
-                    );
+                let (pixmap_id, cached) = self.import_dmabuf(buffer, dma_info)?;
+                self.set_surface_pixmap(pixmap_id);
+                HeldBuffer {
+                    buffer: Some(buffer.clone()),
+                    pixmap_id: (!cached).then_some(pixmap_id),
                 }
             }
-        }
+            FrameData::SystemMemory { frame } => {
+                let pixmap_id = self.import_system_memory(frame)?;
+                self.set_surface_pixmap(pixmap_id);
+                HeldBuffer {
+                    buffer: None,
+                    pixmap_id: Some(pixmap_id),
+                }
+            }
+        };
+
+        self.push_held(held);
 
         let colorimetry = frame_video_colorimetry(frame);
         let transfer = colorimetry.transfer();
@@ -97,15 +100,62 @@ impl FhsPixmapSink {
         Ok(())
     }
 
-    pub fn show_image(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<()> {
-        let pixmap_id = self.upload_rgba(rgba, width, height)?;
-
+    fn set_surface_pixmap(&self, pixmap_id: fl_protocol_PixmapId) {
         unsafe {
             fl_discard_reply(
                 self.client,
                 fl_set_surface_pixmap(self.client, self.surface_id, pixmap_id).value,
             );
         }
+    }
+
+    fn push_held(&mut self, held: HeldBuffer) {
+        self.held.push_back(held);
+        while self.held.len() > SCANOUT_HOLD {
+            if let Some(old) = self.held.pop_front()
+                && let Some(pixmap_id) = old.pixmap_id
+            {
+                unsafe {
+                    fl_discard_reply(self.client, fl_destroy_pixmap(self.client, pixmap_id).value);
+                }
+            }
+        }
+    }
+
+    fn evict_pixmaps(&mut self) {
+        let current = self.pixmap_cache_gen;
+        let client = self.client;
+        self.pixmap_cache.retain(|_, entry| {
+            if entry.last_used + PIXMAP_CACHE_STALE_FRAMES >= current {
+                return true;
+            }
+            unsafe {
+                fl_discard_reply(client, fl_destroy_pixmap(client, entry.pixmap_id).value);
+            }
+            false
+        });
+
+        while self.pixmap_cache.len() > PIXMAP_CACHE_MAX {
+            let Some(key) = self
+                .pixmap_cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(&key, _)| key)
+            else {
+                break;
+            };
+            if let Some(entry) = self.pixmap_cache.remove(&key) {
+                unsafe {
+                    fl_discard_reply(client, fl_destroy_pixmap(client, entry.pixmap_id).value);
+                }
+            }
+        }
+    }
+
+    pub fn show_image(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<()> {
+        let pixmap_id = self.upload_rgba(rgba, width, height)?;
+
+        self.set_surface_pixmap(pixmap_id);
 
         if self.surface_has_hdr_metadata {
             unsafe {
@@ -119,29 +169,19 @@ impl FhsPixmapSink {
             self.surface_has_hdr_metadata = false;
         }
 
-        self.held.push_back(HeldBuffer {
+        self.push_held(HeldBuffer {
             buffer: None,
-            pixmap_id,
+            pixmap_id: Some(pixmap_id),
         });
-        while self.held.len() > SCANOUT_HOLD {
-            if let Some(old) = self.held.pop_front() {
-                unsafe {
-                    fl_discard_reply(
-                        self.client,
-                        fl_destroy_pixmap(self.client, old.pixmap_id).value,
-                    );
-                }
-            }
-        }
 
         Ok(())
     }
 
     fn import_dmabuf(
-        &self,
+        &mut self,
         buffer: &gst::Buffer,
         dma_info: &gst_video::VideoInfoDmaDrm,
-    ) -> Result<fl_protocol_PixmapId> {
+    ) -> Result<(fl_protocol_PixmapId, bool)> {
         let vmeta = buffer
             .meta::<gst_video::VideoMeta>()
             .ok_or_else(|| anyhow!("dma-buf frame is missing a VideoMeta"))?;
@@ -157,6 +197,16 @@ impl FhsPixmapSink {
         let flags = full_color_range_flag(&dma_info.colorimetry());
         let vmeta_offsets = vmeta.offset();
         let vmeta_strides = vmeta.stride();
+
+        self.pixmap_cache_gen += 1;
+        self.evict_pixmaps();
+        let cache_key = dmabuf_inode(buffer, vmeta_offsets[0]);
+        if let Some(key) = cache_key
+            && let Some(entry) = self.pixmap_cache.get_mut(&key)
+        {
+            entry.last_used = self.pixmap_cache_gen;
+            return Ok((entry.pixmap_id, true));
+        }
 
         let mut offsets = [0u32; 4];
         let mut pitches = [0u32; 4];
@@ -209,7 +259,20 @@ impl FhsPixmapSink {
             reply.pixmap_id
         };
 
-        Ok(pixmap_id)
+        let cached = if let Some(key) = cache_key {
+            self.pixmap_cache.insert(
+                key,
+                PixmapCacheEntry {
+                    pixmap_id,
+                    last_used: self.pixmap_cache_gen,
+                },
+            );
+            true
+        } else {
+            false
+        };
+
+        Ok((pixmap_id, cached))
     }
 
     fn import_system_memory(
@@ -469,13 +532,32 @@ impl FhsPixmapSink {
 
     pub fn teardown(&mut self) {
         for held in self.held.drain(..) {
+            if let Some(pixmap_id) = held.pixmap_id {
+                unsafe {
+                    fl_discard_reply(self.client, fl_destroy_pixmap(self.client, pixmap_id).value);
+                }
+            }
+        }
+        for (_, entry) in self.pixmap_cache.drain() {
             unsafe {
                 fl_discard_reply(
                     self.client,
-                    fl_destroy_pixmap(self.client, held.pixmap_id).value,
+                    fl_destroy_pixmap(self.client, entry.pixmap_id).value,
                 );
             }
         }
+    }
+}
+
+fn dmabuf_inode(buffer: &gst::Buffer, plane0_offset: usize) -> Option<u64> {
+    let (range, _) = buffer.find_memory(plane0_offset..(plane0_offset + 1))?;
+    let mem = buffer.peek_memory(range.start);
+    let dmabuf = mem.downcast_memory_ref::<gst_allocators::DmaBufMemory>()?;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(dmabuf.fd(), &mut st) } == 0 {
+        Some(st.st_ino as u64)
+    } else {
+        None
     }
 }
 

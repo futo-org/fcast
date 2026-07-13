@@ -2633,6 +2633,7 @@ dependencies = [
  "egl-sys",
  "fiatlux",
  "glutin_egl_sys",
+ "libc",
  "mimalloc",
  "pango",
  "pangocairo",
