@@ -293,7 +293,6 @@ pub mod imp {
                         .build(),
                     glib::ParamSpecBoxed::builder::<WindowResolution>("window-resolution")
                         .nick("Window resolution")
-                        .write_only()
                         .build(),
                     glib::ParamSpecBoolean::builder("scale-to-window")
                         .nick("Scale decoded frames to the window size upstream")
@@ -316,6 +315,15 @@ pub mod imp {
         fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
             match pspec.name() {
                 "payload-handle" => self.payload_handle.to_value(),
+                "window-resolution" => self
+                    .window_resolution
+                    .lock()
+                    .clone()
+                    .unwrap_or(WindowResolution {
+                        width: 0,
+                        height: 0,
+                    })
+                    .to_value(),
                 _ => unreachable!(),
             }
         }
@@ -412,18 +420,21 @@ pub mod imp {
 
             if self.scale_to_window.load(atomic::Ordering::SeqCst)
                 && let Some(window) = self.window_resolution.lock().clone()
-                && self
-                    .source_resolution
-                    .lock()
-                    .as_ref()
-                    .is_some_and(|src| src.width > window.width || src.height > window.height)
+                && let Some(source) = self.source_resolution.lock().clone()
             {
+                let (target_width, target_height) =
+                    if source.width > window.width || source.height > window.height {
+                        (window.width, window.height)
+                    } else {
+                        (source.width, source.height)
+                    };
+
                 let mut sized = tmp_caps.copy();
                 {
                     let sized = sized.get_mut().unwrap();
                     for s in sized.iter_mut() {
-                        s.set("width", window.width as i32);
-                        s.set("height", window.height as i32);
+                        s.set("width", target_width as i32);
+                        s.set("height", target_height as i32);
                     }
                 }
                 tmp_caps = sized;

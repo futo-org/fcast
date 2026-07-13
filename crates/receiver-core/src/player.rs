@@ -685,6 +685,24 @@ fn stream_resolution(stream: &gst::Stream) -> Option<(u32, u32)> {
     Some((width as u32, height as u32))
 }
 
+fn build_scale_bin(identity: &gst::Element) -> Option<gst::Bin> {
+    let bin = gst::Bin::builder().name("fcast-video-scale").build();
+    bin.add(identity).ok()?;
+    let sink_pad = identity.static_pad("sink")?;
+    let src_pad = identity.static_pad("src")?;
+    let ghost_sink = gst::GhostPad::builder_with_target(&sink_pad)
+        .ok()?
+        .name("sink")
+        .build();
+    let ghost_src = gst::GhostPad::builder_with_target(&src_pad)
+        .ok()?
+        .name("src")
+        .build();
+    bin.add_pad(&ghost_sink).ok()?;
+    bin.add_pad(&ghost_src).ok()?;
+    Some(bin)
+}
+
 pub struct Stream {
     pub inner: gst::Stream,
     pub title: String,
@@ -704,6 +722,10 @@ pub struct Player {
     state_machine: StateMachine,
     stream_collection: Option<gst::StreamCollection>,
     stream_collection_notify: Option<gst::glib::SignalHandlerId>,
+    scale_bin: Option<gst::Bin>,
+    scale_vapostproc: Option<gst::Element>,
+    scale_identity: Option<gst::Element>,
+    scaling_engaged: bool,
 }
 
 impl Player {
@@ -723,6 +745,9 @@ impl Player {
 
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let mut video_sink_handle = None;
+        let mut scale_bin = None;
+        let mut scale_vapostproc = None;
+        let mut scale_identity = None;
         let playbin = {
             let mut builder =
                 gst::ElementFactory::make("playbin3").property("audio-filter", scaletempo);
@@ -736,9 +761,13 @@ impl Player {
                         .property("sharpen", 0.0f32)
                         .property("add-borders", true)
                         .build()
+                    && let Ok(identity) = gst::ElementFactory::make("identity").build()
+                    && let Some(bin) = build_scale_bin(&identity)
                 {
-                    video_sink.set_property("scale-to-window", true);
-                    builder = builder.property("video-filter", vapostproc);
+                    builder = builder.property("video-filter", bin.clone());
+                    scale_bin = Some(bin);
+                    scale_vapostproc = Some(vapostproc);
+                    scale_identity = Some(identity);
                 }
                 builder = builder
                     .property("video-sink", video_sink)
@@ -918,6 +947,10 @@ impl Player {
             stream_collection: None,
             stream_collection_notify: None,
             streams: Vec::new(),
+            scale_bin,
+            scale_vapostproc,
+            scale_identity,
+            scaling_engaged: false,
         })
     }
 
@@ -1089,6 +1122,61 @@ impl Player {
         }
     }
 
+    fn set_scaling(&mut self, needs: bool) {
+        if needs == self.scaling_engaged {
+            return;
+        }
+        let (Some(bin), Some(vapostproc), Some(identity), Some(video_sink)) = (
+            self.scale_bin.clone(),
+            self.scale_vapostproc.clone(),
+            self.scale_identity.clone(),
+            self.video_sink.clone(),
+        ) else {
+            return;
+        };
+        let Some(ghost) = bin
+            .static_pad("sink")
+            .and_then(|pad| pad.downcast::<gst::GhostPad>().ok())
+        else {
+            return;
+        };
+
+        if needs {
+            ghost.clone().add_probe(gst::PadProbeType::IDLE, move |_pad, _info| {
+                let (Some(vsink), Some(vsrc), Some(id_sink)) = (
+                    vapostproc.static_pad("sink"),
+                    vapostproc.static_pad("src"),
+                    identity.static_pad("sink"),
+                ) else {
+                    return gst::PadProbeReturn::Remove;
+                };
+                if bin.add(&vapostproc).is_err() {
+                    return gst::PadProbeReturn::Remove;
+                }
+                let _ = ghost.set_target(Some(&vsink));
+                let _ = vsrc.link(&id_sink);
+                let _ = vapostproc.sync_state_with_parent();
+                gst::PadProbeReturn::Remove
+            });
+        } else {
+            ghost.clone().add_probe(gst::PadProbeType::IDLE, move |_pad, _info| {
+                let (Some(vsrc), Some(id_sink)) =
+                    (vapostproc.static_pad("src"), identity.static_pad("sink"))
+                else {
+                    return gst::PadProbeReturn::Remove;
+                };
+                let _ = ghost.set_target(Some(&id_sink));
+                let _ = vsrc.unlink(&id_sink);
+                let _ = vapostproc.set_state(gst::State::Null);
+                let _ = bin.remove(&vapostproc);
+                gst::PadProbeReturn::Remove
+            });
+        }
+
+        video_sink.set_property("scale-to-window", needs);
+        self.scaling_engaged = needs;
+    }
+
     pub fn handle_stream_collection(
         &mut self,
         collection: gst::StreamCollection,
@@ -1117,17 +1205,32 @@ impl Player {
             self.streams.push(stream);
         }
 
-        if let Some(video_sink) = &self.video_sink
-            && let Some((width, height)) = self
-                .streams
-                .iter()
-                .filter(|s| s.inner.stream_type().contains(gst::StreamType::VIDEO))
-                .find_map(|s| stream_resolution(&s.inner))
+        let source_resolution = self
+            .streams
+            .iter()
+            .filter(|s| s.inner.stream_type().contains(gst::StreamType::VIDEO))
+            .find_map(|s| stream_resolution(&s.inner));
+
+        let needs_scaling = if let Some(video_sink) = &self.video_sink
+            && let Some((width, height)) = source_resolution
         {
             video_sink.set_property(
                 "source-resolution",
                 crate::video::imp::WindowResolution { width, height },
             );
+            let window: crate::video::imp::WindowResolution =
+                video_sink.property("window-resolution");
+            Some(
+                window.width > 0
+                    && window.height > 0
+                    && (width > window.width || height > window.height),
+            )
+        } else {
+            None
+        };
+
+        if let Some(needs_scaling) = needs_scaling {
+            self.set_scaling(needs_scaling);
         }
 
         self.stream_collection = Some(collection);
