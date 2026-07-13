@@ -49,6 +49,7 @@ mod player;
 mod raop;
 mod user_agent;
 mod utils;
+mod va;
 pub mod video;
 pub mod video_sink;
 
@@ -247,6 +248,7 @@ impl CliArgs {
 pub struct Settings {
     pub cli: CliArgs,
     pub file: Option<SettingsFile>,
+    pub render_device_path: Option<String>,
 }
 
 /// Run the main app.
@@ -637,6 +639,7 @@ pub fn run<S: VideoSink + 'static>(
             let settings = Settings {
                 cli: cli_args,
                 file: settings_file,
+                render_device_path: None,
             };
 
             application::Application::new(
@@ -793,6 +796,7 @@ impl ExternalVideoHandle {
 pub fn run_with_external_video(
     cli_args: CliArgs,
     frame_available: Arc<dyn Fn() + Send + Sync>,
+    render_device_path: Option<String>,
 ) -> Result<ExternalVideoHandle> {
     logging::init(cli_args.loglevel);
 
@@ -834,6 +838,7 @@ pub fn run_with_external_video(
             let settings = Settings {
                 cli: cli_args,
                 file: settings_file,
+                render_device_path,
             };
 
             application::Application::new(gui, Some(sink.upcast()), msg_tx, settings)

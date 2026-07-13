@@ -661,31 +661,36 @@ pub(crate) struct GbmAllocator {
     device: *mut gbm_device,
 }
 
+pub(crate) fn query_render_device_path(client: *mut fl_Client) -> String {
+    const FALLBACK: &str = "/dev/dri/renderD128";
+    let resp = unsafe {
+        fl_receive_reply_dri_get_render_device_path(client, fl_dri_get_render_device_path(client))
+    };
+    let path = if resp.is_null() {
+        warn!(
+            "Failed to get render device path from the fiatlux server, falling back to {FALLBACK}"
+        );
+        FALLBACK.to_string()
+    } else {
+        let decoded = unsafe {
+            let path = (*resp).render_device_path;
+            let slice = std::slice::from_raw_parts(path.ptr, path.len as usize);
+            std::str::from_utf8(slice).map(str::to_string)
+        };
+        decoded.unwrap_or_else(|e| {
+            warn!("Invalid utf-8 in render device path: {e}, falling back to {FALLBACK}");
+            FALLBACK.to_string()
+        })
+    };
+    unsafe {
+        fl_free_reply_dri_get_render_device_path(resp);
+    }
+    path
+}
+
 impl GbmAllocator {
     pub(crate) fn new(client: *mut fl_Client) -> Result<Self> {
-        let render_device_path_resp = unsafe {
-            fl_receive_reply_dri_get_render_device_path(
-                client,
-                fl_dri_get_render_device_path(client),
-            )
-        };
-        let render_device_path = if render_device_path_resp.is_null() {
-            warn!(
-                "Failed to get render device path from the fiatlux server, falling back to /dev/dri/renderD128"
-            );
-            "/dev/dri/renderD128".to_string()
-        } else {
-            unsafe {
-                let path = (*render_device_path_resp).render_device_path;
-                let slice = std::slice::from_raw_parts(path.ptr, path.len as usize);
-                std::str::from_utf8(slice)
-                    .map_err(|e| anyhow!("invalid utf-8 in render device path: {e}"))?
-                    .to_string()
-            }
-        };
-        unsafe {
-            fl_free_reply_dri_get_render_device_path(render_device_path_resp);
-        }
+        let render_device_path = query_render_device_path(client);
 
         let file = OpenOptions::new()
             .read(true)

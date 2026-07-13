@@ -355,12 +355,17 @@ impl Application {
         #[cfg(feature = "airplay")]
         let airplay_context = airplay::AirPlayContext::new();
         let signalling_channel = Arc::new(Mutex::new(None::<fwebrtcsrc::SignallingChannel>));
+        #[cfg(not(target_os = "android"))]
+        let render_device_path = settings.render_device_path.clone();
+        #[cfg(target_os = "android")]
+        let render_device_path: Option<String> = None;
         let player = player::Player::new(
             video_sink,
             msg_tx.clone(),
             fcompsrc::imp::CompContext(companion_ctx.clone()),
             #[cfg(feature = "airplay")]
             airplay_context.clone(),
+            render_device_path,
             // Arc::clone(&signalling_channel),
         )?;
 

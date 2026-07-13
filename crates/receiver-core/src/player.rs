@@ -677,6 +677,14 @@ pub fn stream_title(stream: &gst::Stream) -> String {
     res
 }
 
+fn stream_resolution(stream: &gst::Stream) -> Option<(u32, u32)> {
+    let caps = stream.caps()?;
+    let structure = caps.structure(0)?;
+    let width = structure.get::<i32>("width").ok()?;
+    let height = structure.get::<i32>("height").ok()?;
+    Some((width as u32, height as u32))
+}
+
 pub struct Stream {
     pub inner: gst::Stream,
     pub title: String,
@@ -684,6 +692,7 @@ pub struct Stream {
 
 pub struct Player {
     pub playbin: gst::Element,
+    video_sink: Option<gst::Element>,
     volume_lock: BoolLock,
     selection_lock: BoolLock,
     work_tx: std::sync::mpsc::Sender<Job>,
@@ -703,15 +712,34 @@ impl Player {
         msg_tx: MessageSender,
         fcomp_context: crate::fcompsrc::imp::CompContext,
         #[cfg(feature = "airplay")] airplay_context: crate::airplay::AirPlayContext,
+        render_device_path: Option<String>,
         // signalling_channel: std::sync::Arc<
         //     parking_lot::Mutex<Option<crate::fwebrtcsrc::SignallingChannel>>,
         // >,
     ) -> Result<Self> {
+        let on_intel = render_device_path
+            .as_deref()
+            .is_some_and(crate::va::render_node_is_intel);
+
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
+        let mut video_sink_handle = None;
         let playbin = {
             let mut builder =
                 gst::ElementFactory::make("playbin3").property("audio-filter", scaletempo);
             if let Some(video_sink) = video_sink {
+                video_sink_handle = Some(video_sink.clone());
+                if on_intel
+                    && let Ok(vapostproc) = gst::ElementFactory::make("vapostproc")
+                        .property_from_str("scale-method", "fast")
+                        // Needed to force scaling to happen on the Intel video post processing engine (VideoEnchance)
+                        // rather than the Render/3D engine
+                        .property("sharpen", 0.0f32)
+                        .property("add-borders", true)
+                        .build()
+                {
+                    video_sink.set_property("scale-to-window", true);
+                    builder = builder.property("video-filter", vapostproc);
+                }
                 builder = builder
                     .property("video-sink", video_sink)
                     .property_from_str("flags", PlaybinFlags::AUDIO_AND_VIDEO);
@@ -720,6 +748,13 @@ impl Player {
             }
             builder.build()?
         };
+
+        #[cfg(feature = "fhs")]
+        if let Some(path) = render_device_path.as_deref()
+            && let Some(context) = crate::va::display_context(path)
+        {
+            playbin.set_context(&context);
+        }
 
         playbin.connect_notify(Some("volume"), {
             let msg_tx = msg_tx.clone();
@@ -870,6 +905,7 @@ impl Player {
 
         Ok(Self {
             playbin,
+            video_sink: video_sink_handle,
             // TODO: are these "locks" needed?
             volume_lock: BoolLock::new(),
             selection_lock: BoolLock::new(),
@@ -1079,6 +1115,19 @@ impl Player {
             };
 
             self.streams.push(stream);
+        }
+
+        if let Some(video_sink) = &self.video_sink
+            && let Some((width, height)) = self
+                .streams
+                .iter()
+                .filter(|s| s.inner.stream_type().contains(gst::StreamType::VIDEO))
+                .find_map(|s| stream_resolution(&s.inner))
+        {
+            video_sink.set_property(
+                "source-resolution",
+                crate::video::imp::WindowResolution { width, height },
+            );
         }
 
         self.stream_collection = Some(collection);

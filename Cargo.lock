@@ -7842,6 +7842,7 @@ dependencies = [
  "pango",
  "parking_lot",
  "pin-project-lite",
+ "pkg-config",
  "plist",
  "rand 0.10.1",
  "rcgen",

@@ -129,6 +129,7 @@ receiver-resources.path = "../receiver-resources"
 
 [build-dependencies]
 slint-build.workspace = true
+pkg-config = "0.3"
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["server"] }

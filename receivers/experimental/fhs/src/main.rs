@@ -199,8 +199,11 @@ fn main() -> Result<()> {
     let mut subtitles =
         subtitle_surface::SubtitleSurface::new(fl.client.client, fl.window.window_id)?;
 
+    let render_device_path = pixmap_video_sink::query_render_device_path(fl.client.client);
+
     let signal = FrameSignal::new();
-    let handle = rcore::run_with_external_video(cli_args, signal.notifier())?;
+    let handle =
+        rcore::run_with_external_video(cli_args, signal.notifier(), Some(render_device_path))?;
     handle.set_drm_formats(drm_formats);
     handle.set_gui_visible(true);
 

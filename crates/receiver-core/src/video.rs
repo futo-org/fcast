@@ -269,6 +269,8 @@ pub mod imp {
         cached_caps: Mutex<Option<gst::Caps>>,
         window_resolution: Mutex<Option<WindowResolution>>,
         window_resized: AtomicBool,
+        scale_to_window: AtomicBool,
+        source_resolution: Mutex<Option<WindowResolution>>,
         payload_handle: VideoPayloadHandle,
         last_overlay_seqnums: Mutex<SmallVec<[u32; 4]>>,
     }
@@ -291,6 +293,14 @@ pub mod imp {
                         .build(),
                     glib::ParamSpecBoxed::builder::<WindowResolution>("window-resolution")
                         .nick("Window resolution")
+                        .write_only()
+                        .build(),
+                    glib::ParamSpecBoolean::builder("scale-to-window")
+                        .nick("Scale decoded frames to the window size upstream")
+                        .write_only()
+                        .build(),
+                    glib::ParamSpecBoxed::builder::<WindowResolution>("source-resolution")
+                        .nick("Native resolution of the decoded video")
                         .write_only()
                         .build(),
                     glib::ParamSpecBoxed::builder::<VideoPayloadHandle>("payload-handle")
@@ -321,6 +331,15 @@ pub mod imp {
                 "window-resolution" => {
                     let resolution: WindowResolution = value.get().expect("type checked upstream");
                     *self.window_resolution.lock() = Some(resolution);
+                    self.window_resized.store(true, atomic::Ordering::SeqCst);
+                }
+                "scale-to-window" => {
+                    let enabled: bool = value.get().expect("type checked upstream");
+                    self.scale_to_window.store(enabled, atomic::Ordering::SeqCst);
+                }
+                "source-resolution" => {
+                    let resolution: WindowResolution = value.get().expect("type checked upstream");
+                    *self.source_resolution.lock() = Some(resolution);
                     self.window_resized.store(true, atomic::Ordering::SeqCst);
                 }
                 _ => unreachable!(),
@@ -390,6 +409,25 @@ pub mod imp {
             });
 
             gst::debug!(CAT, imp = self, "Advertising our own caps: {tmp_caps:?}");
+
+            if self.scale_to_window.load(atomic::Ordering::SeqCst)
+                && let Some(window) = self.window_resolution.lock().clone()
+                && self
+                    .source_resolution
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|src| src.width > window.width || src.height > window.height)
+            {
+                let mut sized = tmp_caps.copy();
+                {
+                    let sized = sized.get_mut().unwrap();
+                    for s in sized.iter_mut() {
+                        s.set("width", window.width as i32);
+                        s.set("height", window.height as i32);
+                    }
+                }
+                tmp_caps = sized;
+            }
 
             if let Some(filter_caps) = filter {
                 gst::debug!(
@@ -492,7 +530,8 @@ pub mod imp {
     impl VideoSinkImpl for FSink {
         fn show_frame(&self, buffer: &gst::Buffer) -> Result<gst::FlowSuccess, gst::FlowError> {
             let reconfigure = self.window_resized.swap(false, atomic::Ordering::SeqCst)
-                && self.config.lock().has_overlay;
+                && (self.config.lock().has_overlay
+                    || self.scale_to_window.load(atomic::Ordering::SeqCst));
             if reconfigure {
                 gst::info!(CAT, imp = self, "Window size changed, needs to reconfigure");
                 let obj = self.obj();
