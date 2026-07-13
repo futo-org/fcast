@@ -157,6 +157,7 @@ buil_sender_win_x64:
         $env:PATH += ";C:\Program Files\CMake\bin"
 
         winget install --id=Google.flatbuffers -e --accept-package-agreements --accept-source-agreements
+        $env:PATH += ";C:\Users\$Env:UserName\AppData\Local\Microsoft\WinGet\Links"
 
         git clone "https://gitlab.futo.org/videostreaming/fcast-build-deps.git"
         cd fcast-build-deps
