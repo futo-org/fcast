@@ -136,38 +136,6 @@ pub enum ImageType {
     AudioTrackCover,
 }
 
-pub struct ImageAnimationFrame {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-    pub delay_ms: i64,
-}
-
-pub enum ImageCommand {
-    Set {
-        rgba: Vec<u8>,
-        width: u32,
-        height: u32,
-    },
-    SetAnimation {
-        frames: Vec<ImageAnimationFrame>,
-    },
-    AudioPlaceholder {
-        title: String,
-        artist: String,
-    },
-    Clear,
-}
-
-#[derive(Default)]
-struct AudioViewState {
-    playing: bool,
-    audio_variant: bool,
-    has_cover: bool,
-    title: String,
-    artist: String,
-}
-
 pub type QrCodeImage = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
 pub type Seconds = f32;
 
@@ -298,8 +266,7 @@ impl GuiIsVisible {
 
 pub struct GuiController {
     pub tx: Option<UnboundedSender<UpdateGuiCommand>>,
-    image_tx: Option<UnboundedSender<ImageCommand>>,
-    audio_view: std::sync::Mutex<AudioViewState>,
+    external_ui: Option<crate::external_ui::ExternalUi>,
     playback_state: GuiPlaybackState,
     playback_rate: f32,
     is_live: bool,
@@ -310,8 +277,7 @@ impl GuiController {
     pub fn new(tx: Option<UnboundedSender<UpdateGuiCommand>>, is_visible: GuiIsVisible) -> Self {
         Self {
             tx,
-            image_tx: None,
-            audio_view: std::sync::Mutex::new(AudioViewState::default()),
+            external_ui: None,
             playback_state: GuiPlaybackState::default(),
             playback_rate: -1.0,
             is_live: false,
@@ -319,21 +285,8 @@ impl GuiController {
         }
     }
 
-    pub fn set_image_channel(&mut self, tx: UnboundedSender<ImageCommand>) {
-        self.image_tx = Some(tx);
-    }
-
-    fn maybe_show_placeholder(&self) {
-        let Some(tx) = &self.image_tx else {
-            return;
-        };
-        let state = self.audio_view.lock().unwrap();
-        if state.playing && state.audio_variant && !state.has_cover {
-            let _ = tx.send(ImageCommand::AudioPlaceholder {
-                title: state.title.clone(),
-                artist: state.artist.clone(),
-            });
-        }
+    pub fn set_external_ui(&mut self, external_ui: crate::external_ui::ExternalUi) {
+        self.external_ui = Some(external_ui);
     }
 
     fn send(&self, cmd: UpdateGuiCommand) {
@@ -369,9 +322,8 @@ impl GuiController {
     }
 
     pub fn set_app_state(&self, state: crate::AppState) {
-        if self.image_tx.is_some() {
-            self.audio_view.lock().unwrap().playing = matches!(state, crate::AppState::Playing);
-            self.maybe_show_placeholder();
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_playing(matches!(state, crate::AppState::Playing));
         }
         self.send(UpdateGuiCommand::SetAppState(state));
     }
@@ -381,16 +333,11 @@ impl GuiController {
     }
 
     fn set_image(&self, img: DecodedImage, typ: ImageType) {
-        if let Some(tx) = &self.image_tx {
-            if matches!(typ, ImageType::AudioTrackCover) {
-                self.audio_view.lock().unwrap().has_cover = true;
+        if let Some(external_ui) = &self.external_ui {
+            match typ {
+                ImageType::AudioTrackCover => external_ui.set_cover(img),
+                ImageType::Preview => external_ui.set_preview(img),
             }
-            let (rgba, width, height) = img.into_upright_rgba();
-            let _ = tx.send(ImageCommand::Set {
-                rgba,
-                width,
-                height,
-            });
             return;
         }
         self.send(UpdateGuiCommand::SetImage {
@@ -408,6 +355,9 @@ impl GuiController {
     }
 
     pub fn update_playback_progress(&self, prog_sec: Seconds, dur_sec: Seconds) {
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_progress(prog_sec as f64, dur_sec as f64);
+        }
         self.send(UpdateGuiCommand::UpdatePlaybackProgress {
             progress_s: prog_sec,
             duration_s: dur_sec,
@@ -415,25 +365,28 @@ impl GuiController {
     }
 
     pub fn set_media_title(&self, title: String) {
-        if self.image_tx.is_some() {
-            self.audio_view.lock().unwrap().title = title.clone();
-            self.maybe_show_placeholder();
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_title(&title);
         }
         self.send(UpdateGuiCommand::SetMediaTitle(title));
     }
 
     pub fn set_artist_name(&self, name: String) {
-        if self.image_tx.is_some() {
-            self.audio_view.lock().unwrap().artist = name.clone();
-            self.maybe_show_placeholder();
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_artist(&name);
         }
         self.send(UpdateGuiCommand::SetArtistName(name));
     }
 
+    pub fn set_album_name(&self, name: String) {
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_album(&name);
+        }
+    }
+
     pub fn clear_audio_covers(&self) {
-        if self.image_tx.is_some() {
-            self.audio_view.lock().unwrap().has_cover = false;
-            self.maybe_show_placeholder();
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.clear_audio_covers();
         }
         self.send(UpdateGuiCommand::ClearAudioCovers);
     }
@@ -443,14 +396,11 @@ impl GuiController {
     }
 
     pub fn set_player_type(&self, typ: UiPlayerVariant) {
-        if let Some(tx) = &self.image_tx {
-            let is_audio = matches!(typ, UiPlayerVariant::Audio | UiPlayerVariant::Raop);
-            self.audio_view.lock().unwrap().audio_variant = is_audio;
-            if is_audio {
-                self.maybe_show_placeholder();
-            } else {
-                let _ = tx.send(ImageCommand::Clear);
-            }
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_audio_variant(matches!(
+                typ,
+                UiPlayerVariant::Audio | UiPlayerVariant::Raop
+            ));
         }
         self.send(UpdateGuiCommand::SetPlayerType(typ));
     }
@@ -509,15 +459,17 @@ impl GuiController {
 
     pub fn set_playback_state(&mut self, state: GuiPlaybackState) {
         if state != self.playback_state {
+            if let Some(external_ui) = &self.external_ui {
+                external_ui.set_paused(matches!(state, GuiPlaybackState::Paused));
+            }
             self.send(UpdateGuiCommand::SetPlaybackState(state));
             self.playback_state = state;
         }
     }
 
     pub fn clear_images(&self) {
-        if let Some(tx) = &self.image_tx {
-            self.audio_view.lock().unwrap().has_cover = false;
-            let _ = tx.send(ImageCommand::Clear);
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.clear();
             return;
         }
         self.send(UpdateGuiCommand::ClearImageState);
@@ -556,17 +508,8 @@ impl GuiController {
     }
 
     pub fn set_animation(&self, frames: Vec<crate::image::AnimationFrame>) {
-        if let Some(tx) = &self.image_tx {
-            let frames = frames
-                .into_iter()
-                .map(|f| ImageAnimationFrame {
-                    width: f.image.width(),
-                    height: f.image.height(),
-                    rgba: f.image.as_bytes().to_vec(),
-                    delay_ms: f.delay_ms,
-                })
-                .collect();
-            let _ = tx.send(ImageCommand::SetAnimation { frames });
+        if let Some(external_ui) = &self.external_ui {
+            external_ui.set_animation(frames);
             return;
         }
         self.send(UpdateGuiCommand::SetAnimation {

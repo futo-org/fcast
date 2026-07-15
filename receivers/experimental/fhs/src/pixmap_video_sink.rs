@@ -32,6 +32,12 @@ struct PixmapCacheEntry {
     last_used: u64,
 }
 
+pub(crate) struct RenderTarget {
+    bo: *mut gbm_bo,
+    pub(crate) texture: glow::Texture,
+    pub(crate) pixmap_id: fl_protocol_PixmapId,
+}
+
 pub struct FhsPixmapSink {
     client: *mut fl_Client,
     surface_id: fl_protocol_SurfaceId,
@@ -67,6 +73,10 @@ impl FhsPixmapSink {
             egl_display,
             egl_image_target,
         })
+    }
+
+    pub fn gl(&self) -> &glow::Context {
+        &self.gl
     }
 
     pub fn render(&mut self, frame: &Frame) -> Result<()> {
@@ -380,6 +390,136 @@ impl FhsPixmapSink {
         })();
         for bo in bos {
             unsafe { gbm_bo_destroy(bo) };
+        }
+        result
+    }
+
+    pub(crate) fn create_render_target(&self, width: u32, height: u32) -> Result<RenderTarget> {
+        let target = self
+            .egl_image_target
+            .ok_or_else(|| anyhow!("glEGLImageTargetTexture2DOES unavailable"))?;
+        let fourcc = DRM_FORMAT_ABGR8888;
+        let alloc_w = width.next_multiple_of(64);
+        let bo = self.gbm.create_scanout_bo(alloc_w, height, fourcc, 1)?;
+        let result = (|| -> Result<(glow::Texture, fl_protocol_PixmapId)> {
+            let texture = self.egl_texture_from_bo(bo, width, height, fourcc, target)?;
+            let flags = fl_protocol_PixmapFlags_flags_fl_protocol_PixmapFlags_full_color_range_bit
+                as fl_protocol_PixmapFlags;
+            let pixmap_id =
+                create_pixmap_from_plane_bos(self.client, &[bo], fourcc, width, height, flags)?;
+            Ok((texture, pixmap_id))
+        })();
+        match result {
+            Ok((texture, pixmap_id)) => Ok(RenderTarget {
+                bo,
+                texture,
+                pixmap_id,
+            }),
+            Err(e) => {
+                unsafe { gbm_bo_destroy(bo) };
+                Err(e)
+            }
+        }
+    }
+
+    pub(crate) fn destroy_render_target(&self, rt: RenderTarget) {
+        unsafe {
+            self.gl.delete_texture(rt.texture);
+            gbm_bo_destroy(rt.bo);
+            fl_discard_reply(self.client, fl_destroy_pixmap(self.client, rt.pixmap_id).value);
+        }
+    }
+
+    fn egl_texture_from_bo(
+        &self,
+        bo: *mut gbm_bo,
+        width: u32,
+        height: u32,
+        fourcc: u32,
+        target: EglImageTargetTexture2dOes,
+    ) -> Result<glow::Texture> {
+        let modifier = unsafe { gbm_bo_get_modifier(bo) };
+        let fd = unsafe { gbm_bo_get_fd(bo) };
+        if fd < 0 {
+            return Err(anyhow!("gbm_bo_get_fd failed"));
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let bo_offset = unsafe { gbm_bo_get_offset(bo, 0) };
+        let bo_stride = unsafe { gbm_bo_get_stride_for_plane(bo, 0) };
+
+        let attribs: [egl_sys::bindings::types::EGLAttrib; 17] = [
+            egl_sys::bindings::WIDTH as isize,
+            width as isize,
+            egl_sys::bindings::HEIGHT as isize,
+            height as isize,
+            egl_sys::bindings::LINUX_DRM_FOURCC_EXT as isize,
+            fourcc as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_FD_EXT as isize,
+            fd.as_raw_fd() as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_OFFSET_EXT as isize,
+            bo_offset as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_PITCH_EXT as isize,
+            bo_stride as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_MODIFIER_LO_EXT as isize,
+            (modifier & 0xffff_ffff) as isize,
+            egl_sys::bindings::DMA_BUF_PLANE0_MODIFIER_HI_EXT as isize,
+            (modifier >> 32) as isize,
+            egl_sys::bindings::NONE as isize,
+        ];
+
+        let image = unsafe {
+            egl_sys::bindings::CreateImage(
+                self.egl_display as egl_sys::bindings::types::EGLDisplay,
+                egl_sys::bindings::NO_CONTEXT,
+                egl_sys::bindings::LINUX_DMA_BUF_EXT,
+                core::ptr::null::<c_void>() as egl_sys::bindings::types::EGLClientBuffer,
+                attribs.as_ptr(),
+            )
+        };
+        if image.is_null() {
+            let egl_error = unsafe { egl_sys::bindings::GetError() };
+            return Err(anyhow!(
+                "eglCreateImage failed: egl_error={egl_error:#06x} fourcc={fourcc:#010x} \
+                 modifier={modifier:#018x} offset={bo_offset} pitch={bo_stride} {width}x{height}"
+            ));
+        }
+
+        let result = (|| -> Result<glow::Texture> {
+            let tex =
+                unsafe { self.gl.create_texture() }.map_err(|e| anyhow!("create_texture: {e}"))?;
+            unsafe {
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                target(glow::TEXTURE_2D, image as *const c_void);
+                self.gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::NEAREST as i32,
+                );
+                self.gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::NEAREST as i32,
+                );
+                self.gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_WRAP_S,
+                    glow::CLAMP_TO_EDGE as i32,
+                );
+                self.gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_WRAP_T,
+                    glow::CLAMP_TO_EDGE as i32,
+                );
+                self.gl.bind_texture(glow::TEXTURE_2D, None);
+            }
+            Ok(tex)
+        })();
+
+        unsafe {
+            egl_sys::bindings::DestroyImage(
+                self.egl_display as egl_sys::bindings::types::EGLDisplay,
+                image,
+            );
         }
         result
     }

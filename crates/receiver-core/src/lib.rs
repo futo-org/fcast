@@ -33,6 +33,7 @@ mod fcasthttpsrc;
 mod fcasttextoverlay;
 mod fcastwhepsrcbin;
 mod fcompsrc;
+mod external_ui;
 mod fwebrtcsrc;
 mod gcast;
 mod gstreamer;
@@ -59,7 +60,7 @@ pub use gst_allocators;
 pub use gst_video;
 pub use libplacebo;
 pub use video_sink::{SwapchainSink, VideoSink};
-pub use gui::{ImageAnimationFrame, ImageCommand};
+pub use external_ui::{ImageAnimationFrame, ImageCommand, PlaybackCommand, TitleCommand};
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -732,6 +733,8 @@ pub fn run<S: VideoSink + 'static>(
 pub struct ExternalVideoHandle {
     payload_handle: video::imp::VideoPayloadHandle,
     image_rx: std::sync::Mutex<mpsc::UnboundedReceiver<ImageCommand>>,
+    title_rx: std::sync::Mutex<mpsc::UnboundedReceiver<TitleCommand>>,
+    playback_rx: std::sync::Mutex<mpsc::UnboundedReceiver<PlaybackCommand>>,
     sink: video::FSink,
     gui_is_visible: gui::GuiIsVisible,
     msg_tx: MessageSender,
@@ -753,6 +756,29 @@ impl ExternalVideoHandle {
             last = Some(cmd);
         }
         last
+    }
+
+    pub fn take_title_update(&self) -> Option<TitleCommand> {
+        let mut rx = self.title_rx.lock().unwrap();
+        let mut last = None;
+        while let Ok(cmd) = rx.try_recv() {
+            last = Some(cmd);
+        }
+        last
+    }
+
+    pub fn take_playback_updates(&self) -> Vec<PlaybackCommand> {
+        let mut rx = self.playback_rx.lock().unwrap();
+        let mut updates = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            updates.push(cmd);
+        }
+        updates
+    }
+
+    pub fn resume_or_pause(&self) {
+        self.msg_tx
+            .operation(application::PacketOrigin::Gui, Operation::ResumeOrPause);
     }
 
     pub fn set_drm_formats(&self, formats: std::collections::HashSet<drm_fourcc::DrmFormat>) {
@@ -813,8 +839,10 @@ pub fn run_with_external_video(
 
     let gui_is_visible = gui::GuiIsVisible::new();
     let (image_tx, image_rx) = mpsc::unbounded_channel::<ImageCommand>();
+    let (title_tx, title_rx) = mpsc::unbounded_channel::<TitleCommand>();
+    let (playback_tx, playback_rx) = mpsc::unbounded_channel::<PlaybackCommand>();
     let mut gui = GuiController::new(None, gui_is_visible.clone());
-    gui.set_image_channel(image_tx);
+    gui.set_external_ui(external_ui::ExternalUi::new(image_tx, title_tx, playback_tx));
     let quit = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let (init_tx, init_rx) =
@@ -871,6 +899,8 @@ pub fn run_with_external_video(
     Ok(ExternalVideoHandle {
         payload_handle,
         image_rx: std::sync::Mutex::new(image_rx),
+        title_rx: std::sync::Mutex::new(title_rx),
+        playback_rx: std::sync::Mutex::new(playback_rx),
         sink,
         gui_is_visible,
         msg_tx,

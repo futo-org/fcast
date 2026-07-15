@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use fiatlux::*;
 use mimalloc::MiMalloc;
 use rcore::{
-    ImageAnimationFrame, ImageCommand,
+    ImageAnimationFrame, ImageCommand, PlaybackCommand, TitleCommand,
     clap::Parser,
     egl, glow,
     tracing::error,
@@ -15,9 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod overlay;
 mod pixmap_video_sink;
 mod placeholder;
-mod subtitle_surface;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -105,33 +105,46 @@ struct ImageAnimation {
 }
 
 const PLACEHOLDER_GRACE: Duration = Duration::from_millis(300);
+const TITLE_SHOW_DURATION: Duration = Duration::from_millis(3500);
 
 struct PlaceholderState {
-    title: String,
-    artist: String,
     size: (u32, u32),
     show_at: Instant,
     shown: bool,
 }
 
+struct TitleState {
+    title: String,
+    artist: String,
+    album: String,
+    persistent: bool,
+    show_until: Instant,
+}
+
+#[derive(Default)]
+struct PlaybackState {
+    elapsed_s: f64,
+    duration_s: f64,
+    paused: bool,
+}
+
 fn show_audio_placeholder(
     sink: &mut pixmap_video_sink::FhsPixmapSink,
-    client: *mut fl_Client,
-    surface_id: fl_protocol_SurfaceId,
-    title: &str,
-    artist: &str,
     size: (u32, u32),
     scale: f32,
-) {
-    match placeholder::render(title, artist, size.0, size.1, scale) {
-        Ok((rgba, width, height)) => {
-            if let Err(err) = sink.show_image(&rgba, width, height) {
+) -> bool {
+    match placeholder::render(size.0, size.1, scale) {
+        Ok((rgba, width, height)) => match sink.show_image(&rgba, width, height) {
+            Ok(()) => true,
+            Err(err) => {
                 error!(?err, "audio placeholder show failed");
-            } else {
-                mark_damaged(client, &[surface_id]);
+                false
             }
+        },
+        Err(err) => {
+            error!(?err, "audio placeholder render failed");
+            false
         }
-        Err(err) => error!(?err, "audio placeholder render failed"),
     }
 }
 
@@ -196,8 +209,9 @@ fn main() -> Result<()> {
         fl_egl_display as *const c_void,
         egl_image_target,
     )?;
-    let mut subtitles =
-        subtitle_surface::SubtitleSurface::new(fl.client.client, fl.window.window_id)?;
+    let mut overlay = overlay::Overlay::new(fl.client.client, fl.window.window_id, sink.gl())?;
+
+    let mut size = (fl.window.width, fl.window.height);
 
     let render_device_path = pixmap_video_sink::query_render_device_path(fl.client.client);
 
@@ -210,7 +224,9 @@ fn main() -> Result<()> {
     let mut cached_frame: Option<Frame> = None;
     let mut animation: Option<ImageAnimation> = None;
     let mut placeholder: Option<PlaceholderState> = None;
-    let mut size = (fl.window.width, fl.window.height);
+    let mut title_state: Option<TitleState> = None;
+    let mut playback_state = PlaybackState::default();
+    let mut damaged: Vec<fl_protocol_SurfaceId> = Vec::new();
     handle.set_window_resolution(size.0, size.1);
 
     loop {
@@ -225,9 +241,17 @@ fn main() -> Result<()> {
         {
             wait = wait.min(p.show_at.saturating_duration_since(Instant::now()));
         }
+        if let Some(ts) = &title_state
+            && !ts.persistent
+            && Instant::now() < ts.show_until
+        {
+            wait = wait.min(ts.show_until.saturating_duration_since(Instant::now()));
+        }
         signal.wait_timeout(wait);
 
         let mut resized = false;
+        let mut cursor_moved = false;
+        let mut click: Option<(i32, i32)> = None;
         loop {
             let mut res = fl_poll_event_result_fl_poll_event_success;
             let event = match unsafe { fl_poll_events(fl.client.client, 0.0, &mut res).as_mut() } {
@@ -237,11 +261,26 @@ fn main() -> Result<()> {
 
             const WINDOW_RESIZED: u8 =
                 fl_protocol_EventType_fl_protocol_EventType_window_resized as u8;
-            if unsafe { event.header.event_type } == WINDOW_RESIZED {
+            const POINTER_MOVED: u8 =
+                fl_protocol_EventType_fl_protocol_EventType_pointer_moved as u8;
+            const POINTER_BUTTON: u8 =
+                fl_protocol_EventType_fl_protocol_EventType_pointer_button as u8;
+            const PRESSED: u8 =
+                fl_protocol_PointerButtonState_fl_protocol_PointerButtonState_pressed as u8;
+            const BUTTON1: u8 = fl_protocol_PointerButton_fl_protocol_PointerButton_button1 as u8;
+            let event_type = unsafe { event.header.event_type };
+            if event_type == WINDOW_RESIZED {
                 let (width, height) =
                     unsafe { (event.window_resized.width, event.window_resized.height) };
                 size = (width, height);
                 resized = true;
+            } else if event_type == POINTER_MOVED {
+                cursor_moved = true;
+            } else if event_type == POINTER_BUTTON {
+                let button = unsafe { event.pointer_button };
+                if button.state == PRESSED && button.button == BUTTON1 {
+                    click = Some((button.abs_x, button.abs_y));
+                }
             }
 
             unsafe {
@@ -249,23 +288,22 @@ fn main() -> Result<()> {
             }
         }
 
+        if cursor_moved
+            && let Some(ts) = title_state.as_mut()
+        {
+            ts.show_until = Instant::now() + TITLE_SHOW_DURATION;
+        }
+
+        damaged.clear();
+
         if resized {
             handle.set_window_resolution(size.0, size.1);
-            subtitles.reposition(size);
             if let Some(p) = placeholder.as_mut()
                 && p.size != size
             {
                 p.size = size;
-                if p.shown {
-                    show_audio_placeholder(
-                        &mut sink,
-                        fl.client.client,
-                        fl.video_surface_id,
-                        &p.title,
-                        &p.artist,
-                        size,
-                        fl.window.display_scale,
-                    );
+                if p.shown && show_audio_placeholder(&mut sink, size, fl.window.display_scale) {
+                    damaged.push(fl.video_surface_id);
                 }
             }
         }
@@ -294,30 +332,20 @@ fn main() -> Result<()> {
             }
 
             if have_new {
-                let result = match &frame.overlays {
-                    Resource::New(overlays) => subtitles.set_overlays(&sink, overlays, size),
-                    Resource::Unchanged => Ok(()),
+                match &frame.overlays {
+                    Resource::New(overlays) => overlay.set_subtitle_overlays(sink.gl(), overlays),
+                    Resource::Unchanged => {}
                     Resource::Cleared | Resource::Eos => match &frame.subtitles {
                         Resource::New(lines) => {
-                            subtitles.set_subtitles(&sink, lines, size, fl.window.display_scale)
+                            overlay.set_subtitle_text(sink.gl(), lines, fl.window.display_scale)
                         }
-                        Resource::Unchanged => Ok(()),
-                        Resource::Cleared | Resource::Eos => {
-                            subtitles.clear();
-                            Ok(())
-                        }
+                        Resource::Unchanged => {}
+                        Resource::Cleared | Resource::Eos => overlay.clear_subtitle(sink.gl()),
                     },
-                };
-                if let Err(err) = result {
-                    error!(?err, "subtitle surface update failed");
                 }
             }
 
-            let mut surface_ids = vec![fl.video_surface_id];
-            if let Some(subtitle_surface_id) = subtitles.surface_id() {
-                surface_ids.push(subtitle_surface_id);
-            }
-            mark_damaged(fl.client.client, &surface_ids);
+            damaged.push(fl.video_surface_id);
         }
 
         match handle.take_image_update() {
@@ -331,7 +359,7 @@ fn main() -> Result<()> {
                 if let Err(err) = sink.show_image(&rgba, width, height) {
                     error!(?err, "image show failed");
                 } else {
-                    mark_damaged(fl.client.client, &[fl.video_surface_id]);
+                    damaged.push(fl.video_surface_id);
                 }
             }
             Some(ImageCommand::SetAnimation { frames }) => {
@@ -341,7 +369,7 @@ fn main() -> Result<()> {
                     if let Err(err) = sink.show_image(&first.rgba, first.width, first.height) {
                         error!(?err, "image show failed");
                     } else {
-                        mark_damaged(fl.client.client, &[fl.video_surface_id]);
+                        damaged.push(fl.video_surface_id);
                     }
                 }
                 if frames.len() > 1 {
@@ -353,33 +381,14 @@ fn main() -> Result<()> {
                     });
                 }
             }
-            Some(ImageCommand::AudioPlaceholder { title, artist }) => {
+            Some(ImageCommand::AudioPlaceholder) => {
                 animation = None;
-                match placeholder.as_mut() {
-                    Some(p) if p.title == title && p.artist == artist => {}
-                    Some(p) if p.shown => {
-                        p.title = title;
-                        p.artist = artist;
-                        p.size = size;
-                        show_audio_placeholder(
-                            &mut sink,
-                            fl.client.client,
-                            fl.video_surface_id,
-                            &p.title,
-                            &p.artist,
-                            size,
-                            fl.window.display_scale,
-                        );
-                    }
-                    _ => {
-                        placeholder = Some(PlaceholderState {
-                            title,
-                            artist,
-                            size,
-                            show_at: Instant::now() + PLACEHOLDER_GRACE,
-                            shown: false,
-                        });
-                    }
+                if placeholder.is_none() {
+                    placeholder = Some(PlaceholderState {
+                        size,
+                        show_at: Instant::now() + PLACEHOLDER_GRACE,
+                        shown: false,
+                    });
                 }
             }
             Some(ImageCommand::Clear) => {
@@ -395,15 +404,9 @@ fn main() -> Result<()> {
         {
             p.shown = true;
             p.size = size;
-            show_audio_placeholder(
-                &mut sink,
-                fl.client.client,
-                fl.video_surface_id,
-                &p.title,
-                &p.artist,
-                size,
-                fl.window.display_scale,
-            );
+            if show_audio_placeholder(&mut sink, size, fl.window.display_scale) {
+                damaged.push(fl.video_surface_id);
+            }
         }
 
         if let Some(anim) = &mut animation
@@ -414,15 +417,77 @@ fn main() -> Result<()> {
             if let Err(err) = sink.show_image(&frame.rgba, frame.width, frame.height) {
                 error!(?err, "image show failed");
             } else {
-                mark_damaged(fl.client.client, &[fl.video_surface_id]);
+                damaged.push(fl.video_surface_id);
             }
             anim.next_deadline = Instant::now() + frame_delay(frame.delay_ms);
+        }
+
+        match handle.take_title_update() {
+            Some(TitleCommand::Show {
+                title,
+                artist,
+                album,
+                persistent,
+            }) => {
+                title_state = Some(TitleState {
+                    title,
+                    artist,
+                    album,
+                    persistent,
+                    show_until: Instant::now() + TITLE_SHOW_DURATION,
+                });
+            }
+            Some(TitleCommand::Clear) => title_state = None,
+            None => {}
+        }
+
+        for update in handle.take_playback_updates() {
+            match update {
+                PlaybackCommand::Progress {
+                    elapsed_s,
+                    duration_s,
+                } => {
+                    playback_state.elapsed_s = elapsed_s;
+                    playback_state.duration_s = duration_s;
+                }
+                PlaybackCommand::Paused(paused) => playback_state.paused = paused,
+            }
+        }
+
+        let osd_visible = title_state
+            .as_ref()
+            .is_some_and(|ts| ts.persistent || Instant::now() < ts.show_until);
+
+        if osd_visible {
+            let ts = title_state.as_ref().unwrap();
+            overlay.set_title(sink.gl(), &ts.title, &ts.artist, &ts.album, size);
+
+            if let Some((cx, cy)) = click
+                && overlay.button_hit(size, cx, cy)
+            {
+                handle.resume_or_pause();
+            }
+        }
+
+        let playback = osd_visible.then(|| overlay::Playback {
+            elapsed_s: playback_state.elapsed_s,
+            duration_s: playback_state.duration_s,
+            paused: playback_state.paused,
+        });
+        match overlay.show(&sink, playback, size) {
+            Ok(Some(surface_id)) => damaged.push(surface_id),
+            Ok(None) => {}
+            Err(err) => error!(?err, "overlay show failed"),
+        }
+
+        if !damaged.is_empty() {
+            mark_damaged(fl.client.client, &damaged);
         }
     }
 
     handle.set_gui_visible(false);
     handle.send_gui_window_closed_blocking(Duration::from_millis(2500));
-    subtitles.clear();
+    overlay.clear(&sink);
     sink.teardown();
     handle.shutdown();
 

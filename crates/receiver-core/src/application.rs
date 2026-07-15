@@ -772,6 +772,7 @@ impl Application {
         if continue_to_play == ContinueToPlay::No {
             self.gui.set_media_title("".to_owned());
             self.gui.set_artist_name("".to_owned());
+            self.gui.set_album_name("".to_owned());
             self.gui.clear_images();
             self.gui.update_playback_progress(0.0, 0.0);
             self.gui.set_app_state(AppState::Idle);
@@ -1687,6 +1688,37 @@ impl Application {
         }
     }
 
+    fn media_title_from_streams(&self) -> Option<String> {
+        let streams = &self.player.streams;
+        let has_video = streams
+            .iter()
+            .any(|s| s.inner.stream_type().contains(gst::StreamType::VIDEO));
+        let want = if has_video {
+            gst::StreamType::VIDEO
+        } else {
+            gst::StreamType::AUDIO
+        };
+        streams
+            .iter()
+            .filter(|s| s.inner.stream_type().contains(want))
+            .find_map(|s| {
+                s.inner
+                    .tags()
+                    .and_then(|t| t.get::<gst::tags::Title>().map(|v| v.get().to_owned()))
+            })
+            .filter(|t| !t.is_empty())
+    }
+
+    fn maybe_update_media_title_from_streams(&mut self) {
+        if self.have_media_title {
+            return;
+        }
+        if let Some(title) = self.media_title_from_streams() {
+            self.have_media_title = true;
+            self.gui.set_media_title(title);
+        }
+    }
+
     fn update_tracks(&mut self, force_update: bool) {
         if !force_update && !self.player.update_stream_properties() {
             return;
@@ -1841,15 +1873,12 @@ impl Application {
                     }
                 }
 
-                if !self.have_media_title
-                    && let Some(title) = tags.get::<gst::tags::Title>()
-                {
-                    self.have_media_title = true;
-                    self.gui.set_media_title(title.get().to_owned());
-                }
-
                 if let Some(artist) = tags.get::<gst::tags::Artist>() {
                     self.gui.set_artist_name(artist.get().to_owned());
+                }
+
+                if let Some(album) = tags.get::<gst::tags::Album>() {
+                    self.gui.set_album_name(album.get().to_owned());
                 }
             }
             player::PlayerEvent::VolumeChanged(volume) => {
@@ -1893,6 +1922,7 @@ impl Application {
                 self.player.play();
 
                 self.update_tracks(true);
+                self.maybe_update_media_title_from_streams();
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -2041,6 +2071,7 @@ impl Application {
             }
             player::PlayerEvent::StreamTagsUpdated => {
                 self.update_tracks(false);
+                self.maybe_update_media_title_from_streams();
             }
         }
 
