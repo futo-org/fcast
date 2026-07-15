@@ -294,6 +294,8 @@ enum Action {
     LoadedV4(V4Load),
 }
 
+/// Convert the v4 `ReceiverCapabilities` flatbuffer into the public
+/// [`crate::device::ReceiverCapabilities`] struct forwarded to callers.
 fn map_receiver_capabilities(
     caps: v4::flat::ReceiverCapabilities<'_>,
 ) -> crate::device::ReceiverCapabilities {

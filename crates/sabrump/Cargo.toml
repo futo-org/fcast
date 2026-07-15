@@ -1,0 +1,26 @@
+[package]
+name = "sabrump"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "SABR (Server ABR) / UMP streaming protocol client for YouTube playback"
+
+[dependencies]
+prost = "0.14"
+bytes.workspace = true
+thiserror.workspace = true
+log.workspace = true
+base64.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+tokio.workspace = true
+futures.workspace = true
+reqwest = { version = "0.13", default-features = false }
+serde = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9"

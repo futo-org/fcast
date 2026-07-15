@@ -55,6 +55,7 @@ mod player;
 mod pwaudiosink;
 mod raop;
 mod render_latency;
+mod sabrumpsrc;
 mod user_agent;
 mod utils;
 pub mod video;

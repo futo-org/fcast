@@ -395,6 +395,9 @@ pub enum QueueItem {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     },
+    // Named `FCompanion` (not `Companion`) because uniffi maps enum variants to
+    // Kotlin sealed-class members, and `Companion` collides with Kotlin's
+    // reserved `companion object`.
     FCompanion {
         content_type: String,
         source: CompanionSource,
