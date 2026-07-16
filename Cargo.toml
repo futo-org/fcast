@@ -101,6 +101,11 @@ inherits = "release"
 debug = "full"
 strip = false
 
+[profile.release-small]
+inherits = "release"
+opt-level = "s"
+panic = "abort"
+
 [profile.dev.package.image]
 opt-level = 3
 

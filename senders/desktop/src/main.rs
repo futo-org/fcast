@@ -1502,6 +1502,7 @@ impl Application {
                     device::DeviceConnectionState::Connected {
                         local_addr,
                         used_remote_addr,
+                        ..
                     } => {
                         if let Some(session) = self.session_state.as_mut() {
                             session.local_address = Some(local_addr);

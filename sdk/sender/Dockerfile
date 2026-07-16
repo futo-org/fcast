@@ -5,6 +5,9 @@ FROM rust:1-alpine
 
 RUN apk add --update alpine-sdk wget2 gcompat
 
+RUN apk add --update openjdk21
+ENV JAVA_HOME="/usr/lib/jvm/java-21-openjdk"
+
 RUN cargo install cargo-ndk
 RUN cargo install cargo-hack --locked
 

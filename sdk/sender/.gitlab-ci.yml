@@ -181,3 +181,16 @@ cargoTestSenderSDK:
   tags:
     - fcast-instance-runner
   when: manual
+
+publishAndroidSdk:
+  stage: buildSenderSDK
+  image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev:latest
+  tags:
+    - fcast-instance-runner
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^sender-sdk-v/'
+  script:
+    - export ORG_GRADLE_PROJECT_signingInMemoryKey="$(cat "$SIGNING_KEY")"
+    - cargo utask android download-sdk
+    - export ORG_GRADLE_PROJECT_sdkVersion="${CI_COMMIT_TAG#sender-sdk-v}"
+    - cargo utask kotlin build-aar --release --module-dir sdk/sender/android --gradle-task publishToMavenCentral

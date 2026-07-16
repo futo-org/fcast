@@ -530,6 +530,9 @@ impl InnerDevice {
                                                 local_addr: shared_state
                                                     .stream_local_sockaddr
                                                     .into(),
+                                                // Chromecast does not expose
+                                                // receiver format capabilities.
+                                                capabilities: None,
                                             },
                                         );
                                     }

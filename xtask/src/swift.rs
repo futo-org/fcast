@@ -3,9 +3,7 @@ use std::fs::rename;
 use anyhow::Result;
 use camino::Utf8Path;
 use clap::{Args, Subcommand};
-use uniffi_bindgen::{
-    bindings::SwiftBindingGenerator, library_mode::generate_bindings, EmptyCrateConfigSupplier,
-};
+use uniffi_bindgen::bindings::{generate, GenerateOptions, TargetLanguage};
 use xshell::cmd;
 
 use crate::{sh, workspace};
@@ -25,15 +23,13 @@ pub struct SwiftArgs {
 }
 
 fn generate_uniffi_bindings(library_path: &Utf8Path, ffi_generated_dir: &Utf8Path) -> Result<()> {
-    generate_bindings(
-        library_path,
-        None,
-        &SwiftBindingGenerator,
-        &EmptyCrateConfigSupplier,
-        None,
-        ffi_generated_dir,
-        false,
-    )?;
+    generate(GenerateOptions {
+        languages: vec![TargetLanguage::Swift],
+        source: library_path.to_path_buf(),
+        out_dir: ffi_generated_dir.to_path_buf(),
+        format: false,
+        ..Default::default()
+    })?;
 
     Ok(())
 }
