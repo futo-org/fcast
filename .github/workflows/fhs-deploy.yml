@@ -188,6 +188,8 @@ jobs:
     outputs:
       version: ${{ steps.r.outputs.version }}
       release: ${{ steps.r.outputs.release }}
+      build_type: ${{ steps.r.outputs.build_type }}
+      image: ${{ steps.r.outputs.image }}
     steps:
       - name: Check out fhs-core (resolve script)
         uses: actions/checkout@v4
@@ -209,7 +211,10 @@ jobs:
         env:
           GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
           INPUT_VERSION: ${{ needs.build.outputs.version }}
-        run: bash fhs-core/os/extensions/resolve-release.sh >> "$GITHUB_OUTPUT"
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: fhs
+          SHA: ${{ github.sha }}
+        run: bash fhs-core/os/extensions/resolve-sysext.sh >> "$GITHUB_OUTPUT"
 
   # Workaround since cannot use private workflows in public repo
   publish:
@@ -253,11 +258,12 @@ jobs:
 
       - name: Publish + sign
         env:
-          IMAGE: ${{ env.GHCR_IMAGE }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           ARCH: ${{ matrix.arch }}
           PKG_DIR: ${{ github.workspace }}/pkg
           VERSION: ${{ needs.resolve.outputs.version }}
           RELEASE: ${{ needs.resolve.outputs.release }}
+          BUILD_TYPE: ${{ needs.resolve.outputs.build_type }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: bash fhs-core/os/extensions/publish-sysext.sh
