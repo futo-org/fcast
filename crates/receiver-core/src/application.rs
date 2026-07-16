@@ -29,8 +29,6 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::message;
-#[cfg(feature = "airplay")]
-use crate::{airplay, message::AirPlay};
 use crate::{
     AppState, FCAST_TCP_PORT, GCastUpdateSender, GuiPlaybackState, MediaItemId, MessageSender,
     SenderId, UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
@@ -49,6 +47,8 @@ use crate::{
 };
 #[cfg(not(target_os = "android"))]
 use crate::{Settings, mdns};
+#[cfg(feature = "airplay")]
+use crate::{airplay, message::AirPlay};
 
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
@@ -1229,6 +1229,17 @@ impl Application {
         Ok(())
     }
 
+    fn video_stream_unavailable(&self) {
+        if !self.is_playing() {
+            debug!("Ignoring old video stream unavailable event");
+            return;
+        };
+
+        debug!("Video stream unavailable");
+
+        self.gui.set_player_type(UiPlayerVariant::Audio);
+    }
+
     fn stop_playback(&mut self) {
         tracing::info!(is_playing = self.is_playing());
         if self.is_playing() {
@@ -1561,10 +1572,10 @@ impl Application {
             Operation::ChangeTrack { id, typ } => {
                 debug!(id, ?typ, "changing track");
 
-                let res = match typ {
-                    v4::flat::MediaTrackType::Video => self.player.select_video_stream(id),
-                    v4::flat::MediaTrackType::Audio => self.player.select_audio_stream(id),
-                    v4::flat::MediaTrackType::Subtitle => self.player.select_subtitle_stream(id),
+                let stream_type = match typ {
+                    v4::flat::MediaTrackType::Video => gst::StreamType::VIDEO,
+                    v4::flat::MediaTrackType::Audio => gst::StreamType::AUDIO,
+                    v4::flat::MediaTrackType::Subtitle => gst::StreamType::TEXT,
                     _ => {
                         error!(?typ, "Unknown track type");
                         self.send_error(origin, ErrorKind::MalformedBody);
@@ -1572,9 +1583,41 @@ impl Application {
                     }
                 };
 
-                if let Err(err) = res {
-                    error!(?err, "Failed to change track");
-                    self.send_error(origin, ErrorKind::Internal);
+                if let Some(id) = id
+                    && !self.player.is_stream_of_type(id, stream_type)
+                {
+                    error!(id, ?typ, "Track id is not a track of the requested type");
+                    self.send_error(origin, ErrorKind::MalformedBody);
+                    return Ok(false);
+                }
+
+                // playsink cannot present a text stream without a video
+                // stream, so selecting a subtitle while video is deselected
+                // would either error the pipeline or be silently dropped.
+                // Report it as unsatisfiable instead.
+                if matches!(typ, v4::flat::MediaTrackType::Subtitle)
+                    && id.is_some()
+                    && self.player.current_video_stream.is_none()
+                {
+                    error!("Cannot select a subtitle track while video is disabled");
+                    self.send_error(origin, ErrorKind::InvalidState);
+                    return Ok(false);
+                }
+
+                // Latest-wins and serialized against other track operations in
+                // the player (see player::TrackOps); the subtitle re-emit
+                // flush is scheduled there too.
+                let kind = match typ {
+                    v4::flat::MediaTrackType::Video => player::TrackKind::Video,
+                    v4::flat::MediaTrackType::Audio => player::TrackKind::Audio,
+                    v4::flat::MediaTrackType::Subtitle => player::TrackKind::Subtitle,
+                    _ => unreachable!(),
+                };
+                if self.player.request_track_change(kind, id) {
+                    // The displayed cue belongs to the previous track; clear it
+                    // immediately so the change registers visually (a lingering
+                    // old cue reads as broken, especially while paused).
+                    self.gui.clear_video_overlays();
                 }
             }
             Operation::SelectQueueItem(position) => {
@@ -1931,6 +1974,11 @@ impl Application {
             }
             player::PlayerEvent::AboutToFinish => {}
             player::PlayerEvent::AsyncDone => {
+                // Settles an in-flight subtitle refresh (retrying it while
+                // paused if no cue rendered) and dispatches track work queued
+                // behind the async change.
+                self.player.async_done();
+
                 if self.player.have_media_info()
                     && self.player.player_state() != PlayerState::Playing
                 {
@@ -1999,23 +2047,32 @@ impl Application {
             }
             player::PlayerEvent::RequestState(state) => self.player.request_state(state),
             player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
+            player::PlayerEvent::SubtitleOverlayShown => self.player.subtitle_overlay_shown(),
+            player::PlayerEvent::SubtitleRefreshFailed { seqnum } => {
+                self.player.subtitle_refresh_failed(seqnum)
+            }
             player::PlayerEvent::StreamsSelected {
                 video,
                 audio,
                 subtitle,
+                seqnum,
             } => {
                 let (video_sid, audio_sid, subtitle_sid) = self.player.streams_selected(
                     video.as_deref(),
                     audio.as_deref(),
                     subtitle.as_deref(),
+                    seqnum,
                 );
                 self.gui.set_track_ids(
                     video_sid.map(|i| i as i32).unwrap_or(-1),
                     audio_sid.map(|i| i as i32).unwrap_or(-1),
                     subtitle_sid.map(|i| i as i32).unwrap_or(-1),
                 );
+
                 if video.is_some() {
                     self.video_stream_available()?;
+                } else {
+                    self.video_stream_unavailable();
                 }
 
                 if self.updates_tx.strong_count() > 0 {
@@ -2034,6 +2091,9 @@ impl Application {
             }
             player::PlayerEvent::SeekFailed => {
                 self.player.seek_failed();
+            }
+            player::PlayerEvent::ClockLost => {
+                self.player.recover_clock();
             }
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);
@@ -2336,7 +2396,7 @@ impl Application {
                             Err(err) => {
                                 let error_msg = err.to_shared_string();
                                 let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                                    UiUpdaterState::DownloadFailed,
+                                    crate::UiUpdaterState::DownloadFailed,
                                 ));
                                 let _ =
                                     gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
@@ -2360,7 +2420,7 @@ impl Application {
                             error!(?err, "Failed to install update");
                             let error_msg = err.to_shared_string();
                             let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                                UiUpdaterState::InstallFailed,
+                                crate::UiUpdaterState::InstallFailed,
                             ));
                             let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdaterError(error_msg));
                             return;
@@ -2369,7 +2429,7 @@ impl Application {
                         debug!(?update, "Successfully updated");
 
                         let _ = gui_tx.send(gui::UpdateGuiCommand::SetUpdateState(
-                            UiUpdaterState::InstallSuccessful,
+                            crate::UiUpdaterState::InstallSuccessful,
                         ));
                     });
                 }
@@ -2577,14 +2637,16 @@ impl Application {
 
                 let sid = if id >= 0 { Some(id as u32) } else { None };
 
-                let res = match variant {
-                    UiMediaTrackType::Video => self.player.select_video_stream(sid),
-                    UiMediaTrackType::Audio => self.player.select_audio_stream(sid),
-                    UiMediaTrackType::Subtitle => self.player.select_subtitle_stream(sid),
+                // Latest-wins and serialized against other track operations in
+                // the player (see player::TrackOps): rapid picker changes
+                // can't pile up overlapping playbin re-prerolls.
+                let kind = match variant {
+                    UiMediaTrackType::Video => player::TrackKind::Video,
+                    UiMediaTrackType::Audio => player::TrackKind::Audio,
+                    UiMediaTrackType::Subtitle => player::TrackKind::Subtitle,
                 };
-
-                if let Err(err) = res {
-                    error!(?err, id, ?variant, "Failed to select track");
+                if self.player.request_track_change(kind, sid) {
+                    self.gui.clear_video_overlays();
                 }
             }
             Message::NewPlayerEvent(event) => {
@@ -2718,6 +2780,7 @@ impl Application {
                     }
                 }
                 _ = update_interval.tick() => {
+                    self.player.poll_track_ops();
                     if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
                         self.send_v4_progress_updates();

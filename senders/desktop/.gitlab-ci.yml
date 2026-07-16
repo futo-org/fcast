@@ -156,6 +156,9 @@ buil_sender_win_x64:
         winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
         $env:PATH += ";C:\Program Files\CMake\bin"
 
+        winget install --id=Google.flatbuffers -e --accept-package-agreements --accept-source-agreements
+        $env:PATH += ";C:\Users\$Env:UserName\AppData\Local\Microsoft\WinGet\Links"
+
         git clone "https://gitlab.futo.org/videostreaming/fcast-build-deps.git"
         cd fcast-build-deps
         Start-Process 'msiexec.exe' -ArgumentList '/i "gstreamer-1.0-msvc-x86_64-1.26.10.msi" /qn' -Wait

@@ -1,17 +1,13 @@
+#[cfg(target_os = "windows")]
+use anyhow::anyhow;
 use anyhow::Result;
-#[cfg(target_os = "macos")]
-use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
 use xshell::cmd;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use crate::concat_paths;
 #[cfg(target_os = "macos")]
 use crate::BuildMacosInstallerArgs;
 use crate::{sh, workspace, AndroidAbiTarget};
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use receiver_resources::*;
 
 #[cfg(target_os = "macos")]
 #[derive(askama::Template)]
@@ -26,7 +22,6 @@ struct InfoPlistTemplate {
 struct ProductTemplate {
     version: String,
     dll_components: String,
-    gio_components: String,
 }
 
 #[derive(Subcommand)]
@@ -57,10 +52,50 @@ pub struct AndroidReceiverArgs {
 #[derive(Subcommand)]
 pub enum ReceiverCommand {
     Android(AndroidReceiverArgs),
+    /// Build a statically-linked GStreamer from a source tree and link the
+    /// desktop receiver against it.
+    BuildStatic(crate::gstreamer::GstreamerArgs),
+    /// Build the statically-linked receiver and run it. Arguments after `--`
+    /// are forwarded to the receiver binary.
+    Run(RunStaticArgs),
+    /// `cargo check` the desktop receiver against a static GStreamer.
+    Check(CargoSubcmdArgs),
+    /// `cargo clippy` the desktop receiver against a static GStreamer.
+    Clippy(CargoSubcmdArgs),
+    /// `cargo test` receiver-core against a static GStreamer (links + runs the
+    /// test binary). Args after `--` are forwarded to the libtest harness,
+    /// e.g. `-- --nocapture` or a test-name filter.
+    Test(CargoSubcmdArgs),
     #[cfg(target_os = "windows")]
-    BuildWindowsInstaller,
+    BuildWindowsInstaller(crate::gstreamer::GstreamerArgs),
     #[cfg(target_os = "macos")]
     BuildMacosInstaller(BuildMacosInstallerArgs),
+}
+
+#[derive(Args)]
+pub struct CargoSubcmdArgs {
+    #[command(flatten)]
+    pub gst: crate::gstreamer::GstreamerArgs,
+    /// Check/lint the release profile instead of the default fast debug build.
+    #[arg(long)]
+    pub release: bool,
+    /// Extra args appended to the inner cargo invocation (everything after `--`),
+    /// e.g. `-- --message-format=json` for editor integration (rustic/eglot).
+    #[arg(last = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct RunStaticArgs {
+    #[command(flatten)]
+    pub gst: crate::gstreamer::GstreamerArgs,
+    /// Build the receiver in release instead of the default fast debug build
+    /// (receiver side only; GStreamer is controlled by --gst-buildtype).
+    #[arg(long)]
+    pub release: bool,
+    /// Arguments forwarded to the receiver binary (everything after `--`).
+    #[arg(last = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -86,9 +121,22 @@ impl ReceiverArgs {
     pub fn run(self) -> Result<()> {
         let sh = sh();
         let root_path = workspace::root_path()?;
+        // Run from the workspace root so the receiver build's relative paths
+        // (target/gstreamer-src, target/<triple>/…) resolve correctly even when
+        // invoked from a subdirectory — e.g. rust-analyzer / rustic launching us
+        // inside a crate. push_dir covers the xshell commands; set_current_dir
+        // covers the std::fs / std::process::Command calls that bypass the shell
+        // (the source-reuse `.git` check and the `run` binary exec).
+        std::env::set_current_dir(&root_path)
+            .map_err(|e| anyhow::anyhow!("chdir to workspace root {root_path}: {e}"))?;
         let _p = sh.push_dir(root_path.clone());
 
         match self.cmd {
+            ReceiverCommand::BuildStatic(args) => return args.run(),
+            ReceiverCommand::Run(a) => return a.gst.run_binary(a.args, a.release),
+            ReceiverCommand::Check(a) => return a.gst.check(a.args, a.release),
+            ReceiverCommand::Clippy(a) => return a.gst.clippy(a.args, a.release),
+            ReceiverCommand::Test(a) => return a.gst.test(a.args, a.release),
             ReceiverCommand::Android(args) => {
                 let _env_andr_sdk = sh.push_env(
                     "ANDROID_HOME",
@@ -216,37 +264,26 @@ impl ReceiverArgs {
                 }
             }
             #[cfg(target_os = "windows")]
-            ReceiverCommand::BuildWindowsInstaller => {
-                let gst_root = crate::get_gst_root(&sh);
-
-                cmd!(sh, "cargo build --release --package desktop-receiver --features static-gst-plugins").run()?;
+            ReceiverCommand::BuildWindowsInstaller(static_args) => {
+                // scope=Full (the mac/win default): gstreamer, the glib/pango
+                // stack, codecs and the GIO TLS module are ALL statically
+                // linked into the binary — no GStreamer dev kit is involved
+                // and no runtime DLLs are bundled beyond the MSVC redists.
+                // NEEDS VALIDATION on a Windows box: check the exe imports
+                // with `dumpbin /dependents` — anything beyond OS DLLs and
+                // the redists indicates a dep that escaped the static build.
+                let binary = static_args
+                    .build()?
+                    .ok_or_else(|| anyhow!("--clean/--gstreamer-only produce no binary"))?;
 
                 let build_dir_root = crate::setup_build_dir(&sh, &root_path);
 
                 let mut files_to_copy = Vec::new();
                 files_to_copy.push((
-                    concat_paths(&[
-                        root_path.as_str(),
-                        "target",
-                        "release",
-                        "desktop-receiver.exe",
-                    ]),
+                    concat_path(&root_path, binary.as_str()),
                     "fcast-receiver.exe".to_string(),
                 ));
 
-                fn dlls() -> Vec<String> {
-                    let mut dlls: Vec<String> = GST_WIN_DEPENDENCY_LIBS
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect();
-                    for lib in GST_BASE_LIBS {
-                        dlls.push(format!("{lib}-1.0-0.dll"));
-                    }
-                    dlls
-                }
-
-                files_to_copy.extend(crate::find_dlls(&gst_root, dlls()));
-                files_to_copy.extend(crate::find_plugins(&gst_root, all_plugins_for_win()));
                 files_to_copy.extend(crate::find_msvc_redists(&sh));
                 files_to_copy.extend(crate::find_c_runtime(
                     crate::find_windows_sdk_installation_path(),
@@ -266,25 +303,12 @@ impl ReceiverArgs {
                     }
                 }
 
-                let src = gst_root
-                    .join("lib")
-                    .join("gio")
-                    .join("modules")
-                    .join("gioopenssl.dll");
-                sh.create_dir(build_dir_root.join("gio").join("modules"))?;
-                let dst = "gio\\modules\\gioopenssl.dll".to_owned();
-                let dst = concat_path(&build_dir_root, &dst);
-                sh.copy_file(&src, &dst)?;
-                let mut gio_components = format!(r#"<File Source="{dst}" />"#);
-                gio_components += "\n";
-
                 use askama::Template;
 
                 let receiver_version = get_receiver_version();
                 let product_wxs = ProductTemplate {
                     version: receiver_version.clone(),
                     dll_components,
-                    gio_components,
                 }
                 .render()?;
 
@@ -307,6 +331,7 @@ impl ReceiverArgs {
                 p12_file,
                 p12_password_file,
                 api_key_file,
+                static_args,
             }) => {
                 let path_to_dmg_dir = root_path.join("target").join("fcast-receiver-dmg");
                 let app_top_level = path_to_dmg_dir.join("FCast Receiver.app");
@@ -316,45 +341,33 @@ impl ReceiverArgs {
                     println!("Removed old build dir at `{path_to_dmg_dir:?}`")
                 }
 
-                let library_target_directory = build_dir_root.join("lib");
-                sh.create_dir(&library_target_directory)?;
+                sh.create_dir(&build_dir_root)?;
 
-                // "cargo build --release --package desktop-receiver --features static-gst-plugins"
-                cmd!(
-                    sh,
-                    "cargo build --release --package desktop-receiver --no-default-features --features static-gst-plugins"
-                )
-                .run()?;
+                // scope=Full (the macOS default): gstreamer, the glib/pango
+                // stack, codecs and the GIO TLS module are ALL statically
+                // linked — no GStreamer.framework dev kit, no dylib bundling,
+                // no install_name_tool rewriting. Only OS frameworks may
+                // remain dynamic; anything else means a dep escaped the
+                // static build, so fail loudly instead of shipping it.
+                let mut static_args = static_args;
+                static_args.no_default_features = true; // no systray on macOS
+                let binary = static_args
+                    .build()?
+                    .ok_or_else(|| anyhow::anyhow!("--clean/--gstreamer-only produce no binary"))?;
+                let binary_path = concat_path(&root_path, binary.as_str());
 
-                let binary_path =
-                    concat_paths(&[root_path.as_str(), "target", "release", "desktop-receiver"]);
+                let leftover = crate::find_non_system_dependencies_with_otool(&binary_path);
+                if !leftover.is_empty() {
+                    anyhow::bail!(
+                        "static build still links non-system dylibs: {leftover:?}\n\
+                         These would dangle on user machines — fix the static build \
+                         instead of bundling them."
+                    );
+                }
 
                 std::fs::copy(&binary_path, build_dir_root.join("fcast-receiver"))?;
 
                 use askama::Template;
-
-                let binary_dependencies = crate::find_libraries(
-                    &binary_path,
-                    all_plugins_for_macos(),
-                    &["libsoup-3.0.dylib"],
-                );
-                let relative_path = Utf8PathBuf::from("lib/");
-
-                println!("############### Rewriting dependencies to be relative ###############");
-
-                crate::rewrite_dependencies_to_be_relative(
-                    &binary_path,
-                    &binary_dependencies,
-                    &relative_path,
-                );
-
-                let extras = ["gio/modules/libgioopenssl.so"];
-                crate::process_dependencies(
-                    &sh,
-                    binary_dependencies,
-                    library_target_directory,
-                    &extras,
-                );
 
                 println!("############### Writing resources ###############");
 

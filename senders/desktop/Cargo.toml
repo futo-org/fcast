@@ -30,12 +30,12 @@ directories.workspace = true
 toml_edit.workspace = true
 fcast-protocol = { path = "../../crates/fcast-protocol" }
 mcore.path = "../../crates/mirroring-core/"
-image = { version = "0.25", default-features = false, features = [ "png", "jpeg", "webp", "avif", "rayon" ] }
+image = { version = "0.25", default-features = false, features = [ "decode", "png", "jpeg", "webp", "avif", "rayon" ] }
 url = "2"
 file-server = { path = "../../crates/file-server" }
 num_cpus.workspace = true
 mimalloc.workspace = true
-rustls = { version = "0.23.36", default-features = false, features = [ "prefer-post-quantum", "tls12", "std", "ring" ]}
+rustls = { version = "0.23.36", default-features = false, features = [ "tls12", "std", "ring" ]}
 isolang.workspace = true
 
 [dependencies.fcast-sender-sdk]
@@ -61,4 +61,4 @@ enable-ansi-support = "0.3.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 app-updater = { path = "../../crates/app-updater"}
-reqwest = { version = "0.13", features = [ "native-tls", "json" ] }
+reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "json" ] }

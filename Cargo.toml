@@ -20,6 +20,7 @@ members = [
     "crates/receiver-resources",
     "crates/libplacebo-sys",
     "crates/libplacebo",
+    "crates/libplacebo-vulkan",
     "crates/egl-sys",
     "crates/fiatlux-sys",
     "crates/fiatlux",
@@ -39,9 +40,10 @@ gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
-gst-plugin-rtp = { version = "0.15", features = [ "static" ] }
-gst-plugin-webrtc = { rev = "c2dc32fefa6db664143d79ab8cc0ae49b8415ddc", git = "https://github.com/MAlba124/gst-plugins-rs.git", default-features = false }
-gst-webrtc = { package = "gstreamer-webrtc", version = "0.25.0" }
+gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay" ] }
+gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
+gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
@@ -50,11 +52,11 @@ mdns-sd = { git = "https://github.com/MAlba124/mdns-sd.git", rev = "7523ce8c0603
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tracing-gstreamer = "0.9"
+tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3f7965c" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { version = "1.17", default-features = false }
-slint-build = "1.17"
+slint = { git = "https://github.com/MAlba124/slint.git", rev = "f05c68ab3", default-features = false }
+slint-build = { git = "https://github.com/MAlba124/slint.git", rev = "f05c68ab3" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
@@ -92,7 +94,7 @@ rcgen = "0.14"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-strip = "debuginfo"
+strip = "symbols"
 
 [profile.release-dbg]
 inherits = "release"
@@ -104,3 +106,7 @@ opt-level = 3
 
 [profile.dev.package."*"]
 debug = "line-tables-only"
+
+# Disable encoders
+[patch.crates-io]
+image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }

@@ -1,0 +1,23 @@
+As a subproject only libFLAC is consumed; the flac and metaflac
+command-line tools are dead weight at the tail of the parent build.
+The share/* helper libs are kept — they are tiny and building them
+unconditionally keeps the diff minimal.
+
+---
+ src/meson.build | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/meson.build b/src/meson.build
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -9,5 +9,8 @@
+ subdir('share/utf8')
+ subdir('share/grabbag')
+
+-subdir('flac')
+-subdir('metaflac')
++# As a subproject only libFLAC is wanted — skip the command-line tools.
++if not meson.is_subproject()
++  subdir('flac')
++  subdir('metaflac')
++endif

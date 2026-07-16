@@ -1,0 +1,8 @@
+[package]
+name = "libplacebo-vulkan"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+libplacebo = { path = "../libplacebo", features = ["vulkan"] }

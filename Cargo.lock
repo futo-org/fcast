@@ -378,7 +378,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -389,7 +389,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -407,7 +407,7 @@ dependencies = [
  "ctor 0.2.9",
  "flate2",
  "osakit",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tar",
@@ -927,28 +927,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7178fe5f7d460b13895ebb9dcb28a3a6216d2df2574a0806cb51b555d297f38"
 dependencies = [
  "arrayvec",
-]
-
-[[package]]
-name = "aws-lc-rs"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
-dependencies = [
- "aws-lc-sys",
- "zeroize",
-]
-
-[[package]]
-name = "aws-lc-sys"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
-dependencies = [
- "cc",
- "cmake",
- "dunce",
- "fs_extra",
 ]
 
 [[package]]
@@ -1538,15 +1516,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmake"
-version = "0.1.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1597,8 +1566,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9713489fbc45a2d113f58d17448c73115d533ed27fd2f2d0e5e5c69663eaf19b"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1607,8 +1575,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b5dc851b7ea80cc4f69aa28632385ffd3e0f88014d53db3f2e5a781896ca783"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2072,7 +2039,6 @@ version = "3.0.2"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
- "mimalloc",
  "receiver-core",
  "winresource",
 ]
@@ -2105,7 +2071,7 @@ dependencies = [
  "num_cpus",
  "objc2-core-graphics",
  "parking_lot",
- "reqwest 0.13.4",
+ "reqwest",
  "rustls",
  "serde",
  "slint",
@@ -2163,7 +2129,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2270,12 +2236,6 @@ name = "dtor"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
-
-[[package]]
-name = "dunce"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "egl-sys"
@@ -2415,7 +2375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2890,12 +2850,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs_extra"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
-
-[[package]]
 name = "futures"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3091,11 +3045,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -3153,7 +3105,7 @@ dependencies = [
  "gobject-sys 0.21.5",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3166,7 +3118,7 @@ dependencies = [
  "gobject-sys 0.22.6",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3403,9 +3355,8 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 
 [[package]]
 name = "gst-plugin-dav1d"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1af679769a9e89f97c224ea4c5b3663b40dfae2d265c4d2953c8b9413aefa273"
+version = "0.15.2"
+source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=f8bdc4929ff79e2567d97c5e95ac90b452812c79#f8bdc4929ff79e2567d97c5e95ac90b452812c79"
 dependencies = [
  "dav1d",
  "gst-plugin-version-helper",
@@ -3418,8 +3369,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-rtp"
 version = "0.15.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbd08f982932c6795233837ed687fada93ac4b02e305ec646f5ce864e8b62eea"
+source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=f8bdc4929ff79e2567d97c5e95ac90b452812c79#f8bdc4929ff79e2567d97c5e95ac90b452812c79"
 dependencies = [
  "anyhow",
  "atomic_refcell",
@@ -3462,7 +3412,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-webrtc"
 version = "0.15.2"
-source = "git+https://github.com/MAlba124/gst-plugins-rs.git?rev=c2dc32fefa6db664143d79ab8cc0ae49b8415ddc#c2dc32fefa6db664143d79ab8cc0ae49b8415ddc"
+source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=f8bdc4929ff79e2567d97c5e95ac90b452812c79#f8bdc4929ff79e2567d97c5e95ac90b452812c79"
 dependencies = [
  "anyhow",
  "async-tungstenite",
@@ -3491,7 +3441,7 @@ dependencies = [
  "itertools 0.14.0",
  "parse_link_header",
  "rand 0.10.1",
- "reqwest 0.12.28",
+ "reqwest",
  "rustls",
  "rustls-pki-types",
  "serde",
@@ -4255,11 +4205,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
- "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -4305,9 +4253,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-android-activity"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a69c405bd541532766a2d059ae21c562191881d2394fe112fc97f3aa9708a94"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -4322,9 +4269,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-linuxkms"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54e6cb54b264cac4aa4968d6b5d4f4240a89ae8d9153659391ac57b6e4757a9f"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "bytemuck",
  "calloop 0.14.4",
@@ -4347,9 +4293,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-selector"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74e252fd16064a10f7a0f105fef01b634cc6b6bebb0331f2cdc6da94e15d326d"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -4366,9 +4311,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-testing"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afd45731b1c4b973357f18dd6e4f95811ba496c73b56f21363d6c05af0dc2d0d"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -4380,9 +4324,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-winit"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a66940b16cbc6f6fc14363c8dd220497b503946146408907ecf071fdd6794973"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4427,9 +4370,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-common"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4be292acd6d591cf376f2338786b0c95faddb79fdbce4ff89f840daf2d7bac4"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "derive_more",
  "fontique",
@@ -4444,9 +4386,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-compiler"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "290c2247e87d3653b9b7c3bc1cbe19647b2f93a4b99a40aae6a7140717700d37"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -4477,9 +4418,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-core"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b7d306bc9d6fe1d1fd5e775837ec1fa1e41d1c8063789181b7de631bd5db41c"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "async-channel",
  "auto_enums",
@@ -4530,9 +4470,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-core-macros"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e66e7fc31239ceba98646825614df8148abc30f8326296c4d762008cc22ddff"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "quote",
  "serde_json",
@@ -4541,9 +4480,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-femtovg"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1a430c5adbd652119a5d37673b424ce3516903e192d73848919153e503c6d4d"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -4563,9 +4501,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-skia"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1c8e1e1351ed5d3b40211b5a6e5a8597cd541726f94b880ed71693bdbe519c4"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -4600,9 +4537,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-software"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5b4d1e212e5eed5a2ea7b7c693f152e6a50df84e2305060de13557e4b864d18"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "bytemuck",
  "clru",
@@ -4851,8 +4787,7 @@ dependencies = [
 [[package]]
 name = "image"
 version = "0.25.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+source = "git+https://gitlab.futo.org/fcast/image-rs.git?rev=9ee78f3f#9ee78f3f3cc8110b7b22dcb87b793b7d1a91bc7f"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
@@ -4897,15 +4832,6 @@ checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
  "quick-error",
-]
-
-[[package]]
-name = "image_swizzle"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f0b4ca70fba5d4987acb89071ddaa6960caebbd285248c8dce39e568993e447"
-dependencies = [
- "rustversion",
 ]
 
 [[package]]
@@ -5518,6 +5444,7 @@ dependencies = [
 name = "libplacebo"
 version = "0.1.0"
 dependencies = [
+ "libloading 0.9.0",
  "libplacebo-sys",
  "tracing",
 ]
@@ -5529,6 +5456,13 @@ dependencies = [
  "bindgen 0.72.1",
  "link-cplusplus",
  "system-deps",
+]
+
+[[package]]
+name = "libplacebo-vulkan"
+version = "0.1.0"
+dependencies = [
+ "libplacebo",
 ]
 
 [[package]]
@@ -5774,12 +5708,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru-slab"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
-
-[[package]]
 name = "lyon_algorithms"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6023,7 +5951,7 @@ dependencies = [
  "once_cell",
  "png",
  "thiserror 2.0.18",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6181,7 +6109,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7354,7 +7282,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -7373,7 +7301,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -7500,62 +7428,6 @@ checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
 dependencies = [
  "memchr",
  "serde",
-]
-
-[[package]]
-name = "quinn"
-version = "0.11.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
-dependencies = [
- "bytes",
- "cfg_aliases",
- "pin-project-lite",
- "quinn-proto",
- "quinn-udp",
- "rustc-hash 2.1.2",
- "rustls",
- "socket2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "quinn-proto"
-version = "0.11.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
-dependencies = [
- "aws-lc-rs",
- "bytes",
- "getrandom 0.3.4",
- "lru-slab",
- "rand 0.9.4",
- "ring",
- "rustc-hash 2.1.2",
- "rustls",
- "rustls-pki-types",
- "slab",
- "thiserror 2.0.18",
- "tinyvec",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "quinn-udp"
-version = "0.5.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
-dependencies = [
- "cfg_aliases",
- "libc",
- "once_cell",
- "socket2",
- "tracing",
- "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7817,6 +7689,7 @@ dependencies = [
  "gstreamer-base",
  "gstreamer-check",
  "gstreamer-gl-egl",
+ "gstreamer-pbutils",
  "gstreamer-tag",
  "gstreamer-video",
  "gstreamer-webrtc",
@@ -7824,15 +7697,16 @@ dependencies = [
  "headers",
  "http-body-util",
  "hyper",
+ "i-slint-backend-winit",
  "if-addrs",
  "image",
- "image_swizzle",
  "inhibit-screensaver",
  "jni 0.21.1",
  "jxl-oxide",
  "lazy_static",
  "libheif-rs",
  "libplacebo",
+ "libplacebo-vulkan",
  "md-5",
  "mdns-sd",
  "mime",
@@ -7846,15 +7720,15 @@ dependencies = [
  "pkg-config",
  "plist",
  "rand 0.10.1",
+ "raw-window-handle",
  "rcgen",
  "receiver-resources",
  "regex",
  "remote-pipeline-dbg",
- "reqwest 0.13.4",
+ "reqwest",
  "rsa",
  "rtp-types",
  "rtsp-types",
- "rustls",
  "rustls-pki-types",
  "sdp-types",
  "self_cell",
@@ -7878,6 +7752,9 @@ dependencies = [
  "tracing-tracy",
  "url",
  "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]
@@ -7956,51 +7833,10 @@ name = "remote-pipeline-dbg"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "image_swizzle",
- "slint",
- "slint-build",
-]
-
-[[package]]
-name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64",
- "bytes",
- "encoding_rs",
- "futures-core",
- "h2",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "mime",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
  "serde",
  "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webpki-roots",
+ "slint",
+ "slint-build",
 ]
 
 [[package]]
@@ -8029,7 +7865,6 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
@@ -8234,7 +8069,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8243,7 +8078,6 @@ version = "0.23.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
- "aws-lc-rs",
  "log",
  "once_cell",
  "ring",
@@ -8271,7 +8105,6 @@ version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
 dependencies = [
- "web-time",
  "zeroize",
 ]
 
@@ -8293,7 +8126,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8308,7 +8141,6 @@ version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
- "aws-lc-rs",
  "ring",
  "rustls-pki-types",
  "untrusted",
@@ -8337,12 +8169,6 @@ dependencies = [
  "unicode-properties",
  "unicode-script",
 ]
-
-[[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "same-file"
@@ -8533,18 +8359,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "serde_urlencoded"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
-dependencies = [
- "form_urlencoded",
- "itoa",
- "ryu",
- "serde",
 ]
 
 [[package]]
@@ -8747,9 +8561,8 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slint"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a54a407d1a0cbaa71d830ae7c236064b171368ea18db3b51ea3f2ce3f19519ee"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
@@ -8770,9 +8583,8 @@ dependencies = [
 
 [[package]]
 name = "slint-build"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc34415cacfde72e062d7e9c2bdd764429f5946870647c9f605fb7066a82015c"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "derive_more",
  "fontique",
@@ -8783,9 +8595,8 @@ dependencies = [
 
 [[package]]
 name = "slint-macros"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b74e0f959111e906199c743a3d7d59926f9d47823b462f6e6555bf8777275749"
+version = "1.17.1"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -8938,7 +8749,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9192,7 +9003,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9645,8 +9456,7 @@ dependencies = [
 [[package]]
 name = "tracing-gstreamer"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e6f5fad39c887a86671900bb19329ca91360b455d2bfd5d007bfa9084cbf162"
+source = "git+https://github.com/MAlba124/tracing-gstreamer.git?rev=3f7965c#3f7965c30a1dbb527f407c0533fda09e68fb95b6"
 dependencies = [
  "gstreamer 0.24.5",
  "libc",
@@ -9723,7 +9533,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69fff37da548239c3bf9e64a12193d261e8b22b660991c6fd2df057c168f435f"
 dependencies = [
  "cc",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -9796,7 +9606,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10111,8 +9921,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ea953f65593feb5287b022b83c35046d1ff49c7417b6f5851a079d8a231fe31"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -10123,8 +9932,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "482a37f9777480673d3a99c80ac2edc69f92382230440946855fa27ebc47cba6"
+source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10401,15 +10209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webpki-roots"
-version = "1.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
 name = "weedle2"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10446,7 +10245,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -11170,7 +10969,6 @@ dependencies = [
  "clap",
  "ctrlc",
  "mdns-sd",
- "receiver-resources",
  "serde",
  "serde_json",
  "toml_edit",

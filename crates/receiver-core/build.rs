@@ -8,4 +8,9 @@ fn main() {
             .probe("gstreamer-va-1.0")
             .expect("gstreamer-va-1.0 (libgstva) is required for the fhs feature");
     }
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-lib=framework=IOSurface");
+        println!("cargo:rustc-link-lib=framework=OpenGL");
+    }
 }

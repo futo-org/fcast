@@ -379,6 +379,10 @@ impl SenderArgs {
                 p12_file,
                 p12_password_file,
                 api_key_file,
+                // The sender still builds against the dynamic GStreamer dev
+                // kit and bundles its dylibs — the static-build options only
+                // apply to the receiver installer.
+                static_args: _,
             }) => {
                 fn plugins() -> Vec<String> {
                     GSTREAMER_PLUGIN_LIBS_COMMON

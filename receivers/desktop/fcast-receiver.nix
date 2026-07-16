@@ -22,6 +22,7 @@
   libGL,
   dav1d,
   libheif,
+  shaderc,
 }:
 
 let
@@ -71,6 +72,7 @@ rustPlatform.buildRustPackage rec {
     pipewire
     dav1d
     libheif
+    shaderc
   ];
 
   postInstall = ''
@@ -84,6 +86,7 @@ rustPlatform.buildRustPackage rec {
           xorg.libX11
           xorg.libxcb
           wayland
+          vulkan-loader
         ]
       }
   '';

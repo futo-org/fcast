@@ -124,6 +124,7 @@ pub struct Overlay {
     subtitle_gen: u64,
     title: Option<(TextLayer, u64)>,
     last_key: Option<u64>,
+    subtitle_key: Option<u64>,
 }
 
 impl Overlay {
@@ -167,6 +168,7 @@ impl Overlay {
                 subtitle_gen: 0,
                 title: None,
                 last_key: None,
+                subtitle_key: None,
             })
         }
     }
@@ -185,38 +187,35 @@ impl Overlay {
         dx * dx + dy * dy <= l.button_r * l.button_r
     }
 
-    pub fn set_subtitle_text(&mut self, gl: &glow::Context, lines: &[String], scale: f32) {
-        if lines.is_empty() {
-            self.clear_subtitle(gl);
-            return;
-        }
-        let font_px = (30.0 * scale).round().max(1.0) as u32;
-        let text = lines.join("\n");
-        // Wrap subtitles to a sane fraction of the window; the surface still fits
-        // the resulting text block.
-        let max_w = (1920.0 * scale) as u32;
-        let Ok((rgba, w, h)) = rasterize_subtitle(&text, font_px, max_w.max(320)) else {
-            self.clear_subtitle(gl);
-            return;
-        };
-        self.store_subtitle(gl, &rgba, w, h);
-    }
-
     pub fn set_subtitle_overlays(&mut self, gl: &glow::Context, overlays: &[VideoOverlay]) {
         if overlays.is_empty() {
             self.clear_subtitle(gl);
+            self.subtitle_key = None;
+            return;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for o in overlays {
+            o.seqnum.hash(&mut hasher);
+        }
+        let key = hasher.finish();
+        if self.subtitle_key == Some(key) && self.subtitle.is_some() {
+            return;
+        }
+        if let [only] = overlays {
+            self.store_subtitle(gl, &only.pixels, only.width as i32, only.height as i32);
+            self.subtitle_key = Some(key);
             return;
         }
         let min_x = overlays.iter().map(|o| o.x).min().unwrap();
         let min_y = overlays.iter().map(|o| o.y).min().unwrap();
         let max_x = overlays
             .iter()
-            .map(|o| o.x + o.pix_buffer.width() as i32)
+            .map(|o| o.x + o.width as i32)
             .max()
             .unwrap();
         let max_y = overlays
             .iter()
-            .map(|o| o.y + o.pix_buffer.height() as i32)
+            .map(|o| o.y + o.height as i32)
             .max()
             .unwrap();
         let w = (max_x - min_x).max(1) as u32;
@@ -224,9 +223,9 @@ impl Overlay {
         let row_bytes = w as usize * 4;
         let mut rgba = vec![0u8; row_bytes * h as usize];
         for overlay in overlays {
-            let ow = overlay.pix_buffer.width() as usize;
-            let oh = overlay.pix_buffer.height() as usize;
-            let src = overlay.pix_buffer.as_bytes();
+            let ow = overlay.width as usize;
+            let oh = overlay.height as usize;
+            let src = &overlay.pixels;
             let ox = (overlay.x - min_x) as usize;
             let oy = (overlay.y - min_y) as usize;
             for row in 0..oh {
@@ -236,6 +235,7 @@ impl Overlay {
             }
         }
         self.store_subtitle(gl, &rgba, w as i32, h as i32);
+        self.subtitle_key = Some(key);
     }
 
     pub fn clear_subtitle(&mut self, gl: &glow::Context) {
@@ -247,11 +247,15 @@ impl Overlay {
     }
 
     fn store_subtitle(&mut self, gl: &glow::Context, rgba: &[u8], w: i32, h: i32) {
-        if let Some(layer) = self.subtitle.take() {
-            unsafe { gl.delete_texture(layer.tex) };
-        }
-        let Ok(tex) = (unsafe { upload_texture(gl, rgba, w, h) }) else {
-            return;
+        let tex = match self.subtitle.take() {
+            Some(layer) => {
+                unsafe { upload_texture_into(gl, layer.tex, rgba, w, h) };
+                layer.tex
+            }
+            None => match unsafe { upload_texture(gl, rgba, w, h) } {
+                Ok(tex) => tex,
+                Err(_) => return,
+            },
         };
         self.subtitle = Some(TextLayer { tex, w, h });
         self.subtitle_gen += 1;
@@ -285,11 +289,15 @@ impl Overlay {
             self.clear_title(gl);
             return;
         };
-        if let Some((layer, _)) = self.title.take() {
-            unsafe { gl.delete_texture(layer.tex) };
-        }
-        let Ok(tex) = (unsafe { upload_texture(gl, &rgba, w, h) }) else {
-            return;
+        let tex = match self.title.take() {
+            Some((layer, _)) => {
+                unsafe { upload_texture_into(gl, layer.tex, &rgba, w, h) };
+                layer.tex
+            }
+            None => match unsafe { upload_texture(gl, &rgba, w, h) } {
+                Ok(tex) => tex,
+                Err(_) => return,
+            },
         };
         self.title = Some((TextLayer { tex, w, h }, key));
         self.last_key = None;
@@ -831,6 +839,24 @@ unsafe fn upload_texture(gl: &glow::Context, rgba: &[u8], w: i32, h: i32) -> Res
     }
 }
 
+unsafe fn upload_texture_into(gl: &glow::Context, tex: glow::Texture, rgba: &[u8], w: i32, h: i32) {
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            w,
+            h,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(rgba)),
+        );
+        gl.bind_texture(glow::TEXTURE_2D, None);
+    }
+}
+
 unsafe fn compile_program(gl: &glow::Context) -> Result<glow::Program> {
     unsafe {
         let program = gl.create_program().map_err(|e| anyhow!("create_program: {e}"))?;
@@ -917,54 +943,6 @@ fn outline_text(cr: &cairo::Context, layout: &pango::Layout, pad: f64, outline: 
     Ok(())
 }
 
-fn rasterize_subtitle(text: &str, font_px: u32, max_width: u32) -> Result<(Vec<u8>, i32, i32)> {
-    use cairo::{Context, Format, ImageSurface, Operator};
-
-    const PAD_X: i32 = 10;
-    const PAD_Y: i32 = 5;
-
-    let mut font = pango::FontDescription::new();
-    font.set_family("sans-serif");
-    font.set_absolute_size(font_px as f64 * pango::SCALE as f64);
-
-    let measure = ImageSurface::create(Format::ARgb32, 1, 1)
-        .map_err(|e| anyhow!("cairo surface create failed: {e}"))?;
-    let measure_cr = Context::new(&measure).map_err(|e| anyhow!("cairo context failed: {e}"))?;
-    let layout = pangocairo::functions::create_layout(&measure_cr);
-    layout.set_font_description(Some(&font));
-    layout.set_alignment(pango::Alignment::Center);
-    layout.set_wrap(pango::WrapMode::WordChar);
-    layout.set_width((max_width as i32 - PAD_X * 2).max(1) * pango::SCALE);
-    layout.set_text(text);
-    let (text_w, text_h) = layout.pixel_size();
-
-    let width = (text_w + PAD_X * 2).max(1);
-    let height = (text_h + PAD_Y * 2).max(1);
-
-    let mut surface = ImageSurface::create(Format::ARgb32, width, height)
-        .map_err(|e| anyhow!("cairo surface create failed: {e}"))?;
-    {
-        let cr = Context::new(&surface).map_err(|e| anyhow!("cairo context failed: {e}"))?;
-        cr.set_operator(Operator::Source);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.5);
-        cr.paint().map_err(|e| anyhow!("cairo paint failed: {e}"))?;
-
-        cr.set_operator(Operator::Over);
-        cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
-        cr.move_to(PAD_X as f64, PAD_Y as f64);
-        let layout = pangocairo::functions::create_layout(&cr);
-        layout.set_font_description(Some(&font));
-        layout.set_alignment(pango::Alignment::Center);
-        layout.set_wrap(pango::WrapMode::WordChar);
-        layout.set_width(text_w * pango::SCALE);
-        layout.set_text(text);
-        pangocairo::functions::show_layout(&cr, &layout);
-    }
-    surface.flush();
-
-    Ok((swizzle(&mut surface, width, height)?, width, height))
-}
-
 fn escape_markup(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -987,7 +965,7 @@ fn rasterize_title_row(
     let sep = "   \u{2022}   ";
     let mut parts: Vec<String> = Vec::new();
     if !title.is_empty() {
-        parts.push(format!("<b>{}</b>", escape_markup(title)));
+        parts.push(escape_markup(title));
     }
     if !artist.is_empty() {
         parts.push(escape_markup(artist));
@@ -999,6 +977,7 @@ fn rasterize_title_row(
 
     let mut font = pango::FontDescription::new();
     font.set_family("sans-serif");
+    font.set_weight(pango::Weight::Bold);
     font.set_absolute_size(font_px * pango::SCALE as f64);
 
     let measure = ImageSurface::create(Format::ARgb32, 1, 1)

@@ -1,0 +1,19 @@
+diff --git a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
+index 4211527..aa88bcb 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
++++ b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
+@@ -4834,7 +4834,13 @@ gst_matroska_demux_update_stream_seek_ranges (GstMatroskaDemux * demux,
+   if (start_time < range->start_time) {
+     /* We're walking backward, so we need to find the correct range */
+     GList *l = demux->current_seek_range;
+-    g_assert (l->prev != NULL); /* We can't be *before* the first range */
++
++    /* If this block predates the first range (e.g. in a multi-stream file a
++     * second stream's first block arrives before the block that seeded the
++     * initial range), extend the first range's start backward to cover it
++     * instead of asserting l->prev != NULL and aborting. */
++    if (l->prev == NULL)
++      range->start_time = start_time;
+ 
+     while (l->prev) {
+       GList *prev = l->prev;

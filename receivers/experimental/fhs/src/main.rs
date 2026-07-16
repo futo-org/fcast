@@ -6,7 +6,7 @@ use rcore::{
     clap::Parser,
     egl, glow,
     tracing::error,
-    video::{Frame, Resource},
+    video::Frame,
 };
 use std::{
     ffi::{CString, c_char, c_void},
@@ -332,17 +332,7 @@ fn main() -> Result<()> {
             }
 
             if have_new {
-                match &frame.overlays {
-                    Resource::New(overlays) => overlay.set_subtitle_overlays(sink.gl(), overlays),
-                    Resource::Unchanged => {}
-                    Resource::Cleared | Resource::Eos => match &frame.subtitles {
-                        Resource::New(lines) => {
-                            overlay.set_subtitle_text(sink.gl(), lines, fl.window.display_scale)
-                        }
-                        Resource::Unchanged => {}
-                        Resource::Cleared | Resource::Eos => overlay.clear_subtitle(sink.gl()),
-                    },
-                }
+                overlay.set_subtitle_overlays(sink.gl(), &frame.overlays);
             }
 
             damaged.push(fl.video_surface_id);

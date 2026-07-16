@@ -163,7 +163,7 @@ build_receiver_for_win_x64:
           winget install --id=LLVM.LLVM -e --accept-package-agreements --accept-source-agreements
           winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
           winget install --id=Ninja-build.Ninja -e --accept-package-agreements --accept-source-agreements
-          winget install --id=gstreamerproject.gstreamer --version 1.28.1 --scope=machine -e --accept-package-agreements --accept-source-agreements
+          winget install --id=Google.flatbuffers -e --accept-package-agreements --accept-source-agreements
         }
 
         Start-Job -ScriptBlock {
@@ -192,17 +192,16 @@ build_receiver_for_win_x64:
         \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Roaming\Python\Python314\Scripts"
         \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Microsoft\WinGet\Links\"
         \$env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
-        \$env:PATH += ";C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
 
         \$env:CC = "clang-cl"
         \$env:CXX = "clang-cl"
-        \$env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
 
         cd fcast
 
-        pip3 install meson
+        pip3 install meson pkgconf
+        \$env:PKG_CONFIG = (python -c "import pkgconf; print(pkgconf.get_executable())")
 
-        cargo xtask receiver build-windows-installer
+        cargo xtask receiver build-windows-installer --gst-ref 1.29.2
       PS
 
     - |

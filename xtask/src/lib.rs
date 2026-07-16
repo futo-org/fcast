@@ -9,10 +9,12 @@ use clap::Args;
 use xshell::Shell;
 
 pub mod android;
+pub mod gstreamer;
 #[cfg(feature = "uniffi")]
 pub mod csharp;
 #[cfg(feature = "uniffi")]
 pub mod kotlin;
+#[cfg(feature = "mdns")]
 pub mod mdns;
 pub mod protocol;
 pub mod receiver;
@@ -68,6 +70,9 @@ pub struct BuildMacosInstallerArgs {
     pub p12_password_file: Option<String>,
     #[clap(long)]
     pub api_key_file: Option<String>,
+    /// Static GStreamer build options (source tree, offline, LTO, ...).
+    #[clap(flatten)]
+    pub static_args: gstreamer::GstreamerArgs,
 }
 
 #[cfg(target_os = "macos")]

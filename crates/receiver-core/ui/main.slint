@@ -42,6 +42,9 @@ export component MainWindow inherits Window {
         Bridge.connected_devices += 1;
     }
 
+    property <bool> video-obstructed: Bridge.video-obstructed;
+    changed video-obstructed => Bridge.video-obstructed-changed(self.video-obstructed);
+
     FocusScope {
         capture-key-pressed(event) => Bridge.capture-key-pressed(event);
     }

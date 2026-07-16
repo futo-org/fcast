@@ -1,0 +1,79 @@
+vtdec: pick the NV12/P010_10LE output matching the input bit depth
+
+get_preferred_video_format() returns the first NV12-or-P010 in the downstream
+format list regardless of content depth (the in-tree TODO), so whichever the
+sink lists first wins for ALL streams: with NV12 first, 10-bit HEVC decodes
+into 8-bit NV12 - VideoToolbox quantizes in its output-format conversion (the
+transfer function / colorimetry pass through untouched, so this is silent
+precision loss before any downstream tonemapping, i.e. banding on HDR
+gradients). With P010 first, all 8-bit content would be padded to 10-bit
+instead (2x bandwidth for SDR).
+
+Use bit-depth-luma from the parsed input caps (set by h265parse/h264parse/
+vp9parse; absent means 8) to pick the depth-matched variant, falling back to
+whichever NV12/P010 the sink offers if there is no match.
+
+diff --git a/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c b/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c
+--- a/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c
++++ b/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c
+@@ -567,15 +567,19 @@
+  * Unconditionally output a high bit-depth + alpha format when decoding Apple
+  * ProRes video if downstream supports it.
+  * Also prefer alpha formats if we're decoding HEVC with alpha.
++ * For normal video, prefer the NV12/P010_10LE variant matching the input bit
++ * depth (bit-depth-luma from the parsed input caps), so 10-bit content is not
++ * silently quantized to 8 bits by the decompression session's output stage.
+  * TODO: read src_pix_fmt to get the preferred output format
+  * https://wiki.multimedia.cx/index.php/Apple_ProRes#Frame_header
+  */
+ static GstVideoFormat
+ get_preferred_video_format (GstStructure * s, gboolean prores,
+-    gboolean hevc_alpha)
++    gboolean hevc_alpha, gboolean prefer_10bit)
+ {
+   const GValue *list = gst_structure_get_value (s, "format");
+   guint i, size = gst_value_list_get_size (list);
++  GstVideoFormat fallback = GST_VIDEO_FORMAT_UNKNOWN;
+ 
+   for (i = 0; i < size; i++) {
+     const GValue *value = gst_value_list_get_value (list, i);
+@@ -584,8 +588,12 @@
+     switch (vfmt) {
+       case GST_VIDEO_FORMAT_NV12:
+       case GST_VIDEO_FORMAT_P010_10LE:
+-        if (!prores && !hevc_alpha)
+-          return vfmt;
++        if (!prores && !hevc_alpha) {
++          if ((vfmt == GST_VIDEO_FORMAT_P010_10LE) == (prefer_10bit != FALSE))
++            return vfmt;
++          if (fallback == GST_VIDEO_FORMAT_UNKNOWN)
++            fallback = vfmt;
++        }
+         break;
+       case GST_VIDEO_FORMAT_AV12:
+       case GST_VIDEO_FORMAT_BGRA:
+@@ -611,7 +619,7 @@
+         break;
+     }
+   }
+-  return GST_VIDEO_FORMAT_UNKNOWN;
++  return fallback;
+ }
+ 
+ static gboolean
+@@ -707,9 +715,14 @@
+     if (gst_structure_has_field_typed (s, "format", GST_TYPE_LIST)) {
+       CMVideoCodecType codec =
+           CMVideoFormatDescriptionGetCodecType (vtdec->format_description);
++      guint bit_depth = 8;
++
++      if (vtdec->input_state)
++        gst_structure_get_uint (gst_caps_get_structure
++            (vtdec->input_state->caps, 0), "bit-depth-luma", &bit_depth);
+       format = get_preferred_video_format (s,
+           GST_VTDEC_CODEC_TYPE_IS_PRORES (codec),
+-          codec == kCMVideoCodecType_HEVCWithAlpha);
++          codec == kCMVideoCodecType_HEVCWithAlpha, bit_depth > 8);
+     }
+ 
+     if (format == GST_VIDEO_FORMAT_UNKNOWN) {

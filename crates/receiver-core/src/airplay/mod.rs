@@ -28,8 +28,8 @@ use tokio::net::TcpListener;
 use tracing::{debug, instrument, warn};
 
 use crate::MessageSender;
-use crypto::MirrorCipher;
 use apple_fairplay::FairPlay;
+use crypto::MirrorCipher;
 use http::{Connection, Request, Response};
 
 /// Apple's default AirPlay port. iOS expects the `_airplay._tcp` HTTP/RTSP

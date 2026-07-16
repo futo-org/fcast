@@ -79,25 +79,55 @@ mod build {
             .join("patches/opengl-rgb10a2.patch");
         apply_patch(&source, &rgb10a2_patch_path);
 
-        runner!(
-            "meson",
+        let (vulkan, shaderc, vk_proc_addr) = if cfg!(feature = "vulkan") {
+            (
+                "-Dvulkan=enabled",
+                "-Dshaderc=enabled",
+                "-Dvk-proc-addr=disabled",
+            )
+        } else {
+            (
+                "-Dvulkan=disabled",
+                "-Dshaderc=disabled",
+                "-Dvk-proc-addr=disabled",
+            )
+        };
+
+        let mut setup_args: Vec<&str> = vec![
             "setup",
             "-Dbuildtype=release",
             "-Ddefault_library=static",
             "-Dglslang=disabled",
-            "-Dvulkan=disabled",
-            "-Dshaderc=disabled",
+            vulkan,
+            shaderc,
+            vk_proc_addr,
             "-Dd3d11=disabled",
             "-Ddemos=false",
             "-Ddovi=disabled",
             "-Dlcms=disabled",
             "-Dxxhash=disabled",
             "-Dunwind=disabled",
+        ];
+        // MSVC hides <stdatomic.h> behind C11 + an experimental switch; without
+        // both, libplacebo's atomic probe fails and it falls back to a
+        // nonexistent `atomic.lib`. C-only so the C++ (shaderc/glslang) TUs are
+        // unaffected.
+        if cfg!(target_os = "windows") {
+            setup_args.push("-Dc_args=/std:c11 /experimental:c11atomics");
+        }
+        setup_args.extend([
             "--prefix",
             release_path.to_str().unwrap(),
             build_path.to_str().unwrap(),
-            source.to_str().unwrap()
-        );
+            source.to_str().unwrap(),
+        ]);
+        let status = Command::new("meson")
+            .args(&setup_args)
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .status()
+            .expect("meson failed to spawn");
+        assert!(status.success(), "meson setup exited with a failure status");
 
         runner!("ninja", "-C", build_path.to_str().unwrap());
         runner!("meson", "install", "-C", build_path.to_str().unwrap());
@@ -140,6 +170,17 @@ fn main() {
 
     for header in headers {
         builder = builder.clang_arg("-I").clang_arg(header.to_str().unwrap());
+    }
+
+    if cfg!(feature = "vulkan") {
+        builder = builder.clang_arg("-DFCAST_ENABLE_VULKAN");
+        // libplacebo/vulkan.h includes <vulkan/vulkan.h>; use the same vendored headers
+        // the meson build itself prefers, so the bindings match the compiled library.
+        let vk_headers = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("libplacebo/3rdparty/Vulkan-Headers/include");
+        builder = builder
+            .clang_arg("-I")
+            .clang_arg(vk_headers.to_str().unwrap());
     }
 
     builder = builder.default_enum_style(bindgen::EnumVariation::Rust {
