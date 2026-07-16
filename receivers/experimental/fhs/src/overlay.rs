@@ -214,7 +214,7 @@ impl Overlay {
             o.seqnum.hash(&mut hasher);
         }
         let key = hasher.finish();
-        if self.subtitle_key == Some(key) && self.subtitle.is_some() {
+        if self.subtitle_key == Some(key) {
             return;
         }
         if let [only] = overlays {

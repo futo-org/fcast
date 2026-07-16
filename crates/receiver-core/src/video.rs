@@ -347,6 +347,16 @@ pub mod imp {
         })
     }
 
+    // Tracks the last frame's overlay state so unchanged overlays can be
+    // skipped without re-decoding their bitmaps every frame. `meta_seqnums`
+    // are the composition seqnums (the change signal); `emitted_seqnums` are
+    // the seqnums of the overlays actually produced, reused as dedup markers.
+    #[derive(Default)]
+    struct LastOverlays {
+        meta_seqnums: SmallVec<[u32; 4]>,
+        emitted_seqnums: SmallVec<[u32; 4]>,
+    }
+
     #[derive(Default)]
     pub struct FSink {
         config: Mutex<Config>,
@@ -356,6 +366,7 @@ pub mod imp {
         scale_to_window: AtomicBool,
         source_resolution: Mutex<Option<WindowResolution>>,
         payload_handle: VideoPayloadHandle,
+        last_overlays: Mutex<LastOverlays>,
         // Edge detector for the overlay-shown element message (see
         // `SUBTITLE_OVERLAY_SHOWN_MESSAGE`); reset by flush-stop.
         had_overlays: AtomicBool,
@@ -672,67 +683,101 @@ pub mod imp {
 
             let buffer = buffer.clone();
 
-            let overlays: SmallVec<[Overlay; 3]> = buffer
+            let current_meta_seqnums: SmallVec<[u32; 4]> = buffer
                 .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
-                .flat_map(|meta| {
-                    let composition = meta.overlay();
-                    let seqnum = composition.seqnum();
-                    composition
-                        .iter()
-                        .filter_map(|rect| {
-                            let buffer = rect.pixels_unscaled_argb(
-                                gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA,
-                            );
-                            let (x, y, render_width, render_height) = rect.render_rectangle();
-
-                            let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
-
-                            if vmeta.format() != gst_video::VideoFormat::Bgra {
-                                return None;
-                            }
-
-                            let info = gst_video::VideoInfo::builder(
-                                vmeta.format(),
-                                vmeta.width(),
-                                vmeta.height(),
-                            )
-                            .build()
-                            .unwrap();
-
-                            let frame =
-                                gst_video::VideoFrame::from_buffer_readable(buffer, &info).ok()?;
-
-                            let Ok(plane) = frame.plane_data(0) else {
-                                return None;
-                            };
-
-                            let width = frame.width();
-                            let height = frame.height();
-                            let stride = frame.plane_stride()[0] as usize;
-                            let row_bytes = width as usize * 4;
-                            let mut pixels = Vec::with_capacity(row_bytes * height as usize);
-                            for row in 0..height as usize {
-                                let start = row * stride;
-                                pixels.extend_from_slice(&plane[start..start + row_bytes]);
-                            }
-                            for px in pixels.chunks_exact_mut(4) {
-                                px.swap(0, 2);
-                            }
-
-                            Some(Overlay {
-                                pixels,
-                                width,
-                                height,
-                                x,
-                                y,
-                                render_width,
-                                render_height,
-                                seqnum,
-                            })
-                        })
-                        .collect::<SmallVec<[_; 3]>>()
-                })
+                .map(|meta| meta.overlay().seqnum())
                 .collect();
+
+            let overlays: SmallVec<[Overlay; 3]> = {
+                let mut last = self.last_overlays.lock();
+                if !current_meta_seqnums.is_empty() && last.meta_seqnums == current_meta_seqnums {
+                    // Overlays are unchanged since the last frame. Emit lightweight
+                    // markers (seqnum only, no pixels) reproducing the last emitted
+                    // overlays so the sink consumer dedups and keeps the current
+                    // subtitle, without re-decoding the overlay bitmaps every frame.
+                    last.emitted_seqnums
+                        .iter()
+                        .map(|&seqnum| Overlay {
+                            pixels: Vec::new(),
+                            width: 0,
+                            height: 0,
+                            x: 0,
+                            y: 0,
+                            render_width: 0,
+                            render_height: 0,
+                            seqnum,
+                        })
+                        .collect()
+                } else {
+                    let extracted: SmallVec<[Overlay; 3]> = buffer
+                        .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
+                        .flat_map(|meta| {
+                            let composition = meta.overlay();
+                            let seqnum = composition.seqnum();
+                            composition
+                                .iter()
+                                .filter_map(|rect| {
+                                    let buffer = rect.pixels_unscaled_argb(
+                                        gst_video::VideoOverlayFormatFlags::GLOBAL_ALPHA,
+                                    );
+                                    let (x, y, render_width, render_height) =
+                                        rect.render_rectangle();
+
+                                    let vmeta = buffer.meta::<gst_video::VideoMeta>().unwrap();
+
+                                    if vmeta.format() != gst_video::VideoFormat::Bgra {
+                                        return None;
+                                    }
+
+                                    let info = gst_video::VideoInfo::builder(
+                                        vmeta.format(),
+                                        vmeta.width(),
+                                        vmeta.height(),
+                                    )
+                                    .build()
+                                    .unwrap();
+
+                                    let frame =
+                                        gst_video::VideoFrame::from_buffer_readable(buffer, &info)
+                                            .ok()?;
+
+                                    let Ok(plane) = frame.plane_data(0) else {
+                                        return None;
+                                    };
+
+                                    let width = frame.width();
+                                    let height = frame.height();
+                                    let stride = frame.plane_stride()[0] as usize;
+                                    let row_bytes = width as usize * 4;
+                                    let mut pixels =
+                                        Vec::with_capacity(row_bytes * height as usize);
+                                    for row in 0..height as usize {
+                                        let start = row * stride;
+                                        pixels.extend_from_slice(&plane[start..start + row_bytes]);
+                                    }
+                                    for px in pixels.chunks_exact_mut(4) {
+                                        px.swap(0, 2);
+                                    }
+
+                                    Some(Overlay {
+                                        pixels,
+                                        width,
+                                        height,
+                                        x,
+                                        y,
+                                        render_width,
+                                        render_height,
+                                        seqnum,
+                                    })
+                                })
+                                .collect::<SmallVec<[_; 3]>>()
+                        })
+                        .collect();
+                    last.emitted_seqnums = extracted.iter().map(|o| o.seqnum).collect();
+                    last.meta_seqnums = current_meta_seqnums;
+                    extracted
+                }
+            };
 
             let has_overlays = !overlays.is_empty();
             let prev = self
