@@ -901,6 +901,10 @@ impl ExternalVideoHandle {
             .operation(application::PacketOrigin::Gui, Operation::ResumeOrPause);
     }
 
+    pub fn seek_percent(&self, percent: f32) {
+        self.msg_tx.send(Message::SeekPercent(percent));
+    }
+
     pub fn set_drm_formats(&self, formats: std::collections::HashSet<drm_fourcc::DrmFormat>) {
         self.sink
             .set_property("drm-formats", video::imp::DrmFormats(Arc::new(formats)));

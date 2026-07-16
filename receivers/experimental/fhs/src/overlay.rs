@@ -187,6 +187,22 @@ impl Overlay {
         dx * dx + dy * dy <= l.button_r * l.button_r
     }
 
+    pub fn bar_hit(&self, window_size: (u32, u32), x: i32, y: i32) -> Option<f64> {
+        let l = self.layout(window_size)?;
+        let bar_w = l.bar_x1 - l.bar_x0;
+        if bar_w <= 0.0 {
+            return None;
+        }
+        let lx = x as f64 - l.surface_x as f64;
+        let ly = y as f64 - l.surface_y as f64;
+        let cy = (l.bar_y0 + l.bar_y1) / 2.0;
+        let half = ((l.bar_y1 - l.bar_y0) * 2.0).max(l.button_r * 0.5);
+        if (ly - cy).abs() > half || lx < l.bar_x0 || lx > l.bar_x1 {
+            return None;
+        }
+        Some(((lx - l.bar_x0) / bar_w).clamp(0.0, 1.0))
+    }
+
     pub fn set_subtitle_overlays(&mut self, gl: &glow::Context, overlays: &[VideoOverlay]) {
         if overlays.is_empty() {
             self.clear_subtitle(gl);

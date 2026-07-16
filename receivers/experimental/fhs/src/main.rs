@@ -452,10 +452,14 @@ fn main() -> Result<()> {
             let ts = title_state.as_ref().unwrap();
             overlay.set_title(sink.gl(), &ts.title, &ts.artist, &ts.album, size);
 
-            if let Some((cx, cy)) = click
-                && overlay.button_hit(size, cx, cy)
-            {
-                handle.resume_or_pause();
+            if let Some((cx, cy)) = click {
+                if overlay.button_hit(size, cx, cy) {
+                    handle.resume_or_pause();
+                } else if let Some(frac) = overlay.bar_hit(size, cx, cy)
+                    && playback_state.duration_s > 0.0
+                {
+                    handle.seek_percent(frac as f32);
+                }
             }
         }
 
