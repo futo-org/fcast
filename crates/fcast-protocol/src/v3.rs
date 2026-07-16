@@ -541,6 +541,15 @@ mod tests {
             .unwrap(),
             r#"{"thumbnailUrl":"def","title":"abc","type":0}"#
         );
+        assert_eq!(
+            &serde_json::to_string(&MetadataObject::Generic {
+                title: None,
+                thumbnail_url: None,
+                custom: None,
+            })
+            .unwrap(),
+            r#"{"thumbnailUrl":null,"title":null,"type":0}"#
+        );
     }
 
     #[test]
@@ -573,6 +582,17 @@ mod tests {
             }
         );
         assert!(serde_json::from_str::<MetadataObject>(r#"{"type":1"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<MetadataObject>(
+                r#"{"thumbnailUrl":null,"title":null,"type":0}"#
+            )
+            .unwrap(),
+            MetadataObject::Generic {
+                title: None,
+                thumbnail_url: None,
+                custom: None,
+            }
+        );
     }
 
     #[test]
