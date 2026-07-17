@@ -310,8 +310,41 @@ enum Action {
     PlaybackRateChanged(f32),
     Introduction {
         supports_whep: bool,
+        capabilities: Option<crate::device::ReceiverCapabilities>,
     },
     LoadedV4(V4Load),
+}
+
+fn map_receiver_capabilities(
+    caps: v4::flat::ReceiverCapabilities<'_>,
+) -> crate::device::ReceiverCapabilities {
+    fn strings<'a>(it: Option<impl Iterator<Item = &'a str>>) -> Vec<String> {
+        it.map(|i| i.map(|s| s.to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    crate::device::ReceiverCapabilities {
+        media: caps.media().map(|m| crate::device::MediaCapabilities {
+            protocols: strings(m.protocols().map(|v| v.iter())),
+            containers: strings(m.containers().map(|v| v.iter())),
+            video_formats: strings(m.video_formats().map(|v| v.iter())),
+            audio_formats: strings(m.audio_formats().map(|v| v.iter())),
+            subtitle_formats: strings(m.subtitle_formats().map(|v| v.iter())),
+            hdr_formats: strings(m.hdr_formats().map(|v| v.iter())),
+            image_formats: strings(m.image_formats().map(|v| v.iter())),
+            external_subtitles: m.external_subtitles(),
+            mirroring: m.mirroring(),
+        }),
+        display: caps.display().map(|d| crate::device::DisplayCapabilities {
+            resolution: d.resolution().map(|r| crate::device::VideoResolution {
+                width: r.width(),
+                height: r.height(),
+            }),
+        }),
+        audio: caps.audio().map(|a| crate::device::AudioCapabilities {
+            volume_step_interval: a.volume_step_interval(),
+        }),
+    }
 }
 
 #[derive(Default)]
@@ -609,20 +642,19 @@ impl DeviceStateMachine {
             v4::flat::Message::ReceiverIntroduction => {
                 let msg = union!(packet.payload_as_receiver_introduction());
                 debug!("Receiver introduction: {msg:?}");
-                let mut supports_whep = false;
-                if let Some(caps) = msg.capabilities() {
-                    if let Some(media_caps) = caps.media() {
-                        if let Some(protos) = media_caps.protocols() {
-                            for proto in protos {
-                                if proto == "whep" {
-                                    supports_whep = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+
+                let capabilities = msg.capabilities().map(map_receiver_capabilities);
+
+                let supports_whep = capabilities
+                    .as_ref()
+                    .and_then(|c| c.media.as_ref())
+                    .map(|m| m.protocols.iter().any(|p| p == "whep"))
+                    .unwrap_or(false);
+
+                Action::Introduction {
+                    supports_whep,
+                    capabilities,
                 }
-                Action::Introduction { supports_whep }
             }
             v4::flat::Message::CompanionResourceRequest => {
                 let msg = union!(packet.payload_as_companion_resource_request());
@@ -902,7 +934,7 @@ impl InnerDevice {
             4 => {
                 let url = match type_ {
                     LoadType::Url { url } => url,
-                    LoadType::Content { .. } => unreachable!(),
+                    LoadType::Content { .. } => bail!("Unsupported load type"),
                     LoadType::CompanionResource { source } => self.companion_url(&source)?,
                 };
 
@@ -935,11 +967,17 @@ impl InnerDevice {
         Ok(())
     }
 
-    fn emit_connected(&self, used_remote_addr: IpAddr, local_addr: IpAddr) {
+    fn emit_connected(
+        &self,
+        used_remote_addr: IpAddr,
+        local_addr: IpAddr,
+        capabilities: Option<crate::device::ReceiverCapabilities>,
+    ) {
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connected {
                 used_remote_addr,
                 local_addr,
+                capabilities,
             });
     }
 
@@ -1095,7 +1133,7 @@ impl InnerDevice {
             }
             Action::Connected(version_code) => match version_code {
                 VersionCode::V2 => {
-                    self.emit_connected(*used_remote_addr, *local_addr);
+                    self.emit_connected(*used_remote_addr, *local_addr, None);
                     *has_emitted_connected_event = true;
                     self.session_version.set(2);
                 }
@@ -1209,7 +1247,7 @@ impl InnerDevice {
                 }
 
                 if !*has_emitted_connected_event {
-                    self.emit_connected(*used_remote_addr, *local_addr);
+                    self.emit_connected(*used_remote_addr, *local_addr, None);
                     *has_emitted_connected_event = true;
                 }
             }
@@ -1309,10 +1347,11 @@ impl InnerDevice {
                 )))
                 .with_no_client_auth();
                 let connector = TlsConnector::from(Arc::new(config));
-                let dnsname = rustls_pki_types::ServerName::from(match &self.stream {
-                    NetworkStream::Tcp { peer_addr, .. } => peer_addr.ip(),
-                    _ => unreachable!(),
-                });
+                let NetworkStream::Tcp { peer_addr, .. } = &self.stream else {
+                    error!("TLS upgrade requested on a non-TCP stream");
+                    return Err(utils::WorkError::Disconnected);
+                };
+                let dnsname = rustls_pki_types::ServerName::from(peer_addr.ip());
                 debug!("Upgrading network stream to use TLS");
                 self.stream
                     .upgrade(&connector, dnsname, TLS_UPGRADE_TIMEOUT)
@@ -1418,11 +1457,14 @@ impl InnerDevice {
             Action::TracksAvailable(tracks) => self.event_handler.tracks_available(tracks),
             Action::ChangeTrack { id, typ } => self.event_handler.track_selected(id, typ),
             Action::PlaybackRateChanged(rate) => self.event_handler.speed_changed(rate as f64),
-            Action::Introduction { supports_whep } => {
+            Action::Introduction {
+                supports_whep,
+                capabilities,
+            } => {
                 self.supports_whep.store(supports_whep, Ordering::Relaxed);
 
                 if !*has_emitted_connected_event {
-                    self.emit_connected(*used_remote_addr, *local_addr);
+                    self.emit_connected(*used_remote_addr, *local_addr, capabilities);
                     *has_emitted_connected_event = true;
                 }
             }
@@ -1650,12 +1692,13 @@ impl InnerDevice {
                     error!("Cannot jump in playlist because a playlist is not currently playing");
                     return Ok(false);
                 };
-                if jump < 0 && *current_playlist_item_index == 0 {
-                    *current_playlist_item_index = *playlist_length - 1;
-                } else {
-                    *current_playlist_item_index += jump as usize;
-                    *current_playlist_item_index %= *playlist_length;
-                }
+                let Some(next_index) =
+                    wrapped_playlist_index(*current_playlist_item_index, jump, *playlist_length)
+                else {
+                    error!("Cannot jump in an empty playlist");
+                    return Ok(false);
+                };
+                *current_playlist_item_index = next_index;
 
                 self.send(
                     Opcode::SetPlaylistItem,
@@ -1667,7 +1710,7 @@ impl InnerDevice {
             }
             Command::ConnectedEventDeadlineElapsed => {
                 if !*has_emitted_connected_event {
-                    self.emit_connected(*used_remote_addr, *local_addr);
+                    self.emit_connected(*used_remote_addr, *local_addr, None);
                     *has_emitted_connected_event = true;
                 }
             }
@@ -1706,7 +1749,7 @@ impl InnerDevice {
                 for item in items {
                     let url = match &item {
                         crate::device::QueueItem::Url { url, .. } => url.clone(),
-                        crate::device::QueueItem::Companion { source, .. } => {
+                        crate::device::QueueItem::FCompanion { source, .. } => {
                             self.companion_url(source)?
                         }
                     };
@@ -1747,7 +1790,7 @@ impl InnerDevice {
                 };
                 let url = match &item {
                     crate::device::QueueItem::Url { url, .. } => url.clone(),
-                    crate::device::QueueItem::Companion { source, .. } => {
+                    crate::device::QueueItem::FCompanion { source, .. } => {
                         self.companion_url(source)?
                     }
                 };
@@ -2328,6 +2371,15 @@ fn resource_bytes_to_read(start: u64, stop_inclusive: u64, file_len: u64) -> u64
     stop_inclusive - start + 1
 }
 
+/// Compute the playlist index after jumping `jump` positions with wraparound.
+fn wrapped_playlist_index(current: usize, jump: i32, length: usize) -> Option<usize> {
+    if length == 0 {
+        return None;
+    }
+    let next = (current as i64 + jump as i64).rem_euclid(length as i64);
+    Some(next as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2557,5 +2609,38 @@ mod tests {
         assert_eq!(resource_bytes_to_read(0, 100, 0), 0);
         assert_eq!(resource_bytes_to_read(100, 200, 100), 0);
         assert_eq!(resource_bytes_to_read(50, 10, 100), 0);
+    }
+
+    #[test]
+    fn wrapped_playlist_index_empty_playlist_is_none() {
+        // Regression: `load(Playlist([]))` then `playlist_item_next()` reached
+        // `current %= 0` (divide-by-zero) and `playlist_item_previous()` reached
+        // `0usize - 1` (underflow). Both must now be a safe no-op, not a panic.
+        assert_eq!(wrapped_playlist_index(0, 0, 0), None);
+        assert_eq!(wrapped_playlist_index(0, 1, 0), None);
+        assert_eq!(wrapped_playlist_index(0, -1, 0), None);
+    }
+
+    #[test]
+    fn wrapped_playlist_index_forward_wraps() {
+        assert_eq!(wrapped_playlist_index(0, 1, 5), Some(1));
+        assert_eq!(wrapped_playlist_index(4, 1, 5), Some(0)); // past the end
+        assert_eq!(wrapped_playlist_index(3, 4, 5), Some(2)); // multi-step past end
+    }
+
+    #[test]
+    fn wrapped_playlist_index_backward_wraps() {
+        assert_eq!(wrapped_playlist_index(2, -1, 5), Some(1));
+        assert_eq!(wrapped_playlist_index(0, -1, 5), Some(4)); // past the start
+        // Previously buggy: the `jump < 0 && current == 0` special case ignored
+        // the jump magnitude, and negative `jump as usize` corrupted other cases.
+        assert_eq!(wrapped_playlist_index(0, -3, 5), Some(2));
+        assert_eq!(wrapped_playlist_index(1, -3, 5), Some(3));
+    }
+
+    #[test]
+    fn wrapped_playlist_index_single_item() {
+        assert_eq!(wrapped_playlist_index(0, 1, 1), Some(0));
+        assert_eq!(wrapped_playlist_index(0, -1, 1), Some(0));
     }
 }

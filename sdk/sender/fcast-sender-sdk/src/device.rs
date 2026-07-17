@@ -15,7 +15,61 @@ pub enum DeviceConnectionState {
     Connected {
         used_remote_addr: IpAddr,
         local_addr: IpAddr,
+        /// Formats and capabilities the receiver advertised in its v4
+        /// introduction. `None` for protocols that don't provide this
+        /// information (FCast v2/v3 and Chromecast).
+        capabilities: Option<ReceiverCapabilities>,
     },
+}
+
+/// Capabilities advertised by an FCast receiver in its v4 `ReceiverIntroduction`.
+///
+/// Mirrors the `ReceiverCapabilities` flatbuffers table.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReceiverCapabilities {
+    pub media: Option<MediaCapabilities>,
+    pub display: Option<DisplayCapabilities>,
+    pub audio: Option<AudioCapabilities>,
+}
+
+/// The media formats a receiver supports.
+///
+/// Each list holds short, lowercase, canonical format tokens (e.g. `"mp4"`,
+/// `"h264"`, `"whep"`) as defined by the FCast protocol. These are distinct
+/// from the MIME `container` a sender puts on a loaded item.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MediaCapabilities {
+    pub protocols: Vec<String>,
+    pub containers: Vec<String>,
+    pub video_formats: Vec<String>,
+    pub audio_formats: Vec<String>,
+    pub subtitle_formats: Vec<String>,
+    pub hdr_formats: Vec<String>,
+    pub image_formats: Vec<String>,
+    pub external_subtitles: bool,
+    pub mirroring: bool,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DisplayCapabilities {
+    pub resolution: Option<VideoResolution>,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VideoResolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AudioCapabilities {
+    /// The receiver's volume step granularity, e.g. `0.01` for 1%.
+    pub volume_step_interval: f32,
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -415,7 +469,7 @@ pub enum QueueItem {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     },
-    Companion {
+    FCompanion {
         content_type: String,
         source: CompanionSource,
         metadata: Option<Metadata>,
@@ -425,7 +479,7 @@ pub enum QueueItem {
 impl QueueItem {
     pub fn content_type(&self) -> &str {
         match self {
-            QueueItem::Url { content_type, .. } | QueueItem::Companion { content_type, .. } => {
+            QueueItem::Url { content_type, .. } | QueueItem::FCompanion { content_type, .. } => {
                 &content_type
             }
         }

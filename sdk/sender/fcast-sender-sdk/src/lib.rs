@@ -522,9 +522,20 @@ impl LogLevelFilter {
 }
 
 #[cfg(all(target_os = "android", feature = "logging"))]
+fn init_panic_logger() {
+    use std::sync::Once;
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            log::error!(target: "panic", "{info}");
+        }));
+    });
+}
+
+#[cfg(all(target_os = "android", feature = "logging"))]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 pub fn init_logger(level_filter: LogLevelFilter) {
-    log_panics::init();
+    init_panic_logger();
     android_logger::init_once(
         android_logger::Config::default().with_max_level(level_filter.to_log_compat()),
     );

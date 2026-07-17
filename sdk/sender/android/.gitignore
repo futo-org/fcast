@@ -1,0 +1,12 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/src/jniLibs/
+/src/kotlin/org/fcast/sender_sdk/fcast_sender_sdk.kt

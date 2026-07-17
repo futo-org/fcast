@@ -249,7 +249,7 @@ fn run(ui_weak: slint::Weak<MainWindow>, msg_tx: Sender<Message>, msg_rx: Receiv
                     let img = &images[id];
 
                     fn create_item(img: &ImageEntry) -> QueueItem {
-                        QueueItem::Companion {
+                        QueueItem::FCompanion {
                             content_type: img.mime.to_owned(),
                             source: CompanionSource {
                                 descriptor: CompanionSourceDescriptor::Path(
