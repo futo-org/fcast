@@ -1,0 +1,24 @@
+[package]
+name = "fcast-sender-sdk-flutter"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+fcast-sender-sdk-raw = { package = "fcast-sender-sdk", path = "../../fcast-sender-sdk", default-features = false }
+flutter_rust_bridge = "=2.13.0-beta.5"
+thiserror = "2.0.16"
+env_logger = "0.11.8"
+log = "0.4.27"
+futures = "0.3.31"
+
+[features]
+default = ["fcast", "chromecast", "logging"]
+fcast = ["fcast-sender-sdk-raw/fcast"]
+chromecast = ["fcast-sender-sdk-raw/chromecast"]
+logging = ["fcast-sender-sdk-raw/logging"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use xshell::cmd;
-use xtask::{android, gstreamer, protocol, receiver, sender, sh, test_corpus, workspace};
+use xtask::{android, flutter, gstreamer, protocol, receiver, sender, sh, test_corpus, workspace};
 #[cfg(feature = "mdns")]
 use xtask::mdns;
 #[cfg(feature = "uniffi")]
@@ -21,6 +21,7 @@ enum Command {
     #[cfg(feature = "uniffi")]
     CSharp(csharp::CSharpArgs),
     Android(android::AndroidArgs),
+    Flutter(flutter::FlutterArgs),
     Sender(sender::SenderArgs),
     TestCorpus(test_corpus::TestCorpusArgs),
     #[cfg(feature = "mdns")]
@@ -57,6 +58,7 @@ fn main() {
         #[cfg(feature = "uniffi")]
         Command::CSharp(cmd) => cmd.run().unwrap(),
         Command::Android(cmd) => cmd.run().unwrap(),
+        Command::Flutter(cmd) => cmd.run().unwrap(),
         Command::Sender(cmd) => cmd.run().unwrap(),
         Command::TestCorpus(cmd) => cmd.run().unwrap(),
         #[cfg(feature = "mdns")]
