@@ -2,6 +2,7 @@
 members = [
     "xtask",
     "sdk/sender/fcast-sender-sdk",
+    "sdk/sender/flutter-plugin/rust",
     "senders/terminal",
     "crates/fcast-protocol",
     "crates/mirroring-core",
