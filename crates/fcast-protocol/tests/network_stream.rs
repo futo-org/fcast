@@ -43,6 +43,42 @@ macro_rules! read_packet {
     }};
 }
 
+/// Like [`read_packet!`] but reads straight into the reader's spare capacity
+/// (`spare_capacity_mut` + `commit`) — the zero-copy receive path the receiver uses. No
+/// scratch buffer, so there is no `$buf` argument.
+macro_rules! read_packet_zerocopy {
+    ($stream:expr, $reader:expr) => {{
+        loop {
+            let ready = match $reader.get_packet() {
+                ReadResult::Read(packet) => Some(packet.to_vec()),
+                ReadResult::PacketTooLarge(size) => panic!("packet too large: {size}"),
+                ReadResult::NeedData => None,
+            };
+
+            match ready {
+                Some(packet) => break packet,
+                None => {
+                    let spare = $reader.spare_capacity_mut();
+                    assert!(
+                        !spare.is_empty(),
+                        "spare capacity empty — would read as EOF"
+                    );
+                    let n = $stream.read(spare).await.expect("read failed");
+                    assert_ne!(n, 0, "stream closed before a full packet arrived");
+                    $reader.commit(n);
+                }
+            }
+        }
+    }};
+}
+
+/// Full packet bytes (opcode + payload) as `get_packet` returns them.
+fn packet_bytes(opcode: Opcode, payload: &[u8]) -> Vec<u8> {
+    let mut v = vec![opcode as u8];
+    v.extend_from_slice(payload);
+    v
+}
+
 fn new_reader() -> PacketReader {
     PacketReader::new(v4::MAX_PACKET_SIZE, 8 * 1024)
 }
@@ -284,4 +320,132 @@ async fn tls_upgrade_roundtrip() {
     assert_eq!(pong.as_slice(), &[Opcode::Pong as u8]);
 
     receiver.await.unwrap();
+}
+
+#[tokio::test]
+async fn tcp_zerocopy_varied_sizes() {
+    // Exercises the zero-copy receive path over a real socket: several packets of very
+    // different sizes — including one far larger than any single TCP segment — written back
+    // to back so they split and coalesce across reads arbitrarily. All must reassemble in
+    // order and byte-for-byte.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let items: Vec<(Opcode, Vec<u8>)> = vec![
+        (Opcode::Ping, vec![]),
+        (
+            Opcode::SetVolume,
+            serde_json::to_vec(&SetVolumeMessage { volume: 0.5 }).unwrap(),
+        ),
+        // ~40 KiB body: forces assembly across many reads / TCP segments.
+        (
+            Opcode::PlaybackError,
+            (0..40_000u32).map(|i| (i % 253) as u8).collect(),
+        ),
+        (Opcode::Pong, vec![]),
+    ];
+    let expected: Vec<Vec<u8>> = items
+        .iter()
+        .map(|(op, payload)| packet_bytes(*op, payload))
+        .collect();
+
+    let n_packets = expected.len();
+    let receiver = tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.unwrap();
+        let mut stream = ReceiverStream::new(sock);
+        let mut reader = new_reader();
+        let mut got = Vec::new();
+        for _ in 0..n_packets {
+            got.push(read_packet_zerocopy!(stream, reader));
+        }
+        got
+    });
+
+    let sock = TcpStream::connect(addr).await.unwrap();
+    let mut stream = SenderStream::new(sock).unwrap();
+    let mut batch = Vec::new();
+    for (op, payload) in &items {
+        batch.extend_from_slice(&encode_packet(*op, payload));
+    }
+    stream.write_all(&batch).await.unwrap();
+    stream.flush().await.unwrap();
+
+    let got = receiver.await.unwrap();
+    assert_eq!(got, expected);
+}
+
+#[tokio::test]
+async fn tls_zerocopy_large_packet_after_upgrade() {
+    // The receiver's real transport is TLS. Drive the zero-copy path over an upgraded TLS
+    // stream with a large packet followed by a tiny one (the reader must keep working after
+    // a big read), mirroring `tls_upgrade_roundtrip`'s handshake sequence.
+    let (acceptor, fingerprint) = server_tls();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let big: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+    let big_expected = packet_bytes(Opcode::PlaybackError, &big);
+
+    let receiver = tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.unwrap();
+        let mut stream = ReceiverStream::new(sock);
+        let mut buf = [0u8; 8 * 1024];
+        let mut reader = new_reader();
+
+        // Plaintext Version exchange, then upgrade — same as tls_upgrade_roundtrip.
+        let packet = read_packet!(stream, reader, buf);
+        assert_eq!(packet[0], Opcode::Version as u8);
+        let body = serde_json::to_vec(&VersionMessage { version: 4 }).unwrap();
+        stream
+            .write_all(&encode_packet(Opcode::Version, &body))
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        stream
+            .upgrade(&acceptor, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        // Post-upgrade reads via the zero-copy path.
+        let mut reader = new_reader();
+        let big_packet = read_packet_zerocopy!(stream, reader);
+        let ping = read_packet_zerocopy!(stream, reader);
+        (big_packet, ping)
+    });
+
+    let sock = TcpStream::connect(addr).await.unwrap();
+    let mut stream = SenderStream::new(sock).unwrap();
+    let mut buf = [0u8; 8 * 1024];
+    let mut reader = new_reader();
+
+    let body = serde_json::to_vec(&VersionMessage { version: 4 }).unwrap();
+    stream
+        .write_all(&encode_packet(Opcode::Version, &body))
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+    let packet = read_packet!(stream, reader, buf);
+    assert_eq!(packet[0], Opcode::Version as u8);
+
+    let connector = client_tls(fingerprint);
+    let server_name = rustls_pki_types::ServerName::from(addr.ip());
+    stream
+        .upgrade(&connector, server_name, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    stream
+        .write_all(&encode_packet(Opcode::PlaybackError, &big))
+        .await
+        .unwrap();
+    stream
+        .write_all(&encode_packet(Opcode::Ping, &[]))
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+
+    let (big_packet, ping) = receiver.await.unwrap();
+    assert_eq!(big_packet, big_expected);
+    assert_eq!(ping.as_slice(), &[Opcode::Ping as u8]);
 }

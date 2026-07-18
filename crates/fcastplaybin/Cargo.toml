@@ -1,0 +1,11 @@
+[package]
+name = "fcastplaybin"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+gst = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }

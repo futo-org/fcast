@@ -26,7 +26,20 @@ use uuid::Uuid;
 use crate::{PlaylistItem, QueueMutationKind, Receive, Send as Op, Step, TrackKind};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
-const MAX_SETTLE: Duration = Duration::from_secs(8);
+// The cap on how long we wait for an expected event (a track-change confirm, a
+// state settle) before declaring failure. It must outlast the receiver's OWN
+// worst-case recovery, or a correct-but-slow settle reads as a false failure.
+//
+// The receiver holds a flushing seek's text-restore until the pipeline reports
+// steady PLAYING (linking text into subtitleoverlay mid-preroll livelocks), by
+// polling every 500ms up to 20 times = ~10s, and only THEN applies a deferred
+// track change (another select_streams + StreamsSelected round-trip). Under a
+// slow re-preroll, e.g. the FAST shuffle oversubscribing the GPU, which the
+// video sink reports as "computer is too slow", that envelope runs ~13-15s.
+// 8s gave up mid-settle-poll and failed cases the receiver was recovering from
+// cleanly (audio_track_switch_v4, rapid_track_changes_v4). A genuine wedge
+// never recovers, so it still fails here, just 8s later.
+const MAX_SETTLE: Duration = Duration::from_secs(16);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const TEARDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -214,7 +227,7 @@ struct Expectations {
     /// Satisfied by a v4 progress update whose position is at least this many seconds.
     progress_v4_at_least: Option<f64>,
     /// The next v4 progress update with a non-zero position must be at least
-    /// this many seconds; a lower one fails the test immediately.
+    /// this many seconds, a lower one fails the test immediately.
     next_progress_floor: Option<f64>,
     /// Waiting for a `TracksAvailable` advertising at least this many tracks
     /// of each kind (indexed by `TrackKind`).
@@ -471,7 +484,7 @@ impl<'a> Engine<'a> {
     /// Dropping the connection right after the stop write is not enough. The
     /// receiver broadcasts updates until the very end, so our socket usually
     /// still holds unread data when it closes, turning the close into a TCP
-    /// RST — and an RST discards whatever the receiver has not yet read from
+    /// RST, and an RST discards whatever the receiver has not yet read from
     /// its end, the just-written stop included. The receiver then keeps
     /// playing the finished case's media into the next one, whose
     /// `file_server.clear()` turns the orphaned load's next range request
@@ -479,7 +492,7 @@ impl<'a> Engine<'a> {
     ///
     /// Sessions answer `Ping` in order with the rest of the stream (on every
     /// protocol version), so one ping/pong round-trip after the stop proves
-    /// the stop was consumed and handed to the receiver's application loop —
+    /// the stop was consumed and handed to the receiver's application loop,
     /// which processes it before it can even register the next case's
     /// connection.
     async fn confirm_stop_delivery(&mut self) {
@@ -509,7 +522,7 @@ impl<'a> Engine<'a> {
                 }
                 // Anything else is a late broadcast from the case that just
                 // finished (playback updates, errors from the load being torn
-                // down); drain it and keep waiting for our pong.
+                // down), drain it and keep waiting for our pong.
                 Ok(Ok(packet)) => debug!(opcode = ?packet.opcode, "drained during teardown"),
                 Ok(Err(err)) => {
                     debug!(%err, "connection closed while confirming teardown stop");
@@ -632,7 +645,7 @@ impl<'a> Engine<'a> {
         // PlayUpdate is broadcast to every connected sender, and the receiver
         // keeps its current media until superseded. A previous test's media can
         // therefore be broadcast onto our connection. Only assert on the update
-        // that echoes the URL we just sent; ignore foreign ones and keep waiting.
+        // that echoes the URL we just sent, ignore foreign ones and keep waiting.
         if got.url != expected.url {
             debug!(?got, "ignoring play update for a different url");
             return Ok(());
@@ -700,7 +713,7 @@ impl<'a> Engine<'a> {
                     // Small positions are ignored: the receiver reports ~0
                     // while a (re)load is in flight, and up to ~1s can
                     // elapse between the reload settling and the
-                    // position-restore seek (subtitle-branch settle delay) —
+                    // position-restore seek (subtitle-branch settle delay),
                     // none of which says anything about where playback
                     // resumes. Playback that genuinely reset to 0 still
                     // trips the floor as soon as its position crosses this
@@ -1026,7 +1039,7 @@ impl<'a> Engine<'a> {
             } => {
                 self.expect.await_tracks = Some([*video, *audio, *subtitle]);
                 // The advertisement may already have arrived while settling an
-                // earlier step; don't wait for a re-broadcast in that case.
+                // earlier step, don't wait for a re-broadcast in that case.
                 self.check_await_tracks();
             }
             Step::AssertTrackState {
@@ -1418,9 +1431,9 @@ impl<'a> Engine<'a> {
 
     /// Attach an external subtitle from the second sender. The receiver
     /// refuses external-subtitle work while another (re)load is still
-    /// applying (`InvalidState`) — e.g. the first sender's add mid-dance —
+    /// applying (`InvalidState`), e.g. the first sender's add mid-dance,
     /// and a sender cannot know a peer's operation is in flight, so a
-    /// refusal backs off and retries. Acceptance produces no direct reply;
+    /// refusal backs off and retries. Acceptance produces no direct reply,
     /// follow with `AwaitTracksOnSecondSender` to observe the updated
     /// advertisement.
     async fn add_subtitle_on_second_sender(
@@ -1436,7 +1449,7 @@ impl<'a> Engine<'a> {
             self.second_conn()?
                 .write(Opcode::Flatbuf, Some(&msg))
                 .await?;
-            // A refusal is sent synchronously while handling the request;
+            // A refusal is sent synchronously while handling the request,
             // watch a short window for one, then treat the add as accepted.
             let watch_until = Instant::now() + Duration::from_millis(600);
             loop {
@@ -1466,7 +1479,7 @@ impl<'a> Engine<'a> {
 
     /// Send a `ChangeTrack` from the second sender for the `index`th track it
     /// was advertised (`None` = disable the kind) and wait for the relayed
-    /// confirmation; interim confirmations for other ids are ignored, like the
+    /// confirmation, interim confirmations for other ids are ignored, like the
     /// main sender's ChangeTrack expectation. An `InvalidState` refusal (a
     /// peer's external-subtitle operation still applying) backs off and
     /// retries.
@@ -1651,10 +1664,10 @@ impl<'a> Engine<'a> {
     }
 
     /// Wait until the relayed track state matches `expected_idx` (indices
-    /// into the advertised tracks per kind; `None` = kind disabled) and no
+    /// into the advertised tracks per kind, `None` = kind disabled) and no
     /// contradicting relay arrives for a hold window. Reload dances emit
     /// interim selections (mid-preroll text deselect, auto-select remaps)
-    /// before settling — point-in-time asserts race them, and how long a
+    /// before settling, point-in-time asserts race them, and how long a
     /// dance takes varies too much for a fixed sleep. A wanted index that
     /// is not (yet) advertised counts as not-matching, not as an error
     /// (advertisements are re-broadcast during the dance).

@@ -1692,9 +1692,9 @@ impl SessionDriver {
     ) -> anyhow::Result<()> {
         debug!("Session was started");
 
-        let mut read_buf = [0u8; 1024 * 8];
+        const READ_HEADROOM: usize = 1024 * 8;
         let mut packet_reader =
-            fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, read_buf.len());
+            fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, READ_HEADROOM);
         let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
 
         let (internal_tx, mut internal_rx) =
@@ -1738,7 +1738,7 @@ impl SessionDriver {
                         }
                     }
                 }
-                res = self.stream.read(&mut read_buf) => {
+                res = self.stream.read(packet_reader.spare_capacity_mut()) => {
                     let Ok(n_read) = res else {
                         break;
                     };
@@ -1747,7 +1747,7 @@ impl SessionDriver {
                         break;
                     }
 
-                    packet_reader.push_data(&read_buf[0..n_read]).map_err(|_| anyhow::anyhow!("Invalid packet (buffer overrun)"))?;
+                    packet_reader.commit(n_read);
 
                     loop {
                         let packet = match packet_reader.get_packet() {

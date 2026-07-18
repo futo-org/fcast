@@ -683,13 +683,27 @@ struct Profile {
     lto: Lto,
     offline: bool,
     target: Option<String>,
-    /// Build the receiver in the cargo dev profile; GStreamer stays release
-    /// (see `gst_buildtype`).
-    debug: bool,
+    /// Cargo profile for the receiver build (`dev`, `release`, or a custom
+    /// profile like `release-dbg`); GStreamer stays release (see
+    /// `gst_buildtype`).
+    cargo_profile: String,
     /// meson buildtype for GStreamer (default "release").
     gst_buildtype: String,
     /// Pass --no-default-features to cargo (e.g. no systray on macOS).
     no_default_features: bool,
+}
+
+impl Profile {
+    /// The `target/<subdir>` directory cargo writes this profile's build
+    /// artifacts into: `dev` → `debug`, `release` → `release`, and any custom
+    /// profile uses its own name (e.g. `release-dbg` → `release-dbg`).
+    fn target_subdir(&self) -> &str {
+        match self.cargo_profile.as_str() {
+            "dev" | "test" => "debug",
+            "release" | "bench" => "release",
+            other => other,
+        }
+    }
 }
 
 const GST_REPO: &str = "https://gitlab.freedesktop.org/gstreamer/gstreamer.git";
@@ -722,9 +736,23 @@ pub struct GstreamerArgs {
     /// unless you also pass --gst-buildtype.
     #[arg(long)]
     debug: bool,
+    /// Cargo profile for the receiver build, e.g. `release-dbg` for an
+    /// optimized build that keeps full debug symbols (ideal under
+    /// heaptrack/perf). Overrides --debug/--release; GStreamer is still
+    /// controlled by --gst-buildtype.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Debug-info preset for profiling/debugging: builds the receiver in the
+    /// `release-dbg` cargo profile (optimized + full unstripped debug symbols)
+    /// AND builds GStreamer and all its vendored dependencies with debug info
+    /// (`--buildtype=debugoptimized`). An explicit --profile / --gst-buildtype /
+    /// --debug still wins over this preset.
+    #[arg(long)]
+    debug_info: bool,
     /// meson buildtype for GStreamer itself (e.g. release, debugoptimized, debug).
-    #[arg(long, default_value = "release")]
-    gst_buildtype: String,
+    /// Defaults to `debugoptimized` under --debug-info, otherwise `release`.
+    #[arg(long)]
+    gst_buildtype: Option<String>,
     /// Only build gstreamer, don't build the receiver.
     #[arg(long)]
     gstreamer_only: bool,
@@ -740,6 +768,32 @@ pub struct GstreamerArgs {
 impl GstreamerArgs {
     pub fn run(self) -> Result<()> {
         self.build().map(|_| ())
+    }
+
+    /// The cargo profile the receiver is built with: an explicit `--profile`
+    /// wins, then `--debug-info` selects `release-dbg`, then `--debug` selects
+    /// the `dev` profile, and the default is `release`. (The
+    /// run/check/clippy/test subcommands force `--debug` on unless `--release`
+    /// is passed, so those default to `dev` here.)
+    fn cargo_profile(&self) -> String {
+        match &self.profile {
+            Some(p) => p.clone(),
+            None if self.debug_info => "release-dbg".to_owned(),
+            None if self.debug => "dev".to_owned(),
+            None => "release".to_owned(),
+        }
+    }
+
+    /// The meson buildtype GStreamer (and its vendored subprojects) is built
+    /// with: an explicit `--gst-buildtype` wins, then `--debug-info` selects
+    /// `debugoptimized` (debug=true, optimization=2 — propagated to every
+    /// subproject), and the default is `release`.
+    fn gst_buildtype(&self) -> String {
+        match &self.gst_buildtype {
+            Some(b) => b.clone(),
+            None if self.debug_info => "debugoptimized".to_owned(),
+            None => "release".to_owned(),
+        }
     }
 
     /// The args you'd get by passing no flags — host target, release GStreamer,
@@ -787,8 +841,8 @@ impl GstreamerArgs {
             lto: self.lto,
             offline: self.offline,
             target: self.target.clone(),
-            debug: self.debug,
-            gst_buildtype: self.gst_buildtype.clone(),
+            cargo_profile: self.cargo_profile(),
+            gst_buildtype: self.gst_buildtype(),
             no_default_features: self.no_default_features,
         };
         let source = match self.source {
@@ -1631,10 +1685,7 @@ fn prebuild_receiver_deps(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -
     if !profile.no_default_features {
         features.push_str(",systray");
     }
-    let mut flags: Vec<String> = Vec::new();
-    if !profile.debug {
-        flags.push("--release".into());
-    }
+    let mut flags: Vec<String> = vec!["--profile".into(), profile.cargo_profile.clone()];
     flags.extend([
         "-p".into(),
         "receiver-core".into(),
@@ -1802,7 +1853,7 @@ fn receiver_bin_path(profile: &Profile) -> Utf8PathBuf {
     if let Some(t) = &profile.target {
         bin.push(t);
     }
-    bin.push(if profile.debug { "debug" } else { "release" });
+    bin.push(profile.target_subdir());
     bin.push(if target_os(profile) == "windows" {
         "desktop-receiver.exe"
     } else {
@@ -1814,10 +1865,7 @@ fn receiver_bin_path(profile: &Profile) -> Utf8PathBuf {
 /// Common `--features`/`--target`/profile flags shared by every cargo
 /// invocation that targets the receiver against the static gstreamer.
 fn receiver_cargo_flags(profile: &Profile, package: &str) -> Vec<String> {
-    let mut flags = Vec::new();
-    if !profile.debug {
-        flags.push("--release".into());
-    }
+    let mut flags = vec!["--profile".to_owned(), profile.cargo_profile.clone()];
     flags.extend([
         "-p".into(),
         package.to_owned(),
@@ -1901,6 +1949,24 @@ fn with_receiver_env<T>(
         pkg_path = prepend_env_path(&pkg_path, stub_dir.as_str());
     }
     let _pc = sh.push_env("PKG_CONFIG_PATH", &pkg_path);
+
+    // Debug/profiling profiles keep frame pointers so `perf record
+    // --call-graph fp` resolves Rust frames (rustc omits them even at
+    // opt-level 0; the static gstreamer C side already keeps them). Appended
+    // via RUSTFLAGS because a `cargo rustc` arg after `--` would only cover
+    // the final crate, and applied here so build/check/clippy share unit
+    // fingerprints. Plain `cargo build/test` outside xtask doesn't set this,
+    // so alternating the two rebuilds shared dev-profile deps.
+    let _fp = matches!(profile.cargo_profile.as_str(), "dev" | "release-dbg").then(|| {
+        let mut flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+        if !flags.contains("force-frame-pointers") {
+            if !flags.is_empty() {
+                flags.push(' ');
+            }
+            flags.push_str("-Cforce-frame-pointers=yes");
+        }
+        sh.push_env("RUSTFLAGS", flags)
+    });
 
     // Tell system-deps to link the gstreamer libs statically.
     let mut guards = Vec::new();

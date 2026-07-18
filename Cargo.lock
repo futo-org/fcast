@@ -344,6 +344,16 @@ dependencies = [
 
 [[package]]
 name = "annotate-snippets"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "710e8eae58854cdc1790fcb56cca04d712a17be849eeb81da2a724bf4bae2bc4"
+dependencies = [
+ "anstyle",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "annotate-snippets"
 version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f211a51805bc641f3ad5b7664c77d2547af685cc33b4cd8d31964027a46f13f1"
@@ -1024,6 +1034,7 @@ version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
+ "annotate-snippets 0.11.5",
  "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
@@ -2601,6 +2612,16 @@ dependencies = [
  "futures",
  "log",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "fcastplaybin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gstreamer 0.25.2",
+ "parking_lot",
+ "tracing",
 ]
 
 [[package]]
@@ -4479,7 +4500,7 @@ name = "i-slint-compiler"
 version = "1.17.1"
 source = "git+https://github.com/MAlba124/slint.git?rev=f05c68ab3#f05c68ab3028855931801e1af12fe129a0363c6e"
 dependencies = [
- "annotate-snippets",
+ "annotate-snippets 0.12.16",
  "by_address",
  "data-url",
  "derive_more",
@@ -5614,6 +5635,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8a484fa48be5f62a8d3ffed767779d0ab808cfead91de98ef4362d469097dfb"
 dependencies = [
  "pkg-config",
+]
+
+[[package]]
+name = "libspa"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2909f3be29d674e7f10604aff18d1bbe1bb03c4cd61c8a8ba19c0b1d162f7d4e"
+dependencies = [
+ "bitflags 2.13.0",
+ "cc",
+ "cookie-factory",
+ "libc",
+ "libspa-sys",
+ "nom 8.0.0",
+ "rustix 1.1.4",
+ "system-deps",
+]
+
+[[package]]
+name = "libspa-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69ad52764fca54818486f3cf75afec844d1f1a1568c24dcee25d41b1ab007dda"
+dependencies = [
+ "bindgen 0.72.1",
+ "cc",
+ "system-deps",
 ]
 
 [[package]]
@@ -7159,6 +7207,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipewire"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8585aba8a52ad74ccc633b8e293c1dc4277976bd5d510b925533f34fd6685f38"
+dependencies = [
+ "bitflags 2.13.0",
+ "libc",
+ "libspa",
+ "libspa-sys",
+ "pipewire-sys",
+ "rustix 1.1.4",
+]
+
+[[package]]
+name = "pipewire-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2089f245b548723e60325773c27f586b7a2372c79ea941b246cd0d654706adc"
+dependencies = [
+ "bindgen 0.72.1",
+ "libspa-sys",
+ "system-deps",
+]
+
+[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7762,6 +7835,7 @@ dependencies = [
  "egl-sys",
  "fast_qr",
  "fcast-protocol",
+ "fcastplaybin",
  "futures",
  "gethostname",
  "glow",
@@ -7792,9 +7866,11 @@ dependencies = [
  "jni 0.21.1",
  "jxl-oxide",
  "lazy_static",
+ "libc",
  "libheif-rs",
  "libplacebo",
  "libplacebo-vulkan",
+ "libspa",
  "md-5 0.11.0",
  "mdns-sd",
  "mime",
@@ -7805,6 +7881,7 @@ dependencies = [
  "pango",
  "parking_lot",
  "pin-project-lite",
+ "pipewire",
  "plist",
  "rand 0.10.1",
  "raw-window-handle",
@@ -8162,8 +8239,7 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.23.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
+source = "git+https://gitlab.futo.org/fcast/rustls.git?rev=72ec207b#72ec207b800a9d8d1e1f3ea17cac5ed3644828a3"
 dependencies = [
  "log",
  "once_cell",

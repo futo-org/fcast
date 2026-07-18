@@ -1267,11 +1267,7 @@ impl InnerDevice {
                     ..
                 } = msg.event
                 {
-                    changed!(
-                        playback_state,
-                        PlaybackState::Ended,
-                        playback_state_changed
-                    );
+                    changed!(playback_state, PlaybackState::Ended, playback_state_changed);
                 }
             }
             Action::UpgradeToTls => {
@@ -1794,21 +1790,21 @@ impl InnerDevice {
         let mut playlist_length = None::<usize>;
         let mut current_playlist_item_index = None::<usize>;
         self.state_machine = DeviceStateMachine::new(self.receiver_fingerprint.is_some());
-        let mut read_buf = [0u8; 1024 * 8];
+        const READ_HEADROOM: usize = 1024 * 8;
         let mut packet_reader =
-            fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, read_buf.len());
+            fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, READ_HEADROOM);
 
         self.send(Opcode::Version, VersionMessage { version: 4 })
             .await?;
 
         'main_loop: loop {
             tokio::select! {
-                res = self.stream.read(&mut read_buf) => {
+                res = self.stream.read(packet_reader.spare_capacity_mut()) => {
                     let n_read = res?;
                     if n_read == 0 {
                         return Err(utils::WorkError::Disconnected);
                     }
-                    packet_reader.push_data(&read_buf[..n_read]).map_err(|_| utils::WorkError::ReceivePacket)?;
+                    packet_reader.commit(n_read);
                     loop {
                         let packet = match packet_reader.get_packet() {
                             fcast_protocol::ReadResult::NeedData => break,
@@ -2548,8 +2544,8 @@ mod tests {
     fn wrapped_playlist_index_backward_wraps() {
         assert_eq!(wrapped_playlist_index(2, -1, 5), Some(1));
         assert_eq!(wrapped_playlist_index(0, -1, 5), Some(4)); // past the start
-        // Previously buggy: the `jump < 0 && current == 0` special case ignored
-        // the jump magnitude, and negative `jump as usize` corrupted other cases.
+                                                               // Previously buggy: the `jump < 0 && current == 0` special case ignored
+                                                               // the jump magnitude, and negative `jump as usize` corrupted other cases.
         assert_eq!(wrapped_playlist_index(0, -3, 5), Some(2));
         assert_eq!(wrapped_playlist_index(1, -3, 5), Some(3));
     }

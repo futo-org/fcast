@@ -1,0 +1,235 @@
+diff --git a/subprojects/gstreamer/gst/gstpad.c b/subprojects/gstreamer/gst/gstpad.c
+index 64df40f1da..ccdbf99176 100644
+--- a/subprojects/gstreamer/gst/gstpad.c
++++ b/subprojects/gstreamer/gst/gstpad.c
+@@ -91,6 +91,7 @@
+ 
+ #include "gstpad.h"
+ #include "gstpadtemplate.h"
++#include "gstghostpad.h"
+ #include "gstenumtypes.h"
+ #include "gstutils.h"
+ #include "gstinfo.h"
+@@ -3099,6 +3100,106 @@ no_parent:
+  *
+  * Returns: %TRUE if one of the dispatcher functions returned %TRUE.
+  */
++/* We stack-allocate for N_STACK_ALLOCATE_FORWARDED_PADS pads as a first step.
++ * If more are needed, we will re-allocate with g_malloc(). This should usually
++ * never be needed */
++#define N_STACK_ALLOCATE_FORWARDED_PADS (16)
++
++/* The pad pointers are only ever compared, not dereferenced, mirroring what
++ * the pointer-keyed hash table previously used here did */
++static gboolean
++gst_pad_forward_already_pushed (GstPad ** pads, guint n_pads, GstPad * pad)
++{
++  guint i;
++
++  for (i = 0; i < n_pads; i++) {
++    if (pads[i] == pad)
++      return TRUE;
++  }
++  return FALSE;
++}
++
++/* Fast path of gst_pad_forward() for pads using the default internal-links
++ * function: walk the parent element's opposite-direction pad list directly
++ * instead of allocating a GstIterator. This takes the same object lock and
++ * checks the same pads_cookie the iterator would use, so the iteration and
++ * resync semantics are identical. */
++static gboolean
++gst_pad_forward_default_links (GstPad * pad, GstElement * eparent,
++    GstPadForwardFunction forward, gpointer user_data)
++{
++  gboolean result = FALSE;
++  GstPad *pushed_pads_stack[N_STACK_ALLOCATE_FORWARDED_PADS];
++  GstPad **pushed_pads = pushed_pads_stack;
++  guint n_pushed_pads = 0;
++  guint pushed_pads_size = N_STACK_ALLOCATE_FORWARDED_PADS;
++  gboolean resynced = FALSE;
++  GList **padlist;
++  guint32 cookie;
++  GList *l;
++
++  if (pad->direction == GST_PAD_SRC)
++    padlist = &eparent->sinkpads;
++  else
++    padlist = &eparent->srcpads;
++
++  GST_OBJECT_LOCK (eparent);
++
++restart:
++  cookie = eparent->pads_cookie;
++
++  for (l = *padlist; l != NULL; l = l->next) {
++    GstPad *intpad = GST_PAD_CAST (l->data);
++
++    /* if we have restarted, check if we have already pushed */
++    if (resynced
++        && gst_pad_forward_already_pushed (pushed_pads, n_pushed_pads, intpad))
++      continue;
++
++    /* the list holds a ref, but the pad must stay alive while we drop the
++     * lock to call the forward function */
++    gst_object_ref (intpad);
++    GST_OBJECT_UNLOCK (eparent);
++
++    GST_LOG_OBJECT (pad, "calling forward function on pad %s:%s",
++        GST_DEBUG_PAD_NAME (intpad));
++    result = forward (intpad, user_data);
++
++    GST_OBJECT_LOCK (eparent);
++
++    /* reallocate on the heap if we needed more than
++     * N_STACK_ALLOCATE_FORWARDED_PADS pads */
++    if (n_pushed_pads == pushed_pads_size) {
++      pushed_pads_size *= 2;
++      if (pushed_pads == pushed_pads_stack) {
++        pushed_pads = g_new (GstPad *, pushed_pads_size);
++        memcpy (pushed_pads, pushed_pads_stack, sizeof (pushed_pads_stack));
++      } else {
++        pushed_pads = g_renew (GstPad *, pushed_pads, pushed_pads_size);
++      }
++    }
++    pushed_pads[n_pushed_pads++] = intpad;
++    gst_object_unref (intpad);
++
++    if (result)
++      break;
++
++    /* the lock was released while calling the forward function, the pad
++     * list might have changed */
++    if (G_UNLIKELY (cookie != eparent->pads_cookie)) {
++      resynced = TRUE;
++      goto restart;
++    }
++  }
++
++  GST_OBJECT_UNLOCK (eparent);
++
++  if (pushed_pads != pushed_pads_stack)
++    g_free (pushed_pads);
++
++  return result;
++}
++
+ gboolean
+ gst_pad_forward (GstPad * pad, GstPadForwardFunction forward,
+     gpointer user_data)
+@@ -3107,16 +3208,60 @@ gst_pad_forward (GstPad * pad, GstPadForwardFunction forward,
+   GstIterator *iter;
+   gboolean done = FALSE;
+   GValue item = { 0, };
+-  GHashTable *pushed_pads = NULL;
++  GstPad *pushed_pads_stack[N_STACK_ALLOCATE_FORWARDED_PADS];
++  GstPad **pushed_pads = pushed_pads_stack;
++  guint n_pushed_pads = 0;
++  guint pushed_pads_size = N_STACK_ALLOCATE_FORWARDED_PADS;
+   gboolean resynced = FALSE;
++  GstObject *parent = NULL;
++  gboolean default_links;
++  gboolean proxy_links;
++
++  GST_OBJECT_LOCK (pad);
++  default_links =
++      GST_PAD_ITERINTLINKFUNC (pad) == gst_pad_iterate_internal_links_default;
++  proxy_links = GST_IS_PROXY_PAD (pad)
++      && GST_PAD_ITERINTLINKFUNC (pad) ==
++      gst_proxy_pad_iterate_internal_links_default;
++  if (default_links || proxy_links)
++    ACQUIRE_PARENT (pad, parent, no_parent);
++  GST_OBJECT_UNLOCK (pad);
++
++  if (proxy_links) {
++    /* Proxy/ghost pads have exactly one internal pad: forward to it directly
++     * instead of allocating a single-element GstIterator for it. The iterator
++     * path acquires the internal pad the same way (via
++     * gst_proxy_pad_get_internal() under the pad's object lock), yields it
++     * once and finishes, so the semantics are identical. */
++    GstPad *intpad =
++        GST_PAD_CAST (gst_proxy_pad_get_internal ((GstProxyPad *) pad));
++
++    if (intpad) {
++      GST_LOG_OBJECT (pad, "calling forward function on pad %s:%s",
++          GST_DEBUG_PAD_NAME (intpad));
++      result = forward (intpad, user_data);
++      gst_object_unref (intpad);
++    }
++    RELEASE_PARENT (parent);
++    return result;
++  }
++
++  if (default_links) {
++    if (G_LIKELY (parent && GST_IS_ELEMENT (parent))) {
++      result = gst_pad_forward_default_links (pad, GST_ELEMENT_CAST (parent),
++          forward, user_data);
++      RELEASE_PARENT (parent);
++      return result;
++    }
++    /* unusual parent setup, use the generic iterator path */
++    RELEASE_PARENT (parent);
++  }
+ 
+   iter = gst_pad_iterate_internal_links (pad);
+ 
+   if (!iter)
+     goto no_iter;
+ 
+-  pushed_pads = g_hash_table_new (NULL, NULL);
+-
+   while (!done) {
+     switch (gst_iterator_next (iter, &item)) {
+       case GST_ITERATOR_OK:
+@@ -3127,7 +3272,8 @@ gst_pad_forward (GstPad * pad, GstPadForwardFunction forward,
+ 
+         /* if we have resynced, check if we have already pushed */
+         if (intpad == NULL || (resynced
+-                && g_hash_table_contains (pushed_pads, intpad))) {
++                && gst_pad_forward_already_pushed (pushed_pads, n_pushed_pads,
++                    intpad))) {
+           g_value_reset (&item);
+           break;
+         }
+@@ -3136,7 +3282,19 @@ gst_pad_forward (GstPad * pad, GstPadForwardFunction forward,
+             GST_DEBUG_PAD_NAME (intpad));
+         done = result = forward (intpad, user_data);
+ 
+-        g_hash_table_add (pushed_pads, intpad);
++        /* reallocate on the heap if we needed more than
++         * N_STACK_ALLOCATE_FORWARDED_PADS pads */
++        if (n_pushed_pads == pushed_pads_size) {
++          pushed_pads_size *= 2;
++          if (pushed_pads == pushed_pads_stack) {
++            pushed_pads = g_new (GstPad *, pushed_pads_size);
++            memcpy (pushed_pads, pushed_pads_stack,
++                sizeof (pushed_pads_stack));
++          } else {
++            pushed_pads = g_renew (GstPad *, pushed_pads, pushed_pads_size);
++          }
++        }
++        pushed_pads[n_pushed_pads++] = intpad;
+ 
+         g_value_reset (&item);
+         break;
+@@ -3160,10 +3318,19 @@ gst_pad_forward (GstPad * pad, GstPadForwardFunction forward,
+   g_value_unset (&item);
+   gst_iterator_free (iter);
+ 
+-  g_hash_table_destroy (pushed_pads);
++  if (pushed_pads != pushed_pads_stack)
++    g_free (pushed_pads);
+ 
+ no_iter:
+   return result;
++
++  /* ERRORS */
++no_parent:
++  {
++    GST_DEBUG_OBJECT (pad, "no parent");
++    GST_OBJECT_UNLOCK (pad);
++    return FALSE;
++  }
+ }
+ 
+ typedef struct

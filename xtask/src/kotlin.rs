@@ -234,7 +234,10 @@ fn find_built_aar(root: &Utf8Path) -> Result<Utf8PathBuf> {
             if path.is_dir() {
                 collect(&path, out);
             } else if path.extension() == Some("aar")
-                && path.as_str().replace('\\', "/").contains("build/outputs/aar/")
+                && path
+                    .as_str()
+                    .replace('\\', "/")
+                    .contains("build/outputs/aar/")
             {
                 out.push(path);
             }

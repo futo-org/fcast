@@ -116,11 +116,17 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
-    #[cfg(debug_assertions)]
     bridge.on_refresh_pipeline_graph({
         let msg_tx = msg_tx.clone();
         move || {
             msg_tx.send(Message::InspectorRefresh);
+        }
+    });
+
+    bridge.on_inspector_tick({
+        let msg_tx = msg_tx.clone();
+        move || {
+            msg_tx.send(Message::InspectorBitrateTick);
         }
     });
 
@@ -176,11 +182,33 @@ pub enum ToastType {
     Error,
 }
 
-#[cfg(debug_assertions)]
 pub struct GraphDumpData {
     pub trigger: String,
     pub timestamp: String,
     pub graph: remote_pipeline_dbg::render::RenderGraph,
+}
+
+/// One row of the inspector's track table.
+pub struct InspectorTrackRow {
+    pub kind: String,
+    pub codec: String,
+    pub detail: String,
+    pub language: String,
+    pub selected: bool,
+}
+
+/// One inspector tick's worth of display data (see
+/// `Application::inspector_tick`). Bitrate histories are kbit/s, oldest
+/// first.
+pub struct InspectorSample {
+    pub video_kbps: Vec<f32>,
+    pub audio_kbps: Vec<f32>,
+    pub tracks: Vec<InspectorTrackRow>,
+    pub container: String,
+    pub sources: Vec<String>,
+    pub internals: Vec<String>,
+    pub sinks: Vec<String>,
+    pub image: String,
 }
 
 #[derive(Debug)]
@@ -248,10 +276,11 @@ pub enum UpdateGuiCommand {
     SetAnimation {
         frames: IgnoredDebug<Vec<crate::image::AnimationFrame>>,
     },
-    #[cfg(debug_assertions)]
     SetGraphDump(IgnoredDebug<GraphDumpData>),
-    #[cfg(debug_assertions)]
     SetInspectorDumping(bool),
+    /// One inspector tick's display data. The bitrate histories are
+    /// rendered into SVG polylines on the GUI thread.
+    SetInspectorSample(IgnoredDebug<InspectorSample>),
     QuitLoop,
 }
 
@@ -339,6 +368,10 @@ impl GuiController {
 
     pub fn set_app_state(&self, state: crate::AppState) {
         self.send(UpdateGuiCommand::SetAppState(state));
+    }
+
+    pub fn set_inspector_sample(&self, sample: InspectorSample) {
+        self.send(UpdateGuiCommand::SetInspectorSample(sample.into()));
     }
 
     pub fn update_playlist(&self, start_idx: i32, length: i32) {
@@ -659,17 +692,94 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             );
             bridge.set_current_animation_frame(0);
         }
-        #[cfg(debug_assertions)]
         UpdateGuiCommand::SetGraphDump(dump) => set_graph_dump(&ui, dump.0),
-        #[cfg(debug_assertions)]
         UpdateGuiCommand::SetInspectorDumping(dumping) => {
             ui.global::<crate::InspectorState>().set_dumping(dumping);
         }
+        UpdateGuiCommand::SetInspectorSample(sample) => set_inspector_sample(&ui, sample.0),
         UpdateGuiCommand::QuitLoop => (),
     }
 }
 
-#[cfg(debug_assertions)]
+/// Push one inspector sample into the UI: sparkline paths (SVG polylines
+/// over the fixed 300x100 viewbox, both scaled to the shared peak so video
+/// and audio are comparable), the track table and the info line lists.
+fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
+    use std::fmt::Write;
+
+    let video_kbps: &[f32] = &sample.video_kbps;
+    let audio_kbps: &[f32] = &sample.audio_kbps;
+
+    fn fmt_rate(kbps: f32) -> String {
+        if kbps >= 1000.0 {
+            format!("{:.1} Mbit/s", kbps / 1000.0)
+        } else {
+            format!("{kbps:.0} kbit/s")
+        }
+    }
+
+    fn polyline(history: &[f32], peak: f32) -> SharedString {
+        let mut commands = String::new();
+        let last = history.len().saturating_sub(1).max(1) as f32;
+        for (i, kbps) in history.iter().enumerate() {
+            let x = i as f32 / last * 300.0;
+            let y = 100.0 - (kbps / peak) * 95.0;
+            let op = if i == 0 { 'M' } else { 'L' };
+            let _ = write!(commands, "{op} {x:.1} {y:.1} ");
+        }
+        commands.into()
+    }
+
+    let peak = video_kbps
+        .iter()
+        .chain(audio_kbps)
+        .fold(1.0f32, |m, v| m.max(*v));
+
+    let state = ui.global::<crate::InspectorState>();
+    state.set_video_bitrate_path(polyline(video_kbps, peak));
+    state.set_audio_bitrate_path(polyline(audio_kbps, peak));
+    state.set_video_bitrate_label(
+        format!(
+            "Video {}",
+            fmt_rate(video_kbps.last().copied().unwrap_or(0.0))
+        )
+        .into(),
+    );
+    state.set_audio_bitrate_label(
+        format!(
+            "Audio {}",
+            fmt_rate(audio_kbps.last().copied().unwrap_or(0.0))
+        )
+        .into(),
+    );
+    state.set_bitrate_peak_label(fmt_rate(peak).into());
+    state.set_have_bitrate(true);
+
+    let tracks: Vec<crate::UiInspectorTrack> = sample
+        .tracks
+        .into_iter()
+        .map(|t| crate::UiInspectorTrack {
+            kind: t.kind.into(),
+            codec: t.codec.into(),
+            detail: t.detail.into(),
+            language: t.language.into(),
+            selected: t.selected,
+        })
+        .collect();
+    state.set_tracks(Rc::new(VecModel::from(tracks)).into());
+    state.set_container(sample.container.into());
+    let lines = |v: Vec<String>| -> slint::ModelRc<SharedString> {
+        Rc::new(VecModel::from(
+            v.into_iter().map(SharedString::from).collect::<Vec<_>>(),
+        ))
+        .into()
+    };
+    state.set_sources_lines(lines(sample.sources));
+    state.set_internals_lines(lines(sample.internals));
+    state.set_sink_lines(lines(sample.sinks));
+    state.set_image_info(sample.image.into());
+}
+
 fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
     use remote_pipeline_dbg::render::TextAlign;
 

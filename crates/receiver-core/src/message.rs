@@ -34,8 +34,14 @@ impl MessageSender {
         self.send(Message::AirPlay(msg));
     }
 
-    pub fn player(&self, msg: crate::player::PlayerEvent) {
-        self.send(Message::NewPlayerEvent(msg));
+    /// Forward a player event. `generation` is the load generation the event belongs to (`None` for
+    /// app-internal events not tied to a load); the application drops load-scoped events from
+    /// superseded generations.
+    pub fn player(&self, msg: crate::player::PlayerEvent, generation: Option<u64>) {
+        self.send(Message::NewPlayerEvent {
+            event: msg,
+            generation,
+        });
     }
 
     pub fn image(&self, msg: crate::image::Event) {
@@ -66,27 +72,27 @@ pub enum Mdns {
 pub enum AirPlay {
     ConfigAvailable(airplay::Configuration),
     SenderConnected(tokio::net::TcpStream),
-    /// A mirror video stream was set up; the receiver should start playing the
+    /// A mirror video stream was set up, the receiver should start playing the
     /// `airplay://mirror/<id>` source.
     MirrorStarted {
         stream_connection_id: u64,
     },
-    /// A mirror session ended (TEARDOWN or sender disconnect); the receiver
+    /// A mirror session ended (TEARDOWN or sender disconnect), the receiver
     /// should stop playback if this is the session currently playing.
     MirrorStopped {
         stream_connection_id: u64,
     },
-    /// The client stopped sending video (screen locked/asleep); the receiver
+    /// The client stopped sending video (screen locked/asleep), the receiver
     /// should pause playback of this session.
     MirrorPaused {
         stream_connection_id: u64,
     },
-    /// The client resumed sending video after a pause; the receiver should
+    /// The client resumed sending video after a pause, the receiver should
     /// resume playback of this session.
     MirrorResumed {
         stream_connection_id: u64,
     },
-    /// The client changed the volume (SET_PARAMETER); `volume` is the linear
+    /// The client changed the volume (SET_PARAMETER). `volume` is the linear
     /// GStreamer gain (`0.0`..=`1.0`). Applied to the shared player, which now
     /// decodes the mirror audio.
     VolumeChanged {
@@ -123,7 +129,12 @@ pub enum Message {
     SessionFinished,
     SeekPercent(f32),
     ToggleDebug,
-    NewPlayerEvent(player::PlayerEvent),
+    NewPlayerEvent {
+        event: player::PlayerEvent,
+        /// The load generation the event belongs to (see `fcastplaybin::FcastPlaybin::load_async`);
+        /// `None` for app-internal events not tied to a load.
+        generation: Option<u64>,
+    },
     Op {
         origin: PacketOrigin,
         op: crate::Operation,
@@ -154,17 +165,30 @@ pub enum Message {
     PendingSeekCheck {
         epoch: u64,
     },
-    /// A subtitle text-restore dance timer fired (see `player::subtitles`);
-    /// routed back through this loop so the dance stays serialized with
-    /// every other player call.
-    PlayerTimer(player::TimerEvent),
+    /// fcast backend: bounded wait for an attached external subtitle input
+    /// to produce its stream. If it still hasn't when this fires, the input
+    /// failed silently (a bad URL can fail without a bus error) and is
+    /// detached with `ResourceNotFound`.
+    FcastExternalSubCheck {
+        item: MediaItemId,
+        ext_id: u32,
+    },
+    /// DIAGNOSTIC (load-stall investigation): a bounded wait after a pipeline
+    /// load. If the pipeline still has not reached a steady PAUSED when this
+    /// fires (a selected stream's pad never routed), dump why (see
+    /// `Player::log_load_stall_diagnostics`). Diagnostics only, no recovery.
+    LoadStallCheck {
+        item: MediaItemId,
+        epoch: u64,
+    },
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),
     #[cfg(debug_assertions)]
     DumpPipeline,
-    #[cfg(debug_assertions)]
     InspectorRefresh,
+    /// One bitrate sample while the inspector is open (driven by its timer).
+    InspectorBitrateTick,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     AppUpdate(AppUpdate),
     GuiWindowClosed(oneshot::Sender<()>),

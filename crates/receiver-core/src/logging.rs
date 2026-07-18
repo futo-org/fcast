@@ -42,6 +42,9 @@ pub fn init(loglevel: Option<LevelFilter>) {
 
         let fmt_layer = tracing_subscriber::fmt::layer();
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
+        if let Ok(spec) = std::env::var("GST_DEBUG") {
+            gst::log::set_threshold_from_string(&spec, false);
+        }
         let registry = tracing_subscriber::registry()
             .with(fmt_layer)
             .with(env_filter)
