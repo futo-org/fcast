@@ -7,8 +7,7 @@ pub use fcast_sender_sdk_raw::device::{
     CompanionSourceDescriptor, DeviceConnectionState, DeviceFeature, DeviceInfo,
     DisplayCapabilities, LoadRequest, MediaCapabilities, MediaTrack, MediaTrackType, Metadata,
     PlaybackState, PlaylistItem, ProtocolType, QueueItem, ReceiverCapabilities, Source,
-    VideoResolution, EventSubscription, KeyEvent, KeyName, MediaEvent, MediaItem,
-    MediaItemEventType
+    VideoResolution,
 };
 pub use fcast_sender_sdk_raw::IpAddr;
 use flutter_rust_bridge::{frb, DartFnFuture};
@@ -176,31 +175,6 @@ pub struct _PlaylistItem {
     pub start_time: Option<f64>,
 }
 
-#[frb(mirror(MediaItemEventType))]
-pub enum _MediaItemEventType {
-    Start,
-    End,
-    Change,
-}
-
-#[frb(mirror(MediaItem))]
-pub struct _MediaItem {
-    pub content_type: String,
-    pub url: Option<String>,
-    pub content: Option<String>,
-    pub time: Option<f64>,
-    pub volume: Option<f64>,
-    pub speed: Option<f64>,
-    pub show_duration: Option<f64>,
-    pub metadata: Option<Metadata>,
-}
-
-#[frb(mirror(MediaEvent))]
-pub struct _MediaEvent {
-    pub type_: MediaItemEventType,
-    pub item: MediaItem,
-}
-
 #[frb(mirror(MediaTrackType))]
 pub enum _MediaTrackType {
     Video,
@@ -214,32 +188,6 @@ pub struct _MediaTrack {
     pub title: Option<String>,
     pub language: String,
     pub typ: MediaTrackType,
-}
-
-#[frb(mirror(KeyName))]
-pub enum _KeyName {
-    ArrowLeft,
-    ArrowRight,
-    ArrowUp,
-    ArrowDown,
-    Ok,
-}
-
-#[frb(mirror(EventSubscription))]
-pub enum _EventSubscription {
-    MediaItemStart,
-    MediaItemEnd,
-    MediaItemChange,
-    KeyDown { keys: Vec<KeyName> },
-    KeyUp { keys: Vec<KeyName> },
-}
-
-#[frb(mirror(KeyEvent))]
-pub struct _KeyEvent {
-    pub released: bool,
-    pub repeat: bool,
-    pub handled: bool,
-    pub name: String,
 }
 
 #[frb(sync)]
@@ -259,10 +207,9 @@ pub enum DeviceEvent {
     DurationChanged { new_duration: f64 },
     SpeedChanged { new_speed: f64 },
     SourceChanged { new_source: Source },
-    KeyEvent { event: KeyEvent },
-    MediaEvent { event: MediaEvent },
     TracksAvailable { tracks: Vec<MediaTrack> },
     TrackSelected { id: Option<u32>, typ: MediaTrackType },
+    PlaybackStopped,
     PlaybackError { message: String },
 }
 
@@ -330,19 +277,6 @@ impl device::DeviceEventHandler for DeviceEventHandler {
         });
     }
 
-    #[frb(ignore)]
-    fn key_event(&self, event: KeyEvent) {
-        futures::executor::block_on(async {
-            (self.on_event)(DeviceEvent::KeyEvent { event }).await;
-        });
-    }
-
-    #[frb(ignore)]
-    fn media_event(&self, event: MediaEvent) {
-        futures::executor::block_on(async {
-            (self.on_event)(DeviceEvent::MediaEvent { event }).await;
-        });
-    }
 
     #[frb(ignore)]
     fn tracks_available(&self, tracks: Vec<MediaTrack>) {
@@ -355,6 +289,13 @@ impl device::DeviceEventHandler for DeviceEventHandler {
     fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
         futures::executor::block_on(async {
             (self.on_event)(DeviceEvent::TrackSelected { id, typ }).await;
+        });
+    }
+
+    #[frb(ignore)]
+    fn playback_stopped(&self) {
+        futures::executor::block_on(async {
+            (self.on_event)(DeviceEvent::PlaybackStopped).await;
         });
     }
 
@@ -375,8 +316,6 @@ pub enum _CastingDeviceError {
     MissingAddresses,
     #[error("device already started")]
     DeviceAlreadyStarted,
-    #[error("unsupported subscription")]
-    UnsupportedSubscription,
     #[error("unsupported feature")]
     UnsupportedFeature,
 }
@@ -388,8 +327,6 @@ pub enum _DeviceFeature {
     SetSpeed,
     LoadContent,
     LoadUrl,
-    KeyEventSubscription,
-    MediaEventSubscription,
     LoadImage,
     LoadPlaylist,
     PlaylistNextAndPrevious,
@@ -405,9 +342,6 @@ macro_rules! device_error_converter {
                 CastingDeviceError::MissingAddresses => _CastingDeviceError::MissingAddresses,
                 CastingDeviceError::DeviceAlreadyStarted => {
                     _CastingDeviceError::DeviceAlreadyStarted
-                }
-                CastingDeviceError::UnsupportedSubscription => {
-                    _CastingDeviceError::UnsupportedSubscription
                 }
                 CastingDeviceError::UnsupportedFeature => _CastingDeviceError::UnsupportedFeature,
             }),
@@ -610,21 +544,6 @@ impl CastingDevice {
         self.0.set_port(port);
     }
 
-    #[frb(sync)]
-    pub fn subscribe_event(
-        &self,
-        group: EventSubscription,
-    ) -> Result<(), _CastingDeviceError> {
-        device_error_converter!(self.0.subscribe_event(group))
-    }
-
-    #[frb(sync)]
-    pub fn unsubscribe_event(
-        &self,
-        group: EventSubscription,
-    ) -> Result<(), _CastingDeviceError> {
-        device_error_converter!(self.0.unsubscribe_event(group))
-    }
 }
 
 #[derive(Debug, thiserror::Error)]

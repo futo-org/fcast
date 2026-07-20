@@ -20,8 +20,8 @@
 //!
 //! use fcast_sender_sdk::context::CastContext;
 //! use fcast_sender_sdk::device::{
-//!     ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo, KeyEvent,
-//!     MediaEvent, LoadRequest, PlaybackState, ProtocolType, Source, MediaTrack, MediaTrackType,
+//!     ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo,
+//!     LoadRequest, PlaybackState, ProtocolType, Source, MediaTrack, MediaTrackType,
 //! };
 //! use fcast_sender_sdk::{DeviceDiscovererEventHandler, IpAddr};
 //!
@@ -56,12 +56,8 @@
 //!         println!("Source changed: {source:?}");
 //!     }
 //!
-//!     fn key_event(&self, event: KeyEvent) {
-//!         println!("Key event: {event:?}");
-//!     }
-//!
-//!     fn media_event(&self, event: MediaEvent) {
-//!         println!("Media event: {event:?}");
+//!     fn playback_stopped(&self) {
+//!         println!("Playback stopped");
 //!     }
 //!
 //!     fn playback_error(&self, message: String) {

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -31,8 +31,8 @@ use tokio_rustls::{
 use crate::{
     device::{
         ApplicationInfo, CastingDevice, CastingDeviceError, DeviceConnectionState,
-        DeviceEventHandler, DeviceFeature, DeviceInfo, EventSubscription, LoadRequest, MediaItem,
-        Metadata, PlaybackState, PlaylistItem, ProtocolType, QueuePosition, Source,
+        DeviceEventHandler, DeviceFeature, DeviceInfo, LoadRequest, Metadata, PlaybackState,
+        PlaylistItem, ProtocolType, QueuePosition, Source,
     },
     utils, IpAddr,
 };
@@ -96,8 +96,6 @@ enum Command {
     PausePlayback,
     ResumePlayback,
     JumpPlaylist(i32),
-    Subscribe(EventSubscription),
-    Unsubscribe(EventSubscription),
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
@@ -184,7 +182,6 @@ struct SharedReceiverState {
     pub is_running: bool,
     pub remote_sockaddr: std::net::SocketAddr,
     pub stream_local_sockaddr: std::net::SocketAddr,
-    pub media_item: Option<MediaItem>,
 }
 
 struct InnerDevice {
@@ -198,7 +195,6 @@ struct InnerDevice {
     current_player_state: PlayerState,
     session_id: String,
     launch_retries: u8,
-    subscriptions: HashSet<EventSubscription>,
 }
 
 impl InnerDevice {
@@ -217,7 +213,6 @@ impl InnerDevice {
             current_player_state: PlayerState::Idle,
             session_id: String::new(),
             launch_retries: 0,
-            subscriptions: HashSet::new(),
         }
     }
 
@@ -436,12 +431,6 @@ impl InnerDevice {
                 })
                 .await?;
             }
-            Command::Subscribe(subscription) => {
-                let _ = self.subscriptions.insert(subscription);
-            }
-            Command::Unsubscribe(subscription) => {
-                let _ = self.subscriptions.remove(&subscription);
-            }
         }
 
         Ok(false)
@@ -572,27 +561,6 @@ impl InnerDevice {
                                     url: media.content_id.clone(),
                                     content_type: media.content_type.clone(),
                                 };
-                                shared_state.media_item = Some(MediaItem {
-                                    content_type: media.content_type,
-                                    url: Some(media.content_id),
-                                    content: None,
-                                    time: None,
-                                    volume: None,
-                                    speed: None,
-                                    show_duration: media.duration,
-                                    metadata: media.metadata.map(|meta| match meta {
-                                        google_cast_protocol::Metadata::Generic {
-                                            title,
-                                            images,
-                                            ..
-                                        } => crate::device::Metadata {
-                                            title,
-                                            thumbnail_url: images.and_then(|imgs| {
-                                                imgs.first().map(|img| img.url.clone())
-                                            }),
-                                        },
-                                    }),
-                                });
                                 if shared_state.source != Some(new_source.clone()) {
                                     self.event_handler.source_changed(new_source.clone());
                                     shared_state.source = Some(new_source);
@@ -614,19 +582,15 @@ impl InnerDevice {
                             self.current_player_state = stat.player_state;
                             if let Some(idle_reason) = stat.idle_reason {
                                 match idle_reason {
-                                    google_cast_protocol::IdleReason::Finished
-                                        if self
-                                            .subscriptions
-                                            .contains(&EventSubscription::MediaItemEnd) =>
-                                    {
-                                        if let Some(media_item) = shared_state.media_item.take() {
-                                            self.event_handler.media_event(
-                                                crate::device::MediaEvent {
-                                                    type_: crate::device::MediaItemEventType::End,
-                                                    item: media_item,
-                                                },
-                                            );
-                                        }
+                                    google_cast_protocol::IdleReason::Finished => {
+                                        changed!(
+                                            playback_state,
+                                            PlaybackState::Ended,
+                                            playback_state_changed
+                                        );
+                                    }
+                                    google_cast_protocol::IdleReason::Cancelled => {
+                                        self.event_handler.playback_stopped();
                                     }
                                     _ => (),
                                 }
@@ -763,7 +727,6 @@ impl InnerDevice {
             is_running: false,
             remote_sockaddr,
             stream_local_sockaddr,
-            media_item: None,
         };
 
         let mut get_status_interval = tokio::time::interval(DEFAULT_GET_STATUS_DELAY);
@@ -893,8 +856,7 @@ impl CastingDevice for ChromecastDevice {
             | DeviceFeature::LoadUrl
             | DeviceFeature::LoadImage
             | DeviceFeature::LoadPlaylist
-            | DeviceFeature::PlaylistNextAndPrevious
-            | DeviceFeature::MediaEventSubscription => true,
+            | DeviceFeature::PlaylistNextAndPrevious => true,
             _ => false,
         }
     }
@@ -1071,19 +1033,6 @@ impl CastingDevice for ChromecastDevice {
     fn set_port(&self, port: u16) {
         let mut state = self.state.lock().unwrap();
         state.port = port;
-    }
-
-    #[allow(unused_variables)]
-    fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
-        match group {
-            EventSubscription::MediaItemEnd => self.send_command(Command::Subscribe(group)),
-            _ => Err(CastingDeviceError::UnsupportedSubscription),
-        }
-    }
-
-    #[allow(unused_variables)]
-    fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError> {
-        self.send_command(Command::Unsubscribe(group))
     }
 
     fn start_mirroring_session(

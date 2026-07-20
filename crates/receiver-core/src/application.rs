@@ -1480,7 +1480,15 @@ impl Application {
         match op {
             Operation::Pause => self.pause(),
             Operation::Resume => self.resume(),
-            Operation::Stop => self.stop_playback(),
+            Operation::Stop => {
+                self.stop_playback();
+                // Let the other senders know playback was stopped (current item/queue cleared) by
+                // this sender. The initiator is excluded as it already knows it issued the stop.
+                self.relay_to_other_senders(
+                    origin,
+                    fcast_protocol::v4::MessageBuilder::new().stop_playback(),
+                );
+            }
             Operation::Seek(time) => {
                 if self.is_playing() {
                     match self.current_duration {

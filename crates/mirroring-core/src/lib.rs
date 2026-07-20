@@ -120,11 +120,11 @@ pub enum DeviceEvent {
     // fn media_event(&self, _event: device::MediaEvent) {}
     // #[cfg(not(target_os = "android"))]
     // VolumeChanged(f64),
+    #[cfg(not(target_os = "android"))]
+    PlaybackStopped,
     // fn playback_error(&self, _message: String) {}
     #[cfg(not(target_os = "android"))]
     PlaybackError(String),
-    #[cfg(not(target_os = "android"))]
-    Media(device::MediaEvent),
     TracksAvailable(Vec<MediaTrack>),
     TrackSelected {
         id: Option<u32>,
@@ -366,11 +366,9 @@ impl device::DeviceEventHandler for DeviceHandler {
         self.send_event(DeviceEvent::SourceChanged(source));
     }
 
-    fn key_event(&self, _event: device::KeyEvent) {}
-
-    fn media_event(&self, _event: device::MediaEvent) {
+    fn playback_stopped(&self) {
         #[cfg(not(target_os = "android"))]
-        self.send_event(DeviceEvent::Media(_event));
+        self.send_event(DeviceEvent::PlaybackStopped);
     }
 
     fn playback_error(&self, _message: String) {}

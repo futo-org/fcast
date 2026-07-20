@@ -10,7 +10,7 @@ use desktop_sender::{FetchEvent, device_info_parser};
 use directories::{BaseDirs, UserDirs};
 use fcast_sender_sdk::{
     context::CastContext,
-    device::{self, DeviceFeature, DeviceInfo, EventSubscription},
+    device::{self, DeviceFeature, DeviceInfo},
 };
 use file_server::FileServer;
 use gst_video::prelude::*;
@@ -1512,14 +1512,6 @@ impl Application {
                             debug!(is_mirroring_supported, "Device connected");
                             let remote_addr: std::net::IpAddr = (&used_remote_addr).into();
                             let remote_addr_str = remote_addr.to_string().to_shared_string();
-                            if session
-                                .device
-                                .supports_feature(DeviceFeature::MediaEventSubscription)
-                            {
-                                let _ = session
-                                    .device
-                                    .subscribe_event(EventSubscription::MediaItemEnd);
-                            }
                             self.ui_weak.upgrade_in_event_loop(move |ui| {
                                 let bridge = ui.global::<Bridge>();
                                 bridge.set_is_mirroring_supported(is_mirroring_supported);
@@ -1582,13 +1574,7 @@ impl Application {
                     }
                 }
                 mcore::DeviceEvent::PlaybackError(_) => (),
-                mcore::DeviceEvent::Media(media_event) => match media_event.type_ {
-                    device::MediaItemEventType::End => {
-                        // TODO: look for next item to play if any
-                        self.play_next_if_available()?;
-                    }
-                    _ => (),
-                },
+                mcore::DeviceEvent::PlaybackStopped => (),
                 _ => self.update_device_state(event)?,
             },
             Event::FromDevice { id, .. } => {

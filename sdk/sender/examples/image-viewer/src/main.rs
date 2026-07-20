@@ -13,7 +13,7 @@ use fcast_sender_sdk::{
     context::CastContext,
     device::{
         CompanionSource, CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler,
-        DeviceInfo, KeyEvent, LoadRequest, MediaEvent, MediaTrack, MediaTrackType, PlaybackState,
+        DeviceInfo, LoadRequest, MediaTrack, MediaTrackType, PlaybackState,
         QueueItem, QueuePosition, Source,
     },
 };
@@ -88,9 +88,7 @@ impl DeviceEventHandler for DevEventHandler {
 
     fn source_changed(&self, _source: Source) {}
 
-    fn key_event(&self, _event: KeyEvent) {}
-
-    fn media_event(&self, _event: MediaEvent) {}
+    fn playback_stopped(&self) {}
 
     fn playback_error(&self, message: String) {
         println!("Playback error: {message}");
