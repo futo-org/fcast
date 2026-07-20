@@ -245,88 +245,6 @@ pub struct PlaylistItem {
     pub start_time: Option<f64>,
 }
 
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum KeyName {
-    ArrowLeft,
-    ArrowRight,
-    ArrowUp,
-    ArrowDown,
-    Ok,
-}
-
-impl KeyName {
-    pub fn all() -> Vec<Self> {
-        vec![
-            Self::ArrowLeft,
-            Self::ArrowRight,
-            Self::ArrowUp,
-            Self::ArrowDown,
-            Self::Ok,
-        ]
-    }
-}
-
-impl ToString for KeyName {
-    fn to_string(&self) -> String {
-        match self {
-            KeyName::ArrowLeft => "ArrowLeft",
-            KeyName::ArrowRight => "ArrowRight",
-            KeyName::ArrowUp => "ArrowUp",
-            KeyName::ArrowDown => "ArrowDown",
-            KeyName::Ok => "Ok",
-        }
-        .to_owned()
-    }
-}
-
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EventSubscription {
-    MediaItemStart,
-    MediaItemEnd,
-    MediaItemChange,
-    KeyDown { keys: Vec<KeyName> },
-    KeyUp { keys: Vec<KeyName> },
-}
-
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-#[derive(Clone, Debug)]
-pub struct KeyEvent {
-    pub released: bool,
-    pub repeat: bool,
-    pub handled: bool,
-    pub name: String,
-}
-
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MediaItemEventType {
-    Start,
-    End,
-    Change,
-}
-
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-#[derive(Clone, Debug)]
-pub struct MediaItem {
-    pub content_type: String,
-    pub url: Option<String>,
-    pub content: Option<String>,
-    pub time: Option<f64>,
-    pub volume: Option<f64>,
-    pub speed: Option<f64>,
-    pub show_duration: Option<f64>,
-    pub metadata: Option<Metadata>,
-}
-
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
-#[derive(Clone, Debug)]
-pub struct MediaEvent {
-    pub type_: MediaItemEventType,
-    pub item: MediaItem,
-}
-
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug)]
 pub struct ResourceInfo {}
@@ -358,16 +276,13 @@ pub trait DeviceEventHandler: Send + Sync {
     fn duration_changed(&self, duration: f64);
     fn speed_changed(&self, speed: f64);
     fn source_changed(&self, source: Source);
-    fn key_event(&self, event: KeyEvent);
-    fn media_event(&self, event: MediaEvent);
     /// Called when the current media item's playback is **stopped**, that is,
     /// explicitly terminated before reaching its natural end, either because a
     /// stop was requested (e.g. via [`CastingDevice::stop_playback`]).
     ///
     /// This is deliberately distinct from playback *ending*. A media item that
     /// plays through to completion is reported as [`PlaybackState::Ended`] via
-    /// [`DeviceEventHandler::playback_state_changed`] (and, when the client is
-    /// subscribed to it, a [`MediaItemEventType::End`] media event).
+    /// [`DeviceEventHandler::playback_state_changed`].
     fn playback_stopped(&self);
     fn playback_error(&self, message: String);
     fn tracks_available(&self, tracks: Vec<MediaTrack>);
@@ -406,7 +321,6 @@ pub enum CastingDeviceError {
     FailedToSendCommand,
     MissingAddresses,
     DeviceAlreadyStarted,
-    UnsupportedSubscription,
     UnsupportedFeature,
 }
 
@@ -420,7 +334,6 @@ impl std::fmt::Display for CastingDeviceError {
             }
             CastingDeviceError::MissingAddresses => write!(f, "missing addresses"),
             CastingDeviceError::DeviceAlreadyStarted => write!(f, "device already started"),
-            CastingDeviceError::UnsupportedSubscription => write!(f, "unsupported subscription"),
             CastingDeviceError::UnsupportedFeature => write!(f, "unsupported feature"),
         }
     }
@@ -433,8 +346,6 @@ pub enum DeviceFeature {
     SetSpeed,
     LoadContent,
     LoadUrl,
-    KeyEventSubscription,
-    MediaEventSubscription,
     LoadImage,
     LoadPlaylist,
     PlaylistNextAndPrevious,
@@ -618,14 +529,6 @@ pub trait CastingDevice: Send + Sync {
     fn set_addresses(&self, addrs: Vec<IpAddr>);
     fn get_port(&self) -> u16;
     fn set_port(&self, port: u16);
-    /// Attempt to subscribe to an event group.
-    ///
-    /// An error will be returned if the device does not support the group. Use
-    /// [`supports_feature`] to check if the group is supported.
-    ///
-    /// [`supports_feature`]: Self::supports_feature
-    fn subscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
-    fn unsubscribe_event(&self, group: EventSubscription) -> Result<(), CastingDeviceError>;
     fn start_mirroring_session(
         &self,
         signaller: Arc<dyn FWRTCSignaller>,

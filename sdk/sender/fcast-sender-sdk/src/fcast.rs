@@ -34,15 +34,13 @@ use crate::{
     device::{
         ApplicationInfo, CastingDevice, CastingDeviceError, CompanionSource,
         CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
-        DeviceInfo, EventSubscription, KeyEvent, KeyName, LoadRequest, MediaEvent, MediaItem,
-        MediaItemEventType, Metadata, PlaybackState, PlaylistItem, ProtocolType, QueueItem,
+        DeviceInfo, LoadRequest, Metadata, PlaybackState, PlaylistItem, ProtocolType, QueueItem,
         QueuePosition, Source,
     },
     utils, IpAddr,
 };
 
 const DEFAULT_SESSION_VERSION: u64 = 2;
-const EVENT_SUB_MIN_PROTO_VERSION: u64 = 3;
 const PLAYLIST_MIN_PROTO_VERSION: u64 = 3;
 const V3_FEATURES_MIN_PROTO_VERSION: u64 = 3;
 
@@ -86,8 +84,6 @@ enum Command {
     PauseVideo,
     ResumeVideo,
     Quit,
-    Subscribe(EventSubscription),
-    Unsubscribe(EventSubscription),
     SetPlaylistItemIndex(u32),
     JumpPlaylist(i32),
     LoadPlaylist(Vec<PlaylistItem>),
@@ -115,24 +111,6 @@ enum Command {
     QueueSelect {
         position: QueuePosition,
     },
-}
-
-fn key_names_to_string(keys: &[KeyName]) -> Vec<String> {
-    keys.iter().map(|key| key.to_string()).collect()
-}
-
-fn event_sub_to_object(sub: &EventSubscription) -> v3::EventSubscribeObject {
-    match sub {
-        EventSubscription::MediaItemStart => v3::EventSubscribeObject::MediaItemStart,
-        EventSubscription::MediaItemEnd => v3::EventSubscribeObject::MediaItemEnd,
-        EventSubscription::MediaItemChange => v3::EventSubscribeObject::MediaItemChanged,
-        EventSubscription::KeyDown { keys } => v3::EventSubscribeObject::KeyDown {
-            keys: key_names_to_string(keys),
-        },
-        EventSubscription::KeyUp { keys } => v3::EventSubscribeObject::KeyDown {
-            keys: key_names_to_string(keys),
-        },
-    }
 }
 
 struct State {
@@ -1162,6 +1140,15 @@ impl InnerDevice {
                     .context("Failed to send InitialSenderMessage")?;
 
                     self.session_version.set(V3_FEATURES_MIN_PROTO_VERSION);
+
+                    self.send(
+                        Opcode::SubscribeEvent,
+                        v3::SubscribeEventMessage {
+                            event: v3::EventSubscribeObject::MediaItemEnd,
+                        },
+                    )
+                    .await
+                    .context("Failed to subscribe to MediaItemEnd")?;
                 }
             },
             Action::VolumeUpdated(msg) => {
@@ -1274,62 +1261,19 @@ impl InnerDevice {
                     shared_state.source = Some(source);
                 }
             }
-            Action::Event(msg) => match msg.event {
-                v3::EventObject::MediaItem { variant, item } => {
-                    let type_ = match variant {
-                        v3::EventType::MediaItemStart => MediaItemEventType::Start,
-                        v3::EventType::MediaItemEnd => MediaItemEventType::End,
-                        v3::EventType::MediaItemChange => MediaItemEventType::Change,
-                        _ => {
-                            error!("Received event of type {variant:?} when a media event was expected");
-                            return Ok(false);
-                        }
-                    };
-                    self.event_handler.media_event(MediaEvent {
-                        type_,
-                        item: MediaItem {
-                            content_type: item.container,
-                            url: item.url,
-                            content: item.content,
-                            time: item.time,
-                            volume: item.volume,
-                            speed: item.speed,
-                            show_duration: item.show_duration,
-                            metadata: item.metadata.map(|m| match m {
-                                MetadataObject::Generic {
-                                    title,
-                                    thumbnail_url,
-                                    ..
-                                } => Metadata {
-                                    title,
-                                    thumbnail_url,
-                                },
-                            }),
-                        },
-                    });
+            Action::Event(msg) => {
+                if let v3::EventObject::MediaItem {
+                    variant: v3::EventType::MediaItemEnd,
+                    ..
+                } = msg.event
+                {
+                    changed!(
+                        playback_state,
+                        PlaybackState::Ended,
+                        playback_state_changed
+                    );
                 }
-                v3::EventObject::Key {
-                    variant,
-                    key,
-                    repeat,
-                    handled,
-                } => {
-                    let event = KeyEvent {
-                        released: match variant {
-                            v3::EventType::KeyDown => false,
-                            v3::EventType::KeyUp => true,
-                            _ => {
-                                error!("Expected Key event, got {variant:?}");
-                                return Ok(false);
-                            }
-                        },
-                        repeat,
-                        handled,
-                        name: key,
-                    };
-                    self.event_handler.key_event(event);
-                }
-            },
+            }
             Action::UpgradeToTls => {
                 let Some(fingerprint) = self.receiver_fingerprint.clone() else {
                     error!("Missing fingerprint for TLS upgrade");
@@ -1666,22 +1610,6 @@ impl InnerDevice {
                 _ => (),
             },
             Command::Quit => return Ok(true),
-            Command::Subscribe(ref event) | Command::Unsubscribe(ref event) => {
-                if self.session_version.get() != EVENT_SUB_MIN_PROTO_VERSION {
-                    error!(
-                        "Current protocol version ({}) does not support event subscriptions, version >=3 is required",
-                        self.session_version.get(),
-                    );
-                    return Ok(false);
-                }
-                let event = event_sub_to_object(event);
-                let op = if matches!(cmd, Command::Subscribe(_)) {
-                    Opcode::SubscribeEvent
-                } else {
-                    Opcode::UnsubscribeEvent
-                };
-                self.send(op, v3::SubscribeEventMessage { event }).await?;
-            }
             Command::SetPlaylistItemIndex(item_index) => {
                 self.send(
                     Opcode::SetPlaylistItem,
@@ -2026,9 +1954,7 @@ impl CastingDevice for FCastDevice {
             DeviceFeature::SetVolume | DeviceFeature::SetSpeed | DeviceFeature::LoadUrl => true,
             DeviceFeature::LoadImage => session_version > 2,
             DeviceFeature::LoadContent => session_version < 4,
-            DeviceFeature::KeyEventSubscription
-            | DeviceFeature::MediaEventSubscription
-            | DeviceFeature::PlaylistNextAndPrevious
+            DeviceFeature::PlaylistNextAndPrevious
             | DeviceFeature::SetPlaylistItemIndex
             | DeviceFeature::LoadPlaylist => session_version == 3,
             DeviceFeature::WhepStreaming => self.supports_whep.load(Ordering::Relaxed),
@@ -2296,22 +2222,6 @@ impl CastingDevice for FCastDevice {
     fn set_port(&self, port: u16) {
         let mut state = self.state.lock().unwrap();
         state.port = port;
-    }
-
-    fn subscribe_event(&self, subscription: EventSubscription) -> Result<(), CastingDeviceError> {
-        if self.session_version.get() >= EVENT_SUB_MIN_PROTO_VERSION {
-            self.send_command(Command::Subscribe(subscription))
-        } else {
-            Err(CastingDeviceError::UnsupportedFeature)
-        }
-    }
-
-    fn unsubscribe_event(&self, subscription: EventSubscription) -> Result<(), CastingDeviceError> {
-        if self.session_version.get() >= EVENT_SUB_MIN_PROTO_VERSION {
-            self.send_command(Command::Unsubscribe(subscription))
-        } else {
-            Err(CastingDeviceError::UnsupportedFeature)
-        }
     }
 
     fn start_mirroring_session(

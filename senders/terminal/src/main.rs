@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use fcast_sender_sdk::{
     context::CastContext,
     device::{
-        DeviceConnectionState, DeviceEventHandler, DeviceInfo, EventSubscription, KeyEvent,
-        KeyName, LoadRequest, MediaEvent, MediaTrack, MediaTrackType, PlaybackState, Source,
+        DeviceConnectionState, DeviceEventHandler, DeviceInfo, LoadRequest, MediaTrack,
+        MediaTrackType, PlaybackState, Source,
     },
     url_format_ip_addr, DeviceDiscovererEventHandler,
 };
@@ -107,10 +107,6 @@ struct TerminalSender {
     /// The port to send the command to
     #[arg(long, short, default_value_t = 46899)]
     port: u16,
-    /// A comma separated list of events to subscribe to (e.g. MediaItemStart,KeyDown).
-    /// Available events: [MediaItemStart, MediaItemEnd, MediaItemChange, KeyDown, KeyUp]
-    #[arg(long, short)]
-    subscriptions: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -168,14 +164,6 @@ impl DeviceEventHandler for EventHandler {
 
     fn source_changed(&self, source: Source) {
         println!("Source changed: {source:#?}");
-    }
-
-    fn key_event(&self, event: KeyEvent) {
-        println!("Key event: {event:#?}");
-    }
-
-    fn media_event(&self, event: MediaEvent) {
-        println!("Media event: {event:#?}");
     }
 
     fn playback_stopped(&self) {
@@ -380,29 +368,6 @@ async fn main() {
         eprintln!("Failed to connect");
         std::process::exit(1);
     };
-
-    if let Some(subscriptions) = app.subscriptions {
-        let subs = subscriptions.split(',');
-        for sub in subs {
-            let subscription = match sub.to_lowercase().as_str() {
-                "mediaitemstart" => EventSubscription::MediaItemStart,
-                "mediaitemend" => EventSubscription::MediaItemEnd,
-                "mediaitemchange" => EventSubscription::MediaItemChange,
-                "keydown" => EventSubscription::KeyDown {
-                    keys: KeyName::all(),
-                },
-                "keyup" => EventSubscription::KeyUp {
-                    keys: KeyName::all(),
-                },
-                _ => {
-                    println!("Invalid event in subscriptions list: {sub}");
-                    continue;
-                }
-            };
-            device.subscribe_event(subscription.clone()).unwrap();
-            println!("Subscribed to {subscription:?}");
-        }
-    }
 
     let quit = Arc::new(AtomicBool::new(true));
 
