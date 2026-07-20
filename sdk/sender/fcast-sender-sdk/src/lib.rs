@@ -64,6 +64,10 @@
 //!         println!("Media event: {event:?}");
 //!     }
 //!
+//!     fn playback_stopped(&self) {
+//!         println!("Playback stopped");
+//!     }
+//!
 //!     fn playback_error(&self, message: String) {
 //!         println!("Playback error: {message}");
 //!     }

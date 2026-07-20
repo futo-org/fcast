@@ -973,6 +973,10 @@ impl<'a> Engine<'a> {
                     .await?;
             }
             Step::ExpectLoadOnSecondSender => self.expect_load_on_second_sender().await?,
+            Step::ExpectStopOnSecondSender => {
+                self.expect_flat_on_second_sender(v4::flat::Message::StopPlayback, "StopPlayback")
+                    .await?
+            }
             Step::ExpectVolumeOnSecondSender(volume) => {
                 self.expect_volume_on_second_sender(*volume as f32).await?
             }

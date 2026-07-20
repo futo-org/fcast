@@ -628,6 +628,9 @@ impl InnerDevice {
                                             );
                                         }
                                     }
+                                    google_cast_protocol::IdleReason::Cancelled => {
+                                        self.event_handler.playback_stopped();
+                                    }
                                     _ => (),
                                 }
                             }

@@ -906,7 +906,9 @@ pub enum PlayerEvent {
     /// the empty -> non-empty edge, re-armed by every flush).
     SubtitleOverlayShown,
     /// A subtitle refresh seek could not be performed.
-    SubtitleRefreshFailed { seqnum: gst::Seqnum },
+    SubtitleRefreshFailed {
+        seqnum: gst::Seqnum,
+    },
     RateChanged(f64),
     SeekFailed,
     /// The element providing the pipeline clock went away (e.g. the audio
@@ -936,7 +938,9 @@ enum Job {
     /// forces a Paused round-trip). Serialized against other track operations
     /// by `TrackOps`; `seqnum` is stamped on the seek event so its ASYNC_DONE
     /// can be attributed exactly.
-    RefreshSeek { seqnum: gst::Seqnum },
+    RefreshSeek {
+        seqnum: gst::Seqnum,
+    },
     /// Cycle the pipeline through Paused back to Playing so it elects a new
     /// clock after `ClockLost`. Without this every sink keeps waiting on the
     /// dead clock and playback stalls.
@@ -1560,8 +1564,8 @@ impl Player {
         // preroll) is in progress instead of predicting from the kind of
         // change -- mispredictions are what used to wedge this logic.
         let (res, _, pending) = self.playbin.state(gst::ClockTime::ZERO);
-        let async_busy = matches!(res, Ok(gst::StateChangeSuccess::Async))
-            || pending != gst::State::VoidPending;
+        let async_busy =
+            matches!(res, Ok(gst::StateChangeSuccess::Async)) || pending != gst::State::VoidPending;
         let (running, paused) = match self.state_machine.state {
             State::Running { state } => (true, state == RunningState::Paused),
             _ => (false, false),
@@ -1613,8 +1617,7 @@ impl Player {
             // transiently report Paused here (a re-preroll "loses" Playing),
             // so ask the pipeline for its target state instead.
             let (_, current, pending) = self.playbin.state(gst::ClockTime::ZERO);
-            let paused_bound =
-                current != gst::State::Playing && pending != gst::State::Playing;
+            let paused_bound = current != gst::State::Playing && pending != gst::State::Playing;
             if paused_bound && self.track_ops.maybe_retry_refresh() {
                 debug!("Subtitle refresh finished without rendering a cue; retrying");
             }
@@ -2599,7 +2602,11 @@ mod tests {
         ops.request(TrackKind::Subtitle, Some(3), applied);
         assert_eq!(
             ops.pump(ctx(true, false, applied)),
-            Some(TrackOpCommand::SelectStreams(sel(Some(0), Some(1), Some(3))))
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(3)
+            )))
         );
         let sn = gst::Seqnum::next();
         ops.selection_dispatched(sn);
@@ -2624,7 +2631,11 @@ mod tests {
         ops.streams_selected(sn);
         assert_eq!(
             ops.pump(ctx(true, false, applied)),
-            Some(TrackOpCommand::SelectStreams(sel(Some(0), Some(1), Some(2))))
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(2)
+            )))
         );
     }
 
@@ -2636,7 +2647,11 @@ mod tests {
         ops.request(TrackKind::Subtitle, Some(2), applied);
         assert_eq!(
             ops.pump(ctx(true, false, applied)),
-            Some(TrackOpCommand::SelectStreams(sel(Some(0), Some(1), Some(2))))
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(2)
+            )))
         );
         let sn = gst::Seqnum::next();
         ops.selection_dispatched(sn);
@@ -2661,7 +2676,11 @@ mod tests {
         ops.request(TrackKind::Subtitle, Some(2), applied);
         assert_eq!(
             ops.pump(ctx(true, false, applied)),
-            Some(TrackOpCommand::SelectStreams(sel(Some(0), Some(1), Some(2))))
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(2)
+            )))
         );
         let sn = gst::Seqnum::next();
         ops.selection_dispatched(sn);
@@ -2705,7 +2724,11 @@ mod tests {
         ops.request(TrackKind::Subtitle, Some(2), applied);
         assert_eq!(
             ops.pump(ctx(true, true, applied)),
-            Some(TrackOpCommand::SelectStreams(sel(Some(0), Some(1), Some(2))))
+            Some(TrackOpCommand::SelectStreams(sel(
+                Some(0),
+                Some(1),
+                Some(2)
+            )))
         );
         let sn = gst::Seqnum::next();
         ops.selection_dispatched(sn);

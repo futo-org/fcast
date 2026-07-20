@@ -178,6 +178,10 @@ impl DeviceEventHandler for EventHandler {
         println!("Media event: {event:#?}");
     }
 
+    fn playback_stopped(&self) {
+        println!("Playback stopped");
+    }
+
     fn playback_error(&self, message: String) {
         eprintln!("Playback error: {message}");
     }

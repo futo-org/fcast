@@ -182,6 +182,7 @@ pub enum Step {
         millis: u64,
     },
     ExpectLoadOnSecondSender,
+    ExpectStopOnSecondSender,
     ExpectVolumeOnSecondSender(f64),
     ExpectQueueMutationOnSecondSender(QueueMutationKind),
     MeasureProgressBothSenders {
@@ -302,6 +303,7 @@ cases!(
     multi_sender_queue_insert_broadcast_v4,
     multi_sender_queue_remove_broadcast_v4,
     multi_sender_queue_select_broadcast_v4,
+    multi_sender_stop_broadcast_v4,
     seek_v3,
     unsubscribe_event_v3
 );
@@ -1941,6 +1943,28 @@ define_test_case!(
         }),
         Step::ExpectQueueMutationOnSecondSender(QueueMutationKind::Select),
         send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    multi_sender_stop_broadcast_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        // Make sure the second sender is caught up (it saw the relayed load)
+        // before the first sender stops.
+        Step::ExpectLoadOnSecondSender,
+        Step::SleepMillis(500),
+        // The first sender stops playback; the receiver must relay a
+        // StopPlayback to the *other* sender (never echoing it back to the
+        // initiator).
+        send!(Send::StopV4),
+        Step::ExpectStopOnSecondSender,
     ]
 );
 

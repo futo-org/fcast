@@ -196,6 +196,12 @@ pub enum PlaybackState {
     Buffering,
     Playing,
     Paused,
+    /// The media item played through to its natural end.
+    ///
+    /// This is distinct from being *stopped*: an item that is explicitly
+    /// terminated before reaching its end does not produce `Ended` but instead
+    /// triggers [`DeviceEventHandler::playback_stopped`]. See that method for
+    /// the full ended-vs-stopped breakdown.
     Ended,
 }
 
@@ -354,6 +360,15 @@ pub trait DeviceEventHandler: Send + Sync {
     fn source_changed(&self, source: Source);
     fn key_event(&self, event: KeyEvent);
     fn media_event(&self, event: MediaEvent);
+    /// Called when the current media item's playback is **stopped**, that is,
+    /// explicitly terminated before reaching its natural end, either because a
+    /// stop was requested (e.g. via [`CastingDevice::stop_playback`]).
+    ///
+    /// This is deliberately distinct from playback *ending*. A media item that
+    /// plays through to completion is reported as [`PlaybackState::Ended`] via
+    /// [`DeviceEventHandler::playback_state_changed`] (and, when the client is
+    /// subscribed to it, a [`MediaItemEventType::End`] media event).
+    fn playback_stopped(&self);
     fn playback_error(&self, message: String);
     fn tracks_available(&self, tracks: Vec<MediaTrack>);
     fn track_selected(&self, id: Option<u32>, typ: MediaTrackType);

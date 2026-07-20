@@ -1589,6 +1589,7 @@ impl Application {
                     }
                     _ => (),
                 },
+                mcore::DeviceEvent::PlaybackStopped => (),
                 _ => self.update_device_state(event)?,
             },
             Event::FromDevice { id, .. } => {

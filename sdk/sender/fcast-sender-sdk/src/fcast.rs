@@ -293,6 +293,7 @@ enum Action {
     },
     VolumeChanged(f64),
     PlaybackStateChanged(v4::fcast_flatbuffers::fcast::v4::PlaybackState),
+    PlaybackStopped,
     Companion(CompanionRequest),
     StartMirroringSession {
         id: u16,
@@ -543,6 +544,7 @@ impl DeviceStateMachine {
                 let msg = union!(packet.payload_as_playback_state_changed()).state();
                 Action::PlaybackStateChanged(msg)
             }
+            v4::flat::Message::StopPlayback => Action::PlaybackStopped,
             v4::flat::Message::MirroringSessionDescription => {
                 let msg = union!(packet.payload_as_mirroring_session_description());
                 let active = match &self.variant {
@@ -1416,6 +1418,9 @@ impl InnerDevice {
                 };
                 self.event_handler.playback_state_changed(state);
             }
+            Action::PlaybackStopped => {
+                self.event_handler.playback_stopped();
+            }
             Action::Companion(request) => {
                 match request {
                     CompanionRequest::ResourceInfo {
@@ -1545,6 +1550,7 @@ impl InnerDevice {
             _ => (),
         }
 
+        self.event_handler.playback_stopped();
         self.event_handler
             .playback_state_changed(PlaybackState::Idle);
         self.companion_sources.clear();

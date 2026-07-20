@@ -92,6 +92,8 @@ impl DeviceEventHandler for DevEventHandler {
 
     fn media_event(&self, _event: MediaEvent) {}
 
+    fn playback_stopped(&self) {}
+
     fn playback_error(&self, message: String) {
         println!("Playback error: {message}");
     }

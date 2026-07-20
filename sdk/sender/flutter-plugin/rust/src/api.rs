@@ -263,6 +263,7 @@ pub enum DeviceEvent {
     MediaEvent { event: MediaEvent },
     TracksAvailable { tracks: Vec<MediaTrack> },
     TrackSelected { id: Option<u32>, typ: MediaTrackType },
+    PlaybackStopped,
     PlaybackError { message: String },
 }
 
@@ -355,6 +356,13 @@ impl device::DeviceEventHandler for DeviceEventHandler {
     fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
         futures::executor::block_on(async {
             (self.on_event)(DeviceEvent::TrackSelected { id, typ }).await;
+        });
+    }
+
+    #[frb(ignore)]
+    fn playback_stopped(&self) {
+        futures::executor::block_on(async {
+            (self.on_event)(DeviceEvent::PlaybackStopped).await;
         });
     }
 
