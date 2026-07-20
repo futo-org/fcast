@@ -15,5 +15,6 @@ slint-build.workspace = true
 
 [features]
 default = ["gui"]
-gui = ["dep:slint", "dep:chrono", "dep:serde", "dep:serde_json"]
+gui = ["render", "dep:slint", "dep:chrono"]
+render = ["dep:serde", "dep:serde_json"]
 client = []

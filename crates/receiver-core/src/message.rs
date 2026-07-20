@@ -144,6 +144,8 @@ pub enum Message {
     AirPlay(AirPlay),
     #[cfg(debug_assertions)]
     DumpPipeline,
+    #[cfg(debug_assertions)]
+    InspectorRefresh,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     AppUpdate(AppUpdate),
     GuiWindowClosed(oneshot::Sender<()>),

@@ -1,0 +1,317 @@
+import { ScrollView, Button } from "std-widgets.slint";
+import {
+    Bridge,
+    AppState,
+    UiPlayerVariant,
+    UiVideoDbgInfo,
+} from "globals.slint";
+
+// A batch of geometry sharing one fill/stroke, as an SVG path string.
+export struct UiGraphPath {
+    commands: string,
+    fill: brush,
+    stroke: brush,
+    stroke-width: length,
+}
+
+// A single text label anchored at (x, y) in the graph's coordinate space.
+// `align`: 0 = left, 1 = center, 2 = right — the anchor is offset by the
+// label's own rendered width so it never gets clipped to a fixed box.
+export struct UiGraphText {
+    x: length,
+    y: length,
+    size: length,
+    text: string,
+    color: color,
+    align: int,
+}
+
+export struct GraphDump {
+    // Human-readable trigger for the dump (e.g. "Manual", "Error").
+    trigger: string,
+    // Wall-clock time the dump was taken.
+    timestamp: string,
+    // Graph bounds (graphviz layout, in points treated as pixels).
+    width: length,
+    height: length,
+    paths: [UiGraphPath],
+    texts: [UiGraphText],
+}
+
+export global InspectorState {
+    in-out property <bool> have-graph: false;
+    in-out property <GraphDump> graph;
+    // True while a fresh graph dump is being laid out by graphviz.
+    in-out property <bool> dumping: false;
+}
+
+component InfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+
+    spacing: 8px;
+
+    Text {
+        width: 96px;
+        text: root.label;
+        color: #8a8a8a;
+        font-size: 12px;
+        vertical-alignment: top;
+    }
+
+    // Never elide — the card sizes to fit the value, and a pathologically long
+    // value wraps rather than getting cut off.
+    Text {
+        text: root.value == "" ? "-" : root.value;
+        color: white;
+        font-size: 12px;
+        horizontal-stretch: 1;
+        wrap: word-wrap;
+    }
+}
+
+component VideoInfoCard inherits Rectangle {
+    property <UiVideoDbgInfo> info: Bridge.video-dbg-info;
+
+    min-width: 240px;
+    max-width: 560px;
+    background: #1c1c1eee;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #ffffff20;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 5px;
+
+        Text {
+            text: "Video";
+            color: white;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        InfoRow {
+            label: "Format";
+            value: root.info.format;
+        }
+
+        InfoRow {
+            label: "Resolution";
+            value: root.info.resolution == ""
+                ? Bridge.video-frame-width + "×" + Bridge.video-frame-height
+                : root.info.resolution;
+        }
+
+        InfoRow {
+            label: "Frame rate";
+            value: root.info.framerate;
+        }
+
+        InfoRow {
+            label: "Pixel aspect";
+            value: root.info.pixel-aspect;
+        }
+
+        InfoRow {
+            label: "Rotation";
+            value: root.info.rotation;
+        }
+
+        InfoRow {
+            label: "Memory";
+            value: root.info.memory;
+        }
+
+        Rectangle {
+            height: 6px;
+        }
+
+        Text {
+            text: "Colorimetry";
+            color: white;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        InfoRow {
+            label: "Primaries";
+            value: root.info.primaries;
+        }
+
+        InfoRow {
+            label: "Transfer";
+            value: root.info.transfer;
+        }
+
+        InfoRow {
+            label: "Matrix";
+            value: root.info.matrix;
+        }
+
+        InfoRow {
+            label: "Range";
+            value: root.info.range;
+        }
+
+        InfoRow {
+            label: "DNR";
+            value: root.info.hdr;
+        }
+
+        Rectangle { }
+    }
+}
+
+component GraphView inherits Rectangle {
+    clip: true;
+
+    scroll := ScrollView {
+        property <float> scaling: 1.0;
+
+        viewport-width: canvas.width;
+        viewport-height: canvas.height;
+
+        TouchArea {
+            scroll-event(event) => {
+                if !event.modifiers.control {
+                    return reject;
+                }
+                let old-scale = scaling;
+                scaling = Math.clamp(scaling + (event.delta-y > 0 ? 0.05 : -0.05), 0.1, 5.0);
+                scroll.viewport-x = (self.mouse-x + scroll.viewport-x) - (self.mouse-x * (scaling / old-scale));
+                scroll.viewport-y = (self.mouse-y + scroll.viewport-y) - (self.mouse-y * (scaling / old-scale));
+
+                accept
+            }
+
+            // https://github.com/slint-ui/slint/discussions/2235#discussioncomment-4992466
+            property <length> drag-start-x;
+            property <length> drag-start-y;
+
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down
+                    && e.button == PointerEventButton.left) {
+                    self.drag-start-x = scroll.viewport-x;
+                    self.drag-start-y = scroll.viewport-y;
+                }
+            }
+
+            moved => {
+                scroll.viewport-x += (self.mouse-x - self.pressed-x);
+                scroll.viewport-y += (self.mouse-y - self.pressed-y);
+            }
+        }
+
+        canvas := Rectangle {
+            width: InspectorState.graph.width * scroll.scaling;
+            height: InspectorState.graph.height * scroll.scaling;
+            // Graphviz assumes a white page; keep it readable regardless of the app theme.
+            background: white;
+
+            for p in InspectorState.graph.paths: Path {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                // Map the graph's coordinate space onto the (scaled) canvas so every path shares
+                // one absolute coordinate system. `fit: fill` scales the geometry to the canvas, so
+                // zoom is resolution-free.
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: InspectorState.graph.width / 1px;
+                viewbox-height: InspectorState.graph.height / 1px;
+                fit: fill;
+
+                commands: p.commands;
+                fill: p.fill;
+                stroke: p.stroke;
+                stroke-width: p.stroke-width * scroll.scaling;
+            }
+
+            for t in InspectorState.graph.texts: Text {
+                // Anchor scales with the zoom; then offset by the label's own (already scaled)
+                // width so left/center/right alignment holds without a clipping box.
+                x: t.align == 0
+                    ? t.x * scroll.scaling
+                    : t.align == 2
+                    ? t.x * scroll.scaling - self.width
+                    : t.x * scroll.scaling - self.width / 2;
+                y: t.y * scroll.scaling;
+                text: t.text;
+                color: t.color;
+                font-size: t.size * scroll.scaling;
+            }
+        }
+    }
+}
+
+export component Inspector inherits Rectangle {
+    background: black.transparentize(15%);
+
+    property <bool> video-playing:
+        Bridge.app-state == AppState.Playing
+        && Bridge.player-variant == UiPlayerVariant.Video;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: end;
+
+            if InspectorState.have-graph: Text {
+                text: "Graph: " + InspectorState.graph.trigger + "@" + InspectorState.graph.timestamp;
+                color: #9a9a9a;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: InspectorState.dumping
+                    ? "Refreshing…"
+                    : (InspectorState.have-graph ? "Refresh graph" : "Dump graph");
+                enabled: !InspectorState.dumping;
+                clicked => {
+                    InspectorState.dumping = true;
+                    Bridge.refresh-pipeline-graph();
+                }
+            }
+
+            Button {
+                text: "Close";
+                clicked => {
+                    Bridge.show-inspector = false;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            if root.video-playing && Bridge.have-video-dbg-info: VideoInfoCard { }
+
+            Rectangle {
+                horizontal-stretch: 1;
+
+                if InspectorState.have-graph: GraphView {
+                    width: 100%;
+                    height: 100%;
+                }
+
+                if !InspectorState.have-graph: Text {
+                    text: InspectorState.dumping ? "Dumping pipeline graph..." : "No graph yet";
+                    color: #9a9a9a;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
