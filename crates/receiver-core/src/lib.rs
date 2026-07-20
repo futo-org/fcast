@@ -80,6 +80,63 @@ pub type MediaItemId = u64;
 
 pub use message::MessageSender;
 
+#[cfg(debug_assertions)]
+fn video_dbg_info(frame: &video::Frame) -> Option<UiVideoDbgInfo> {
+    use slint::ToSharedString;
+
+    let info = frame.data.video_info()?;
+    let colorimetry = info.colorimetry();
+    let fps = info.fps();
+    let par = info.par();
+
+    let framerate = if fps.denom() == 0 {
+        String::new()
+    } else {
+        format!("{:.3} fps", fps.numer() as f64 / fps.denom() as f64)
+    };
+
+    let hdr = match frame.mastering_display_info.as_ref() {
+        Some(mdi) => {
+            let cll = frame.content_light_level.as_ref().map_or_else(
+                String::new,
+                |cll| {
+                    format!(
+                        ", CLL {}/{}",
+                        cll.max_content_light_level, cll.max_frame_average_light_level
+                    )
+                },
+            );
+            format!(
+                "mastering {:.0}–{:.0} nits{cll}",
+                mdi.min_luminance_as_nits(),
+                mdi.max_luminance_as_nits(),
+            )
+        }
+        None => "SDR".to_owned(),
+    };
+
+    let rotation = match frame.rotation {
+        video::Rotation::Rotate0 => "0°",
+        video::Rotation::Rotate90 => "90°",
+        video::Rotation::Rotate180 => "180°",
+        video::Rotation::Rotate270 => "270°",
+    };
+
+    Some(UiVideoDbgInfo {
+        format: format!("{:?} ({}-bit)", info.format(), info.comp_depth(0)).to_shared_string(),
+        resolution: format!("{}x{}", info.width(), info.height()).to_shared_string(),
+        framerate: framerate.to_shared_string(),
+        pixel_aspect: format!("{}:{}", par.numer(), par.denom()).to_shared_string(),
+        rotation: rotation.to_shared_string(),
+        memory: frame.data.memory_kind().to_shared_string(),
+        primaries: format!("{:?}", colorimetry.primaries()).to_shared_string(),
+        transfer: format!("{:?}", colorimetry.transfer()).to_shared_string(),
+        matrix: format!("{:?}", colorimetry.matrix()).to_shared_string(),
+        range: format!("{:?}", colorimetry.range()).to_shared_string(),
+        hdr: hdr.to_shared_string(),
+    })
+}
+
 #[derive(Debug)]
 pub struct ReceiverInfo {
     pub device_info: fcast_protocol::v4::DeviceInfo,
@@ -581,6 +638,18 @@ pub fn run<S: VideoSink + 'static>(
                     if let Some(frame) = t.cached_frame.as_mut() {
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
+
+                        #[cfg(debug_assertions)]
+                        if bridge.get_show_inspector() && (new_frame || force_render) {
+                            match video_dbg_info(frame) {
+                                Some(info) => {
+                                    bridge.set_video_dbg_info(info);
+                                    bridge.set_have_video_dbg_info(true);
+                                }
+                                None => bridge.set_have_video_dbg_info(false),
+                            }
+                        }
+
                         if (new_frame
                             || size_changed
                             || force_render
@@ -694,6 +763,22 @@ pub fn run<S: VideoSink + 'static>(
                             }
                         }
                     }
+                }
+            }
+        });
+
+        #[cfg(debug_assertions)]
+        ui.global::<Bridge>().on_inspector_toggled({
+            let ui_weak = ui.as_weak();
+            let tick = tick.clone();
+            let msg_tx = msg_tx.clone();
+            move |active| {
+                if active {
+                    msg_tx.send(Message::InspectorRefresh);
+                }
+                if let Some(ui) = ui_weak.upgrade() {
+                    tick.borrow_mut().force_render = true;
+                    ui.window().request_redraw();
                 }
             }
         });

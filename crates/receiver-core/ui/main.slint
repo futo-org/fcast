@@ -23,12 +23,14 @@ import { ImageView } from "views/image.slint";
 import { AudioPlayerView } from "views/audio-player.slint";
 import { RaopView } from "views/raop.slint";
 import { ToastOverlay } from "toast-overlay.slint";
+import { Inspector, InspectorState } from "inspector.slint";
 
 export {
     Bridge,
     GuiPlaybackState,
     AppState,
     UiPlayerVariant,
+    InspectorState,
 }
 
 export component MainWindow inherits Window {
@@ -45,7 +47,12 @@ export component MainWindow inherits Window {
     property <bool> video-obstructed: Bridge.video-obstructed;
     changed video-obstructed => Bridge.video-obstructed-changed(self.video-obstructed);
 
-    FocusScope {
+    property <bool> show-inspector: Bridge.show-inspector;
+    changed show-inspector => Bridge.inspector-toggled(self.show-inspector);
+
+    forward-focus: fs;
+
+    fs := FocusScope {
         capture-key-pressed(event) => Bridge.capture-key-pressed(event);
     }
 
@@ -76,6 +83,8 @@ export component MainWindow inherits Window {
     }
 
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
+
+    if Bridge.show-inspector: Inspector { }
 }
 
 export component SystemTray inherits SystemTrayIcon {

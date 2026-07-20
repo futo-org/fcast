@@ -116,6 +116,14 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
+    #[cfg(debug_assertions)]
+    bridge.on_refresh_pipeline_graph({
+        let msg_tx = msg_tx.clone();
+        move || {
+            msg_tx.send(Message::InspectorRefresh);
+        }
+    });
+
     bridge.on_sec_to_string(|sec: i32| -> SharedString {
         sec_to_string(sec as f64).to_shared_string()
     });
@@ -166,6 +174,13 @@ impl<T> std::ops::Deref for IgnoredDebug<T> {
 pub enum ToastType {
     Warning,
     Error,
+}
+
+#[cfg(debug_assertions)]
+pub struct GraphDumpData {
+    pub trigger: String,
+    pub timestamp: String,
+    pub graph: remote_pipeline_dbg::render::RenderGraph,
 }
 
 #[derive(Debug)]
@@ -233,10 +248,15 @@ pub enum UpdateGuiCommand {
     SetAnimation {
         frames: IgnoredDebug<Vec<crate::image::AnimationFrame>>,
     },
+    #[cfg(debug_assertions)]
+    SetGraphDump(IgnoredDebug<GraphDumpData>),
+    #[cfg(debug_assertions)]
+    SetInspectorDumping(bool),
     QuitLoop,
 }
 
 type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
+pub type UpdateGuiSender = UnboundedSender<UpdateGuiCommand>;
 
 struct GuiIsVisibleHandle {
     is_visible: Mutex<bool>,
@@ -639,8 +659,68 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             );
             bridge.set_current_animation_frame(0);
         }
+        #[cfg(debug_assertions)]
+        UpdateGuiCommand::SetGraphDump(dump) => set_graph_dump(&ui, dump.0),
+        #[cfg(debug_assertions)]
+        UpdateGuiCommand::SetInspectorDumping(dumping) => {
+            ui.global::<crate::InspectorState>().set_dumping(dumping);
+        }
         UpdateGuiCommand::QuitLoop => (),
     }
+}
+
+#[cfg(debug_assertions)]
+fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
+    use remote_pipeline_dbg::render::TextAlign;
+
+    fn color(rgba: [u8; 4]) -> slint::Color {
+        slint::Color::from_argb_u8(rgba[3], rgba[0], rgba[1], rgba[2])
+    }
+
+    fn brush(rgba: Option<[u8; 4]>) -> slint::Brush {
+        slint::Brush::SolidColor(rgba.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), color))
+    }
+
+    let paths: Vec<crate::UiGraphPath> = dump
+        .graph
+        .paths
+        .iter()
+        .map(|p| crate::UiGraphPath {
+            commands: p.commands.as_str().into(),
+            fill: brush(p.fill),
+            stroke: brush(p.stroke),
+            stroke_width: p.stroke_width,
+        })
+        .collect();
+    let texts: Vec<crate::UiGraphText> = dump
+        .graph
+        .texts
+        .iter()
+        .map(|t| crate::UiGraphText {
+            x: t.x,
+            y: t.y,
+            size: t.size,
+            text: t.text.as_str().into(),
+            color: color(t.color),
+            align: match t.align {
+                TextAlign::Left => 0,
+                TextAlign::Center => 1,
+                TextAlign::Right => 2,
+            },
+        })
+        .collect();
+
+    let state = ui.global::<crate::InspectorState>();
+    state.set_graph(crate::GraphDump {
+        trigger: dump.trigger.into(),
+        timestamp: dump.timestamp.into(),
+        width: dump.graph.width,
+        height: dump.graph.height,
+        paths: Rc::new(slint::VecModel::from(paths)).into(),
+        texts: Rc::new(slint::VecModel::from(texts)).into(),
+    });
+    state.set_have_graph(true);
+    state.set_dumping(false);
 }
 
 pub fn spawn_command_handler(

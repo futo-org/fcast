@@ -1726,6 +1726,12 @@ impl Player {
     }
 
     #[cfg(debug_assertions)]
+    pub fn graph_dot_data(&self) -> Option<gst::glib::GString> {
+        let bin = self.playbin.downcast_ref::<gst::Bin>()?;
+        Some(bin.debug_to_dot_data(gst::DebugGraphDetails::all()))
+    }
+
+    #[cfg(debug_assertions)]
     pub fn dump_graph(&self, trigger: remote_pipeline_dbg::Trigger) {
         use remote_pipeline_dbg::{PipelineSource, post_graph};
 

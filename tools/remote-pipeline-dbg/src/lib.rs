@@ -2,7 +2,7 @@
 use std::io::Write;
 use std::{fmt::Display, io::Read, net::TcpStream};
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "render")]
 pub mod render;
 
 #[derive(Debug)]

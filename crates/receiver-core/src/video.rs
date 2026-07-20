@@ -42,6 +42,26 @@ impl FrameData {
             Self::IOSurface { info, .. } => info.height(),
         }
     }
+
+    pub fn memory_kind(&self) -> &'static str {
+        match self {
+            Self::SystemMemory { .. } => "System memory",
+            #[cfg(target_os = "linux")]
+            Self::DmaBuf { .. } => "DMABuf",
+            #[cfg(target_os = "macos")]
+            Self::IOSurface { .. } => "IOSurface",
+        }
+    }
+
+    pub fn video_info(&self) -> Option<gst_video::VideoInfo> {
+        match self {
+            Self::SystemMemory { frame } => Some(frame.info().clone()),
+            #[cfg(target_os = "linux")]
+            Self::DmaBuf { dma_info, .. } => dma_info.to_video_info().ok(),
+            #[cfg(target_os = "macos")]
+            Self::IOSurface { info, .. } => Some(info.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]

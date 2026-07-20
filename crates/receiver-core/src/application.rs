@@ -2511,6 +2511,87 @@ impl Application {
         Ok(false)
     }
 
+    #[cfg(debug_assertions)]
+    fn refresh_inspector_graph(&self) {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+
+        let Some(dot) = self.player.graph_dot_data() else {
+            error!("Cannot dump pipeline graph: playbin is not a bin");
+            return;
+        };
+        let Some(gui_tx) = self.gui.tx.clone() else {
+            return;
+        };
+        let dot = dot.to_string();
+
+        let _ = gui_tx.send(gui::UpdateGuiCommand::SetInspectorDumping(true));
+
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let timestamp = format!(
+            "{:02}:{:02}:{:02} UTC",
+            (secs / 3600) % 24,
+            (secs / 60) % 60,
+            secs % 60
+        );
+
+        tokio::task::spawn_blocking(move || {
+            fn fail(gui_tx: &gui::UpdateGuiSender) {
+                let _ = gui_tx.send(gui::UpdateGuiCommand::SetInspectorDumping(false));
+            }
+
+            let child = Command::new("dot")
+                .arg("-Tjson")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn();
+            let mut child = match child {
+                Ok(c) => c,
+                Err(err) => {
+                    error!(?err, "Failed to spawn `dot` (is graphviz installed?)");
+                    return fail(&gui_tx);
+                }
+            };
+
+            if let Some(mut stdin) = child.stdin.take()
+                && let Err(err) = stdin.write_all(dot.as_bytes())
+            {
+                error!(?err, "Failed to write graph to graphviz");
+                return fail(&gui_tx);
+            }
+
+            let output = match child.wait_with_output() {
+                Ok(o) => o,
+                Err(err) => {
+                    error!(?err, "graphviz layout failed");
+                    return fail(&gui_tx);
+                }
+            };
+
+            match remote_pipeline_dbg::render::parse(&output.stdout) {
+                Ok(graph) => {
+                    let _ = gui_tx.send(gui::UpdateGuiCommand::SetGraphDump(
+                        gui::GraphDumpData {
+                            trigger: "manual".to_string(),
+                            timestamp,
+                            graph,
+                        }
+                        .into(),
+                    ));
+                }
+                Err(err) => {
+                    error!(?err, "Failed to parse graphviz output");
+                    fail(&gui_tx);
+                }
+            }
+        });
+    }
+
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Message) -> Result<bool> {
         match event {
@@ -2636,6 +2717,8 @@ impl Application {
             Message::DumpPipeline => {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);
             }
+            #[cfg(debug_assertions)]
+            Message::InspectorRefresh => self.refresh_inspector_graph(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
             Message::GuiWindowClosed(feedback) => {

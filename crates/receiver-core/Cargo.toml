@@ -34,7 +34,7 @@ gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", r
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
-remote-pipeline-dbg = { path = "../../tools/remote-pipeline-dbg", default-features = false, features = ["client"] }
+remote-pipeline-dbg = { path = "../../tools/remote-pipeline-dbg", default-features = false, features = ["client", "render"] }
 tracing-tracy = { version = "=0.11.2", optional = true }
 pango = { version = "0.22.0", features = ["v1_44"] }
 hayro-jpeg2000 = "0.3"

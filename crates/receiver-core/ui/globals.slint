@@ -59,6 +59,20 @@ export struct UiAnimationFrame {
     delay: duration,
 }
 
+export struct UiVideoDbgInfo {
+    format: string,
+    resolution: string,
+    framerate: string,
+    pixel-aspect: string,
+    rotation: string,
+    memory: string,
+    primaries: string,
+    transfer: string,
+    matrix: string,
+    range: string,
+    hdr: string,
+}
+
 export global Bridge {
     in property <float> progress-secs;
     in property <float> duration-secs;
@@ -105,6 +119,11 @@ export global Bridge {
     // Maintained by the video player's PlaybackControls: true while the controls are drawn over the video.
     in-out property <bool> controls-overlay-visible: false;
 
+    // Inspector
+    in-out property <bool> show-inspector: false;
+    in property <bool> have-video-dbg-info: false;
+    in property <UiVideoDbgInfo> video-dbg-info;
+
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
     // Whether any GUI element is (potentially) drawn over the video area.
     out property <bool> video-obstructed:
@@ -113,6 +132,7 @@ export global Bridge {
         || playback-state != GuiPlaybackState.Playing
         || controls-overlay-visible
         || should-show-toast-overlay()
+        || show-inspector
         || volume-set-at > 0;
 
     callback resume-or-pause();
@@ -129,6 +149,10 @@ export global Bridge {
     callback restart-app();
     callback video-obstructed-changed(obstructed: bool);
     callback new-video-frame();
+
+    // Inspector
+    callback inspector-toggled(active: bool);
+    callback refresh-pipeline-graph();
 
     pure callback sec-to-string(sec: int) -> string;
     pure callback sec-float-to-string(sec: float) -> string;
@@ -167,6 +191,10 @@ export global Bridge {
     }
 
     public function capture-key-pressed(event: KeyEvent) -> EventResult {
+        if event.modifiers.control && event.modifiers.shift && (event.text == "i" || event.text == "I") {
+            show-inspector = !show-inspector;
+            return accept;
+        }
         if event.text == "q" {
             force-quit();
             return accept;
