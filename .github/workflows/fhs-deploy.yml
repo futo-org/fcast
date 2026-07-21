@@ -92,6 +92,7 @@ jobs:
             libdav1d-devel glib2-devel \
             fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel \
             libheif-devel pango-devel cairo-devel cairo-gobject-devel libdrm-devel \
+            libshaderc-devel vulkan-headers vulkan-loader-devel \
             meson ninja-build \
             gcc gcc-c++ make rustup \
             clang-libs clang-devel git flatbuffers-compiler
