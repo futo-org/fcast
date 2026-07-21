@@ -506,9 +506,10 @@ fn main() -> Result<()> {
             }
         }
 
-        let osd_visible = title_state
-            .as_ref()
-            .is_some_and(|ts| ts.persistent || Instant::now() < ts.show_until);
+        let osd_visible = !image_shown
+            && title_state
+                .as_ref()
+                .is_some_and(|ts| ts.persistent || Instant::now() < ts.show_until);
 
         if osd_visible {
             let ts = title_state.as_ref().unwrap();
