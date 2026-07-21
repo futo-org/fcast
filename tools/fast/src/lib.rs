@@ -60,6 +60,17 @@ pub enum Send {
     PlayV4 {
         file_id: u32,
     },
+    PlayV4WithMetadata {
+        file_id: u32,
+        title: Option<&'static str>,
+        thumbnail_url: Option<&'static str>,
+    },
+    /// Load a v4 item carrying arbitrary custom `extra_metadata` key/values
+    /// (string-valued).
+    PlayV4WithExtraMetadata {
+        file_id: u32,
+        extra: &'static [(&'static str, &'static str)],
+    },
     PlayFakeUrlV4 {
         container: &'static str,
     },
@@ -250,6 +261,13 @@ pub enum Step {
         subtitle: Option<usize>,
     },
     ExpectLoadOnSecondSender,
+    ExpectLoadWithMetadataOnSecondSender {
+        title: Option<&'static str>,
+        thumbnail_url: Option<&'static str>,
+    },
+    ExpectLoadWithExtraMetadataOnSecondSender {
+        extra: &'static [(&'static str, &'static str)],
+    },
     ExpectStopOnSecondSender,
     ExpectVolumeOnSecondSender(f64),
     ExpectQueueMutationOnSecondSender(QueueMutationKind),
@@ -384,6 +402,10 @@ cases!(
     queue_full_v4,
     queue_insert_front_v4,
     multi_sender_load_broadcast_v4,
+    multi_sender_load_metadata_broadcast_video_v4,
+    multi_sender_load_metadata_broadcast_image_v4,
+    multi_sender_load_custom_metadata_broadcast_video_v4,
+    multi_sender_load_custom_metadata_broadcast_image_v4,
     multi_sender_volume_broadcast_v4,
     multi_sender_progress_isolation_v4,
     multi_sender_queue_insert_broadcast_v4,
@@ -2650,6 +2672,90 @@ define_test_case!(
         serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV4 { file_id: 0 }),
         Step::ExpectLoadOnSecondSender,
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    multi_sender_load_metadata_broadcast_video_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4WithMetadata {
+            file_id: 0,
+            title: Some("Big Buck Bunny"),
+            thumbnail_url: Some("https://example.com/bbb-thumb.jpg"),
+        }),
+        Step::ExpectLoadWithMetadataOnSecondSender {
+            title: Some("Big Buck Bunny"),
+            thumbnail_url: Some("https://example.com/bbb-thumb.jpg"),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    multi_sender_load_metadata_broadcast_image_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        send!(Send::PlayV4WithMetadata {
+            file_id: 0,
+            title: Some("Flowers"),
+            thumbnail_url: Some("https://example.com/flowers-thumb.jpg"),
+        }),
+        Step::ExpectLoadWithMetadataOnSecondSender {
+            title: Some("Flowers"),
+            thumbnail_url: Some("https://example.com/flowers-thumb.jpg"),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    multi_sender_load_custom_metadata_broadcast_video_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4WithExtraMetadata {
+            file_id: 0,
+            extra: &[("a", "b"), ("c", "d"),],
+        }),
+        Step::ExpectLoadWithExtraMetadataOnSecondSender {
+            extra: &[("a", "b"), ("c", "d"),],
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    multi_sender_load_custom_metadata_broadcast_image_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        send!(Send::PlayV4WithExtraMetadata {
+            file_id: 0,
+            extra: &[("a", "b"), ("c", "d")],
+        }),
+        Step::ExpectLoadWithExtraMetadataOnSecondSender {
+            extra: &[("a", "b"), ("c", "d")],
+        },
         send!(Send::StopV4),
     ]
 );

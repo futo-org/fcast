@@ -1172,6 +1172,17 @@ impl<'a> Engine<'a> {
                 );
             }
             Step::ExpectLoadOnSecondSender => self.expect_load_on_second_sender().await?,
+            Step::ExpectLoadWithMetadataOnSecondSender {
+                title,
+                thumbnail_url,
+            } => {
+                self.expect_load_with_metadata_on_second_sender(*title, *thumbnail_url)
+                    .await?
+            }
+            Step::ExpectLoadWithExtraMetadataOnSecondSender { extra } => {
+                self.expect_load_with_extra_metadata_on_second_sender(extra)
+                    .await?
+            }
             Step::ExpectStopOnSecondSender => {
                 self.expect_flat_on_second_sender(v4::flat::Message::StopPlayback, "StopPlayback")
                     .await?
@@ -1312,6 +1323,108 @@ impl<'a> Engine<'a> {
     async fn expect_load_on_second_sender(&mut self) -> Result<()> {
         self.expect_flat_on_second_sender(v4::flat::Message::Load, "Load")
             .await
+    }
+
+    /// Wait for the relayed `Load` on the second sender and assert its single
+    /// media item carries the expected title and thumbnail metadata. This
+    /// proves a party that did not issue the load still receives the full load
+    /// broadcast with its metadata attached.
+    async fn expect_load_with_metadata_on_second_sender(
+        &mut self,
+        title: Option<&str>,
+        thumbnail_url: Option<&str>,
+    ) -> Result<()> {
+        let deadline = Instant::now() + MAX_SETTLE;
+        loop {
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "second sender never received the relayed Load with metadata"
+            );
+            let Some(pkt) = self.recv_second_strict(deadline - now).await? else {
+                continue;
+            };
+            if pkt.opcode != Opcode::Flatbuf {
+                continue;
+            }
+            let Some(body) = pkt.body.as_deref() else {
+                continue;
+            };
+            let packet =
+                v4::flat::root_as_packet(body).map_err(|e| anyhow!("invalid flatbuffer: {e}"))?;
+            let Some(load) = packet.payload_as_load() else {
+                continue;
+            };
+            let single = load
+                .source_as_single()
+                .ok_or_else(|| anyhow!("relayed Load was not a single media source"))?;
+            ensure!(
+                single.title() == title,
+                "relayed Load title mismatch: got {:?}, expected {title:?}",
+                single.title()
+            );
+            ensure!(
+                single.thumbnail_url() == thumbnail_url,
+                "relayed Load thumbnail_url mismatch: got {:?}, expected {thumbnail_url:?}",
+                single.thumbnail_url()
+            );
+            info!(
+                title = ?single.title(),
+                thumbnail_url = ?single.thumbnail_url(),
+                "second sender received relayed Load with metadata"
+            );
+            return Ok(());
+        }
+    }
+
+    /// Wait for the relayed `Load` on the second sender and assert its single
+    /// media item carries the expected custom `extra_metadata` key/values. This
+    /// proves arbitrary custom metadata fields survive the relay to a party
+    /// that did not issue the load.
+    async fn expect_load_with_extra_metadata_on_second_sender(
+        &mut self,
+        expected: &[(&str, &str)],
+    ) -> Result<()> {
+        let deadline = Instant::now() + MAX_SETTLE;
+        loop {
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "second sender never received the relayed Load with custom metadata"
+            );
+            let Some(pkt) = self.recv_second_strict(deadline - now).await? else {
+                continue;
+            };
+            if pkt.opcode != Opcode::Flatbuf {
+                continue;
+            }
+            let Some(body) = pkt.body.as_deref() else {
+                continue;
+            };
+            let packet =
+                v4::flat::root_as_packet(body).map_err(|e| anyhow!("invalid flatbuffer: {e}"))?;
+            let Some(load) = packet.payload_as_load() else {
+                continue;
+            };
+            let single = load
+                .source_as_single()
+                .ok_or_else(|| anyhow!("relayed Load was not a single media source"))?;
+            let got = v4::read_extra_metadata(&single).unwrap_or_default();
+            for (key, value) in expected {
+                let entry = got.get(*key).ok_or_else(|| {
+                    anyhow!("relayed Load is missing custom metadata key {key:?}; got {got:?}")
+                })?;
+                ensure!(
+                    entry == &v4::MetaValue::String((*value).to_owned()),
+                    "relayed Load custom metadata {key:?} mismatch: got {entry:?}, expected {value:?}"
+                );
+            }
+            info!(
+                fields = expected.len(),
+                "second sender received relayed Load with custom metadata"
+            );
+            return Ok(());
+        }
     }
 
     /// Receive one packet on the second sender's connection, answering
@@ -1947,6 +2060,28 @@ impl<'a> Engine<'a> {
             }
             Op::PlayV4 { file_id } => {
                 let item = self.media_item_v4(*file_id)?;
+                let msg = v4::MessageBuilder::new().load_single(item);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::PlayV4WithMetadata {
+                file_id,
+                title,
+                thumbnail_url,
+            } => {
+                let mut item = self.media_item_v4(*file_id)?;
+                item.title = *title;
+                item.thumbnail_url = *thumbnail_url;
+                let msg = v4::MessageBuilder::new().load_single(item);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::PlayV4WithExtraMetadata { file_id, extra } => {
+                let mut item = self.media_item_v4(*file_id)?;
+                item.extra_metadata = Some(
+                    extra
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), v4::MetaValue::String((*v).to_owned())))
+                        .collect(),
+                );
                 let msg = v4::MessageBuilder::new().load_single(item);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
