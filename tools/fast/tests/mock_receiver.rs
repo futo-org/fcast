@@ -730,7 +730,7 @@ async fn missing_expected_packet_fails_instead_of_hanging() {
         }
     });
 
-    assert_err_contains(run(addr, &handshake()).await, "timed out");
+    assert_err_contains(run(addr, &handshake()).await, "still waiting for");
 }
 
 #[tokio::test]

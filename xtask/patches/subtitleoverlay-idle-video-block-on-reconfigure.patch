@@ -1,0 +1,84 @@
+diff --git a/subprojects/gst-plugins-base/gst/playback/gstsubtitleoverlay.c b/subprojects/gst-plugins-base/gst/playback/gstsubtitleoverlay.c
+index d063d393ca..d18b6d2479 100644
+--- a/subprojects/gst-plugins-base/gst/playback/gstsubtitleoverlay.c
++++ b/subprojects/gst-plugins-base/gst/playback/gstsubtitleoverlay.c
+@@ -170,6 +170,42 @@ unblock_subtitle (GstSubtitleOverlay * self)
+   }
+ }
+ 
++static GstPadProbeReturn
++_video_pad_idle_block_cb (GstPad * pad, GstPadProbeInfo * info,
++    gpointer user_data)
++{
++  GstSubtitleOverlay *self = GST_SUBTITLE_OVERLAY_CAST (user_data);
++
++  _pad_blocked_cb (pad, info, user_data);
++
++  /* One-shot: this probe is not tracked in video_block_id, so the blocked
++   * flag must not outlive it (unblock_video() only clears the flag for a
++   * tracked probe). If a tracked block was armed meanwhile, leave the flag
++   * to that one. */
++  GST_SUBTITLE_OVERLAY_LOCK (self);
++  if (self->video_block_id == 0)
++    self->video_sink_blocked = FALSE;
++  GST_SUBTITLE_OVERLAY_UNLOCK (self);
++
++  return GST_PAD_PROBE_REMOVE;
++}
++
++/* Arm a one-shot BLOCK|IDLE probe on the video pad so the reconfiguration
++ * can run even when no video data is flowing.
++ *
++ * Called WITHOUT the overlay lock: an idle pad invokes the callback
++ * synchronously from gst_pad_add_probe(), and the callback takes the
++ * lock itself. */
++static void
++block_video_idle_oneshot (GstSubtitleOverlay * self)
++{
++  if (!self->video_block_pad)
++    return;
++  gst_pad_add_probe (self->video_block_pad,
++      GST_PAD_PROBE_TYPE_IDLE | GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM,
++      _video_pad_idle_block_cb, self, NULL);
++}
++
+ static gboolean
+ pad_supports_caps (GstPad * pad, GstCaps * caps)
+ {
+@@ -1032,6 +1068,7 @@ _pad_blocked_cb (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
+   GstSubtitleOverlay *self = GST_SUBTITLE_OVERLAY_CAST (user_data);
+   GstCaps *subcaps;
+   GList *l, *factories = NULL;
++  gboolean want_video_idle_block = FALSE;
+ 
+   if (GST_IS_EVENT (info->data)) {
+     if (!GST_EVENT_IS_SERIALIZED (info->data)) {
+@@ -1115,7 +1152,17 @@ _pad_blocked_cb (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
+ 
+   if (self->subtitle_sink_blocked && !self->video_sink_blocked) {
+     GST_DEBUG_OBJECT (self, "Subtitle sink blocked but video not blocked");
+-    block_video (self);
++    /* A plain BLOCK probe on the video pad only fires when video data
++     * flows. But with our async-start pending the pipeline can sit in
++     * PAUSED (preroll, paused pipeline, lost-state re-preroll) where the
++     * video pad never sees another buffer: the reconfiguration then never
++     * runs and async-done is never posted -- a permanent, silent deadlock
++     * of the pipeline's state change. Arm the probe as BLOCK|IDLE instead
++     * so a quiescent video pad triggers the reconfiguration immediately.
++     * Armed at `out:` below, after the lock is dropped: an idle pad
++     * invokes the callback synchronously from gst_pad_add_probe() and the
++     * callback takes this lock. */
++    want_video_idle_block = TRUE;
+     goto out;
+   }
+ 
+@@ -1319,6 +1366,9 @@ out:
+     gst_plugin_feature_list_free (factories);
+   GST_SUBTITLE_OVERLAY_UNLOCK (self);
+ 
++  if (want_video_idle_block)
++    block_video_idle_oneshot (self);
++
+   return GST_PAD_PROBE_OK;
+ }
+ 

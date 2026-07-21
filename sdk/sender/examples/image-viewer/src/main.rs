@@ -13,8 +13,8 @@ use fcast_sender_sdk::{
     context::CastContext,
     device::{
         CompanionSource, CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler,
-        DeviceInfo, LoadRequest, MediaTrack, MediaTrackType, PlaybackState,
-        QueueItem, QueuePosition, Source,
+        DeviceInfo, LoadRequest, MediaTrack, MediaTrackType, PlaybackState, QueueItem,
+        QueuePosition, Source,
     },
 };
 use slint::{ToSharedString, VecModel};

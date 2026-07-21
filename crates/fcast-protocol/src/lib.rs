@@ -218,6 +218,9 @@ pub enum PushDataError {
 pub struct PacketReader {
     buffer: Vec<u8>,
     state: ReaderState,
+    /// Start of unconsumed data in `buffer`.
+    pos: usize,
+    /// End of valid data in `buffer`.
     len: usize,
     max_packet_size: usize,
 }
@@ -227,9 +230,36 @@ impl PacketReader {
         Self {
             buffer: vec![0; size_of::<u32>() + max_packet_size + padding],
             state: ReaderState::MissingLength,
+            pos: 0,
             len: 0,
             max_packet_size,
         }
+    }
+
+    /// Number of buffered bytes not yet consumed as packets.
+    fn buffered(&self) -> usize {
+        self.len - self.pos
+    }
+
+    /// Resolve a pending [`ReaderState::ShouldClear`]: advance `pos` past the packet that was
+    /// returned by the previous `get_packet` call. No bytes move.
+    fn discard_consumed(&mut self) {
+        if let ReaderState::ShouldClear { body_length } = self.state {
+            self.pos += size_of::<u32>() + body_length;
+            self.state = ReaderState::MissingLength;
+        }
+    }
+
+    /// Reclaim the space of already-consumed packets by moving the unconsumed tail to the front of
+    /// the buffer. Called once per refill (`push_data`/`spare_capacity_mut`), not per packet.
+    fn compact(&mut self) {
+        self.discard_consumed();
+        if self.pos == 0 {
+            return;
+        }
+        self.buffer.copy_within(self.pos..self.len, 0);
+        self.len -= self.pos;
+        self.pos = 0;
     }
 
     fn next_state(&mut self) -> ReadResult<'_> {
@@ -237,13 +267,12 @@ impl PacketReader {
 
         match self.state {
             ReaderState::MissingLength => {
-                if self.len >= LEN_SIZE {
-                    let length = u32::from_le_bytes([
-                        self.buffer[0],
-                        self.buffer[1],
-                        self.buffer[2],
-                        self.buffer[3],
-                    ]) as usize;
+                if self.buffered() >= LEN_SIZE {
+                    let length = u32::from_le_bytes(
+                        self.buffer[self.pos..self.pos + LEN_SIZE]
+                            .try_into()
+                            .expect("slice is LEN_SIZE bytes"),
+                    ) as usize;
                     if length > self.max_packet_size {
                         ReadResult::PacketTooLarge(length)
                     } else {
@@ -255,22 +284,18 @@ impl PacketReader {
                 }
             }
             ReaderState::MissingBody { length } => {
-                if self.len.saturating_sub(LEN_SIZE) >= length {
+                if self.buffered().saturating_sub(LEN_SIZE) >= length {
                     self.state = ReaderState::ShouldClear {
                         body_length: length,
                     };
-                    ReadResult::Read(&self.buffer[LEN_SIZE..LEN_SIZE + length])
+                    let start = self.pos + LEN_SIZE;
+                    ReadResult::Read(&self.buffer[start..start + length])
                 } else {
                     ReadResult::NeedData
                 }
             }
-            ReaderState::ShouldClear { body_length } => {
-                self.buffer.copy_within(LEN_SIZE + body_length..self.len, 0);
-                self.len = self
-                    .len
-                    .saturating_sub(body_length)
-                    .saturating_sub(LEN_SIZE);
-                self.state = ReaderState::MissingLength;
+            ReaderState::ShouldClear { .. } => {
+                self.discard_consumed();
                 self.next_state()
             }
         }
@@ -281,11 +306,74 @@ impl PacketReader {
     /// `get_packet()` should be called to extract packets.
     pub fn push_data(&mut self, data: &[u8]) -> Result<(), PushDataError> {
         if self.len + data.len() > self.buffer.len() {
-            return Err(PushDataError::BufferTooBig);
+            self.compact();
+            if self.len + data.len() > self.buffer.len() {
+                return Err(PushDataError::BufferTooBig);
+            }
         }
         self.buffer[self.len..self.len + data.len()].copy_from_slice(data);
         self.len += data.len();
         Ok(())
+    }
+
+    /// Borrow the unused tail of the internal buffer to fill in place.
+    ///
+    /// This is the zero-copy counterpart to [`push_data`]: instead of reading into a scratch buffer
+    /// and copying that in, a transport can write straight into the reassembly buffer and mark the
+    /// bytes received with [`commit`]. That removes one copy of every received byte on the hot
+    /// receive path.
+    ///
+    /// Space freed by already-consumed packets is reclaimed here (at most one compaction per
+    /// refill), so the returned slice is empty only when unconsumed data fills the whole buffer. A
+    /// caller that drains to [`NeedData`] before each read never sees that: a mid-packet reader
+    /// holds fewer than `size_of::<u32>() + max_packet_size` bytes, less than the buffer's capacity
+    /// even with `padding == 0`. The slice is therefore never empty, so a read into it cannot
+    /// return `Ok(0)` and be mistaken for end-of-stream. `padding` only trades memory for fewer,
+    /// larger reads.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::io::Read;
+    ///
+    /// use fcast_protocol::{PacketReader, ReadResult};
+    ///
+    /// // A transport carrying one framed packet: length prefix 3, body [1, 2, 3].
+    /// let mut stream: &[u8] = &[3, 0, 0, 0, 1, 2, 3];
+    ///
+    /// let mut reader = PacketReader::new(1024, 0);
+    /// let n = stream.read(reader.spare_capacity_mut())?;
+    /// reader.commit(n);
+    /// assert_eq!(reader.get_packet(), ReadResult::Read(&[1, 2, 3]));
+    /// assert_eq!(reader.get_packet(), ReadResult::NeedData);
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    ///
+    /// [`push_data`]: Self::push_data
+    /// [`commit`]: Self::commit
+    /// [`NeedData`]: ReadResult::NeedData
+    pub fn spare_capacity_mut(&mut self) -> &mut [u8] {
+        self.compact();
+        &mut self.buffer[self.len..]
+    }
+
+    /// Mark `n` bytes written into the slice returned by [`spare_capacity_mut`] as
+    /// received.
+    ///
+    /// `n` must not exceed the length of that slice (a transport must never report having read more
+    /// bytes than the slice could hold). In debug builds this is asserted; in release builds an
+    /// out-of-range `n` corrupts the reader's length bookkeeping, so it is a caller bug rather than
+    /// defined behaviour.
+    ///
+    /// [`spare_capacity_mut`]: Self::spare_capacity_mut
+    pub fn commit(&mut self, n: usize) {
+        debug_assert!(
+            self.len + n <= self.buffer.len(),
+            "commit({n}) overflows reader buffer (len={}, capacity={})",
+            self.len,
+            self.buffer.len()
+        );
+        self.len += n;
     }
 
     /// Get a packet if it's available.
@@ -295,20 +383,16 @@ impl PacketReader {
         self.next_state()
     }
 
-    /// Take all buffered bytes that are not part of an already-returned packet
-    /// and reset the reader.
+    /// Take all buffered bytes that are not part of an already-returned packet and reset the
+    /// reader.
     ///
-    /// This is used when the underlying connection is handed to another
-    /// protocol layer (e.g. a TLS upgrade after the plaintext `Version`
-    /// exchange): a single read may have pulled in bytes belonging to that
-    /// next layer, and those must be replayed there instead of being lost.
+    /// This is used when the underlying connection is handed to another protocol layer (e.g. a TLS
+    /// upgrade after the plaintext `Version` exchange): a single read may have pulled in bytes
+    /// belonging to that next layer, and those must be replayed there instead of being lost.
     pub fn drain_unparsed(&mut self) -> Vec<u8> {
-        const LEN_SIZE: usize = std::mem::size_of::<u32>();
-        let start = match self.state {
-            ReaderState::ShouldClear { body_length } => LEN_SIZE + body_length,
-            _ => 0,
-        };
-        let data = self.buffer[start..self.len].to_vec();
+        self.discard_consumed();
+        let data = self.buffer[self.pos..self.len].to_vec();
+        self.pos = 0;
         self.len = 0;
         self.state = ReaderState::MissingLength;
         data
@@ -378,9 +462,9 @@ mod tests {
         assert_eq!(reader.get_packet(), ReadResult::Read(&[0]));
         assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 1 });
         assert_eq!(reader.get_packet(), ReadResult::NeedData);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
         assert_eq!(reader.state, ReaderState::MissingLength);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
     }
 
     #[test]
@@ -398,7 +482,7 @@ mod tests {
         assert_eq!(reader.get_packet(), ReadResult::Read(&[0]));
         assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 1 });
         assert_eq!(reader.get_packet(), ReadResult::NeedData);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
     }
 
     #[rustfmt::skip]
@@ -418,7 +502,7 @@ mod tests {
         assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 3 });
         assert_eq!(reader.get_packet(), ReadResult::NeedData);
         assert_eq!(reader.state, ReaderState::MissingLength);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
     }
 
     #[test]
@@ -435,7 +519,7 @@ mod tests {
         assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 4 });
         assert_eq!(reader.get_packet(), ReadResult::NeedData);
         assert_eq!(reader.state, ReaderState::MissingLength);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
     }
 
     #[test]
@@ -449,7 +533,7 @@ mod tests {
         assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 10 });
         assert_eq!(reader.get_packet(), ReadResult::NeedData);
         assert_eq!(reader.state, ReaderState::MissingLength);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
     }
 
     #[test]
@@ -481,7 +565,7 @@ mod tests {
         assert_eq!(reader.get_packet(), ReadResult::Read(&[7]));
         assert_eq!(reader.state, ReaderState::ShouldClear { body_length: 1 });
         assert_eq!(reader.drain_unparsed(), trailing);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
         assert_eq!(reader.state, ReaderState::MissingLength);
     }
 
@@ -491,7 +575,7 @@ mod tests {
         let data = [0x16u8, 0x03, 0x01, 0x00];
         reader.push_data(&data).unwrap();
         assert_eq!(reader.drain_unparsed(), data);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
         assert_eq!(reader.state, ReaderState::MissingLength);
     }
 
@@ -504,7 +588,7 @@ mod tests {
         assert_eq!(reader.state, ReaderState::MissingBody { length: 4 });
 
         assert_eq!(reader.drain_unparsed(), data);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
         assert_eq!(reader.state, ReaderState::MissingLength);
     }
 
@@ -536,6 +620,331 @@ mod tests {
             .unwrap();
         assert_eq!(reader.get_packet(), ReadResult::Read(&[8, 9]));
         assert_eq!(reader.get_packet(), ReadResult::NeedData);
-        assert_eq!(reader.len, 0);
+        assert_eq!(reader.buffered(), 0);
+    }
+
+    // ---- zero-copy read path: `spare_capacity_mut` + `commit` ----
+
+    const LEN_SIZE: usize = std::mem::size_of::<u32>();
+
+    fn frame(body: &[u8]) -> Vec<u8> {
+        let mut v = (body.len() as u32).to_le_bytes().to_vec();
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn drain_zerocopy(reader: &mut PacketReader, data: &[u8], chunk: usize) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while pos < data.len() {
+            let spare = reader.spare_capacity_mut();
+            assert!(
+                !spare.is_empty(),
+                "spare capacity empty before a read (would be read as EOF)"
+            );
+            let want = if chunk == 0 {
+                spare.len()
+            } else {
+                chunk.min(spare.len())
+            };
+            let take = want.min(data.len() - pos);
+            spare[..take].copy_from_slice(&data[pos..pos + take]);
+            reader.commit(take);
+            pos += take;
+
+            loop {
+                match reader.get_packet() {
+                    ReadResult::Read(p) => out.push(p.to_vec()),
+                    ReadResult::NeedData => break,
+                    ReadResult::PacketTooLarge(s) => panic!("unexpected PacketTooLarge({s})"),
+                }
+            }
+        }
+        out
+    }
+
+    fn drain_pushdata(reader: &mut PacketReader, data: &[u8], scratch: usize) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; scratch];
+        let mut pos = 0;
+        while pos < data.len() {
+            let n = scratch.min(data.len() - pos);
+            buf[..n].copy_from_slice(&data[pos..pos + n]);
+            reader.push_data(&buf[..n]).expect("push_data overflowed");
+            pos += n;
+            loop {
+                match reader.get_packet() {
+                    ReadResult::Read(p) => out.push(p.to_vec()),
+                    ReadResult::NeedData => break,
+                    ReadResult::PacketTooLarge(s) => panic!("unexpected PacketTooLarge({s})"),
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn spare_capacity_starts_at_full_buffer() {
+        let mut reader = PacketReader::new(100, 16);
+        assert_eq!(reader.spare_capacity_mut().len(), LEN_SIZE + 100 + 16);
+    }
+
+    #[test]
+    fn commit_zero_is_noop() {
+        let mut reader = PacketReader::new(100, 16);
+        let before = reader.spare_capacity_mut().len();
+        reader.commit(0);
+        assert_eq!(reader.spare_capacity_mut().len(), before);
+        assert_eq!(reader.get_packet(), ReadResult::NeedData);
+        assert_eq!(reader.buffered(), 0);
+    }
+
+    #[test]
+    fn spare_capacity_shrinks_by_commit_and_regrows_after_consume() {
+        let mut reader = PacketReader::new(100, 16);
+        let cap = LEN_SIZE + 100 + 16;
+
+        // Write a whole framed packet plus the length prefix of a second, in place.
+        let first = frame(&[0xAA, 0xBB, 0xCC]);
+        let second_prefix = 2u32.to_le_bytes();
+        let n = {
+            let spare = reader.spare_capacity_mut();
+            spare[..first.len()].copy_from_slice(&first);
+            spare[first.len()..first.len() + LEN_SIZE].copy_from_slice(&second_prefix);
+            first.len() + LEN_SIZE
+        };
+        reader.commit(n);
+        assert_eq!(reader.spare_capacity_mut().len(), cap - n);
+
+        // Consuming the first packet frees its bytes; the next `spare_capacity_mut` compacts
+        // (leftover prefix moves to the front) and the spare grows back to
+        // all-but-the-leftover.
+        assert_eq!(reader.get_packet(), ReadResult::Read(&[0xAA, 0xBB, 0xCC]));
+        assert_eq!(reader.get_packet(), ReadResult::NeedData);
+        assert_eq!(reader.buffered(), LEN_SIZE);
+        assert_eq!(reader.spare_capacity_mut().len(), cap - LEN_SIZE);
+    }
+
+    #[test]
+    fn consuming_packets_does_not_move_buffered_data() {
+        // Consumption must be a cursor advance, not a per-packet memmove of the tail -
+        // otherwise a read that batches K packets costs O(K^2) byte moves.
+        let mut reader = PacketReader::new(100, 16);
+        let stream: Vec<u8> = [frame(&[0]), frame(&[0, 1]), frame(&[0, 1, 2])].concat();
+        reader.push_data(&stream).unwrap();
+
+        assert_eq!(reader.get_packet(), ReadResult::Read(&[0]));
+        assert_eq!(reader.get_packet(), ReadResult::Read(&[0, 1]));
+        assert_eq!(reader.get_packet(), ReadResult::Read(&[0, 1, 2]));
+        assert_eq!(reader.get_packet(), ReadResult::NeedData);
+
+        // All three packets were consumed purely by advancing the cursor: the write end
+        // never moved back, so no bytes were copied while draining.
+        assert_eq!(reader.pos, stream.len());
+        assert_eq!(reader.len, stream.len());
+
+        // The next refill reclaims the whole buffer in one step - and since nothing is
+        // buffered mid-packet, it is a free cursor reset rather than a copy.
+        assert_eq!(
+            reader.spare_capacity_mut().len(),
+            LEN_SIZE + 100 + 16,
+            "refill should reclaim all consumed space"
+        );
+        assert_eq!((reader.pos, reader.len), (0, 0));
+    }
+
+    #[test]
+    fn zerocopy_single_packet() {
+        let mut reader = PacketReader::new(100, 16);
+        let body = [7u8, 8, 9];
+        let out = drain_zerocopy(&mut reader, &frame(&body), 0);
+        assert_eq!(out, vec![body.to_vec()]);
+        assert_eq!(reader.buffered(), 0);
+    }
+
+    #[test]
+    fn zerocopy_reassembles_across_all_chunk_sizes() {
+        let bodies: Vec<Vec<u8>> = vec![
+            vec![0], // opcode-only packet
+            vec![1, 2],
+            (0..37u8).collect(),
+            vec![0xFF; 90], // near max
+            vec![42],
+            (0..64u8).rev().collect(),
+        ];
+        let mut stream = Vec::new();
+        for b in &bodies {
+            stream.extend_from_slice(&frame(b));
+        }
+
+        for chunk in [1usize, 2, 3, 4, 5, 6, 7, 8, 13, 31, 64, 100, 8192, 0] {
+            let mut reader = PacketReader::new(100, 8192);
+            let out = drain_zerocopy(&mut reader, &stream, chunk);
+            assert_eq!(out, bodies, "mismatch at chunk size {chunk}");
+            assert_eq!(
+                reader.buffered(),
+                0,
+                "buffer not drained at chunk size {chunk}"
+            );
+        }
+    }
+
+    #[test]
+    fn zerocopy_large_packet_split_byte_by_byte() {
+        let mut reader = PacketReader::new(100_000, 8192);
+        let body: Vec<u8> = (0..5000).map(|i| (i % 251) as u8).collect();
+        let out = drain_zerocopy(&mut reader, &frame(&body), 1);
+        assert_eq!(out, vec![body]);
+        assert_eq!(reader.buffered(), 0);
+    }
+
+    #[test]
+    fn zerocopy_matches_push_data_path() {
+        // Same input, same chunking, two APIs - identical extracted packets.
+        let bodies: Vec<Vec<u8>> = vec![vec![1], (0..50u8).collect(), vec![9; 80], vec![2, 3]];
+        let mut stream = Vec::new();
+        for b in &bodies {
+            stream.extend_from_slice(&frame(b));
+        }
+
+        for chunk in [1usize, 3, 7, 64, 128] {
+            let mut zc = PacketReader::new(100, 8192);
+            let mut pd = PacketReader::new(100, 8192);
+            let zc_out = drain_zerocopy(&mut zc, &stream, chunk);
+            let pd_out = drain_pushdata(&mut pd, &stream, chunk);
+            assert_eq!(
+                zc_out, pd_out,
+                "zero-copy vs push_data diverged at chunk {chunk}"
+            );
+            assert_eq!(zc_out, bodies);
+        }
+    }
+
+    #[test]
+    fn zerocopy_full_buffer_still_yields_a_packet() {
+        // buffer = 4 + 64 + 16 = 84. Fill it exactly: one max-size (64B) packet plus 16
+        // bytes of the next. A full buffer must still surface the complete packet - the
+        // invariant that guarantees the spare never stays empty.
+        let max = 64usize;
+        let padding = 16usize;
+        let mut reader = PacketReader::new(max, padding);
+        let big = frame(&vec![0x5Au8; max]); // 4 + 64 = 68 bytes
+                                             // 16 trailing bytes forming the *start* of a second packet: a length prefix of 16
+                                             // but only 12 of those 16 body bytes present, so it stays incomplete (NeedData)
+                                             // rather than parsing as another packet.
+        let mut trailing = 16u32.to_le_bytes().to_vec();
+        trailing.extend_from_slice(&[0xEE; 12]);
+        assert_eq!(trailing.len(), 16);
+        let n = {
+            let spare = reader.spare_capacity_mut();
+            assert_eq!(spare.len(), LEN_SIZE + max + padding);
+            spare[..big.len()].copy_from_slice(&big);
+            spare[big.len()..big.len() + trailing.len()].copy_from_slice(&trailing);
+            big.len() + trailing.len()
+        };
+        reader.commit(n);
+        assert_eq!(
+            reader.spare_capacity_mut().len(),
+            0,
+            "buffer should be exactly full"
+        );
+
+        assert_eq!(reader.get_packet(), ReadResult::Read(&[0x5A; 64]));
+        assert_eq!(reader.get_packet(), ReadResult::NeedData);
+        // Refilling compacts the 16 leftover bytes to the front; spare recovered (no
+        // deadlock).
+        assert_eq!(reader.buffered(), 16);
+        assert_eq!(
+            reader.spare_capacity_mut().len(),
+            LEN_SIZE + max + padding - 16
+        );
+    }
+
+    #[test]
+    fn zerocopy_never_false_eof_under_back_to_back_max_packets() {
+        // Greedy reads (chunk = 0) over a stream of max-size packets: the assertion inside
+        // `drain_zerocopy` fails if the spare is ever empty before a read.
+        let max = 200usize;
+        let mut reader = PacketReader::new(max, 64);
+        let bodies: Vec<Vec<u8>> = (0..15)
+            .map(|i| vec![i as u8; max]) // each body exactly max_packet_size
+            .collect();
+        let mut stream = Vec::new();
+        for b in &bodies {
+            stream.extend_from_slice(&frame(b));
+        }
+        let out = drain_zerocopy(&mut reader, &stream, 0);
+        assert_eq!(out, bodies);
+        assert_eq!(reader.buffered(), 0);
+    }
+
+    #[test]
+    fn zerocopy_drain_unparsed_recovers_tls_prefix() {
+        // Mirrors the receiver's TLS upgrade: a single read pulls in the plaintext `Version`
+        // packet plus the first bytes of the following TLS ClientHello, committed in place.
+        let mut reader = PacketReader::new(100, 16);
+        let version = frame(&[Opcode::Version as u8, b'{', b'}']);
+        let handshake = [0x16u8, 0x03, 0x01, 0x02, 0x00, 0x42];
+        let n = {
+            let spare = reader.spare_capacity_mut();
+            spare[..version.len()].copy_from_slice(&version);
+            spare[version.len()..version.len() + handshake.len()].copy_from_slice(&handshake);
+            version.len() + handshake.len()
+        };
+        reader.commit(n);
+
+        assert_eq!(
+            reader.get_packet(),
+            ReadResult::Read(&[Opcode::Version as u8, b'{', b'}'])
+        );
+        assert_eq!(reader.drain_unparsed(), handshake);
+        assert_eq!(reader.buffered(), 0);
+        assert_eq!(reader.state, ReaderState::MissingLength);
+    }
+
+    #[test]
+    fn zerocopy_too_large_prefix_is_reported() {
+        let mut reader = PacketReader::new(64, 16);
+        // Length prefix of 65 (> max 64). Write just the prefix and commit.
+        let prefix = 65u32.to_le_bytes();
+        reader.spare_capacity_mut()[..LEN_SIZE].copy_from_slice(&prefix);
+        reader.commit(LEN_SIZE);
+        assert_eq!(reader.get_packet(), ReadResult::PacketTooLarge(65));
+    }
+
+    #[test]
+    fn zerocopy_randomized_reassembly() {
+        // Deterministic xorshift PRNG, random packet counts, sizes and read chunking. The
+        // extracted packets must always equal the framed input, regardless of segmentation.
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+
+        let max = 300usize;
+        for _ in 0..400 {
+            let n_packets = (next() % 12) as usize + 1;
+            let bodies: Vec<Vec<u8>> = (0..n_packets)
+                .map(|_| {
+                    let len = (next() as usize % max) + 1; // 1..=max
+                    (0..len).map(|_| next() as u8).collect()
+                })
+                .collect();
+            let mut stream = Vec::new();
+            for b in &bodies {
+                stream.extend_from_slice(&frame(b));
+            }
+            let chunk = (next() as usize % 40) + 1; // 1..=40 (also exercises tiny reads)
+            let mut reader = PacketReader::new(max, 8192);
+            let out = drain_zerocopy(&mut reader, &stream, chunk);
+            assert_eq!(
+                out, bodies,
+                "randomized reassembly mismatch (chunk={chunk})"
+            );
+            assert_eq!(reader.buffered(), 0);
+        }
     }
 }

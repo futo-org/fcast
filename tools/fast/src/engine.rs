@@ -26,8 +26,22 @@ use uuid::Uuid;
 use crate::{PlaylistItem, QueueMutationKind, Receive, Send as Op, Step, TrackKind};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
-const MAX_SETTLE: Duration = Duration::from_secs(8);
+// The cap on how long we wait for an expected event (a track-change confirm, a
+// state settle) before declaring failure. It must outlast the receiver's OWN
+// worst-case recovery, or a correct-but-slow settle reads as a false failure.
+//
+// The receiver holds a flushing seek's text-restore until the pipeline reports
+// steady PLAYING (linking text into subtitleoverlay mid-preroll livelocks), by
+// polling every 500ms up to 20 times = ~10s, and only THEN applies a deferred
+// track change (another select_streams + StreamsSelected round-trip). Under a
+// slow re-preroll, e.g. the FAST shuffle oversubscribing the GPU, which the
+// video sink reports as "computer is too slow", that envelope runs ~13-15s.
+// 8s gave up mid-settle-poll and failed cases the receiver was recovering from
+// cleanly (audio_track_switch_v4, rapid_track_changes_v4). A genuine wedge
+// never recovers, so it still fails here, just 8s later.
+const MAX_SETTLE: Duration = Duration::from_secs(16);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const TEARDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -212,6 +226,9 @@ struct Expectations {
     error: Option<v4::flat::ErrorKind>,
     /// Satisfied by a v4 progress update whose position is at least this many seconds.
     progress_v4_at_least: Option<f64>,
+    /// The next v4 progress update with a non-zero position must be at least
+    /// this many seconds, a lower one fails the test immediately.
+    next_progress_floor: Option<f64>,
     /// Waiting for a `TracksAvailable` advertising at least this many tracks
     /// of each kind (indexed by `TrackKind`).
     await_tracks: Option<[usize; 3]>,
@@ -250,6 +267,7 @@ impl Expectations {
             || self.companion_served.is_some()
             || self.error.is_some()
             || self.progress_v4_at_least.is_some()
+            || self.next_progress_floor.is_some()
             || self.await_tracks.is_some()
             || self.change_track.iter().any(|c| c.is_some())
     }
@@ -304,8 +322,13 @@ impl Expectations {
         if let Some(secs) = self.progress_v4_at_least {
             out.push(format!("ProgressV4AtLeast({secs})"));
         }
+        if let Some(secs) = self.next_progress_floor {
+            out.push(format!("NextProgressV4AtLeast({secs})"));
+        }
         if let Some([v, a, s]) = self.await_tracks {
-            out.push(format!("TracksAvailable(>= {v} video, {a} audio, {s} subtitle)"));
+            out.push(format!(
+                "TracksAvailable(>= {v} video, {a} audio, {s} subtitle)"
+            ));
         }
         for (slot, expected) in self.change_track.iter().enumerate() {
             if let Some(expected) = expected {
@@ -348,6 +371,16 @@ pub struct Engine<'a> {
     /// The most recently relayed `ChangeTrack` id per kind (indexed by
     /// `TrackKind`). `None` = never relayed; `Some(None)` = kind disabled.
     last_track_state: [Option<Option<u32>>; 3],
+    /// `track_ids`, but for advertisements broadcast to the second sender.
+    /// Only current up to the last packet a second-sender step consumed (the
+    /// second connection is not read while `settle` drives the main one).
+    second_track_ids: [Vec<u32>; 3],
+    /// `last_track_state`, but for `ChangeTrack`s relayed to the second sender.
+    second_last_track_state: [Option<Option<u32>>; 3],
+    /// The most recently relayed playback state: v4 `PlaybackStateChanged`,
+    /// or the state of a legacy `PlaybackUpdate` mapped onto the v4 enum
+    /// (so `AwaitPlaybackState` works on every protocol version).
+    last_state_v4: Option<v4::flat::PlaybackState>,
 }
 
 struct CompanionResource {
@@ -398,6 +431,9 @@ impl<'a> Engine<'a> {
             tls_upgraded: false,
             track_ids: Default::default(),
             last_track_state: [None; 3],
+            second_track_ids: Default::default(),
+            second_last_track_state: [None; 3],
+            last_state_v4: None,
         })
     }
 
@@ -428,16 +464,72 @@ impl<'a> Engine<'a> {
     }
 
     async fn best_effort_stop(&mut self) {
-        match self.version {
+        let stop_sent = match self.version {
             // The v4 connection is only writable once the TLS upgrade succeeded.
             4 if self.tls_upgraded => {
                 let msg = v4::MessageBuilder::new().stop_playback();
-                let _ = self.conn.write(Opcode::Flatbuf, Some(&msg)).await;
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await.is_ok()
             }
-            1..=3 | 5.. => {
-                let _ = self.conn.write(Opcode::Stop, None).await;
+            1..=3 | 5.. => self.conn.write(Opcode::Stop, None).await.is_ok(),
+            _ => false,
+        };
+        if stop_sent {
+            self.confirm_stop_delivery().await;
+        }
+    }
+
+    /// Barrier: make sure the receiver has actually *read* the teardown stop
+    /// before the connection is dropped.
+    ///
+    /// Dropping the connection right after the stop write is not enough. The
+    /// receiver broadcasts updates until the very end, so our socket usually
+    /// still holds unread data when it closes, turning the close into a TCP
+    /// RST, and an RST discards whatever the receiver has not yet read from
+    /// its end, the just-written stop included. The receiver then keeps
+    /// playing the finished case's media into the next one, whose
+    /// `file_server.clear()` turns the orphaned load's next range request
+    /// into a "Resource not found" broadcast that fails an innocent test.
+    ///
+    /// Sessions answer `Ping` in order with the rest of the stream (on every
+    /// protocol version), so one ping/pong round-trip after the stop proves
+    /// the stop was consumed and handed to the receiver's application loop,
+    /// which processes it before it can even register the next case's
+    /// connection.
+    async fn confirm_stop_delivery(&mut self) {
+        if self.conn.write(Opcode::Ping, None).await.is_err() {
+            return;
+        }
+        let deadline = Instant::now() + TEARDOWN_ACK_TIMEOUT;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                warn!(
+                    "receiver did not acknowledge the teardown stop within \
+                     {TEARDOWN_ACK_TIMEOUT:?}; its playback may leak into the next case"
+                );
+                return;
             }
-            _ => {}
+            match tokio::time::timeout(deadline - now, self.conn.recv()).await {
+                Ok(Ok(Packet {
+                    opcode: Opcode::Pong,
+                    ..
+                })) => return,
+                Ok(Ok(Packet {
+                    opcode: Opcode::Ping,
+                    ..
+                })) => {
+                    let _ = self.conn.write(Opcode::Pong, None).await;
+                }
+                // Anything else is a late broadcast from the case that just
+                // finished (playback updates, errors from the load being torn
+                // down), drain it and keep waiting for our pong.
+                Ok(Ok(packet)) => debug!(opcode = ?packet.opcode, "drained during teardown"),
+                Ok(Err(err)) => {
+                    debug!(%err, "connection closed while confirming teardown stop");
+                    return;
+                }
+                Err(_elapsed) => {} // the loop re-checks the deadline
+            }
         }
     }
 
@@ -468,12 +560,12 @@ impl<'a> Engine<'a> {
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(wake)) => {
                     if self.sleep_until.is_some_and(|d| d <= Instant::now()) {
                         self.sleep_until = None;
-                    } else if !sleeping {
-                        bail!(
-                            "timed out after {IDLE_TIMEOUT:?} waiting for: {}",
-                            self.expect.describe()
-                        );
                     }
+                    // An idle connection is not failure by itself: a reload
+                    // dance can keep the receiver silent for several seconds
+                    // (teardown tails stretch on aged instances), with the
+                    // expected packet arriving just after. MAX_SETTLE above
+                    // bounds the total wait.
                 }
             }
         }
@@ -512,6 +604,11 @@ impl<'a> Engine<'a> {
 
     fn on_playback_update(&mut self, body: Option<&[u8]>) -> Result<()> {
         let msg: v3::PlaybackUpdateMessage = parse(Opcode::PlaybackUpdate, body)?;
+        self.last_state_v4 = Some(match msg.state {
+            PlaybackState::Idle => v4::flat::PlaybackState::Idle,
+            PlaybackState::Playing => v4::flat::PlaybackState::Playing,
+            PlaybackState::Paused => v4::flat::PlaybackState::Paused,
+        });
         if self.expect.pause && msg.state == PlaybackState::Paused {
             self.expect.pause = false;
             info!("paused state confirmed");
@@ -548,7 +645,7 @@ impl<'a> Engine<'a> {
         // PlayUpdate is broadcast to every connected sender, and the receiver
         // keeps its current media until superseded. A previous test's media can
         // therefore be broadcast onto our connection. Only assert on the update
-        // that echoes the URL we just sent; ignore foreign ones and keep waiting.
+        // that echoes the URL we just sent, ignore foreign ones and keep waiting.
         if got.url != expected.url {
             debug!(?got, "ignoring play update for a different url");
             return Ok(());
@@ -601,17 +698,37 @@ impl<'a> Engine<'a> {
                         .payload_as_progress_changed()
                         .ok_or_else(|| anyhow!("malformed ProgressChanged"))?;
                     self.progress_times.push(Instant::now());
+                    let pos_secs = progress
+                        .position()
+                        .map(|t| t.micros() as f64 / 1_000_000.0)
+                        .unwrap_or(0.0);
                     if let Some(threshold) = self.expect.progress_v4_at_least {
-                        let pos_secs = progress
-                            .position()
-                            .map(|t| t.micros() as f64 / 1_000_000.0)
-                            .unwrap_or(0.0);
                         if pos_secs >= threshold {
                             self.expect.progress_v4_at_least = None;
                             info!("v4 progress position {pos_secs:.3}s reached {threshold}s");
                         } else {
                             debug!(pos_secs, threshold, "ignoring interim v4 progress position");
                         }
+                    }
+                    // Small positions are ignored: the receiver reports ~0
+                    // while a (re)load is in flight, and up to ~1s can
+                    // elapse between the reload settling and the
+                    // position-restore seek (subtitle-branch settle delay),
+                    // none of which says anything about where playback
+                    // resumes. Playback that genuinely reset to 0 still
+                    // trips the floor as soon as its position crosses this
+                    // threshold, so cases must use a floor comfortably above
+                    // it.
+                    if let Some(floor) = self.expect.next_progress_floor
+                        && pos_secs > 1.5
+                    {
+                        ensure!(
+                            pos_secs >= floor,
+                            "first non-zero progress was {pos_secs:.2}s, expected at least \
+                             {floor}s (playback position was not preserved)"
+                        );
+                        self.expect.next_progress_floor = None;
+                        info!("v4 progress resumed at {pos_secs:.3}s (>= {floor}s)");
                     }
                     FlatAction::None
                 }
@@ -658,6 +775,7 @@ impl<'a> Engine<'a> {
                         .payload_as_playback_state_changed()
                         .ok_or_else(|| anyhow!("malformed PlaybackStateChanged"))?
                         .state();
+                    self.last_state_v4 = Some(got);
                     if self.expect.state_v4 == Some(got) {
                         self.expect.state_v4 = None;
                         info!("v4 playback state confirmed: {got:?}");
@@ -682,18 +800,7 @@ impl<'a> Engine<'a> {
                     let tracks = packet
                         .payload_as_tracks_available()
                         .ok_or_else(|| anyhow!("malformed TracksAvailable"))?;
-                    let mut ids: [Vec<u32>; 3] = Default::default();
-                    if let Some(list) = tracks.tracks() {
-                        for track in list {
-                            let slot = match track.metadata_type() {
-                                v4::flat::MediaTrackMetadata::Video => TrackKind::Video,
-                                v4::flat::MediaTrackMetadata::Audio => TrackKind::Audio,
-                                v4::flat::MediaTrackMetadata::Subtitle => TrackKind::Subtitle,
-                                _ => continue,
-                            };
-                            ids[slot as usize].push(track.id());
-                        }
-                    }
+                    let ids = advertised_ids(tracks);
                     debug!(?ids, "TracksAvailable track ids");
                     self.track_ids = ids;
                     self.check_await_tracks();
@@ -703,12 +810,7 @@ impl<'a> Engine<'a> {
                     let change = packet
                         .payload_as_change_track()
                         .ok_or_else(|| anyhow!("malformed ChangeTrack"))?;
-                    let slot = match change.track_type() {
-                        v4::flat::MediaTrackType::Video => TrackKind::Video,
-                        v4::flat::MediaTrackType::Audio => TrackKind::Audio,
-                        v4::flat::MediaTrackType::Subtitle => TrackKind::Subtitle,
-                        typ => bail!("relayed ChangeTrack with unknown track type {typ:?}"),
-                    } as usize;
+                    let slot = change_track_slot(change)?;
                     let id = change.id();
                     self.last_track_state[slot] = Some(id);
                     if let Some(expected) = self.expect.change_track[slot] {
@@ -908,6 +1010,9 @@ impl<'a> Engine<'a> {
                 Receive::VolumeChangedV4(volume) => self.expect.volume_v4 = Some(*volume as f32),
                 Receive::SpeedChangedV4(speed) => self.expect.speed_v4 = Some(*speed as f32),
                 Receive::ProgressV4AtLeast(secs) => self.expect.progress_v4_at_least = Some(*secs),
+                Receive::NextProgressV4AtLeast(secs) => {
+                    self.expect.next_progress_floor = Some(*secs)
+                }
             },
             Step::ServeFile {
                 path,
@@ -934,7 +1039,7 @@ impl<'a> Engine<'a> {
             } => {
                 self.expect.await_tracks = Some([*video, *audio, *subtitle]);
                 // The advertisement may already have arrived while settling an
-                // earlier step; don't wait for a re-broadcast in that case.
+                // earlier step, don't wait for a re-broadcast in that case.
                 self.check_await_tracks();
             }
             Step::AssertTrackState {
@@ -963,6 +1068,43 @@ impl<'a> Engine<'a> {
                 }
                 info!(?video, ?audio, ?subtitle, "relayed track state matches");
             }
+            Step::AwaitTrackState {
+                video,
+                audio,
+                subtitle,
+            } => {
+                self.await_track_state([*video, *audio, *subtitle]).await?;
+            }
+            Step::AssertTrackCounts {
+                video,
+                audio,
+                subtitle,
+            } => {
+                let counts = [
+                    self.track_ids[0].len(),
+                    self.track_ids[1].len(),
+                    self.track_ids[2].len(),
+                ];
+                ensure!(
+                    counts == [*video, *audio, *subtitle],
+                    "last TracksAvailable advertised {counts:?} (video/audio/subtitle) tracks, \
+                     expected [{video}, {audio}, {subtitle}]"
+                );
+                info!(?counts, "advertised track counts match");
+            }
+            Step::AssertPlaybackStateV4(expected) => {
+                let seen = self
+                    .last_state_v4
+                    .ok_or_else(|| anyhow!("no v4 PlaybackStateChanged was ever received"))?;
+                ensure!(
+                    seen == *expected,
+                    "last relayed playback state is {seen:?}, expected {expected:?}"
+                );
+                info!(?expected, "relayed playback state matches");
+            }
+            Step::AwaitPlaybackState(expected) => {
+                self.await_playback_state(*expected).await?;
+            }
             Step::OpenSecondSender => self.open_second_sender().await?,
             Step::SetSecondSenderInterval { millis } => {
                 let micros = Duration::from_millis(*millis).as_micros() as u64;
@@ -971,6 +1113,63 @@ impl<'a> Engine<'a> {
                 self.second_conn()?
                     .write(Opcode::Flatbuf, Some(&msg))
                     .await?;
+            }
+            Step::AwaitTracksOnSecondSender {
+                video,
+                audio,
+                subtitle,
+            } => {
+                self.await_tracks_on_second_sender([*video, *audio, *subtitle])
+                    .await?
+            }
+            Step::AddSubtitleSourceOnSecondSenderV4 {
+                file_id,
+                select,
+                name,
+            } => {
+                self.add_subtitle_on_second_sender(*file_id, *select, *name)
+                    .await?
+            }
+            Step::ChangeTrackOnSecondSender { kind, index } => {
+                self.change_track_on_second_sender(*kind, *index).await?
+            }
+            Step::AssertTrackStateOnSecondSender {
+                video,
+                audio,
+                subtitle,
+            } => {
+                // Absorb anything already queued on the second connection so
+                // the assertion sees the receiver's latest relays.
+                self.drain_second().await?;
+                for (kind, expected_idx) in [
+                    (TrackKind::Video, video),
+                    (TrackKind::Audio, audio),
+                    (TrackKind::Subtitle, subtitle),
+                ] {
+                    let slot = kind as usize;
+                    let expected = match expected_idx {
+                        Some(n) => Some(self.second_advertised_track_id(kind, *n)?),
+                        None => None,
+                    };
+                    let seen = self.second_last_track_state[slot].ok_or_else(|| {
+                        anyhow!(
+                            "no ChangeTrack({}) was ever relayed to the second sender",
+                            KIND_NAMES[slot]
+                        )
+                    })?;
+                    ensure!(
+                        seen == expected,
+                        "last {} track relayed to the second sender is {seen:?}, \
+                         expected {expected:?}",
+                        KIND_NAMES[slot]
+                    );
+                }
+                info!(
+                    ?video,
+                    ?audio,
+                    ?subtitle,
+                    "second sender's relayed track state matches"
+                );
             }
             Step::ExpectLoadOnSecondSender => self.expect_load_on_second_sender().await?,
             Step::ExpectStopOnSecondSender => {
@@ -1115,6 +1314,224 @@ impl<'a> Engine<'a> {
             .await
     }
 
+    /// Receive one packet on the second sender's connection, answering
+    /// keepalive pings and folding relayed track advertisements and changes
+    /// into the second-sender bookkeeping. Returns `None` if nothing arrived
+    /// within `remaining`.
+    async fn recv_second(&mut self, remaining: Duration) -> Result<Option<Packet>> {
+        let pkt = {
+            let conn = self
+                .second
+                .as_mut()
+                .ok_or_else(|| anyhow!("no second sender has been opened"))?;
+            match tokio::time::timeout(remaining, conn.recv()).await {
+                Ok(p) => p?,
+                Err(_) => return Ok(None),
+            }
+        };
+        if pkt.opcode == Opcode::Ping {
+            self.second_conn()?.write(Opcode::Pong, None).await?;
+        } else {
+            self.note_second_packet(&pkt)?;
+        }
+        Ok(Some(pkt))
+    }
+
+    /// `recv_second`, but any relayed v4 error fails the test. Steps that
+    /// legitimately race a peer's in-flight operation use `recv_second`
+    /// directly and handle `InvalidState` refusals themselves.
+    async fn recv_second_strict(&mut self, remaining: Duration) -> Result<Option<Packet>> {
+        let pkt = self.recv_second(remaining).await?;
+        if let Some(pkt) = &pkt
+            && let Some((_, desc)) = flat_error(pkt)
+        {
+            bail!("receiver reported a v4 error on the second sender: {desc}");
+        }
+        Ok(pkt)
+    }
+
+    /// Fold a packet the receiver sent to the second sender into that
+    /// sender's track bookkeeping.
+    fn note_second_packet(&mut self, pkt: &Packet) -> Result<()> {
+        if pkt.opcode != Opcode::Flatbuf {
+            return Ok(());
+        }
+        let Some(body) = pkt.body.as_deref() else {
+            return Ok(());
+        };
+        let packet =
+            v4::flat::root_as_packet(body).map_err(|e| anyhow!("invalid flatbuffer: {e}"))?;
+        match packet.payload_type() {
+            v4::flat::Message::TracksAvailable => {
+                let tracks = packet
+                    .payload_as_tracks_available()
+                    .ok_or_else(|| anyhow!("malformed TracksAvailable"))?;
+                let ids = advertised_ids(tracks);
+                debug!(?ids, "second sender TracksAvailable track ids");
+                self.second_track_ids = ids;
+            }
+            v4::flat::Message::ChangeTrack => {
+                let change = packet
+                    .payload_as_change_track()
+                    .ok_or_else(|| anyhow!("malformed ChangeTrack"))?;
+                self.second_last_track_state[change_track_slot(change)?] = Some(change.id());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Read everything currently queued on the second sender's connection
+    /// until it goes quiet, so assertions see the receiver's latest relays.
+    async fn drain_second(&mut self) -> Result<()> {
+        while self
+            .recv_second_strict(Duration::from_millis(80))
+            .await?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    /// The protocol id of the `n`th track advertised to the second sender.
+    fn second_advertised_track_id(&self, kind: TrackKind, n: usize) -> Result<u32> {
+        let slot = kind as usize;
+        self.second_track_ids[slot].get(n).copied().ok_or_else(|| {
+            anyhow!(
+                "{} track index {n} out of range on the second sender ({} advertised); \
+                 run AwaitTracksOnSecondSender before acting on tracks",
+                KIND_NAMES[slot],
+                self.second_track_ids[slot].len()
+            )
+        })
+    }
+
+    /// Wait until the second sender has been advertised at least `min` tracks
+    /// of every kind (indexed by `TrackKind`).
+    async fn await_tracks_on_second_sender(&mut self, min: [usize; 3]) -> Result<()> {
+        let deadline = Instant::now() + MAX_SETTLE;
+        loop {
+            let counts = [
+                self.second_track_ids[0].len(),
+                self.second_track_ids[1].len(),
+                self.second_track_ids[2].len(),
+            ];
+            if (0..3).all(|slot| counts[slot] >= min[slot]) {
+                info!(?counts, "required tracks advertised to the second sender");
+                return Ok(());
+            }
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "second sender was never advertised >= {min:?} (video/audio/subtitle) \
+                 tracks; its last TracksAvailable had {counts:?}"
+            );
+            self.recv_second_strict(deadline - now).await?;
+        }
+    }
+
+    /// Attach an external subtitle from the second sender. The receiver
+    /// refuses external-subtitle work while another (re)load is still
+    /// applying (`InvalidState`), e.g. the first sender's add mid-dance,
+    /// and a sender cannot know a peer's operation is in flight, so a
+    /// refusal backs off and retries. Acceptance produces no direct reply,
+    /// follow with `AwaitTracksOnSecondSender` to observe the updated
+    /// advertisement.
+    async fn add_subtitle_on_second_sender(
+        &mut self,
+        file_id: u32,
+        select: bool,
+        name: Option<&'static str>,
+    ) -> Result<()> {
+        let (url, _mime, _headers) = self.file(file_id)?;
+        let deadline = Instant::now() + MAX_SETTLE;
+        'send: loop {
+            let msg = v4::MessageBuilder::new().add_subtitle_source(&url, select, name);
+            self.second_conn()?
+                .write(Opcode::Flatbuf, Some(&msg))
+                .await?;
+            // A refusal is sent synchronously while handling the request,
+            // watch a short window for one, then treat the add as accepted.
+            let watch_until = Instant::now() + Duration::from_millis(600);
+            loop {
+                let now = Instant::now();
+                if now >= watch_until {
+                    return Ok(());
+                }
+                let Some(pkt) = self.recv_second(watch_until - now).await? else {
+                    continue;
+                };
+                if let Some((kind, desc)) = flat_error(&pkt) {
+                    ensure!(
+                        kind == v4::flat::ErrorKind::InvalidState,
+                        "receiver reported a v4 error on the second sender: {desc}"
+                    );
+                    ensure!(
+                        Instant::now() < deadline,
+                        "second sender's AddSubtitleSource kept being refused (InvalidState)"
+                    );
+                    debug!("second sender's AddSubtitleSource refused (InvalidState); retrying");
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    continue 'send;
+                }
+            }
+        }
+    }
+
+    /// Send a `ChangeTrack` from the second sender for the `index`th track it
+    /// was advertised (`None` = disable the kind) and wait for the relayed
+    /// confirmation, interim confirmations for other ids are ignored, like the
+    /// main sender's ChangeTrack expectation. An `InvalidState` refusal (a
+    /// peer's external-subtitle operation still applying) backs off and
+    /// retries.
+    async fn change_track_on_second_sender(
+        &mut self,
+        kind: TrackKind,
+        index: Option<usize>,
+    ) -> Result<()> {
+        let slot = kind as usize;
+        let id = match index {
+            Some(n) => Some(self.second_advertised_track_id(kind, n)?),
+            None => None,
+        };
+        self.second_last_track_state[slot] = None;
+        let msg = v4::MessageBuilder::new().change_track(id, track_kind_to_type(kind));
+        self.second_conn()?
+            .write(Opcode::Flatbuf, Some(&msg))
+            .await?;
+        let deadline = Instant::now() + MAX_SETTLE;
+        loop {
+            if self.second_last_track_state[slot] == Some(id) {
+                info!(
+                    ?id,
+                    kind = KIND_NAMES[slot],
+                    "second sender's track change confirmed"
+                );
+                return Ok(());
+            }
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "second sender's ChangeTrack({}, {id:?}) was never confirmed",
+                KIND_NAMES[slot]
+            );
+            let Some(pkt) = self.recv_second(deadline - now).await? else {
+                continue;
+            };
+            if let Some((err_kind, desc)) = flat_error(&pkt) {
+                ensure!(
+                    err_kind == v4::flat::ErrorKind::InvalidState,
+                    "receiver reported a v4 error on the second sender: {desc}"
+                );
+                debug!("second sender's ChangeTrack refused (InvalidState); retrying");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let msg = v4::MessageBuilder::new().change_track(id, track_kind_to_type(kind));
+                self.second_conn()?
+                    .write(Opcode::Flatbuf, Some(&msg))
+                    .await?;
+            }
+        }
+    }
+
     /// Wait until the second sender receives a relayed Flatbuf message of the
     /// given payload type, answering keepalive pings while waiting.
     async fn expect_flat_on_second_sender(
@@ -1122,7 +1539,6 @@ impl<'a> Engine<'a> {
         expected: v4::flat::Message,
         label: &str,
     ) -> Result<()> {
-        let conn = self.second_conn()?;
         let deadline = Instant::now() + MAX_SETTLE;
         loop {
             let now = Instant::now();
@@ -1130,23 +1546,17 @@ impl<'a> Engine<'a> {
                 now < deadline,
                 "second sender never received the relayed {label}"
             );
-            let pkt = match tokio::time::timeout(deadline - now, conn.recv()).await {
-                Ok(p) => p?,
-                Err(_) => continue,
+            let Some(pkt) = self.recv_second_strict(deadline - now).await? else {
+                continue;
             };
-            match pkt.opcode {
-                Opcode::Ping => conn.write(Opcode::Pong, None).await?,
-                Opcode::Flatbuf if flat_payload_type(&pkt) == Some(expected) => {
-                    info!("second sender received relayed {label}");
-                    return Ok(());
-                }
-                _ => {}
+            if flat_payload_type(&pkt) == Some(expected) {
+                info!("second sender received relayed {label}");
+                return Ok(());
             }
         }
     }
 
     async fn expect_volume_on_second_sender(&mut self, target: f32) -> Result<()> {
-        let conn = self.second_conn()?;
         let deadline = Instant::now() + MAX_SETTLE;
         loop {
             let now = Instant::now();
@@ -1154,29 +1564,22 @@ impl<'a> Engine<'a> {
                 now < deadline,
                 "second sender never received VolumeChanged({target})"
             );
-            let pkt = match tokio::time::timeout(deadline - now, conn.recv()).await {
-                Ok(p) => p?,
-                Err(_) => continue,
+            let Some(pkt) = self.recv_second_strict(deadline - now).await? else {
+                continue;
             };
-            match pkt.opcode {
-                Opcode::Ping => conn.write(Opcode::Pong, None).await?,
-                Opcode::Flatbuf => {
-                    if let Some(body) = &pkt.body {
-                        let packet = v4::flat::root_as_packet(body)
-                            .map_err(|e| anyhow!("invalid flatbuffer: {e}"))?;
-                        if packet.payload_type() == v4::flat::Message::VolumeChanged {
-                            let got = packet
-                                .payload_as_volume_changed()
-                                .ok_or_else(|| anyhow!("malformed VolumeChanged"))?
-                                .volume();
-                            if (got - target).abs() <= 0.001 {
-                                info!("second sender received VolumeChanged({target})");
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-                _ => {}
+            if flat_payload_type(&pkt) != Some(v4::flat::Message::VolumeChanged) {
+                continue;
+            }
+            let body = pkt.body.as_deref().unwrap_or_default();
+            let packet =
+                v4::flat::root_as_packet(body).map_err(|e| anyhow!("invalid flatbuffer: {e}"))?;
+            let got = packet
+                .payload_as_volume_changed()
+                .ok_or_else(|| anyhow!("malformed VolumeChanged"))?
+                .volume();
+            if (got - target).abs() <= 0.001 {
+                info!("second sender received VolumeChanged({target})");
+                return Ok(());
             }
         }
     }
@@ -1257,6 +1660,91 @@ impl<'a> Engine<'a> {
                 self.track_ids[2].len(),
             ];
             info!(?counts, "required tracks advertised");
+        }
+    }
+
+    /// Wait until the relayed track state matches `expected_idx` (indices
+    /// into the advertised tracks per kind, `None` = kind disabled) and no
+    /// contradicting relay arrives for a hold window. Reload dances emit
+    /// interim selections (mid-preroll text deselect, auto-select remaps)
+    /// before settling, point-in-time asserts race them, and how long a
+    /// dance takes varies too much for a fixed sleep. A wanted index that
+    /// is not (yet) advertised counts as not-matching, not as an error
+    /// (advertisements are re-broadcast during the dance).
+    async fn await_track_state(&mut self, expected_idx: [Option<usize>; 3]) -> Result<()> {
+        const HOLD: Duration = Duration::from_millis(750);
+        let deadline = Instant::now() + MAX_SETTLE;
+        let mut matched_since: Option<Instant> = None;
+        loop {
+            let mut matches = true;
+            for kind in [TrackKind::Video, TrackKind::Audio, TrackKind::Subtitle] {
+                let slot = kind as usize;
+                let want = match expected_idx[slot] {
+                    Some(n) => match self.track_ids[slot].get(n).copied() {
+                        Some(id) => Some(id),
+                        None => {
+                            matches = false;
+                            break;
+                        }
+                    },
+                    None => None,
+                };
+                if self.last_track_state[slot] != Some(want) {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                let since = *matched_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= HOLD {
+                    info!(?expected_idx, "relayed track state settled");
+                    return Ok(());
+                }
+            } else {
+                matched_since = None;
+            }
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "track state never settled at {expected_idx:?} (video/audio/subtitle \
+                 indices); last relayed ids were {:?}",
+                self.last_track_state
+            );
+            let wait = Duration::from_millis(100).min(deadline - now);
+            if let Ok(pkt) = tokio::time::timeout(wait, self.conn.recv()).await {
+                self.handle_incoming(pkt?).await?;
+            }
+        }
+    }
+
+    /// Wait until the relayed v4 playback state matches AND holds steady for
+    /// a short while. The external-subtitle dance's re-pause lands whenever
+    /// playsink finishes its un-signalled text-branch churn, so a fixed
+    /// sleep followed by a point-in-time assert races it.
+    async fn await_playback_state(&mut self, expected: v4::flat::PlaybackState) -> Result<()> {
+        const HOLD: Duration = Duration::from_millis(750);
+        let deadline = Instant::now() + MAX_SETTLE;
+        let mut matched_since: Option<Instant> = None;
+        loop {
+            if self.last_state_v4 == Some(expected) {
+                let since = *matched_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= HOLD {
+                    info!(?expected, "relayed playback state settled");
+                    return Ok(());
+                }
+            } else {
+                matched_since = None;
+            }
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "playback state never settled at {expected:?}; last relayed was {:?}",
+                self.last_state_v4
+            );
+            let wait = Duration::from_millis(100).min(deadline - now);
+            if let Ok(pkt) = tokio::time::timeout(wait, self.conn.recv()).await {
+                self.handle_incoming(pkt?).await?;
+            }
         }
     }
 
@@ -1597,6 +2085,26 @@ impl<'a> Engine<'a> {
                 let msg = v4::MessageBuilder::new().stop_playback();
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
+            Op::AddSubtitleSourceV4 {
+                file_id,
+                select,
+                name,
+            } => {
+                let (url, _mime, _headers) = self.file(*file_id)?;
+                let msg = v4::MessageBuilder::new().add_subtitle_source(&url, *select, *name);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::AddSubtitleSourceFakeUrlV4 { select } => {
+                // A well-formed file-server URL for a resource that was never
+                // served, so the subtitle fetch gets a 404.
+                let url = self.file_server.get_url(&self.local_ip, &Uuid::new_v4());
+                let msg = v4::MessageBuilder::new().add_subtitle_source(&url, *select, None);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::AddSubtitleSourceEmptyUrlV4 => {
+                let msg = v4::MessageBuilder::new().add_subtitle_source("", false, None);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
             Op::ChangeTrack { kind, index } => {
                 self.send_change_track(*kind, *index, true).await?;
             }
@@ -1879,6 +2387,48 @@ async fn drain_conn(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// Track ids carried by a `TracksAvailable` advertisement, per kind
+/// (indexed by `TrackKind`).
+fn advertised_ids(tracks: v4::flat::TracksAvailable<'_>) -> [Vec<u32>; 3] {
+    let mut ids: [Vec<u32>; 3] = Default::default();
+    if let Some(list) = tracks.tracks() {
+        for track in list {
+            let slot = match track.metadata_type() {
+                v4::flat::MediaTrackMetadata::Video => TrackKind::Video,
+                v4::flat::MediaTrackMetadata::Audio => TrackKind::Audio,
+                v4::flat::MediaTrackMetadata::Subtitle => TrackKind::Subtitle,
+                _ => continue,
+            };
+            ids[slot as usize].push(track.id());
+        }
+    }
+    ids
+}
+
+/// If the packet is a relayed v4 `Error`, its kind and a description.
+fn flat_error(pkt: &Packet) -> Option<(v4::flat::ErrorKind, String)> {
+    if flat_payload_type(pkt) != Some(v4::flat::Message::Error) {
+        return None;
+    }
+    let body = pkt.body.as_deref()?;
+    let packet = v4::flat::root_as_packet(body).ok()?;
+    let err = packet.payload_as_error()?;
+    Some((
+        err.kind(),
+        format!("{:?} (packet_num={:?})", err.kind(), err.packet_num()),
+    ))
+}
+
+/// The `TrackKind` slot a relayed `ChangeTrack` refers to.
+fn change_track_slot(change: v4::flat::ChangeTrack<'_>) -> Result<usize> {
+    Ok(match change.track_type() {
+        v4::flat::MediaTrackType::Video => TrackKind::Video,
+        v4::flat::MediaTrackType::Audio => TrackKind::Audio,
+        v4::flat::MediaTrackType::Subtitle => TrackKind::Subtitle,
+        typ => bail!("relayed ChangeTrack with unknown track type {typ:?}"),
+    } as usize)
+}
+
 fn flat_payload_type(pkt: &Packet) -> Option<v4::flat::Message> {
     if pkt.opcode != Opcode::Flatbuf {
         return None;
@@ -1964,7 +2514,8 @@ mod tests {
 
     #[test]
     fn each_expectation_field_marks_pending() {
-        let setters: [fn(&mut Expectations); 20] = [
+        let setters: [fn(&mut Expectations); 21] = [
+            |e| e.next_progress_floor = Some(2.0),
             |e| e.waiting_opcode = Some(Opcode::Version),
             |e| e.volume = Some((1.0, 0)),
             |e| e.play_update = Some(sample_play()),
@@ -2012,6 +2563,7 @@ mod tests {
             companion_served: Some(7),
             error: Some(v4::flat::ErrorKind::VolumeOutOfRange),
             progress_v4_at_least: Some(25.0),
+            next_progress_floor: Some(2.0),
             await_tracks: Some([1, 1, 3]),
             change_track: [Some(Some(0)), Some(Some(1)), Some(None)],
         };
@@ -2034,6 +2586,7 @@ mod tests {
             "CompanionResource(7)",
             "Error(VolumeOutOfRange)",
             "ProgressV4AtLeast(25)",
+            "NextProgressV4AtLeast(2)",
             "TracksAvailable(>= 1 video, 1 audio, 3 subtitle)",
             "ChangeTrack(Video, id=0)",
             "ChangeTrack(Audio, id=1)",

@@ -81,6 +81,8 @@ pub struct DecodedImage {
     pub id: ImageId,
     pub image: imagelib::RgbaImage,
     pub orientation: metadata::Orientation,
+    /// Source format short name (see `media_formats::Image::to_str`).
+    pub format: &'static str,
 }
 
 impl DecodedImage {
@@ -168,6 +170,8 @@ pub enum Event {
     DecodedAnimation {
         id: ImageId,
         frames: Vec<AnimationFrame>,
+        /// Source format short name (see `media_formats::Image::to_str`).
+        format: &'static str,
     },
 }
 
@@ -186,7 +190,11 @@ impl<'a> DecoderContext<'a> {
         }
     }
 
-    fn handle_animation<'b>(&self, decoder: impl AnimationDecoder<'b>) -> anyhow::Result<()> {
+    fn handle_animation<'b>(
+        &self,
+        decoder: impl AnimationDecoder<'b>,
+        format: &'static str,
+    ) -> anyhow::Result<()> {
         let mut slint_frames = Vec::new();
         for frame in decoder.into_frames() {
             let Ok(frame) = frame else {
@@ -205,12 +213,17 @@ impl<'a> DecoderContext<'a> {
         self.msg_tx.image(Event::DecodedAnimation {
             id: self.job_id,
             frames: slint_frames,
+            format,
         });
 
         Ok(())
     }
 
-    fn handle_still(&self, mut decoder: impl imagelib::ImageDecoder) -> anyhow::Result<()> {
+    fn handle_still(
+        &self,
+        mut decoder: impl imagelib::ImageDecoder,
+        format: &'static str,
+    ) -> anyhow::Result<()> {
         let orientation = decoder
             .orientation()
             .unwrap_or(metadata::Orientation::NoTransforms);
@@ -229,6 +242,7 @@ impl<'a> DecoderContext<'a> {
             id: self.job_id,
             image: decoded,
             orientation,
+            format,
         };
 
         match self.job_type {
@@ -256,6 +270,7 @@ impl<'a> DecoderContext<'a> {
             }
         };
 
+        let format_str = format.to_str();
         let img_data: std::io::Cursor<&[u8]> = std::io::Cursor::new(&job.image);
 
         macro_rules! non_fatal {
@@ -275,21 +290,21 @@ impl<'a> DecoderContext<'a> {
                 ImageFormat::Png => {
                     let decoder = non_fatal!(PngDecoder::new(img_data), "PNG");
                     if decoder.is_apng().unwrap_or(false) {
-                        self.handle_animation(non_fatal!(decoder.apng(), "APNG"))?;
+                        self.handle_animation(non_fatal!(decoder.apng(), "APNG"), "apng")?;
                     } else {
-                        self.handle_still(decoder)?;
+                        self.handle_still(decoder, format_str)?;
                     }
                 }
                 ImageFormat::Gif => {
                     let decoder = non_fatal!(GifDecoder::new(img_data), "GIF");
-                    self.handle_animation(decoder)?;
+                    self.handle_animation(decoder, format_str)?;
                 }
                 ImageFormat::WebP => {
                     let decoder = non_fatal!(WebPDecoder::new(img_data), "WebP");
                     if decoder.has_animation() {
-                        self.handle_animation(decoder)?;
+                        self.handle_animation(decoder, format_str)?;
                     } else {
-                        self.handle_still(decoder)?;
+                        self.handle_still(decoder, format_str)?;
                     }
                 }
                 _ => {
@@ -300,7 +315,7 @@ impl<'a> DecoderContext<'a> {
                             return Ok(());
                         }
                     };
-                    self.handle_still(decoder)?;
+                    self.handle_still(decoder, format_str)?;
                 }
             },
             media_formats::Image::JpegXl => {
@@ -312,7 +327,7 @@ impl<'a> DecoderContext<'a> {
                 // }
                 let decoder =
                     non_fatal!(jxl_oxide::integration::JxlDecoder::new(img_data), "JPEG XL");
-                self.handle_still(decoder)?;
+                self.handle_still(decoder, format_str)?;
             }
             media_formats::Image::Jpeg2000 => {
                 let decoder = non_fatal!(
@@ -326,13 +341,13 @@ impl<'a> DecoderContext<'a> {
                     ),
                     "JPEG 2000"
                 );
-                self.handle_still(decoder)?;
+                self.handle_still(decoder, format_str)?;
             }
             #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
             media_formats::Image::Heif => {
                 let reader = non_fatal!(ImageReader::new(img_data).with_guessed_format(), "HEIF");
                 let decoder = non_fatal!(reader.into_decoder(), "HEIF");
-                self.handle_still(decoder)?;
+                self.handle_still(decoder, format_str)?;
             }
         }
 

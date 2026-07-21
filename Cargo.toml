@@ -27,6 +27,7 @@ members = [
     "crates/fiatlux",
     "crates/inhibit-screensaver",
     "crates/get-type-string-derive",
+    "crates/fcastplaybin",
     "fuzz", "sdk/sender/examples/image-viewer", "crates/apple-fairplay",
 ]
 resolver = "2"
@@ -113,6 +114,7 @@ opt-level = 3
 [profile.dev.package."*"]
 debug = "line-tables-only"
 
-# Disable encoders
 [patch.crates-io]
+# Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
+rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }

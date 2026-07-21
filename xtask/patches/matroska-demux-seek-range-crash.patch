@@ -14,6 +14,6 @@ index 4211527..aa88bcb 100644
 +     * instead of asserting l->prev != NULL and aborting. */
 +    if (l->prev == NULL)
 +      range->start_time = start_time;
- 
+
      while (l->prev) {
        GList *prev = l->prev;

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use gst::prelude::*;
+use gst_base::prelude::BaseSinkExt;
 #[cfg(target_os = "android")]
 use slint::android::android_activity::WindowManagerFlags;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -45,11 +46,15 @@ mod logging;
 #[cfg(not(target_os = "android"))]
 mod mdns;
 mod media_formats;
+mod media_source;
 mod message;
 mod opengl;
 pub mod placebo;
 mod player;
+#[cfg(target_os = "linux")]
+mod pwaudiosink;
 mod raop;
+mod render_latency;
 mod user_agent;
 mod utils;
 pub mod video;
@@ -80,7 +85,6 @@ pub type MediaItemId = u64;
 
 pub use message::MessageSender;
 
-#[cfg(debug_assertions)]
 fn video_dbg_info(frame: &video::Frame) -> Option<UiVideoDbgInfo> {
     use slint::ToSharedString;
 
@@ -97,15 +101,15 @@ fn video_dbg_info(frame: &video::Frame) -> Option<UiVideoDbgInfo> {
 
     let hdr = match frame.mastering_display_info.as_ref() {
         Some(mdi) => {
-            let cll = frame.content_light_level.as_ref().map_or_else(
-                String::new,
-                |cll| {
+            let cll = frame
+                .content_light_level
+                .as_ref()
+                .map_or_else(String::new, |cll| {
                     format!(
                         ", CLL {}/{}",
                         cll.max_content_light_level, cll.max_frame_average_light_level
                     )
-                },
-            );
+                });
             format!(
                 "mastering {:.0}–{:.0} nits{cll}",
                 mdi.min_luminance_as_nits(),
@@ -322,14 +326,80 @@ pub struct Settings {
 struct VideoTick<S> {
     video_sink: S,
     payload_handle: Option<video::imp::VideoPayloadHandle>,
+    /// The sink element itself (both render paths report their measured render
+    /// cost back to it as `render-delay`, see [`render_latency`]).
+    sink_elem: Option<video::FSink>,
     cached_frame: Option<video::Frame>,
     /// Render on the next repaint even without a new payload (a standalone render was skipped
     /// or failed after the frame had already been taken off the payload slot).
     force_render: bool,
     /// A standalone EOS couldn't flush the shared GL placebo context (it isn't current outside
-    /// the rendering notifier); do it on the next repaint tick.
+    /// the rendering notifier), do it on the next repaint tick.
     pending_gl_flush: bool,
+    /// Feeds the real (post-`show_frame`) render cost back into the sink's
+    /// `render-delay` so the base sink accounts for it.
+    render_latency: render_latency::RenderLatencyTracker,
 }
+
+impl<S> VideoTick<S> {
+    /// Record one render's measured cost and, on a meaningful change, push the
+    /// new `render-delay` to the sink. Posting a LATENCY message makes the
+    /// pipeline redistribute latency so the new value takes effect (fcastplaybin
+    /// answers it with `recalculate_latency`).
+    fn note_render_cost(&mut self, cost: std::time::Duration) {
+        self.render_latency.record(cost);
+        let Some(delay) = self.render_latency.poll(std::time::Instant::now()) else {
+            return;
+        };
+        let Some(sink) = self.sink_elem.as_ref() else {
+            return;
+        };
+        sink.set_render_delay(gst::ClockTime::from_nseconds(delay.as_nanos() as u64));
+        let _ = sink.post_message(gst::message::Latency::builder().src(sink).build());
+    }
+}
+
+/// Cap the number of glibc malloc arenas.
+///
+/// GStreamer spawns many short-lived worker threads over a session (one set per
+/// load). glibc gives each thread its own arena and never returns an arena's
+/// freed pages to the OS, so the process RSS climbs to the sum of every arena's
+/// high-water mark even though the live heap stays flat (~120 MB). Capping the
+/// arena count pins steady-state RSS (measured: ~800 MB climbing -> ~370 MB flat
+/// over hundreds of loads). Skip it if the operator set MALLOC_ARENA_MAX so an
+/// explicit environment override always wins.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator() {
+    if std::env::var_os("MALLOC_ARENA_MAX").is_some() {
+        return;
+    }
+    // SAFETY: `mallopt` takes two ints and has no memory-safety
+    // preconditions. Called on the main thread before any GStreamer worker
+    // threads spawn.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator() {}
+
+/// Debug builds: let any process (gdb, eu-stack) attach and snapshot thread
+/// stacks. Yama's default `ptrace_scope=1` only allows ancestor tracers, which
+/// blocks the "attach to the live receiver when a test harness detects a
+/// wedge" workflow, exactly when the stacks matter most. No-op outside
+/// debug builds.
+#[cfg(all(debug_assertions, target_os = "linux"))]
+fn allow_ptrace_attach() {
+    // SAFETY: prctl(PR_SET_PTRACER, ...) only adjusts this process's Yama
+    // tracer allowance, no memory-safety preconditions.
+    unsafe {
+        libc::prctl(libc::PR_SET_PTRACER, libc::PR_SET_PTRACER_ANY, 0, 0, 0);
+    }
+}
+
+#[cfg(not(all(debug_assertions, target_os = "linux")))]
+fn allow_ptrace_attach() {}
 
 /// Run the main app.
 ///
@@ -341,6 +411,9 @@ pub fn run<S: VideoSink + 'static>(
     video_sink: S,
 ) -> Result<()> {
     let start = std::time::Instant::now();
+
+    tune_allocator();
+    allow_ptrace_attach();
 
     logging::init(cli_args.loglevel);
 
@@ -395,9 +468,11 @@ pub fn run<S: VideoSink + 'static>(
         let tick = Rc::new(RefCell::new(VideoTick {
             video_sink,
             payload_handle: None,
+            sink_elem: None,
             cached_frame: None,
             force_render: false,
             pending_gl_flush: false,
+            render_latency: render_latency::RenderLatencyTracker::new(),
         }));
 
         let (renderer_chan_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
@@ -575,6 +650,7 @@ pub fn run<S: VideoSink + 'static>(
                                 video::imp::DrmFormats(Arc::new(drm_formats.clone())),
                             );
                             t.payload_handle = Some(new_sink.property("payload-handle"));
+                            t.sink_elem = Some(new_sink.clone());
                             sink = Some(new_sink);
                         }
                         return;
@@ -635,11 +711,11 @@ pub fn run<S: VideoSink + 'static>(
                     }
 
                     let force_render = std::mem::take(&mut t.force_render);
+                    let mut render_cost = None;
                     if let Some(frame) = t.cached_frame.as_mut() {
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
 
-                        #[cfg(debug_assertions)]
                         if bridge.get_show_inspector() && (new_frame || force_render) {
                             match video_dbg_info(frame) {
                                 Some(info) => {
@@ -657,11 +733,36 @@ pub fn run<S: VideoSink + 'static>(
                             && let Some(placebo) = pl_context.as_mut()
                             && let Some(renderer) = renderer.as_ref()
                         {
+                            let start = std::time::Instant::now();
                             if let Err(err) =
                                 t.video_sink.render(placebo, &renderer.gl, frame, prev_size)
                             {
                                 error!(?err, "video sink render failed");
+                            } else {
+                                render_cost = Some(start.elapsed());
                             }
+                        }
+                    }
+                    // After the `cached_frame` borrow ends: feed the measured
+                    // cost back into the sink's render-delay (see `render_latency`).
+                    if let Some(cost) = render_cost {
+                        t.note_render_cost(cost);
+
+                        if bridge.get_show_inspector() {
+                            use slint::ToSharedString;
+                            let (p95, applied) = t.render_latency.debug_snapshot();
+                            let p95 = p95.map_or_else(
+                                || "warming up".to_owned(),
+                                |d| format!("{:.2} ms p95", d.as_secs_f64() * 1000.0),
+                            );
+                            bridge.set_render_latency_info(
+                                format!(
+                                    "render: {:.2} ms, {p95}, delay {:.2} ms",
+                                    cost.as_secs_f64() * 1000.0,
+                                    applied.as_secs_f64() * 1000.0,
+                                )
+                                .to_shared_string(),
+                            );
                         }
                     }
                 }
@@ -703,7 +804,7 @@ pub fn run<S: VideoSink + 'static>(
         });
 
         // One invocation per decoded frame (proxied from the GStreamer streaming thread).
-        // Normally we just schedule a repaint and let `BeforeRendering` take the frame; while
+        // Normally we just schedule a repaint and let `BeforeRendering` take the frame, while
         // the sink presents above the (redraw-parked) GUI, render it directly instead.
         ui.global::<Bridge>().on_new_video_frame({
             let tick = tick.clone();
@@ -716,7 +817,7 @@ pub fn run<S: VideoSink + 'static>(
                 // Self-clocked means winit's redraw loop may be parked, and with it Slint's
                 // `changed` callbacks (they only run as part of the render/update cycle), so
                 // obstruction changes must be *polled*. Reading the property forces a fresh
-                // evaluation; restacking below re-exposes the GUI and resumes its redraws.
+                // evaluation, restacking below re-exposes the GUI and resumes its redraws.
                 if t.video_sink.self_clocked() && bridge.get_video_obstructed() {
                     t.video_sink.set_video_obstructed(true, true);
                 }
@@ -745,11 +846,15 @@ pub fn run<S: VideoSink + 'static>(
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
                         let size = ui.window().size();
-                        match t
+                        let start = std::time::Instant::now();
+                        let render_result = t
                             .video_sink
-                            .render_standalone(frame, (size.width, size.height))
-                        {
-                            Ok(true) => {}
+                            .render_standalone(frame, (size.width, size.height));
+                        let render_cost = start.elapsed();
+                        match render_result {
+                            Ok(true) => {
+                                t.note_render_cost(render_cost);
+                            }
                             // Raced a restack (or failed): the payload slot is already empty,
                             // so flag a forced render and fall back to the repaint path.
                             Ok(false) => {
@@ -767,7 +872,6 @@ pub fn run<S: VideoSink + 'static>(
             }
         });
 
-        #[cfg(debug_assertions)]
         ui.global::<Bridge>().on_inspector_toggled({
             let ui_weak = ui.as_weak();
             let tick = tick.clone();

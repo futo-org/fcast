@@ -1,0 +1,46 @@
+--- a/subprojects/gst-plugins-base/gst/playback/gstsubtitleoverlay.c
++++ b/subprojects/gst-plugins-base/gst/playback/gstsubtitleoverlay.c
+@@ -2150,6 +2150,20 @@
+ }
+ 
+ static void
++gst_subtitle_overlay_subtitle_sink_unlink_deferred (GstElement * element,
++    gpointer user_data)
++{
++  GstSubtitleOverlay *self = GST_SUBTITLE_OVERLAY (element);
++
++  GST_SUBTITLE_OVERLAY_LOCK (self);
++  self->subtitle_error = FALSE;
++
++  block_subtitle (self);
++  block_video (self);
++  GST_SUBTITLE_OVERLAY_UNLOCK (self);
++}
++
++static void
+ gst_subtitle_overlay_subtitle_sink_unlink (GstPad * pad, GstObject * parent)
+ {
+   GstSubtitleOverlay *self = GST_SUBTITLE_OVERLAY (parent);
+@@ -2161,12 +2175,16 @@
+   GST_DEBUG_OBJECT (pad, "Pad unlinking");
+   gst_caps_replace (&self->subcaps, NULL);
+ 
+-  GST_SUBTITLE_OVERLAY_LOCK (self);
+-  self->subtitle_error = FALSE;
+-
+-  block_subtitle (self);
+-  block_video (self);
+-  GST_SUBTITLE_OVERLAY_UNLOCK (self);
++  /* Core calls unlink functions with BOTH pads' object locks held. Taking
++   * the overlay lock here inverts against _pad_blocked_cb, which holds the
++   * overlay lock across pad (re)links that need those same object locks —
++   * observed as a permanent deadlock when the application unlinks the
++   * subtitle sink while a reconfiguration is in flight (the unlinking
++   * thread parks in this handler forever). Defer the locked work to a
++   * clean thread; block_subtitle/block_video only arm the asynchronous
++   * reconfiguration, which tolerates the short delay. */
++  gst_element_call_async (GST_ELEMENT_CAST (self),
++      gst_subtitle_overlay_subtitle_sink_unlink_deferred, NULL, NULL);
+ }
+ 
+ static gboolean

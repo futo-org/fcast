@@ -1,0 +1,189 @@
+diff --git a/subprojects/gstreamer/gst/gstevent.c b/subprojects/gstreamer/gst/gstevent.c
+index c9f001fceb..8b439dcce6 100644
+--- a/subprojects/gstreamer/gst/gstevent.c
++++ b/subprojects/gstreamer/gst/gstevent.c
+@@ -89,6 +89,21 @@ typedef struct
+ 
+   GstStructure *structure;
+   gint64 running_time_offset;
++
++  /* Inline payload for event types that are created without a
++   * #GstStructure to avoid the structure allocations. Only valid while
++   * @structure is %NULL; once a structure has been materialized it is
++   * the only authoritative representation. */
++  union
++  {
++    struct
++    {
++      GstQOSType type;
++      gdouble proportion;
++      GstClockTimeDiff diff;
++      GstClockTime timestamp;
++    } qos;
++  } payload;
+ } GstEventImpl;
+ 
+ #define GST_EVENT_STRUCTURE(e)  (((GstEventImpl *)(e))->structure)
+@@ -289,6 +304,7 @@ _gst_event_copy (GstEvent * event)
+ 
+   ((GstEventImpl *) copy)->running_time_offset =
+       ((GstEventImpl *) event)->running_time_offset;
++  copy->payload = ((GstEventImpl *) event)->payload;
+ 
+   return GST_EVENT_CAST (copy);
+ }
+@@ -370,12 +386,52 @@ had_parent:
+  *
+  * MT safe.
+  */
++/* Build and attach the structure for event types that carry their
++ * payload inline. May be called on a non-writable event from multiple
++ * threads; the first materialized structure wins. */
++static GstStructure *
++gst_event_materialize_structure (GstEvent * event)
++{
++  GstEventImpl *impl = (GstEventImpl *) event;
++  GstStructure *structure;
++
++  switch (GST_EVENT_TYPE (event)) {
++    case GST_EVENT_QOS:
++      structure = gst_structure_new_static_str ("GstEventQOS",
++          "type", GST_TYPE_QOS_TYPE, impl->payload.qos.type,
++          "proportion", G_TYPE_DOUBLE, impl->payload.qos.proportion,
++          "diff", G_TYPE_INT64, impl->payload.qos.diff,
++          "timestamp", G_TYPE_UINT64, impl->payload.qos.timestamp, NULL);
++      break;
++    default:
++      return NULL;
++  }
++
++  gst_structure_set_parent_refcount (structure, &event->mini_object.refcount);
++
++  if (!g_atomic_pointer_compare_and_exchange (&impl->structure, NULL,
++          structure)) {
++    /* lost the race, another thread attached a structure first */
++    gst_structure_set_parent_refcount (structure, NULL);
++    gst_structure_free (structure);
++    structure = g_atomic_pointer_get (&impl->structure);
++  }
++
++  return structure;
++}
++
+ const GstStructure *
+ gst_event_get_structure (GstEvent * event)
+ {
++  GstStructure *structure;
++
+   g_return_val_if_fail (GST_IS_EVENT (event), NULL);
+ 
+-  return GST_EVENT_STRUCTURE (event);
++  structure = g_atomic_pointer_get (&((GstEventImpl *) event)->structure);
++  if (G_UNLIKELY (structure == NULL))
++    structure = gst_event_materialize_structure (event);
++
++  return structure;
+ }
+ 
+ /**
+@@ -402,6 +458,9 @@ gst_event_writable_structure (GstEvent * event)
+ 
+   structure = GST_EVENT_STRUCTURE (event);
+ 
++  if (structure == NULL)
++    structure = gst_event_materialize_structure (event);
++
+   if (structure == NULL) {
+     structure =
+         gst_structure_new_static_str_empty (gst_event_type_get_name
+@@ -425,12 +484,15 @@ gst_event_writable_structure (GstEvent * event)
+ gboolean
+ gst_event_has_name (GstEvent * event, const gchar * name)
+ {
++  const GstStructure *structure;
++
+   g_return_val_if_fail (GST_IS_EVENT (event), FALSE);
+ 
+-  if (GST_EVENT_STRUCTURE (event) == NULL)
++  structure = gst_event_get_structure (event);
++  if (structure == NULL)
+     return FALSE;
+ 
+-  return gst_structure_has_name (GST_EVENT_STRUCTURE (event), name);
++  return gst_structure_has_name (structure, name);
+ }
+ 
+ /**
+@@ -1224,8 +1286,7 @@ GstEvent *
+ gst_event_new_qos (GstQOSType type, gdouble proportion,
+     GstClockTimeDiff diff, GstClockTime timestamp)
+ {
+-  GstEvent *event;
+-  GstStructure *structure;
++  GstEventImpl *event;
+ 
+   /* diff must be positive or timestamp + diff must be positive */
+   g_return_val_if_fail (diff >= 0 || -diff <= timestamp, NULL);
+@@ -1235,13 +1296,15 @@ gst_event_new_qos (GstQOSType type, gdouble proportion,
+       ", timestamp %" GST_TIME_FORMAT, type, proportion,
+       diff, GST_TIME_ARGS (timestamp));
+ 
+-  structure = gst_structure_new_static_str ("GstEventQOS",
+-      "type", GST_TYPE_QOS_TYPE, type,
+-      "proportion", G_TYPE_DOUBLE, proportion,
+-      "diff", G_TYPE_INT64, diff, "timestamp", G_TYPE_UINT64, timestamp, NULL);
+-  event = gst_event_new_custom (GST_EVENT_QOS, structure);
++  /* the payload is carried inline, the structure is only materialized
++   * on demand in gst_event_get_structure() */
++  event = (GstEventImpl *) gst_event_new_custom (GST_EVENT_QOS, NULL);
++  event->payload.qos.type = type;
++  event->payload.qos.proportion = proportion;
++  event->payload.qos.diff = diff;
++  event->payload.qos.timestamp = timestamp;
+ 
+-  return event;
++  return GST_EVENT_CAST (event);
+ }
+ 
+ /**
+@@ -1261,12 +1324,39 @@ void
+ gst_event_parse_qos (GstEvent * event, GstQOSType * type,
+     gdouble * proportion, GstClockTimeDiff * diff, GstClockTime * timestamp)
+ {
++  GstEventImpl *impl = (GstEventImpl *) event;
+   const GstStructure *structure;
+ 
+   g_return_if_fail (GST_IS_EVENT (event));
+   g_return_if_fail (GST_EVENT_TYPE (event) == GST_EVENT_QOS);
+ 
+-  structure = GST_EVENT_STRUCTURE (event);
++  structure = g_atomic_pointer_get (&impl->structure);
++  if (G_LIKELY (structure == NULL)) {
++    /* the payload is immutable while no structure has been materialized */
++    if (type)
++      *type = impl->payload.qos.type;
++    if (proportion)
++      *proportion = impl->payload.qos.proportion;
++    if (diff)
++      *diff = impl->payload.qos.diff;
++    if (timestamp) {
++      gint64 offset = gst_event_get_running_time_offset (event);
++      GstClockTimeDiff diff_ = impl->payload.qos.diff;
++
++      *timestamp = impl->payload.qos.timestamp;
++      /* Catch underflows */
++      if (*timestamp > -offset)
++        *timestamp += offset;
++      else
++        *timestamp = 0;
++
++      /* Make sure that timestamp + diff is always >= 0. Because
++       * of the running time offset this might not be true */
++      if (diff_ < 0 && *timestamp < -diff_)
++        *timestamp = (GstClockTime) - diff_;
++    }
++    return;
++  }
+   if (type)
+     *type = (GstQOSType)
+         g_value_get_enum (gst_structure_get_value (structure, "type"));
