@@ -123,6 +123,7 @@ pub enum Protocol {
     Rtsp,
     Srt,
     Whep,
+    Sabr,
 }
 
 impl Protocol {
@@ -135,6 +136,7 @@ impl Protocol {
             Protocol::Rtsp => "rtsp",
             Protocol::Srt => "srt",
             Protocol::Whep => "whep",
+            Protocol::Sabr => "sabr",
         }
     }
 }

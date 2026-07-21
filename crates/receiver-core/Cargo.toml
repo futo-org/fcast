@@ -9,6 +9,7 @@ tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 fcastplaybin = { path = "../fcastplaybin" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
+sabrump = { path = "../sabrump", features = ["serde"] }
 gethostname = "1"
 anyhow.workspace = true
 futures.workspace = true

@@ -1252,6 +1252,7 @@ impl Application {
             || container == "application/dash+xml"
             || container == "application/vnd.apple.mpegurl"
             || container == "application/x-fwebrtc"
+            || container == "application/x-sabr-ump"
         {
             UiPlayerVariant::Audio
         } else {

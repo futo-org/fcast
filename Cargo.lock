@@ -7894,6 +7894,7 @@ dependencies = [
  "rtp-types",
  "rtsp-types",
  "rustls-pki-types",
+ "sabrump",
  "sdp-types",
  "self_cell",
  "serde",
@@ -8331,6 +8332,25 @@ dependencies = [
  "unicode-ccc",
  "unicode-properties",
  "unicode-script",
+]
+
+[[package]]
+name = "sabrump"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures",
+ "log",
+ "parking_lot",
+ "prost",
+ "prost-build",
+ "protox",
+ "rand 0.10.1",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

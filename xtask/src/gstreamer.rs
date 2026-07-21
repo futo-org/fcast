@@ -346,6 +346,15 @@ const DISABLE_COMMON: &[(Plugins, &str)] = &[
     (Plugins::Bad, "shm"),
     (Plugins::Bad, "librfb"),
     (Plugins::Bad, "unixfd"),
+    // TCP: tcpclient/server src+sink, multifdsink, multisocketsink, socketsrc —
+    // all serve-out / socket-IPC elements a playback receiver never instantiates.
+    (Plugins::Base, "tcp"),
+    // GIO IO: giosrc/giosink/giostream*. File IO goes through filesrc and
+    // network IO through souphttpsrc / the receiver's own httpsrc, so no cast
+    // URI scheme needs a GIO source. Disables only the gst `gio` element plugin;
+    // the GLib GIO library + glib-networking TLS module (see gstreamer.rs) are
+    // unaffected.
+    (Plugins::Base, "gio"),
     // v4l2src/v4l2sink/v4l2radio: pure capture/output — a receiver never
     // captures. Bad's v4l2codecs (v4l2sl*dec) is KEPT: it's the stateless
     // hardware-decode path on SoCs like the Raspberry Pi.
@@ -2112,19 +2121,26 @@ fn receiver_test(
             rustflags.push(format!("-Clink-arg={a}"));
         }
 
-        // A config file (vs CARGO_TARGET_*_RUSTFLAGS) sidesteps the env
-        // string's space/length limits — the link line is ~100 abspaths — and
-        // renders each flag as a separate TOML array element, so paths with
-        // spaces survive.
-        let triple = profile
-            .target
-            .as_deref()
-            .expect("test() always sets a target");
-        let cfg_path = build.build_dir.join("xtask-cargo-test-config.toml");
-        std::fs::write(&cfg_path, cargo_rustflags_config(triple, &rustflags))
-            .context("writing cargo test config")?;
+        // Feed the link line through CARGO_ENCODED_RUSTFLAGS, not a
+        // `[target].rustflags` config file. Cargo picks ONE rustflags source and
+        // env wins over config, so with_receiver_env's own RUSTFLAGS (frame
+        // pointers) would silently shadow the config file and drop every link
+        // arg, leaving gst_init_static_plugins undefined at link. This env var
+        // has the highest precedence, and its \x1f separator keeps abspaths with
+        // spaces intact where a space-split RUSTFLAGS would not. The ambient
+        // RUSTFLAGS is merged in so the frame-pointer flag survives. The forced
+        // --target scopes all of this to the test binary and its target-side
+        // deps, never host build scripts or proc-macros (which must NOT link the
+        // gstreamer archives).
+        let mut encoded: Vec<String> = std::env::var("RUSTFLAGS")
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        encoded.extend(rustflags);
+        let _rf = sh.push_env("CARGO_ENCODED_RUSTFLAGS", encoded.join("\x1f"));
 
-        let mut cargo: Vec<String> = vec!["test".into(), "--config".into(), cfg_path.to_string()];
+        let mut cargo: Vec<String> = vec!["test".into()];
         cargo.extend(receiver_cargo_flags(profile, "receiver-core"));
         // Trailing args go to the libtest harness (filters, --nocapture,
         // --list, --test-threads), matching plain `cargo test -- …`.
@@ -2136,20 +2152,6 @@ fn receiver_test(
         cmd!(sh, "cargo {cargo...}").run()?;
         Ok(())
     })
-}
-
-/// Render a cargo config body pinning `[target.<triple>].rustflags`. The triple
-/// key is quoted (harmless for hyphenated triples, and correct should one ever
-/// carry a `.`), and each flag is TOML-escaped for Windows' backslash paths.
-fn cargo_rustflags_config(triple: &str, flags: &[String]) -> String {
-    let escaped: Vec<String> = flags
-        .iter()
-        .map(|f| format!("\"{}\"", f.replace('\\', "\\\\").replace('"', "\\\"")))
-        .collect();
-    format!(
-        "[target.\"{triple}\"]\nrustflags = [{}]\n",
-        escaped.join(", ")
-    )
 }
 
 /// The host target triple, parsed from `rustc -vV` (the `host:` line). Used to

@@ -6,6 +6,7 @@ members = [
     "senders/terminal",
     "crates/fcast-protocol",
     "crates/mirroring-core",
+    "crates/sabrump",
     "senders/desktop",
     "senders/android",
     "tools/fast",

@@ -60,6 +60,7 @@ pub fn init_and_load_plugins() {
     #[cfg(target_os = "linux")]
     crate::pwaudiosink::plugin_init().unwrap();
     crate::fcompsrc::plugin_init().unwrap();
+    crate::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
     crate::airplay::source::plugin_init().unwrap();
     crate::fwebrtcsrc::plugin_init().unwrap();
@@ -247,6 +248,7 @@ pub fn find_formats() -> (
                 | "rtspst" | "rtspsh" => Protocol::Rtsp,
                 "srt" => Protocol::Srt,
                 "fcastwhep" => Protocol::Whep,
+                "sabrump" => Protocol::Sabr,
                 _ => continue,
             };
             protocols.insert(protocol);
