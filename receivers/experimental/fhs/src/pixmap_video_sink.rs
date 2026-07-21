@@ -183,6 +183,21 @@ impl FhsPixmapSink {
         }
     }
 
+    pub fn clear(&mut self) {
+        for held in self.held.drain(..) {
+            if let Some(pixmap_id) = held.pixmap_id {
+                unsafe {
+                    fl_discard_reply(self.client, fl_destroy_pixmap(self.client, pixmap_id).value);
+                }
+            }
+        }
+        for (_, entry) in self.pixmap_cache.drain() {
+            unsafe {
+                fl_discard_reply(self.client, fl_destroy_pixmap(self.client, entry.pixmap_id).value);
+            }
+        }
+    }
+
     fn evict_pixmaps(&mut self) {
         let current = self.pixmap_cache_gen;
         let client = self.client;

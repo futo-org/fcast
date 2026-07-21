@@ -106,6 +106,7 @@ struct ImageAnimation {
 
 const PLACEHOLDER_GRACE: Duration = Duration::from_millis(300);
 const TITLE_SHOW_DURATION: Duration = Duration::from_millis(3500);
+const IDLE_GRACE: Duration = Duration::from_secs(1);
 
 struct PlaceholderState {
     size: (u32, u32),
@@ -126,6 +127,47 @@ struct PlaybackState {
     elapsed_s: f64,
     duration_s: f64,
     paused: bool,
+}
+
+struct IdleTracker {
+    cmd_prev: Option<bool>,
+    last_sent: Instant,
+    stopped_at: Option<Instant>,
+}
+
+impl IdleTracker {
+    fn new() -> Self {
+        Self {
+            cmd_prev: None,
+            last_sent: Instant::now(),
+            stopped_at: None,
+        }
+    }
+
+    fn update(&mut self, client: *mut fl_Client, media_active: bool, paused: bool) {
+        let now = Instant::now();
+        let idle_cmd = if !media_active {
+            let since = *self.stopped_at.get_or_insert(now);
+            if now.duration_since(since) >= IDLE_GRACE {
+                Some(true)
+            } else {
+                None
+            }
+        } else {
+            self.stopped_at = None;
+            if paused { None } else { Some(false) }
+        };
+
+        let heartbeat =
+            idle_cmd == Some(false) && now.duration_since(self.last_sent) >= Duration::from_secs(1);
+        if idle_cmd != self.cmd_prev || heartbeat {
+            if let Some(idle) = idle_cmd {
+                unsafe { fl_set_idle(client, idle) };
+            }
+            self.cmd_prev = idle_cmd;
+            self.last_sent = now;
+        }
+    }
 }
 
 fn show_audio_placeholder(
@@ -224,8 +266,11 @@ fn main() -> Result<()> {
     let mut cached_frame: Option<Frame> = None;
     let mut animation: Option<ImageAnimation> = None;
     let mut placeholder: Option<PlaceholderState> = None;
+    let mut image_shown = false;
     let mut title_state: Option<TitleState> = None;
     let mut playback_state = PlaybackState::default();
+    let mut idle_tracker = IdleTracker::new();
+    let mut prev_media_active = false;
     let mut damaged: Vec<fl_protocol_SurfaceId> = Vec::new();
     handle.set_window_resolution(size.0, size.1);
 
@@ -320,6 +365,7 @@ fn main() -> Result<()> {
                 have_new = true;
                 animation = None;
                 placeholder = None;
+                image_shown = false;
             }
             Some(None) => cached_frame = None,
         }
@@ -346,6 +392,7 @@ fn main() -> Result<()> {
             }) => {
                 animation = None;
                 placeholder = None;
+                image_shown = true;
                 if let Err(err) = sink.show_image(&rgba, width, height) {
                     error!(?err, "image show failed");
                 } else {
@@ -355,6 +402,7 @@ fn main() -> Result<()> {
             Some(ImageCommand::SetAnimation { frames }) => {
                 animation = None;
                 placeholder = None;
+                image_shown = true;
                 if let Some(first) = frames.first() {
                     if let Err(err) = sink.show_image(&first.rgba, first.width, first.height) {
                         error!(?err, "image show failed");
@@ -384,6 +432,7 @@ fn main() -> Result<()> {
             Some(ImageCommand::Clear) => {
                 animation = None;
                 placeholder = None;
+                image_shown = false;
             }
             None => {}
         }
@@ -411,6 +460,19 @@ fn main() -> Result<()> {
             }
             anim.next_deadline = Instant::now() + frame_delay(frame.delay_ms);
         }
+
+        let media_active = cached_frame.is_some()
+            || animation.is_some()
+            || placeholder.is_some()
+            || image_shown;
+        if prev_media_active && !media_active {
+            sink.clear();
+            overlay.set_subtitle_overlays(sink.gl(), &[]);
+            title_state = None;
+            playback_state = PlaybackState::default();
+            damaged.push(fl.video_surface_id);
+        }
+        prev_media_active = media_active;
 
         match handle.take_title_update() {
             Some(TitleCommand::Show {
@@ -477,6 +539,8 @@ fn main() -> Result<()> {
         if !damaged.is_empty() {
             mark_damaged(fl.client.client, &damaged);
         }
+
+        idle_tracker.update(fl.client.client, media_active, playback_state.paused);
     }
 
     handle.set_gui_visible(false);
