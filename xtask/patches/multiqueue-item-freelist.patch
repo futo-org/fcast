@@ -1,0 +1,66 @@
+diff --git a/subprojects/gstreamer/plugins/elements/gstmultiqueue.c b/subprojects/gstreamer/plugins/elements/gstmultiqueue.c
+index a2f6272e24..08d49d9a9b 100644
+--- a/subprojects/gstreamer/plugins/elements/gstmultiqueue.c
++++ b/subprojects/gstreamer/plugins/elements/gstmultiqueue.c
+@@ -2111,12 +2111,42 @@ gst_multi_queue_item_steal_object (GstMultiQueueItem * item)
+   return res;
+ }
+ 
++/* Recycle pool for GstMultiQueueItem to avoid a malloc/free per queued
++ * object. Shared by all multiqueue instances and never freed; capped so
++ * at most ITEM_POOL_MAX_SIZE items are retained when idle. */
++#define ITEM_POOL_MAX_SIZE 256
++
++static GstAtomicQueue *item_pool;
++
++static GstMultiQueueItem *
++gst_multi_queue_item_alloc (void)
++{
++  static gsize init = 0;
++  GstMultiQueueItem *item;
++
++  if (g_once_init_enter (&init)) {
++    item_pool = gst_atomic_queue_new (16);
++    g_once_init_leave (&init, 1);
++  }
++
++  item = gst_atomic_queue_pop (item_pool);
++  if (item == NULL)
++    item = g_new (GstMultiQueueItem, 1);
++
++  return item;
++}
++
+ static void
+ gst_multi_queue_item_destroy (GstMultiQueueItem * item)
+ {
+   if (!item->is_query && item->object)
+     gst_mini_object_unref (item->object);
+-  g_free (item);
++  /* the pool always exists here, items are only created through
++   * gst_multi_queue_item_alloc() */
++  if (gst_atomic_queue_length (item_pool) < ITEM_POOL_MAX_SIZE)
++    gst_atomic_queue_push (item_pool, item);
++  else
++    g_free (item);
+ }
+ 
+ /* takes ownership of passed mini object! */
+@@ -2125,7 +2155,7 @@ gst_multi_queue_buffer_item_new (GstMiniObject * object, guint32 curid)
+ {
+   GstMultiQueueItem *item;
+ 
+-  item = g_new (GstMultiQueueItem, 1);
++  item = gst_multi_queue_item_alloc ();
+   item->object = object;
+   item->destroy = (GDestroyNotify) gst_multi_queue_item_destroy;
+   item->posid = curid;
+@@ -2144,7 +2174,7 @@ gst_multi_queue_mo_item_new (GstMiniObject * object, guint32 curid)
+ {
+   GstMultiQueueItem *item;
+ 
+-  item = g_new (GstMultiQueueItem, 1);
++  item = gst_multi_queue_item_alloc ();
+   item->object = object;
+   item->destroy = (GDestroyNotify) gst_multi_queue_item_destroy;
+   item->posid = curid;

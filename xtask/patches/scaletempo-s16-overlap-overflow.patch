@@ -1,0 +1,18 @@
+diff --git a/subprojects/gst-plugins-good/gst/audiofx/gstscaletempo.c b/subprojects/gst-plugins-good/gst/audiofx/gstscaletempo.c
+index d910394..b044606 100644
+--- a/subprojects/gst-plugins-good/gst/audiofx/gstscaletempo.c
++++ b/subprojects/gst-plugins-good/gst/audiofx/gstscaletempo.c
+@@ -260,7 +260,12 @@ output_overlap_s16 (GstScaletempo * st, gpointer buf_out, guint bytes_off)
+   gint16 *pin = (gint16 *) (st->buf_queue + bytes_off);
+   gint i;
+   for (i = 0; i < st->samples_overlap; i++) {
+-    *pout++ = *po - ((*pb++ * (*po - *pin++)) >> 16);
++    /* Do the blend multiply in 64-bit: `*pb` reaches ~2^16 and the sample
++     * difference reaches ~2^16, so the product can exceed INT32_MAX and
++     * overflow gint32 — worst at a cold start, where the saved overlap `*po`
++     * is 0 and `*pin` is loud, producing a garbage sample (an audible click
++     * at the first output when scaletempo engages at a non-1.0 rate). */
++    *pout++ = *po - (gint16) (((gint64) *pb++ * (*po - *pin++)) >> 16);
+     po++;
+   }
+ }

@@ -38,11 +38,38 @@ export struct GraphDump {
     texts: [UiGraphText],
 }
 
+// One row of the track table (see `Application::inspector_track_row`).
+export struct UiInspectorTrack {
+    kind: string,
+    codec: string,
+    detail: string,
+    language: string,
+    selected: bool,
+}
+
 export global InspectorState {
     in-out property <bool> have-graph: false;
     in-out property <GraphDump> graph;
     // True while a fresh graph dump is being laid out by graphviz.
     in-out property <bool> dumping: false;
+
+    // Per-tick player data (see `Application::inspector_tick`).
+    in-out property <[UiInspectorTrack]> tracks;
+    in-out property <string> container;
+    in-out property <[string]> sources-lines;
+    in-out property <[string]> internals-lines;
+    in-out property <[string]> sink-lines;
+    in-out property <string> image-info;
+
+    // Bitrate sparklines for the selected video/audio streams. The receiver
+    // renders each history into an SVG polyline over a fixed 300x100 viewbox
+    // (newest sample at the right edge), so the UI just draws the strings.
+    in-out property <bool> have-bitrate: false;
+    in-out property <string> video-bitrate-path;
+    in-out property <string> audio-bitrate-path;
+    in-out property <string> video-bitrate-label;
+    in-out property <string> audio-bitrate-label;
+    in-out property <string> bitrate-peak-label;
 }
 
 component InfoRow inherits HorizontalLayout {
@@ -76,7 +103,6 @@ component VideoInfoCard inherits Rectangle {
     min-width: 240px;
     max-width: 560px;
     background: #1c1c1eee;
-    border-radius: 8px;
     border-width: 1px;
     border-color: #ffffff20;
 
@@ -160,6 +186,208 @@ component VideoInfoCard inherits Rectangle {
         }
 
         Rectangle { }
+    }
+}
+
+component BitrateCard inherits Rectangle {
+    min-width: 240px;
+    max-width: 560px;
+    background: #1c1c1eee;
+    border-width: 1px;
+    border-color: #ffffff20;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 5px;
+
+        Text {
+            text: "Bitrate";
+            color: white;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        Rectangle {
+            height: 100px;
+            background: #00000066;
+            clip: true;
+
+            Path {
+                width: 100%;
+                height: 100%;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 300;
+                viewbox-height: 100;
+                fit: fill;
+                commands: InspectorState.video-bitrate-path;
+                fill: transparent;
+                stroke: #4da3ff;
+                stroke-width: 1.5px;
+            }
+
+            Path {
+                width: 100%;
+                height: 100%;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 300;
+                viewbox-height: 100;
+                fit: fill;
+                commands: InspectorState.audio-bitrate-path;
+                fill: transparent;
+                stroke: #6ee7a0;
+                stroke-width: 1.5px;
+            }
+
+            Text {
+                x: 4px;
+                y: 2px;
+                text: InspectorState.bitrate-peak-label;
+                color: #8a8a8a;
+                font-size: 10px;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+
+            Text {
+                text: InspectorState.video-bitrate-label;
+                color: #4da3ff;
+                font-size: 12px;
+            }
+
+            Text {
+                text: InspectorState.audio-bitrate-label;
+                color: #6ee7a0;
+                font-size: 12px;
+            }
+
+            Rectangle { }
+        }
+    }
+}
+
+// Shared chrome for the inspector's data cards.
+component Card inherits Rectangle {
+    in property <string> title;
+
+    min-width: 240px;
+    max-width: 560px;
+    background: #1c1c1eee;
+    border-width: 1px;
+    border-color: #ffffff20;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 5px;
+
+        Text {
+            text: root.title;
+            color: white;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        @children
+    }
+}
+
+component TracksCard inherits Card {
+    title: "Tracks";
+
+    if InspectorState.container != "": InfoRow {
+        label: "Container";
+        value: InspectorState.container;
+    }
+
+    for t in InspectorState.tracks: HorizontalLayout {
+        spacing: 6px;
+
+        Text {
+            text: t.selected ? "●" : "○";
+            color: t.selected ? #6ee7a0 : #666666;
+            font-size: 12px;
+        }
+
+        Text {
+            width: 42px;
+            text: t.kind;
+            color: #8a8a8a;
+            font-size: 12px;
+        }
+
+        Text {
+            text: t.codec;
+            color: white;
+            font-size: 12px;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: t.detail;
+            color: #b0b0b0;
+            font-size: 12px;
+        }
+
+        Text {
+            text: t.language;
+            color: #8a8a8a;
+            font-size: 12px;
+        }
+    }
+}
+
+component SourcesCard inherits Card {
+    title: "Sources";
+
+    for line in InspectorState.sources-lines: Text {
+        text: line;
+        color: white;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+component SinksCard inherits Card {
+    title: "Sinks";
+
+    if Bridge.render-latency-info != "": Text {
+        text: Bridge.render-latency-info;
+        color: white;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+
+    for line in InspectorState.sink-lines: Text {
+        text: line;
+        color: white;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+component InternalsCard inherits Card {
+    title: "Player internals";
+
+    for line in InspectorState.internals-lines: Text {
+        text: line;
+        color: white;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+component ImageInfoCard inherits Card {
+    title: "Image";
+
+    Text {
+        text: InspectorState.image-info;
+        color: white;
+        font-size: 12px;
+        wrap: word-wrap;
     }
 }
 
@@ -253,6 +481,16 @@ export component Inspector inherits Rectangle {
         Bridge.app-state == AppState.Playing
         && Bridge.player-variant == UiPlayerVariant.Video;
 
+    // The component only exists while the inspector is shown, so this samples
+    // exactly while it is open.
+    Timer {
+        interval: 500ms;
+        running: true;
+        triggered => {
+            Bridge.inspector-tick();
+        }
+    }
+
     VerticalLayout {
         padding: 12px;
         spacing: 10px;
@@ -295,7 +533,33 @@ export component Inspector inherits Rectangle {
         HorizontalLayout {
             spacing: 10px;
 
-            if root.video-playing && Bridge.have-video-dbg-info: VideoInfoCard { }
+            ScrollView {
+                width: 400px;
+
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+
+                    if root.video-playing && Bridge.have-video-dbg-info: VideoInfoCard { }
+
+                    // Only for stream playback: images (and an idle player)
+                    // have no flowing bitrate to plot.
+                    if InspectorState.have-bitrate
+                        && Bridge.app-state == AppState.Playing
+                        && (Bridge.player-variant == UiPlayerVariant.Video
+                            || Bridge.player-variant == UiPlayerVariant.Audio): BitrateCard { }
+
+                    if InspectorState.sources-lines.length > 0: SourcesCard { }
+
+                    if InspectorState.tracks.length > 0: TracksCard { }
+
+                    if InspectorState.image-info != "": ImageInfoCard { }
+
+                    if Bridge.render-latency-info != "" || InspectorState.sink-lines.length > 0: SinksCard { }
+
+                    if InspectorState.internals-lines.length > 0: InternalsCard { }
+                }
+            }
 
             Rectangle {
                 horizontal-stretch: 1;

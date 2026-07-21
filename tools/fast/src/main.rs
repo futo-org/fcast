@@ -1,5 +1,5 @@
 use std::{
-    io::Write,
+    io::{IsTerminal, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -45,10 +45,36 @@ struct Cli {
     /// upgrade.
     #[arg(long, short)]
     fingerprint: Option<String>,
+    /// Case-name substring to exclude (repeatable; applies to `run-all` and
+    /// `stress`). Soak around a known-flaky case without it aborting the run.
+    #[arg(long, global = true)]
+    exclude: Vec<String>,
+    /// Case-name substring to include (repeatable; applies to `run-all` and
+    /// `stress`). When given, only matching cases run; `--exclude` still
+    /// applies on top.
+    #[arg(long, global = true)]
+    only: Vec<String>,
     #[command(flatten)]
     verbosity: clap_verbosity_flag::Verbosity<clap_verbosity_flag::OffLevel>,
     #[command(subcommand)]
     command: Command,
+}
+
+/// Erase the current line so a fresh one can replace an in-place status /
+/// partial line. A no-op byte-wise when stdout is not a terminal, where
+/// nothing is rewritten in place.
+fn clear_line() -> &'static str {
+    if std::io::stdout().is_terminal() {
+        "\x1B[2K\r"
+    } else {
+        ""
+    }
+}
+
+/// `HH:MM:SS` for status lines (`Duration`'s Debug prints raw seconds).
+fn fmt_elapsed(elapsed: Duration) -> String {
+    let s = elapsed.as_secs();
+    format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
 /// Run a single test case, printing its result. Returns `true` on success.
@@ -72,7 +98,7 @@ async fn run_test(
     {
         Ok(()) => true,
         Err(err) => {
-            println!("\rtest {} ... {RED}FAILED{RESET}", case.name);
+            println!("{}test {} ... {RED}FAILED{RESET}", clear_line(), case.name);
             println!("Reason: {err:?}");
             println!("==================== DUMPING STATE ====================");
             file_server.dump_to_stdout();
@@ -104,8 +130,11 @@ async fn run_tests(
         }
 
         for case in matched {
-            print!("test {} ...", case.name);
-            stdout.flush().unwrap();
+            // The partial line only makes sense where it can be rewritten.
+            if std::io::stdout().is_terminal() {
+                print!("test {} ...", case.name);
+                stdout.flush().unwrap();
+            }
 
             if !run_test(
                 case,
@@ -119,12 +148,18 @@ async fn run_tests(
                 return;
             }
 
-            println!("\rtest {} ... {GREEN}OK{RESET}", case.name);
+            println!("{}test {} ... {GREEN}OK{RESET}", clear_line(), case.name);
         }
     }
 }
 
-async fn stress(receiver: SocketAddr, sample_media: PathBuf, fingerprint: Option<Vec<u8>>) {
+async fn stress(
+    receiver: SocketAddr,
+    sample_media: PathBuf,
+    fingerprint: Option<Vec<u8>>,
+    exclude: Vec<String>,
+    only: Vec<String>,
+) {
     let should_run = Arc::new(AtomicBool::new(true));
     ctrlc::set_handler({
         let should_run = Arc::clone(&should_run);
@@ -136,9 +171,28 @@ async fn stress(receiver: SocketAddr, sample_media: PathBuf, fingerprint: Option
     let mut stdout = std::io::stdout();
     let mut passed = 0u64;
     let mut rng = rand::rng();
-    let mut indices: Vec<usize> = (0..fast::TEST_CASES.len()).collect();
+    let mut indices: Vec<usize> = (0..fast::TEST_CASES.len())
+        .filter(|&i| {
+            let name = fast::TEST_CASES[i].name;
+            (only.is_empty() || only.iter().any(|o| name.contains(o.as_str())))
+                && !exclude.iter().any(|e| name.contains(e.as_str()))
+        })
+        .collect();
+    if indices.is_empty() {
+        eprintln!("stress: no test case matches the --only/--exclude filters");
+        std::process::exit(2);
+    }
+    if !exclude.is_empty() || !only.is_empty() {
+        println!(
+            "stress: filters selected {} of {} case(s)",
+            indices.len(),
+            fast::TEST_CASES.len()
+        );
+    }
+    let is_tty = std::io::stdout().is_terminal();
     let start = Instant::now();
-    let mut last_status_dump = start;
+    let mut last_log_status = start;
+    let mut failed = false;
 
     'out: loop {
         indices.shuffle(&mut rng);
@@ -146,6 +200,22 @@ async fn stress(receiver: SocketAddr, sample_media: PathBuf, fingerprint: Option
             if !should_run.load(Ordering::Relaxed) {
                 break 'out;
             }
+            let name = fast::TEST_CASES[idx].name;
+
+            // The status carries the case ABOUT to run, so both a human and
+            // an external stall-watcher can tell which case is in flight and
+            // since when. On a terminal it is ONE line, rewritten in place;
+            // piped to a log it is one plain greppable line per case.
+            if is_tty {
+                print!(
+                    "\x1B[2K\r[ {BLUE}{}{RESET} | {GREEN}{passed}{RESET} passed | {:.1}/s ] running {name}",
+                    fmt_elapsed(start.elapsed()),
+                    passed as f64 / start.elapsed().as_secs_f64().max(0.001),
+                );
+            } else {
+                println!("stress: starting {name}");
+            }
+            stdout.flush().unwrap();
 
             if !run_test(
                 &fast::TEST_CASES[idx],
@@ -156,23 +226,34 @@ async fn stress(receiver: SocketAddr, sample_media: PathBuf, fingerprint: Option
             )
             .await
             {
+                failed = true;
                 break 'out;
             }
 
             passed += 1;
 
-            if last_status_dump.elapsed() >= Duration::from_secs(1) {
-                print!(
-                    "\x1B[2K\r[ Elapsed: {BLUE}{:?}{RESET} Tests ran: {GREEN}{passed}{RESET} ]",
-                    start.elapsed()
+            // Piped runs get a periodic summary line too (in-place status
+            // lines would just bloat the log).
+            if !is_tty && last_log_status.elapsed() >= Duration::from_secs(10) {
+                println!(
+                    "stress: {passed} passed, elapsed {}",
+                    fmt_elapsed(start.elapsed())
                 );
-                stdout.flush().unwrap();
-                last_status_dump = Instant::now();
+                last_log_status = Instant::now();
             }
         }
     }
 
-    println!("\n{passed} test cases ran and passed");
+    if is_tty && !failed {
+        // Leave the in-place status line behind.
+        println!();
+    }
+    println!(
+        "stress: {passed} case(s) passed in {} ({:.1}/s){}",
+        fmt_elapsed(start.elapsed()),
+        passed as f64 / start.elapsed().as_secs_f64().max(0.001),
+        if failed { ", then FAILED" } else { "" },
+    );
 }
 
 #[tokio::main]
@@ -196,11 +277,16 @@ async fn main() {
         Command::RunAll => {
             let all = fast::TEST_CASES
                 .iter()
-                .map(|t| t.name.to_string())
+                .map(|t| t.name)
+                .filter(|name| {
+                    cli.only.is_empty() || cli.only.iter().any(|o| name.contains(o.as_str()))
+                })
+                .filter(|name| !cli.exclude.iter().any(|e| name.contains(e.as_str())))
+                .map(str::to_string)
                 .collect();
             run_tests(receiver, sample_media, all, fingerprint).await;
         }
         Command::Run { tests } => run_tests(receiver, sample_media, tests, fingerprint).await,
-        Command::Stress => stress(receiver, sample_media, fingerprint).await,
+        Command::Stress => stress(receiver, sample_media, fingerprint, cli.exclude, cli.only).await,
     }
 }

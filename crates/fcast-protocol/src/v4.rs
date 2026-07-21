@@ -170,6 +170,24 @@ impl<'a> MessageBuilder<'a> {
         create_msg!(self, ChangeTrack, id, track_type: typ)
     }
 
+    pub fn add_subtitle_source(
+        mut self,
+        url: &str,
+        select: bool,
+        name: Option<&str>,
+    ) -> ConstructedMessage<'a> {
+        let url = self.builder.create_string(url);
+        let name = name.map(|n| self.builder.create_string(n));
+        create_msg!(
+            self,
+            AddSubtitleSource,
+            url: Some(url),
+            select,
+            name,
+            metadata: None
+        )
+    }
+
     pub fn companion_hello_request(mut self) -> ConstructedMessage<'a> {
         create_msg!(self, CompanionHelloRequest,)
     }

@@ -367,6 +367,11 @@ pub enum Operation {
         id: Option<u32>,
         typ: fcast_protocol::v4::flat::MediaTrackType,
     },
+    AddSubtitleSource {
+        url: String,
+        select: bool,
+        name: Option<smol_str::SmolStr>,
+    },
     SelectQueueItem(v4::QueuePosition),
     RemoveQueueItem(v4::QueuePosition),
     InsertQueueItem(QueueInsertCell),
@@ -993,6 +998,23 @@ impl State {
                 let typ = msg.track_type();
                 Action::Op(Operation::ChangeTrack { id, typ })
             }
+            v4::flat::Message::AddSubtitleSource => {
+                let msg = union!(packet.payload_as_add_subtitle_source());
+                let url = msg.url();
+                if url.is_empty() {
+                    // The spec gives an empty URL no meaning; there is
+                    // nothing to attach.
+                    Action::Error {
+                        kind: v4::flat::ErrorKind::MalformedBody,
+                    }
+                } else {
+                    Action::Op(Operation::AddSubtitleSource {
+                        url: url.to_owned(),
+                        select: msg.select(),
+                        name: msg.name().map(smol_str::SmolStr::new),
+                    })
+                }
+            }
             v4::flat::Message::QueueItemSelected => {
                 let msg = union!(packet.payload_as_queue_item_selected());
                 let position = get_queue_position!(msg);
@@ -1412,7 +1434,7 @@ impl SessionDriver {
             fmts.subtitles.iter().map(|s| s.to_str()),
             fmts.hdrs.iter().map(|s| s.to_str()),
             fmts.images.iter().map(|i| i.to_str()),
-            false,
+            true,
             true,
             0.01,
         );
@@ -1670,9 +1692,9 @@ impl SessionDriver {
     ) -> anyhow::Result<()> {
         debug!("Session was started");
 
-        let mut read_buf = [0u8; 1024 * 8];
+        const READ_HEADROOM: usize = 1024 * 8;
         let mut packet_reader =
-            fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, read_buf.len());
+            fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, READ_HEADROOM);
         let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
 
         let (internal_tx, mut internal_rx) =
@@ -1716,7 +1738,7 @@ impl SessionDriver {
                         }
                     }
                 }
-                res = self.stream.read(&mut read_buf) => {
+                res = self.stream.read(packet_reader.spare_capacity_mut()) => {
                     let Ok(n_read) = res else {
                         break;
                     };
@@ -1725,7 +1747,7 @@ impl SessionDriver {
                         break;
                     }
 
-                    packet_reader.push_data(&read_buf[0..n_read]).map_err(|_| anyhow::anyhow!("Invalid packet (buffer overrun)"))?;
+                    packet_reader.commit(n_read);
 
                     loop {
                         let packet = match packet_reader.get_packet() {

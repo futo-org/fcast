@@ -1,0 +1,121 @@
+diff --git a/subprojects/gst-plugins-good/gst/matroska/ebml-read.c b/subprojects/gst-plugins-good/gst/matroska/ebml-read.c
+index 4ad1a5eb28..f94d83b77f 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/ebml-read.c
++++ b/subprojects/gst-plugins-good/gst/matroska/ebml-read.c
+@@ -154,7 +154,7 @@ invalid_length:
+  * Takes ownership of @buf. */
+ void
+ gst_ebml_read_init (GstEbmlRead * ebml, GstElement * el, GstBuffer * buf,
+-    guint64 offset)
++    guint64 offset, GArray ** readers_cache)
+ {
+   GstEbmlMaster m;
+ 
+@@ -165,7 +165,16 @@ gst_ebml_read_init (GstEbmlRead * ebml, GstElement * el, GstBuffer * buf,
+   ebml->offset = offset;
+   ebml->buf = buf;
+   gst_buffer_map (buf, &ebml->map, GST_MAP_READ);
+-  ebml->readers = g_array_sized_new (FALSE, FALSE, sizeof (GstEbmlMaster), 10);
++  if (readers_cache && *readers_cache) {
++    /* take over the cached array instead of allocating a new one */
++    ebml->readers = *readers_cache;
++    *readers_cache = NULL;
++    g_array_set_size (ebml->readers, 0);
++  } else {
++    ebml->readers =
++        g_array_sized_new (FALSE, FALSE, sizeof (GstEbmlMaster), 10);
++  }
++  ebml->readers_cache = readers_cache;
+   m.offset = ebml->offset;
+   gst_byte_reader_init (&m.br, ebml->map.data, ebml->map.size);
+   g_array_append_val (ebml->readers, m);
+@@ -174,9 +183,14 @@ gst_ebml_read_init (GstEbmlRead * ebml, GstElement * el, GstBuffer * buf,
+ void
+ gst_ebml_read_clear (GstEbmlRead * ebml)
+ {
+-  if (ebml->readers)
+-    g_array_unref (ebml->readers);
++  if (ebml->readers) {
++    if (ebml->readers_cache && *ebml->readers_cache == NULL)
++      *ebml->readers_cache = ebml->readers;
++    else
++      g_array_unref (ebml->readers);
++  }
+   ebml->readers = NULL;
++  ebml->readers_cache = NULL;
+   if (ebml->buf) {
+     gst_buffer_unmap (ebml->buf, &ebml->map);
+     gst_buffer_unref (ebml->buf);
+diff --git a/subprojects/gst-plugins-good/gst/matroska/ebml-read.h b/subprojects/gst-plugins-good/gst/matroska/ebml-read.h
+index ce894da7f7..e42b83697d 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/ebml-read.h
++++ b/subprojects/gst-plugins-good/gst/matroska/ebml-read.h
+@@ -58,6 +58,9 @@ typedef struct _GstEbmlRead {
+   GstMapInfo map;
+ 
+   GArray *readers;
++  /* optional location to stash @readers on clear for reuse by the next
++   * init, to avoid an array allocation per parsed element */
++  GArray **readers_cache;
+ } GstEbmlRead;
+ 
+ typedef GstFlowReturn (*GstPeekData) (gpointer * context, guint peek, const guint8 ** data);
+@@ -70,7 +73,8 @@ GstFlowReturn gst_ebml_peek_id_length    (guint32 * _id, guint64 * _length,
+ 
+ void          gst_ebml_read_init         (GstEbmlRead * ebml,
+                                           GstElement * el, GstBuffer * buf,
+-                                          guint64 offset);
++                                          guint64 offset,
++                                          GArray ** readers_cache);
+ 
+ void          gst_ebml_read_clear        (GstEbmlRead * ebml);
+ 
+diff --git a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
+index 2fce088ab4..322bbf7d6d 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
++++ b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
+@@ -222,6 +222,8 @@ gst_matroska_demux_finalize (GObject * object)
+ 
+   gst_matroska_read_common_finalize (&demux->common);
+   gst_flow_combiner_free (demux->flowcombiner);
++  if (demux->ebml_readers_cache)
++    g_array_unref (demux->ebml_readers_cache);
+   G_OBJECT_CLASS (parent_class)->finalize (object);
+ }
+ 
+@@ -6198,7 +6200,7 @@ gst_matroska_demux_take (GstMatroskaDemux * demux, guint64 bytes,
+         demux->common.offset, bytes, &buffer, NULL);
+   if (G_LIKELY (buffer)) {
+     gst_ebml_read_init (ebml, GST_ELEMENT_CAST (demux), buffer,
+-        demux->common.offset);
++        demux->common.offset, &demux->ebml_readers_cache);
+     demux->common.offset += bytes;
+   }
+ exit:
+diff --git a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.h b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.h
+index 82cf60066c..e4f8c8b0f1 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.h
++++ b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.h
+@@ -84,6 +84,9 @@ typedef struct _GstMatroskaDemux {
+   /* cluster positions (optional) */
+   GArray                  *clusters;
+ 
++  /* recycled ebml reader stack, to avoid an allocation per element */
++  GArray                  *ebml_readers_cache;
++
+   /* keeping track of playback position */
+   GstClockTime             last_stop_end;
+   GstClockTime             stream_start_time;
+diff --git a/subprojects/gst-plugins-good/gst/matroska/matroska-parse.c b/subprojects/gst-plugins-good/gst/matroska/matroska-parse.c
+index d819cd2d39..990b0f3a14 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/matroska-parse.c
++++ b/subprojects/gst-plugins-good/gst/matroska/matroska-parse.c
+@@ -2345,7 +2345,7 @@ gst_matroska_parse_take (GstMatroskaParse * parse, guint64 bytes,
+   buffer = gst_adapter_take_buffer (parse->common.adapter, bytes);
+   if (G_LIKELY (buffer)) {
+     gst_ebml_read_init (ebml, GST_ELEMENT_CAST (parse), buffer,
+-        parse->common.offset);
++        parse->common.offset, NULL);
+     parse->common.offset += bytes;
+   } else {
+     ret = GST_FLOW_ERROR;

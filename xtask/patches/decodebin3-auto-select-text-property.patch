@@ -1,0 +1,88 @@
+diff --git a/subprojects/gst-plugins-base/gst/playback/gstdecodebin3.c b/subprojects/gst-plugins-base/gst/playback/gstdecodebin3.c
+index 7286570d13..2786411bc1 100644
+--- a/subprojects/gst-plugins-base/gst/playback/gstdecodebin3.c
++++ b/subprojects/gst-plugins-base/gst/playback/gstdecodebin3.c
+@@ -311,6 +311,7 @@ struct _GstDecodebin3
+ 
+   /* Properties */
+   GstCaps *caps;
++  gboolean auto_select_text;
+ 
+   GList *candidate_decoders;
+ };
+@@ -445,7 +446,8 @@ struct _DecodebinOutputStream
+ enum
+ {
+   PROP_0,
+-  PROP_CAPS
++  PROP_CAPS,
++  PROP_AUTO_SELECT_TEXT
+ };
+ 
+ /* signals */
+@@ -655,6 +657,20 @@ gst_decodebin3_class_init (GstDecodebin3Class * klass)
+           "The caps on which to stop decoding. (NULL = default)",
+           GST_TYPE_CAPS, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+ 
++  /**
++   * GstDecodebin3:auto-select-text:
++   *
++   * Whether the default stream selection (used when no select-stream
++   * handler and no GST_EVENT_SELECT_STREAMS decided) may pick TEXT
++   * streams. When disabled, text streams stay unselected until an
++   * explicit SELECT_STREAMS event requests one; streams already in the
++   * requested or active selection are still kept across collections.
++   */
++  g_object_class_install_property (gobject_klass, PROP_AUTO_SELECT_TEXT,
++      g_param_spec_boolean ("auto-select-text", "Auto-select text streams",
++          "Allow the default stream selection to pick TEXT streams",
++          TRUE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
++
+   /**
+    * GstDecodebin3::select-stream:
+    * @decodebin: a #GstDecodebin3
+@@ -742,6 +758,7 @@ gst_decodebin3_init (GstDecodebin3 * dbin)
+   dbin->posting_collection = FALSE;
+ 
+   dbin->caps = gst_static_caps_get (&default_raw_caps);
++  dbin->auto_select_text = TRUE;
+ 
+   GST_OBJECT_FLAG_SET (dbin, GST_BIN_FLAG_STREAMS_AWARE);
+ }
+@@ -857,6 +874,11 @@ gst_decodebin3_set_property (GObject * object, guint prop_id,
+       dbin->caps = g_value_dup_boxed (value);
+       GST_OBJECT_UNLOCK (dbin);
+       break;
++    case PROP_AUTO_SELECT_TEXT:
++      GST_OBJECT_LOCK (dbin);
++      dbin->auto_select_text = g_value_get_boolean (value);
++      GST_OBJECT_UNLOCK (dbin);
++      break;
+     default:
+       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+       break;
+@@ -875,6 +897,11 @@ gst_decodebin3_get_property (GObject * object, guint prop_id, GValue * value,
+       g_value_set_boxed (value, dbin->caps);
+       GST_OBJECT_UNLOCK (dbin);
+       break;
++    case PROP_AUTO_SELECT_TEXT:
++      GST_OBJECT_LOCK (dbin);
++      g_value_set_boolean (value, dbin->auto_select_text);
++      GST_OBJECT_UNLOCK (dbin);
++      break;
+     default:
+       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+       break;
+@@ -2430,6 +2457,12 @@ update_requested_selection (GstDecodebin3 * dbin,
+       GstStream *stream =
+           gst_stream_collection_get_stream (new_collection->collection, i);
+       GstStreamType curtype = gst_stream_get_stream_type (stream);
++      if ((curtype & GST_STREAM_TYPE_TEXT) && !dbin->auto_select_text) {
++        GST_DEBUG_OBJECT (dbin,
++            "Not automatically selecting text stream '%s' (auto-select-text is off)",
++            gst_stream_get_stream_id (stream));
++        continue;
++      }
+       if (curtype != GST_STREAM_TYPE_UNKNOWN && !(used_types & curtype)) {
+         const gchar *sid = gst_stream_get_stream_id (stream);
+         GST_DEBUG_OBJECT (dbin,

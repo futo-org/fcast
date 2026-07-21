@@ -123,6 +123,9 @@ export global Bridge {
     in-out property <bool> show-inspector: false;
     in property <bool> have-video-dbg-info: false;
     in property <UiVideoDbgInfo> video-dbg-info;
+    // Measured video render cost + applied render-delay, set by the render
+    // path (see `note_render_cost`).
+    in property <string> render-latency-info;
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
     // Whether any GUI element is (potentially) drawn over the video area.
@@ -153,6 +156,9 @@ export global Bridge {
     // Inspector
     callback inspector-toggled(active: bool);
     callback refresh-pipeline-graph();
+    // Fired periodically while the inspector is open, drives the bitrate
+    // sampling (the receiver polls the player and pushes a fresh graph).
+    callback inspector-tick();
 
     pure callback sec-to-string(sec: int) -> string;
     pure callback sec-float-to-string(sec: float) -> string;

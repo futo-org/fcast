@@ -7,6 +7,7 @@ license = "GPL-3.0-only"
 [dependencies]
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
+fcastplaybin = { path = "../fcastplaybin" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
 gethostname = "1"
 anyhow.workspace = true
@@ -109,6 +110,9 @@ image = { workspace = true, features = ["encode"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
+pipewire = { version = "0.10", features = ["v0_3_50"] }
+libspa = "0.10"
+libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }

@@ -1,0 +1,39 @@
+diff --git a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
+index 14188913f5..2fce088ab4 100644
+--- a/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
++++ b/subprojects/gst-plugins-good/gst/matroska/matroska-demux.c
+@@ -5020,7 +5020,8 @@ gst_matroska_demux_parse_blockgroup_or_simpleblock (GstMatroskaDemux *
+   GstMapInfo map;
+   gint stream_num = -1, n, laces = 0;
+   guint size = 0;
+-  gint *lace_size = NULL;
++  /* the lace count is stored in 8 bits + 1, so at most 256 laces */
++  gint lace_size[256];
+   gint64 time = 0;
+   gint flags = 0;
+   gint64 referenceblock = 0;
+@@ -5100,7 +5101,6 @@ gst_matroska_demux_parse_blockgroup_or_simpleblock (GstMatroskaDemux *
+         switch ((flags & 0x06) >> 1) {
+           case 0x0:            /* no lacing */
+             laces = 1;
+-            lace_size = g_new (gint, 1);
+             lace_size[0] = size;
+             break;
+ 
+@@ -5112,7 +5112,7 @@ gst_matroska_demux_parse_blockgroup_or_simpleblock (GstMatroskaDemux *
+             laces = GST_READ_UINT8 (data) + 1;
+             data += 1;
+             size -= 1;
+-            lace_size = g_new0 (gint, laces);
++            memset (lace_size, 0, laces * sizeof (gint));
+ 
+             switch ((flags & 0x06) >> 1) {
+               case 0x1:        /* xiph lacing */  {
+@@ -5808,7 +5808,6 @@ done:
+     gst_buffer_unmap (buf, &map);
+     gst_buffer_unref (buf);
+   }
+-  g_free (lace_size);
+   {
+     BlockAddition *blockadd;
+ 
