@@ -50,6 +50,12 @@ pub struct FhsPixmapSink {
     gl: glow::Context,
     egl_display: *const c_void,
     egl_image_target: Option<EglImageTargetTexture2dOes>,
+    #[cfg(feature = "fhs")]
+    cuda: Option<rcore::placebo::CudaVulkanRenderer>,
+    #[cfg(feature = "fhs")]
+    cuda_drm_device: Option<u64>,
+    #[cfg(feature = "fhs")]
+    is_nvidia: bool,
 }
 
 impl FhsPixmapSink {
@@ -72,6 +78,16 @@ impl FhsPixmapSink {
             gl,
             egl_display,
             egl_image_target,
+            #[cfg(feature = "fhs")]
+            cuda: None,
+            #[cfg(feature = "fhs")]
+            cuda_drm_device: {
+                use std::os::unix::fs::MetadataExt;
+                let path = query_render_device_path(client);
+                std::fs::metadata(&path).ok().map(|m| m.rdev())
+            },
+            #[cfg(feature = "fhs")]
+            is_nvidia: rcore::va::render_node_is_nvidia(&query_render_device_path(client)),
         })
     }
 
@@ -89,8 +105,43 @@ impl FhsPixmapSink {
                     pixmap_id: (!cached).then_some(pixmap_id),
                 }
             }
-            FrameData::SystemMemory { frame } => {
-                let pixmap_id = self.import_system_memory(frame)?;
+            FrameData::SystemMemory { frame: v_frame } => {
+                #[cfg(feature = "fhs")]
+                let pixmap_id = if self.is_nvidia {
+                    if self.cuda.is_none() {
+                        self.cuda = Some(rcore::placebo::CudaVulkanRenderer::new(
+                            rcore::placebo::RenderProfile::Balanced,
+                            self.cuda_drm_device,
+                        )?);
+                    }
+                    let export = self.cuda.as_mut().unwrap().render_system_memory(frame)?;
+                    self.import_cuda_dmabuf(&export)?
+                } else {
+                    self.import_system_memory(v_frame)?
+                };
+                #[cfg(not(feature = "fhs"))]
+                let pixmap_id = self.import_system_memory(v_frame)?;
+                self.set_surface_pixmap(pixmap_id);
+                HeldBuffer {
+                    buffer: None,
+                    pixmap_id: Some(pixmap_id),
+                }
+            }
+            #[cfg(feature = "fhs")]
+            FrameData::Cuda { buffer, info } => {
+                if self.cuda.is_none() {
+                    self.cuda = Some(rcore::placebo::CudaVulkanRenderer::new(
+                        rcore::placebo::RenderProfile::Balanced,
+                        self.cuda_drm_device,
+                    )?);
+                }
+                let export = self.cuda.as_mut().unwrap().render(
+                    buffer,
+                    info,
+                    &frame.mastering_display_info,
+                    frame.rotation,
+                )?;
+                let pixmap_id = self.import_cuda_dmabuf(&export)?;
                 self.set_surface_pixmap(pixmap_id);
                 HeldBuffer {
                     buffer: None,
@@ -522,6 +573,42 @@ impl FhsPixmapSink {
             );
         }
         result
+    }
+
+    #[cfg(feature = "fhs")]
+    fn import_cuda_dmabuf(
+        &self,
+        e: &rcore::placebo::CudaDmaBuf,
+    ) -> Result<fl_protocol_PixmapId> {
+        let flags = fl_protocol_PixmapFlags_flags_fl_protocol_PixmapFlags_full_color_range_bit
+            as fl_protocol_PixmapFlags;
+        let offsets = [e.offset];
+        let pitches = [e.stride];
+        let modifiers = [e.modifier];
+        let fds = [e.fd];
+        unsafe {
+            let seq = fl_create_pixmap_from_dmabuf(
+                self.client,
+                e.width,
+                e.height,
+                e.fourcc,
+                1,
+                flags,
+                offsets.as_ptr(),
+                pitches.as_ptr(),
+                modifiers.as_ptr(),
+                1,
+                fds.as_ptr(),
+            );
+            if seq.value == 0 {
+                return Err(anyhow!("fl_create_pixmap_from_dmabuf (cuda) failed"));
+            }
+            let mut reply: fl_reply_CreatePixmapFromDmaBuf = std::mem::zeroed();
+            if !fl_receive_reply_create_pixmap_from_dma_buf(self.client, seq, &mut reply) {
+                return Err(anyhow!("fl_create_pixmap_from_dmabuf (cuda) reply was null"));
+            }
+            Ok(reply.pixmap_id)
+        }
     }
 
     fn upload_plane(
@@ -1008,6 +1095,8 @@ fn frame_video_colorimetry(frame: &Frame) -> gst_video::VideoColorimetry {
     match &frame.data {
         FrameData::SystemMemory { frame } => frame.info().colorimetry(),
         FrameData::DmaBuf { dma_info, .. } => dma_info.colorimetry(),
+        #[cfg(feature = "fhs")]
+        FrameData::Cuda { info, .. } => info.colorimetry(),
     }
 }
 

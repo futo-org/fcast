@@ -336,12 +336,22 @@ impl Application {
         #[cfg(not(target_os = "android"))] settings: Settings,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
-        for nv_feature in registry.features_by_plugin("nvcodec") {
-            if let Some(elem) = nv_feature.downcast_ref::<gst::ElementFactory>()
-                && elem.has_type(gst::ElementFactoryType::DECODER)
-            {
-                debug!("Changing {}'s rank to MARGINAL", elem.name());
-                elem.set_rank(gst::Rank::MARGINAL);
+        #[cfg(all(not(target_os = "android"), feature = "fhs"))]
+        let keep_nvcodec = settings
+            .render_device_path
+            .as_deref()
+            .is_some_and(crate::va::render_node_is_nvidia);
+        #[cfg(not(all(not(target_os = "android"), feature = "fhs")))]
+        let keep_nvcodec = false;
+
+        if !keep_nvcodec {
+            for nv_feature in registry.features_by_plugin("nvcodec") {
+                if let Some(elem) = nv_feature.downcast_ref::<gst::ElementFactory>()
+                    && elem.has_type(gst::ElementFactoryType::DECODER)
+                {
+                    debug!("Changing {}'s rank to MARGINAL", elem.name());
+                    elem.set_rank(gst::Rank::MARGINAL);
+                }
             }
         }
 

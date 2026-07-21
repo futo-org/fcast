@@ -6,7 +6,7 @@ use anyhow::anyhow;
 #[cfg(target_os = "linux")]
 use drm_fourcc::DrmFourcc;
 use gst_video::prelude::*;
-#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+#[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
 use libplacebo::Vulkan;
 use libplacebo::{OpenGL, Renderer, Swapchain, SwapchainFrame, libplacebo_sys::*};
 use tracing::{debug, warn};
@@ -180,6 +180,9 @@ pub enum RenderFrameError {
     MissingPlane,
     #[error("failed to upload plane")]
     PlaneUploadFailed,
+    #[cfg(all(target_os = "linux", feature = "fhs"))]
+    #[error("CUDA memory frames are not supported by the libplacebo renderer")]
+    UnsupportedCuda,
 }
 
 fn create_pl_frame(
@@ -218,7 +221,7 @@ enum Backend {
         opengl: ManuallyDrop<OpenGL>,
         swapchain: ManuallyDrop<Swapchain>,
     },
-    #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+    #[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
     Vulkan(ManuallyDrop<Vulkan>),
 }
 
@@ -280,7 +283,7 @@ impl PlaceboContext {
     /// (dmabuf-exported) textures. Used by the Wayland subsurface sink. `drm_device` (a `dev_t`,
     /// e.g. the compositor's dmabuf-feedback main device) pins the GPU selection so exported
     /// dmabufs are importable on multi-GPU systems.
-    #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+    #[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
     pub fn new_vulkan(
         log: &libplacebo::Log,
         opts: &RenderingOptions,
@@ -300,7 +303,7 @@ impl PlaceboContext {
         })
     }
 
-    #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+    #[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
     pub fn is_vulkan(&self) -> bool {
         matches!(self.backend, Backend::Vulkan(_))
     }
@@ -308,7 +311,7 @@ impl PlaceboContext {
     fn swapchain(&self) -> Option<&Swapchain> {
         match &self.backend {
             Backend::OpenGL { swapchain, .. } => Some(swapchain),
-            #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+            #[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
             Backend::Vulkan(_) => None,
         }
     }
@@ -928,6 +931,8 @@ impl PlaceboContext {
                     ok => ok,
                 }
             }
+            #[cfg(all(target_os = "linux", feature = "fhs"))]
+            crate::video::FrameData::Cuda { .. } => Err(RenderFrameError::UnsupportedCuda),
         }
     }
 
@@ -991,6 +996,8 @@ impl PlaceboContext {
                 &source_frame.overlays,
                 source_frame.rotation,
             ),
+            #[cfg(feature = "fhs")]
+            crate::video::FrameData::Cuda { .. } => Err(RenderFrameError::UnsupportedCuda),
         }
     }
 
@@ -998,7 +1005,7 @@ impl PlaceboContext {
         unsafe {
             match &self.backend {
                 Backend::OpenGL { opengl, .. } => opengl.gpu(),
-                #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+                #[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
                 Backend::Vulkan(vulkan) => vulkan.gpu(),
             }
         }
@@ -1064,11 +1071,436 @@ impl Drop for PlaceboContext {
                     ManuallyDrop::drop(swapchain);
                     ManuallyDrop::drop(opengl);
                 }
-                #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+                #[cfg(all(target_os = "linux", feature = "libplacebo-vulkan"))]
                 Backend::Vulkan(vulkan) => ManuallyDrop::drop(vulkan),
             }
             let _ =
                 Box::from_raw(self.rendering_params.color_map_params as *mut pl_color_map_params);
         }
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+const VK_QUEUE_FAMILY_EXTERNAL: u32 = 0xFFFF_FFFE;
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+#[derive(Clone, Copy)]
+pub struct CudaDmaBuf {
+    pub fd: i32,
+    pub fourcc: u32,
+    pub modifier: u64,
+    pub stride: u32,
+    pub offset: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+struct CudaSourcePlane {
+    tex: pl_tex,
+    cuda: crate::cuda_vulkan::CudaExtImage,
+    sem: CudaTimelineSem,
+    copy_width_bytes: usize,
+    copy_height: usize,
+}
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+struct CudaTimelineSem {
+    vk_sem: VkSemaphore,
+    cuda: crate::cuda_vulkan::CudaExtSemaphore,
+    value: u64,
+}
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+pub struct CudaVulkanRenderer {
+    placebo: PlaceboContext,
+    planes: Vec<CudaSourcePlane>,
+    output: pl_tex,
+    export: Option<CudaDmaBuf>,
+    cached: Option<(u32, u32, gst_video::VideoFormat)>,
+    output_key: Option<(u32, u32, bool)>,
+    _log: libplacebo::Log,
+}
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+impl CudaVulkanRenderer {
+    pub fn new(profile: RenderProfile, drm_device: Option<u64>) -> anyhow::Result<Self> {
+        let log =
+            libplacebo::Log::new().ok_or_else(|| anyhow!("failed to create libplacebo log"))?;
+        let opts = RenderingOptions {
+            profile,
+            visualize_lut: false,
+            show_clipping: false,
+        };
+        let placebo = PlaceboContext::new_vulkan(&log, &opts, drm_device)?;
+        Ok(Self {
+            placebo,
+            planes: Vec::new(),
+            output: std::ptr::null(),
+            export: None,
+            cached: None,
+            output_key: None,
+            _log: log,
+        })
+    }
+
+    fn gpu(&self) -> *const pl_gpu_t {
+        self.placebo.gpu()
+    }
+
+    fn plane_specs(format: gst_video::VideoFormat) -> Option<&'static [(i32, u32, usize, u8, u8)]> {
+        use crate::cuda_vulkan::{CU_AD_FORMAT_UNSIGNED_INT8, CU_AD_FORMAT_UNSIGNED_INT16};
+        match format {
+            gst_video::VideoFormat::Nv12 => Some(&[
+                (1, CU_AD_FORMAT_UNSIGNED_INT8, 1, 0, 0),
+                (2, CU_AD_FORMAT_UNSIGNED_INT8, 1, 1, 1),
+            ]),
+            gst_video::VideoFormat::P01010le
+            | gst_video::VideoFormat::P012Le
+            | gst_video::VideoFormat::P016Le => Some(&[
+                (1, CU_AD_FORMAT_UNSIGNED_INT16, 2, 0, 0),
+                (2, CU_AD_FORMAT_UNSIGNED_INT16, 2, 1, 1),
+            ]),
+            _ => None,
+        }
+    }
+
+    fn destroy_cache(&mut self) {
+        let gpu = self.gpu();
+        for mut p in self.planes.drain(..) {
+            unsafe { pl_tex_destroy(gpu, &mut p.tex) };
+            unsafe { pl_vulkan_sem_destroy(gpu, &mut p.sem.vk_sem) };
+        }
+        if !self.output.is_null() {
+            let mut tex = self.output;
+            unsafe { pl_tex_destroy(gpu, &mut tex) };
+            self.output = std::ptr::null();
+        }
+        self.export = None;
+        self.cached = None;
+        self.output_key = None;
+    }
+
+    fn ensure_output(&mut self, width: u32, height: u32, ten_bit: bool) -> anyhow::Result<()> {
+        if self.output_key == Some((width, height, ten_bit)) && !self.output.is_null() {
+            return Ok(());
+        }
+        let gpu = self.gpu();
+        if !self.output.is_null() {
+            let mut tex = self.output;
+            unsafe { pl_tex_destroy(gpu, &mut tex) };
+            self.output = std::ptr::null();
+        }
+        self.export = None;
+
+        let out_name = if ten_bit { c"rgb10a2" } else { c"rgba8" };
+        let out_fmt = unsafe { pl_find_named_fmt(gpu, out_name.as_ptr()) };
+        if out_fmt.is_null() {
+            return Err(anyhow!("libplacebo has no output format"));
+        }
+        let fourcc = unsafe { (*out_fmt).fourcc };
+        if fourcc == 0 {
+            return Err(anyhow!("output format has no DRM fourcc"));
+        }
+        let mut op: pl_tex_params = unsafe { std::mem::zeroed() };
+        op.w = width as i32;
+        op.h = height as i32;
+        op.format = out_fmt;
+        op.renderable = true;
+        op.export_handle = pl_handle_type_PL_HANDLE_DMA_BUF;
+        op.host_readable = true;
+        let output = unsafe { pl_tex_create(gpu, &op) };
+        if output.is_null() {
+            return Err(anyhow!("pl_tex_create (dma-buf output) failed"));
+        }
+        self.output = output;
+        let oshared = unsafe { (*output).shared_mem };
+        self.export = Some(CudaDmaBuf {
+            fd: unsafe { oshared.handle.fd },
+            fourcc,
+            modifier: oshared.drm_format_mod,
+            stride: oshared.stride_w as u32,
+            offset: oshared.offset as u32,
+            width,
+            height,
+        });
+        self.output_key = Some((width, height, ten_bit));
+        Ok(())
+    }
+
+    fn recreate(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: gst_video::VideoFormat,
+        specs: &[(i32, u32, usize, u8, u8)],
+    ) -> anyhow::Result<()> {
+        self.destroy_cache();
+        let gpu = self.gpu();
+        let _push = crate::cuda::push().ok_or_else(|| anyhow!("no shared CUDA context"))?;
+
+        for &(num_comp, ad_format, bytes, w_shift, h_shift) in specs {
+            let mut out_handle: pl_handle = unsafe { std::mem::zeroed() };
+            let sem_params = pl_vulkan_sem_params {
+                type_: VkSemaphoreType::VK_SEMAPHORE_TYPE_TIMELINE,
+                initial_value: 0,
+                export_handle: pl_handle_type_PL_HANDLE_FD,
+                out_handle: &mut out_handle,
+                debug_tag: std::ptr::null(),
+            };
+            let vk_sem = unsafe { pl_vulkan_sem_create(gpu, &sem_params) };
+            if vk_sem.is_null() {
+                return Err(anyhow!("pl_vulkan_sem_create failed"));
+            }
+            let sem_fd = unsafe { out_handle.fd };
+            let cuda_sem = unsafe { crate::cuda_vulkan::CudaExtSemaphore::import(sem_fd)? };
+
+            let pw = width >> w_shift;
+            let ph = height >> h_shift;
+            let fmt = unsafe {
+                pl_find_fmt(
+                    gpu,
+                    pl_fmt_type::PL_FMT_UNORM,
+                    num_comp,
+                    (bytes * 8) as i32,
+                    0,
+                    pl_fmt_caps::PL_FMT_CAP_SAMPLEABLE,
+                )
+            };
+            if fmt.is_null() {
+                return Err(anyhow!("no UNORM format for cuda source plane"));
+            }
+            let mut tp: pl_tex_params = unsafe { std::mem::zeroed() };
+            tp.w = pw as i32;
+            tp.h = ph as i32;
+            tp.format = fmt;
+            tp.sampleable = true;
+            tp.export_handle = pl_handle_type_PL_HANDLE_FD;
+            let tex = unsafe { pl_tex_create(gpu, &tp) };
+            if tex.is_null() {
+                return Err(anyhow!("pl_tex_create (cuda source, export FD) failed"));
+            }
+            let shared = unsafe { (*tex).shared_mem };
+            let cuda = unsafe {
+                crate::cuda_vulkan::CudaExtImage::import(
+                    shared.handle.fd,
+                    shared.size as u64,
+                    pw as usize,
+                    ph as usize,
+                    ad_format,
+                    num_comp as u32,
+                    true,
+                )?
+            };
+            self.planes.push(CudaSourcePlane {
+                tex,
+                cuda,
+                sem: CudaTimelineSem {
+                    vk_sem,
+                    cuda: cuda_sem,
+                    value: 0,
+                },
+                copy_width_bytes: pw as usize * num_comp as usize * bytes,
+                copy_height: ph as usize,
+            });
+        }
+
+        let ten_bit = specs.first().map(|s| s.2 >= 2).unwrap_or(false);
+        self.ensure_output(width, height, ten_bit)?;
+        self.cached = Some((width, height, format));
+        Ok(())
+    }
+
+    pub fn render(
+        &mut self,
+        buffer: &gst::Buffer,
+        info: &gst_video::VideoInfo,
+        mdi: &Option<MasteringDisplayInfo>,
+        rotation: Rotation,
+    ) -> anyhow::Result<CudaDmaBuf> {
+        let format = info.format();
+        let width = info.width();
+        let height = info.height();
+        let specs =
+            Self::plane_specs(format).ok_or_else(|| anyhow!("unsupported cuda format {format:?}"))?;
+        if self.cached != Some((width, height, format)) {
+            self.recreate(width, height, format, specs)?;
+        }
+
+        let vmeta = buffer.meta::<gst_video::VideoMeta>();
+        let plane_offset = |i: usize| -> usize {
+            vmeta
+                .as_ref()
+                .map(|m| m.offset()[i])
+                .unwrap_or_else(|| info.offset()[i])
+        };
+        let plane_stride = |i: usize| -> usize {
+            vmeta
+                .as_ref()
+                .map(|m| m.stride()[i] as usize)
+                .unwrap_or_else(|| info.stride()[i] as usize)
+        };
+
+        let mem_ptr = buffer.peek_memory(0).as_ptr() as *mut std::ffi::c_void;
+        unsafe {
+            if !crate::cuda_vulkan::is_cuda_memory(mem_ptr) {
+                return Err(anyhow!("frame is not CUDA memory"));
+            }
+            crate::cuda_vulkan::sync_memory(mem_ptr);
+        }
+        let buf_ptr = buffer.as_ptr() as *mut std::ffi::c_void;
+        let map = unsafe { crate::cuda_vulkan::CudaBufferMap::map(buf_ptr)? };
+
+        let gpu = self.gpu();
+        {
+            let _push = crate::cuda::push().ok_or_else(|| anyhow!("no shared CUDA context"))?;
+            for (i, plane) in self.planes.iter_mut().enumerate() {
+                plane.sem.value += 1;
+                let hold_value = plane.sem.value;
+                let hp = pl_vulkan_hold_params {
+                    tex: plane.tex,
+                    layout: VkImageLayout::VK_IMAGE_LAYOUT_GENERAL,
+                    out_layout: std::ptr::null_mut(),
+                    qf: VK_QUEUE_FAMILY_EXTERNAL,
+                    semaphore: pl_vulkan_sem {
+                        sem: plane.sem.vk_sem,
+                        value: hold_value,
+                    },
+                };
+                unsafe { pl_vulkan_hold_ex(gpu, &hp) };
+                plane.sem.cuda.wait(hold_value)?;
+                unsafe {
+                    plane.cuda.copy_into(
+                        map.base + plane_offset(i),
+                        plane_stride(i),
+                        plane.copy_width_bytes,
+                        plane.copy_height,
+                    )?;
+                }
+                plane.sem.value += 1;
+                let signal_value = plane.sem.value;
+                plane.sem.cuda.signal(signal_value)?;
+                let rp = pl_vulkan_release_params {
+                    tex: plane.tex,
+                    layout: VkImageLayout::VK_IMAGE_LAYOUT_GENERAL,
+                    qf: VK_QUEUE_FAMILY_EXTERNAL,
+                    semaphore: pl_vulkan_sem {
+                        sem: plane.sem.vk_sem,
+                        value: signal_value,
+                    },
+                };
+                unsafe { pl_vulkan_release_ex(gpu, &rp) };
+            }
+        }
+
+        let frame_info = RenderFrameInfo::new(info);
+        let mut image = create_pl_frame(self.planes.len() as i32, info, &frame_info, mdi);
+        image.rotation = rotation_to_pl(rotation);
+        for plane_idx in 0..self.planes.len() {
+            image.planes[plane_idx].texture = self.planes[plane_idx].tex;
+            let mut components = 0;
+            for comp_idx in 0..info.n_components() {
+                if info.comp_plane(comp_idx as u8) == plane_idx as u32 {
+                    image.planes[plane_idx].component_mapping[components] = comp_idx as i32;
+                    components += 1;
+                }
+            }
+            image.planes[plane_idx].components = components as i32;
+        }
+
+        let mut dest: pl_frame = unsafe { std::mem::zeroed() };
+        dest.num_planes = 1;
+        dest.planes[0] = libplacebo::new_plane();
+        dest.planes[0].texture = self.output;
+        dest.planes[0].components = 4;
+        dest.planes[0].component_mapping = [0, 1, 2, 3];
+        let out_depth = if frame_info.sample_depth >= 16 { 10 } else { 8 };
+        dest.repr = pl_color_repr {
+            sys: pl_color_system::PL_COLOR_SYSTEM_RGB,
+            levels: pl_color_levels::PL_COLOR_LEVELS_FULL,
+            alpha: pl_alpha_mode::PL_ALPHA_NONE,
+            bits: pl_bit_encoding {
+                sample_depth: out_depth,
+                color_depth: out_depth,
+                bit_shift: 0,
+            },
+            dovi: ptr::null(),
+        };
+        dest.color = image.color;
+        dest.crop = pl_rect2df {
+            x0: 0.0,
+            y0: 0.0,
+            x1: width as f32,
+            y1: height as f32,
+        };
+        dest.crop =
+            libplacebo::scale_and_fit(&dest.crop, &rotated_fit_rect(&image.crop, rotation));
+
+        self.placebo.render_image_with_overlays(&mut image, &dest, &[]);
+        unsafe { pl_gpu_finish(gpu) };
+
+        self.export.ok_or_else(|| anyhow!("no export"))
+    }
+
+    pub fn render_system_memory(
+        &mut self,
+        frame: &crate::video::Frame,
+    ) -> anyhow::Result<CudaDmaBuf> {
+        let v_frame = match &frame.data {
+            crate::video::FrameData::SystemMemory { frame } => frame,
+            _ => return Err(anyhow!("render_system_memory: not a system-memory frame")),
+        };
+        let info = v_frame.info();
+        let width = info.width();
+        let height = info.height();
+        let frame_info = RenderFrameInfo::new(info);
+        let ten_bit = frame_info.sample_depth >= 16;
+        self.ensure_output(width, height, ten_bit)?;
+
+        let mut dest: pl_frame = unsafe { std::mem::zeroed() };
+        dest.num_planes = 1;
+        dest.planes[0] = libplacebo::new_plane();
+        dest.planes[0].texture = self.output;
+        dest.planes[0].components = 4;
+        dest.planes[0].component_mapping = [0, 1, 2, 3];
+        let out_depth = if ten_bit { 10 } else { 8 };
+        dest.repr = pl_color_repr {
+            sys: pl_color_system::PL_COLOR_SYSTEM_RGB,
+            levels: pl_color_levels::PL_COLOR_LEVELS_FULL,
+            alpha: pl_alpha_mode::PL_ALPHA_NONE,
+            bits: pl_bit_encoding {
+                sample_depth: out_depth,
+                color_depth: out_depth,
+                bit_shift: 0,
+            },
+            dovi: ptr::null(),
+        };
+        let src = create_pl_frame(
+            v_frame.n_planes() as i32,
+            info,
+            &frame_info,
+            &frame.mastering_display_info,
+        );
+        dest.color = src.color;
+        dest.crop = pl_rect2df {
+            x0: 0.0,
+            y0: 0.0,
+            x1: width as f32,
+            y1: height as f32,
+        };
+
+        self.placebo
+            .render_sysmem_to_frame(&mut dest, v_frame, &frame.mastering_display_info, &[], frame.rotation)
+            .map_err(|e| anyhow!("placebo sysmem render failed: {e}"))?;
+        unsafe { pl_gpu_finish(self.gpu()) };
+
+        self.export.ok_or_else(|| anyhow!("no export"))
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "fhs"))]
+impl Drop for CudaVulkanRenderer {
+    fn drop(&mut self) {
+        self.destroy_cache();
     }
 }

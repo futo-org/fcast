@@ -7705,6 +7705,7 @@ dependencies = [
  "jxl-oxide",
  "lazy_static",
  "libheif-rs",
+ "libloading 0.9.0",
  "libplacebo",
  "libplacebo-vulkan",
  "md-5",

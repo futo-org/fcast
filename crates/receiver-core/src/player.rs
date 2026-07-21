@@ -1044,6 +1044,10 @@ impl Player {
         let on_intel = render_device_path
             .as_deref()
             .is_some_and(crate::va::render_node_is_intel);
+        #[cfg(feature = "fhs")]
+        let on_nvidia = render_device_path
+            .as_deref()
+            .is_some_and(crate::va::render_node_is_nvidia);
 
         let scaletempo = gst::ElementFactory::make("scaletempo").build()?;
         let mut video_sink_handle = None;
@@ -1084,6 +1088,11 @@ impl Player {
         if let Some(path) = render_device_path.as_deref()
             && let Some(context) = crate::va::display_context(path)
         {
+            playbin.set_context(&context);
+        }
+
+        #[cfg(feature = "fhs")]
+        if on_nvidia && let Some(context) = crate::cuda::context() {
             playbin.set_context(&context);
         }
 
@@ -1342,6 +1351,13 @@ impl Player {
                             );
                         }
                         element.set_context(&ctx);
+                        return;
+                    }
+                    // Share one CUDA context across NVDEC + cudaconvert so they
+                    // can pass CUDA memory between them (see crate::cuda).
+                    #[cfg(feature = "fhs")]
+                    if typ == crate::cuda::CUDA_CONTEXT_TYPE {
+                        crate::cuda::provide_cuda_context(element);
                         return;
                     }
                     // } else if typ == crate::fwebrtcsrc::FSIG_CONTEXT {

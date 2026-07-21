@@ -16,7 +16,8 @@ pangocairo = "0.22"
 libc = "0.2"
 
 [features]
-default = []
+default = ["fhs"]
+fhs = ["rcore/fhs"]
 tracy = ["rcore/tracy"]
 static-gst-plugins = ["rcore/static-gst-plugins"]
 airplay = ["rcore/airplay"]

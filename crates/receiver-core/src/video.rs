@@ -20,6 +20,11 @@ pub enum FrameData {
         buffer: gst::Buffer,
         info: gst_video::VideoInfo,
     },
+    #[cfg(all(target_os = "linux", feature = "fhs"))]
+    Cuda {
+        buffer: gst::Buffer,
+        info: gst_video::VideoInfo,
+    },
 }
 
 impl FrameData {
@@ -30,6 +35,8 @@ impl FrameData {
             Self::DmaBuf { dma_info, .. } => dma_info.width(),
             #[cfg(target_os = "macos")]
             Self::IOSurface { info, .. } => info.width(),
+            #[cfg(all(target_os = "linux", feature = "fhs"))]
+            Self::Cuda { info, .. } => info.width(),
         }
     }
 
@@ -40,6 +47,8 @@ impl FrameData {
             Self::DmaBuf { dma_info, .. } => dma_info.height(),
             #[cfg(target_os = "macos")]
             Self::IOSurface { info, .. } => info.height(),
+            #[cfg(all(target_os = "linux", feature = "fhs"))]
+            Self::Cuda { info, .. } => info.height(),
         }
     }
 }
@@ -157,6 +166,9 @@ pub mod imp {
 
     use crate::video::Overlay;
 
+    #[cfg(all(target_os = "linux", feature = "fhs"))]
+    const CAPS_FEATURE_MEMORY_CUDA: &str = "memory:CUDAMemory";
+
     fn get_caps() -> gst::Caps {
         let mut caps = gst::Caps::new_empty();
         {
@@ -227,6 +239,13 @@ pub mod imp {
                     gst_allocators::CAPS_FEATURE_MEMORY_DMABUF,
                     gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
                 ]),
+                #[cfg(all(target_os = "linux", feature = "fhs"))]
+                gst::CapsFeatures::new([CAPS_FEATURE_MEMORY_CUDA]),
+                #[cfg(all(target_os = "linux", feature = "fhs"))]
+                gst::CapsFeatures::new([
+                    CAPS_FEATURE_MEMORY_CUDA,
+                    gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
+                ]),
             ] {
                 let mut these_caps = gst_video::VideoCapsBuilder::new()
                     .features(features.iter())
@@ -236,7 +255,18 @@ pub mod imp {
                 if features.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF) {
                     these_caps = these_caps.format(gst_video::VideoFormat::DmaDrm);
                 } else {
-                    these_caps = these_caps.format_list(formats);
+                    #[cfg(feature = "fhs")]
+                    let is_cuda = features.contains(CAPS_FEATURE_MEMORY_CUDA);
+                    #[cfg(not(feature = "fhs"))]
+                    let is_cuda = false;
+                    if is_cuda {
+                        these_caps = these_caps.format_list([
+                            gst_video::VideoFormat::Nv12,
+                            gst_video::VideoFormat::P01010le,
+                        ]);
+                    } else {
+                        these_caps = these_caps.format_list(formats);
+                    }
                 }
 
                 #[cfg(target_os = "macos")]
@@ -304,6 +334,8 @@ pub mod imp {
         DmaDrm(gst_video::VideoInfoDmaDrm),
         #[cfg(target_os = "macos")]
         IOSurface(gst_video::VideoInfo),
+        #[cfg(all(target_os = "linux", feature = "fhs"))]
+        Cuda(gst_video::VideoInfo),
         Normal(gst_video::VideoInfo),
     }
 
@@ -558,7 +590,19 @@ pub mod imp {
 
             gst::debug!(CAT, imp = self, "set_caps: {caps}");
 
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "fhs"))]
+            let zero_copy_info = if caps
+                .features(0)
+                .is_some_and(|f| f.contains(CAPS_FEATURE_MEMORY_CUDA))
+            {
+                gst_video::VideoInfo::from_caps(caps).map(VideoInfo::Cuda).ok()
+            } else {
+                gst_video::VideoInfoDmaDrm::from_caps(caps)
+                    .map(VideoInfo::DmaDrm)
+                    .ok()
+            };
+
+            #[cfg(all(target_os = "linux", not(feature = "fhs")))]
             let zero_copy_info = gst_video::VideoInfoDmaDrm::from_caps(caps)
                 .map(VideoInfo::DmaDrm)
                 .ok();
@@ -805,6 +849,11 @@ pub mod imp {
                     },
                     #[cfg(target_os = "macos")]
                     VideoInfo::IOSurface(info) => super::FrameData::IOSurface {
+                        buffer,
+                        info: info.clone(),
+                    },
+                    #[cfg(all(target_os = "linux", feature = "fhs"))]
+                    VideoInfo::Cuda(info) => super::FrameData::Cuda {
                         buffer,
                         info: info.clone(),
                     },

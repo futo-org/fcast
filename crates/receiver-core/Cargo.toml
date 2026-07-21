@@ -82,6 +82,7 @@ rcgen.workspace = true
 uuid.workspace = true
 
 glow.workspace = true
+libloading = { workspace = true, optional = true }
 
 
 [dependencies.slint]
@@ -169,8 +170,11 @@ wayland-subsurface = [
     "dep:wayland-protocols",
     "dep:raw-window-handle",
     "dep:i-slint-backend-winit",
-    "dep:libplacebo-vulkan",
+    "libplacebo-vulkan",
 ]
+# libplacebo's Vulkan backend (windowless GPU + dma-buf export), without the
+# winit/wayland baggage. Enabled by wayland-subsurface and by fhs.
+libplacebo-vulkan = ["dep:libplacebo-vulkan"]
 systray = ["slint/system-tray"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
@@ -178,4 +182,4 @@ tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
 # Enable when linking against a fully static gstreamer-full build
 static-gstreamer = []
-fhs = ["extra-imgfmt", "slint/renderer-femtovg"]
+fhs = ["extra-imgfmt", "slint/renderer-femtovg", "libplacebo-vulkan", "dep:libloading"]

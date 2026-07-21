@@ -53,8 +53,12 @@ mod player;
 mod raop;
 mod user_agent;
 mod utils;
-mod va;
+pub mod va;
 pub mod video;
+#[cfg(feature = "fhs")]
+mod cuda;
+#[cfg(feature = "fhs")]
+mod cuda_vulkan;
 pub mod video_sink;
 #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
 mod wayland_sink;

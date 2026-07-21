@@ -217,6 +217,11 @@ impl Overlay {
         if self.subtitle_key == Some(key) {
             return;
         }
+        if overlays.iter().all(|o| o.pixels.is_empty()) {
+            self.clear_subtitle(gl);
+            self.subtitle_key = Some(key);
+            return;
+        }
         if let [only] = overlays {
             self.store_subtitle(gl, &only.pixels, only.width as i32, only.height as i32);
             self.subtitle_key = Some(key);

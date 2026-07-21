@@ -1,13 +1,18 @@
 use std::path::Path;
 
+fn render_node_vendor(device_path: &str) -> Option<String> {
+    let node = Path::new(device_path).file_name().and_then(|n| n.to_str())?;
+    let vendor = std::fs::read_to_string(format!("/sys/class/drm/{node}/device/vendor")).ok()?;
+    Some(vendor.trim().to_string())
+}
+
 pub fn render_node_is_intel(device_path: &str) -> bool {
-    let Some(node) = Path::new(device_path).file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    match std::fs::read_to_string(format!("/sys/class/drm/{node}/device/vendor")) {
-        Ok(vendor) => vendor.trim() == "0x8086",
-        Err(_) => false,
-    }
+    render_node_vendor(device_path).as_deref() == Some("0x8086")
+}
+
+#[cfg(feature = "fhs")]
+pub fn render_node_is_nvidia(device_path: &str) -> bool {
+    render_node_vendor(device_path).as_deref() == Some("0x10de")
 }
 
 #[cfg(feature = "fhs")]
