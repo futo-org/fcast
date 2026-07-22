@@ -1625,6 +1625,30 @@ fn configure_gstreamer(
     ))
 }
 
+/// Apply the Windows MSVC/vcvars build environment to `sh` — PATH with
+/// `cl`/`link`/`dumpbin` plus the SDK `INCLUDE`/`LIB`, and the RunAsInvoker
+/// compat shim — returning the RAII guards. Both `meson setup` AND `meson
+/// compile` need it: a compile can trigger a reconfigure whose `find_library`
+/// link checks are uncached (`disable_cache=True`) and re-invoke `cl`, so the
+/// compiler must still be on PATH at compile time.
+#[cfg(windows)]
+fn push_msvc_build_env(sh: &Rc<Shell>) -> Result<Vec<xshell::PushEnv<'_>>> {
+    let mut guards = Vec::new();
+    let mut path = sh.var("PATH").unwrap_or_default();
+    for (k, v) in vcvars_env(sh)? {
+        if k.eq_ignore_ascii_case("PATH") {
+            path = v; // vcvars PATH already includes the original plus MSVC bins
+        } else {
+            guards.push(sh.push_env(k, v));
+        }
+    }
+    guards.push(sh.push_env("PATH", path));
+    // patch.exe / child procs must inherit our unelevated token or
+    // CreateProcess fails with WinError 740 (see configure_gstreamer).
+    guards.push(sh.push_env("__COMPAT_LAYER", "RunAsInvoker"));
+    Ok(guards)
+}
+
 /// `meson compile` + stamp write (only after success, so a failed build
 /// re-runs the setup check next time). Split from `configure_gstreamer` so
 /// `build()` can instead run the compile in the background (spawn/join).
@@ -1644,6 +1668,15 @@ fn compile_gstreamer(
             sh.push_env("PKG_CONFIG_LIBDIR", empty.as_str()),
         )
     });
+    // Windows: that same compile-time regenerate re-runs `find_library` link
+    // checks, which need `cl` on PATH. configure_gstreamer installs the MSVC
+    // env for `meson setup`, but its guards drop when it returns — without
+    // re-establishing it here the reconfigure dies with
+    // `CreateProcess … [WinError 2] The system cannot find the file specified`.
+    #[cfg(windows)]
+    let _msvc_env = (target_os(profile) == "windows")
+        .then(|| push_msvc_build_env(sh))
+        .transpose()?;
     println!(">> Building GStreamer …");
     let build_dir = &build.build_dir;
     cmd!(sh, "meson compile -C {build_dir}").run()?;
