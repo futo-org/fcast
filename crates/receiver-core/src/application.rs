@@ -53,6 +53,10 @@ use crate::{airplay, message::AirPlay};
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
+/// Buffered-range/nub polling is cheap but not free (the stream-mode nub walks
+/// the pipeline), the buffered amount changes slowly, and the scrubber is
+/// rarely on screen, so throttle it well below the 100 ms progress tick.
+const BUFFERED_RANGES_INTERVAL: Duration = Duration::from_millis(1000);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
 
@@ -370,6 +374,7 @@ pub struct Application {
     pending_subtitle_adds: Vec<PendingSubtitleAdd>,
     pending_subtitle_add_epoch: u64,
     last_progress_broadcast: Option<Instant>,
+    last_buffered_push: Option<Instant>,
     last_volume_cmd: Option<Instant>,
     pending_seek_op: Option<(PacketOrigin, gst::ClockTime)>,
     pending_seek_epoch: u64,
@@ -639,6 +644,7 @@ impl Application {
             pending_subtitle_adds: Vec::new(),
             pending_subtitle_add_epoch: 0,
             last_progress_broadcast: None,
+            last_buffered_push: None,
             last_volume_cmd: None,
             pending_seek_op: None,
             pending_seek_epoch: 0,
@@ -759,12 +765,59 @@ impl Application {
         }
     }
 
+    /// Push the scrubber's buffered indicator. Prefers real timeline ranges (download/timeshift
+    /// buffering); in the receiver's STREAM mode those are empty, so it falls back to a single
+    /// "buffered ahead of the playhead" nub sized from the queue depth. Empty (no bar) when neither
+    /// is known.
+    ///
+    /// Throttled to [`BUFFERED_RANGES_INTERVAL`]: it is driven from the 100 ms progress tick and
+    /// from state edges, but the buffered amount changes slowly and the stream-mode nub walks the
+    /// pipeline, so polling every tick is wasteful.
+    fn push_buffered_ranges(&mut self) {
+        if self
+            .last_buffered_push
+            .is_some_and(|at| at.elapsed() < BUFFERED_RANGES_INTERVAL)
+        {
+            return;
+        }
+        self.last_buffered_push = Some(Instant::now());
+
+        let ranges = self.player.buffered_ranges();
+        if !ranges.is_empty() {
+            let ranges = ranges
+                .into_iter()
+                .map(|r| (r.start as f32, r.stop as f32))
+                .collect();
+            self.gui.set_buffered_ranges(ranges);
+            return;
+        }
+
+        // STREAM mode: draw [position, position + buffered-ahead] as one nub.
+        let nub = self.buffered_ahead_range();
+        self.gui.set_buffered_ranges(nub.into_iter().collect());
+    }
+
+    /// The buffered-ahead nub as a single `(start, stop)` timeline fraction, or `None` when the
+    /// ahead duration or total duration is unknown.
+    fn buffered_ahead_range(&self) -> Option<(f32, f32)> {
+        let duration = self.current_duration?.seconds_f64();
+        if duration <= 0.0 {
+            return None;
+        }
+        let ahead = self.player.buffered_ahead()?.seconds_f64();
+        let position = self.player.get_position()?.seconds_f64();
+        let start = (position / duration).clamp(0.0, 1.0);
+        let stop = ((position + ahead) / duration).clamp(0.0, 1.0);
+        (stop > start).then_some((start as f32, stop as f32))
+    }
+
     fn playback_progress_changed(&mut self) {
         let position = self.player.get_position().unwrap_or(gst::ClockTime::ZERO);
         let duration = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
 
         self.gui
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
+        self.push_buffered_ranges();
 
         // Discontinuity notification (seek/state edge): bypasses per-sender
         // intervals on purpose, but the start/seek dance produces bursts of
@@ -877,6 +930,7 @@ impl Application {
         self.gui.set_playback_rate(playback_rate as f32);
         self.gui
             .update_playback_progress(position as f32, duration as f32);
+        self.push_buffered_ranges();
 
         if self.should_broadcast()
             && (self.last_sent_update.elapsed() >= SENDER_UPDATE_INTERVAL || force)
@@ -3536,12 +3590,38 @@ impl Application {
             internals: self.inspector_internals(),
             sinks: self.inspector_sink_lines(),
             image: self.inspector_image.clone(),
+            buffering: self.inspector_buffering(),
         });
     }
 
-    /// The sources card's lines: one per live input, showing the uri's
-    /// protocol and hostname when the element has a uri, and the element
-    /// factory either way.
+    /// The buffering card's data: a summary of the current buffering state. `None` when the source
+    /// can't answer a buffering query.
+    fn inspector_buffering(&self) -> Option<gui::InspectorBuffering> {
+        let info = self.player.dbg_buffering()?;
+
+        Some(gui::InspectorBuffering {
+            fill_fraction: (info.percent as f32 / 100.0).clamp(0.0, 1.0),
+            fill_label: format!(
+                "{}%{}",
+                info.percent,
+                if info.busy { " (busy)" } else { "" }
+            ),
+            ahead_label: self
+                .player
+                .buffered_ahead()
+                .map(|ahead| format!("{:.1} s", ahead.seconds_f64()))
+                .unwrap_or_default(),
+            mode_label: format!("{:?}", info.mode).to_lowercase(),
+            eta_label: info
+                .buffering_left
+                .filter(|left| *left > gst::ClockTime::ZERO)
+                .map(|left| format!("full in {:.1} s", left.seconds_f64()))
+                .unwrap_or_default(),
+        })
+    }
+
+    /// The sources card's lines: one per live input, showing the uri's protocol and hostname when
+    /// the element has a uri, and the element factory either way.
     fn inspector_source_lines(&self) -> Vec<String> {
         self.player
             .dbg_sources()
@@ -3696,11 +3776,15 @@ impl Application {
                         )
                     })
                     .unwrap_or_else(|| "not negotiated".to_string());
-                lines.push(format!(
-                    "audio: {format}, {} rendered, {} dropped",
-                    stats.get::<u64>("rendered").unwrap_or(0),
-                    stats.get::<u64>("dropped").unwrap_or(0),
-                ));
+                let counts = match stats {
+                    Some(stats) => format!(
+                        "{} rendered, {} dropped",
+                        stats.get::<u64>("rendered").unwrap_or(0),
+                        stats.get::<u64>("dropped").unwrap_or(0),
+                    ),
+                    None => "stats n/a".to_string(),
+                };
+                lines.push(format!("audio: {format}, {counts}"));
             }
             None => lines.push("audio: no sink".to_string()),
         }

@@ -761,6 +761,24 @@ impl Player {
         self.fcast.position()
     }
 
+    /// Buffered regions of the current media as timeline fractions, for the
+    /// scrubber's buffered indicator. Empty when the source can't answer a
+    /// buffering query (local file, live/SABR, pre-preroll).
+    pub fn buffered_ranges(&self) -> Vec<fcastplaybin::BufferedRange> {
+        self.fcast.buffered_ranges()
+    }
+
+    /// Inspector: full buffering state (fill percent, mode, rates, ranges).
+    pub fn dbg_buffering(&self) -> Option<fcastplaybin::BufferingInfo> {
+        self.fcast.buffering_info()
+    }
+
+    /// "Buffered ahead of the playhead" duration, for the scrubber's buffered
+    /// nub in STREAM mode (where the buffering query reports no ranges).
+    pub fn buffered_ahead(&self) -> Option<gst::ClockTime> {
+        self.fcast.buffered_ahead()
+    }
+
     fn clear_state(&mut self) {
         self.streams.clear();
         self.selected = TrackSelection::default();
@@ -1258,7 +1276,7 @@ impl Player {
 
     /// Inspector: the audio sink's negotiated caps and rendered/dropped
     /// counts, while a per-load sink exists.
-    pub fn dbg_audio_sink_health(&self) -> Option<(Option<gst::Caps>, gst::Structure)> {
+    pub fn dbg_audio_sink_health(&self) -> Option<(Option<gst::Caps>, Option<gst::Structure>)> {
         self.fcast.audio_sink_health()
     }
 

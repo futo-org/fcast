@@ -4,6 +4,7 @@ import {
     AppState,
     UiPlayerVariant,
     UiVideoDbgInfo,
+    UiBufferedRange,
 } from "globals.slint";
 
 // A batch of geometry sharing one fill/stroke, as an SVG path string.
@@ -70,6 +71,15 @@ export global InspectorState {
     in-out property <string> video-bitrate-label;
     in-out property <string> audio-bitrate-label;
     in-out property <string> bitrate-peak-label;
+
+    // Buffering health (see `Application::inspector_buffering`). STREAM mode
+    // exposes a fill level + rates, not timeline ranges.
+    in-out property <bool> have-buffering: false;
+    in-out property <float> buffering-fill;
+    in-out property <string> buffering-fill-label;
+    in-out property <string> buffering-ahead-label;
+    in-out property <string> buffering-mode-label;
+    in-out property <string> buffering-eta-label;
 }
 
 component InfoRow inherits HorizontalLayout {
@@ -291,6 +301,45 @@ component Card inherits Rectangle {
         }
 
         @children
+    }
+}
+
+component BufferingCard inherits Card {
+    title: "Buffering";
+
+    // Buffer fill meter (0..1, relative to the low/high watermarks).
+    Rectangle {
+        height: 10px;
+        background: #00000066;
+        border-radius: 3px;
+        clip: true;
+
+        Rectangle {
+            x: 0;
+            width: parent.width * clamp(InspectorState.buffering-fill, 0.0, 1.0);
+            height: parent.height;
+            background: #4da3ff;
+        }
+    }
+
+    InfoRow {
+        label: "Fill";
+        value: InspectorState.buffering-fill-label;
+    }
+
+    if InspectorState.buffering-ahead-label != "": InfoRow {
+        label: "Ahead";
+        value: InspectorState.buffering-ahead-label;
+    }
+
+    InfoRow {
+        label: "Mode";
+        value: InspectorState.buffering-mode-label;
+    }
+
+    if InspectorState.buffering-eta-label != "": InfoRow {
+        label: "ETA";
+        value: InspectorState.buffering-eta-label;
     }
 }
 
@@ -548,6 +597,8 @@ export component Inspector inherits Rectangle {
                         && Bridge.app-state == AppState.Playing
                         && (Bridge.player-variant == UiPlayerVariant.Video
                             || Bridge.player-variant == UiPlayerVariant.Audio): BitrateCard { }
+
+                    if InspectorState.have-buffering: BufferingCard { }
 
                     if InspectorState.sources-lines.length > 0: SourcesCard { }
 

@@ -197,9 +197,23 @@ pub struct InspectorTrackRow {
     pub selected: bool,
 }
 
-/// One inspector tick's worth of display data (see
-/// `Application::inspector_tick`). Bitrate histories are kbit/s, oldest
-/// first.
+/// The inspector's buffering card: a health summary of the current buffering state. `None` when the
+/// source can't answer a buffering query (see `Player::dbg_buffering`).
+pub struct InspectorBuffering {
+    /// Buffer fill (`0.0..=1.0`) for the meter, relative to the watermarks.
+    pub fill_fraction: f32,
+    /// e.g. "87%" or "87% (busy)".
+    pub fill_label: String,
+    /// Buffered-ahead duration, e.g. "2.1 s", or empty when unknown.
+    pub ahead_label: String,
+    /// e.g. "stream", "download".
+    pub mode_label: String,
+    /// e.g. "full in 3.2 s", or empty when unknown.
+    pub eta_label: String,
+}
+
+/// One inspector tick's worth of display data (see `Application::inspector_tick`). Bitrate
+/// histories are kbit/s, oldest first.
 pub struct InspectorSample {
     pub video_kbps: Vec<f32>,
     pub audio_kbps: Vec<f32>,
@@ -209,6 +223,7 @@ pub struct InspectorSample {
     pub internals: Vec<String>,
     pub sinks: Vec<String>,
     pub image: String,
+    pub buffering: Option<InspectorBuffering>,
 }
 
 #[derive(Debug)]
@@ -232,6 +247,8 @@ pub enum UpdateGuiCommand {
         progress_s: Seconds,
         duration_s: Seconds,
     },
+    /// Buffered scrubber regions, as `(start, stop)` timeline fractions.
+    SetBufferedRanges(Vec<(f32, f32)>),
     SetMediaTitle(String),
     SetArtistName(String),
     ClearAudioCovers,
@@ -400,6 +417,12 @@ impl GuiController {
         });
     }
 
+    /// Push the scrubber's buffered regions (fractions `0.0..=1.0` of the
+    /// timeline, `start` < `stop`).
+    pub fn set_buffered_ranges(&self, ranges: Vec<(f32, f32)>) {
+        self.send(UpdateGuiCommand::SetBufferedRanges(ranges));
+    }
+
     pub fn set_media_title(&self, title: String) {
         self.send(UpdateGuiCommand::SetMediaTitle(title));
     }
@@ -550,6 +573,14 @@ fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
     bridge.set_duration_secs(dur_sec);
 }
 
+fn set_buffered_ranges(bridge: &Bridge, ranges: Vec<(f32, f32)>) {
+    let model: Vec<crate::UiBufferedRange> = ranges
+        .into_iter()
+        .map(|(start, stop)| crate::UiBufferedRange { start, stop })
+        .collect();
+    bridge.set_buffered_ranges(Rc::new(VecModel::from(model)).into());
+}
+
 fn clear_audio_covers(bridge: &Bridge, renderer_tx: &RendererMsgSender) {
     bridge.set_audio_track_cover(CompoundImage::default());
     let _ = renderer_tx.send(RendererMessage::ClearBluredAudioTrackCover);
@@ -590,12 +621,14 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         } => {
             set_playback_progress(&bridge, progress_s, duration_s);
         }
+        UpdateGuiCommand::SetBufferedRanges(ranges) => set_buffered_ranges(&bridge, ranges),
         UpdateGuiCommand::SetMediaTitle(title) => bridge.set_media_title(title.to_shared_string()),
         UpdateGuiCommand::SetArtistName(name) => bridge.set_artist_name(name.to_shared_string()),
         UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge, renderer_tx),
         UpdateGuiCommand::ClearCommonPlaybackState => {
             clear_audio_covers(&bridge, renderer_tx);
             set_playback_progress(&bridge, 0.0, 0.0);
+            set_buffered_ranges(&bridge, Vec::new());
         }
         UpdateGuiCommand::SetPlayerType(typ) => bridge.set_player_variant(typ),
         UpdateGuiCommand::SetTracks {
@@ -778,6 +811,18 @@ fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
     state.set_internals_lines(lines(sample.internals));
     state.set_sink_lines(lines(sample.sinks));
     state.set_image_info(sample.image.into());
+
+    match sample.buffering {
+        Some(buffering) => {
+            state.set_buffering_fill(buffering.fill_fraction);
+            state.set_buffering_fill_label(buffering.fill_label.into());
+            state.set_buffering_ahead_label(buffering.ahead_label.into());
+            state.set_buffering_mode_label(buffering.mode_label.into());
+            state.set_buffering_eta_label(buffering.eta_label.into());
+            state.set_have_buffering(true);
+        }
+        None => state.set_have_buffering(false),
+    }
 }
 
 fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {

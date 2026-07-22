@@ -4,6 +4,13 @@
 import { FluentPalette, FCastPalette } from "styling.slint";
 import { SliderBase } from "slider-base.slint";
 
+// A filled region drawn behind the track, as fractions [0.0, 1.0] of the
+// rail. Used by media scrubbers to show how much has buffered.
+export struct UiBufferedRange {
+    start: float,
+    stop: float,
+}
+
 export component Slider {
     in property <Orientation> orientation <=> base.orientation;
     in property <float> maximum <=> base.maximum;
@@ -15,6 +22,8 @@ export component Slider {
     in property <bool> hide-thumb: false;
     in property <color> thumb-color: FCastPalette.brand-600;
     in property <color> thumb-border-color: FCastPalette.brand-600;
+    in property <[UiBufferedRange]> buffered-ranges;
+    in property <color> buffered-color: FCastPalette.opacity-light-1100;
     out property <bool> has-focus: base.has-focus;
     out property <bool> has-hover: base.has-hover;
     out property <length> mouse-x <=> base.mouse-x;
@@ -65,6 +74,15 @@ export component Slider {
 
         background: rail-color;
         border-radius: 2px;
+    }
+
+    for range in root.buffered-ranges: Rectangle {
+        x: rail.x + range.start * rail.width;
+        y: rail.y;
+        width: max(0px, (range.stop - range.start) * rail.width);
+        height: rail.height;
+        background: root.buffered-color;
+        border-radius: rail.border-radius;
     }
 
     track := Rectangle {

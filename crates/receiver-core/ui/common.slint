@@ -8,6 +8,8 @@ export component PositionScrubber inherits Slider {
     minimum: 0.0;
     value <=> Bridge.progress-secs;
     rail-color: #FFFFFF33;
+    buffered-ranges: Bridge.is-live ? [] : Bridge.buffered-ranges;
+    buffered-color: #FFFFFF66;
     track-color: Bridge.is-live ? FCastPalette.negative-800 : FCastPalette.foreground;
     thumb-color: black.transparentize(85%);
     thumb-border-color: FCastPalette.foreground;

@@ -1,3 +1,7 @@
+import { UiBufferedRange } from "../../../ui-components/std-widgets.slint";
+
+export { UiBufferedRange }
+
 export enum GuiPlaybackState {
     Idle,
     Playing,
@@ -76,6 +80,9 @@ export struct UiVideoDbgInfo {
 export global Bridge {
     in property <float> progress-secs;
     in property <float> duration-secs;
+    // Buffered regions of the current media, as fractions [0.0, 1.0] of the timeline (see
+    // `Player::buffered_ranges`). Drawn on the scrubber.
+    in property <[UiBufferedRange]> buffered-ranges;
     in property <AppState> app-state: AppState.Idle;
     in property <bool> is-live: false;
     in property <string> media-title;
