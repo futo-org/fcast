@@ -1131,14 +1131,17 @@ impl Player {
         self.fcast.recover_clock_async();
     }
 
-    /// Produce a dot dump of the pipeline for the inspector, delivered via
-    /// `done`. Runs on the fcastplaybin worker so the graph walk is
-    /// serialized against loads and teardowns (`debug_to_dot_data` reads
-    /// every element's properties mid-walk, and racing the per-load audio
-    /// sink's finalize double-freed in the sink). `done` is invoked on the
-    /// worker thread: hand the work off, do not block in it.
-    pub fn request_graph_dot_data(&self, done: impl FnOnce(String) + Send + 'static) {
-        self.fcast.debug_dot_data_async(Box::new(done));
+    /// Produce a graph snapshot of the pipeline for the inspector, delivered
+    /// via `done`. Runs on the fcastplaybin worker so the graph walk is
+    /// serialized against loads and teardowns (the walk reads every
+    /// element's properties, and racing the per-load audio sink's finalize
+    /// double-freed in the sink back when this was a dot dump). `done` is
+    /// invoked on the worker thread: hand the work off, do not block in it.
+    pub fn request_graph_snapshot(
+        &self,
+        done: impl FnOnce(fcastplaybin::graph::GraphSnapshot) + Send + 'static,
+    ) {
+        self.fcast.debug_graph_async(Box::new(done));
     }
 
     #[cfg(debug_assertions)]
@@ -1630,7 +1633,7 @@ mod tests {
 
     #[test]
     fn missing_plugin_ignorable_only_for_metadata_streams() {
-        gst::init().unwrap();
+        crate::gstreamer::init_for_tests();
         // gst_missing_decoder_message_new requires a non-null src element.
         let src = gst::ElementFactory::make("identity").build().unwrap();
 

@@ -33,6 +33,7 @@ use gst::prelude::*;
 use parking_lot::Mutex;
 use tracing::{debug, debug_span, error, info, warn};
 
+pub mod graph;
 pub mod state_machine;
 
 pub use state_machine::{
@@ -293,10 +294,10 @@ enum Job {
     DetachSub {
         id: ExternalSubId,
     },
-    /// Dot-dump the pipeline graph for debugging. On the worker so the
+    /// Snapshot the pipeline graph for the inspector. On the worker so the
     /// element walk cannot race a load's sink teardown.
-    DumpDot {
-        done: Box<dyn FnOnce(String) + Send>,
+    DumpGraph {
+        done: Box<dyn FnOnce(graph::GraphSnapshot) + Send>,
     },
 }
 
@@ -332,7 +333,7 @@ impl std::fmt::Debug for Job {
                 .field("url", url)
                 .finish(),
             Job::DetachSub { id } => f.debug_struct("DetachSub").field("id", id).finish(),
-            Job::DumpDot { .. } => write!(f, "DumpDot"),
+            Job::DumpGraph { .. } => write!(f, "DumpGraph"),
         }
     }
 }
@@ -1190,11 +1191,11 @@ impl FcastPlaybin {
         });
     }
 
-    /// Queue a dot dump of the pipeline graph, delivered to `done` ON THE
-    /// WORKER THREAD (hand it off, do not block). Queued so the element walk
-    /// cannot race a concurrent load or teardown.
-    pub fn debug_dot_data_async(&self, done: Box<dyn FnOnce(String) + Send>) {
-        self.queue_job(Job::DumpDot { done });
+    /// Queue a [`graph::snapshot`] of the pipeline graph, delivered to `done`
+    /// ON THE WORKER THREAD (hand it off, do not block). Queued so the
+    /// element walk cannot race a concurrent load or teardown.
+    pub fn debug_graph_async(&self, done: Box<dyn FnOnce(graph::GraphSnapshot) + Send>) {
+        self.queue_job(Job::DumpGraph { done });
     }
 
     /// Queue a position/rate seek. If the pipeline is not settled in PAUSED
@@ -1941,11 +1942,8 @@ impl FcastPlaybin {
                     debug!(?err, ?id, "fcastplaybin subtitle detach failed");
                 }
             }
-            Job::DumpDot { done } => {
-                let dot = inner
-                    .pipeline
-                    .debug_to_dot_data(gst::DebugGraphDetails::all());
-                done(dot.to_string());
+            Job::DumpGraph { done } => {
+                done(graph::snapshot(inner.pipeline.upcast_ref()));
             }
         }
     }

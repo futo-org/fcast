@@ -3504,11 +3504,6 @@ impl Application {
     }
 
     fn refresh_inspector_graph(&self) {
-        use std::{
-            io::Write,
-            process::{Command, Stdio},
-        };
-
         let Some(gui_tx) = self.gui.tx.clone() else {
             return;
         };
@@ -3526,61 +3521,22 @@ impl Application {
             secs % 60
         );
 
-        // The dot walk runs on the player worker (serialized against loads
-        // and teardowns, see `request_graph_dot_data`). The delivery callback
+        // The graph walk runs on the player worker (serialized against loads
+        // and teardowns, see `request_graph_snapshot`). The delivery callback
         // executes on that worker, so it only hands the layout work off to
         // the blocking pool.
         let runtime = tokio::runtime::Handle::current();
-        self.player.request_graph_dot_data(move |dot| {
+        self.player.request_graph_snapshot(move |snapshot| {
             runtime.spawn_blocking(move || {
-                fn fail(gui_tx: &gui::UpdateGuiSender) {
-                    let _ = gui_tx.send(gui::UpdateGuiCommand::SetInspectorDumping(false));
-                }
-
-                let child = Command::new("dot")
-                    .arg("-Tjson")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn();
-                let mut child = match child {
-                    Ok(c) => c,
-                    Err(err) => {
-                        error!(?err, "Failed to spawn `dot` (is graphviz installed?)");
-                        return fail(&gui_tx);
+                let scene = crate::inspector_graph::layout(&snapshot);
+                let _ = gui_tx.send(gui::UpdateGuiCommand::SetGraphDump(
+                    gui::GraphDumpData {
+                        trigger: "manual".to_string(),
+                        timestamp,
+                        scene,
                     }
-                };
-
-                if let Some(mut stdin) = child.stdin.take()
-                    && let Err(err) = stdin.write_all(dot.as_bytes())
-                {
-                    error!(?err, "Failed to write graph to graphviz");
-                    return fail(&gui_tx);
-                }
-
-                let output = match child.wait_with_output() {
-                    Ok(o) => o,
-                    Err(err) => {
-                        error!(?err, "graphviz layout failed");
-                        return fail(&gui_tx);
-                    }
-                };
-
-                match remote_pipeline_dbg::render::parse(&output.stdout) {
-                    Ok(graph) => {
-                        let _ = gui_tx.send(gui::UpdateGuiCommand::SetGraphDump(
-                            gui::GraphDumpData {
-                                trigger: "manual".to_string(),
-                                timestamp,
-                                graph,
-                            }
-                            .into(),
-                        ));
-                    }
-                    Err(err) => {
-                        error!(?err, "Failed to parse graphviz output");
-                        fail(&gui_tx);
-                    }
-                }
+                    .into(),
+                ));
             });
         });
     }

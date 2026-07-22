@@ -7,24 +7,52 @@ import {
     UiBufferedRange,
 } from "globals.slint";
 
-// A batch of geometry sharing one fill/stroke, as an SVG path string.
-export struct UiGraphPath {
-    commands: string,
-    fill: brush,
-    stroke: brush,
-    stroke-width: length,
+// One axis-aligned box of the graph scene (element, bin or pad chrome).
+export struct UiGraphRect {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    fill: color,
+    stroke: color,
 }
 
-// A single text label anchored at (x, y) in the graph's coordinate space.
-// `align`: 0 = left, 1 = center, 2 = right — the anchor is offset by the
-// label's own rendered width so it never gets clipped to a fixed box.
+// A caps chip on a wire: `summary` is always visible. Hovering expands the
+// chip in place to `detail-width`×`detail-height` showing `detail` (full
+// caps, newline-separated), and highlights the wire (`edge`/`commands`).
+export struct UiGraphLabel {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    summary: string,
+    detail: string,
+    detail-width: length,
+    detail-height: length,
+    edge: int,
+    commands: string,
+    arrow: string,
+}
+
+// A thin hover zone along one segment of a wire. Hovering it highlights
+// that wire (drawing `commands`/`arrow` in the accent color).
+export struct UiEdgeHit {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    edge: int,
+    commands: string,
+    arrow: string,
+}
+
+// A single left-aligned text label at (x, y) in the graph's coordinate space.
 export struct UiGraphText {
     x: length,
     y: length,
     size: length,
     text: string,
     color: color,
-    align: int,
 }
 
 export struct GraphDump {
@@ -32,11 +60,20 @@ export struct GraphDump {
     trigger: string,
     // Wall-clock time the dump was taken.
     timestamp: string,
-    // Graph bounds (graphviz layout, in points treated as pixels).
+    // Scene bounds (receiver-side layout, logical pixels at zoom 1).
     width: length,
     height: length,
-    paths: [UiGraphPath],
+    rects: [UiGraphRect],
+    // Caps chips: one compact line per wire, expanding to the full caps
+    // block on hover.
+    labels: [UiGraphLabel],
+    // Per-segment hover zones for wire highlighting.
+    hits: [UiEdgeHit],
     texts: [UiGraphText],
+    // All edge polylines batched into one SVG path (right angles only), and
+    // all arrowheads into another, so the whole wiring is two Path items.
+    edges: string,
+    arrows: string,
 }
 
 // One row of the track table (see `Application::inspector_track_row`).
@@ -51,7 +88,7 @@ export struct UiInspectorTrack {
 export global InspectorState {
     in-out property <bool> have-graph: false;
     in-out property <GraphDump> graph;
-    // True while a fresh graph dump is being laid out by graphviz.
+    // True while a fresh graph dump is being walked and laid out.
     in-out property <bool> dumping: false;
 
     // Per-tick player data (see `Application::inspector_tick`).
@@ -440,84 +477,290 @@ component ImageInfoCard inherits Card {
     }
 }
 
+// A viewport onto the laid-out graph: the dark canvas always fills the whole
+// available area, and pan/zoom move the graph content within it. Wheel pans,
+// ctrl+wheel zooms around the cursor, left-drag pans.
 component GraphView inherits Rectangle {
     clip: true;
+    // Same chrome as the inspector's data cards.
+    background: #1c1c1eee;
+    border-width: 1px;
+    border-color: #ffffff20;
 
-    scroll := ScrollView {
-        property <float> scaling: 1.0;
+    property <float> scaling: 1.0;
+    property <length> offset-x: 0;
+    property <length> offset-y: 0;
 
-        viewport-width: canvas.width;
-        viewport-height: canvas.height;
+    // The hovered wire (via an edge segment or its caps chip), redrawn in
+    // the accent color on top of the batched gray wiring.
+    property <int> hovered-edge: -1;
+    property <string> hover-commands;
+    property <string> hover-arrow;
 
-        TouchArea {
-            scroll-event(event) => {
-                if !event.modifiers.control {
-                    return reject;
-                }
-                let old-scale = scaling;
-                scaling = Math.clamp(scaling + (event.delta-y > 0 ? 0.05 : -0.05), 0.1, 5.0);
-                scroll.viewport-x = (self.mouse-x + scroll.viewport-x) - (self.mouse-x * (scaling / old-scale));
-                scroll.viewport-y = (self.mouse-y + scroll.viewport-y) - (self.mouse-y * (scaling / old-scale));
+    // The expanded caps chip, rendered as one shared overlay after all the
+    // chips so no other chip can draw on top of it. Coordinates are in
+    // scene space and scale at render time.
+    property <int> expanded-chip: -1;
+    property <length> expanded-x;
+    property <length> expanded-y;
+    property <length> expanded-w;
+    property <length> expanded-h;
+    property <string> expanded-detail;
 
-                accept
+    // A fresh dump resets the viewport: fit the whole graph (never zoom
+    // past 1:1) and center it, so it can't be stranded off-screen at the
+    // previous dump's pan/zoom.
+    property <string> graph-stamp: InspectorState.graph.trigger + InspectorState.graph.timestamp;
+    changed graph-stamp => {
+        root.scaling = Math.clamp(Math.min(
+            root.width / Math.max(1px, InspectorState.graph.width),
+            root.height / Math.max(1px, InspectorState.graph.height)), 0.1, 1.0);
+        root.offset-x = (root.width - InspectorState.graph.width * root.scaling) / 2.0;
+        root.offset-y = (root.height - InspectorState.graph.height * root.scaling) / 2.0;
+        root.hovered-edge = -1;
+        root.expanded-chip = -1;
+    }
+    init => {
+        // Also fit when the view opens onto an already-present graph.
+        root.scaling = Math.clamp(Math.min(
+            root.width / Math.max(1px, InspectorState.graph.width),
+            root.height / Math.max(1px, InspectorState.graph.height)), 0.1, 1.0);
+        root.offset-x = (root.width - InspectorState.graph.width * root.scaling) / 2.0;
+        root.offset-y = (root.height - InspectorState.graph.height * root.scaling) / 2.0;
+    }
+
+    TouchArea {
+        scroll-event(event) => {
+            if event.modifiers.control {
+                let old-scale = root.scaling;
+                root.scaling = Math.clamp(root.scaling + (event.delta-y > 0 ? 0.05 : -0.05), 0.1, 5.0);
+                // Keep the graph point under the cursor fixed while zooming.
+                root.offset-x = self.mouse-x - (self.mouse-x - root.offset-x) * (root.scaling / old-scale);
+                root.offset-y = self.mouse-y - (self.mouse-y - root.offset-y) * (root.scaling / old-scale);
+            } else {
+                root.offset-x += event.delta-x;
+                root.offset-y += event.delta-y;
             }
+            accept
+        }
 
-            // https://github.com/slint-ui/slint/discussions/2235#discussioncomment-4992466
-            property <length> drag-start-x;
-            property <length> drag-start-y;
+        // https://github.com/slint-ui/slint/discussions/2235#discussioncomment-4992466
+        property <length> drag-start-x;
+        property <length> drag-start-y;
 
-            pointer-event(e) => {
-                if (e.kind == PointerEventKind.down
-                    && e.button == PointerEventButton.left) {
-                    self.drag-start-x = scroll.viewport-x;
-                    self.drag-start-y = scroll.viewport-y;
-                }
-            }
-
-            moved => {
-                scroll.viewport-x += (self.mouse-x - self.pressed-x);
-                scroll.viewport-y += (self.mouse-y - self.pressed-y);
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down
+                && e.button == PointerEventButton.left) {
+                self.drag-start-x = root.offset-x;
+                self.drag-start-y = root.offset-y;
             }
         }
 
-        canvas := Rectangle {
-            width: InspectorState.graph.width * scroll.scaling;
-            height: InspectorState.graph.height * scroll.scaling;
-            // Graphviz assumes a white page; keep it readable regardless of the app theme.
-            background: white;
+        moved => {
+            root.offset-x = self.drag-start-x + (self.mouse-x - self.pressed-x);
+            root.offset-y = self.drag-start-y + (self.mouse-y - self.pressed-y);
+        }
+    }
 
-            for p in InspectorState.graph.paths: Path {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                // Map the graph's coordinate space onto the (scaled) canvas so every path shares
-                // one absolute coordinate system. `fit: fill` scales the geometry to the canvas, so
-                // zoom is resolution-free.
-                viewbox-x: 0;
-                viewbox-y: 0;
-                viewbox-width: InspectorState.graph.width / 1px;
-                viewbox-height: InspectorState.graph.height / 1px;
-                fit: fill;
+    // Trackpad pinch (and two-finger touch pinch): scale around the gesture
+    // center. TouchArea's scroll-event never sees macOS pinch gestures, they
+    // arrive as dedicated gesture events that only this handler receives.
+    ScaleRotateGestureHandler {
+        property <float> start-scale: 1.0;
+        property <length> start-offset-x;
+        property <length> start-offset-y;
 
-                commands: p.commands;
-                fill: p.fill;
-                stroke: p.stroke;
-                stroke-width: p.stroke-width * scroll.scaling;
+        started => {
+            self.start-scale = root.scaling;
+            self.start-offset-x = root.offset-x;
+            self.start-offset-y = root.offset-y;
+        }
+
+        updated => {
+            let new-scale = Math.clamp(self.start-scale * self.scale, 0.1, 5.0);
+            root.scaling = new-scale;
+            // Keep the graph point under the gesture center fixed.
+            root.offset-x = self.center.x - (self.center.x - self.start-offset-x) * (new-scale / self.start-scale);
+            root.offset-y = self.center.y - (self.center.y - self.start-offset-y) * (new-scale / self.start-scale);
+        }
+    }
+
+    content := Rectangle {
+        x: root.offset-x;
+        y: root.offset-y;
+        width: InspectorState.graph.width * root.scaling;
+        height: InspectorState.graph.height * root.scaling;
+
+        // Boxes first (parents were emitted before their children, so
+        // z-order nests correctly), then the wiring, then the labels.
+        for r in InspectorState.graph.rects: Rectangle {
+            x: r.x * root.scaling;
+            y: r.y * root.scaling;
+            width: r.width * root.scaling;
+            height: r.height * root.scaling;
+            background: r.fill;
+            border-color: r.stroke;
+            border-width: max(1px, 1px * root.scaling);
+        }
+
+        // Every edge shares one stroke and every arrowhead one fill, so
+        // the whole wiring is two Path items regardless of graph size.
+        // The viewbox maps the layout's coordinate space onto the scaled
+        // canvas, keeping zoom resolution-free.
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: InspectorState.graph.width / 1px;
+            viewbox-height: InspectorState.graph.height / 1px;
+            fit: fill;
+            commands: InspectorState.graph.edges;
+            fill: transparent;
+            stroke: #8a8a8a;
+            stroke-width: max(1px, 1.2px * root.scaling);
+        }
+
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: InspectorState.graph.width / 1px;
+            viewbox-height: InspectorState.graph.height / 1px;
+            fit: fill;
+            commands: InspectorState.graph.arrows;
+            fill: #8a8a8a;
+            stroke: transparent;
+        }
+
+        // The hovered wire redrawn in the accent color, above the gray batch.
+        if root.hovered-edge >= 0: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: InspectorState.graph.width / 1px;
+            viewbox-height: InspectorState.graph.height / 1px;
+            fit: fill;
+            commands: root.hover-commands;
+            fill: transparent;
+            stroke: #4da3ff;
+            stroke-width: max(1.5px, 2px * root.scaling);
+        }
+
+        if root.hovered-edge >= 0: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: InspectorState.graph.width / 1px;
+            viewbox-height: InspectorState.graph.height / 1px;
+            fit: fill;
+            commands: root.hover-arrow;
+            fill: #4da3ff;
+            stroke: transparent;
+        }
+
+        for t in InspectorState.graph.texts: Text {
+            x: t.x * root.scaling;
+            y: t.y * root.scaling;
+            text: t.text;
+            color: t.color;
+            font-size: t.size * root.scaling;
+        }
+
+        // Invisible hover zones along every wire segment.
+        for hit in InspectorState.graph.hits: TouchArea {
+            x: hit.x * root.scaling;
+            y: hit.y * root.scaling;
+            width: hit.width * root.scaling;
+            height: hit.height * root.scaling;
+
+            changed has-hover => {
+                if self.has-hover {
+                    root.hovered-edge = hit.edge;
+                    root.hover-commands = hit.commands;
+                    root.hover-arrow = hit.arrow;
+                } else if root.hovered-edge == hit.edge {
+                    root.hovered-edge = -1;
+                }
+            }
+        }
+
+        // Caps chips above the wiring. Hovering one expands the chip in
+        // place to the full caps block and highlights its wire.
+        for l in InspectorState.graph.labels: Rectangle {
+            x: l.x * root.scaling;
+            y: l.y * root.scaling;
+            width: l.width * root.scaling;
+            height: l.height * root.scaling;
+            background: #1c1c1ef2;
+            border-color: root.hovered-edge == l.edge ? #4da3ff : #ffffff20;
+            border-width: 1px;
+            border-radius: 3px;
+
+            Text {
+                x: 6px * root.scaling;
+                vertical-alignment: center;
+                text: l.summary;
+                color: #4da3ff;
+                font-size: 10px * root.scaling;
             }
 
-            for t in InspectorState.graph.texts: Text {
-                // Anchor scales with the zoom; then offset by the label's own (already scaled)
-                // width so left/center/right alignment holds without a clipping box.
-                x: t.align == 0
-                    ? t.x * scroll.scaling
-                    : t.align == 2
-                    ? t.x * scroll.scaling - self.width
-                    : t.x * scroll.scaling - self.width / 2;
-                y: t.y * scroll.scaling;
-                text: t.text;
-                color: t.color;
-                font-size: t.size * scroll.scaling;
+            TouchArea {
+                changed has-hover => {
+                    // No clearing on exit: the expansion overlay covers the
+                    // chip, takes over the hover, and clears when left.
+                    if self.has-hover {
+                        root.hovered-edge = l.edge;
+                        root.hover-commands = l.commands;
+                        root.hover-arrow = l.arrow;
+                        root.expanded-chip = l.edge;
+                        root.expanded-x = l.x;
+                        root.expanded-y = l.y;
+                        root.expanded-w = max(l.width, l.detail-width);
+                        root.expanded-h = l.detail-height;
+                        root.expanded-detail = l.detail;
+                    }
+                }
+            }
+        }
+
+        // The expanded caps block, over every chip.
+        if root.expanded-chip >= 0: Rectangle {
+            x: root.expanded-x * root.scaling;
+            y: root.expanded-y * root.scaling;
+            width: root.expanded-w * root.scaling;
+            height: root.expanded-h * root.scaling;
+            background: #1c1c1ef8;
+            border-color: #4da3ff;
+            border-width: 1px;
+            border-radius: 3px;
+            clip: true;
+
+            Text {
+                x: 6px * root.scaling;
+                y: 4px * root.scaling;
+                text: root.expanded-detail;
+                color: #b0b0b0;
+                font-size: 10px * root.scaling;
+            }
+
+            TouchArea {
+                // Which chip this overlay was showing when it got the
+                // hover. Leaving only collapses when the state has not
+                // already moved to another chip.
+                property <int> owner: -1;
+
+                changed has-hover => {
+                    if self.has-hover {
+                        self.owner = root.expanded-chip;
+                    } else if root.expanded-chip == self.owner {
+                        root.expanded-chip = -1;
+                        root.hovered-edge = -1;
+                    }
+                }
             }
         }
     }

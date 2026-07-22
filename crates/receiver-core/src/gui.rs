@@ -185,7 +185,7 @@ pub enum ToastType {
 pub struct GraphDumpData {
     pub trigger: String,
     pub timestamp: String,
-    pub graph: remote_pipeline_dbg::render::RenderGraph,
+    pub scene: crate::inspector_graph::Scene,
 }
 
 /// One row of the inspector's track table.
@@ -303,7 +303,6 @@ pub enum UpdateGuiCommand {
 }
 
 type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
-pub type UpdateGuiSender = UnboundedSender<UpdateGuiCommand>;
 
 struct GuiIsVisibleHandle {
     is_visible: Mutex<bool>,
@@ -832,42 +831,69 @@ fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
 }
 
 fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
-    use remote_pipeline_dbg::render::TextAlign;
-
-    fn color(rgba: [u8; 4]) -> slint::Color {
-        slint::Color::from_argb_u8(rgba[3], rgba[0], rgba[1], rgba[2])
-    }
-
-    fn brush(rgba: Option<[u8; 4]>) -> slint::Brush {
-        slint::Brush::SolidColor(rgba.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), color))
-    }
-
-    let paths: Vec<crate::UiGraphPath> = dump
-        .graph
-        .paths
+    let rects: Vec<crate::UiGraphRect> = dump
+        .scene
+        .rects
         .iter()
-        .map(|p| crate::UiGraphPath {
-            commands: p.commands.as_str().into(),
-            fill: brush(p.fill),
-            stroke: brush(p.stroke),
-            stroke_width: p.stroke_width,
+        .map(|rect| crate::UiGraphRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.w,
+            height: rect.h,
+            fill: rect.fill,
+            stroke: rect.stroke,
+        })
+        .collect();
+    // Wire geometry is denormalized onto every hit-zone and chip (shared
+    // refcounted strings), so the UI can highlight without model indexing.
+    let edge_commands: Vec<(slint::SharedString, slint::SharedString)> = dump
+        .scene
+        .edge_paths
+        .iter()
+        .map(|e| (e.commands.as_str().into(), e.arrow.as_str().into()))
+        .collect();
+    let labels: Vec<crate::UiGraphLabel> = dump
+        .scene
+        .labels
+        .iter()
+        .map(|label| crate::UiGraphLabel {
+            x: label.x,
+            y: label.y,
+            width: label.w,
+            height: label.h,
+            summary: label.summary.as_str().into(),
+            detail: label.detail.as_str().into(),
+            detail_width: label.detail_w,
+            detail_height: label.detail_h,
+            edge: label.edge as i32,
+            commands: edge_commands[label.edge].0.clone(),
+            arrow: edge_commands[label.edge].1.clone(),
+        })
+        .collect();
+    let hits: Vec<crate::UiEdgeHit> = dump
+        .scene
+        .edge_hits
+        .iter()
+        .map(|hit| crate::UiEdgeHit {
+            x: hit.x,
+            y: hit.y,
+            width: hit.w,
+            height: hit.h,
+            edge: hit.edge as i32,
+            commands: edge_commands[hit.edge].0.clone(),
+            arrow: edge_commands[hit.edge].1.clone(),
         })
         .collect();
     let texts: Vec<crate::UiGraphText> = dump
-        .graph
+        .scene
         .texts
         .iter()
-        .map(|t| crate::UiGraphText {
-            x: t.x,
-            y: t.y,
-            size: t.size,
-            text: t.text.as_str().into(),
-            color: color(t.color),
-            align: match t.align {
-                TextAlign::Left => 0,
-                TextAlign::Center => 1,
-                TextAlign::Right => 2,
-            },
+        .map(|text| crate::UiGraphText {
+            x: text.x,
+            y: text.y,
+            size: text.size,
+            text: text.text.as_str().into(),
+            color: text.color,
         })
         .collect();
 
@@ -875,10 +901,14 @@ fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
     state.set_graph(crate::GraphDump {
         trigger: dump.trigger.into(),
         timestamp: dump.timestamp.into(),
-        width: dump.graph.width,
-        height: dump.graph.height,
-        paths: Rc::new(slint::VecModel::from(paths)).into(),
+        width: dump.scene.width,
+        height: dump.scene.height,
+        rects: Rc::new(slint::VecModel::from(rects)).into(),
+        labels: Rc::new(slint::VecModel::from(labels)).into(),
+        hits: Rc::new(slint::VecModel::from(hits)).into(),
         texts: Rc::new(slint::VecModel::from(texts)).into(),
+        edges: dump.scene.edges.as_str().into(),
+        arrows: dump.scene.arrows.as_str().into(),
     });
     state.set_have_graph(true);
     state.set_dumping(false);
