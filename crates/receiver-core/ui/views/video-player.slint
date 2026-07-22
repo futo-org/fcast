@@ -115,13 +115,13 @@ component SettingItem inherits Rectangle {
         padding: 10px;
         padding-left: 12px;
         padding-right: 12px;
+        spacing: 8px;
 
         FText {
+            horizontal-stretch: 1;
             text: value;
             overflow: elide;
         }
-
-        Rectangle { }
 
         VerticalLayout {
             alignment: center;
@@ -238,6 +238,8 @@ enum SettingsPage {
 
 component PlaybackControls inherits Rectangle {
     out property <MouseCursor> suggested-cursor: default;
+    // Driven by the parent: true while the pointer is anywhere inside the window.
+    in property <bool> pointer-inside-window: true;
 
     property <bool> is-changing-volume: false;
     property <float> background-height: 100%;
@@ -258,6 +260,14 @@ component PlaybackControls inherits Rectangle {
 
     changed obstructing => {
         Bridge.controls-overlay-visible = self.obstructing;
+    }
+
+    changed pointer-inside-window => {
+        // Don't yank the controls away mid-scrub if the pointer slips out of the window while
+        // dragging (mirrors the idle timer's guard).
+        if !self.pointer-inside-window && !Bridge.is-scrubbing-position {
+            close();
+        }
     }
 
     init => {
@@ -634,7 +644,8 @@ component PlaybackControls inherits Rectangle {
         interval: 2s;
         running: true;
         triggered => {
-            if ta.has-hover || !focus.has-focus || show-settings {
+            if !Bridge.is-scrubbing-position
+                && (ta.has-hover || !focus.has-focus || show-settings) {
                 parent.close();
                 Bridge.hide-cursor-hack();
             }
@@ -647,13 +658,20 @@ export component VideoPlayerView inherits Rectangle {
     height: 100%;
     background: transparent;
 
-    VolumePreview {
-        width: 100%;
-        height: 100%;
-    }
+    // Ancestor TouchArea covering the whole view: its has-hover stays true while the pointer is
+    // anywhere in the window and drops to false the moment the pointer leaves the window. It
+    // forwards events, so the controls underneath keep working. Feeds PlaybackControls so it can
+    // hide the overlay on exit.
+    window-hover := TouchArea {
+        VolumePreview {
+            width: 100%;
+            height: 100%;
+        }
 
-    PlaybackControls {
-        width: 100%;
-        height: 100%;
+        PlaybackControls {
+            width: 100%;
+            height: 100%;
+            pointer-inside-window: window-hover.has-hover;
+        }
     }
 }
