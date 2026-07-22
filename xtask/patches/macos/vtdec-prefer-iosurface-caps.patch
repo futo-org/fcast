@@ -21,7 +21,7 @@ diff --git a/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c b/subprojects/gs
 @@ -258,12 +258,12 @@
  #define VIDEO_SRC_CAPS_GL_FORMATS "{ NV12 }"
  #define VIDEO_SRC_CAPS_VULKAN_FORMATS "{ NV12, BGRA }"
-
+ 
  #define VIDEO_SRC_CAPS_NATIVE                                           \
      GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_GL_MEMORY,\
          VIDEO_SRC_CAPS_GL_FORMATS) ", "                                 \
@@ -31,5 +31,5 @@ diff --git a/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c b/subprojects/gs
 -        VIDEO_SRC_CAPS_NATIVE_FORMATS)
 +        VIDEO_SRC_CAPS_NATIVE_FORMATS) ";"                              \
 +    GST_VIDEO_CAPS_MAKE(VIDEO_SRC_CAPS_NATIVE_FORMATS)
-
+ 
  #ifdef APPLEMEDIA_MOLTENVK

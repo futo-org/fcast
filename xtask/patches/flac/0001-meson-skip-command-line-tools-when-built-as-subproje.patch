@@ -13,7 +13,7 @@ diff --git a/src/meson.build b/src/meson.build
 @@ -9,5 +9,8 @@
  subdir('share/utf8')
  subdir('share/grabbag')
-
+ 
 -subdir('flac')
 -subdir('metaflac')
 +# As a subproject only libFLAC is wanted — skip the command-line tools.
