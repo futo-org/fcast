@@ -2,8 +2,24 @@
 
 ## 3.0.3 - UNRELEASED
 
- - Use the new request headers for image downloads
+### New Features
+
+ - YouTube (UMP/SABR) stream playback support
+ - Support for FCast protocol v4
+ - HDR10 metadata passthrough to the video renderer
+ - Zero-copy video import on macOS
+ - Wayland subsurface video sink (experimental, enable with `FCAST_VIDEO_SINK=wayland-subsurface`)
+ - Debug inspector view (Ctrl+Shift+I)
  - Enable system tray icon on macOS
+
+### Fixes
+
+ - Rework track selection and fix subtitle deselect freeze
+ - Improve RAOP synchronization and fix RAOP playback crashes
+ - Fix Google Cast optional volume handling
+ - Fix rustls crypto panic on macOS/Windows
+ - Fix subtitle timing when the end time is unknown
+ - Use the new request headers for image downloads
 
 ## 3.0.2 - 2026-06-16
 
