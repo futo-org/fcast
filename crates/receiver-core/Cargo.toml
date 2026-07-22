@@ -119,6 +119,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "charset", 
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 egl-sys.path = "../egl-sys"
+zbus = "5.15.0"
 drm-fourcc = "2.2.0"
 # Wayland subsurface video sink (prototype), gated by the `wayland-subsurface` feature so
 # non-winit receivers (e.g. fhs) don't pull in winit.

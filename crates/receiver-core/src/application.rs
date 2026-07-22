@@ -41,6 +41,7 @@ use crate::{
     media_formats::SupportedFormats,
     media_source,
     message::{Mdns, Message, Raop, ReceiverToFCastSender},
+    mpris::{MprisUpdate, PlaybackStatus as MprisStatus},
     player::{self, PlayerState},
     raop,
     utils::{current_time_millis, map_to_header_map},
@@ -211,6 +212,7 @@ enum MediaSource {
 #[derive(Debug, Copy, Clone)]
 pub enum PacketOrigin {
     Gui,
+    Mpris,
     AutoPlay,
     FCast {
         sender_id: SenderId,
@@ -361,6 +363,7 @@ pub struct Application {
     android_app: slint::android::AndroidApp,
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
+    mpris_tx: Option<mpsc::UnboundedSender<MprisUpdate>>,
     #[cfg(not(target_os = "android"))]
     mdns: mdns_sd::ServiceDaemon,
     last_sent_update: Instant,
@@ -622,11 +625,21 @@ impl Application {
 
         debug!("Receiver information: {receiver_info:?}");
 
+        #[cfg(target_os = "linux")]
+        let mpris_tx = {
+            let (tx, rx) = mpsc::unbounded_channel::<MprisUpdate>();
+            tokio::spawn(crate::mpris::run(msg_tx.clone(), rx, receiver_info.clone()));
+            Some(tx)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let mpris_tx = None;
+
         Ok(Self {
             #[cfg(target_os = "android")]
             android_app,
             msg_tx,
             updates_tx,
+            mpris_tx,
             #[cfg(not(target_os = "android"))]
             mdns,
             last_sent_update: Instant::now() - SENDER_UPDATE_INTERVAL,
@@ -714,6 +727,8 @@ impl Application {
 
         self.gcast_tx
             .send(gcast::StatusUpdate::Volume(volume as f64));
+
+        self.notify_mpris(MprisUpdate::Volume(volume as f64));
     }
 
     /// Relay a playback rate to all senders (progress update + v4
@@ -725,6 +740,7 @@ impl Application {
                 fcast::V4Message::PlaybackRateChanged(rate),
             )));
         }
+        self.notify_mpris(MprisUpdate::Rate(rate as f64));
         Ok(())
     }
 
@@ -740,6 +756,13 @@ impl Application {
 
     fn broadcast_update(&self, msg: ReceiverToSenderMessage) {
         let _ = self.updates_tx.send(Arc::new(msg)).is_err();
+    }
+
+    /// Forward a state delta to the MPRIS2 control task, if it is running.
+    fn notify_mpris(&self, update: MprisUpdate) {
+        if let Some(tx) = &self.mpris_tx {
+            let _ = tx.send(update);
+        }
     }
 
     fn relay_to_other_senders(
@@ -765,6 +788,11 @@ impl Application {
 
         self.gui
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
+
+        self.notify_mpris(MprisUpdate::Position {
+            position_us: position.useconds() as i64,
+            length_us: duration.useconds() as i64,
+        });
 
         // Discontinuity notification (seek/state edge): bypasses per-sender
         // intervals on purpose, but the start/seek dance produces bursts of
@@ -812,6 +840,16 @@ impl Application {
                 fcast::V4Message::PlaybackStateChanged(state),
             ));
         }
+
+        use fcast_protocol::v4::PlaybackState as P;
+        let status = if state == P::Playing || state == P::Buffering {
+            MprisStatus::Playing
+        } else if state == P::Paused {
+            MprisStatus::Paused
+        } else {
+            MprisStatus::Stopped
+        };
+        self.notify_mpris(MprisUpdate::Status(status));
     }
 
     fn send_error(&self, origin: PacketOrigin, error: fcast_protocol::v4::flat::ErrorKind) {
@@ -819,6 +857,7 @@ impl Application {
 
         match origin {
             PacketOrigin::Gui
+            | PacketOrigin::Mpris
             | PacketOrigin::AutoPlay
             | PacketOrigin::Raop
             | PacketOrigin::AirPlay => (),
@@ -1440,6 +1479,7 @@ impl Application {
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
             self.current_media = None;
             self.screensaver_inhibitor.un_inhibit();
+            self.notify_mpris(MprisUpdate::Stopped);
         }
     }
 
@@ -1724,6 +1764,17 @@ impl Application {
                             _ => self.player.seek(time),
                         }
                     }
+
+                    let length_us =
+                        self.current_duration.map(|d| d.useconds() as i64).unwrap_or(0);
+                    let mut position_us = time.useconds() as i64;
+                    if length_us > 0 {
+                        position_us = position_us.min(length_us);
+                    }
+                    self.notify_mpris(MprisUpdate::Seeked {
+                        position_us,
+                        length_us,
+                    });
                 }
             }
             Operation::SetSpeed(rate) => {
@@ -2637,6 +2688,8 @@ impl Application {
 
                 self.media_ended();
 
+                self.notify_mpris(MprisUpdate::Stopped);
+
                 // TODO: this should be the last message sent regarding the media currently being played
                 if self.should_broadcast()
                     && let Some(current_media) = self.current_media.as_ref()
@@ -2673,7 +2726,7 @@ impl Application {
                         }
                         MediaSource::Playlist { .. }
                         | MediaSource::Raop
-                        | MediaSource::AirPlayMirror { .. } => (),
+                            | MediaSource::AirPlayMirror { .. } => (),
                     }
                 }
             }
@@ -2712,15 +2765,28 @@ impl Application {
                     }
                 }
 
+                let mut title_update = None;
                 if !self.have_media_title
                     && let Some(title) = tags.get::<gst::tags::Title>()
                 {
                     self.have_media_title = true;
-                    self.gui.set_media_title(title.get().to_owned());
+                    let title = title.get().to_owned();
+                    self.gui.set_media_title(title.clone());
+                    title_update = Some(title);
                 }
 
+                let mut artist_update = None;
                 if let Some(artist) = tags.get::<gst::tags::Artist>() {
-                    self.gui.set_artist_name(artist.get().to_owned());
+                    let artist = artist.get().to_owned();
+                    self.gui.set_artist_name(artist.clone());
+                    artist_update = Some(artist);
+                }
+
+                if title_update.is_some() || artist_update.is_some() {
+                    self.notify_mpris(MprisUpdate::Metadata {
+                        title: title_update,
+                        artist: artist_update,
+                    });
                 }
             }
             player::PlayerEvent::VolumeChanged(volume) => {
@@ -2748,15 +2814,13 @@ impl Application {
                 //     self.video_stream_available()?;
                 // }
 
-                // NO transport driving here: `Player::uri_loaded` is the one
-                // post-load transport driver (the collection-time auto-play
-                // used to stomp a pause that landed mid-load, and un-paused
-                // a paused pipeline when a live subtitle attach posted a
-                // mid-playback collection).
+                // NO transport driving here: `Player::uri_loaded` is the one post-load transport
+                // driver (the collection-time auto-play used to stomp a pause that landed mid-load,
+                // and un-paused a paused pipeline when a live subtitle attach posted a mid-playback
+                // collection).
 
-                // Learn stream ids for externals that just materialized, then
-                // advertise and enforce the parked desired selection (no-ops
-                // otherwise).
+                // Learn stream ids for externals that just materialized, then advertise and enforce
+                // the parked desired selection (no-ops otherwise).
                 self.refresh_external_stream_sids();
 
                 self.update_tracks(true);
@@ -2766,12 +2830,25 @@ impl Application {
                 if !self.have_media_info {
                     self.media_loaded_successfully();
                     self.have_media_info = true;
+
+                    // First collection for this load: publish a fresh MPRIS track (bumps
+                    // `mpris:trackid`, clears stale title/artist, marks playable). Duration may
+                    // still be unknown here.
+                    let length_us = self
+                        .player
+                        .get_duration()
+                        .map(|d| d.useconds() as i64)
+                        .unwrap_or(0);
+                    let can_seek = !self.player.is_live();
+                    self.notify_mpris(MprisUpdate::Loaded {
+                        length_us,
+                        can_seek,
+                    });
                 }
             }
             player::PlayerEvent::AsyncDone => {
-                // Settles an in-flight subtitle refresh (retrying it while
-                // paused if no cue rendered) and dispatches track work queued
-                // behind the async change.
+                // Settles an in-flight subtitle refresh (retrying it while paused if no cue
+                // rendered) and dispatches track work queued behind the async change.
                 self.player.async_done();
 
                 if self.player.have_media_info()
@@ -2833,13 +2910,11 @@ impl Application {
                     self.on_media_info_updated();
                 }
 
-                // Dispatch queued track work LAST: `on_media_info_updated`
-                // above may just have launched the start seek, and a
-                // selection dispatched before it would interleave with the
-                // seek dance (its playsink reconfigure then runs outside
-                // steady PLAYING, an observed permanent wedge). With the
-                // seek already owning the state machine, the pump parks the
-                // work until the dance commits.
+                // Dispatch queued track work LAST: `on_media_info_updated` above may just have
+                // launched the start seek, and a selection dispatched before it would interleave
+                // with the seek dance (its playsink reconfigure then runs outside steady PLAYING,
+                // an observed permanent wedge). With the seek already owning the state machine, the
+                // pump parks the work until the dance commits.
                 self.player.poll_track_ops();
             }
             player::PlayerEvent::UriLoaded => {

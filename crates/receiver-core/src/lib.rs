@@ -48,6 +48,7 @@ mod mdns;
 mod media_formats;
 mod media_source;
 mod message;
+mod mpris;
 mod opengl;
 pub mod placebo;
 mod player;
