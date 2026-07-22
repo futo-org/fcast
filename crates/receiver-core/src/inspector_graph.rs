@@ -1243,7 +1243,7 @@ mod tests {
     /// because the static test build trims the fake/test elements.
     #[test]
     fn real_pipeline_snapshot_lays_out() {
-        gst::init().unwrap();
+        crate::gstreamer::init_for_tests();
 
         let pipeline = gst::Pipeline::with_name("p");
         let src = gst::ElementFactory::make("identity")

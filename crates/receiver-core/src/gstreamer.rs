@@ -74,6 +74,27 @@ pub fn init_and_load_plugins() {
     }
 }
 
+#[cfg(all(test, feature = "static-gstreamer"))]
+#[ctor::ctor]
+fn isolate_gst_registry_for_tests() {
+    unsafe {
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "");
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
+        std::env::set_var("GST_PLUGIN_PATH_1_0", "");
+        std::env::set_var("GST_PLUGIN_PATH", "");
+        std::env::set_var("GST_REGISTRY_DISABLE", "yes");
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn init_for_tests() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        gst::init().unwrap();
+    });
+}
+
 fn caps_field_has_int(structure: &gst::StructureRef, field: &str, target: i32) -> bool {
     let Ok(value) = structure.value(field) else {
         return false;

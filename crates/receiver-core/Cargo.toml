@@ -153,6 +153,7 @@ hyper = { workspace = true, features = ["server"] }
 http-body-util = "0.1.1"
 pin-project-lite = "0.2"
 gst-check = { package = "gstreamer-check", version = "0.25" }
+ctor = "0.2"
 
 
 [features]

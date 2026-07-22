@@ -7829,6 +7829,7 @@ dependencies = [
  "bytes",
  "cbc",
  "clap",
+ "ctor 0.2.9",
  "ctr",
  "directories",
  "drm-fourcc",

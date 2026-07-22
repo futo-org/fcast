@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn missing_plugin_ignorable_only_for_metadata_streams() {
-        gst::init().unwrap();
+        crate::gstreamer::init_for_tests();
         // gst_missing_decoder_message_new requires a non-null src element.
         let src = gst::ElementFactory::make("identity").build().unwrap();
 
