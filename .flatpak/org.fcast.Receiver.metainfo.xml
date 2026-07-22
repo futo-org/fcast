@@ -24,6 +24,22 @@
   </description>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="3.0.3" date="2026-07-23">
+      <description>
+        <ul>
+            <li>YouTube (UMP/SABR) stream playback support</li>
+            <li>Support for FCast protocol v4</li>
+            <li>HDR10 metadata passthrough to the video renderer</li>
+            <li>Wayland subsurface video sink (experimental, enable with `FCAST_VIDEO_SINK=wayland-subsurface`)</li>
+            <li>Debug inspector view (Ctrl+Shift+I)</li>
+            <li>Enable system tray icon on macOS</li>
+            <li>Rework track selection and fix subtitle deselect freeze</li>
+            <li>Improve RAOP synchronization and fix RAOP playback crashes</li>
+            <li>Fix Google Cast optional volume handling</li>
+            <li>Fix subtitle timing when the end time is unknown</li>
+        </ul>
+      </description>
+    </release>
     <release version="3.0.2" date="2026-06-16">
       <description>
         <ul>
