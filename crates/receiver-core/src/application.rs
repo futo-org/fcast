@@ -57,8 +57,24 @@ const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// the pipeline), the buffered amount changes slowly, and the scrubber is
 /// rarely on screen, so throttle it well below the 100 ms progress tick.
 const BUFFERED_RANGES_INTERVAL: Duration = Duration::from_millis(1000);
+/// How close the reported position must get to a GUI seek target before the optimistic thumb hold
+/// is released. Seeks are ACCURATE so they land exactly, this only absorbs the tick's sampling
+/// drift once playback resumes.
+const SEEK_HOLD_TOLERANCE: f64 = 0.75;
+/// Safety net: release the thumb hold even if the pipeline never reports the target (a
+/// dropped/failed seek), so the thumb can't stay frozen forever.
+const SEEK_HOLD_TIMEOUT: Duration = Duration::from_secs(12);
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_BASE_URL: &str = "http://dl.fcast.org/receiver/desktop";
+
+/// State for an in-flight optimistic GUI seek (see `Application::gui_seek_hold`).
+struct GuiSeekHold {
+    /// Requested position, in seconds (clamped to the media duration).
+    target: f64,
+    /// When the hold was armed, for the `SEEK_HOLD_TIMEOUT` safety net.
+    since: Instant,
+}
 
 #[derive(PartialEq, Eq)]
 enum PreservePlaylist {
@@ -378,6 +394,11 @@ pub struct Application {
     last_volume_cmd: Option<Instant>,
     pending_seek_op: Option<(PacketOrigin, gst::ClockTime)>,
     pending_seek_epoch: u64,
+    /// Active optimistic hold for a GUI-originated seek: the slider thumb stays
+    /// pinned at `target` (and the GUI's `seek-pending` flag stays set) until the
+    /// pipeline reports it has landed there, so a stale position tick can't
+    /// spring the thumb back to the pre-seek position.
+    gui_seek_hold: Option<GuiSeekHold>,
     /// DIAGNOSTIC (load-stall investigation): bumped per pipeline load so a
     /// stale `LoadStallCheck` watchdog no-ops.
     load_watchdog_epoch: u64,
@@ -648,6 +669,7 @@ impl Application {
             last_volume_cmd: None,
             pending_seek_op: None,
             pending_seek_epoch: 0,
+            gui_seek_hold: None,
             load_watchdog_epoch: 0,
             current_image_id: 0,
             have_audio_track_cover: false,
@@ -815,6 +837,9 @@ impl Application {
         let position = self.player.get_position().unwrap_or(gst::ClockTime::ZERO);
         let duration = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
 
+        // A seek's own settle (ASYNC_DONE while paused) reaches the thumb through here, not the
+        // tick, so release the hold on this path too.
+        self.release_seek_hold_if_landed(position.seconds_f64());
         self.gui
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
         self.push_buffered_ranges();
@@ -891,6 +916,28 @@ impl Application {
     }
 
     #[cfg_attr(not(target_os = "android"), tracing::instrument(skip_all))]
+    /// Release the optimistic GUI seek hold once the pipeline has actually landed on the requested
+    /// position (or a safety timeout elapses), so the slider thumb stops being pinned to the seek
+    /// target and resumes following playback.
+    fn release_seek_hold_if_landed(&mut self, position: f64) {
+        let Some(hold) = self.gui_seek_hold.as_ref() else {
+            return;
+        };
+        let landed = (position - hold.target).abs() <= SEEK_HOLD_TOLERANCE;
+        let expired = hold.since.elapsed() >= SEEK_HOLD_TIMEOUT;
+        if !landed && !expired {
+            return;
+        }
+        if expired && !landed {
+            debug!(
+                target = hold.target,
+                position, "GUI seek hold timed out before the pipeline reported the target"
+            );
+        }
+        self.gui_seek_hold = None;
+        self.gui.set_seek_pending(false);
+    }
+
     fn notify_updates(&mut self, force: bool) -> Result<()> {
         if !self.player.have_media_info() || self.player.is_seeking() {
             return Ok(());
@@ -901,6 +948,9 @@ impl Application {
             return Ok(());
         };
         let position = position.seconds_f64();
+        // Once the pipeline has caught up to a GUI seek, let the thumb follow playback again (must
+        // precede the progress write below, which is suppressed while the hold is active).
+        self.release_seek_hold_if_landed(position);
         self.last_position_updated = position;
         let duration = match self.current_duration {
             Some(dur) => dur,
@@ -971,6 +1021,9 @@ impl Application {
         // held seeks, parked deselects, is reset by `Player::stop` below.)
         self.reject_pending_subtitle_adds();
         self.drop_pending_seek();
+        if self.gui_seek_hold.take().is_some() {
+            self.gui.set_seek_pending(false);
+        }
         self.have_audio_track_cover = false;
         self.have_media_info = false;
         self.have_media_title = false;
@@ -3803,9 +3856,15 @@ impl Application {
                     if let Ok(pos) = gst::ClockTime::try_from_seconds_f64(
                         percent as f64 * duration.seconds_f64(),
                     ) {
+                        self.gui_seek_hold = Some(GuiSeekHold {
+                            target: pos.min(duration).seconds_f64(),
+                            since: Instant::now(),
+                        });
                         return self.handle_operation(Operation::Seek(pos), PacketOrigin::Gui);
                     }
                 }
+                self.gui_seek_hold = None;
+                self.gui.set_seek_pending(false);
             }
             Message::Quit => return Ok(true),
             Message::ToggleDebug => self.debug_mode = !self.debug_mode,

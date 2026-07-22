@@ -634,7 +634,8 @@ component PlaybackControls inherits Rectangle {
         interval: 2s;
         running: true;
         triggered => {
-            if ta.has-hover || !focus.has-focus || show-settings {
+            if !Bridge.is-scrubbing-position
+                && (ta.has-hover || !focus.has-focus || show-settings) {
                 parent.close();
                 Bridge.hide-cursor-hack();
             }

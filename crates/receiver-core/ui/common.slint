@@ -57,6 +57,7 @@ export component ScrubbyMcScrub {
             released(position) => {
                 Bridge.is-scrubbing-position = false;
                 if position <= Bridge.duration-secs && Bridge.duration-secs != 0.0 {
+                    Bridge.seek-pending = true;
                     Bridge.seek-to-percent(position / Bridge.duration-secs);
                 }
             }

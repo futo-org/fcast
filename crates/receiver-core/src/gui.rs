@@ -279,6 +279,7 @@ pub enum UpdateGuiCommand {
     SetPlaybackState(GuiPlaybackState),
     ClearImageState,
     SetIsLive(bool),
+    SetSeekPending(bool),
     SetPlaybackRate(f32),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     SetUpdateState(crate::UiUpdaterState),
@@ -517,6 +518,10 @@ impl GuiController {
         }
     }
 
+    pub fn set_seek_pending(&self, pending: bool) {
+        self.send(UpdateGuiCommand::SetSeekPending(pending));
+    }
+
     pub fn set_playback_rate(&mut self, rate: f32) {
         if rate != self.playback_rate {
             self.send(UpdateGuiCommand::SetPlaybackRate(rate));
@@ -567,7 +572,7 @@ impl GuiController {
 }
 
 fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
-    if !bridge.get_is_scrubbing_position() {
+    if !bridge.get_is_scrubbing_position() && !bridge.get_seek_pending() {
         bridge.set_progress_secs(prog_sec);
     }
     bridge.set_duration_secs(dur_sec);
@@ -691,6 +696,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_animation_frames(slint::ModelRc::default());
         }
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
+        UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::SetUpdateState(state) => bridge.set_updater_state(state),

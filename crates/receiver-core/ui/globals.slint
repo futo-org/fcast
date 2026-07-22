@@ -117,6 +117,9 @@ export global Bridge {
     in-out property <bool> is-debugging: false;
     in-out property <int> connected_devices: 0;
     in-out property <bool> is-scrubbing-position: false;
+    // True from the moment the user releases the scrubber until the pipeline reports it has landed
+    // on the requested position.
+    in-out property <bool> seek-pending: false;
     in-out property <UiPlayerVariant> player-variant: UiPlayerVariant.Unknown;
     in-out property <float> playback-rate: 1.0;
     in-out property <bool> is-showing-error-message: false;
