@@ -115,13 +115,13 @@ component SettingItem inherits Rectangle {
         padding: 10px;
         padding-left: 12px;
         padding-right: 12px;
+        spacing: 8px;
 
         FText {
+            horizontal-stretch: 1;
             text: value;
             overflow: elide;
         }
-
-        Rectangle { }
 
         VerticalLayout {
             alignment: center;

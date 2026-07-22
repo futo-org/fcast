@@ -427,16 +427,12 @@ pub fn stream_title(stream: &gst::Stream) -> String {
             }
         }
         if let Some(title) = tags.get::<gst::tags::Title>() {
-            if !res.is_empty() {
-                res += " - ";
-            }
             let title = title.get();
             if !title.is_empty() {
-                let mut chars = title.chars();
-                res.extend(chars.by_ref().take(16));
-                if chars.next().is_some() {
-                    res += "...";
+                if !res.is_empty() {
+                    res += " - ";
                 }
+                res += title;
             }
         }
     }
