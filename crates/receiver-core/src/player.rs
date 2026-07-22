@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
@@ -16,6 +18,32 @@ use fcastplaybin::state_machine::{
 /// fcastplaybin deliberately knows nothing about: no fake-URI dispatch, no
 /// global config side channels.
 pub use fcastplaybin::MediaInput;
+
+/// Correlates missing-plugin element messages with decodebin's follow-up "missing plugin" WARNING
+/// (posted right after, on the same thread) so the user-facing warning can be dropped when the only
+/// undecodable streams were non-media metadata that needs no decoder.
+#[derive(Default)]
+struct MissingPluginTracker {
+    /// A real media stream had no decoder.
+    saw_real: AtomicBool,
+    /// Only a non-media metadata stream had no "decoder".
+    saw_ignorable: AtomicBool,
+}
+
+/// Whether a missing-plugin element message is for a non-media metadata stream (e.g. qtdemux's
+/// `meta/x-gst-fourcc-priv` for an unknown atom like `wide`), which needs no decoder and so should
+/// not be reported as a missing codec.
+fn missing_plugin_is_ignorable(msg: &gst::Message) -> bool {
+    let Some(structure) = msg.structure() else {
+        return false;
+    };
+    // Missing decoder/encoder messages carry the offending caps in `detail`; other kinds
+    // (element/urisource/...) store a string there, so a failed caps read means "treat as real".
+    let Ok(caps) = structure.get::<gst::Caps>("detail") else {
+        return false;
+    };
+    !caps.is_empty() && caps.iter().all(|s| s.name().as_str().starts_with("meta/"))
+}
 
 /// The playback snapshot a load returns to once it prerolls (the start
 /// position/rate seek `fcastplaybin::load` applies in PAUSED).
@@ -526,6 +554,7 @@ impl Player {
         // Raw-message hook: bus traffic only the receiver understands
         // (context requests from its custom source elements, missing-plugin
         // reports). Runs on the posting (streaming) thread.
+        let missing_plugins = MissingPluginTracker::default();
         let hook: fcastplaybin::MessageHook = Box::new(move |msg| {
             use gst::MessageView;
             match msg.view() {
@@ -564,10 +593,28 @@ impl Player {
                     true
                 }
                 MessageView::Element(_) => {
-                    if let Ok(msg) = gst_pbutils::MissingPluginMessage::parse(msg) {
-                        error!(detail = %msg.installer_detail(), desc = %msg.description(), "GStreamer missing plugin");
+                    if let Ok(mp) = gst_pbutils::MissingPluginMessage::parse(msg) {
+                        // qtdemux exposes non-media metadata streams (unknown atoms) as `meta/*`;
+                        // decodebin then reports "no decoder" for them even though none is
+                        // needed. Note it for the follow-up warning and don't cry wolf.
+                        if missing_plugin_is_ignorable(msg) {
+                            debug!(detail = %mp.installer_detail(), "Ignoring missing plugin for non-media stream");
+                            missing_plugins.saw_ignorable.store(true, Ordering::SeqCst);
+                        } else {
+                            error!(detail = %mp.installer_detail(), desc = %mp.description(), "GStreamer missing plugin");
+                            missing_plugins.saw_real.store(true, Ordering::SeqCst);
+                        }
                     }
                     true
+                }
+                MessageView::Warning(warning) => {
+                    if warning.error().matches(gst::CoreError::MissingPlugin) {
+                        let real = missing_plugins.saw_real.swap(false, Ordering::SeqCst);
+                        let ignorable = missing_plugins.saw_ignorable.swap(false, Ordering::SeqCst);
+                        ignorable && !real
+                    } else {
+                        false
+                    }
                 }
                 _ => false,
             }
@@ -1580,6 +1627,28 @@ impl Drop for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_plugin_ignorable_only_for_metadata_streams() {
+        gst::init().unwrap();
+        // gst_missing_decoder_message_new requires a non-null src element.
+        let src = gst::ElementFactory::make("identity").build().unwrap();
+
+        // qtdemux's non-media metadata stream: no decoder is needed, so it must not be reported as
+        // a missing codec.
+        let meta = gst::Caps::builder("meta/x-gst-fourcc-priv").build();
+        let msg = gst_pbutils::MissingPluginMessage::builder_for_decoder(&meta)
+            .src(&src)
+            .build();
+        assert!(missing_plugin_is_ignorable(&msg));
+
+        // A real codec with no decoder must still be reported.
+        let video = gst::Caps::builder("video/x-h264").build();
+        let msg = gst_pbutils::MissingPluginMessage::builder_for_decoder(&video)
+            .src(&src)
+            .build();
+        assert!(!missing_plugin_is_ignorable(&msg));
+    }
 
     // --- TrackOps -----------------------------------------------------------
 
