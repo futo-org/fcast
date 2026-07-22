@@ -40,6 +40,7 @@ mod gcast;
 mod gstreamer;
 mod gui;
 mod image;
+mod inspector_graph;
 #[cfg(target_os = "macos")]
 mod iosurface;
 mod logging;
@@ -876,10 +877,28 @@ pub fn run<S: VideoSink + 'static>(
         ui.global::<Bridge>().on_inspector_toggled({
             let ui_weak = ui.as_weak();
             let tick = tick.clone();
-            move |_active| {
+            move |active| {
                 if let Some(ui) = ui_weak.upgrade() {
                     tick.borrow_mut().force_render = true;
                     ui.window().request_redraw();
+
+                    // Drop the graph dump and per-tick models on close. A
+                    // big pipeline's scene holds thousands of rects, texts
+                    // and hit zones that would otherwise sit in memory for
+                    // the rest of the session.
+                    if !active {
+                        let state = ui.global::<InspectorState>();
+                        state.set_have_graph(false);
+                        state.set_graph(GraphDump::default());
+                        state.set_tracks(Rc::new(slint::VecModel::default()).into());
+                        state.set_sources_lines(Rc::new(slint::VecModel::default()).into());
+                        state.set_internals_lines(Rc::new(slint::VecModel::default()).into());
+                        state.set_sink_lines(Rc::new(slint::VecModel::default()).into());
+                        state.set_have_bitrate(false);
+                        state.set_video_bitrate_path(Default::default());
+                        state.set_audio_bitrate_path(Default::default());
+                        state.set_have_buffering(false);
+                    }
                 }
             }
         });
