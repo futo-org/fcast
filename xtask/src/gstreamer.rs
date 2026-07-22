@@ -1098,8 +1098,11 @@ fn apply_gst_patches(sh: &Rc<Shell>, source: &Utf8Path, os: &str) -> Result<()> 
 
     for patch in patches {
         let name = patch.file_name().unwrap_or("<patch>");
+        // --ignore-whitespace: a Windows CI checkout (core.autocrlf=true) turns
+        // these LF patches into CRLF; ignoring the trailing CR keeps the apply
+        // and the reverse-check idempotency EOL-agnostic against either source.
         // Already applied (reused checkout): reverse-apply must succeed cleanly.
-        if cmd!(sh, "git -C {source} apply --reverse --check {patch}")
+        if cmd!(sh, "git -C {source} apply --ignore-whitespace --reverse --check {patch}")
             .quiet()
             .ignore_stderr()
             .run()
@@ -1109,7 +1112,7 @@ fn apply_gst_patches(sh: &Rc<Shell>, source: &Utf8Path, os: &str) -> Result<()> 
             continue;
         }
         // Not applicable to this tree (different ref / already-diverged): warn, don't fail.
-        if cmd!(sh, "git -C {source} apply --check {patch}")
+        if cmd!(sh, "git -C {source} apply --ignore-whitespace --check {patch}")
             .quiet()
             .ignore_stderr()
             .run()
@@ -1119,7 +1122,7 @@ fn apply_gst_patches(sh: &Rc<Shell>, source: &Utf8Path, os: &str) -> Result<()> 
             continue;
         }
         println!(">> Applying gstreamer patch: {name}");
-        cmd!(sh, "git -C {source} apply {patch}")
+        cmd!(sh, "git -C {source} apply --ignore-whitespace {patch}")
             .run()
             .with_context(|| format!("applying gstreamer patch {name}"))?;
     }
@@ -1778,10 +1781,16 @@ fn apply_subproject_patches(sh: &Rc<Shell>, source: &Utf8Path) -> Result<()> {
         // prefix explicitly and behaves the same for git checkouts (FFmpeg)
         // and extracted archives.
         let dir_arg = format!("--directory=subprojects/{dir_name}");
+        // --ignore-whitespace treats a trailing CR as whitespace, so an
+        // LF-only patch matches regardless of the source's line endings. On a
+        // Windows CI the repo checks out with core.autocrlf=true, turning these
+        // patch files into CRLF; git-wrap sources (FFmpeg) are CRLF too and
+        // match, but tarball-wrap sources (libxml2) stay LF and the CRLF patch
+        // then fails to apply. Ignoring the CR makes it EOL-agnostic both ways.
         for patch in patches {
             let _d = sh.push_dir(source);
             // A patch that applies cleanly in REVERSE is already present.
-            if cmd!(sh, "git apply --check --reverse {dir_arg} {patch}")
+            if cmd!(sh, "git apply --ignore-whitespace --check --reverse {dir_arg} {patch}")
                 .quiet()
                 .ignore_stderr()
                 .run()
@@ -1789,7 +1798,7 @@ fn apply_subproject_patches(sh: &Rc<Shell>, source: &Utf8Path) -> Result<()> {
             {
                 continue;
             }
-            cmd!(sh, "git apply {dir_arg} {patch}")
+            cmd!(sh, "git apply --ignore-whitespace {dir_arg} {patch}")
                 .quiet()
                 .run()
                 .with_context(|| {
@@ -1800,7 +1809,7 @@ fn apply_subproject_patches(sh: &Rc<Shell>, source: &Utf8Path) -> Result<()> {
                 })?;
             // Belt and suspenders against the silent-skip failure mode: after
             // a successful apply the reverse-check must pass.
-            if cmd!(sh, "git apply --check --reverse {dir_arg} {patch}")
+            if cmd!(sh, "git apply --ignore-whitespace --check --reverse {dir_arg} {patch}")
                 .quiet()
                 .ignore_stderr()
                 .run()
