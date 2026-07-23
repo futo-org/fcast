@@ -120,6 +120,8 @@ pub enum _PlaybackState {
     Buffering,
     Playing,
     Paused,
+    /// The media item played through to its natural end (distinct from being stopped).
+    Ended,
 }
 
 #[frb(mirror(Source))]

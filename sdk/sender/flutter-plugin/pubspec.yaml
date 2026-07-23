@@ -1,11 +1,11 @@
 name: fcast_sender_sdk
 description: "An SDK for easily creating senders for FCast and Google cast"
-version: 0.0.3
+version: 0.0.4
 repository: https://gitlab.futo.org/videostreaming/fcast-sender-sdk-flutter-plugin
 
 environment:
   sdk: ^3.9.0
-  flutter: '>=3.3.0'
+  flutter: '>=3.35.0'
 
 dependencies:
   flutter:

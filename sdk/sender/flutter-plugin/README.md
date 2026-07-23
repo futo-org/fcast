@@ -7,9 +7,13 @@ The native (Rust) library is generated with
 [`flutter_rust_bridge`](https://cjycode.com/flutter_rust_bridge/) and built &
 bundled via Dart's **native assets** build hook (`hook/build.dart`).
 
+## Supported platforms
+
+Android, iOS, Linux, macOS, and Windows. **Web is not supported**.
+
 ## Requirements
 
-- [rustup](https://rustup.rs/) and [flatc](https://flatbuffers.dev/)
+- [rustup](https://rustup.rs/) — the native build uses it to manage the Rust toolchain
 - A Flutter/Dart SDK with native assets enabled:
   ```sh
   flutter config --enable-native-assets
