@@ -2112,7 +2112,7 @@ dependencies = [
  "fcast-protocol",
  "fcast-sender-sdk",
  "file-server",
- "flume",
+ "flume 0.11.1",
  "futures",
  "gst-plugin-rtp",
  "gstreamer 0.25.2",
@@ -2578,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "fcast-sender-sdk"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -2785,6 +2785,17 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "nanorand",
+ "spin",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "futures-core",
+ "futures-sink",
  "spin",
 ]
 
@@ -5948,11 +5959,12 @@ dependencies = [
 
 [[package]]
 name = "mdns-sd"
-version = "0.20.0"
-source = "git+https://github.com/MAlba124/mdns-sd.git?rev=7523ce8c0603b6c302938cf32940d19bf096eb39#7523ce8c0603b6c302938cf32940d19bf096eb39"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18d8ec9d1869796fb2910d95f4d957072df0b6a22e247a1d760d8b4c805e17a"
 dependencies = [
  "fastrand",
- "flume",
+ "flume 0.12.0",
  "if-addrs",
  "log",
  "mio",
@@ -8899,13 +8911,13 @@ dependencies = [
 
 [[package]]
 name = "socket-pktinfo"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "927136cc2ae6a1b0e66ac6b1210902b75c3f726db004a73bc18686dcd0dcd22f"
+checksum = "3e8e43b4bdce7cff8a4d3f8025ee38fce5ca138fab868ebbf9529c81328fbf9d"
 dependencies = [
  "libc",
  "socket2",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
