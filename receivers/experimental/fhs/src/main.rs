@@ -378,7 +378,7 @@ fn main() -> Result<()> {
             }
 
             if have_new {
-                overlay.set_subtitle_overlays(sink.gl(), &frame.overlays);
+                overlay.set_subtitle_overlays(sink.gl(), &frame.overlays, size);
             }
 
             damaged.push(fl.video_surface_id);
@@ -467,7 +467,7 @@ fn main() -> Result<()> {
             || image_shown;
         if prev_media_active && !media_active {
             sink.clear();
-            overlay.set_subtitle_overlays(sink.gl(), &[]);
+            overlay.set_subtitle_overlays(sink.gl(), &[], size);
             title_state = None;
             playback_state = PlaybackState::default();
             damaged.push(fl.video_surface_id);
@@ -532,8 +532,9 @@ fn main() -> Result<()> {
             paused: playback_state.paused,
         });
         match overlay.show(&sink, playback, size) {
-            Ok(Some(surface_id)) => damaged.push(surface_id),
-            Ok(None) => {}
+            Ok(overlay::ShowResult::Rendered(surface_id)) => damaged.push(surface_id),
+            Ok(overlay::ShowResult::Hidden) => damaged.push(fl.video_surface_id),
+            Ok(overlay::ShowResult::Unchanged) => {}
             Err(err) => error!(?err, "overlay show failed"),
         }
 

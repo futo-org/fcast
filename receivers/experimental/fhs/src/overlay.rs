@@ -82,6 +82,12 @@ pub struct Playback {
     pub paused: bool,
 }
 
+pub enum ShowResult {
+    Rendered(fl_protocol_SurfaceId),
+    Hidden,
+    Unchanged,
+}
+
 struct TextLayer {
     tex: glow::Texture,
     w: i32,
@@ -94,7 +100,7 @@ struct Layout {
     content_h: i32,
     surface_x: i32,
     surface_y: i32,
-    sub: Option<(f64, f64)>,
+    sub: Option<(f64, f64, f64, f64)>,
     bar_x0: f64,
     bar_x1: f64,
     bar_y0: f64,
@@ -122,6 +128,7 @@ pub struct Overlay {
     next_target: usize,
     subtitle: Option<TextLayer>,
     subtitle_gen: u64,
+    sub_ref_h: f64,
     title: Option<(TextLayer, u64)>,
     last_key: Option<u64>,
     subtitle_key: Option<u64>,
@@ -166,6 +173,7 @@ impl Overlay {
                 next_target: 0,
                 subtitle: None,
                 subtitle_gen: 0,
+                sub_ref_h: 0.0,
                 title: None,
                 last_key: None,
                 subtitle_key: None,
@@ -203,7 +211,12 @@ impl Overlay {
         Some(((lx - l.bar_x0) / bar_w).clamp(0.0, 1.0))
     }
 
-    pub fn set_subtitle_overlays(&mut self, gl: &glow::Context, overlays: &[VideoOverlay]) {
+    pub fn set_subtitle_overlays(
+        &mut self,
+        gl: &glow::Context,
+        overlays: &[VideoOverlay],
+        window_size: (u32, u32),
+    ) {
         if overlays.is_empty() {
             self.clear_subtitle(gl);
             self.subtitle_key = None;
@@ -222,6 +235,7 @@ impl Overlay {
             self.subtitle_key = Some(key);
             return;
         }
+        self.sub_ref_h = (window_size.1.max(1)) as f64;
         if let [only] = overlays {
             self.store_subtitle(gl, &only.pixels, only.width as i32, only.height as i32);
             self.subtitle_key = Some(key);
@@ -351,7 +365,15 @@ impl Overlay {
         let button_r = (wh * 0.03).max(14.0);
         let gap = wh * 0.012;
 
-        let sub_sz = self.subtitle.as_ref().map(|l| (l.w as f64, l.h as f64));
+        let sub_scale = if self.sub_ref_h > 0.0 {
+            wh / self.sub_ref_h
+        } else {
+            1.0
+        };
+        let sub_sz = self
+            .subtitle
+            .as_ref()
+            .map(|l| (l.w as f64 * sub_scale, l.h as f64 * sub_scale));
         let title_sz = if has_title {
             self.title.as_ref().map(|(l, _)| (l.w as f64, l.h as f64))
         } else {
@@ -376,7 +398,7 @@ impl Overlay {
             let sx = cx - w / 2.0;
             let sy = y;
             y += h + gap;
-            (sx, sy)
+            (sx, sy, w, h)
         });
 
         let (mut bar_x0, mut bar_x1, mut bar_y0, mut bar_y1) = (0.0, 0.0, 0.0, 0.0);
@@ -431,12 +453,17 @@ impl Overlay {
         sink: &FhsPixmapSink,
         playback: Option<Playback>,
         window_size: (u32, u32),
-    ) -> Result<Option<fl_protocol_SurfaceId>> {
+    ) -> Result<ShowResult> {
         let (ww, wh) = (window_size.0 as f64, window_size.1 as f64);
         let show_ui = playback.is_some();
         let Some(l) = self.compute(ww, wh, show_ui) else {
+            let was_shown = self.surface_id.is_some();
             self.clear(sink);
-            return Ok(None);
+            return Ok(if was_shown {
+                ShowResult::Hidden
+            } else {
+                ShowResult::Unchanged
+            });
         };
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -455,7 +482,7 @@ impl Overlay {
         }
         let key = hasher.finish();
         if self.surface_id.is_some() && self.last_key == Some(key) {
-            return Ok(None);
+            return Ok(ShowResult::Unchanged);
         }
 
         let w = l.content_w.max(1);
@@ -493,8 +520,8 @@ impl Overlay {
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             self.set_uniform_2f(gl, "u_viewport", w as f32, h as f32);
 
-            if let (Some((sx, sy)), Some(layer)) = (l.sub, self.subtitle.as_ref()) {
-                self.draw_texture(gl, layer.tex, sx, sy, layer.w as f64, layer.h as f64);
+            if let (Some((sx, sy, sw, sh)), Some(layer)) = (l.sub, self.subtitle.as_ref()) {
+                self.draw_texture(gl, layer.tex, sx, sy, sw, sh);
             }
 
             if let Some(p) = &playback {
@@ -533,7 +560,7 @@ impl Overlay {
             );
         }
         self.last_key = Some(key);
-        Ok(Some(surface_id))
+        Ok(ShowResult::Rendered(surface_id))
     }
 
     pub fn clear(&mut self, sink: &FhsPixmapSink) {
