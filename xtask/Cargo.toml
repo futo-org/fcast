@@ -18,6 +18,7 @@ toml_edit.workspace = true
 askama.workspace = true
 syn = { version = "2", features = ["full"] }
 prettyplease = "0.2"
+flatc-rust = "0.2.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55.0"

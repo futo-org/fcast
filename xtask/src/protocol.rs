@@ -10,6 +10,9 @@ use crate::workspace;
 pub enum ProtocolCommand {
     /// Regenerate `docs/docs/protocol/v4.md` from the `fcast-protocol` sources.
     ExportV4,
+    /// Regenerate the vendored `src/v4_generated.rs` from `flatbuffers/fcast.fbs`.
+    /// Requires the `flatc` binary on PATH; run after editing the schema.
+    RegenFlatbuffers,
 }
 
 #[derive(Args)]
@@ -101,6 +104,28 @@ impl ProtocolArgs {
 
                 let out = root.join("docs/docs/protocol/v4.md");
                 fs::write(&out, doc.render()?).with_context(|| format!("writing {out}"))?;
+                println!("Wrote {out}");
+
+                Ok(())
+            }
+            ProtocolCommand::RegenFlatbuffers => {
+                let root = workspace::root_path()?;
+                let proto = root.join("crates/fcast-protocol");
+                let fbs = proto.join("flatbuffers/fcast.fbs");
+                let out = proto.join("src/v4_generated.rs");
+
+                let tmp = root.join("target/flatc-gen");
+                fs::create_dir_all(&tmp)?;
+                flatc_rust::run(flatc_rust::Args {
+                    inputs: &[fbs.as_std_path()],
+                    out_dir: tmp.as_std_path(),
+                    ..Default::default()
+                })
+                .context("running flatc: is the `flatc` binary installed and in PATH?")?;
+
+                let generated = tmp.join("fcast_generated.rs");
+                fs::copy(&generated, &out)
+                    .with_context(|| format!("copying {generated} -> {out}"))?;
                 println!("Wrote {out}");
 
                 Ok(())

@@ -9,7 +9,7 @@ pub mod fcast_flatbuffers {
     #![allow(clippy::missing_safety_doc)]
     #![allow(clippy::derivable_impls)]
 
-    include!(concat!(env!("OUT_DIR"), "/flatbuffers/fcast_generated.rs"));
+    include!("v4_generated.rs");
 }
 
 pub use flatbuffers;
