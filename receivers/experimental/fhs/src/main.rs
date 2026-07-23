@@ -507,13 +507,16 @@ fn main() -> Result<()> {
         }
 
         let osd_visible = !image_shown
-            && title_state
-                .as_ref()
-                .is_some_and(|ts| ts.persistent || Instant::now() < ts.show_until);
+            && ((media_active && playback_state.paused)
+                || title_state
+                    .as_ref()
+                    .is_some_and(|ts| ts.persistent || Instant::now() < ts.show_until));
 
         if osd_visible {
-            let ts = title_state.as_ref().unwrap();
-            overlay.set_title(sink.gl(), &ts.title, &ts.artist, &ts.album, size);
+            match title_state.as_ref() {
+                Some(ts) => overlay.set_title(sink.gl(), &ts.title, &ts.artist, &ts.album, size),
+                None => overlay.clear_title(sink.gl()),
+            }
 
             if let Some((cx, cy)) = click {
                 if overlay.button_hit(size, cx, cy) {
