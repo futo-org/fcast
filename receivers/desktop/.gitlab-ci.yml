@@ -149,74 +149,18 @@ build_receiver_for_win_x64:
         sleep 10
       done
 
+    # Bootstrap: install git, then clone this repo at the CI ref. The clone is
+    # both the build source and how the VM gets win-build.ps1. Two quote-free
+    # ssh calls; a failed clone (or missing git) exits non-zero, failing the job.
     - |
-      sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -Command - <<PS
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        Set-PSDebug -Trace 1
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+    - |
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command git clone --recursive --depth=1 -b ${CI_COMMIT_REF_NAME} https://gitlab.futo.org/videostreaming/fcast.git
 
-        winget install --id Git.Git -e --source winget
-        \$env:PATH += ";C:\Program Files\Git\bin"
-
-        Start-Job -ScriptBlock {
-          winget install --id=NASM.NASM -e --accept-package-agreements --accept-source-agreements
-          winget install --id=Kitware.CMake -e --accept-package-agreements --accept-source-agreements
-          winget install --id=LLVM.LLVM -e --accept-package-agreements --accept-source-agreements
-          winget install --id=Python.Python.3.14 -e --accept-package-agreements --accept-source-agreements
-          winget install --id=Ninja-build.Ninja -e --accept-package-agreements --accept-source-agreements
-          winget install --id=Google.flatbuffers -e --accept-package-agreements --accept-source-agreements
-        }
-
-        Start-Job -ScriptBlock {
-          rustup self update
-          rustup install nightly
-          rustup default nightly
-        }
-
-        git clone --recursive --depth=1 "https://gitlab.futo.org/videostreaming/fcast-receiver-windows-build-deps.git"
-        git clone --recursive --depth=1 -b ${CI_COMMIT_REF_NAME} "https://gitlab.futo.org/videostreaming/fcast.git"
-
-        Get-Job | Wait-Job
-        Get-Job | Receive-Job
-        Get-Job | Remove-Job
-
-        cd fcast-receiver-windows-build-deps
-        Start-Process 'msiexec.exe' -ArgumentList '/i "wix-cli-x64.msi" /qn' -Wait
-        cd ..
-
-        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\bin\NASM"
-        \$env:PATH += ";C:\Program Files\CMake\bin"
-        \$env:PATH += ";C:\Program Files\LLVM\bin"
-        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Python314\"
-        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Python314\Scripts"
-        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Programs\Python\Launcher"
-        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Roaming\Python\Python314\Scripts"
-        \$env:PATH += ";C:\Users\\\$Env:UserName\AppData\Local\Microsoft\WinGet\Links\"
-        \$env:PATH += ";C:\Program Files\WiX Toolset v6.0\bin"
-
-        \$env:CC = "clang-cl"
-        \$env:CXX = "clang-cl"
-
-        cd fcast
-
-        # pkgconf pinned <3: the 3.0 rewrite (PyPI 2026-07-13) ships a new,
-        # still-buggy Windows port — glib-sys probes get empty --modversion
-        # output and panic in the pkg-config crate. Re-evaluate once 3.x
-        # stabilizes (verify on a Windows box first).
-        # `python -m pip` (not pip3) so the install lands in the exact
-        # interpreter that resolves get_executable() below — a `python` that
-        # differs from pip3 (Store alias, user-site split) hands the build an
-        # unpinned pkgconf while the pin "succeeds". --force-reinstall
-        # downgrades any pkgconf already present on the VM image.
-        python -m pip install --force-reinstall meson "pkgconf==2.5.1.post2"
-        if (\$LASTEXITCODE -ne 0) { throw "pip install of pinned pkgconf failed" }
-        \$env:PKG_CONFIG = (python -c "import pkgconf; print(pkgconf.get_executable())")
-        Write-Output "PKG_CONFIG=\$env:PKG_CONFIG"
-        \$pcver = (& \$env:PKG_CONFIG --version)
-        Write-Output "pkgconf --version: \$pcver"
-        if (\$pcver -notlike "2.*") { throw "pkgconf pin not in effect: PKG_CONFIG reports '\$pcver'" }
-
-        cargo xtask receiver build-windows-installer --gst-ref 1.29.2
-      PS
+    # -File, never `-Command -` (stdin), which runs the script line by line so
+    # a throw aborts only its own line and the build limps on.
+    - |
+      sshpass -p "${PROXMOX_WIN_PASSWORD}" ssh -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File fcast/receivers/desktop/ci/win-build.ps1
 
     - |
       sshpass -p "${PROXMOX_WIN_PASSWORD}" scp -o StrictHostKeyChecking=no "${PROXMOX_WIN_USER}@${VM_IP}:C:/Users/${PROXMOX_WIN_USER}/fcast/target/win-build/*.msi" .
