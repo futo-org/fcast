@@ -2249,6 +2249,9 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
                 Some(path) => out.push(path.to_string()),
                 None => out.push(tok.to_string()), // non-built -l stays dynamic
             }
+        } else if let Some(dir) = tok.strip_prefix("-R").filter(|d| !d.is_empty()) {
+            // Solaris/BSD-ld style rpath (`-R<dir>`, an alias for `-rpath`).
+            out.push(format!("-Wl,-rpath,{dir}"));
         } else {
             out.push(tok.to_string());
         }
