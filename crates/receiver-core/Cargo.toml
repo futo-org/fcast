@@ -126,7 +126,7 @@ wayland-client = { version = "0.31", optional = true }
 wayland-backend = { version = "0.3", features = ["client_system"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"], optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-i-slint-backend-winit = { git = "https://github.com/MAlba124/slint.git", rev = "f05c68ab3", optional = true }
+i-slint-backend-winit = { workspace = true, optional = true }
 libplacebo-vulkan = { path = "../libplacebo-vulkan", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
