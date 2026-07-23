@@ -198,7 +198,11 @@ build_receiver_for_win_x64:
 
         cd fcast
 
-        pip3 install meson pkgconf
+        # pkgconf pinned <3: the 3.0 rewrite (PyPI 2026-07-13) ships a new,
+        # still-buggy Windows port — glib-sys probes get empty --modversion
+        # output and panic in the pkg-config crate. Re-evaluate once 3.x
+        # stabilizes (verify on a Windows box first).
+        pip3 install meson "pkgconf==2.5.1.post2"
         \$env:PKG_CONFIG = (python -c "import pkgconf; print(pkgconf.get_executable())")
 
         cargo xtask receiver build-windows-installer --gst-ref 1.29.2
