@@ -26,16 +26,8 @@ rustls-pki-types = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
-askama = { workspace = true, optional = true }
-get-type-string-derive = { path = "../get-type-string-derive", optional = true }
-
 [build-dependencies]
 flatc-rust = "0.2.0"
-
-[[bin]]
-name = "fcast-protocol"
-path = "src/main.rs"
-required-features = ["__schema"]
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -46,7 +38,5 @@ rcgen.workspace = true
 
 [features]
 default = []
-# default = ["__schema"]
 tokio-sender = ["dep:tokio-rustls", "dep:tokio", "dep:tracing", "dep:x509-parser", "dep:sha2", "dep:rustls-pki-types"]
 tokio-receiver= ["dep:tokio-rustls", "dep:tokio", "dep:tracing"]
-__schema = ["dep:askama", "dep:get-type-string-derive"]

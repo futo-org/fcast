@@ -9,8 +9,6 @@ use base64::{
     engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
     Engine as _,
 };
-#[cfg(feature = "__schema")]
-use get_type_string_derive::GetTypeString;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -138,7 +136,6 @@ pub struct PlaybackErrorMessage {
     pub message: String,
 }
 
-#[cfg_attr(feature = "__schema", derive(GetTypeString))]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct VersionMessage {
     pub version: u64,

@@ -2558,11 +2558,9 @@ dependencies = [
 name = "fcast-protocol"
 version = "0.1.3"
 dependencies = [
- "askama 0.15.6",
  "base64",
  "flatbuffers",
  "flatc-rust",
- "get-type-string-derive",
  "paste",
  "rcgen",
  "rustls-pki-types",
@@ -3106,15 +3104,6 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
-]
-
-[[package]]
-name = "get-type-string-derive"
-version = "0.1.0"
-dependencies = [
- "prettyplease",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -11171,8 +11160,10 @@ dependencies = [
  "clap",
  "ctrlc",
  "mdns-sd",
+ "prettyplease",
  "serde",
  "serde_json",
+ "syn",
  "toml_edit",
  "uniffi_bindgen",
  "walkdir",

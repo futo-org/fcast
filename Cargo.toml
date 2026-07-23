@@ -27,7 +27,6 @@ members = [
     "crates/fiatlux-sys",
     "crates/fiatlux",
     "crates/inhibit-screensaver",
-    "crates/get-type-string-derive",
     "crates/fcastplaybin",
     "fuzz", "sdk/sender/examples/image-viewer", "crates/apple-fairplay",
 ]
