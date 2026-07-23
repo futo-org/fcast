@@ -2266,6 +2266,20 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
         }
     }
 
+    // aarch64 GCC emits outline-atomics calls (`__aarch64_ldset4_relax`, …)
+    // whose stubs exist only in the STATIC libgcc.a — libgcc_s.so keeps them
+    // hidden. rustc links with -nodefaultlibs and places its own -lgcc_s
+    // BEFORE these appended archives, so FFmpeg's objects can't resolve the
+    // stubs from it; a trailing -lgcc (resolved via cc's internal -L paths)
+    // covers everything above it.
+    let triple = match profile.target.as_deref() {
+        Some(t) => t.to_string(),
+        None => host_triple(sh)?,
+    };
+    if triple.starts_with("aarch64") && target_os(profile) == "linux" {
+        out.push("-lgcc".to_string());
+    }
+
     // Windows: the dshow/mediafoundation/winks/dmo plugins reference COM GUID
     // constants living in Windows SDK GUID libs, which gstreamer-full's
     // pkg-config doesn't propagate — name them explicitly; link.exe resolves
