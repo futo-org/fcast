@@ -202,8 +202,18 @@ build_receiver_for_win_x64:
         # still-buggy Windows port — glib-sys probes get empty --modversion
         # output and panic in the pkg-config crate. Re-evaluate once 3.x
         # stabilizes (verify on a Windows box first).
-        pip3 install meson "pkgconf==2.5.1.post2"
+        # `python -m pip` (not pip3) so the install lands in the exact
+        # interpreter that resolves get_executable() below — a `python` that
+        # differs from pip3 (Store alias, user-site split) hands the build an
+        # unpinned pkgconf while the pin "succeeds". --force-reinstall
+        # downgrades any pkgconf already present on the VM image.
+        python -m pip install --force-reinstall meson "pkgconf==2.5.1.post2"
+        if (\$LASTEXITCODE -ne 0) { throw "pip install of pinned pkgconf failed" }
         \$env:PKG_CONFIG = (python -c "import pkgconf; print(pkgconf.get_executable())")
+        Write-Output "PKG_CONFIG=\$env:PKG_CONFIG"
+        \$pcver = (& \$env:PKG_CONFIG --version)
+        Write-Output "pkgconf --version: \$pcver"
+        if (\$pcver -notlike "2.*") { throw "pkgconf pin not in effect: PKG_CONFIG reports '\$pcver'" }
 
         cargo xtask receiver build-windows-installer --gst-ref 1.29.2
       PS
