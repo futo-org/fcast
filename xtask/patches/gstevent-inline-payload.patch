@@ -1,8 +1,8 @@
 diff --git a/subprojects/gstreamer/gst/gstevent.c b/subprojects/gstreamer/gst/gstevent.c
-index c9f001fceb..8b439dcce6 100644
+index c9f001fceb..270ed5526b 100644
 --- a/subprojects/gstreamer/gst/gstevent.c
 +++ b/subprojects/gstreamer/gst/gstevent.c
-@@ -89,6 +89,21 @@ typedef struct
+@@ -89,6 +89,30 @@ typedef struct
  
    GstStructure *structure;
    gint64 running_time_offset;
@@ -20,11 +20,20 @@ index c9f001fceb..8b439dcce6 100644
 +      GstClockTimeDiff diff;
 +      GstClockTime timestamp;
 +    } qos;
++    struct
++    {
++      GstClockTime timestamp;
++      GstClockTime duration;
++      GstGapFlags flags;
++      /* whether gst_event_set_gap_flags() was called; a materialized
++       * structure only carries the gap-flags field in that case */
++      gboolean flags_set;
++    } gap;
 +  } payload;
  } GstEventImpl;
  
  #define GST_EVENT_STRUCTURE(e)  (((GstEventImpl *)(e))->structure)
-@@ -289,6 +304,7 @@ _gst_event_copy (GstEvent * event)
+@@ -289,6 +313,7 @@ _gst_event_copy (GstEvent * event)
  
    ((GstEventImpl *) copy)->running_time_offset =
        ((GstEventImpl *) event)->running_time_offset;
@@ -32,7 +41,7 @@ index c9f001fceb..8b439dcce6 100644
  
    return GST_EVENT_CAST (copy);
  }
-@@ -370,12 +386,52 @@ had_parent:
+@@ -370,12 +395,60 @@ had_parent:
   *
   * MT safe.
   */
@@ -52,6 +61,14 @@ index c9f001fceb..8b439dcce6 100644
 +          "proportion", G_TYPE_DOUBLE, impl->payload.qos.proportion,
 +          "diff", G_TYPE_INT64, impl->payload.qos.diff,
 +          "timestamp", G_TYPE_UINT64, impl->payload.qos.timestamp, NULL);
++      break;
++    case GST_EVENT_GAP:
++      structure = gst_structure_new_static_str ("GstEventGap",
++          "timestamp", GST_TYPE_CLOCK_TIME, impl->payload.gap.timestamp,
++          "duration", GST_TYPE_CLOCK_TIME, impl->payload.gap.duration, NULL);
++      if (impl->payload.gap.flags_set)
++        gst_structure_set (structure,
++            "gap-flags", GST_TYPE_GAP_FLAGS, impl->payload.gap.flags, NULL);
 +      break;
 +    default:
 +      return NULL;
@@ -86,7 +103,7 @@ index c9f001fceb..8b439dcce6 100644
  }
  
  /**
-@@ -402,6 +458,9 @@ gst_event_writable_structure (GstEvent * event)
+@@ -402,6 +475,9 @@ gst_event_writable_structure (GstEvent * event)
  
    structure = GST_EVENT_STRUCTURE (event);
  
@@ -96,7 +113,7 @@ index c9f001fceb..8b439dcce6 100644
    if (structure == NULL) {
      structure =
          gst_structure_new_static_str_empty (gst_event_type_get_name
-@@ -425,12 +484,15 @@ gst_event_writable_structure (GstEvent * event)
+@@ -425,12 +501,15 @@ gst_event_writable_structure (GstEvent * event)
  gboolean
  gst_event_has_name (GstEvent * event, const gchar * name)
  {
@@ -114,7 +131,106 @@ index c9f001fceb..8b439dcce6 100644
  }
  
  /**
-@@ -1224,8 +1286,7 @@ GstEvent *
+@@ -804,7 +883,7 @@ gst_event_new_eos (void)
+ GstEvent *
+ gst_event_new_gap (GstClockTime timestamp, GstClockTime duration)
+ {
+-  GstEvent *event;
++  GstEventImpl *event;
+ 
+   g_return_val_if_fail (GST_CLOCK_TIME_IS_VALID (timestamp), NULL);
+ 
+@@ -813,12 +892,13 @@ gst_event_new_gap (GstClockTime timestamp, GstClockTime duration)
+       GST_TIME_ARGS (timestamp), GST_TIME_ARGS (timestamp + duration),
+       GST_TIME_ARGS (duration));
+ 
+-  event = gst_event_new_custom (GST_EVENT_GAP,
+-      gst_structure_new_static_str ("GstEventGap",
+-          "timestamp", GST_TYPE_CLOCK_TIME, timestamp,
+-          "duration", GST_TYPE_CLOCK_TIME, duration, NULL));
++  /* the payload is carried inline, the structure is only materialized
++   * on demand in gst_event_get_structure() */
++  event = (GstEventImpl *) gst_event_new_custom (GST_EVENT_GAP, NULL);
++  event->payload.gap.timestamp = timestamp;
++  event->payload.gap.duration = duration;
+ 
+-  return event;
++  return GST_EVENT_CAST (event);
+ }
+ 
+ /**
+@@ -835,12 +915,21 @@ void
+ gst_event_parse_gap (GstEvent * event, GstClockTime * timestamp,
+     GstClockTime * duration)
+ {
++  GstEventImpl *impl = (GstEventImpl *) event;
+   GstStructure *structure;
+ 
+   g_return_if_fail (GST_IS_EVENT (event));
+   g_return_if_fail (GST_EVENT_TYPE (event) == GST_EVENT_GAP);
+ 
+-  structure = GST_EVENT_STRUCTURE (event);
++  structure = g_atomic_pointer_get (&impl->structure);
++  if (G_LIKELY (structure == NULL)) {
++    /* the payload is immutable while no structure has been materialized */
++    if (timestamp)
++      *timestamp = impl->payload.gap.timestamp;
++    if (duration)
++      *duration = impl->payload.gap.duration;
++    return;
++  }
+   gst_structure_get (structure,
+       "timestamp", GST_TYPE_CLOCK_TIME, timestamp,
+       "duration", GST_TYPE_CLOCK_TIME, duration, NULL);
+@@ -859,11 +948,21 @@ gst_event_parse_gap (GstEvent * event, GstClockTime * timestamp,
+ void
+ gst_event_set_gap_flags (GstEvent * event, GstGapFlags flags)
+ {
++  GstEventImpl *impl = (GstEventImpl *) event;
++  GstStructure *structure;
++
+   g_return_if_fail (event != NULL);
+   g_return_if_fail (GST_EVENT_TYPE (event) == GST_EVENT_GAP);
+   g_return_if_fail (gst_event_is_writable (event));
+ 
+-  gst_structure_set (GST_EVENT_STRUCTURE (event),
++  structure = g_atomic_pointer_get (&impl->structure);
++  if (structure == NULL) {
++    /* writable implies a single owner, safe to update the payload */
++    impl->payload.gap.flags = flags;
++    impl->payload.gap.flags_set = TRUE;
++    return;
++  }
++  gst_structure_set (structure,
+       "gap-flags", GST_TYPE_GAP_FLAGS, flags, NULL);
+ }
+ 
+@@ -880,6 +979,9 @@ gst_event_set_gap_flags (GstEvent * event, GstGapFlags flags)
+ void
+ gst_event_parse_gap_flags (GstEvent * event, GstGapFlags * flags)
+ {
++  GstEventImpl *impl = (GstEventImpl *) event;
++  GstStructure *structure;
++
+   g_return_if_fail (event != NULL);
+   g_return_if_fail (GST_EVENT_TYPE (event) == GST_EVENT_GAP);
+ 
+@@ -887,7 +989,13 @@ gst_event_parse_gap_flags (GstEvent * event, GstGapFlags * flags)
+   if (flags)
+     *flags = 0;
+ 
+-  gst_structure_get (GST_EVENT_STRUCTURE (event),
++  structure = g_atomic_pointer_get (&impl->structure);
++  if (G_LIKELY (structure == NULL)) {
++    if (flags && impl->payload.gap.flags_set)
++      *flags = impl->payload.gap.flags;
++    return;
++  }
++  gst_structure_get (structure,
+       "gap-flags", GST_TYPE_GAP_FLAGS, flags, NULL);
+ }
+ 
+@@ -1224,8 +1332,7 @@ GstEvent *
  gst_event_new_qos (GstQOSType type, gdouble proportion,
      GstClockTimeDiff diff, GstClockTime timestamp)
  {
@@ -124,7 +240,7 @@ index c9f001fceb..8b439dcce6 100644
  
    /* diff must be positive or timestamp + diff must be positive */
    g_return_val_if_fail (diff >= 0 || -diff <= timestamp, NULL);
-@@ -1235,13 +1296,15 @@ gst_event_new_qos (GstQOSType type, gdouble proportion,
+@@ -1235,13 +1342,15 @@ gst_event_new_qos (GstQOSType type, gdouble proportion,
        ", timestamp %" GST_TIME_FORMAT, type, proportion,
        diff, GST_TIME_ARGS (timestamp));
  
@@ -146,7 +262,7 @@ index c9f001fceb..8b439dcce6 100644
  }
  
  /**
-@@ -1261,12 +1324,39 @@ void
+@@ -1261,12 +1370,39 @@ void
  gst_event_parse_qos (GstEvent * event, GstQOSType * type,
      gdouble * proportion, GstClockTimeDiff * diff, GstClockTime * timestamp)
  {
