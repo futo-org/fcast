@@ -267,6 +267,7 @@ export global Bridge {
     callback update-application();
     callback restart-application();
     callback select-track(id: int, track-type: UiMediaTrackType);
+    callback add-subtitle(url: string);
 
     pure callback is-device-info-valid(info: string) -> bool;
     pure callback is-valid-url(url: string) -> bool;
@@ -1179,10 +1180,43 @@ component SubSetting inherits Rectangle {
             select(track) => Bridge.select-track(track.id, UiMediaTrackType.Audio);
         }
 
-        if menu == SettingsMenu.Subtitle: TrackList {
-            tracks: Bridge.subtitle-tracks;
-            currently-selected: Bridge.current-subtitle-track;
-            select(track) => Bridge.select-track(track.id, UiMediaTrackType.Subtitle);
+        if menu == SettingsMenu.Subtitle: VerticalLayout {
+            spacing: 8px;
+
+            TrackList {
+                tracks: Bridge.subtitle-tracks;
+                currently-selected: Bridge.current-subtitle-track;
+                select(track) => Bridge.select-track(track.id, UiMediaTrackType.Subtitle);
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                i-subtitle-url := LineEdit {
+                    placeholder-text: "Add external subtitle URL (.srt, .vtt)...";
+                    icon: Icons.link;
+
+                    key-pressed(event) => {
+                        if event.text == Key.Return {
+                            add-subtitle-btn.clicked();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+
+                add-subtitle-btn := Button {
+                    width: self.preferred-width + 30px;
+                    text: "Add";
+                    enabled: !i-subtitle-url.text.is-empty && Bridge.is-valid-url(i-subtitle-url.text);
+                    background-default-color: FCastPalette.brand-600;
+
+                    clicked => {
+                        Bridge.add-subtitle(i-subtitle-url.text);
+                        i-subtitle-url.text = "";
+                    }
+                }
+            }
         }
 
         if menu == SettingsMenu.Rate: ListView {
@@ -1362,7 +1396,9 @@ component PlaybackControls inherits Rectangle {
                 }
             }
 
-            if Bridge.subtitle-tracks.length > 0: RootSetting {
+            // Always reachable so an external subtitle can be added even when
+            // the media exposes no embedded subtitle tracks.
+            RootSetting {
                 title: "Subtitle";
 
                 clicked => {

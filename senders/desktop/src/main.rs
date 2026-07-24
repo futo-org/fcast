@@ -972,20 +972,25 @@ impl Application {
 
         let url = format.src_url();
         let content_type = content_type.to_owned();
-        device.load(fcast_sender_sdk::device::LoadRequest::Url {
-            content_type,
-            url,
-            resume_position: None,
-            speed: None,
-            volume: None,
-            metadata: Some(fcast_sender_sdk::device::Metadata {
-                title: src.title.clone(),
-                thumbnail_url: Self::get_optimal_thumbnail(&src),
-            }),
-            request_headers: format.http_headers.as_ref().map(|headers| {
-                HashMap::from_iter(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())))
-            }),
-        })?;
+        device.load(
+            fcast_sender_sdk::device::LoadRequest::Url {
+                content_type,
+                url,
+                resume_position: None,
+                speed: None,
+                volume: None,
+                metadata: Some(fcast_sender_sdk::device::Metadata {
+                    title: src.title.clone(),
+                    thumbnail_url: Self::get_optimal_thumbnail(&src),
+                }),
+                request_headers: format.http_headers.as_ref().map(|headers| {
+                    HashMap::from_iter(
+                        headers.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+                    )
+                }),
+            },
+            None,
+        )?;
 
         Ok(())
     }
@@ -1157,31 +1162,37 @@ impl Application {
         path.push(&file_entry.name);
         debug!(?path, "Getting ready to cast");
         if device.supports_feature(DeviceFeature::FCompanion) {
-            device.load(device::LoadRequest::CompanionResource {
-                content_type: file_entry.mime_type.to_string(),
-                source: fcast_sender_sdk::device::CompanionSource {
-                    descriptor: fcast_sender_sdk::device::CompanionSourceDescriptor::Path(
-                        path.to_str().unwrap().to_owned(),
-                    ),
+            device.load(
+                device::LoadRequest::CompanionResource {
                     content_type: file_entry.mime_type.to_string(),
+                    source: fcast_sender_sdk::device::CompanionSource {
+                        descriptor: fcast_sender_sdk::device::CompanionSourceDescriptor::Path(
+                            path.to_str().unwrap().to_owned(),
+                        ),
+                        content_type: file_entry.mime_type.to_string(),
+                    },
+                    resume_position: None,
+                    speed: None,
+                    volume: Some(volume),
+                    metadata: None,
                 },
-                resume_position: None,
-                speed: None,
-                volume: Some(volume),
-                metadata: None,
-            })?;
+                None,
+            )?;
         } else {
             let id = file_server.add_file(path, file_entry.mime_type);
             let url = file_server.get_url(&(local_addr.into()), &id);
-            device.load(device::LoadRequest::Url {
-                content_type: file_entry.mime_type.to_string(),
-                url,
-                resume_position: None,
-                speed: None,
-                volume: Some(volume),
-                metadata: None,
-                request_headers: None,
-            })?;
+            device.load(
+                device::LoadRequest::Url {
+                    content_type: file_entry.mime_type.to_string(),
+                    url,
+                    resume_position: None,
+                    speed: None,
+                    volume: Some(volume),
+                    metadata: None,
+                    request_headers: None,
+                },
+                None,
+            )?;
         }
 
         Ok(())
@@ -1405,15 +1416,18 @@ impl Application {
                         }
                     };
 
-                    session.device.load(device::LoadRequest::Url {
-                        content_type,
-                        url,
-                        resume_position: None,
-                        speed: None,
-                        volume: None,
-                        metadata: None,
-                        request_headers: None,
-                    })?;
+                    session.device.load(
+                        device::LoadRequest::Url {
+                            content_type,
+                            url,
+                            resume_position: None,
+                            speed: None,
+                            volume: None,
+                            metadata: None,
+                            request_headers: None,
+                        },
+                        None,
+                    )?;
                 } else {
                     warn!("WHEP signaller was started but we're in a bad state");
                     return Ok(ShouldQuit::No);
@@ -2197,6 +2211,22 @@ impl Application {
                         .change_track(if id >= 0 { Some(id as u32) } else { None }, typ);
                 }
             }
+            Event::AddSubtitle { url } => {
+                if let Some(session) = &mut self.session_state {
+                    if let Err(err) =
+                        session
+                            .device
+                            .add_subtitle_source(fcast_sender_sdk::device::SubtitleSource {
+                                url,
+                                // Select it immediately so it shows up right away.
+                                select: true,
+                                name: None,
+                            })
+                    {
+                        error!("Failed to add external subtitle: {err}");
+                    }
+                }
+            }
         }
 
         Ok(ShouldQuit::No)
@@ -2925,6 +2955,17 @@ fn main() -> Result<()> {
                         UiMediaTrackType::Audio => device::MediaTrackType::Audio,
                         UiMediaTrackType::Subtitle => device::MediaTrackType::Subtitle,
                     },
+                })
+                .unwrap();
+        }
+    });
+
+    bridge.on_add_subtitle({
+        let event_tx = event_tx.clone();
+        move |url| {
+            event_tx
+                .send(Event::AddSubtitle {
+                    url: url.to_string(),
                 })
                 .unwrap();
         }

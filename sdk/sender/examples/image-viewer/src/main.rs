@@ -14,7 +14,7 @@ use fcast_sender_sdk::{
     device::{
         CompanionSource, CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler,
         DeviceInfo, LoadRequest, MediaTrack, MediaTrackType, PlaybackState, QueueItem,
-        QueuePosition, Source,
+        QueuePosition, QueueState, ReceiverError, Source, TrackList,
     },
 };
 use slint::{ToSharedString, VecModel};
@@ -97,6 +97,12 @@ impl DeviceEventHandler for DevEventHandler {
     fn tracks_available(&self, _tracks: Vec<MediaTrack>) {}
 
     fn track_selected(&self, _id: Option<u32>, _typ: MediaTrackType) {}
+
+    fn tracks_changed(&self, _tracks: TrackList) {}
+
+    fn queue_changed(&self, _queue: QueueState) {}
+
+    fn command_error(&self, _error: ReceiverError) {}
 }
 
 struct ImageEntry {
@@ -288,10 +294,13 @@ fn run(ui_weak: slint::Weak<MainWindow>, msg_tx: Sender<Message>, msg_rx: Receiv
                             create_item(&images[id + 1]),
                         ];
                         device
-                            .load(LoadRequest::Queue {
-                                items,
-                                start_index: Some(1),
-                            })
+                            .load(
+                                LoadRequest::Queue {
+                                    items,
+                                    start_index: Some(1),
+                                },
+                                None,
+                            )
                             .unwrap();
                     }
 

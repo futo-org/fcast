@@ -123,13 +123,20 @@ class _ScaffoldState extends State<_Scaffold> {
                                     break;
                                   case DeviceEvent_SourceChanged():
                                     break;
-                                  case DeviceEvent_KeyEvent():
-                                    break;
-                                  case DeviceEvent_MediaEvent():
-                                    break;
                                   case DeviceEvent_TracksAvailable():
                                     break;
                                   case DeviceEvent_TrackSelected():
+                                    break;
+                                  case DeviceEvent_TracksChanged():
+                                    break;
+                                  case DeviceEvent_QueueChanged():
+                                    break;
+                                  case DeviceEvent_CommandError():
+                                    print(
+                                      'Receiver rejected a command: ${event.error}',
+                                    );
+                                    break;
+                                  case DeviceEvent_PlaybackStopped():
                                     break;
                                   case DeviceEvent_PlaybackError():
                                     break;

@@ -22,6 +22,7 @@
 //! use fcast_sender_sdk::device::{
 //!     ApplicationInfo, DeviceConnectionState, DeviceEventHandler, DeviceInfo,
 //!     LoadRequest, PlaybackState, ProtocolType, Source, MediaTrack, MediaTrackType,
+//!     QueueState, ReceiverError, TrackList,
 //! };
 //! use fcast_sender_sdk::{DeviceDiscovererEventHandler, IpAddr};
 //!
@@ -70,6 +71,18 @@
 //!      fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
 //!          println!("Track selected: id={id:?} type={typ:?}");
 //!      }
+//!
+//!      fn tracks_changed(&self, tracks: TrackList) {
+//!          println!("Tracks changed: {tracks:?}");
+//!      }
+//!
+//!      fn queue_changed(&self, queue: QueueState) {
+//!          println!("Queue changed: {queue:?}");
+//!      }
+//!
+//!      fn command_error(&self, error: ReceiverError) {
+//!          println!("Command error: {error:?}");
+//!      }
 //! }
 //!
 //! struct DiscovererEventHandler {}
@@ -103,16 +116,19 @@
 //! dev.connect(None, Arc::new(DevEventHandler {}), 1000)
 //!     .unwrap();
 //!
-//! dev.load(LoadRequest::Video {
-//!     content_type: "video/mp4".to_string(),
-//!     url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-//!         .to_string(),
-//!     resume_position: 0.0,
-//!     speed: None,
-//!     volume: None,
-//!     metadata: None,
-//!     request_headers: None,
-//! })
+//! dev.load(
+//!     LoadRequest::Video {
+//!         content_type: "video/mp4".to_string(),
+//!         url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+//!             .to_string(),
+//!         resume_position: 0.0,
+//!         speed: None,
+//!         volume: None,
+//!         metadata: None,
+//!         request_headers: None,
+//!     },
+//!     None,
+//! )
 //! .unwrap();
 //! ```
 //!

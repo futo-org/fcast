@@ -439,6 +439,15 @@ impl<'a> MessageBuilder<'a> {
         self.builder.create_vector(&kvs)
     }
 
+    /// Encode a seconds value as a wire `Time` (microseconds). Values a `Duration` cannot represent
+    /// (negative, NaN, infinite, or overflowing) are treated as unset.
+    fn time_from_secs_f64(secs: f64) -> Option<flat::Time> {
+        let duration = Duration::try_from_secs_f64(secs).ok()?;
+        Some(flat::Time::new(
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
+        ))
+    }
+
     fn construct_media_item(
         &mut self,
         item: MediaItem,
@@ -483,9 +492,7 @@ impl<'a> MessageBuilder<'a> {
             .filter(|m| !m.is_empty())
             .map(|m| self.build_extra_metadata(m));
 
-        let start_time = item
-            .start_time
-            .map(|s| flat::Time::new(Duration::from_secs_f64(s).as_micros() as u64));
+        let start_time = item.start_time.and_then(Self::time_from_secs_f64);
         let item = flat::MediaItemArgs {
             container: create_str!(self, item.container),
             source_url: create_str!(self, item.source_url),
@@ -508,19 +515,23 @@ impl<'a> MessageBuilder<'a> {
         create_msg!(self, Load, source_type: flat::MediaSource::Single, source: Some(item))
     }
 
-    pub fn load_queue<'m>(
+    /// Build a `Load` carrying a queue. Each item is paired with an optional `playback_duration`
+    /// (seconds). `None` plays the item to its natural end.
+    pub fn load_queue(
         mut self,
-        items: impl Iterator<Item = MediaItem<'m>>,
+        items: impl Iterator<Item = (MediaItem, Option<f64>)>,
         start_index: Option<u8>,
+        autoplay: bool,
     ) -> ConstructedMessage<'a> {
         let items = items
-            .map(|item| {
+            .map(|(item, playback_duration)| {
                 let item = self.construct_media_item(item);
+                let playback_duration = playback_duration.and_then(Self::time_from_secs_f64);
                 flat::QueueItem::create(
                     &mut self.builder,
                     &flat::QueueItemArgs {
                         media_item: Some(item),
-                        playback_duration: None,
+                        playback_duration: playback_duration.as_ref(),
                     },
                 )
             })
@@ -532,7 +543,7 @@ impl<'a> MessageBuilder<'a> {
             &flat::QueueArgs {
                 items: Some(items),
                 start_index,
-                autoplay: false,
+                autoplay,
             },
         )
         .as_union_value();
@@ -574,15 +585,17 @@ impl<'a> MessageBuilder<'a> {
     pub fn queue_insert(
         mut self,
         item: MediaItem,
+        playback_duration: Option<f64>,
         position: QueuePosition,
     ) -> ConstructedMessage<'a> {
         let (pos_type, position) = self.queue_position(position);
         let item = self.construct_media_item(item);
+        let playback_duration = playback_duration.and_then(Self::time_from_secs_f64);
         let q_item = flat::QueueItem::create(
             &mut self.builder,
             &flat::QueueItemArgs {
                 media_item: Some(item),
-                playback_duration: None,
+                playback_duration: playback_duration.as_ref(),
             },
         );
         create_msg!(self, QueueInsert, item: Some(q_item), position_type: pos_type, position: Some(position))
@@ -830,7 +843,7 @@ pub enum Metadata {
     },
 }
 
-pub struct MediaItem<'a> {
+pub struct MediaItem {
     /// The MIME type
     pub container: String,
     pub source_url: String,
@@ -842,8 +855,8 @@ pub struct MediaItem<'a> {
     pub speed: Option<f32>,
     /// HTTP request headers to add to the play request
     pub headers: Option<HashMap<String, String>>,
-    pub title: Option<&'a str>,
-    pub thumbnail_url: Option<&'a str>,
+    pub title: Option<String>,
+    pub thumbnail_url: Option<String>,
     pub metadata: Option<Metadata>,
     pub extra_metadata: Option<HashMap<String, MetaValue>>,
 }
@@ -879,7 +892,7 @@ pub enum QueuePosition {
 mod tests {
     use super::*;
 
-    fn media_item_with_extra(extra: HashMap<String, MetaValue>) -> MediaItem<'static> {
+    fn media_item_with_extra(extra: HashMap<String, MetaValue>) -> MediaItem {
         MediaItem {
             container: "video/mp4".to_owned(),
             source_url: "http://example.test/v.mp4".to_owned(),
@@ -887,10 +900,27 @@ mod tests {
             volume: None,
             speed: None,
             headers: None,
-            title: Some("Title"),
+            title: Some("Title".to_owned()),
             thumbnail_url: None,
             metadata: None,
             extra_metadata: Some(extra),
+        }
+    }
+
+    #[test]
+    fn hostile_time_values_do_not_panic() {
+        for bad in [-1.0, f64::NAN, f64::INFINITY, f64::MAX] {
+            let mut item = media_item_with_extra(HashMap::new());
+            item.start_time = Some(bad);
+            let _ = MessageBuilder::new().load_queue(
+                std::iter::once((item, Some(bad))),
+                Some(0),
+                false,
+            );
+
+            let mut item = media_item_with_extra(HashMap::new());
+            item.start_time = Some(bad);
+            let _ = MessageBuilder::new().queue_insert(item, Some(bad), QueuePosition::Front);
         }
     }
 
