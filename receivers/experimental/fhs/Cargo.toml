@@ -20,6 +20,7 @@ default = ["fhs"]
 fhs = ["rcore/fhs"]
 tracy = ["rcore/tracy"]
 static-gst-plugins = ["rcore/static-gst-plugins"]
+static-gstreamer = ["rcore/static-gstreamer"]
 airplay = ["rcore/airplay"]
 
 [package.metadata.generate-rpm]
@@ -35,9 +36,19 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
-gstreamer1 = "*"
-gstreamer1-plugins-base = "*"
-gstreamer1-plugins-good = "*"
-gstreamer1-plugins-bad-free = "*"
-gstreamer1-plugins-bad-free-extras = "*"
-gstreamer1-libav = "*"
+glib2 = "*"
+pango = "*"
+cairo = "*"
+cairo-gobject = "*"
+fontconfig = "*"
+libdrm = "*"
+libseat = "*"
+libxkbcommon = "*"
+libinput = "*"
+libheif = "*"
+openssl-libs = "*"
+vulkan-loader = "*"
+mesa-libgbm = "*"
+libunistring = "*"
+libsoup3 = "*"
+pulseaudio-libs = "*"
