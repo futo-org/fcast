@@ -601,6 +601,12 @@ struct Profile {
     gst_buildtype: String,
     /// Pass --no-default-features to cargo (e.g. no systray on macOS).
     no_default_features: bool,
+    /// Cargo package to build (`desktop-receiver`, `fhs-receiver`, …).
+    /// Also used as the binary filename in `target/…/<profile>/`.
+    receiver_package: String,
+    /// `receiver-core` flavor feature enabled alongside `static-gstreamer`
+    /// (`desktop`, `fhs`). Selects which flavor of receiver code links in.
+    receiver_flavor: String,
 }
 
 const GST_REPO: &str = "https://gitlab.freedesktop.org/gstreamer/gstreamer.git";
@@ -642,6 +648,14 @@ pub struct GstreamerArgs {
     /// Build the receiver with --no-default-features (e.g. no systray on macOS).
     #[arg(long)]
     pub no_default_features: bool,
+    /// Cargo package to build against the static GStreamer. Defaults to the
+    /// desktop receiver; pass `fhs-receiver` for the FHS sysext build.
+    #[arg(long, default_value = "desktop-receiver")]
+    pub receiver_package: String,
+    /// `receiver-core` flavor feature enabled alongside `static-gstreamer`
+    /// (e.g. `desktop`, `fhs`). Selects the receiver-flavor code paths.
+    #[arg(long, default_value = "desktop")]
+    pub receiver_flavor: String,
     /// Remove built/downloaded artifacts and exit: the meson build dir +
     /// install prefix, and the auto-cloned source — never a --source tree.
     #[arg(long)]
@@ -701,6 +715,8 @@ impl GstreamerArgs {
             debug: self.debug,
             gst_buildtype: self.gst_buildtype.clone(),
             no_default_features: self.no_default_features,
+            receiver_package: self.receiver_package.clone(),
+            receiver_flavor: self.receiver_flavor.clone(),
         };
         let source = match self.source {
             Some(s) => s,
@@ -1418,7 +1434,17 @@ fn configure_gstreamer(
     #[cfg(windows)]
     let _no_elevate = sh.push_env("__COMPAT_LAYER", "RunAsInvoker");
 
-    let cross = profile.target.as_ref().map(|t| cross_file(sh, source, t)).transpose()?;
+    // Only treat this as a cross build when the target actually differs from
+    // the host. An explicit `--target <host-triple>` (as CI passes to split
+    // cargo's host/target build graphs) is a native build and needs no cross
+    // file — calling cross_file() here would bail unconditionally.
+    let host = host_triple(sh)?;
+    let cross = profile
+        .target
+        .as_ref()
+        .filter(|t| t.as_str() != host.as_str())
+        .map(|t| cross_file(sh, source, t))
+        .transpose()?;
     let cross_args: Vec<String> = cross
         .iter()
         .flat_map(|f| vec!["--cross-file".to_string(), f.to_string()])
@@ -1512,8 +1538,10 @@ fn join_gst_compile(mut child: std::process::Child, build: &GstBuild, stamp: &st
 /// features must mirror what the desktop-receiver build enables on rcore —
 /// a mismatch only costs recompilation, never correctness.
 fn prebuild_receiver_deps(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<()> {
-    let mut features = String::from("static-gstreamer,desktop");
-    if !profile.no_default_features {
+    let mut features = format!("static-gstreamer,{}", profile.receiver_flavor);
+    // systray is a desktop-only default feature; skip it for other flavors
+    // or when --no-default-features is set.
+    if profile.receiver_flavor == "desktop" && !profile.no_default_features {
         features.push_str(",systray");
     }
     let mut flags: Vec<String> = Vec::new();
@@ -1689,11 +1717,12 @@ fn receiver_bin_path(profile: &Profile) -> Utf8PathBuf {
         bin.push(t);
     }
     bin.push(if profile.debug { "debug" } else { "release" });
-    bin.push(if target_os(profile) == "windows" {
-        "desktop-receiver.exe"
+    let name = if target_os(profile) == "windows" {
+        format!("{}.exe", profile.receiver_package)
     } else {
-        "desktop-receiver"
-    });
+        profile.receiver_package.clone()
+    };
+    bin.push(name);
     bin
 }
 
@@ -1832,7 +1861,7 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
         // cargo rustc scopes the link args to the FINAL binary (RUSTFLAGS
         // would hit every crate incl. build scripts / proc-macros).
         let mut cargo: Vec<String> = vec!["rustc".into()];
-        cargo.extend(receiver_cargo_flags(profile, "desktop-receiver"));
+        cargo.extend(receiver_cargo_flags(profile, &profile.receiver_package));
         cargo.push("--".into());
 
         // Args for the final crate's rustc (after `--`). Cross-LTO drives the
@@ -1868,7 +1897,7 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
-        println!(">> Building desktop-receiver (static gstreamer) …");
+        println!(">> Building {} (static gstreamer) …", profile.receiver_package);
         println!(">> cargo {shown} -- <{hidden} link args hidden>");
         cmd!(sh, "cargo {cargo...}").quiet().run()?;
         Ok(())
@@ -1887,7 +1916,7 @@ fn receiver_cargo(
 ) -> Result<()> {
     with_receiver_env(sh, build, profile, || {
         let mut cargo: Vec<String> = vec![subcmd.to_owned()];
-        cargo.extend(receiver_cargo_flags(profile, "desktop-receiver"));
+        cargo.extend(receiver_cargo_flags(profile, &profile.receiver_package));
         cargo.extend(extra.iter().cloned());
         // stderr, so it can't interleave with a `--message-format=json` stream.
         eprintln!(">> cargo {subcmd} (static gstreamer) …");

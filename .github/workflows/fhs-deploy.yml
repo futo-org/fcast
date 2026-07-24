@@ -15,10 +15,16 @@ on:
       - 'crates/fiatlux/**'
       - 'crates/fiatlux-sys/**'
       - 'tools/remote-pipeline-dbg/**'
+      - 'xtask/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/fhs-deploy.yml'
   workflow_dispatch:
+    inputs:
+      fhs_core_ref:
+        description: 'fhs-core branch/tag/sha to build from'
+        required: false
+        default: master
 
 permissions:
   contents: read
@@ -31,10 +37,12 @@ env:
   ZIG_VERSION: "0.15.2"
   RUST_NIGHTLY: "nightly-2026-01-15"
   GHCR_IMAGE: ghcr.io/futo-org/fhs-core/sysext/fcast
+  FHS_CORE_REF: ${{ github.event.inputs.fhs_core_ref || 'master' }}
 
 jobs:
   build:
     name: Build (${{ matrix.arch }})
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +54,7 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-            rustflags: ""
+            rustflags: "-C link-arg=-lgcc"
     runs-on: ${{ matrix.runner }}
     container:
       image: quay.io/fedora/fedora-bootc:44
@@ -77,36 +85,43 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          ref: master
+          ref: ${{ env.FHS_CORE_REF }}
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
 
       - name: Install fcast build deps
         run: |
-          dnf -y install \
-            gstreamer1-devel gstreamer1-plugins-base-devel \
-            gstreamer1-plugins-good gstreamer1-plugins-bad-free \
-            gstreamer1-plugins-bad-free-extras \
-            gstreamer1-plugins-bad-free-devel gstreamer1-plugin-libav \
-            libdav1d-devel glib2-devel \
+          dnf -y install --setopt=install_weak_deps=False \
+            glib2-devel gobject-introspection-devel \
             fontconfig-devel libseat-devel libxkbcommon-devel libinput-devel \
-            libheif-devel pango-devel cairo-devel cairo-gobject-devel libdrm-devel \
+            libheif-devel pango-devel cairo-devel cairo-gobject-devel libdrm-devel openssl-devel \
+            mesa-libgbm-devel libunistring-devel \
             libshaderc-devel vulkan-headers vulkan-loader-devel \
-            meson ninja-build \
-            gcc gcc-c++ make rustup \
-            clang-libs clang-devel git flatbuffers-compiler
+            libvorbis-devel libtheora-devel libogg-devel libva-devel \
+            libgudev-devel srt-devel libass-devel wavpack-devel \
+            libsoup3-devel pulseaudio-libs-devel \
+            meson ninja-build cmake flex bison nasm \
+            pipewire-devel \
+            gcc gcc-c++ make patch rustup \
+            clang-devel ccache flatbuffers-compiler
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Install Rust nightly + cross target
+      - name: Install Rust
         run: |
           rustup-init -y --default-toolchain ${{ env.RUST_NIGHTLY }} \
             --profile minimal --target ${{ matrix.rust-target }} --no-modify-path
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up ccache (C build cache — GStreamer subprojects)
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.arch }}-fhs-gst
+          max-size: 500M
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
@@ -136,13 +151,18 @@ jobs:
           echo "FL_LIB_PATH=${{ github.workspace }}/fiatlux-client/zig-out/${{ matrix.arch }}/lib" >> "$GITHUB_ENV"
           echo "FL_INCLUDE_PATH=${{ github.workspace }}/fiatlux-client/zig-out/${{ matrix.arch }}/include" >> "$GITHUB_ENV"
 
-      - name: Build fcast-receiver RPM
+      - name: Build fhs-receiver
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
-          cargo build --release --package fhs-receiver \
-            --features static-gst-plugins \
+          cargo clean -p fiatlux-sys -p fiatlux -p fhs-receiver || true
+          cargo xtask receiver build-static \
+            --receiver-package fhs-receiver \
+            --receiver-flavor fhs \
             --target ${{ matrix.rust-target }}
+
+      - name: Package fcast-receiver RPM
+        run: |
           cargo generate-rpm -p receivers/experimental/fhs --target ${{ matrix.rust-target }}
           mkdir -p tmp
           RPM_FILE="fcast-receiver-${{ steps.version.outputs.version }}-1.${{ matrix.arch }}.rpm"
@@ -196,7 +216,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          ref: master
+          ref: ${{ env.FHS_CORE_REF }}
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
@@ -237,7 +257,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: futo-org/fhs-core
-          ref: master
+          ref: ${{ env.FHS_CORE_REF }}
           path: fhs-core
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
