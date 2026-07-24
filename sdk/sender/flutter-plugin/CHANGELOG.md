@@ -1,3 +1,20 @@
+## 0.0.5
+
+- Update to `fcast-sender-sdk` 0.2.0
+- Queue support: `loadQueue`, `queueInsert`, `queueRemove`, `queueSelect`, and
+  `DeviceEvent.queueChanged` carrying full queue snapshots
+- Track selection: `changeTrack` and the aggregated `DeviceEvent.tracksChanged`
+- External subtitles: `addSubtitleSource`
+- Receiver-rejected commands are surfaced via `DeviceEvent.commandError`
+- Progress update interval: `setProgressUpdateInterval` plus an optional
+  `progressUpdateIntervalMillis` parameter on `load`
+- File-descriptor companion sources (`CompanionSourceDescriptor.fd`) for
+  Android SAF / iOS picker flows
+- `supportsFeature` covers the new capabilities (queue, track selection,
+  companion, WHEP, progress interval)
+- BREAKING: exhaustive `switch`es over `DeviceEvent` must handle the new
+  variants
+
 ## 0.0.4
 
 - Update to `fcast-sender-sdk` 0.1.4
