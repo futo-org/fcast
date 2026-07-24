@@ -111,14 +111,11 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Install Rust nightly + cross target
+      - name: Install Rust
         run: |
           rustup-init -y --default-toolchain ${{ env.RUST_NIGHTLY }} \
             --profile minimal --target ${{ matrix.rust-target }} --no-modify-path
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Set up sccache (Rust build cache)
-        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Set up ccache (C build cache — GStreamer subprojects)
         uses: hendrikmuhs/ccache-action@v1.2
@@ -157,8 +154,6 @@ jobs:
       - name: Build fhs-receiver
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
         run: |
           cargo clean -p fiatlux-sys -p fiatlux -p fhs-receiver || true
           cargo xtask receiver build-static \
