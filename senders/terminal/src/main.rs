@@ -3,7 +3,7 @@ use fcast_sender_sdk::{
     context::CastContext,
     device::{
         DeviceConnectionState, DeviceEventHandler, DeviceInfo, LoadRequest, MediaTrack,
-        MediaTrackType, PlaybackState, Source,
+        MediaTrackType, PlaybackState, QueueState, ReceiverError, Source, TrackList,
     },
     url_format_ip_addr, DeviceDiscovererEventHandler,
 };
@@ -180,6 +180,18 @@ impl DeviceEventHandler for EventHandler {
 
     fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
         println!("Track selected: id={id:?} type={typ:?}");
+    }
+
+    fn tracks_changed(&self, tracks: TrackList) {
+        println!("Tracks changed: {tracks:#?}");
+    }
+
+    fn queue_changed(&self, queue: QueueState) {
+        println!("Queue changed: {queue:#?}");
+    }
+
+    fn command_error(&self, error: ReceiverError) {
+        eprintln!("Receiver rejected command: {error:?}");
     }
 }
 
@@ -439,15 +451,18 @@ async fn main() {
                     url.unwrap()
                 };
                 device
-                    .load(LoadRequest::Url {
-                        content_type: mime_type,
-                        url,
-                        resume_position: timestamp,
-                        speed,
-                        volume,
-                        metadata: None,
-                        request_headers: headers,
-                    })
+                    .load(
+                        LoadRequest::Url {
+                            content_type: mime_type,
+                            url,
+                            resume_position: timestamp,
+                            speed,
+                            volume,
+                            metadata: None,
+                            request_headers: headers,
+                        },
+                        None,
+                    )
                     .unwrap();
             } else {
                 let content = match content {
@@ -460,15 +475,18 @@ async fn main() {
                     }
                 };
                 device
-                    .load(LoadRequest::Content {
-                        content_type: mime_type,
-                        content,
-                        resume_position: timestamp.unwrap_or(0.0),
-                        speed,
-                        volume,
-                        metadata: None,
-                        request_headers: headers,
-                    })
+                    .load(
+                        LoadRequest::Content {
+                            content_type: mime_type,
+                            content,
+                            resume_position: timestamp.unwrap_or(0.0),
+                            speed,
+                            volume,
+                            metadata: None,
+                            request_headers: headers,
+                        },
+                        None,
+                    )
                     .unwrap();
             }
         }

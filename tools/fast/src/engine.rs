@@ -2069,8 +2069,8 @@ impl<'a> Engine<'a> {
                 thumbnail_url,
             } => {
                 let mut item = self.media_item_v4(*file_id)?;
-                item.title = *title;
-                item.thumbnail_url = *thumbnail_url;
+                item.title = title.map(|s| s.to_owned());
+                item.thumbnail_url = thumbnail_url.map(|s| s.to_owned());
                 let msg = v4::MessageBuilder::new().load_single(item);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
@@ -2109,13 +2109,16 @@ impl<'a> Engine<'a> {
                     .iter()
                     .map(|it| self.media_item_v4(it.file_id))
                     .collect::<Result<Vec<_>>>()?;
-                let msg =
-                    v4::MessageBuilder::new().load_queue(media_items.into_iter(), *start_index);
+                let msg = v4::MessageBuilder::new().load_queue(
+                    media_items.into_iter().map(|it| (it, None)),
+                    *start_index,
+                    false,
+                );
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
             Op::QueueInsertV4 { file_id, position } => {
                 let item = self.media_item_v4(*file_id)?;
-                let msg = v4::MessageBuilder::new().queue_insert(item, *position);
+                let msg = v4::MessageBuilder::new().queue_insert(item, None, *position);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
             Op::QueueRemoveV4 { position } => {
@@ -2162,7 +2165,11 @@ impl<'a> Engine<'a> {
                 let items = (0..*count)
                     .map(|_| self.media_item_v4(*file_id))
                     .collect::<Result<Vec<_>>>()?;
-                let msg = v4::MessageBuilder::new().load_queue(items.into_iter(), *start_index);
+                let msg = v4::MessageBuilder::new().load_queue(
+                    items.into_iter().map(|it| (it, None)),
+                    *start_index,
+                    false,
+                );
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
             Op::ErrorV4(kind) => {
@@ -2472,7 +2479,7 @@ impl<'a> Engine<'a> {
         Ok((url.clone(), mime, headers.clone()))
     }
 
-    fn media_item_v4(&self, file_id: u32) -> Result<v4::MediaItem<'static>> {
+    fn media_item_v4(&self, file_id: u32) -> Result<v4::MediaItem> {
         let (url, mime, headers) = self.file(file_id)?;
         Ok(v4::MediaItem {
             container: mime.to_owned(),

@@ -34,8 +34,9 @@ use crate::{
     device::{
         ApplicationInfo, CastingDevice, CastingDeviceError, CompanionSource,
         CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
-        DeviceInfo, LoadRequest, Metadata, PlaybackState, PlaylistItem, ProtocolType, QueueItem,
-        QueuePosition, Source,
+        DeviceInfo, LoadRequest, MediaItem, MediaLocator, MediaTrack, MediaTrackType, Metadata,
+        PlaybackState, PlaylistItem, ProtocolType, Queue, QueueEntry, QueueItem, QueuePosition,
+        QueueState, ReceiverError, Source, SubtitleSource, TrackList,
     },
     utils, IpAddr,
 };
@@ -79,6 +80,7 @@ enum Command {
         metadata: Option<Metadata>,
         request_headers: Option<HashMap<String, String>>,
     },
+    SetProgressUpdateInterval(u64),
     SeekVideo(f64),
     StopVideo,
     PauseVideo,
@@ -87,9 +89,11 @@ enum Command {
     SetPlaylistItemIndex(u32),
     JumpPlaylist(i32),
     LoadPlaylist(Vec<PlaylistItem>),
-    LoadQueue {
-        items: Vec<crate::device::QueueItem>,
-        start_index: Option<u8>,
+    LoadQueue(Queue),
+    AddSubtitleSource {
+        url: String,
+        select: bool,
+        name: Option<String>,
     },
     ConnectedEventDeadlineElapsed,
     StartMirroringSession(WrappedSignaller),
@@ -104,8 +108,9 @@ enum Command {
     QueueRemove {
         position: QueuePosition,
     },
-    QueueAdd {
-        item: crate::device::QueueItem,
+    QueueInsert {
+        item: MediaItem,
+        playback_duration: Option<f64>,
         position: QueuePosition,
     },
     QueueSelect {
@@ -246,8 +251,9 @@ enum CompanionRequest {
 enum V4Load {
     Single(Source),
     Queue {
-        items: Vec<QueueItem>,
+        entries: Vec<QueueEntry>,
         start_index: Option<u8>,
+        autoplay: bool,
     },
 }
 
@@ -292,6 +298,17 @@ enum Action {
         capabilities: Option<crate::device::ReceiverCapabilities>,
     },
     LoadedV4(V4Load),
+    QueueInserted {
+        entry: QueueEntry,
+        position: QueuePosition,
+    },
+    QueueRemoved {
+        position: QueuePosition,
+    },
+    QueueItemSelected {
+        position: QueuePosition,
+    },
+    ReceiverError(ReceiverError),
 }
 
 /// Convert the v4 `ReceiverCapabilities` flatbuffer into the public
@@ -370,6 +387,22 @@ macro_rules! json_from_body {
                 Err(_) => return Some(Action::Quit(QuitReason::InvalidBody)),
             },
             Err(_) => return Some(Action::Quit(QuitReason::InvalidBody)),
+        }
+    };
+}
+
+/// Read a `QueuePosition` off any flatbuffer message that carries one (`QueueInsert`,
+/// `QueueRemove`, `QueueItemSelected`). They share the same `position_type()` /
+/// `position_as_index()` accessors.
+macro_rules! read_queue_position {
+    ($msg:expr) => {
+        match $msg.position_type() {
+            v4::flat::QueuePosition::Index => $msg
+                .position_as_index()
+                .map(|i| QueuePosition::Index(i.index())),
+            v4::flat::QueuePosition::Front => Some(QueuePosition::Front),
+            v4::flat::QueuePosition::Back => Some(QueuePosition::Back),
+            _ => None,
         }
     };
 }
@@ -619,7 +652,31 @@ impl DeviceStateMachine {
             v4::flat::Message::Error => {
                 let msg = union!(packet.payload_as_error());
                 warn!("Got error: {msg:?}");
-                Action::None
+                Action::ReceiverError(receiver_error_from_flat(msg.kind()))
+            }
+            v4::flat::Message::QueueInsert => {
+                let msg = union!(packet.payload_as_queue_insert());
+                match read_queue_position!(msg) {
+                    Some(position) => Action::QueueInserted {
+                        entry: queue_entry_from_flat(&msg.item()),
+                        position,
+                    },
+                    None => Action::None,
+                }
+            }
+            v4::flat::Message::QueueRemove => {
+                let msg = union!(packet.payload_as_queue_remove());
+                match read_queue_position!(msg) {
+                    Some(position) => Action::QueueRemoved { position },
+                    None => Action::None,
+                }
+            }
+            v4::flat::Message::QueueItemSelected => {
+                let msg = union!(packet.payload_as_queue_item_selected());
+                match read_queue_position!(msg) {
+                    Some(position) => Action::QueueItemSelected { position },
+                    None => Action::None,
+                }
             }
             v4::flat::Message::ReceiverIntroduction => {
                 let msg = union!(packet.payload_as_receiver_introduction());
@@ -658,22 +715,15 @@ impl DeviceStateMachine {
                     }
                     v4::flat::MediaSource::Queue => {
                         let queue = union!(msg.source_as_queue());
-                        let items = queue
+                        let entries = queue
                             .items()
                             .iter()
-                            .map(|qi| {
-                                let media_item = qi.media_item();
-                                QueueItem::Url {
-                                    url: media_item.source_url().to_owned(),
-                                    content_type: media_item.container().to_owned(),
-                                    metadata: None,
-                                    request_headers: None,
-                                }
-                            })
+                            .map(|qi| queue_entry_from_flat(&qi))
                             .collect();
                         V4Load::Queue {
-                            items,
+                            entries,
                             start_index: queue.start_index(),
+                            autoplay: queue.autoplay(),
                         }
                     }
                     _ => return Action::None,
@@ -739,6 +789,243 @@ impl DeviceStateMachine {
     }
 }
 
+/// The SDK's mirror of the receiver's queue, reconstructed from the `Load`, `QueueInsert`,
+/// `QueueRemove`, and `QueueItemSelected` broadcasts (and updated optimistically for this sender's
+/// own mutations, since the receiver only relays those to *other* senders). The mutation methods
+/// replicate the receiver's accept/reject rules (`application.rs`) and report whether the mirror
+/// changed, so a command the receiver refuses (an out-of-range position, removing the playing item,
+/// inserting into an empty or full queue) leaves the mirror in agreement with the receiver instead
+/// of desyncing it. Best-effort: a fresh `Load` resyncs it.
+#[derive(Default)]
+struct QueueMirror {
+    active: bool,
+    items: Vec<QueueEntry>,
+    current_index: Option<u32>,
+    autoplay: bool,
+}
+
+impl QueueMirror {
+    fn snapshot(&self) -> Option<QueueState> {
+        self.active.then(|| QueueState {
+            items: self.items.clone(),
+            current_index: self.current_index,
+            autoplay: self.autoplay,
+        })
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn set(&mut self, items: Vec<QueueEntry>, start_index: Option<u32>, autoplay: bool) {
+        let len = items.len();
+        self.active = true;
+        self.items = items;
+        self.autoplay = autoplay;
+        self.current_index = (len > 0).then(|| start_index.unwrap_or(0).min(len as u32 - 1));
+    }
+
+    fn resolve(&self, position: &QueuePosition) -> usize {
+        match position {
+            QueuePosition::Front => 0,
+            QueuePosition::Back => self.items.len().saturating_sub(1),
+            QueuePosition::Index(i) => *i as usize,
+        }
+    }
+
+    fn insert(&mut self, entry: QueueEntry, position: &QueuePosition) -> bool {
+        if !self.active {
+            return false;
+        }
+        // The receiver refuses inserts into an empty or full queue (capped at 256 items) and
+        // positions past the end (`Back` appends).
+        if self.items.is_empty() || self.items.len() > u8::MAX as usize {
+            return false;
+        }
+        let idx = match position {
+            QueuePosition::Front => 0,
+            QueuePosition::Back => self.items.len(),
+            QueuePosition::Index(i) => *i as usize,
+        };
+        if idx > self.items.len() {
+            return false;
+        }
+        self.items.insert(idx, entry);
+        // Mirror the receiver's index bookkeeping (application.rs).
+        if let Some(cur) = self.current_index.as_mut() {
+            if idx as u32 <= *cur {
+                *cur += 1;
+            }
+        }
+        true
+    }
+
+    fn remove(&mut self, position: &QueuePosition) -> bool {
+        if !self.active {
+            return false;
+        }
+        let idx = self.resolve(position);
+        // The receiver refuses out-of-range positions and removal of the currently playing item, so
+        // the mirror must keep them too.
+        if idx >= self.items.len() || Some(idx as u32) == self.current_index {
+            return false;
+        }
+        self.items.remove(idx);
+        if let Some(cur) = self.current_index.as_mut() {
+            if (idx as u32) < *cur {
+                *cur -= 1;
+            }
+        }
+        true
+    }
+
+    fn select(&mut self, position: &QueuePosition) -> bool {
+        if !self.active {
+            return false;
+        }
+        let idx = self.resolve(position);
+        // The receiver refuses out-of-range selects rather than clamping. A same-index select is
+        // accepted receiver-side (it restarts the item) but leaves the snapshot unchanged, so it
+        // isn't re-emitted.
+        if idx >= self.items.len() || Some(idx as u32) == self.current_index {
+            return false;
+        }
+        self.current_index = Some(idx as u32);
+        true
+    }
+}
+
+/// The SDK's mirror of the available tracks and current selection, built from `TracksAvailable` and
+/// the per-type `ChangeTrack` relays.
+#[derive(Default)]
+struct TrackMirror {
+    tracks: Vec<MediaTrack>,
+    selected_video: Option<u32>,
+    selected_audio: Option<u32>,
+    selected_subtitle: Option<u32>,
+}
+
+impl TrackMirror {
+    fn snapshot(&self) -> TrackList {
+        TrackList {
+            tracks: self.tracks.clone(),
+            selected_video: self.selected_video,
+            selected_audio: self.selected_audio,
+            selected_subtitle: self.selected_subtitle,
+        }
+    }
+
+    fn set_selected(&mut self, id: Option<u32>, typ: &MediaTrackType) {
+        match typ {
+            MediaTrackType::Video => self.selected_video = id,
+            MediaTrackType::Audio => self.selected_audio = id,
+            MediaTrackType::Subtitle => self.selected_subtitle = id,
+        }
+    }
+}
+
+fn to_v4_queue_position(position: QueuePosition) -> v4::QueuePosition {
+    match position {
+        QueuePosition::Front => v4::QueuePosition::Front,
+        QueuePosition::Back => v4::QueuePosition::Back,
+        QueuePosition::Index(idx) => v4::QueuePosition::Index(idx),
+    }
+}
+
+/// Convert a received flatbuffer `MediaItem` into the public [`MediaItem`]. Received items are
+/// always URL-sourced (companion items arrive as companion URLs), and headers / typed metadata are
+/// stripped by the receiver relay.
+fn media_item_from_flat(item: &v4::flat::MediaItem<'_>) -> MediaItem {
+    MediaItem {
+        content_type: item.container().to_owned(),
+        source: MediaLocator::Url {
+            url: item.source_url().to_owned(),
+        },
+        start_time: item
+            .start_time()
+            .map(|t| Duration::from_micros(t.micros()).as_secs_f64()),
+        volume: item.volume().map(|v| v as f64),
+        speed: item.speed().map(|s| s as f64),
+        request_headers: None,
+        title: item.title().map(|s| s.to_owned()),
+        thumbnail_url: item.thumbnail_url().map(|s| s.to_owned()),
+    }
+}
+
+fn queue_entry_from_flat(item: &v4::flat::QueueItem<'_>) -> QueueEntry {
+    QueueEntry {
+        item: media_item_from_flat(&item.media_item()),
+        playback_duration: item
+            .playback_duration()
+            .map(|t| Duration::from_micros(t.micros()).as_secs_f64()),
+    }
+}
+
+fn receiver_error_from_flat(kind: v4::flat::ErrorKind) -> ReceiverError {
+    use v4::flat::ErrorKind as K;
+    match kind {
+        K::InvalidOpcode => ReceiverError::InvalidOpcode,
+        K::ResourceNotFound => ReceiverError::ResourceNotFound,
+        K::SeekOutOfRange => ReceiverError::SeekOutOfRange,
+        K::VolumeOutOfRange => ReceiverError::VolumeOutOfRange,
+        K::RateOutOfRange => ReceiverError::RateOutOfRange,
+        K::UnsupportedFormat => ReceiverError::UnsupportedFormat,
+        K::MalformedBody => ReceiverError::MalformedBody,
+        K::InvalidState => ReceiverError::InvalidState,
+        K::QueuePositionOutOfRange => ReceiverError::QueuePositionOutOfRange,
+        K::QueueRemovePlayingItem => ReceiverError::QueueRemovePlayingItem,
+        K::QueueFull => ReceiverError::QueueFull,
+        K::InvalidPayloadType => ReceiverError::InvalidPayloadType,
+        K::Internal => ReceiverError::Internal,
+        _ => ReceiverError::Unknown,
+    }
+}
+
+/// Convert the legacy lossy [`QueueItem`] into a [`QueueEntry`], carrying its title/thumbnail
+/// through so the deprecated queue API still populates the richer wire fields.
+fn queue_item_to_entry(item: QueueItem) -> QueueEntry {
+    let (content_type, source, request_headers, metadata) = match item {
+        QueueItem::Url {
+            url,
+            content_type,
+            metadata,
+            request_headers,
+        } => (
+            content_type,
+            MediaLocator::Url { url },
+            request_headers,
+            metadata,
+        ),
+        QueueItem::FCompanion {
+            content_type,
+            source,
+            metadata,
+        } => (
+            content_type,
+            MediaLocator::FCompanion { source },
+            None,
+            metadata,
+        ),
+    };
+    let (title, thumbnail_url) = match metadata {
+        Some(m) => (m.title, m.thumbnail_url),
+        None => (None, None),
+    };
+    QueueEntry {
+        item: MediaItem {
+            content_type,
+            source,
+            start_time: None,
+            volume: None,
+            speed: None,
+            request_headers,
+            title,
+            thumbnail_url,
+        },
+        playback_duration: None,
+    }
+}
+
 struct WrappedCompanionSource {
     file: std::fs::File,
     content_type: String,
@@ -754,6 +1041,14 @@ struct InnerDevice {
     companion_sources: HashMap<u32, WrappedCompanionSource>,
     receiver_fingerprint: Option<Vec<u8>>,
     signaller: Option<Arc<dyn crate::device::FWRTCSignaller>>,
+    queue_mirror: QueueMirror,
+    track_mirror: TrackMirror,
+    /// Set when this sender dispatches a load and cleared by the first Buffering/Playing update
+    /// that follows it. While set, an inbound `StopPlayback` relay is ambiguous: the receiver may
+    /// have relayed another sender's stop of the *previous* media before processing our load, so
+    /// playback-scoped state (in particular the companion sources the new load needs) must not be
+    /// dropped for it.
+    load_in_flight: bool,
 }
 
 impl InnerDevice {
@@ -774,12 +1069,180 @@ impl InnerDevice {
             companion_sources: HashMap::new(),
             receiver_fingerprint,
             signaller: None,
+            queue_mirror: QueueMirror::default(),
+            track_mirror: TrackMirror::default(),
+            load_in_flight: false,
         }
+    }
+
+    /// Reconstruct the full queue snapshot from the mirror and, when a queue is active, forward it
+    /// to the event handler. The SDK keeps no queue state of its own beyond the transient mirror
+    /// needed to assemble this snapshot.
+    fn emit_queue_changed(&mut self) {
+        if let Some(snapshot) = self.queue_mirror.snapshot() {
+            self.event_handler.queue_changed(snapshot);
+        }
+    }
+
+    /// Deactivate the queue mirror and, if a queue was being tracked, emit one final empty snapshot
+    /// so apps holding a previous [`QueueState`] learn the queue is gone. A stop or single-item
+    /// load ends it with no relay to the originator, so this local emission is the only signal.
+    fn clear_queue_mirror(&mut self) {
+        if self.queue_mirror.active {
+            self.queue_mirror.clear();
+            self.event_handler.queue_changed(QueueState::default());
+        }
+    }
+
+    /// Assemble the aggregated track list from the mirror and forward it to the event handler.
+    fn emit_tracks_changed(&mut self) {
+        self.event_handler.tracks_changed(self.track_mirror.snapshot());
+    }
+
+    /// Resolve a media item's locator to a plain URL, registering a companion source (and taking
+    /// ownership of any transferred fd) when needed.
+    ///
+    /// The returned item always carries a [`MediaLocator::Url`], so it is safe to retain in the
+    /// queue mirror and re-emit to the app: no consumed file descriptor lingers in it.
+    fn resolve_media_item(&mut self, item: MediaItem) -> anyhow::Result<MediaItem> {
+        let source = match item.source {
+            MediaLocator::Url { url } => MediaLocator::Url { url },
+            MediaLocator::FCompanion { source } => MediaLocator::Url {
+                url: self.companion_url(&source)?,
+            },
+        };
+        Ok(MediaItem { source, ..item })
+    }
+
+    /// Build a v4 wire item. `item` is expected to already be resolved to a URL locator (see
+    /// [`Self::resolve_media_item`]). The companion arm resolves the source itself in case a caller
+    /// skips that step.
+    fn build_v4_media_item(&mut self, item: MediaItem) -> anyhow::Result<v4::MediaItem> {
+        let source_url = match item.source {
+            MediaLocator::Url { url } => url,
+            MediaLocator::FCompanion { source } => self.companion_url(&source)?,
+        };
+        Ok(v4::MediaItem {
+            container: item.content_type,
+            source_url,
+            start_time: item.start_time,
+            volume: item.volume.map(|v| v as f32),
+            speed: item.speed.map(|s| s as f32),
+            headers: item.request_headers,
+            title: item.title,
+            thumbnail_url: item.thumbnail_url,
+            metadata: None,
+            extra_metadata: None,
+        })
+    }
+
+    async fn load_rich_queue(&mut self, queue: Queue) -> anyhow::Result<()> {
+        let autoplay = queue.autoplay;
+        // The wire index is a u8 and the receiver refuses out-of-range start indexes, so clamp to
+        // the last item instead of letting `as u8` wrap to an arbitrary in-range value. The mirror
+        // below reuses the clamped index, keeping both views on the same item.
+        let start_index = queue.start_index.map(|i| {
+            i.min(queue.items.len().saturating_sub(1) as u32)
+                .min(u8::MAX as u32) as u8
+        });
+        let mut wire_items = Vec::with_capacity(queue.items.len());
+        let mut entries = Vec::with_capacity(queue.items.len());
+        for entry in queue.items {
+            // Resolve companion sources up front so the fd is consumed exactly once and only the
+            // resulting URL is kept in the mirror.
+            let resolved = self.resolve_media_item(entry.item)?;
+            let wire_item = self.build_v4_media_item(resolved.clone())?;
+            wire_items.push((wire_item, entry.playback_duration));
+            entries.push(QueueEntry {
+                item: resolved,
+                playback_duration: entry.playback_duration,
+            });
+        }
+        let msg = v4::MessageBuilder::new().load_queue(wire_items.into_iter(), start_index, autoplay);
+        self.send_bytes(Opcode::Flatbuf, &msg).await?;
+        self.queue_mirror
+            .set(entries, start_index.map(|i| i as u32), autoplay);
+        self.emit_queue_changed();
+        Ok(())
+    }
+
+    /// Assume ownership of a raw file descriptor transferred through
+    /// [`CompanionSourceDescriptor::Fd`].
+    ///
+    /// Guards the transfer as far as a plain integer allows: negative and dead descriptors are
+    /// rejected up front, and a descriptor this device already holds open is rejected *without*
+    /// being consumed. While the SDK holds a descriptor open the kernel cannot reassign its number,
+    /// so a second arrival of the same number can only be a duplicate use of an already-transferred
+    /// descriptor, and double-closing it would tear down whatever unrelated file the number later
+    /// gets recycled to.
+    #[cfg(unix)]
+    fn take_fd_ownership(&self, fd: i32) -> std::io::Result<std::fs::File> {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+
+        if fd < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid file descriptor: {fd}"),
+            ));
+        }
+        if self
+            .companion_sources
+            .values()
+            .any(|s| s.file.as_raw_fd() == fd)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "file descriptor {fd} is already registered as a companion source"
+                ),
+            ));
+        }
+        // SAFETY: the caller transferred ownership of `fd` to the SDK (see
+        // `CompanionSourceDescriptor::Fd`), and the checks above rejected the descriptors we
+        // provably must not own. From here the SDK closes it exactly once: immediately below if it
+        // turns out to be dead, or when the registered source is dropped (stop/session end).
+        let file = unsafe { std::fs::File::from(OwnedFd::from_raw_fd(fd)) };
+        // Catch garbage descriptors from foreign callers with a clean error instead of failing at
+        // serve time. On error `file` drops here, and closing a dead fd is a harmless no-op.
+        file.metadata()?;
+        Ok(file)
+    }
+
+    /// Close a descriptor whose transfer failed before it could be registered. Ownership passed to
+    /// the SDK the moment the app handed the descriptor over, so it must still be closed exactly
+    /// once on failure.  The exception is a number currently owned by a registered source: that
+    /// value is a duplicate reference and the real owner closes it.
+    fn discard_companion_descriptor(&self, descriptor: &CompanionSourceDescriptor) {
+        #[cfg(unix)]
+        if let CompanionSourceDescriptor::Fd(fd) = *descriptor {
+            use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+            if fd >= 0
+                && !self
+                    .companion_sources
+                    .values()
+                    .any(|s| s.file.as_raw_fd() == fd)
+            {
+                // SAFETY: same ownership transfer as `take_fd_ownership`. The descriptor was never
+                // registered, so this is its only owner.
+                drop(unsafe { OwnedFd::from_raw_fd(fd) });
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = descriptor;
     }
 
     fn add_source(&mut self, source: &CompanionSource) -> std::io::Result<u32> {
         let file = match source.descriptor {
             CompanionSourceDescriptor::Path(ref path) => std::fs::File::open(path)?,
+            #[cfg(unix)]
+            CompanionSourceDescriptor::Fd(fd) => self.take_fd_ownership(fd)?,
+            #[cfg(not(unix))]
+            CompanionSourceDescriptor::Fd(..) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "file-descriptor companion sources are only supported on Unix targets",
+                ));
+            }
         };
 
         let source = WrappedCompanionSource {
@@ -801,9 +1264,11 @@ impl InnerDevice {
             ..
         } = self.state_machine.variant
         else {
+            self.discard_companion_descriptor(&source.descriptor);
             bail!("Receiver does not support FCompanion");
         };
         let Some(provider_id) = companion_provider_id else {
+            self.discard_companion_descriptor(&source.descriptor);
             bail!("No companion provider ID has been assigned");
         };
         let resource_id = self.add_source(source)?;
@@ -1358,9 +1823,28 @@ impl InnerDevice {
                         return Ok(false);
                     }
                 };
+                if matches!(state, PlaybackState::Buffering | PlaybackState::Playing) {
+                    // Playback moving forward is the receiver's first observable response to a
+                    // dispatched load. From here an inbound stop relay is unambiguous again (the
+                    // receiver serializes commands, so a stop of *our* load is always relayed after
+                    // this update).
+                    self.load_in_flight = false;
+                }
                 self.event_handler.playback_state_changed(state);
             }
             Action::PlaybackStopped => {
+                if self.load_in_flight {
+                    // This relay may be another sender's stop of the *previous* media that the
+                    // receiver processed before our in-flight load: dropping the companion sources
+                    // registered for the new load would break it right as the receiver starts
+                    // requesting them. Skip the cleanup once. A stop of the new load itself is
+                    // always preceded by its Buffering/Playing update, which clears this flag.
+                    self.load_in_flight = false;
+                } else {
+                    // Another sender (or the receiver) stopped playback: release any companion
+                    // sources this sender left open, closing their fds, and retract the queue.
+                    self.clear_playback_scoped_state();
+                }
                 self.event_handler.playback_stopped();
             }
             Action::Companion(request) => {
@@ -1401,8 +1885,16 @@ impl InnerDevice {
                     signaller.on_answer_received(sdp);
                 }
             }
-            Action::TracksAvailable(tracks) => self.event_handler.tracks_available(tracks),
-            Action::ChangeTrack { id, typ } => self.event_handler.track_selected(id, typ),
+            Action::TracksAvailable(tracks) => {
+                self.track_mirror.tracks = tracks.clone();
+                self.event_handler.tracks_available(tracks);
+                self.emit_tracks_changed();
+            }
+            Action::ChangeTrack { id, typ } => {
+                self.track_mirror.set_selected(id, &typ);
+                self.event_handler.track_selected(id, typ);
+                self.emit_tracks_changed();
+            }
             Action::PlaybackRateChanged(rate) => self.event_handler.speed_changed(rate as f64),
             Action::Introduction {
                 supports_whep,
@@ -1417,25 +1909,50 @@ impl InnerDevice {
             }
             Action::LoadedV4(load) => match load {
                 V4Load::Single(source) => {
+                    // Switching to a single item ends any active queue.
+                    self.clear_queue_mirror();
                     self.event_handler.source_changed(source.clone());
                     shared_state.source = Some(source);
                 }
-                V4Load::Queue { items, start_index } => {
-                    // TODO: notify about the entire queue and not just one item
+                V4Load::Queue {
+                    entries,
+                    start_index,
+                    autoplay,
+                } => {
                     let index = start_index.unwrap_or(0) as usize;
-                    if let Some(QueueItem::Url {
-                        url, content_type, ..
-                    }) = items.get(index)
-                    {
-                        let source = Source::Url {
-                            url: url.clone(),
-                            content_type: content_type.clone(),
-                        };
-                        self.event_handler.source_changed(source.clone());
-                        shared_state.source = Some(source);
+                    if let Some(entry) = entries.get(index) {
+                        if let MediaLocator::Url { url } = &entry.item.source {
+                            let source = Source::Url {
+                                url: url.clone(),
+                                content_type: entry.item.content_type.clone(),
+                            };
+                            self.event_handler.source_changed(source.clone());
+                            shared_state.source = Some(source);
+                        }
                     }
+                    self.queue_mirror
+                        .set(entries, start_index.map(|i| i as u32), autoplay);
+                    self.emit_queue_changed();
                 }
             },
+            Action::QueueInserted { entry, position } => {
+                if self.queue_mirror.insert(entry, &position) {
+                    self.emit_queue_changed();
+                }
+            }
+            Action::QueueRemoved { position } => {
+                if self.queue_mirror.remove(&position) {
+                    self.emit_queue_changed();
+                }
+            }
+            Action::QueueItemSelected { position } => {
+                if self.queue_mirror.select(&position) {
+                    self.emit_queue_changed();
+                }
+            }
+            Action::ReceiverError(error) => {
+                self.event_handler.command_error(error);
+            }
         }
 
         Ok(false)
@@ -1482,6 +1999,36 @@ impl InnerDevice {
         Ok(())
     }
 
+    /// Drop all playback-scoped state: registered companion sources (which closes the file
+    /// descriptors / files they own) and the queue mirror (emitting its final empty snapshot).
+    ///
+    /// Called whenever playback stops, whether initiated locally ([`Self::stop_playback`]) or by
+    /// another sender (an unambiguous inbound `StopPlayback` relay, [`Action::PlaybackStopped`]). A
+    /// stop clears the receiver's current item and queue, so no companion resource can still be
+    /// requested afterwards and nothing may be left open.
+    fn clear_playback_scoped_state(&mut self) {
+        self.companion_sources.clear();
+        self.clear_queue_mirror();
+    }
+
+    /// Ask a v4 receiver to report playback progress every `interval_millis` milliseconds (floored
+    /// to 100 ms, the receiver's granularity). Older receivers have no such message, so the request
+    /// is skipped there.
+    async fn send_progress_update_interval(&mut self, interval_millis: u64) -> anyhow::Result<()> {
+        match self.state_machine.variant {
+            StateVariant::V4 { .. } => {
+                let interval = crate::device::sanitize_progress_interval(interval_millis);
+                let micros = u64::try_from(interval.as_micros()).unwrap_or(u64::MAX);
+                let msg = v4::MessageBuilder::new()
+                    .set_progress_update_interval(v4::flat::Time::new(micros));
+                self.send_bytes(Opcode::Flatbuf, &msg).await?;
+            }
+            _ => debug!("Receiver does not support SetProgressUpdateInterval"),
+        }
+
+        Ok(())
+    }
+
     async fn stop_playback(&mut self) -> anyhow::Result<()> {
         match self.state_machine.variant {
             StateVariant::V2 | StateVariant::V3 => self.send_empty(Opcode::Stop).await?,
@@ -1495,7 +2042,10 @@ impl InnerDevice {
         self.event_handler.playback_stopped();
         self.event_handler
             .playback_state_changed(PlaybackState::Idle);
-        self.companion_sources.clear();
+        // Our own stop is ordered after any load we dispatched, so there is no ambiguity to
+        // preserve.
+        self.load_in_flight = false;
+        self.clear_playback_scoped_state();
 
         Ok(())
     }
@@ -1550,8 +2100,12 @@ impl InnerDevice {
                     request_headers,
                 )
                 .await?;
+                self.load_in_flight = true;
                 *playlist_length = None;
                 *current_playlist_item_index = None;
+                // Loading a single item clears any active queue on the receiver. The originator
+                // isn't sent a relay, so reflect it locally.
+                self.clear_queue_mirror();
             }
             Command::LoadPlaylist(items) => {
                 let items = items
@@ -1590,6 +2144,10 @@ impl InnerDevice {
                     None,
                 )
                 .await?;
+                self.load_in_flight = true;
+            }
+            Command::SetProgressUpdateInterval(interval_millis) => {
+                self.send_progress_update_interval(interval_millis).await?
             }
             Command::SeekVideo(time) => self.seek(Duration::from_secs_f64(time)).await?,
             Command::StopVideo => self.stop_playback().await?,
@@ -1676,80 +2234,60 @@ impl InnerDevice {
                 );
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
             }
-            Command::LoadQueue { items, start_index } => {
-                let mut wrapped_items = Vec::new();
-                for item in items {
-                    let url = match &item {
-                        crate::device::QueueItem::Url { url, .. } => url.clone(),
-                        crate::device::QueueItem::FCompanion { source, .. } => {
-                            self.companion_url(source)?
-                        }
-                    };
-
-                    let wrapped = v4::MediaItem {
-                        container: item.content_type().to_owned(),
-                        source_url: url,
-                        start_time: None,
-                        volume: None,
-                        speed: None,
-                        headers: None,
-                        title: None,
-                        thumbnail_url: None,
-                        metadata: None,
-                        extra_metadata: None,
-                    };
-                    wrapped_items.push(wrapped);
-                }
-
+            Command::LoadQueue(queue) => {
+                self.load_rich_queue(queue).await?;
+                self.load_in_flight = true;
+                *playlist_length = None;
+                *current_playlist_item_index = None;
+            }
+            Command::AddSubtitleSource { url, select, name } => {
                 let msg =
-                    v4::MessageBuilder::new().load_queue(wrapped_items.into_iter(), start_index);
+                    v4::MessageBuilder::new().add_subtitle_source(&url, select, name.as_deref());
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
             }
             // TODO: update the local queue to keep track of open companion files and close them when they're not needed
             Command::QueueRemove { position } => {
-                let msg = v4::MessageBuilder::new().queue_remove(match position {
-                    crate::device::QueuePosition::Front => v4::QueuePosition::Front,
-                    crate::device::QueuePosition::Back => v4::QueuePosition::Back,
-                    crate::device::QueuePosition::Index(idx) => v4::QueuePosition::Index(idx),
-                });
+                let msg = v4::MessageBuilder::new().queue_remove(to_v4_queue_position(position));
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
+                // The receiver relays queue mutations only to *other* senders, so mirror our own
+                // change locally. The mirror applies the receiver's accept/reject rules, so a
+                // mutation the receiver will refuse (reported via `command_error`) is not
+                // reflected.
+                if self.queue_mirror.remove(&position) {
+                    self.emit_queue_changed();
+                }
             }
-            Command::QueueAdd { item, position } => {
-                let pos = match position {
-                    crate::device::QueuePosition::Front => v4::QueuePosition::Front,
-                    crate::device::QueuePosition::Back => v4::QueuePosition::Back,
-                    crate::device::QueuePosition::Index(idx) => v4::QueuePosition::Index(idx),
-                };
-                let url = match &item {
-                    crate::device::QueueItem::Url { url, .. } => url.clone(),
-                    crate::device::QueueItem::FCompanion { source, .. } => {
-                        self.companion_url(source)?
-                    }
-                };
-
-                let wrapped = v4::MediaItem {
-                    container: item.content_type().to_owned(),
-                    source_url: url,
-                    start_time: None,
-                    volume: None,
-                    speed: None,
-                    headers: None,
-                    title: None,
-                    thumbnail_url: None,
-                    metadata: None,
-                    extra_metadata: None,
-                };
-                let msg = v4::MessageBuilder::new().queue_insert(wrapped, pos);
+            Command::QueueInsert {
+                item,
+                playback_duration,
+                position,
+            } => {
+                // Resolve companion sources up front so the fd is consumed once and only the
+                // resulting URL is retained in the mirror.
+                let resolved = self.resolve_media_item(item)?;
+                let wire_item = self.build_v4_media_item(resolved.clone())?;
+                let msg = v4::MessageBuilder::new().queue_insert(
+                    wire_item,
+                    playback_duration,
+                    to_v4_queue_position(position),
+                );
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
+                if self.queue_mirror.insert(
+                    QueueEntry {
+                        item: resolved,
+                        playback_duration,
+                    },
+                    &position,
+                ) {
+                    self.emit_queue_changed();
+                }
             }
             Command::QueueSelect { position } => {
-                let pos = match position {
-                    crate::device::QueuePosition::Front => v4::QueuePosition::Front,
-                    crate::device::QueuePosition::Back => v4::QueuePosition::Back,
-                    crate::device::QueuePosition::Index(idx) => v4::QueuePosition::Index(idx),
-                };
-                let msg = v4::MessageBuilder::new().queue_select(pos);
+                let msg = v4::MessageBuilder::new().queue_select(to_v4_queue_position(position));
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
+                if self.queue_mirror.select(&position) {
+                    self.emit_queue_changed();
+                }
             }
         }
 
@@ -1792,6 +2330,12 @@ impl InnerDevice {
         let mut playlist_length = None::<usize>;
         let mut current_playlist_item_index = None::<usize>;
         self.state_machine = DeviceStateMachine::new(self.receiver_fingerprint.is_some());
+        self.queue_mirror = QueueMirror::default();
+        self.track_mirror = TrackMirror::default();
+        self.load_in_flight = false;
+        // Close any companion sources left over from a previous connection so a
+        // dropped-then-reconnected session doesn't leak file descriptors.
+        self.companion_sources.clear();
         const READ_HEADROOM: usize = 1024 * 8;
         let mut packet_reader =
             fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, READ_HEADROOM);
@@ -1959,7 +2503,8 @@ impl CastingDevice for FCastDevice {
             DeviceFeature::FCompanion
             | DeviceFeature::FWRTCSignalling
             | DeviceFeature::ChangeTrack
-            | DeviceFeature::Queue => session_version == 4,
+            | DeviceFeature::Queue
+            | DeviceFeature::SetProgressUpdateInterval => session_version == 4,
         }
     }
 
@@ -1989,8 +2534,12 @@ impl CastingDevice for FCastDevice {
         self.send_command(Command::ResumeVideo)
     }
 
-    fn load(&self, request: LoadRequest) -> Result<(), CastingDeviceError> {
-        match request {
+    fn load(
+        &self,
+        request: LoadRequest,
+        progress_update_interval_millis: Option<u64>,
+    ) -> Result<(), CastingDeviceError> {
+        let result = match request {
             LoadRequest::Url {
                 content_type,
                 url,
@@ -2096,9 +2645,23 @@ impl CastingDevice for FCastDevice {
                     return Err(CastingDeviceError::UnsupportedFeature);
                 }
 
-                self.send_command(Command::LoadQueue { items, start_index })
+                // Route the legacy lossy queue-load through the rich path.
+                let queue = Queue {
+                    items: items.into_iter().map(queue_item_to_entry).collect(),
+                    start_index: start_index.map(|i| i as u32),
+                    autoplay: false,
+                };
+                self.send_command(Command::LoadQueue(queue))
+            }
+        };
+        if result.is_ok() {
+            // Queued after the load command, so the receiver applies the interval right after it
+            // processes the load. Skipped by the worker on receivers without the message (v2/v3).
+            if let Some(interval_millis) = progress_update_interval_millis {
+                self.send_command(Command::SetProgressUpdateInterval(interval_millis))?;
             }
         }
+        result
     }
 
     fn playlist_item_next(&self) -> Result<(), CastingDeviceError> {
@@ -2259,7 +2822,12 @@ impl CastingDevice for FCastDevice {
         position: QueuePosition,
     ) -> Result<(), CastingDeviceError> {
         if self.supports_feature(DeviceFeature::Queue) {
-            self.send_command(Command::QueueAdd { item, position })
+            let entry = queue_item_to_entry(item);
+            self.send_command(Command::QueueInsert {
+                item: entry.item,
+                playback_duration: entry.playback_duration,
+                position,
+            })
         } else {
             Err(CastingDeviceError::UnsupportedFeature)
         }
@@ -2268,6 +2836,52 @@ impl CastingDevice for FCastDevice {
     fn queue_select(&self, position: QueuePosition) -> Result<(), CastingDeviceError> {
         if self.supports_feature(DeviceFeature::Queue) {
             self.send_command(Command::QueueSelect { position })
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
+    }
+
+    fn load_queue(&self, queue: Queue) -> Result<(), CastingDeviceError> {
+        if self.supports_feature(DeviceFeature::Queue) {
+            self.send_command(Command::LoadQueue(queue))
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
+    }
+
+    fn queue_insert(
+        &self,
+        item: MediaItem,
+        playback_duration: Option<f64>,
+        position: QueuePosition,
+    ) -> Result<(), CastingDeviceError> {
+        if self.supports_feature(DeviceFeature::Queue) {
+            self.send_command(Command::QueueInsert {
+                item,
+                playback_duration,
+                position,
+            })
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
+    }
+
+    fn set_progress_update_interval(&self, interval_millis: u64) -> Result<(), CastingDeviceError> {
+        if self.supports_feature(DeviceFeature::SetProgressUpdateInterval) {
+            self.send_command(Command::SetProgressUpdateInterval(interval_millis))
+        } else {
+            Err(CastingDeviceError::UnsupportedFeature)
+        }
+    }
+
+    fn add_subtitle_source(&self, subtitle: SubtitleSource) -> Result<(), CastingDeviceError> {
+        // External subtitles are a v4 feature (`AddSubtitleSource`).
+        if self.session_version.get() >= 4 {
+            self.send_command(Command::AddSubtitleSource {
+                url: subtitle.url,
+                select: subtitle.select,
+                name: subtitle.name,
+            })
         } else {
             Err(CastingDeviceError::UnsupportedFeature)
         }
@@ -2297,6 +2911,92 @@ fn wrapped_playlist_index(current: usize, jump: i32, length: usize) -> Option<us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_entry(n: u32) -> QueueEntry {
+        QueueEntry {
+            item: MediaItem {
+                content_type: "video/mp4".to_owned(),
+                source: MediaLocator::Url {
+                    url: format!("http://example.test/{n}.mp4"),
+                },
+                start_time: None,
+                volume: None,
+                speed: None,
+                request_headers: None,
+                title: None,
+                thumbnail_url: None,
+            },
+            playback_duration: None,
+        }
+    }
+
+    fn mirror_with(n: usize, start_index: Option<u32>) -> QueueMirror {
+        let mut mirror = QueueMirror::default();
+        mirror.set((0..n as u32).map(test_entry).collect(), start_index, true);
+        mirror
+    }
+
+    #[test]
+    fn queue_mirror_refuses_removing_playing_item() {
+        // The receiver rejects these with QueueRemovePlayingItem. The mirror
+        // must not drift ahead of it.
+        let mut mirror = mirror_with(3, Some(2));
+        assert!(!mirror.remove(&QueuePosition::Back));
+        assert_eq!(mirror.items.len(), 3);
+        assert_eq!(mirror.current_index, Some(2));
+
+        // Removing behind the playing item shifts it down.
+        assert!(mirror.remove(&QueuePosition::Front));
+        assert_eq!(mirror.items.len(), 2);
+        assert_eq!(mirror.current_index, Some(1));
+    }
+
+    #[test]
+    fn queue_mirror_refuses_out_of_range_ops() {
+        let mut mirror = mirror_with(2, Some(0));
+        assert!(!mirror.remove(&QueuePosition::Index(2)));
+        assert!(!mirror.select(&QueuePosition::Index(2)));
+        assert!(!mirror.insert(test_entry(9), &QueuePosition::Index(3)));
+        assert_eq!(mirror.items.len(), 2);
+        assert_eq!(mirror.current_index, Some(0));
+    }
+
+    #[test]
+    fn queue_mirror_refuses_insert_into_empty_or_full_queue() {
+        let mut mirror = mirror_with(0, None);
+        assert!(!mirror.insert(test_entry(0), &QueuePosition::Front));
+
+        let mut mirror = mirror_with(u8::MAX as usize + 1, Some(0));
+        assert!(!mirror.insert(test_entry(0), &QueuePosition::Back));
+        assert_eq!(mirror.items.len(), u8::MAX as usize + 1);
+    }
+
+    #[test]
+    fn queue_mirror_insert_shifts_current_index() {
+        let mut mirror = mirror_with(2, Some(1));
+        assert!(mirror.insert(test_entry(9), &QueuePosition::Front));
+        assert_eq!(mirror.current_index, Some(2));
+        assert!(mirror.insert(test_entry(10), &QueuePosition::Back));
+        assert_eq!(mirror.current_index, Some(2));
+    }
+
+    #[test]
+    fn queue_mirror_select_is_exact_and_deduplicated() {
+        let mut mirror = mirror_with(3, Some(0));
+        assert!(mirror.select(&QueuePosition::Back));
+        assert_eq!(mirror.current_index, Some(2));
+        // Re-selecting the same item leaves the snapshot unchanged.
+        assert!(!mirror.select(&QueuePosition::Index(2)));
+    }
+
+    #[test]
+    fn queue_mirror_inactive_ignores_everything() {
+        let mut mirror = QueueMirror::default();
+        assert!(mirror.snapshot().is_none());
+        assert!(!mirror.insert(test_entry(0), &QueuePosition::Front));
+        assert!(!mirror.remove(&QueuePosition::Front));
+        assert!(!mirror.select(&QueuePosition::Front));
+    }
 
     fn init_with_version(version: VersionCode) -> DeviceStateMachine {
         let mut state_machine = DeviceStateMachine::new(false);
@@ -2527,9 +3227,9 @@ mod tests {
 
     #[test]
     fn wrapped_playlist_index_empty_playlist_is_none() {
-        // Regression: `load(Playlist([]))` then `playlist_item_next()` reached
-        // `current %= 0` (divide-by-zero) and `playlist_item_previous()` reached
-        // `0usize - 1` (underflow). Both must now be a safe no-op, not a panic.
+        // Regression: `load(Playlist([]))` then `playlist_item_next()` reached `current %= 0`
+        // (divide-by-zero) and `playlist_item_previous()` reached `0usize - 1` (underflow). Both
+        // must now be a safe no-op, not a panic.
         assert_eq!(wrapped_playlist_index(0, 0, 0), None);
         assert_eq!(wrapped_playlist_index(0, 1, 0), None);
         assert_eq!(wrapped_playlist_index(0, -1, 0), None);

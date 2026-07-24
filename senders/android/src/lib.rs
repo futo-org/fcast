@@ -284,15 +284,18 @@ impl Application {
 
                 match self.active_device.as_ref() {
                     Some(device) => {
-                        device.load(device::LoadRequest::Url {
-                            content_type,
-                            url,
-                            resume_position: None,
-                            speed: None,
-                            volume: None,
-                            metadata: None,
-                            request_headers: None,
-                        })?;
+                        device.load(
+                            device::LoadRequest::Url {
+                                content_type,
+                                url,
+                                resume_position: None,
+                                speed: None,
+                                volume: None,
+                                metadata: None,
+                                request_headers: None,
+                            },
+                            None,
+                        )?;
                     }
                     None => error!("Active device is missing, cannot send play message"),
                 }

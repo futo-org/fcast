@@ -89,6 +89,7 @@ enum Command {
         request_headers: Option<HashMap<String, String>>,
     },
     LoadPlaylist(Vec<PlaylistItem>),
+    SetProgressUpdateInterval(Duration),
     ChangeVolume(f64),
     ChangeSpeed(f64),
     Seek(f64),
@@ -332,6 +333,8 @@ impl InnerDevice {
     async fn handle_command(&mut self, cmd: Command) -> anyhow::Result<bool> {
         match cmd {
             Command::Quit => return Ok(true),
+            // Intercepted in the work loop, which owns the poll interval.
+            Command::SetProgressUpdateInterval(_) => (),
             Command::LoadUrl {
                 content_type,
                 url,
@@ -741,7 +744,12 @@ impl InnerDevice {
                 }
                 cmd = self.cmd_rx.recv() => {
                     let cmd = cmd.ok_or(anyhow!("Failed to receive command"))?;
-                    if self.handle_command(cmd).await? {
+                    // Handled inline because the poll interval lives on this loop's stack. The
+                    // fresh interval ticks once immediately, which just means one prompt status
+                    // refresh.
+                    if let Command::SetProgressUpdateInterval(period) = cmd {
+                        get_status_interval = tokio::time::interval(period);
+                    } else if self.handle_command(cmd).await? {
                         break;
                     }
                 }
@@ -856,7 +864,8 @@ impl CastingDevice for ChromecastDevice {
             | DeviceFeature::LoadUrl
             | DeviceFeature::LoadImage
             | DeviceFeature::LoadPlaylist
-            | DeviceFeature::PlaylistNextAndPrevious => true,
+            | DeviceFeature::PlaylistNextAndPrevious
+            | DeviceFeature::SetProgressUpdateInterval => true,
             _ => false,
         }
     }
@@ -887,8 +896,12 @@ impl CastingDevice for ChromecastDevice {
         self.send_command(Command::ResumePlayback)
     }
 
-    fn load(&self, request: LoadRequest) -> Result<(), CastingDeviceError> {
-        match request {
+    fn load(
+        &self,
+        request: LoadRequest,
+        progress_update_interval_millis: Option<u64>,
+    ) -> Result<(), CastingDeviceError> {
+        let result = match request {
             LoadRequest::Url {
                 content_type,
                 url,
@@ -942,7 +955,15 @@ impl CastingDevice for ChromecastDevice {
             ),
             LoadRequest::Playlist { items } => self.send_command(Command::LoadPlaylist(items)),
             LoadRequest::Queue { .. } => Err(CastingDeviceError::UnsupportedFeature),
+        };
+        if result.is_ok() {
+            // Queued after the load command so the status-poll rate changes together with the new
+            // media.
+            if let Some(interval_millis) = progress_update_interval_millis {
+                self.set_progress_update_interval(interval_millis)?;
+            }
         }
+        result
     }
 
     fn playlist_item_next(&self) -> Result<(), CastingDeviceError> {
@@ -1063,6 +1084,32 @@ impl CastingDevice for ChromecastDevice {
     }
 
     fn queue_select(&self, _position: QueuePosition) -> Result<(), CastingDeviceError> {
+        Err(CastingDeviceError::UnsupportedFeature)
+    }
+
+    fn load_queue(&self, _queue: crate::device::Queue) -> Result<(), CastingDeviceError> {
+        Err(CastingDeviceError::UnsupportedFeature)
+    }
+
+    fn set_progress_update_interval(&self, interval_millis: u64) -> Result<(), CastingDeviceError> {
+        self.send_command(Command::SetProgressUpdateInterval(
+            crate::device::sanitize_progress_interval(interval_millis),
+        ))
+    }
+
+    fn queue_insert(
+        &self,
+        _item: crate::device::MediaItem,
+        _playback_duration: Option<f64>,
+        _position: QueuePosition,
+    ) -> Result<(), CastingDeviceError> {
+        Err(CastingDeviceError::UnsupportedFeature)
+    }
+
+    fn add_subtitle_source(
+        &self,
+        _subtitle: crate::device::SubtitleSource,
+    ) -> Result<(), CastingDeviceError> {
         Err(CastingDeviceError::UnsupportedFeature)
     }
 }

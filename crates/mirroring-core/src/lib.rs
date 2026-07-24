@@ -265,6 +265,10 @@ pub enum Event {
         id: i32,
         typ: MediaTrackType,
     },
+    #[cfg(not(target_os = "android"))]
+    AddSubtitle {
+        url: String,
+    },
 
     // Android
     // #[cfg(target_os = "android")]
@@ -380,4 +384,10 @@ impl device::DeviceEventHandler for DeviceHandler {
     fn track_selected(&self, id: Option<u32>, typ: MediaTrackType) {
         self.send_event(DeviceEvent::TrackSelected { id, typ });
     }
+
+    fn tracks_changed(&self, _tracks: device::TrackList) {}
+
+    fn queue_changed(&self, _queue: device::QueueState) {}
+
+    fn command_error(&self, _error: device::ReceiverError) {}
 }

@@ -5,9 +5,10 @@ use fcast_sender_sdk_raw::context;
 pub use fcast_sender_sdk_raw::device::{
     self, ApplicationInfo, AudioCapabilities, CastingDeviceError, CompanionSource,
     CompanionSourceDescriptor, DeviceConnectionState, DeviceFeature, DeviceInfo,
-    DisplayCapabilities, LoadRequest, MediaCapabilities, MediaTrack, MediaTrackType, Metadata,
-    PlaybackState, PlaylistItem, ProtocolType, QueueItem, ReceiverCapabilities, Source,
-    VideoResolution,
+    DisplayCapabilities, LoadRequest, MediaCapabilities, MediaItem, MediaLocator, MediaTrack,
+    MediaTrackType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Queue, QueueEntry,
+    QueueItem, QueuePosition, QueueState, ReceiverCapabilities, ReceiverError, Source,
+    SubtitleSource, TrackList, VideoResolution,
 };
 pub use fcast_sender_sdk_raw::IpAddr;
 use flutter_rust_bridge::{frb, DartFnFuture};
@@ -144,6 +145,7 @@ pub enum _Source {
 #[frb(mirror(CompanionSourceDescriptor))]
 pub enum _CompanionSourceDescriptor {
     Path(String),
+    Fd(i32),
 }
 
 #[frb(mirror(CompanionSource))]
@@ -192,6 +194,84 @@ pub struct _MediaTrack {
     pub typ: MediaTrackType,
 }
 
+#[frb(mirror(TrackList))]
+pub struct _TrackList {
+    pub tracks: Vec<MediaTrack>,
+    pub selected_video: Option<u32>,
+    pub selected_audio: Option<u32>,
+    pub selected_subtitle: Option<u32>,
+}
+
+#[frb(mirror(MediaLocator))]
+pub enum _MediaLocator {
+    Url { url: String },
+    FCompanion { source: CompanionSource },
+}
+
+#[frb(mirror(MediaItem))]
+pub struct _MediaItem {
+    pub content_type: String,
+    pub source: MediaLocator,
+    pub start_time: Option<f64>,
+    pub volume: Option<f64>,
+    pub speed: Option<f64>,
+    pub request_headers: Option<HashMap<String, String>>,
+    pub title: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
+#[frb(mirror(QueueEntry))]
+pub struct _QueueEntry {
+    pub item: MediaItem,
+    pub playback_duration: Option<f64>,
+}
+
+#[frb(mirror(Queue))]
+pub struct _Queue {
+    pub items: Vec<QueueEntry>,
+    pub start_index: Option<u32>,
+    pub autoplay: bool,
+}
+
+#[frb(mirror(QueueState))]
+pub struct _QueueState {
+    pub items: Vec<QueueEntry>,
+    pub current_index: Option<u32>,
+    pub autoplay: bool,
+}
+
+#[frb(mirror(QueuePosition))]
+pub enum _QueuePosition {
+    Front,
+    Back,
+    Index(u8),
+}
+
+#[frb(mirror(SubtitleSource))]
+pub struct _SubtitleSource {
+    pub url: String,
+    pub select: bool,
+    pub name: Option<String>,
+}
+
+#[frb(mirror(ReceiverError))]
+pub enum _ReceiverError {
+    InvalidOpcode,
+    ResourceNotFound,
+    SeekOutOfRange,
+    VolumeOutOfRange,
+    RateOutOfRange,
+    UnsupportedFormat,
+    MalformedBody,
+    InvalidState,
+    QueuePositionOutOfRange,
+    QueueRemovePlayingItem,
+    QueueFull,
+    InvalidPayloadType,
+    Internal,
+    Unknown,
+}
+
 #[frb(sync)]
 pub fn init_logger() {
     // Init can fail if using flutter's "Hot restart"
@@ -211,6 +291,9 @@ pub enum DeviceEvent {
     SourceChanged { new_source: Source },
     TracksAvailable { tracks: Vec<MediaTrack> },
     TrackSelected { id: Option<u32>, typ: MediaTrackType },
+    TracksChanged { tracks: TrackList },
+    QueueChanged { queue: QueueState },
+    CommandError { error: ReceiverError },
     PlaybackStopped,
     PlaybackError { message: String },
 }
@@ -307,6 +390,27 @@ impl device::DeviceEventHandler for DeviceEventHandler {
             (self.on_event)(DeviceEvent::PlaybackError { message }).await;
         });
     }
+
+    #[frb(ignore)]
+    fn tracks_changed(&self, tracks: TrackList) {
+        futures::executor::block_on(async {
+            (self.on_event)(DeviceEvent::TracksChanged { tracks }).await;
+        });
+    }
+
+    #[frb(ignore)]
+    fn queue_changed(&self, queue: QueueState) {
+        futures::executor::block_on(async {
+            (self.on_event)(DeviceEvent::QueueChanged { queue }).await;
+        });
+    }
+
+    #[frb(ignore)]
+    fn command_error(&self, error: ReceiverError) {
+        futures::executor::block_on(async {
+            (self.on_event)(DeviceEvent::CommandError { error }).await;
+        });
+    }
 }
 
 #[frb(mirror(CastingDeviceError))]
@@ -333,6 +437,12 @@ pub enum _DeviceFeature {
     LoadPlaylist,
     PlaylistNextAndPrevious,
     SetPlaylistItemIndex,
+    WhepStreaming,
+    FCompanion,
+    FWRTCSignalling,
+    ChangeTrack,
+    Queue,
+    SetProgressUpdateInterval,
 }
 
 macro_rules! device_error_converter {
@@ -468,9 +578,28 @@ impl CastingDevice {
         device_error_converter!(self.0.resume_playback())
     }
 
+    /// Load new media.
+    ///
+    /// `progress_update_interval_millis`, when set, is applied along with the load (see
+    /// [`Self::set_progress_update_interval`]).
     #[frb(sync)]
-    pub fn load(&self, request: LoadRequest) -> Result<(), _CastingDeviceError> {
-        device_error_converter!(self.0.load(request))
+    pub fn load(
+        &self,
+        request: LoadRequest,
+        progress_update_interval_millis: Option<u64>,
+    ) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.load(request, progress_update_interval_millis))
+    }
+
+    /// Request how often the device reports playback progress, in milliseconds. Settable in any
+    /// playback state and persists for the rest of the connection. Values are floored to 100 ms.
+    /// FCast v4 and Chromecast.
+    #[frb(sync)]
+    pub fn set_progress_update_interval(
+        &self,
+        interval_millis: u64,
+    ) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.set_progress_update_interval(interval_millis))
     }
 
     #[frb(sync)]
@@ -546,6 +675,53 @@ impl CastingDevice {
         self.0.set_port(port);
     }
 
+    /// Select (or, with `id = None`, disable) a track of the given type. FCast v4 only.
+    #[frb(sync)]
+    pub fn change_track(
+        &self,
+        id: Option<u32>,
+        track_type: MediaTrackType,
+    ) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.change_track(id, track_type))
+    }
+
+    /// Load a queue of media items and begin playback. FCast v4 only.
+    #[frb(sync)]
+    pub fn load_queue(&self, queue: Queue) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.load_queue(queue))
+    }
+
+    /// Insert an item into the active queue. FCast v4 only.
+    #[frb(sync)]
+    pub fn queue_insert(
+        &self,
+        item: MediaItem,
+        playback_duration: Option<f64>,
+        position: QueuePosition,
+    ) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.queue_insert(item, playback_duration, position))
+    }
+
+    /// Remove an item from the active queue. FCast v4 only.
+    #[frb(sync)]
+    pub fn queue_remove(&self, position: QueuePosition) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.queue_remove(position))
+    }
+
+    /// Select (jump to) an item in the active queue. FCast v4 only.
+    #[frb(sync)]
+    pub fn queue_select(&self, position: QueuePosition) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.queue_select(position))
+    }
+
+    /// Add an external subtitle source to the current media. FCast v4 only.
+    #[frb(sync)]
+    pub fn add_subtitle_source(
+        &self,
+        subtitle: SubtitleSource,
+    ) -> Result<(), _CastingDeviceError> {
+        device_error_converter!(self.0.add_subtitle_source(subtitle))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
