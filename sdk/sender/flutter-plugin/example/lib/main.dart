@@ -49,17 +49,17 @@ class _ScaffoldState extends State<_Scaffold> {
       switch (event) {
         case DiscoveryEventDeviceAdded():
           setState(() {
-            discoveredDevices[event.deviceInfo.name] = event.deviceInfo;
+            discoveredDevices[event.storageKey] = event.deviceInfo;
           });
           break;
         case DiscoveryEventDeviceUpdated():
           setState(() {
-            discoveredDevices[event.deviceInfo.name] = event.deviceInfo;
+            discoveredDevices[event.storageKey] = event.deviceInfo;
           });
           break;
         case DiscoveryEventDeviceRemoved():
           setState(() {
-            discoveredDevices.remove(event.name);
+            discoveredDevices.remove(event.storageKey);
           });
           break;
         default:

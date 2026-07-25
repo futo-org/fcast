@@ -1,3 +1,12 @@
+## 0.1.0
+
+- Fix device discovery on Bonsoir 7 / macOS
+- Discovered devices are deduplicated by a stable key so add and remove events line up
+- BREAKING: `DiscoveryEventDeviceRemoved.name` is renamed to `storageKey`.
+  `DiscoveryEventDeviceAdded` and `DiscoveryEventDeviceUpdated` now expose a
+  matching `storageKey`. Index your device list by `storageKey` (from
+  `deviceStorageKey`), not `DeviceInfo.name`
+
 ## 0.0.5
 
 - Update to `fcast-sender-sdk` 0.2.0
