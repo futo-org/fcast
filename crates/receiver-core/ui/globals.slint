@@ -109,6 +109,10 @@ export global Bridge {
     in property <string> updater-error-msg;
     in property <[UiAnimationFrame]> animation-frames;
     in property <int> current-animation-frame;
+    // True when the current image is an animated image decoded through the
+    // player pipeline (fimagedec). The image view paints nothing opaque so the
+    // video sink below shows through.
+    in property <bool> image-via-player: false;
     in property <int> video-frame-width;
     in property <int> video-frame-height;
 

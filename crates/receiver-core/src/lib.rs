@@ -40,6 +40,8 @@ mod gcast;
 mod gstreamer;
 mod gui;
 mod image;
+mod imagedec;
+mod imagetypefind;
 mod inspector_graph;
 #[cfg(target_os = "macos")]
 mod iosurface;

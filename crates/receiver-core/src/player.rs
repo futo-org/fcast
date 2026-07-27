@@ -188,6 +188,19 @@ pub enum PlayerEvent {
     },
     Warning(String),
     StreamTagsUpdated,
+    /// fimagedec announced what the current load decodes to: the load is an
+    /// image (still or animation) rendered through the video pipeline.
+    ImageStream(ImageStreamInfo),
+}
+
+/// Parsed form of fimagedec's "fcast-image-stream" announcement.
+#[derive(Debug, Clone)]
+pub struct ImageStreamInfo {
+    /// Source format short name ("gif", "apng", "webp", ...).
+    pub format: String,
+    pub width: i32,
+    pub height: i32,
+    pub animated: bool,
 }
 
 pub fn stream_title(stream: &gst::Stream) -> String {
@@ -489,6 +502,12 @@ impl Player {
                 failed_uri,
             },
             E::ExternalSubtitleFailed { id } => PlayerEvent::ExternalSubtitleFailed { id },
+            E::ImageStream(s) => PlayerEvent::ImageStream(ImageStreamInfo {
+                format: s.get::<&str>("format").unwrap_or("unknown").to_string(),
+                width: s.get::<i32>("width").unwrap_or(0),
+                height: s.get::<i32>("height").unwrap_or(0),
+                animated: s.get::<bool>("animated").unwrap_or(false),
+            }),
             E::Warning(message) => PlayerEvent::Warning(message),
         };
         msg_tx.player(event, Some(generation));

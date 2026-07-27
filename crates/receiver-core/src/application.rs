@@ -377,6 +377,11 @@ pub struct Application {
     load_watchdog_epoch: u64,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
+    /// True while the current load is an animated image routed through the
+    /// player pipeline (fimagedec) rather than the legacy in-GUI image
+    /// downloader. Progress traffic is suppressed for these loads and the
+    /// image view is painted transparent so the video sink shows through.
+    image_via_player: bool,
     have_audio_track_cover: bool,
     current_media: Option<MediaSourceState>,
     have_media_info: bool,
@@ -645,6 +650,7 @@ impl Application {
             gui_seek_hold: None,
             load_watchdog_epoch: 0,
             current_image_id: 0,
+            image_via_player: false,
             have_audio_track_cover: false,
             current_media: None,
             have_media_info: false,
@@ -837,6 +843,11 @@ impl Application {
     }
 
     fn send_v4_progress_updates(&mut self) {
+        // A pipeline image has no meaningful progress, so send nothing (see
+        // `notify_updates`).
+        if self.image_via_player {
+            return;
+        }
         if self.fcast_senders.is_empty() {
             return;
         }
@@ -912,6 +923,13 @@ impl Application {
     }
 
     fn notify_updates(&mut self, force: bool) -> Result<()> {
+        // A pipeline image loops forever and has no meaningful position or
+        // duration, so it produces no progress traffic (matching the legacy
+        // in-GUI image path). Other broadcasts (playback state and so on) are
+        // unaffected.
+        if self.image_via_player {
+            return Ok(());
+        }
         if !self.player.have_media_info() || self.player.is_seeking() {
             return Ok(());
         }
@@ -1001,6 +1019,9 @@ impl Application {
         self.have_media_info = false;
         self.have_media_title = false;
         self.last_position_updated = -1.0;
+        // The next load re-arms this if it is another pipeline image.
+        self.image_via_player = false;
+        self.gui.set_image_via_player(false);
         self.player.stop();
         self.is_loading_media = false;
         if let Some(current_media) = self.current_media.as_mut() {
@@ -1323,6 +1344,13 @@ impl Application {
             is_for_sure_live = true;
         }
 
+        // Image containers decoded by fimagedec inside the normal player
+        // pipeline (animations loop forever and never post EOS, stills hold
+        // their frame). JPEG stays on the legacy in-GUI downloader path (its
+        // caps collide with MJPEG video, see `imagedec::player_mime_types`),
+        // as does any unrecognized image mime.
+        let pipeline_image = crate::imagedec::player_mime_types().contains(&container.as_str());
+
         let player_variant = if container.starts_with("image/") {
             UiPlayerVariant::Image
         } else if container.starts_with("audio/")
@@ -1340,10 +1368,16 @@ impl Application {
         };
 
         match player_variant {
-            UiPlayerVariant::Image => {
+            // Legacy still images keep the previous frame up (ContinueToPlay::Yes)
+            // while the next one downloads. A pipeline image reloads the player
+            // like any other media, so it tears down the previous playback.
+            UiPlayerVariant::Image if !pipeline_image => {
                 self.cleanup_playback_data(ContinueToPlay::Yes, PreservePlaylist::Yes)
             }
-            UiPlayerVariant::Unknown | UiPlayerVariant::Audio | UiPlayerVariant::Video => {
+            UiPlayerVariant::Image
+            | UiPlayerVariant::Unknown
+            | UiPlayerVariant::Audio
+            | UiPlayerVariant::Video => {
                 self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)
             }
             UiPlayerVariant::Raop => (),
@@ -1377,8 +1411,14 @@ impl Application {
                 .queue_download(this_id, thumbnail_url, headers.clone());
         }
 
+        // A pipeline image follows the media load branch below (it is decoded
+        // by fimagedec in the player), so track it so progress traffic is
+        // suppressed and the image view is painted transparent.
+        self.image_via_player = pipeline_image;
+        self.gui.set_image_via_player(pipeline_image);
+
         let mut is_image = false;
-        if container.starts_with("image/") {
+        if container.starts_with("image/") && !pipeline_image {
             self.current_image_download_id += 1;
             let id = self.current_image_download_id;
             is_image = true;
@@ -1431,7 +1471,8 @@ impl Application {
 
         // DIAGNOSTIC (load-stall investigation): a pipeline load should reach a
         // steady PAUSED quickly, if this one has not by the timeout, dump why
-        // (`Player::log_load_stall_diagnostics`). Images bypass the pipeline.
+        // (`Player::log_load_stall_diagnostics`). Legacy images bypass the
+        // pipeline (pipeline images go through it and are covered).
         if !is_image {
             self.load_watchdog_epoch += 1;
             let epoch = self.load_watchdog_epoch;
@@ -1494,6 +1535,12 @@ impl Application {
             return Ok(());
         };
 
+        // A pipeline image exposes a raw video stream (fimagedec output), but
+        // the UI stays on the Image variant so the image view is shown.
+        if self.image_via_player {
+            return Ok(());
+        }
+
         debug!("Video stream available");
 
         self.gui.set_player_type(UiPlayerVariant::Video);
@@ -1506,6 +1553,10 @@ impl Application {
             debug!("Ignoring old video stream unavailable event");
             return;
         };
+
+        if self.image_via_player {
+            return;
+        }
 
         debug!("Video stream unavailable");
 
@@ -2925,6 +2976,16 @@ impl Application {
             }
             player::PlayerEvent::StreamTagsUpdated => {
                 self.update_tracks(false);
+            }
+            player::PlayerEvent::ImageStream(info) => {
+                debug!(?info, "Image stream announced by fimagedec");
+                self.inspector_image = format!(
+                    "{} {}x{}{}",
+                    info.format,
+                    info.width,
+                    info.height,
+                    if info.animated { ", animated" } else { "" }
+                );
             }
         }
 

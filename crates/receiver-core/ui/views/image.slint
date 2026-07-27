@@ -20,9 +20,13 @@ component Animation inherits Rectangle {
 export component ImageView inherits Rectangle {
     width: 100%;
     height: 100%;
-    background: black;
+    // Animated images decoded by the player pipeline (image-via-player) render
+    // into the video sink below, so this view stays fully transparent and paints
+    // nothing. The legacy path (still jpeg/png images and thumbnails) keeps the
+    // black backdrop and paints the decoded image / frames here.
+    background: Bridge.image-via-player ? transparent : black;
 
-    if Bridge.image-preview.img.width > 0: Image {
+    if !Bridge.image-via-player && Bridge.image-preview.img.width > 0: Image {
         source: Bridge.image-preview.img;
         image-fit: contain;
         width: 100%;
@@ -30,5 +34,5 @@ export component ImageView inherits Rectangle {
         transform-rotation: Bridge.image-preview.rotation;
     }
 
-    if Bridge.animation-frames.length > 0: Animation { }
+    if !Bridge.image-via-player && Bridge.animation-frames.length > 0: Animation { }
 }

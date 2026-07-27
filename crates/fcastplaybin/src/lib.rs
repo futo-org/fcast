@@ -276,6 +276,11 @@ pub enum PlaybinEvent {
     ExternalSubtitleFailed {
         id: ExternalSubId,
     },
+    /// fimagedec's announcement of an image load: the "fcast-image-stream"
+    /// structure with format (str), width/height (i32) and animated (bool).
+    /// The caller uses it to classify the load as an image and feed its
+    /// inspector; animations otherwise look like ordinary video streams.
+    ImageStream(gst::Structure),
     Warning(String),
 }
 
@@ -2156,6 +2161,15 @@ impl Inner {
                 let _ = self.work_tx.send(Job::RecalculateLatency);
                 return None;
             }
+            MessageView::Element(element) => {
+                // fimagedec announces what it is decoding (format,
+                // dimensions, animated or still) for load classification.
+                let s = element.structure()?;
+                if s.name() != "fcast-image-stream" {
+                    return None;
+                }
+                PlaybinEvent::ImageStream(s.to_owned())
+            }
             _ => return None,
         };
         Some(event)
@@ -3364,7 +3378,9 @@ mod decisions {
 
     /// Caps-name fallback for pads without a GstStream.
     pub(crate) fn kind_from_caps_name(name: &str) -> Option<StreamKind> {
-        if name.starts_with("video/") {
+        // image/* is video: parsebin types image streams as VIDEO and
+        // fimagedec decodes them into raw video frames.
+        if name.starts_with("video/") || name.starts_with("image/") {
             Some(StreamKind::Video)
         } else if name.starts_with("audio/") {
             Some(StreamKind::Audio)

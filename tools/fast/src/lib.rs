@@ -314,6 +314,10 @@ cases!(
     cast_photos_v2,
     cast_photo_v3,
     cast_photos_v3,
+    cast_gif_v2,
+    cast_gif_v3,
+    cast_gif_v4,
+    cast_gif_then_video_v4,
     cast_video_v2,
     // cast_video_set_volume_v2,
     cast_video_v3,
@@ -543,6 +547,103 @@ define_test_case!(
         send!(Send::PlayV2 { file_id: 0 }),
         send!(Send::PlayV2 { file_id: 1 }),
         send!(Send::Stop),
+    ]
+);
+
+// Animated GIF (and animated WebP, APNG) is decoded by fimagedec inside the
+// normal player pipeline, unlike a still JPEG which the legacy in-GUI
+// downloader handles. The load reaches Playing through the real player state
+// machine, loops forever (never EOS), and sends no progress traffic.
+//
+// A v2 session receives no PlaybackUpdate for a pipeline image (progress is
+// suppressed for these loads) and no v4 state relay, so there is no observable
+// "reached Playing" signal to await. This mirrors the legacy cast_photo_v2
+// (which also just sleeps then stops), a fixed settle is the only option here.
+define_test_case!(
+    cast_gif_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV2 { file_id: 0 }),
+        Step::SleepMillis(750),
+        send!(Send::Stop),
+    ]
+);
+
+// v3 twin of cast_gif_v2. A v3 session, like v2, gets no PlaybackUpdate for a
+// pipeline image, but a MediaItemStart subscription confirms the load was
+// dispatched. Mirrors cast_photo_v3 plus the subscribe/event pattern of
+// subscribe_media_item_start_1.
+define_test_case!(
+    cast_gif_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Stop),
+    ]
+);
+
+// v4 twin: here the receiver relays PlaybackStateChanged, so the "reached
+// Playing" state can be awaited deterministically instead of slept on. The
+// pipeline image exposes exactly one video stream (fimagedec output) and no
+// audio or subtitle tracks. No progress is asserted, a pipeline image sends
+// none.
+define_test_case!(
+    cast_gif_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 0,
+            subtitle: 0,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
+    ]
+);
+
+// A pipeline image loops forever and never posts EOS, so its load must be torn
+// down cleanly when a regular video is cast on top of it. Load the looping GIF,
+// confirm it is Playing, then cast a real video over it and confirm the video
+// reaches Playing (with its own embedded tracks), proving the image load was
+// dismantled.
+define_test_case!(
+    cast_gif_then_video_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 0,
+            subtitle: 0,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 1 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
     ]
 );
 

@@ -278,6 +278,7 @@ pub enum UpdateGuiCommand {
     },
     SetPlaybackState(GuiPlaybackState),
     ClearImageState,
+    SetImageViaPlayer(bool),
     SetIsLive(bool),
     SetSeekPending(bool),
     SetPlaybackRate(f32),
@@ -510,6 +511,13 @@ impl GuiController {
         self.send(UpdateGuiCommand::ClearImageState);
     }
 
+    /// Mark the current load as an animated image decoded through the player
+    /// pipeline. When set, the image view paints nothing opaque so the video
+    /// sink below shows through.
+    pub fn set_image_via_player(&self, via_player: bool) {
+        self.send(UpdateGuiCommand::SetImageViaPlayer(via_player));
+    }
+
     pub fn set_is_live(&mut self, is_live: bool) {
         if is_live != self.is_live {
             self.send(UpdateGuiCommand::SetIsLive(is_live));
@@ -693,6 +701,9 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_image_preview(CompoundImage::default());
             clear_audio_covers(&bridge, renderer_tx);
             bridge.set_animation_frames(slint::ModelRc::default());
+        }
+        UpdateGuiCommand::SetImageViaPlayer(via_player) => {
+            bridge.set_image_via_player(via_player)
         }
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
