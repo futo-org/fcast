@@ -70,6 +70,10 @@ pub mod imp {
     struct Settings {
         url: Option<Url>,
         comp_url: Option<super::FCompUrl>,
+        /// Already-downloaded first bytes of the resource (the queue prefetch
+        /// cache's head). Reads below its length are served from memory, each
+        /// chunk request past it goes to the companion provider as usual.
+        preloaded_head: Option<glib::Bytes>,
     }
 
     impl Settings {
@@ -242,7 +246,42 @@ pub mod imp {
         }
     }
 
-    impl ObjectImpl for FCompSrc {}
+    impl ObjectImpl for FCompSrc {
+        fn properties() -> &'static [glib::ParamSpec] {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+                vec![
+                    glib::ParamSpecBoxed::builder::<glib::Bytes>("preloaded-head")
+                        .nick("Preloaded Head")
+                        .blurb("Already-downloaded first bytes of the resource (the queue prefetch cache's head), served from memory instead of companion chunk requests")
+                        .readwrite()
+                        .mutable_ready()
+                        .build(),
+                ]
+            });
+
+            PROPERTIES.as_ref()
+        }
+
+        fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            match pspec.name() {
+                "preloaded-head" => {
+                    let mut settings = self.settings.lock();
+                    settings.preloaded_head = value.get().expect("type checked upstream");
+                }
+                _ => unimplemented!(),
+            }
+        }
+
+        fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            match pspec.name() {
+                "preloaded-head" => {
+                    let settings = self.settings.lock();
+                    settings.preloaded_head.to_value()
+                }
+                _ => unimplemented!(),
+            }
+        }
+    }
 
     impl GstObjectImpl for FCompSrc {}
 
@@ -381,6 +420,28 @@ pub mod imp {
                 gst::element_imp_error!(self, gst::CoreError::Failed, ["Not started yet"]);
                 return Err(gst::FlowError::Error);
             };
+
+            // Reads inside the preloaded head come from memory: no companion
+            // round-trip. Each request past it goes to the provider as usual
+            // (per-chunk reads keep this correct across seeks in both
+            // directions).
+            if let Some(head) = self.settings.lock().preloaded_head.clone() {
+                let head_len = head.len() as u64;
+                if *current_pos < head_len {
+                    let start = *current_pos;
+                    let end = (start + companion::MAX_RESOURCE_READ_SIZE as u64).min(head_len);
+                    // Zero-copy sub-slice of the refcounted head bytes.
+                    let chunk = glib::Bytes::from_bytes(&head, start as usize..end as usize);
+                    let mut buffer = gst::Buffer::from_slice(chunk);
+                    {
+                        let buffer = buffer.get_mut().unwrap();
+                        buffer.set_offset(start);
+                        buffer.set_offset_end(end);
+                    }
+                    *current_pos = end;
+                    return Ok(CreateSuccess::NewBuffer(buffer));
+                }
+            }
 
             let context = self.ensure_context().map_err(|err| {
                 gst::element_imp_error!(self, gst::ResourceError::Failed, ["{err}"]);

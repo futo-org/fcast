@@ -405,6 +405,8 @@ cases!(
     queue_load_no_start_index_v4,
     queue_full_v4,
     queue_insert_front_v4,
+    queue_select_prefetched_v4,
+    queue_select_prefetched_video_v4,
     multi_sender_load_broadcast_v4,
     multi_sender_load_metadata_broadcast_video_v4,
     multi_sender_load_metadata_broadcast_image_v4,
@@ -2757,6 +2759,70 @@ define_test_case!(
         send!(Send::QueueSelectV4 {
             position: QueuePosition::Front,
         }),
+        Step::SleepMillis(500),
+        send!(Send::StopV4),
+    ]
+);
+
+// All queue items are served BEFORE the queue loads, so the receiver's
+// prefetch cache has time to pull the neighbor while item 0 plays. The
+// select then serves item 1 from memory (visible as a "Serving the load
+// from the queue prefetch cache" debug line in the receiver log). The case
+// itself asserts the switch plays normally either way. GIFs are pipeline
+// image loads, exercising the bytes-source (appsrc) consumption path.
+define_test_case!(
+    queue_select_prefetched_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/animated.gif", 0, "image/gif"),
+        serve!("image/animated.gif", 1, "image/gif"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        // Give the neighbor prefetch time to land before flipping.
+        Step::SleepMillis(500),
+        send!(Send::QueueSelectV4 {
+            position: QueuePosition::Back,
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 0,
+            subtitle: 0,
+        },
+        Step::SleepMillis(500),
+        send!(Send::StopV4),
+    ]
+);
+
+// The partial-head variant of queue_select_prefetched_v4: the 36M mkv is
+// larger than the prefetch head cap, so the select starts from a prefetched
+// HEAD injected into fcasthttpsrc ("Starting the load from a prefetched
+// head" in the receiver log) and streams the remainder over http.
+define_test_case!(
+    queue_select_prefetched_video_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        serve!("video/video_with_subs.mkv", 1, "video/x-matroska"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        // Give the 16M head prefetch time to land before flipping.
+        Step::SleepMillis(1500),
+        send!(Send::QueueSelectV4 {
+            position: QueuePosition::Back,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         Step::SleepMillis(500),
         send!(Send::StopV4),
     ]

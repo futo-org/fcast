@@ -42,7 +42,7 @@ use crate::{
     media_source,
     message::{Mdns, Message, Raop, ReceiverToFCastSender},
     player::{self, PlayerState},
-    raop,
+    queue_cache, raop,
     utils::{current_time_millis, map_to_header_map},
 };
 #[cfg(not(target_os = "android"))]
@@ -411,6 +411,10 @@ pub struct Application {
     window_fullscreen_before_playing: Option<bool>,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
+    /// Prefetched bytes for the queue items around the current index, so
+    /// selecting a neighbor serves from memory (see `queue_cache`).
+    queue_cache: queue_cache::Cache,
+    queue_prefetcher: queue_cache::Prefetcher,
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     companion_ctx: CompanionContext,
@@ -614,6 +618,8 @@ impl Application {
         let http_client = reqwest::Client::new();
         let image_downloader =
             image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
+        let queue_prefetcher =
+            queue_cache::Prefetcher::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
 
         let receiver_info = Arc::new(crate::ReceiverInfo {
             device_info: fcast_protocol::v4::DeviceInfo {
@@ -680,6 +686,8 @@ impl Application {
             window_fullscreen_before_playing: None,
             image_downloader,
             image_decoder,
+            queue_cache: queue_cache::Cache::new(),
+            queue_prefetcher,
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
                 inhibit_screensaver::Options {
                     app_reverse_domain: "org.fcast.receiver".to_owned(),
@@ -1148,6 +1156,7 @@ impl Application {
 
         self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
         self.current_media = None;
+        self.queue_cache.clear();
 
         if self.should_broadcast() {
             let update = v3::PlaybackUpdateMessage {
@@ -1224,6 +1233,7 @@ impl Application {
                 self.send_error(origin, load_media_error_kind(&err));
             }
         }
+        self.sync_queue_cache();
     }
 
     /// Build the source for a load: constructed directly with typed config,
@@ -1242,7 +1252,33 @@ impl Application {
                 Some(chan) => media_source::build_fwebrtc_source(chan),
                 None => Err(anyhow::anyhow!("fwebrtc load without a signalling channel")),
             },
-            _ => media_source::build_uri_source(&url, headers),
+            _ => match self.queue_cache.get(&url) {
+                Some(item) if item.complete => {
+                    debug!(
+                        url,
+                        len = item.bytes.len(),
+                        "Serving the load from the queue prefetch cache"
+                    );
+                    media_source::build_bytes_source(item.bytes)
+                }
+                Some(item) => {
+                    debug!(
+                        url,
+                        len = item.bytes.len(),
+                        total = item.total,
+                        "Starting the load from a prefetched head"
+                    );
+                    media_source::build_uri_source_with_head(
+                        &url,
+                        headers,
+                        Some(media_source::PreloadedHead {
+                            bytes: item.bytes,
+                            total: item.total,
+                        }),
+                    )
+                }
+                None => media_source::build_uri_source(&url, headers),
+            },
         };
         match built {
             Ok(element) => player::MediaInput::Element(element),
@@ -1419,11 +1455,32 @@ impl Application {
 
         let mut is_image = false;
         if container.starts_with("image/") && !pipeline_image {
-            self.current_image_download_id += 1;
-            let id = self.current_image_download_id;
             is_image = true;
-            self.image_downloader
-                .queue_download(id, url.clone(), headers.clone());
+            if let Some(item) = self.queue_cache.get(&url).filter(|item| item.complete) {
+                // A prefetched queue photo: decode straight from the cached
+                // bytes instead of re-downloading (mirrors the DownloadResult
+                // success arm of handle_image_event). Only complete entries
+                // decode, a partial head is not a decodable image.
+                debug!(
+                    url,
+                    len = item.bytes.len(),
+                    "Decoding image from the queue prefetch cache"
+                );
+                self.current_image_id += 1;
+                let id = self.current_image_id;
+                self.image_decoder.queue_job(
+                    id,
+                    image::ImageDecodeJob::new_no_format(
+                        item.bytes,
+                        image::ImageDecodeJobType::Regular,
+                    ),
+                );
+            } else {
+                self.current_image_download_id += 1;
+                let id = self.current_image_download_id;
+                self.image_downloader
+                    .queue_download(id, url.clone(), headers.clone());
+            }
         } else {
             // External subtitles are LIVE inputs (attach/detach), never a
             // suburi ridden along a load, so every media load restores
@@ -1570,6 +1627,7 @@ impl Application {
             self.gui.set_app_state(AppState::Idle);
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
             self.current_media = None;
+            self.queue_cache.clear();
             self.screensaver_inhibitor.un_inhibit();
         }
     }
@@ -1615,6 +1673,27 @@ impl Application {
         }
     }
 
+    /// Reconcile the prefetch cache with the current queue window. Runs after
+    /// every queue mutation (select, insert, remove, initial queue load).
+    fn sync_queue_cache(&mut self) {
+        let desired = match self.current_media.as_ref().map(|m| &m.source) {
+            Some(MediaSource::Queue(queue)) => {
+                queue_cache::window_indices(queue.items.len(), queue.current_idx as usize)
+                    .into_iter()
+                    .filter_map(|idx| queue.items.get(idx))
+                    .map(|item| queue_cache::PrefetchSpec {
+                        url: item.url.clone(),
+                        headers: item.headers.clone(),
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let prefetcher = &self.queue_prefetcher;
+        self.queue_cache
+            .sync(desired, |spec, epoch| prefetcher.fetch(spec, epoch));
+    }
+
     #[tracing::instrument(skip_all)]
     fn remove_queue_item(&mut self, origin: PacketOrigin, position: v4::QueuePosition) {
         let Some(queue) = self.queue_mut() else {
@@ -1651,9 +1730,10 @@ impl Application {
             origin,
             fcast_protocol::v4::MessageBuilder::new().queue_remove(position),
         );
+
+        self.sync_queue_cache();
     }
 
-    // TODO: caching
     #[tracing::instrument(skip_all)]
     fn insert_queue_item(&mut self, origin: PacketOrigin, insert: fcast::QueueInsertCell) {
         let Some(queue) = self.queue_mut() else {
@@ -1707,6 +1787,8 @@ impl Application {
         {
             self.relay_to_other_senders(origin, relay_msg);
         }
+
+        self.sync_queue_cache();
     }
 
     fn pause(&mut self) {
@@ -3743,6 +3825,7 @@ impl Application {
                 return self.handle_operation(op, origin);
             }
             Message::Image(event) => return self.handle_image_event(event),
+            Message::QueueCache(event) => self.queue_cache.on_event(event),
             Message::Mdns(event) => {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;

@@ -48,6 +48,10 @@ impl MessageSender {
         self.send(Message::Image(msg));
     }
 
+    pub fn queue_cache(&self, msg: crate::queue_cache::Event) {
+        self.send(Message::QueueCache(msg));
+    }
+
     #[cfg(not(target_os = "android"))]
     pub fn mdns(&self, msg: Mdns) {
         self.send(Message::Mdns(msg));
@@ -140,6 +144,7 @@ pub enum Message {
         op: crate::Operation,
     },
     Image(crate::image::Event),
+    QueueCache(crate::queue_cache::Event),
     Mdns(Mdns),
     PlaylistDataResult {
         play_message: Option<fcast_protocol::v3::PlayMessage>,

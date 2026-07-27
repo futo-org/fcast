@@ -56,6 +56,7 @@ pub mod placebo;
 mod player;
 #[cfg(target_os = "linux")]
 mod pwaudiosink;
+mod queue_cache;
 mod raop;
 mod render_latency;
 mod sabrumpsrc;

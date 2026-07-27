@@ -32,6 +32,9 @@ mod imp {
     const DEFAULT_COMPRESS: bool = false;
     const DEFAULT_IRADIO_MODE: bool = true;
     const DEFAULT_KEEP_ALIVE: bool = true;
+    /// Buffer size when serving the preloaded head from memory, sized like a
+    /// typical network chunk so downstream behaves identically.
+    const PRELOADED_HEAD_CHUNK: u64 = 256 * 1024;
 
     #[derive(Debug, Clone)]
     struct Settings {
@@ -45,6 +48,13 @@ mod imp {
         cookies: Vec<String>,
         iradio_mode: bool,
         keep_alive: bool,
+        /// Already-downloaded first bytes of the resource (the queue prefetch
+        /// cache's head). Served from memory before any network request, the
+        /// first read past it opens the connection at that offset. Only valid
+        /// together with `preloaded_size` and a range-capable server.
+        preloaded_head: Option<glib::Bytes>,
+        /// Total size of the resource the head belongs to (0 = no head).
+        preloaded_size: u64,
     }
 
     impl Default for Settings {
@@ -60,6 +70,8 @@ mod imp {
                 cookies: Vec::new(),
                 iradio_mode: DEFAULT_IRADIO_MODE,
                 keep_alive: DEFAULT_KEEP_ALIVE,
+                preloaded_head: None,
+                preloaded_size: 0,
             }
         }
     }
@@ -88,6 +100,14 @@ mod imp {
             size: Option<u64>,
             caps: Option<gst::Caps>,
             tags: Option<gst::TagList>,
+            /// Reads at `position` come from the preloaded head instead of
+            /// the network. Set on start/seek when the position falls inside
+            /// the head, cleared when the first read past it opens the real
+            /// connection there.
+            serving_head: bool,
+            /// Range end requested by the active seek segment, carried so the
+            /// lazy head-to-network transition re-requests the same range.
+            stop: Option<u64>,
         },
     }
 
@@ -508,6 +528,43 @@ mod imp {
                 size,
                 caps,
                 tags: if tags.n_tags() > 0 { Some(tags) } else { None },
+                serving_head: false,
+                stop,
+            })
+        }
+
+        /// A Started state that serves `position..` from the preloaded head,
+        /// with no connection open yet. Only built when the settings carry a
+        /// head (which implies a range-capable server and a known size).
+        fn head_state(
+            &self,
+            uri: Url,
+            position: u64,
+            stop: Option<u64>,
+        ) -> Option<State> {
+            let settings = self.settings.lock();
+            let head = settings.preloaded_head.as_ref()?;
+            if settings.preloaded_size == 0 || position >= head.len() as u64 {
+                return None;
+            }
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Serving {}.. from the preloaded head ({} bytes of {})",
+                position,
+                head.len(),
+                settings.preloaded_size
+            );
+            Some(State::Started {
+                uri,
+                response: None,
+                seekable: true,
+                position,
+                size: Some(settings.preloaded_size),
+                caps: None,
+                tags: None,
+                serving_head: true,
+                stop,
             })
         }
 
@@ -643,6 +700,18 @@ mod imp {
                         .readwrite()
                         .mutable_ready()
                         .build(),
+                    glib::ParamSpecBoxed::builder::<glib::Bytes>("preloaded-head")
+                        .nick("Preloaded Head")
+                        .blurb("Already-downloaded first bytes of the resource, served from memory before any request (requires preloaded-size, only valid for range-capable servers)")
+                        .readwrite()
+                        .mutable_ready()
+                        .build(),
+                    glib::ParamSpecUInt64::builder("preloaded-size")
+                        .nick("Preloaded Size")
+                        .blurb("Total resource size the preloaded head belongs to (0 = no preloaded head)")
+                        .readwrite()
+                        .mutable_ready()
+                        .build(),
                 ]
             });
 
@@ -716,6 +785,16 @@ mod imp {
                     settings.keep_alive = keep_alive;
                     Ok(())
                 }
+                "preloaded-head" => {
+                    let mut settings = self.settings.lock();
+                    settings.preloaded_head = value.get().expect("type checked upstream");
+                    Ok(())
+                }
+                "preloaded-size" => {
+                    let mut settings = self.settings.lock();
+                    settings.preloaded_size = value.get().expect("type checked upstream");
+                    Ok(())
+                }
                 _ => unimplemented!(),
             };
 
@@ -774,6 +853,14 @@ mod imp {
                 "keep-alive" => {
                     let settings = self.settings.lock();
                     settings.keep_alive.to_value()
+                }
+                "preloaded-head" => {
+                    let settings = self.settings.lock();
+                    settings.preloaded_head.to_value()
+                }
+                "preloaded-size" => {
+                    let settings = self.settings.lock();
+                    settings.preloaded_size.to_value()
                 }
                 _ => unimplemented!(),
             }
@@ -893,6 +980,13 @@ mod imp {
 
             gst::debug!(CAT, imp = self, "Starting for URI {}", uri);
 
+            // With a preloaded head there is nothing to request yet: serve
+            // from memory and open the connection at the first byte past it.
+            if let Some(head_state) = self.head_state(uri.clone(), 0, None) {
+                *state = head_state;
+                return Ok(());
+            }
+
             *state = self.do_request(uri, 0, None).map_err(|err| {
                 err.unwrap_or_else(|| {
                     gst::error_msg!(gst::LibraryError::Failed, ["Interrupted during start"])
@@ -946,6 +1040,12 @@ mod imp {
 
             gst::debug!(CAT, imp = self, "Seeking to {}-{:?}", start, stop);
 
+            // A seek back into the preloaded head needs no request either.
+            if let Some(head_state) = self.head_state(uri.clone(), start, stop) {
+                *state = head_state;
+                return true;
+            }
+
             *state = State::Stopped;
             match self.do_request(uri, start, stop) {
                 Ok(s) => {
@@ -967,6 +1067,68 @@ mod imp {
             _buffer: Option<&mut gst::BufferRef>,
         ) -> Result<CreateSuccess, gst::FlowError> {
             let mut state = self.state.lock();
+
+            // Preloaded-head mode: serve from memory. The first read past the
+            // head (or past the seek range) either ends the stream or opens
+            // the real connection at the current position, after which the
+            // normal network path below takes over.
+            if let State::Started {
+                ref uri,
+                position,
+                size,
+                stop,
+                serving_head: true,
+                ..
+            } = *state
+            {
+                let head = self
+                    .settings
+                    .lock()
+                    .preloaded_head
+                    .clone()
+                    .expect("serving_head without a preloaded head");
+                let head_len = head.len() as u64;
+                let limit = stop.unwrap_or(u64::MAX).min(head_len);
+                if position < limit {
+                    let end = (position + PRELOADED_HEAD_CHUNK).min(limit);
+                    // Zero-copy sub-slice of the refcounted head bytes.
+                    let chunk =
+                        glib::Bytes::from_bytes(&head, position as usize..end as usize);
+                    let mut buffer = gst::Buffer::from_slice(chunk);
+                    {
+                        let buffer = buffer.get_mut().unwrap();
+                        buffer.set_offset(position);
+                        buffer.set_offset_end(end);
+                    }
+                    if let State::Started {
+                        ref mut position, ..
+                    } = *state
+                    {
+                        *position = end;
+                    }
+                    return Ok(CreateSuccess::NewBuffer(buffer));
+                }
+                if stop.is_some_and(|stop| position >= stop)
+                    || size.is_some_and(|size| position >= size)
+                {
+                    return Err(gst::FlowError::Eos);
+                }
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Preloaded head exhausted, opening the connection at {}",
+                    position
+                );
+                let uri = uri.clone();
+                match self.do_request(uri, position, stop) {
+                    Ok(s) => *state = s,
+                    Err(Some(err)) => {
+                        self.post_error_message(err);
+                        return Err(gst::FlowError::Error);
+                    }
+                    Err(None) => return Err(gst::FlowError::Flushing),
+                }
+            }
 
             let (response, position, caps, tags) = match *state {
                 State::Started {
@@ -1535,6 +1697,80 @@ mod tests {
 
         // Check if everything was read
         assert_eq!(cursor.position(), 11);
+    }
+
+    #[test]
+    fn test_preloaded_head() {
+        init();
+
+        // The injected head bytes DIFFER from anything the server would
+        // produce for that range, and the server asserts it is only ever
+        // asked for the range PAST the head boundary. Both together prove
+        // the head region was served from memory and the remainder was
+        // stitched seamlessly from the network.
+        const TOTAL: usize = 1000;
+        const HEAD: usize = 600;
+        let head: Vec<u8> = (0..HEAD).map(|i| (i % 251) as u8).collect();
+        let tail: Vec<u8> = (HEAD..TOTAL).map(|i| (i % 241) as u8).collect();
+
+        let mut h = Harness::new(
+            {
+                let tail = tail.clone();
+                move |req| {
+                    let range = req
+                        .headers()
+                        .get("range")
+                        .expect("the source must request a range past the head")
+                        .to_str()
+                        .unwrap()
+                        .to_owned();
+                    assert!(
+                        range.starts_with(&format!("bytes={HEAD}")),
+                        "unexpected range request: {range}"
+                    );
+                    hyper::Response::builder()
+                        .status(206)
+                        .header("accept-ranges", "bytes")
+                        .header(
+                            "content-range",
+                            format!("bytes {HEAD}-{}/{TOTAL}", TOTAL - 1),
+                        )
+                        .body(full_body(tail.clone()))
+                        .unwrap()
+                }
+            },
+            {
+                let head = head.clone();
+                move |src| {
+                    src.set_property("preloaded-head", glib::Bytes::from_owned(head));
+                    src.set_property("preloaded-size", TOTAL as u64);
+                }
+            },
+        );
+
+        h.run(|src| {
+            src.set_state(gst::State::Playing).unwrap();
+        });
+
+        let mut expected: Vec<u8> = head.clone();
+        expected.extend_from_slice(&tail);
+        let mut got: Vec<u8> = Vec::new();
+        let mut checked_size = false;
+        while let Some(buffer) = h.wait_buffer_or_eos() {
+            // The size must be answerable from the preloaded metadata alone,
+            // before any connection was made.
+            if !checked_size {
+                assert_eq!(
+                    h.src.query_duration::<gst::format::Bytes>(),
+                    Some(gst::format::Bytes::from_usize(TOTAL))
+                );
+                checked_size = true;
+            }
+            let map = buffer.map_readable().unwrap();
+            got.extend_from_slice(&map);
+        }
+        assert_eq!(got.len(), expected.len());
+        assert!(got == expected, "head+tail stitch mismatch");
     }
 
     #[test]

@@ -12,9 +12,9 @@ use fcast_sender_sdk::{
     DeviceDiscovererEventHandler,
     context::CastContext,
     device::{
-        CompanionSource, CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler,
-        DeviceInfo, LoadRequest, MediaTrack, MediaTrackType, PlaybackState, QueueItem,
-        QueuePosition, QueueState, ReceiverError, Source, TrackList,
+        CastingDevice, CompanionSource, CompanionSourceDescriptor, DeviceConnectionState,
+        DeviceEventHandler, DeviceInfo, LoadRequest, MediaTrack, MediaTrackType, PlaybackState,
+        QueueItem, QueuePosition, QueueState, ReceiverError, Source, TrackList,
     },
 };
 use slint::{ToSharedString, VecModel};
@@ -111,11 +111,19 @@ struct ImageEntry {
 }
 
 fn find_images() -> std::io::Result<(Vec<ImageEntry>, Vec<UiFileEntry>)> {
-    let dirs = directories::UserDirs::new().unwrap();
-    let dir = dirs.picture_dir().unwrap();
-
     let mut images = Vec::new();
     let mut files = Vec::new();
+
+    // No user dirs or no Pictures directory means there is nothing to list. Return an empty catalog
+    // instead of panicking.
+    let Some(dirs) = directories::UserDirs::new() else {
+        log::warn!("Could not determine user directories, no images to list");
+        return Ok((images, files));
+    };
+    let Some(dir) = dirs.picture_dir() else {
+        log::warn!("Could not determine Pictures directory, no images to list");
+        return Ok((images, files));
+    };
 
     let entries = std::fs::read_dir(dir)?;
     for entry in entries {
@@ -168,7 +176,13 @@ fn run(ui_weak: slint::Weak<MainWindow>, msg_tx: Sender<Message>, msg_rx: Receiv
     };
     cast_context.start_discovery(Arc::new(discovery_event_handler));
 
-    let (images, files) = find_images().unwrap();
+    let (images, files) = match find_images() {
+        Ok(res) => res,
+        Err(e) => {
+            log::warn!("Failed to read images: {e}");
+            (Vec::new(), Vec::new())
+        }
+    };
     ui_weak
         .upgrade_in_event_loop(move |ui| {
             ui.global::<Bridge>()
@@ -232,97 +246,146 @@ fn run(ui_weak: slint::Weak<MainWindow>, msg_tx: Sender<Message>, msg_rx: Receiv
                 }
             }
             Message::Connect(name) => {
-                let info = devices.get(&name).unwrap();
+                let Some(info) = devices.get(&name) else {
+                    log::warn!("Cannot connect: device '{name}' is no longer available");
+                    continue;
+                };
                 let device = cast_context.create_device_from_info(info.clone());
                 current_device_id += 1;
-                device
-                    .connect(
-                        None,
-                        Arc::new(DevEventHandler {
-                            event_tx: msg_tx.clone(),
-                            id: current_device_id,
-                        }),
-                        1000,
-                    )
-                    .unwrap();
+                if let Err(e) = device.connect(
+                    None,
+                    Arc::new(DevEventHandler {
+                        event_tx: msg_tx.clone(),
+                        id: current_device_id,
+                    }),
+                    1000,
+                ) {
+                    log::warn!("Failed to connect to device '{name}': {e}");
+                    continue;
+                }
                 current_device = Some(device);
             }
             Message::StartCast(id) => {
-                if let Some(device) = &current_device {
-                    let id = id as usize;
-                    let img = &images[id];
+                let Some(device) = &current_device else {
+                    log::warn!("Cannot cast: no device connected");
+                    continue;
+                };
+                let id = id as usize;
+                let Some(img) = images.get(id) else {
+                    log::warn!("Cannot cast: image index {id} is out of range");
+                    continue;
+                };
 
-                    fn create_item(img: &ImageEntry) -> QueueItem {
-                        QueueItem::FCompanion {
+                fn create_item(img: &ImageEntry) -> QueueItem {
+                    QueueItem::FCompanion {
+                        content_type: img.mime.to_owned(),
+                        source: CompanionSource {
+                            descriptor: CompanionSourceDescriptor::Path(
+                                img.path.to_string_lossy().into_owned(),
+                            ),
                             content_type: img.mime.to_owned(),
-                            source: CompanionSource {
-                                descriptor: CompanionSourceDescriptor::Path(
-                                    img.path.to_str().unwrap().to_owned(),
-                                ),
-                                content_type: img.mime.to_owned(),
-                            },
-                            metadata: None,
-                        }
+                        },
+                        metadata: None,
                     }
+                }
 
-                    if let Some(current_idx) = current_item_idx.as_mut() {
-                        if *current_idx == id {
-                            continue;
-                        };
+                // The prefetch window is the selected image plus its immediate neighbours that
+                // actually exist, so it holds 1, 2 or 3 items. Returns the inclusive
+                // [lo, hi] range of image indices in the window.
+                fn window_range(id: usize, n: usize) -> (usize, usize) {
+                    let lo = id.saturating_sub(1);
+                    let hi = if id + 1 < n { id + 1 } else { id };
+                    (lo, hi)
+                }
 
-                        let go_left = id < *current_idx;
-                        let id_to_queue = if go_left { id - 1 } else { id + 1 };
-                        let new_item = create_item(&images[id_to_queue]);
+                // Rebuild the whole window and (re)load it. Used for the first cast and for
+                // non-adjacent jumps where the incremental select/add/remove dance cannot express
+                // the transition.
+                fn load_window(device: &dyn CastingDevice, images: &[ImageEntry], id: usize) {
+                    let (lo, hi) = window_range(id, images.len());
+                    let items = images[lo..=hi].iter().map(create_item).collect();
+                    let start_index = Some((id - lo) as u8);
+                    if let Err(e) = device.load(LoadRequest::Queue { items, start_index }, None) {
+                        log::warn!("Failed to load queue: {e}");
+                    }
+                }
 
-                        let next_pos = if go_left { 0 } else { 2 };
+                let n = images.len();
+                match current_item_idx {
+                    Some(prev) if prev == id => continue,
+                    // Adjacent moves shift the window by one, so they can be expressed as a select
+                    // followed by at most one remove and one add. Anything else is a full reload.
+                    Some(prev) if prev.abs_diff(id) == 1 => {
+                        let (o_lo, o_hi) = window_range(prev, n);
+                        let (n_lo, n_hi) = window_range(id, n);
 
-                        *current_idx = id;
-                        device.queue_select(QueuePosition::Index(next_pos)).unwrap();
-
-                        if go_left {
-                            device.queue_remove(QueuePosition::Back).unwrap();
-                            device.queue_add(new_item, QueuePosition::Front).unwrap();
-                        } else {
-                            device.queue_remove(QueuePosition::Front).unwrap();
-                            device.queue_add(new_item, QueuePosition::Back).unwrap();
+                        // The new current is always still present in the old window on an adjacent
+                        // move, so select it there first. Selecting before removing also keeps us
+                        // from ever removing the currently playing item, which the receiver refuses.
+                        let select_idx = (id - o_lo) as u8;
+                        if let Err(e) = device.queue_select(QueuePosition::Index(select_idx)) {
+                            log::warn!("Failed to select queue item: {e}");
                         }
-                    } else {
+
+                        // Drop the old-window item that fell out of the new window. It is always at
+                        // an edge: the front when moving right, the back when moving left.
+                        if o_lo < n_lo {
+                            if let Err(e) = device.queue_remove(QueuePosition::Front) {
+                                log::warn!("Failed to remove queue item: {e}");
+                            }
+                        } else if o_hi > n_hi {
+                            if let Err(e) = device.queue_remove(QueuePosition::Back) {
+                                log::warn!("Failed to remove queue item: {e}");
+                            }
+                        }
+
+                        // Add the new-window item that was not already present, again at an edge:
+                        // the back when moving right, the front when moving left.
+                        if n_hi > o_hi {
+                            let item = create_item(&images[n_hi]);
+                            if let Err(e) = device.queue_add(item, QueuePosition::Back) {
+                                log::warn!("Failed to add queue item: {e}");
+                            }
+                        } else if n_lo < o_lo {
+                            let item = create_item(&images[n_lo]);
+                            if let Err(e) = device.queue_add(item, QueuePosition::Front) {
+                                log::warn!("Failed to add queue item: {e}");
+                            }
+                        }
+
                         current_item_idx = Some(id);
-                        let items = vec![
-                            create_item(&images[id - 1]),
-                            create_item(&images[id]),
-                            create_item(&images[id + 1]),
-                        ];
-                        device
-                            .load(
-                                LoadRequest::Queue {
-                                    items,
-                                    start_index: Some(1),
-                                },
-                                None,
-                            )
-                            .unwrap();
                     }
+                    // First cast, or a non-adjacent jump: reload the whole window.
+                    _ => {
+                        current_item_idx = Some(id);
+                        load_window(device.as_ref(), &images, id);
+                    }
+                }
 
-                    if let Ok(img) = image::ImageReader::open(&img.path).unwrap().decode() {
-                        let img = img.to_rgba8();
-                        ui_weak
-                            .upgrade_in_event_loop(move |ui| {
-                                ui.global::<Bridge>()
-                                    .set_current_preview(
-                                        slint::Image::from_rgba8(slint::SharedPixelBuffer::<
-                                            slint::Rgba8Pixel,
-                                        >::clone_from_slice(
-                                            img.as_raw(),
-                                            img.width(),
-                                            img.height(),
-                                        )),
-                                    )
-                            })
-                            .unwrap();
+                let decoded = match image::ImageReader::open(&img.path) {
+                    Ok(reader) => reader.decode(),
+                    Err(e) => {
+                        log::warn!("Failed to open preview image: {e}");
+                        continue;
                     }
-                } else {
-                    panic!("No device");
+                };
+                match decoded {
+                    Ok(img) => {
+                        let img = img.to_rgba8();
+                        if let Err(e) = ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.global::<Bridge>()
+                                .set_current_preview(slint::Image::from_rgba8(
+                                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                        img.as_raw(),
+                                        img.width(),
+                                        img.height(),
+                                    ),
+                                ))
+                        }) {
+                            log::warn!("Failed to update preview: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("Failed to decode preview image: {e}"),
                 }
             }
         }
