@@ -45,6 +45,12 @@ impl CastContext {
                 info,
                 self.runtime.handle().clone(),
             )),
+            // Under `__flutter_hacks`, `ProtocolType` carries variants for protocols that were not
+            // compiled in. Their device types do not exist, so reject them here. Callers gate on
+            // `enabled_protocols`.
+            #[cfg(feature = "__flutter_hacks")]
+            #[allow(unreachable_patterns)]
+            other => panic!("protocol {other:?} is not compiled into this build"),
         }
     }
 }

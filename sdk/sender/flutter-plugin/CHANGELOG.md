@@ -2,6 +2,7 @@
 
 - Fix device discovery on Bonsoir 7 / macOS
 - Discovered devices are deduplicated by a stable key so add and remove events line up
+- Fix builds when not using default features
 - BREAKING: `DiscoveryEventDeviceRemoved.name` is renamed to `storageKey`.
   `DiscoveryEventDeviceAdded` and `DiscoveryEventDeviceUpdated` now expose a
   matching `storageKey`. Index your device list by `storageKey` (from

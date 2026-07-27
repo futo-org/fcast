@@ -75,9 +75,9 @@ pub struct AudioCapabilities {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolType {
-    #[cfg(feature = "chromecast")]
+    #[cfg(any(feature = "chromecast", feature = "__flutter_hacks"))]
     Chromecast,
-    #[cfg(feature = "fcast")]
+    #[cfg(any(feature = "fcast", feature = "__flutter_hacks"))]
     FCast,
 }
 

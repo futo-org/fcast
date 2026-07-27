@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-fcast-sender-sdk-raw = { package = "fcast-sender-sdk", path = "../../fcast-sender-sdk", default-features = false }
+fcast-sender-sdk-raw = { package = "fcast-sender-sdk", path = "../../fcast-sender-sdk", default-features = false, features = ["__flutter_hacks"] }
 flutter_rust_bridge = "=2.13.0-beta.5"
 thiserror = "2.0.16"
 env_logger = "0.11.8"

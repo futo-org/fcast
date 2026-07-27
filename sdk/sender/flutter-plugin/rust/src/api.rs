@@ -44,9 +44,7 @@ pub enum _IpAddr {
 
 #[frb(mirror(ProtocolType))]
 pub enum _ProtocolType {
-    #[cfg(feature = "chromecast")]
     Chromecast,
-    #[cfg(feature = "fcast")]
     FCast,
 }
 
@@ -278,6 +276,16 @@ pub fn init_logger() {
     let _ = env_logger::Builder::new()
         .filter(None, log::LevelFilter::Debug)
         .try_init();
+}
+
+#[frb(sync)]
+pub fn enabled_protocols() -> Vec<ProtocolType> {
+    let mut protocols = Vec::new();
+    #[cfg(feature = "chromecast")]
+    protocols.push(ProtocolType::Chromecast);
+    #[cfg(feature = "fcast")]
+    protocols.push(ProtocolType::FCast);
+    protocols
 }
 
 #[frb(non_opaque)]

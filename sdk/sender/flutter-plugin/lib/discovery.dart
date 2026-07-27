@@ -388,19 +388,22 @@ class DeviceDiscoverer {
   }
 
   Future<void> init() async {
+    final protocols = enabledProtocols();
     // Chromecast first: on macOS, FCast resolves were starving Chromecast
     // browse when both browsers started simultaneously.
-    await _chromecastDiscovery.initialize();
-    await _fcastDiscovery.initialize();
-
-    _chromecastDiscovery.eventStream!.listen((event) async {
-      await _handleChromecastEvent(event);
-    });
-    _fcastDiscovery.eventStream!.listen((event) async {
-      await _handleFcastEvent(event);
-    });
-
-    await _chromecastDiscovery.start();
-    await _fcastDiscovery.start();
+    if (protocols.contains(ProtocolType.chromecast)) {
+      await _chromecastDiscovery.initialize();
+      _chromecastDiscovery.eventStream!.listen((event) async {
+        await _handleChromecastEvent(event);
+      });
+      await _chromecastDiscovery.start();
+    }
+    if (protocols.contains(ProtocolType.fCast)) {
+      await _fcastDiscovery.initialize();
+      _fcastDiscovery.eventStream!.listen((event) async {
+        await _handleFcastEvent(event);
+      });
+      await _fcastDiscovery.start();
+    }
   }
 }
