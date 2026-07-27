@@ -269,40 +269,18 @@ struct ExternalSubtitle {
     url: String,
     name: Option<SmolStr>,
     requested_by: PacketOrigin,
-    /// fcast backend only: the live input attached for this entry (every
-    /// catalog external is attached simultaneously there, selection is pure
-    /// SELECT_STREAMS). `None` on the playbin3 backend, where only the
-    /// active entry is realized, as the suburi. The handle is REPLACED when
-    /// the input is re-armed (see `fail_or_rearm`).
-    handle: Option<fcastplaybin::ExternalSubId>,
-    /// fcast backend only: the entry's GStreamer stream id, learned when its
-    /// stream first materializes in a collection. URI-derived, so it stays
-    /// valid across input replacements. All id/index mapping goes through
-    /// this, never through the live handle.
+    /// The live input attached for this entry (every catalog external is
+    /// attached simultaneously, selection is pure SELECT_STREAMS). The id
+    /// is stable for the entry's whole life: fcastplaybin re-arms a dead
+    /// deselected input internally under the same id, and a genuine
+    /// failure comes back as `PlayerEvent::ExternalSubtitleFailed`, which
+    /// removes the entry.
+    handle: fcastplaybin::ExternalSubId,
+    /// The entry's GStreamer stream id, learned when its stream first
+    /// materializes in a collection. URI-derived, so it stays valid across
+    /// fcastplaybin's internal input replacements. All id/index mapping
+    /// goes through this, never through the live handle.
     stream_sid: Option<String>,
-    /// fcast backend only: when this entry's input was last (re-)attached.
-    /// debounces the error-triggered re-arm (an input can post several
-    /// errors while dying).
-    attached_at: Instant,
-}
-
-/// fcast backend: the subtitle end-state to enforce once a just-attached
-/// external's stream materializes in a collection. decodebin3 re-runs its
-/// default selection for the new collection and may auto-select the fresh
-/// text stream, so even "attach but don't show" needs an explicit
-/// correction, and select-on-add needs its explicit selection anyway.
-struct FcastSubDesire {
-    /// The catalog external whose stream is being waited for.
-    ext_id: u32,
-    target: FcastSubTarget,
-}
-
-enum FcastSubTarget {
-    /// Select the awaited external itself.
-    TheExternal,
-    /// Keep what was showing before the attach: an embedded stream id
-    /// (stable within a load), or `None` for no subtitle.
-    Restore(Option<String>),
 }
 
 /// An `AddSubtitleSource` that arrived after the media was loaded but before the pipeline could
@@ -331,9 +309,6 @@ struct MediaSourceState {
     pending_thumbnail_download: Option<image::ImageDownloadId>,
     /// The external subtitle catalog for the current item.
     external_subtitles: Vec<ExternalSubtitle>,
-    /// Enforcement parked until an attached external's stream materializes
-    /// (see `FcastSubDesire`). Latest attach/selection wins.
-    fcast_sub_desire: Option<FcastSubDesire>,
     /// Monotonic id source for `ExternalSubtitle::id` within this item.
     next_external_id: u32,
 }
@@ -347,7 +322,6 @@ impl MediaSourceState {
             pending_thumbnail: None,
             pending_thumbnail_download: None,
             external_subtitles: Vec::new(),
-            fcast_sub_desire: None,
             next_external_id: 0,
         }
     }
@@ -356,7 +330,6 @@ impl MediaSourceState {
     /// advancing so a stale id from the previous item can never alias a new one.
     fn clear_external_subtitles(&mut self) {
         self.external_subtitles.clear();
-        self.fcast_sub_desire = None;
     }
 }
 
@@ -2103,11 +2076,6 @@ impl Application {
     /// query to resolve before it is rejected with `InvalidState`.
     const PENDING_SUBTITLE_ADD_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// fcast backend: how long an attached external subtitle input may take
-    /// to produce its stream before it is failed with `ResourceNotFound`
-    /// (matches the playbin3 dance's `EXTERNAL_SUB_TIMEOUT`).
-    const FCAST_EXTERNAL_SUB_TIMEOUT: Duration = Duration::from_secs(5);
-
     /// Handle `AddSubtitleSource`. If the media is loaded but the pipeline
     /// hasn't answered the seekability query yet (tracks are advertised off
     /// the first stream collection, well before the query can succeed at
@@ -2175,6 +2143,9 @@ impl Application {
         // no reload in either direction. The virtual track is advertised
         // immediately, the desired end state is enforced once the stream
         // materializes in a collection (see `pump_fcast_sub_desire`).
+        // fcastplaybin babysits the input itself (materialization watchdog,
+        // deselect-race re-arm); a genuine failure arrives as
+        // `PlayerEvent::ExternalSubtitleFailed`.
         let handle = self.player.attach_external_subtitle(&url);
         let Some(media) = self.current_media.as_mut() else {
             self.player.detach_external_subtitle(handle);
@@ -2188,19 +2159,23 @@ impl Application {
             url,
             name,
             requested_by: origin,
-            handle: Some(handle),
+            handle,
             stream_sid: None,
-            attached_at: Instant::now(),
         });
-        let target = if select {
-            FcastSubTarget::TheExternal
+        if select {
+            // The engine parks the desire until the input's stream
+            // materializes, then selects it and re-asserts it against
+            // decodebin3's collection-default auto-select.
+            self.player.request_external_subtitle(handle);
         } else {
-            // Keep what is showing now, decodebin3 may auto-select the
-            // fresh text stream for the new collection otherwise.
-            FcastSubTarget::Restore(self.player.current_subtitle_sid().map(str::to_string))
-        };
-        media.fcast_sub_desire = Some(FcastSubDesire { ext_id: id, target });
-        self.arm_external_sub_watchdog(id);
+            // Pin what is showing NOW as the explicit desire (the old
+            // Restore enforcement, declaratively): decodebin3 may
+            // auto-select the fresh text stream for the new collection,
+            // and a never-requested (unset) desire would simply adopt
+            // that, showing a subtitle nobody asked for.
+            let current = self.player.current_subtitle_sid().map(str::to_string);
+            self.apply_track_change(player::TrackKind::Subtitle, current);
+        }
 
         debug!(id, select, "Attached external subtitle input (live)");
         self.update_tracks(true);
@@ -2334,28 +2309,28 @@ impl Application {
 
         match target {
             SubtitleTarget::External(ext_id) => {
-                // Attached but its stream hasn't materialized yet: park it as
-                // the desired end state, the collection pump applies it and the
-                // eventual selection confirm relays the TracksSelected the
-                // sender is waiting for.
-                debug!(
-                    ext_id,
-                    "Parking the external selection until its stream appears"
-                );
-                if let Some(media) = self.current_media.as_mut() {
-                    media.fcast_sub_desire = Some(FcastSubDesire {
-                        ext_id,
-                        target: FcastSubTarget::TheExternal,
-                    });
+                // Attached but its stream hasn't materialized yet: the
+                // engine parks the desire and applies it when the stream
+                // appears; the eventual selection confirm relays the
+                // TracksSelected the sender is waiting for. Latest-wins
+                // composition in the engine replaces the old parked-desire
+                // supersede bookkeeping.
+                let handle = self
+                    .current_media
+                    .as_ref()
+                    .and_then(|m| m.external_subtitles.iter().find(|s| s.id == ext_id))
+                    .map(|s| s.handle);
+                match handle {
+                    Some(handle) => {
+                        debug!(ext_id, "Requesting the external subtitle from the engine");
+                        self.player.request_external_subtitle(handle);
+                    }
+                    // resolve_subtitle_target just found it, so only a
+                    // racing removal gets here.
+                    None => self.send_error(origin, ErrorKind::MalformedBody),
                 }
             }
             SubtitleTarget::Stream(stream_sid) => {
-                // An explicit subtitle change supersedes a parked post-attach
-                // desire (fcast backend): the newest intent wins, and a stale
-                // desire enforcing itself later would stomp this change.
-                if let Some(media) = self.current_media.as_mut() {
-                    media.fcast_sub_desire = None;
-                }
                 // Apply immediately, paused or playing. A subtitle deselect
                 // tears the overlay's text chain down, under playsink that
                 // deadlocked while paused (the teardown needed flowing data),
@@ -2369,21 +2344,12 @@ impl Application {
         }
     }
 
-    /// Apply a track change through TrackOps. While any external subtitle is
-    /// attached the switch's re-emit flush is suppressed: a flush races the
-    /// external inputs' reconfiguration and can freeze the item (and selecting
-    /// an external needs no flush anyway, its input re-pushes the whole file).
+    /// Apply a track change through TrackOps. Whether the switch's re-emit
+    /// flush is safe (it races an attached external input's reconfiguration
+    /// and can freeze the item) is decided inside the player's pump, off the
+    /// pipeline's own input state, not from the catalog here.
     fn apply_track_change(&mut self, kind: player::TrackKind, sid: Option<player::StreamId>) {
-        let externals_attached = self
-            .current_media
-            .as_ref()
-            .is_some_and(|m| !m.external_subtitles.is_empty());
-        let stale = if externals_attached {
-            self.player.request_track_change_no_refresh(kind, sid)
-        } else {
-            self.player.request_track_change(kind, sid)
-        };
-        if stale {
+        if self.player.request_track_change(kind, sid) {
             // The displayed cue belongs to the previous track. Clear it
             // immediately so the change registers visually, even while paused.
             self.gui.clear_video_overlays();
@@ -2409,8 +2375,7 @@ impl Application {
         };
         for entry in media.external_subtitles.iter_mut() {
             if entry.stream_sid.is_none()
-                && let Some(handle) = entry.handle
-                && let Some(sid) = self.player.external_stream_sid_of(handle)
+                && let Some(sid) = self.player.external_stream_sid_of(entry.handle)
             {
                 debug!(id = entry.id, sid, "external subtitle stream materialized");
                 entry.stream_sid = Some(sid);
@@ -2418,125 +2383,12 @@ impl Application {
         }
     }
 
-    /// fcast backend: enforce the desired subtitle end-state once the awaited
-    /// external's stream has materialized in the advertised collection (run
-    /// from the stream-collection handler). The enforcement goes out AFTER
-    /// decodebin3 computed its own selection for that collection, so it
-    /// supersedes a possible auto-select of the fresh text stream.
-    fn pump_fcast_sub_desire(&mut self) {
-        let Some(media) = self.current_media.as_ref() else {
-            return;
-        };
-        let Some(desire) = media.fcast_sub_desire.as_ref() else {
-            return;
-        };
-        let Some(entry) = media
-            .external_subtitles
-            .iter()
-            .find(|s| s.id == desire.ext_id)
-        else {
-            // The awaited entry is gone (failed and removed), nothing left
-            // to enforce.
-            if let Some(media) = self.current_media.as_mut() {
-                media.fcast_sub_desire = None;
-            }
-            return;
-        };
-        let Some(ext_sid) = self.advertised_external_sid(entry) else {
-            // Stream not in the advertised collection yet, a later
-            // collection re-runs this.
-            return;
-        };
-        let target_sid = match &desire.target {
-            FcastSubTarget::TheExternal => Some(ext_sid),
-            FcastSubTarget::Restore(sid) => sid.clone(),
-        };
-        if let Some(media) = self.current_media.as_mut() {
-            media.fcast_sub_desire = None;
-        }
-        debug!(?target_sid, "Enforcing the post-attach subtitle selection");
-        self.apply_track_change(player::TrackKind::Subtitle, target_sid);
-    }
-
-    /// fcast backend: how soon after a (re-)attach an error may trigger
-    /// another re-arm. A dying input posts several errors and only the first
-    /// past this window may replace it.
-    const FCAST_REARM_DEBOUNCE: Duration = Duration::from_secs(1);
-
-    /// Bounded wait for an attached external's stream to materialize. A bad
-    /// URL can fail without producing a stream or a bus error, so the check
-    /// message fails the entry with `ResourceNotFound` if it is still
-    /// stream-less when it fires. Armed on every attach, including re-arms.
-    fn arm_external_sub_watchdog(&self, ext_id: u32) {
-        let item = self.current_media_item_id;
-        let msg_tx = self.msg_tx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Self::FCAST_EXTERNAL_SUB_TIMEOUT).await;
-            msg_tx.send(Message::FcastExternalSubCheck { item, ext_id });
-        });
-    }
-
-    /// fcast backend: decide what an external input's bus error means.
-    ///
-    /// An error from an input that is currently AWAITED (post-attach desire)
-    /// or SHOWN is a genuine failure: the requester gets `ResourceNotFound`
-    /// and the entry is dropped. An error from a deselected input is the
-    /// known deselect race (switching away from a selected external races its
-    /// in-flight push against decodebin3's slot deactivation and kills the
-    /// source with not-linked) and must NOT fail the entry. Instead the input
-    /// is RE-ARMED with a fresh one on the same URL so the track can be
-    /// selected again. The stream id is URI-derived and stays the same, so
-    /// all advertised ids remain valid.
-    fn fail_or_rearm_fcast_external(&mut self, ext_id: u32) {
-        let Some(media) = self.current_media.as_ref() else {
-            return;
-        };
-        let awaited = media
-            .fcast_sub_desire
-            .as_ref()
-            .is_some_and(|d| d.ext_id == ext_id);
-        let Some(entry) = media.external_subtitles.iter().find(|s| s.id == ext_id) else {
-            return;
-        };
-        let shown = entry.stream_sid.is_some()
-            && entry.stream_sid.as_deref() == self.player.current_subtitle_sid();
-        if awaited || shown {
-            self.fail_fcast_external_subtitle(ext_id);
-            return;
-        }
-        if entry.attached_at.elapsed() < Self::FCAST_REARM_DEBOUNCE {
-            debug!(
-                ext_id,
-                "Ignoring error from an input that was just re-armed"
-            );
-            return;
-        }
-        let (url, old_handle) = (entry.url.clone(), entry.handle);
-        debug!(ext_id, "Re-arming the deselected external subtitle input");
-        if let Some(old) = old_handle {
-            self.player.detach_external_subtitle(old);
-        }
-        let new_handle = Some(self.player.attach_external_subtitle(&url));
-        if let Some(entry) = self
-            .current_media
-            .as_mut()
-            .and_then(|m| m.external_subtitles.iter_mut().find(|s| s.id == ext_id))
-        {
-            entry.handle = new_handle;
-            entry.stream_sid = None;
-            entry.attached_at = Instant::now();
-        }
-        // The fresh input can fail as silently as the original: without a new
-        // bounded check, a dead re-armed entry would stay selectable forever
-        // and a selection parked on it would never resolve or error.
-        self.arm_external_sub_watchdog(ext_id);
-    }
-
-    /// fcast backend: an attached external subtitle failed (a bus error from
-    /// its input, or its stream never materialized). Detach the input, drop
-    /// the catalog entry and tell the requester `ResourceNotFound`, the
-    /// input is independent of the main item, so playback continues
-    /// untouched (no reload).
+    /// An attached external subtitle failed for good: fcastplaybin reported
+    /// `ExternalSubtitleFailed` with the input ALREADY detached (it owns the
+    /// materialization watchdog, the deselect-race re-arm, and dropping any
+    /// selection desire parked on the input). Drop the catalog entry and
+    /// tell the requester `ResourceNotFound`; the input is independent of
+    /// the main item, so playback continues untouched.
     fn fail_fcast_external_subtitle(&mut self, ext_id: u32) {
         let Some(media) = self.current_media.as_mut() else {
             return;
@@ -2545,17 +2397,7 @@ impl Application {
             return;
         };
         let failed = media.external_subtitles.remove(pos);
-        if media
-            .fcast_sub_desire
-            .as_ref()
-            .is_some_and(|d| d.ext_id == ext_id)
-        {
-            media.fcast_sub_desire = None;
-        }
         warn!(url = failed.url, "External subtitle failed; removing it");
-        if let Some(handle) = failed.handle {
-            self.player.detach_external_subtitle(handle);
-        }
         self.send_error(failed.requested_by, ErrorKind::ResourceNotFound);
         self.update_tracks(true);
     }
@@ -2861,14 +2703,14 @@ impl Application {
                 // a paused pipeline when a live subtitle attach posted a
                 // mid-playback collection).
 
-                // Learn stream ids for externals that just materialized, then
-                // advertise and enforce the parked desired selection (no-ops
-                // otherwise).
+                // Learn stream ids for externals that just materialized and
+                // advertise them. Selection enforcement is the engine's job
+                // now: `Player::handle_stream_collection` pumped it above,
+                // and a desire parked on a just-materialized external
+                // resolved there.
                 self.refresh_external_stream_sids();
 
                 self.update_tracks(true);
-
-                self.pump_fcast_sub_desire();
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -2967,12 +2809,21 @@ impl Application {
                 subtitle,
                 seqnum,
             } => {
+                let prev_subtitle = self.player.current_subtitle_sid().map(str::to_string);
                 let selected = self.player.streams_selected(
                     video.as_deref(),
                     audio.as_deref(),
                     subtitle.as_deref(),
                     seqnum,
                 );
+                // A confirmed subtitle switch makes the displayed cue stale.
+                // Requests placed through `apply_track_change` cleared it
+                // optimistically already; this also covers engine-initiated
+                // switches (an external materializing, a re-assertion), whose
+                // dispatch the application never sees.
+                if selected.subtitle.as_deref() != prev_subtitle.as_deref() {
+                    self.gui.clear_video_overlays();
+                }
                 // The wire/GUI edge: map the applied stream ids to advertised
                 // indices. Subtitles report an external's STABLE id when its
                 // own stream is selected (matching TracksAvailable).
@@ -3031,27 +2882,11 @@ impl Application {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
                 // Attribution comes from fcastplaybin's generation-tagged
                 // inputs (supersession is already handled by the generation
-                // filter above); `failed_uri` is diagnostic only.
+                // filter above); `failed_uri` is diagnostic only. External
+                // subtitle inputs never error here: fcastplaybin handles
+                // them itself and reports `ExternalSubtitleFailed` when one
+                // is beyond saving.
                 match err_origin {
-                    // A live subtitle input errored, never the main item, so
-                    // playback keeps running. Whether the entry FAILS or
-                    // merely re-arms is decided in
-                    // `fail_or_rearm_fcast_external`.
-                    fcastplaybin::ErrorOrigin::ExternalSubtitle(handle) => {
-                        warn!(?failed_uri, message, "External subtitle input errored");
-                        let ext_id = self.current_media.as_ref().and_then(|m| {
-                            m.external_subtitles
-                                .iter()
-                                .find(|s| s.handle == Some(handle))
-                                .map(|s| s.id)
-                        });
-                        match ext_id {
-                            Some(ext_id) => self.fail_or_rearm_fcast_external(ext_id),
-                            // The input was already detached (a re-arm or
-                            // removal won the race); nothing to do.
-                            None => debug!(?handle, "Error from an already-detached input"),
-                        }
-                    }
                     fcastplaybin::ErrorOrigin::Stale => {
                         debug!(?failed_uri, message, "Dropping error from a stale input");
                     }
@@ -3062,6 +2897,24 @@ impl Application {
                         }
                         self.media_error(message)?;
                     }
+                }
+            }
+            player::PlayerEvent::ExternalSubtitleFailed { id } => {
+                // fcastplaybin already detached the input (failed attach,
+                // bus error while its stream was shown, or no stream within
+                // its watchdog); what is left is the protocol side: drop the
+                // catalog entry and report ResourceNotFound.
+                let ext_id = self.current_media.as_ref().and_then(|m| {
+                    m.external_subtitles
+                        .iter()
+                        .find(|s| s.handle == id)
+                        .map(|s| s.id)
+                });
+                match ext_id {
+                    Some(ext_id) => self.fail_fcast_external_subtitle(ext_id),
+                    // The catalog entry is already gone (the item was
+                    // replaced, or the entry was removed by its sender).
+                    None => debug!(?id, "Failure report for an unknown external subtitle"),
                 }
             }
             player::PlayerEvent::Warning(msg) => {
@@ -3950,22 +3803,6 @@ impl Application {
                 if epoch == self.pending_seek_epoch && self.pending_seek_op.is_some() {
                     warn!("Seekability never resolved; dropping the parked seek");
                     self.drop_pending_seek();
-                }
-            }
-            Message::FcastExternalSubCheck { item, ext_id } => {
-                // Fail only if the external is STILL attached and awaiting
-                // its stream. A detached entry (switched away) legitimately
-                // has no `stream_sid`, and an already-materialized one has
-                // its `stream_sid` set, neither is a failure, so a stale
-                // watchdog from an earlier attach must no-op.
-                if item == self.current_media_item_id
-                    && let Some(media) = self.current_media.as_ref()
-                    && let Some(entry) = media.external_subtitles.iter().find(|s| s.id == ext_id)
-                    && entry.handle.is_some()
-                    && entry.stream_sid.is_none()
-                {
-                    warn!(ext_id, "External subtitle stream never materialized");
-                    self.fail_fcast_external_subtitle(ext_id);
                 }
             }
             Message::LoadStallCheck { item, epoch } => {

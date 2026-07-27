@@ -165,14 +165,6 @@ pub enum Message {
     PendingSeekCheck {
         epoch: u64,
     },
-    /// fcast backend: bounded wait for an attached external subtitle input
-    /// to produce its stream. If it still hasn't when this fires, the input
-    /// failed silently (a bad URL can fail without a bus error) and is
-    /// detached with `ResourceNotFound`.
-    FcastExternalSubCheck {
-        item: MediaItemId,
-        ext_id: u32,
-    },
     /// DIAGNOSTIC (load-stall investigation): a bounded wait after a pipeline
     /// load. If the pipeline still has not reached a steady PAUSED when this
     /// fires (a selected stream's pad never routed), dump why (see
