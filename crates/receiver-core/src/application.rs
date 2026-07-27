@@ -163,6 +163,9 @@ impl QueueItem {
 struct QueueState {
     items: Vec<QueueItem>,
     current_idx: u8,
+    /// The spec'd Queue.autoplay flag: the receiver advances to the next
+    /// item by itself when the current one finishes.
+    autoplay: bool,
 }
 
 fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
@@ -1673,6 +1676,42 @@ impl Application {
         }
     }
 
+    /// The spec'd Queue.autoplay behavior: when the current item of an
+    /// autoplay queue finishes, the receiver advances to the next item by
+    /// itself instead of waiting for a sender's QueueItemSelected round-trip
+    /// (with the prefetched head already resident, the next item starts
+    /// immediately). Senders are told through a broadcast QueueItemSelected
+    /// so their UIs follow. Runs from the EOS handler, after the Ended
+    /// broadcast.
+    fn maybe_autoplay_advance(&mut self) {
+        let Some(media) = self.current_media.as_ref() else {
+            return;
+        };
+        let origin = media.origin;
+        let MediaSource::Queue(queue) = &media.source else {
+            return;
+        };
+        if !queue.autoplay {
+            return;
+        }
+        let next = queue.current_idx as usize + 1;
+        if next >= queue.items.len() {
+            debug!("Autoplay queue reached its end");
+            return;
+        }
+
+        info!(next, "Autoplay: advancing to the next queue item");
+        self.play_queue_item(origin, v4::QueuePosition::Index(next as u8), false);
+
+        // Receiver-initiated: every sender hears about the selection.
+        if self.should_broadcast() {
+            self.broadcast_update(ReceiverToSenderMessage::V4(fcast::V4Message::Broadcast {
+                serialized_msg: fcast_protocol::v4::MessageBuilder::new()
+                    .queue_select(v4::QueuePosition::Index(next as u8)),
+            }));
+        }
+    }
+
     /// Reconcile the prefetch cache with the current queue window. Runs after
     /// every queue mutation (select, insert, remove, initial queue load).
     fn sync_queue_cache(&mut self) {
@@ -1853,6 +1892,7 @@ impl Application {
                             MediaSource::Queue(QueueState {
                                 items: queue_items,
                                 current_idx: idx,
+                                autoplay: queue.autoplay(),
                             }),
                         ));
                         self.play_queue_item(origin, v4::QueuePosition::Index(idx), false);
@@ -2758,6 +2798,8 @@ impl Application {
                         | MediaSource::AirPlayMirror { .. } => (),
                     }
                 }
+
+                self.maybe_autoplay_advance();
             }
             player::PlayerEvent::Tags(tags) => {
                 if let Some(container) = tags.get::<gst::tags::ContainerFormat>() {

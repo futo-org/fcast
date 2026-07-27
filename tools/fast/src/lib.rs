@@ -77,6 +77,7 @@ pub enum Send {
     LoadQueueV4 {
         items: &'static [PlaylistItem],
         start_index: Option<u8>,
+        autoplay: bool,
     },
     QueueInsertV4 {
         file_id: u32,
@@ -407,6 +408,7 @@ cases!(
     queue_insert_front_v4,
     queue_select_prefetched_v4,
     queue_select_prefetched_video_v4,
+    queue_autoplay_v4,
     multi_sender_load_broadcast_v4,
     multi_sender_load_metadata_broadcast_video_v4,
     multi_sender_load_metadata_broadcast_image_v4,
@@ -1060,6 +1062,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(750),
         send!(Send::QueueSelectV4 {
@@ -1122,6 +1125,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(750),
         send!(Send::QueueSelectV4 {
@@ -1144,6 +1148,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueInsertV4 {
@@ -1188,6 +1193,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueSelectV4 {
@@ -1217,6 +1223,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueRemoveV4 {
@@ -2708,6 +2715,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: None,
+            autoplay: false,
         }),
         Step::SleepMillis(750),
         send!(Send::StopV4),
@@ -2749,6 +2757,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueInsertV4 {
@@ -2782,6 +2791,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         // Give the neighbor prefetch time to land before flipping.
@@ -2815,6 +2825,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         // Give the 16M head prefetch time to land before flipping.
@@ -2824,6 +2835,41 @@ define_test_case!(
         }),
         Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         Step::SleepMillis(500),
+        send!(Send::StopV4),
+    ]
+);
+
+// The spec'd Queue.autoplay flag: when an item of an autoplay queue ends,
+// the receiver advances to the next item BY ITSELF (no QueueItemSelected is
+// sent by this case) and broadcasts the selection to senders. The 2s clip
+// makes item 0's EOS arrive quickly. The advance is detected through item
+// 1's distinct track shape rather than the transient Ended state: under
+// autoplay the Ended broadcast is immediately replaced by the next load's
+// states, so it can never satisfy an AwaitPlaybackState hold.
+define_test_case!(
+    queue_autoplay_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/short_clip.mkv", 0, "video/x-matroska"),
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+            autoplay: true,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        // Item 0 (1 video, 1 audio) ends on its own after ~2s and the
+        // receiver advances to item 1 (1 video, 2 audio, 2 subtitles)
+        // without any sender involvement.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         send!(Send::StopV4),
     ]
 );
@@ -2980,6 +3026,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueInsertV4 {
@@ -3004,6 +3051,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         // Remove the back (non-playing) item, the front item is playing.
@@ -3028,6 +3076,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueSelectV4 {

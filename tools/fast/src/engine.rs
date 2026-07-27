@@ -2104,7 +2104,11 @@ impl<'a> Engine<'a> {
                 let msg = v4::MessageBuilder::new().load_single(item);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
-            Op::LoadQueueV4 { items, start_index } => {
+            Op::LoadQueueV4 {
+                items,
+                start_index,
+                autoplay,
+            } => {
                 let media_items = items
                     .iter()
                     .map(|it| self.media_item_v4(it.file_id))
@@ -2112,7 +2116,7 @@ impl<'a> Engine<'a> {
                 let msg = v4::MessageBuilder::new().load_queue(
                     media_items.into_iter().map(|it| (it, None)),
                     *start_index,
-                    false,
+                    *autoplay,
                 );
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }

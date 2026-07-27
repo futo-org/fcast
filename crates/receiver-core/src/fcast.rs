@@ -255,6 +255,11 @@ pub enum V4Message {
         initiator_session_id: SenderId,
         serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
     },
+    /// A receiver-initiated message for every v4 sender (no initiator to
+    /// exclude), e.g. the autoplay advance's QueueItemSelected.
+    Broadcast {
+        serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
+    },
     TracksAvailable {
         serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
     },
@@ -1393,6 +1398,9 @@ impl SessionDriver {
                 }
             }
             V4Message::TracksAvailable { serialized_msg } => {
+                return self.send_bin_msg(Opcode::Flatbuf, serialized_msg).await;
+            }
+            V4Message::Broadcast { serialized_msg } => {
                 return self.send_bin_msg(Opcode::Flatbuf, serialized_msg).await;
             }
             V4Message::TracksSelected(messages) => {
