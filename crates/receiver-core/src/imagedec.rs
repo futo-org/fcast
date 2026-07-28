@@ -767,8 +767,17 @@ pub mod imp {
                     true
                 }
                 EventView::FlushStart(_) => {
+                    // Forward the flush downstream BEFORE joining the decode
+                    // task. The task may be blocked in srcpad.push() against
+                    // a waiting sink (preroll or clock wait), and only the
+                    // flush reaching that sink unblocks it: the abort flag
+                    // covers the input waits, not an in-flight push. The
+                    // forward also marks the src pad flushing, so the task
+                    // cannot push anything new afterwards. Joining first
+                    // deadlocked (see flush_while_preroll_blocked test).
+                    let ret = gst::Pad::event_default(pad, Some(&*self.obj()), event);
                     self.shutdown_task();
-                    gst::Pad::event_default(pad, Some(&*self.obj()), event)
+                    ret
                 }
                 EventView::FlushStop(_) => {
                     self.reset();
@@ -1627,6 +1636,128 @@ mod tests {
         assert!(!appsink.is_eos());
 
         pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    /// A FlushStart while the decode task is blocked pushing into a prerolled
+    /// sync=true sink must not deadlock. In PAUSED the sink accepts the first
+    /// (preroll) buffer and then preroll-waits every subsequent push forever,
+    /// so the decode task blocks inside `srcpad.push(second_frame)`. The
+    /// sink-pad FlushStart handler must forward the flush downstream BEFORE
+    /// joining the decode task: the abort flag cannot unblock a thread parked
+    /// in `push`, only the flush reaching the sink can. Regression guard for
+    /// the join-before-forward ordering, which deadlocked permanently.
+    /// Sending FlushStart from a helper thread and requiring it to return
+    /// bounded is the deadlock detector.
+    #[test]
+    fn flush_while_preroll_blocked_does_not_deadlock() {
+        init();
+
+        let pipeline = gst::Pipeline::new();
+        let appsrc = gst_app::AppSrc::builder()
+            .caps(&gst::Caps::new_empty_simple("image/gif"))
+            .format(gst::Format::Bytes)
+            .build();
+        let dec = gst::ElementFactory::make("fimagedec").build().unwrap();
+        // sync=true: in PAUSED the sink prerolls on the first buffer and then
+        // blocks the render of the second until it goes PLAYING (never here).
+        let fakesink = gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .unwrap();
+        pipeline
+            .add_many([appsrc.upcast_ref::<gst::Element>(), &dec, &fakesink])
+            .unwrap();
+        gst::Element::link_many([appsrc.upcast_ref(), &dec, &fakesink]).unwrap();
+
+        // PAUSED, not PLAYING: this is what pins the second push in preroll.
+        pipeline.set_state(gst::State::Paused).unwrap();
+        appsrc
+            .push_buffer(gst::Buffer::from_slice(make_gif(4)))
+            .unwrap();
+        appsrc.end_of_stream().unwrap();
+
+        // Wait for preroll to complete (first frame delivered to the sink).
+        let bus = pipeline.bus().unwrap();
+        let async_done = bus.timed_pop_filtered(
+            gst::ClockTime::from_seconds(10),
+            &[gst::MessageType::AsyncDone, gst::MessageType::Error],
+        );
+        match async_done.as_ref().map(|m| m.view()) {
+            Some(gst::MessageView::AsyncDone(_)) => {}
+            Some(gst::MessageView::Error(err)) => {
+                pipeline.set_state(gst::State::Null).unwrap();
+                panic!("pipeline errored before preroll: {}", err.error());
+            }
+            _ => {
+                pipeline.set_state(gst::State::Null).unwrap();
+                panic!("preroll (AsyncDone) never arrived within 10s");
+            }
+        }
+
+        // Give the decode task time to block pushing the second frame into the
+        // now-prerolled sink.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Send FlushStart from a helper thread so the test thread can time it
+        // out. If the sink-pad handler joins the blocked decode task before
+        // forwarding the flush, send_event never returns.
+        let sinkpad = dec.static_pad("sink").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        let flush_pad = sinkpad.clone();
+        std::thread::spawn(move || {
+            let accepted = flush_pad.send_event(gst::event::FlushStart::new());
+            let _ = tx.send(accepted);
+        });
+
+        let returned = rx.recv_timeout(std::time::Duration::from_secs(5));
+
+        // Best-effort cleanup regardless of outcome, on a detached thread so a
+        // still-wedged element (which leaves FlushStop and the state change
+        // blocked) cannot swallow the assertion verdict below or keep the
+        // failing test thread from reporting. On the passing path this joins
+        // quickly.
+        let cleanup_pad = sinkpad.clone();
+        let cleanup_pipeline = pipeline.clone();
+        let cleanup = std::thread::spawn(move || {
+            let _ =
+                cleanup_pad.send_event(gst::event::FlushStop::builder(true).build());
+            let _ = cleanup_pipeline.set_state(gst::State::Null);
+        });
+
+        // If the deadlock leaves non-daemon GStreamer threads parked forever,
+        // the harness cannot report this thread's panic (process never exits).
+        // A watchdog force-exits with a non-zero code shortly after the assert
+        // would have run, so a hang still surfaces as a test-run failure. It
+        // is defused once cleanup completes, so a passing run cannot kill
+        // other tests still executing in this process.
+        let defused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        std::thread::spawn({
+            let defused = defused.clone();
+            move || {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                if defused.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                eprintln!(
+                    "fimagedec flush deadlock watchdog: process wedged, forcing exit"
+                );
+                std::process::exit(101);
+            }
+        });
+
+        let deadlocked = returned.is_err();
+        assert!(
+            !deadlocked,
+            "FlushStart on the sink pad did not return within 5s: the handler \
+             deadlocked joining the decode task, which is blocked in \
+             srcpad.push() against a prerolled sync=true sink that only the \
+             not-yet-forwarded FlushStart could unblock"
+        );
+
+        // Passing path only: wait out cleanup so teardown is observed
+        // complete, then stand down the watchdog.
+        let _ = cleanup.join();
+        defused.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
