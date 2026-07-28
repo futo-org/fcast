@@ -168,6 +168,17 @@ struct QueueState {
     autoplay: bool,
 }
 
+/// A gapless pre-arm in flight: the next autoplay queue item is prepared on
+/// the live pipeline (`Player::prepare_next`) and activates at the current
+/// item's drain with no teardown, preroll, or pipeline EOS in between.
+struct GaplessPrearm {
+    /// The generation the prepared item adopts at activation (validates the
+    /// GaplessActivated event).
+    generation: u64,
+    /// The queue index the receiver advances to at activation.
+    next_index: usize,
+}
+
 fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
     use image::DownloadImageError as E;
     match err {
@@ -418,6 +429,18 @@ pub struct Application {
     /// selecting a neighbor serves from memory (see `queue_cache`).
     queue_cache: queue_cache::Cache,
     queue_prefetcher: queue_cache::Prefetcher,
+    /// A gapless pre-arm in flight (see [`GaplessPrearm`]). Armed from the
+    /// progress tick near the current item's end, consumed by
+    /// GaplessActivated, cancelled by seeks, speed changes, queue
+    /// mutations, and anything that replaces playback.
+    gapless_prearm: Option<GaplessPrearm>,
+    /// The media item id whose pre-arm FAILED: no re-arm for the same item
+    /// (each progress tick would otherwise retry into the same failure).
+    /// The ordinary end-of-stream advance owns that transition instead.
+    gapless_blocked_item: Option<MediaItemId>,
+    /// Kill switch: FCAST_NO_GAPLESS=1 turns the pre-arm off and every
+    /// autoplay advance goes through the ordinary EOS-then-load path.
+    gapless_enabled: bool,
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     companion_ctx: CompanionContext,
@@ -691,6 +714,9 @@ impl Application {
             image_decoder,
             queue_cache: queue_cache::Cache::new(),
             queue_prefetcher,
+            gapless_prearm: None,
+            gapless_blocked_item: None,
+            gapless_enabled: !std::env::var("FCAST_NO_GAPLESS").is_ok_and(|v| v == "1"),
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
                 inhibit_screensaver::Options {
                     app_reverse_domain: "org.fcast.receiver".to_owned(),
@@ -1018,6 +1044,11 @@ impl Application {
         preserve_playlist: PreservePlaylist,
     ) {
         self.current_duration = None;
+        // Playback is being replaced: any pending gapless pre-arm targets
+        // media that is going away (the player's load reset drops the
+        // prepared input; this clears the bookkeeping).
+        self.gapless_prearm = None;
+        self.player.clear_pending_gapless();
         // Parked subtitle adds and seeks target the media that is going
         // away. (The player's own per-load state, the text-restore dance,
         // held seeks, parked deselects, is reset by `Player::stop` below.)
@@ -1708,6 +1739,9 @@ impl Application {
         debug!(?index, "Selecting queue item");
         queue.current_idx = index;
 
+        // An explicit selection replaces any pending gapless pre-arm.
+        self.cancel_gapless_prearm();
+
         // External subtitles are per-item, don't carry them over to the next.
         if let Some(media) = self.current_media.as_mut() {
             media.clear_external_subtitles();
@@ -1763,6 +1797,129 @@ impl Application {
                 serialized_msg: fcast_protocol::v4::MessageBuilder::new()
                     .queue_select(v4::QueuePosition::Index(next as u8)),
             }));
+        }
+    }
+
+    /// Time before the current item's end at which the next autoplay item
+    /// is pre-armed on the live pipeline. Comfortably past the pipeline's
+    /// buffered tail (multiqueue plus chain queues) and the next item's
+    /// parse time, and early enough that short clips pre-arm on their first
+    /// progress tick.
+    const GAPLESS_PREARM_MARGIN: gst::ClockTime = gst::ClockTime::from_seconds(6);
+
+    /// Whether a queue item can be the target of a gapless pre-arm: plain
+    /// progressive A/V only. Per-item start/speed/volume overrides need a
+    /// real load (they apply in PAUSED), images never post EOS (fimagedec
+    /// parks stills and loops animations), adaptive and live containers
+    /// cannot ride a prepared input.
+    fn gapless_eligible(item: &QueueItem) -> bool {
+        item.time.is_none()
+            && item.speed.is_none()
+            && item.volume.is_none()
+            && !item.content_type.starts_with("image/")
+            && queue_cache::cacheable_container(&item.content_type)
+    }
+
+    /// Pre-arm the next autoplay queue item near the current item's end
+    /// (runs from the progress tick): build its source (cache-aware, same
+    /// path a load takes) and hand it to the player, which links it into
+    /// the live pipeline and switches at the drain. The advance itself is
+    /// handled by the GaplessActivated event.
+    fn maybe_prearm_gapless(&mut self) {
+        if !self.gapless_enabled || self.gapless_prearm.is_some() {
+            return;
+        }
+        if self.gapless_blocked_item == Some(self.current_media_item_id) {
+            return;
+        }
+        if self.image_via_player || self.is_loading_media || !self.have_media_info {
+            return;
+        }
+        let Some(next) = self.autoplay_next_index() else {
+            return;
+        };
+        let (current_show_duration, next_item) = {
+            let Some(MediaSource::Queue(queue)) = self.current_media.as_ref().map(|m| &m.source)
+            else {
+                return;
+            };
+            let Some(current) = queue.items.get(queue.current_idx as usize) else {
+                return;
+            };
+            let Some(next_item) = queue.items.get(next) else {
+                return;
+            };
+            (current.show_duration, next_item.clone())
+        };
+        // A playback_duration item advances through its timer with a normal
+        // load cutting the media mid-stream; a pre-arm would fight it.
+        if current_show_duration.is_some() {
+            return;
+        }
+        if !Self::gapless_eligible(&next_item) {
+            return;
+        }
+        // Only near the end of a finite item.
+        let Some(position) = self.player.get_position() else {
+            return;
+        };
+        let Some(duration) = self.current_duration.filter(|d| !d.is_zero()) else {
+            return;
+        };
+        if position + Self::GAPLESS_PREARM_MARGIN < duration {
+            return;
+        }
+
+        info!(next, "Gapless: pre-arming the next queue item");
+        let input = self.build_gapless_source(
+            &next_item.content_type,
+            next_item.url.clone(),
+            next_item.headers.clone(),
+        );
+        let generation = self.player.prepare_next(input);
+        self.gapless_prearm = Some(GaplessPrearm {
+            generation,
+            next_index: next,
+        });
+    }
+
+    /// Like [`build_media_source`](Self::build_media_source) but for a
+    /// gapless pre-arm: a fully cached item still goes through urisourcebin
+    /// with its bytes injected as a preloaded head covering the WHOLE
+    /// resource, instead of the bare appsrc bytes source. A prepared
+    /// input's pads sit unlinked-and-blocked until the swap, the topology
+    /// uridecodebin3's own gapless uses, which the urisourcebin path
+    /// handles and the appsrc bytes source does not (its chain dies
+    /// not-negotiated against the blocked pads). The head covers the full
+    /// resource, so playback still never touches the network.
+    fn build_gapless_source(
+        &mut self,
+        container: &str,
+        url: String,
+        headers: Option<HashMap<String, String>>,
+    ) -> player::MediaInput {
+        let head = self
+            .queue_cache_entry(&url, container)
+            .map(|item| media_source::PreloadedHead {
+                bytes: item.bytes,
+                total: item.total,
+            });
+        match media_source::build_uri_source_with_head(&url, headers, head) {
+            Ok(element) => player::MediaInput::Element(element),
+            Err(err) => {
+                error!(?err, container, "Failed to build the gapless source element");
+                player::MediaInput::Uri(url)
+            }
+        }
+    }
+
+    /// Drop a pending gapless pre-arm (seek, speed change, queue mutation,
+    /// anything that invalidates "the current item plays to its end and the
+    /// next one follows"). A no-op when nothing is pre-armed.
+    fn cancel_gapless_prearm(&mut self) {
+        if self.gapless_prearm.take().is_some() {
+            debug!("Cancelling the gapless pre-arm");
+            self.player.cancel_prepared();
         }
     }
 
@@ -1835,6 +1992,9 @@ impl Application {
 
         queue.items.remove(idx);
 
+        // Indices shifted (and the pre-armed item itself may be gone).
+        self.cancel_gapless_prearm();
+
         self.relay_to_other_senders(
             origin,
             fcast_protocol::v4::MessageBuilder::new().queue_remove(position),
@@ -1890,6 +2050,9 @@ impl Application {
         queue
             .items
             .insert(idx, QueueItem::from_flat(&insert.item()));
+
+        // Indices shifted; the pre-armed item may no longer be the next.
+        self.cancel_gapless_prearm();
 
         if let Some(relay_msg) =
             fcast_protocol::v4::MessageBuilder::new().from_queue_insert_stripped(insert)
@@ -2032,6 +2195,9 @@ impl Application {
             }
             Operation::Seek(time) => {
                 if self.is_playing() {
+                    // Seeking away from the end invalidates "plays to its
+                    // end, next item follows".
+                    self.cancel_gapless_prearm();
                     if !self.player.seekable_known {
                         // Tracks are advertised well before the pipeline can answer the seekability
                         // query, in that window the duration for the range check is unknown too,
@@ -2071,6 +2237,9 @@ impl Application {
                     debug!(rate, "Speed unchanged; re-emitting the confirmation");
                     self.broadcast_rate(rate)?;
                 } else {
+                    // The rate change is a flushing seek; the pre-arm's
+                    // drain assumptions no longer hold.
+                    self.cancel_gapless_prearm();
                     self.player.set_rate(rate);
                 }
             }
@@ -2812,6 +2981,9 @@ impl Application {
                 | player::PlayerEvent::RequestState(_)
                 | player::PlayerEvent::ClockLost
                 | player::PlayerEvent::StreamTagsUpdated
+                // Stamped with the PREPARED (future) generation by design;
+                // its handler validates it against the pre-arm bookkeeping.
+                | player::PlayerEvent::GaplessActivated
         )
     }
 
@@ -2836,6 +3008,11 @@ impl Application {
         }
         match event {
             player::PlayerEvent::EndOfStream => {
+                // A pipeline EOS while pre-armed means the gapless handoff
+                // missed (or was cancelled after the drain): the ordinary
+                // advance below owns the transition, drop the pre-arm.
+                self.cancel_gapless_prearm();
+
                 self.player.end_of_stream_reached();
 
                 debug!("Player reached EOS");
@@ -3193,6 +3370,111 @@ impl Application {
                     info.height,
                     if info.animated { ", animated" } else { "" }
                 );
+            }
+            player::PlayerEvent::GaplessActivated => {
+                // Stamped with the PREPARED generation (excluded from the
+                // load-scoped guard above); validate against the pre-arm.
+                let Some(generation) = generation else {
+                    return Ok(());
+                };
+                let matching = self
+                    .gapless_prearm
+                    .as_ref()
+                    .is_some_and(|prearm| prearm.generation == generation);
+                if !matching {
+                    // A stale activation (superseded by a later load) is a
+                    // harmless straggler. One AHEAD of the player means the
+                    // pipeline switched while the application had dropped
+                    // the pre-arm (a cancel raced the swap and lost):
+                    // reload the item the application believes is current
+                    // so pipeline and state agree again.
+                    if self
+                        .player
+                        .dbg_generation()
+                        .is_some_and(|expected| generation > expected)
+                    {
+                        warn!(
+                            generation,
+                            "Gapless activation without a matching pre-arm: reloading to resync"
+                        );
+                        self.gapless_prearm = None;
+                        self.player.clear_pending_gapless();
+                        self.load_media();
+                    } else {
+                        debug!(generation, "Ignoring a stale gapless activation");
+                    }
+                    return Ok(());
+                }
+                let prearm = self.gapless_prearm.take().expect("checked above");
+                if !self.player.adopt_gapless_generation(generation) {
+                    warn!(generation, "Ignoring a stale gapless activation");
+                    return Ok(());
+                }
+
+                info!(
+                    index = prearm.next_index,
+                    "Gapless: the next queue item is playing"
+                );
+
+                // The queue advances exactly like play_queue_item, minus
+                // the load (the pipeline already switched).
+                if let Some(media) = self.current_media.as_mut() {
+                    media.clear_external_subtitles();
+                }
+                let title = match self.queue_mut() {
+                    Some(queue) => {
+                        queue.current_idx = prearm.next_index as u8;
+                        queue
+                            .items
+                            .get(prearm.next_index)
+                            .and_then(|item| item.title.clone())
+                    }
+                    None => None,
+                };
+
+                // Per-item view state rolls like a fresh load. The new
+                // item's collection follows this event and re-runs
+                // media_loaded_successfully through the usual
+                // have_media_info gate (arming its playback_duration
+                // timer among other things).
+                self.current_media_item_id += 1;
+                self.have_media_info = false;
+                self.current_duration = None;
+                self.inspector_container = None;
+                self.inspector_image = String::new();
+                self.have_media_title = title.is_some();
+                if let Some(title) = title {
+                    self.gui.set_media_title(title);
+                }
+
+                // Receiver-initiated selection: every sender hears about it
+                // (the same broadcast the EOS advance sends).
+                if self.should_broadcast() {
+                    self.broadcast_update(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::Broadcast {
+                            serialized_msg: fcast_protocol::v4::MessageBuilder::new()
+                                .queue_select(v4::QueuePosition::Index(
+                                    prearm.next_index as u8,
+                                )),
+                        },
+                    ));
+                }
+                self.sync_queue_cache();
+            }
+            player::PlayerEvent::GaplessPrepareFailed { generation } => {
+                if self
+                    .gapless_prearm
+                    .as_ref()
+                    .is_some_and(|prearm| prearm.generation == generation)
+                {
+                    debug!(
+                        generation,
+                        "Gapless pre-arm failed; the end-of-stream advance loads the item normally"
+                    );
+                    self.gapless_prearm = None;
+                    self.gapless_blocked_item = Some(self.current_media_item_id);
+                    self.player.clear_pending_gapless();
+                }
             }
         }
 
@@ -4226,6 +4508,7 @@ impl Application {
                     if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
                         self.send_v4_progress_updates();
+                        self.maybe_prearm_gapless();
                     }
                 }
                 session = listener_stream.select_next_some() => {

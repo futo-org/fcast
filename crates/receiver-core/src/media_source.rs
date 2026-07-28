@@ -238,8 +238,14 @@ pub fn build_airplay_mirror_source(mirror_uri: &str) -> Result<gst::Element> {
 /// each dynamic source pad, spin up a `parsebin` and ghost its parsed output
 /// out of the returned bin. Used for the WHEP/fwebrtc RTP sources, which
 /// today reach decodebin3 through urisourcebin's internal parsebin.
+///
+/// `name` is a PREFIX: the bin gets a unique suffix. Two of these can share
+/// one pipeline (a gapless pre-arm adds the next item's source while the
+/// current one still plays), and GStreamer rejects duplicate child names.
 fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> {
-    let bin = gst::Bin::builder().name(name).build();
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bin = gst::Bin::builder().name(format!("{name}-{seq}")).build();
     bin.add(&source).context("adding source to the parse bin")?;
     source.connect_pad_added({
         let bin = bin.downgrade();

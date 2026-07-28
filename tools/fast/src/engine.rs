@@ -381,6 +381,15 @@ pub struct Engine<'a> {
     /// or the state of a legacy `PlaybackUpdate` mapped onto the v4 enum
     /// (so `AwaitPlaybackState` works on every protocol version).
     last_state_v4: Option<v4::flat::PlaybackState>,
+    /// Every v4 playback state relayed so far, in order, for the scoped
+    /// no-state-between assertions (`MarkPlaybackStates` +
+    /// `AssertNoPlaybackStateSinceMark`).
+    state_log: Vec<v4::flat::PlaybackState>,
+    /// Index into `state_log` set by the most recent `MarkPlaybackStates`.
+    state_mark: usize,
+    /// The queue index of the most recent `QueueItemSelected` the receiver
+    /// broadcast to this sender (e.g. an autoplay or gapless advance).
+    last_queue_selected: Option<u8>,
 }
 
 struct CompanionResource {
@@ -431,6 +440,9 @@ impl<'a> Engine<'a> {
             tls_upgraded: false,
             track_ids: Default::default(),
             last_track_state: [None; 3],
+            state_log: Vec::new(),
+            state_mark: 0,
+            last_queue_selected: None,
             second_track_ids: Default::default(),
             second_last_track_state: [None; 3],
             last_state_v4: None,
@@ -776,9 +788,20 @@ impl<'a> Engine<'a> {
                         .ok_or_else(|| anyhow!("malformed PlaybackStateChanged"))?
                         .state();
                     self.last_state_v4 = Some(got);
+                    self.state_log.push(got);
                     if self.expect.state_v4 == Some(got) {
                         self.expect.state_v4 = None;
                         info!("v4 playback state confirmed: {got:?}");
+                    }
+                    FlatAction::None
+                }
+                Message::QueueItemSelected => {
+                    let selected = packet
+                        .payload_as_queue_item_selected()
+                        .ok_or_else(|| anyhow!("malformed QueueItemSelected"))?;
+                    if let Some(index) = selected.position_as_index() {
+                        debug!(index = index.index(), "QueueItemSelected broadcast");
+                        self.last_queue_selected = Some(index.index());
                     }
                     FlatAction::None
                 }
@@ -1104,6 +1127,21 @@ impl<'a> Engine<'a> {
             }
             Step::AwaitPlaybackState(expected) => {
                 self.await_playback_state(*expected).await?;
+            }
+            Step::MarkPlaybackStates => {
+                self.state_mark = self.state_log.len();
+                debug!(mark = self.state_mark, "playback state mark set");
+            }
+            Step::AssertNoPlaybackStateSinceMark(state) => {
+                let since = &self.state_log[self.state_mark.min(self.state_log.len())..];
+                ensure!(
+                    !since.contains(state),
+                    "playback state {state:?} was relayed since the mark: {since:?}"
+                );
+                info!(?state, "no such playback state since the mark");
+            }
+            Step::AwaitQueueSelect { index } => {
+                self.await_queue_select(*index).await?;
             }
             Step::OpenSecondSender => self.open_second_sender().await?,
             Step::SetSecondSenderInterval { millis } => {
@@ -1853,6 +1891,28 @@ impl<'a> Engine<'a> {
                 now < deadline,
                 "playback state never settled at {expected:?}; last relayed was {:?}",
                 self.last_state_v4
+            );
+            let wait = Duration::from_millis(100).min(deadline - now);
+            if let Ok(pkt) = tokio::time::timeout(wait, self.conn.recv()).await {
+                self.handle_incoming(pkt?).await?;
+            }
+        }
+    }
+
+    /// Wait for the receiver to broadcast a `QueueItemSelected` naming
+    /// `index` (a receiver-initiated advance: autoplay or gapless).
+    async fn await_queue_select(&mut self, index: u8) -> Result<()> {
+        let deadline = Instant::now() + MAX_SETTLE;
+        loop {
+            if self.last_queue_selected == Some(index) {
+                info!(index, "queue selection broadcast received");
+                return Ok(());
+            }
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "QueueItemSelected({index}) never arrived; last was {:?}",
+                self.last_queue_selected
             );
             let wait = Duration::from_millis(100).min(deadline - now);
             if let Ok(pkt) = tokio::time::timeout(wait, self.conn.recv()).await {

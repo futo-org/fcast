@@ -231,6 +231,19 @@ pub enum Step {
     /// playsink finishes its un-signalled text-branch churn, too variable
     /// for a fixed sleep followed by a point-in-time assert.
     AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState),
+    /// Mark the current position in the relayed playback-state log, scoping
+    /// a later `AssertNoPlaybackStateSinceMark`.
+    MarkPlaybackStates,
+    /// No `PlaybackStateChanged` with this state may have been relayed
+    /// since the last `MarkPlaybackStates`. The gapless assertion: a
+    /// seamless queue advance broadcasts neither Ended nor Idle between
+    /// the items.
+    AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState),
+    /// Wait for a receiver-initiated `QueueItemSelected` broadcast naming
+    /// this queue index (an autoplay or gapless advance).
+    AwaitQueueSelect {
+        index: u8,
+    },
     OpenSecondSender,
     SetSecondSenderInterval {
         millis: u64,
@@ -409,6 +422,7 @@ cases!(
     queue_select_prefetched_v4,
     queue_select_prefetched_video_v4,
     queue_autoplay_v4,
+    gapless_queue_autoplay_v4,
     multi_sender_load_broadcast_v4,
     multi_sender_load_metadata_broadcast_video_v4,
     multi_sender_load_metadata_broadcast_image_v4,
@@ -2864,6 +2878,48 @@ define_test_case!(
         // Item 0 (1 video, 1 audio) ends on its own after ~2s and the
         // receiver advances to item 1 (1 video, 2 audio, 2 subtitles)
         // without any sender involvement.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
+    ]
+);
+
+// GAPLESS autoplay: the receiver pre-arms the next item on the LIVE
+// pipeline near the current item's end (fcastplaybin::prepare_next) and
+// switches at the drain with no teardown, no re-preroll, and no pipeline
+// EOS between the items. Observable protocol difference from the plain
+// autoplay case above: the advance broadcasts a receiver-initiated
+// QueueItemSelected and NO Ended (and no Idle) state ever appears between
+// the items. Item shapes mirror queue_autoplay_v4 so the track-shape
+// detection carries over.
+define_test_case!(
+    gapless_queue_autoplay_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/short_clip.mkv", 0, "video/x-matroska"),
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+            autoplay: true,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        Step::MarkPlaybackStates,
+        // The switch is announced by the receiver-initiated selection of
+        // item 1 (the 2s clip drains into the pre-armed next input).
+        Step::AwaitQueueSelect { index: 1 },
+        // The gapless property itself: nothing ended in between.
+        Step::AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState::Ended),
+        Step::AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState::Idle),
+        // Item 1's distinct track shape (1 video, 2 audio, 2 subtitles)
+        // proves it is really the one playing.
         Step::AwaitTracks {
             video: 1,
             audio: 2,
