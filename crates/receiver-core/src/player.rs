@@ -191,6 +191,20 @@ pub enum PlayerEvent {
     /// fimagedec announced what the current load decodes to: the load is an
     /// image (still or animation) rendered through the video pipeline.
     ImageStream(ImageStreamInfo),
+    /// A pre-armed next item ([`Player::prepare_next`]) went live: the
+    /// current item drained and the pipeline switched gaplessly. Stamped
+    /// with the PREPARED generation; the application validates it against
+    /// its pre-arm bookkeeping and adopts it
+    /// ([`Player::adopt_gapless_generation`]). The new item's collection
+    /// follows under the same generation.
+    GaplessActivated,
+    /// A pre-armed next item failed before activating; fcastplaybin already
+    /// dropped it and the current item plays on. The application clears its
+    /// pre-arm bookkeeping and the item loads through the ordinary
+    /// end-of-stream advance instead.
+    GaplessPrepareFailed {
+        generation: u64,
+    },
 }
 
 /// Parsed form of fimagedec's "fcast-image-stream" announcement.
@@ -295,6 +309,10 @@ pub struct Player {
     /// (returned by `fcastplaybin::load_async`); `None` when stopped. The
     /// application drops load-scoped events from any other generation.
     expected_generation: Option<u64>,
+    /// The generation of a pending gapless pre-arm
+    /// ([`Player::prepare_next`]), adopted as `expected_generation` when
+    /// its activation arrives.
+    pending_gapless: Option<u64>,
     pub streams: Vec<Stream>,
     /// The applied (or optimistically in-flight) selection, keyed by stream
     /// id. Never index-based: indices exist only at the protocol/GUI edge.
@@ -435,6 +453,7 @@ impl Player {
             msg_tx,
             desired_transport: RunningState::Playing,
             expected_generation: None,
+            pending_gapless: None,
             selected: TrackSelection::default(),
             seekable: false,
             seekable_known: false,
@@ -508,6 +527,8 @@ impl Player {
                 height: s.get::<i32>("height").unwrap_or(0),
                 animated: s.get::<bool>("animated").unwrap_or(false),
             }),
+            E::PreparedActivated => PlayerEvent::GaplessActivated,
+            E::PreparedFailed { generation } => PlayerEvent::GaplessPrepareFailed { generation },
             E::Warning(message) => PlayerEvent::Warning(message),
         };
         msg_tx.player(event, Some(generation));
@@ -635,6 +656,9 @@ impl Player {
         self.seekable_known = false;
         self.volume_confirm_in_flight = false;
         self.expected_generation = None;
+        // A load or stop supersedes any pending pre-arm (fcastplaybin drops
+        // the prepared input in its own reset).
+        self.pending_gapless = None;
         // A volume queued behind an in-flight confirmation must not be
         // stranded by the load (volume is not item-scoped): apply it now
         // that nothing is in flight.
@@ -649,6 +673,48 @@ impl Player {
     /// load. Everything else is a superseded load's straggler.
     pub fn is_event_current(&self, generation: u64) -> bool {
         self.expected_generation == Some(generation)
+    }
+
+    /// Pre-arm the next item on the live pipeline for a gapless transition
+    /// (see `fcastplaybin::prepare_next_async`). Returns the generation the
+    /// item carries once it activates; the application keeps it to validate
+    /// the `GaplessActivated` event.
+    pub fn prepare_next(&mut self, source: MediaInput) -> u64 {
+        let generation = self.fcast.prepare_next_async(source);
+        self.pending_gapless = Some(generation);
+        generation
+    }
+
+    /// Drop a pending pre-armed next item (seek away from the end, queue
+    /// mutation, stop). A no-op when nothing is pending.
+    pub fn cancel_prepared(&mut self) {
+        if self.pending_gapless.take().is_some() {
+            self.fcast.cancel_prepared_async();
+        }
+    }
+
+    /// Adopt a gapless activation: events from `generation` are the current
+    /// item's from here on. Per-item view state resets like a load's
+    /// (selection re-seeds from the incoming collection, seekability is
+    /// re-queried); transport, volume, and the state machine carry over
+    /// untouched, the pipeline never left steady playback. Returns false
+    /// for an activation that does not match the pending pre-arm (stale).
+    pub fn adopt_gapless_generation(&mut self, generation: u64) -> bool {
+        if self.pending_gapless != Some(generation) {
+            return false;
+        }
+        self.pending_gapless = None;
+        self.expected_generation = Some(generation);
+        self.selected = TrackSelection::default();
+        self.seekable = false;
+        self.seekable_known = false;
+        true
+    }
+
+    /// Clear the pre-arm bookkeeping without touching the pipeline (the
+    /// prepare already failed or was consumed elsewhere).
+    pub fn clear_pending_gapless(&mut self) {
+        self.pending_gapless = None;
     }
 
     /// Load a new main source (the crate resets to READY and wires it into
