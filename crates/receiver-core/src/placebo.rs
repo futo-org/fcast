@@ -122,10 +122,19 @@ impl RenderFrameInfo {
         let color_depth = info.comp_depth(0) as i32;
         let bit_shift = format_info.shift()[0] as i32;
 
+        // GStreamer raw video with an alpha channel is straight
+        // (non-premultiplied) alpha, which is what fimagedec's RGBA images
+        // and animations carry. Marking it NONE would make libplacebo ignore
+        // the channel and render semi-transparent regions at full color.
+        let alpha = if format_info.has_alpha() {
+            pl_alpha_mode::PL_ALPHA_INDEPENDENT
+        } else {
+            pl_alpha_mode::PL_ALPHA_NONE
+        };
         let color_repr = pl_color_repr {
             sys: color_system,
             levels,
-            alpha: pl_alpha_mode::PL_ALPHA_NONE,
+            alpha,
             bits: pl_bit_encoding {
                 sample_depth,
                 color_depth,
