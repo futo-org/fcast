@@ -1145,7 +1145,27 @@ impl Application {
                     self.broadcast_update(ReceiverToSenderMessage::Event { msg });
                 }
             }
-            MediaSource::Queue(_) => (),
+            MediaSource::Queue(queue) => {
+                // The spec'd playback_duration: when it elapses the item is
+                // "finished", which is what autoplay advances on. Images and
+                // animations never post EOS (fimagedec parks stills and loops
+                // animations), so a photo slideshow only ever advances through
+                // this timer. Items without a duration keep playing until EOS
+                // (or, for images, until a sender selects something else).
+                if queue.autoplay
+                    && let Some(show_duration) = queue
+                        .items
+                        .get(queue.current_idx as usize)
+                        .and_then(|item| item.show_duration)
+                {
+                    let msg_tx = self.msg_tx.clone();
+                    let id = self.current_media_item_id;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
+                        msg_tx.send(Message::MediaItemFinish(id));
+                    });
+                }
+            }
             MediaSource::Raop | MediaSource::AirPlayMirror { .. } => (),
         }
     }
@@ -1211,8 +1231,12 @@ impl Application {
             });
         }
 
-        // Special case for when there's a google cast sender connected
-        if self.updates_tx.receiver_count() == 0 {
+        // Special case for when there's a google cast sender connected.
+        // An autoplay queue with a next item is exempt: the receiver-side
+        // advance (`maybe_autoplay_advance`, which runs after this in the
+        // EOS path) must keep working after the last sender disconnects,
+        // that is the fire-and-forget use case autoplay exists for.
+        if self.updates_tx.receiver_count() == 0 && self.autoplay_next_index().is_none() {
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
             self.current_media = None;
         }
@@ -1706,22 +1730,29 @@ impl Application {
     /// immediately). Senders are told through a broadcast QueueItemSelected
     /// so their UIs follow. Runs from the EOS handler, after the Ended
     /// broadcast.
-    fn maybe_autoplay_advance(&mut self) {
-        let Some(media) = self.current_media.as_ref() else {
-            return;
-        };
-        let origin = media.origin;
+    /// The index the receiver should advance to by itself: only meaningful
+    /// for an autoplay queue whose current item has a successor. Also gates
+    /// the `media_ended` teardown, so an unattended autoplay queue is not
+    /// wiped between items.
+    fn autoplay_next_index(&self) -> Option<usize> {
+        let media = self.current_media.as_ref()?;
         let MediaSource::Queue(queue) = &media.source else {
-            return;
+            return None;
         };
         if !queue.autoplay {
-            return;
+            return None;
         }
         let next = queue.current_idx as usize + 1;
-        if next >= queue.items.len() {
-            debug!("Autoplay queue reached its end");
+        (next < queue.items.len()).then_some(next)
+    }
+
+    fn maybe_autoplay_advance(&mut self) {
+        let Some(origin) = self.current_media.as_ref().map(|m| m.origin) else {
             return;
-        }
+        };
+        let Some(next) = self.autoplay_next_index() else {
+            return;
+        };
 
         info!(next, "Autoplay: advancing to the next queue item");
         self.play_queue_item(origin, v4::QueuePosition::Index(next as u8), false);
@@ -1921,6 +1952,19 @@ impl Application {
                             return;
                         };
                         let items = queue.items();
+                        // The spec caps a queue at 2^8 items (every queue
+                        // position on the wire is a ubyte). Reject oversized
+                        // queues outright: indices past 255 are unaddressable
+                        // and the u8 bookkeeping (e.g. the autoplay advance)
+                        // would wrap back to item 0.
+                        if items.len() > u8::MAX as usize + 1 {
+                            error!(
+                                len = items.len(),
+                                "Queue exceeds the spec's 256 item cap"
+                            );
+                            self.send_error(origin, ErrorKind::MalformedBody);
+                            return;
+                        }
                         let mut queue_items = Vec::new();
                         for item in items {
                             queue_items.push(QueueItem::from_flat(&item));
@@ -3955,15 +3999,24 @@ impl Application {
                 let Some(media) = &self.current_media else {
                     return Ok(false);
                 };
-                let MediaSource::Playlist { content, index } = &media.source else {
-                    debug!(id, "Ignoring media item finish event");
-                    return Ok(false);
-                };
 
                 if id != self.current_media_item_id {
                     debug!(id, "Ignoring media item finish event");
                     return Ok(false);
                 }
+
+                // A queue item's playback_duration elapsed: the item is
+                // finished (the spec's autoplay trigger; the timer is only
+                // armed for autoplay queues, see media_loaded_successfully).
+                if matches!(media.source, MediaSource::Queue(_)) {
+                    self.maybe_autoplay_advance();
+                    return Ok(false);
+                }
+
+                let MediaSource::Playlist { content, index } = &media.source else {
+                    debug!(id, "Ignoring media item finish event");
+                    return Ok(false);
+                };
 
                 let next_idx = index + 1;
                 if next_idx < content.items.len() {
