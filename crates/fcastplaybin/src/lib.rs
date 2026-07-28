@@ -655,6 +655,13 @@ struct SwapState {
     /// The relink surgery ran; remaining block probes just remove
     /// themselves and let their data flow.
     swapped: bool,
+    /// The output-side hold dropped an EOS while this swap was pending: the
+    /// current item's end has been consumed for good, so a cancel must
+    /// synthesize it or the caller never learns the item ended. An input
+    /// pushing EOS into decodebin3 (`drained`) is NOT that: until the EOS
+    /// re-emerges at the outputs it still flows normally once the hold
+    /// disarms.
+    dropped_eos: bool,
 }
 
 #[derive(Default)]
@@ -793,6 +800,13 @@ struct Inner {
     /// data plane's group id is the reliable switch signal (uridecodebin3
     /// tracks output activation the same way).
     active_group: Mutex<Option<gst::GroupId>>,
+    /// The group id the last gapless activation RETIRED (the previous
+    /// item's). Output pads still carrying it have their EOS dropped even
+    /// after the activation cleared the swap gate: the selection-side
+    /// activation trigger can fire while the old item's tail is still
+    /// draining out of decodebin3, and an old EOS reaching the sinks there
+    /// can end the pipeline between items. Reset per load.
+    retired_group: Mutex<Option<gst::GroupId>>,
 }
 
 /// An RAII hold on [`Inner::route_gate`]. Dropping it releases the gate
@@ -1057,6 +1071,7 @@ impl FcastPlaybin {
             prepared: Mutex::new(None),
             swap_gate: SwapGate::default(),
             active_group: Mutex::new(None),
+            retired_group: Mutex::new(None),
         });
 
         Inner::install_core(&inner)?;
@@ -1195,6 +1210,7 @@ impl FcastPlaybin {
         // A fresh core outputs a fresh group; the first STREAM_START
         // records it (see `Inner::active_group`).
         *inner.active_group.lock() = None;
+        *inner.retired_group.lock() = None;
         // Track desires are per-item: the new load starts on the pipeline's
         // own defaults.
         inner.selection.lock().reset();
@@ -1600,6 +1616,13 @@ impl FcastPlaybin {
     /// emitted and playback of the current item is unaffected: its
     /// end-of-stream then arrives normally and the caller advances through
     /// its ordinary path.
+    ///
+    /// The same failure path also covers prepares the crate REFUSES or
+    /// demotes on its own: external subtitles attached to the current item
+    /// (a swap would carry them into the next item's collections), a
+    /// prepare arriving while a performed swap is mid-activation, and a
+    /// prepared item that lacks a stream type the current item is playing
+    /// (the abandoned sink would block the next end-of-stream forever).
     ///
     /// Returns the generation the prepared item will carry once active.
     pub fn prepare_next_async(&self, input: MediaInput) -> u64 {
@@ -2278,24 +2301,26 @@ impl Inner {
     /// new streams-selected, so the data plane is the reliable signal).
     fn note_output_stream_start(&self, group: Option<gst::GroupId>) {
         let Some(group) = group else { return };
-        {
+        let retired = {
             let mut active = self.active_group.lock();
             if *active == Some(group) {
                 return;
             }
             let first_of_load = active.is_none();
+            let retired = *active;
             *active = Some(group);
             if first_of_load {
                 return;
             }
-        }
+            retired
+        };
         let prepared = self.prepared.lock().take();
         if let Some(prepared) = prepared {
             info!(
                 generation = prepared.generation,
                 "gapless activation: the prepared item's group reached the output"
             );
-            self.activate_prepared_now(prepared);
+            self.activate_prepared_now(prepared, retired);
         }
     }
 
@@ -2322,7 +2347,10 @@ impl Inner {
             generation = prepared.generation,
             "gapless activation: the prepared item's streams are selected"
         );
-        self.activate_prepared_now(prepared);
+        // This trigger fires input-side, BEFORE the output pads flip to the
+        // new group: the still-active group is the one being retired.
+        let retired = *self.active_group.lock();
+        self.activate_prepared_now(prepared, retired);
     }
 
     /// The activation itself: adopt the prepared generation NOW, on the
@@ -2331,15 +2359,29 @@ impl Inner {
     /// reset; emit [`PlaybinEvent::PreparedActivated`] and the held-back
     /// collection (activation-then-collection, a fresh load's order); and
     /// queue the input surgery for the worker.
-    fn activate_prepared_now(&self, prepared: PreparedNext) {
+    fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
         self.generation
             .store(prepared.generation, Ordering::SeqCst);
+
+        // Output pads still carrying the previous item's group keep their
+        // EOS dropped until they flip or die (see `Inner::retired_group`):
+        // the selection trigger can run this while the old tail is still
+        // draining.
+        *self.retired_group.lock() = retired;
 
         // The swap window closes: the output EOS hold disarms (the new
         // item's own end must flow) while `swapped` stays set so straggler
         // block probes on the now-live input self-remove. The next prepare
-        // re-seeds the whole gate.
-        self.swap_gate.state.lock().pending = None;
+        // re-seeds the whole gate. Guarded by generation: a concurrent
+        // prepare for the item after this one may have re-armed the gate
+        // already, and ITS pending must survive this activation.
+        {
+            let mut state = self.swap_gate.state.lock();
+            if state.pending == Some(prepared.generation) {
+                state.pending = None;
+                state.dropped_eos = false;
+            }
+        }
 
         // Per-item state rolls exactly like a load's reset.
         self.selection.lock().reset();
@@ -2785,8 +2827,40 @@ impl FcastPlaybin {
                     debug!(generation, "skipping a superseded prepare");
                     return;
                 }
-                // Latest wins: replace a still-pending previous prepare.
-                self.cancel_prepared();
+                // External subtitle inputs are per-item side inputs on the
+                // live core. A swap would carry them across: decodebin3
+                // keeps their streams in the (combined) collections it
+                // posts for the NEXT item, which corrupts the held-back
+                // collection and the per-item selection state. Refuse; the
+                // caller's ordinary end-of-stream advance owns that
+                // transition.
+                if inner
+                    .routing
+                    .lock()
+                    .inputs
+                    .iter()
+                    .any(|i| i.external.is_some())
+                {
+                    debug!(
+                        generation,
+                        "external subtitles attached; refusing the gapless prepare"
+                    );
+                    inner.emit(PlaybinEvent::PreparedFailed { generation });
+                    return;
+                }
+                // Latest wins: replace a still-pending previous prepare. A
+                // swap already PERFORMED cannot unwind: its activation is
+                // imminent, and arming over it would hand the activation
+                // this prepare's record while the pipeline plays the other
+                // item. Refuse instead.
+                if !self.cancel_prepared() {
+                    debug!(
+                        generation,
+                        "a performed swap is activating; refusing the prepare"
+                    );
+                    inner.emit(PlaybinEvent::PreparedFailed { generation });
+                    return;
+                }
 
                 // The current item is in steady playback, so every routed
                 // pad's sticky stream-start is present: snapshot the group
@@ -2809,6 +2883,7 @@ impl FcastPlaybin {
                     pending: Some(generation),
                     drained: Inner::main_input_drained(inner),
                     swapped: false,
+                    dropped_eos: false,
                 };
 
                 let built = match input {
@@ -2831,13 +2906,20 @@ impl FcastPlaybin {
                     Err(err) => {
                         error!(?err, generation, "failed to prepare the next input");
                         // Disarm what was armed above.
-                        inner.swap_gate.abort();
+                        let aborted = inner.swap_gate.abort();
                         // A prepare failing WHILE the pipeline transitions
                         // (its error message aborts a bin's in-flight
                         // async commit) must not strand playback below the
                         // caller's target: re-commit the transition.
                         self.recommit_pipeline_state();
                         inner.emit(PlaybinEvent::PreparedFailed { generation });
+                        // The hold may have consumed the current item's
+                        // end between the arm and this failure (see
+                        // `SwapState::dropped_eos` and `cancel_prepared`).
+                        if aborted.pending.is_some() && aborted.dropped_eos {
+                            debug!("the item's end was consumed while arming: synthesizing it");
+                            inner.emit(PlaybinEvent::EndOfStream);
+                        }
                     }
                 }
             }
@@ -2873,52 +2955,62 @@ impl FcastPlaybin {
     /// prepared slot and remove its element from the pipeline. A no-op
     /// when nothing is prepared (or it already activated, which empties the
     /// slot). Worker-thread only (pipeline surgery).
-    fn cancel_prepared(&self) {
+    ///
+    /// Returns `false` when a performed swap makes cancellation impossible:
+    /// activation is imminent and must be left to finish (a caller-side
+    /// load supersedes it normally anyway). Callers arming a NEW prepare
+    /// must refuse on `false` rather than clobber the in-flight activation.
+    fn cancel_prepared(&self) -> bool {
         // Atomic against the block probe's surgery: past the swap the
         // relink is live and activation is imminent, cancelling would rip
-        // the now-active input out mid-stream. Let activation finish (a
-        // caller-side load supersedes it normally anyway).
-        let was_drained = {
+        // the now-active input out mid-stream. `pending` distinguishes the
+        // in-flight window from a long-completed activation (which leaves
+        // `swapped` set but clears `pending`).
+        let dropped_eos = {
             let mut state = self.inner.swap_gate.state.lock();
-            if state.swapped {
+            if state.swapped && state.pending.is_some() {
                 debug!("swap already performed, leaving the activation to finish");
-                return;
+                return false;
             }
             let aborted = std::mem::take(&mut *state);
             self.inner.swap_gate.cond.notify_all();
-            aborted.drained
+            aborted.pending.is_some() && aborted.dropped_eos
         };
-        let Some(prepared) = self.inner.prepared.lock().take() else {
-            return;
-        };
-        debug!(
-            generation = prepared.generation,
-            "dropping the prepared next input"
-        );
-        let input = {
-            let mut routing = self.inner.routing.lock();
-            routing
-                .inputs
-                .iter()
-                .position(|i| i.element == prepared.element)
-                .map(|idx| routing.inputs.remove(idx))
-        };
-        if let Some(input) = input {
-            Inner::remove_input(&self.inner, input);
+        if let Some(prepared) = self.inner.prepared.lock().take() {
+            debug!(
+                generation = prepared.generation,
+                "dropping the prepared next input"
+            );
+            let input = {
+                let mut routing = self.inner.routing.lock();
+                routing
+                    .inputs
+                    .iter()
+                    .position(|i| i.element == prepared.element)
+                    .map(|idx| routing.inputs.remove(idx))
+            };
+            if let Some(input) = input {
+                Inner::remove_input(&self.inner, input);
+            }
+            // A prepared input dying mid-transition can abort the
+            // pipeline's in-flight commit (see Job::PrepareNext's failure
+            // arm): re-assert it. A no-op when nothing was disturbed.
+            self.recommit_pipeline_state();
         }
-        // A prepared input dying mid-transition can abort the pipeline's
-        // in-flight commit (see Job::PrepareNext's failure arm): re-assert
-        // it. A no-op when nothing was disturbed.
-        self.recommit_pipeline_state();
-        // The current item may already have drained while the hold was
-        // armed: its EOS is gone for good (consumed at the input, dropped
-        // at the outputs). Surface the end to the caller now; a duplicate
-        // (an output EOS that had not reached the hold yet) is dropped by
-        // the caller's generation guard after it advances.
-        if was_drained {
-            debug!("prepare cancelled after the drain: synthesizing end-of-stream");
+        // The hold DROPPED an output EOS while this swap was pending: that
+        // end is gone for good and nothing else will surface it (a partial
+        // drop even blocks the bin's EOS aggregation forever). Synthesize
+        // it now; a duplicate (an EOS on a pad the hold had not covered
+        // yet) is dropped by the caller's generation guard after it
+        // advances. An EOS that only reached the INPUT side keeps flowing
+        // normally once the hold disarms, so no synthesis there: ending
+        // the item early would cut its buffered tail (and turn a seek-back
+        // near the end into a skip to the next item).
+        if dropped_eos {
+            debug!("prepare cancelled after its end was consumed: synthesizing end-of-stream");
             self.inner.emit(PlaybinEvent::EndOfStream);
         }
+        true
     }
 
     /// Re-assert the pipeline's in-flight target after a prepared input's
@@ -3371,8 +3463,14 @@ impl Inner {
 
         let mut state = inner.swap_gate.state.lock();
         loop {
-            if state.swapped {
+            if state.swapped || inner.current_generation() == generation {
                 // The swap already ran (this pad's link is live): flow.
+                // The generation check covers a straggler probe firing
+                // AFTER the next item's prepare re-armed the gate (a
+                // sparse pad's first datum can come long past this input's
+                // own activation, and the fresh gate no longer names this
+                // generation): its input is the LIVE one and flushing here
+                // would kill the playing stream.
                 return gst::PadProbeReturn::Remove;
             }
             if state.pending != Some(generation) {
@@ -3430,7 +3528,7 @@ impl Inner {
             .ok_or_else(|| anyhow!("no dynamic core"))?;
         let current = inner.current_generation();
 
-        let (prepared_element, mut old_pairs) = {
+        let (prepared_element, old_pairs, routed_ids, routed_kinds) = {
             let routing = inner.routing.lock();
             let prepared_element = routing
                 .inputs
@@ -3449,40 +3547,95 @@ impl Inner {
                         .filter_map(|sink| sink.peer().map(|src| (src, sink.clone())))
                 })
                 .collect();
-            (prepared_element, old_pairs)
+            // The streams actually flowing OUT of decodebin3 (only selected
+            // streams have output slots), by id and by kind.
+            let routed_ids: Vec<String> = routing
+                .routed
+                .iter()
+                .filter_map(|r| r.db3_src_pad.stream_id().map(|sid| sid.to_string()))
+                .collect();
+            let routed_kinds: Vec<StreamKind> = routing.routed.iter().map(|r| r.kind).collect();
+            (prepared_element, old_pairs, routed_ids, routed_kinds)
         };
+
+        // A live A/V output slot whose kind has NO successor stream cannot
+        // switch gaplessly. Its sink outlives the stream: the hold drops
+        // the old item's EOS, nothing removes an audio sink mid-item, and
+        // the bin can then never aggregate the NEW item's end-of-stream
+        // (a silent autoplay wedge); a dying video slot can conversely EOS
+        // every remaining sink between items. Fail the swap BEFORE touching
+        // any link: the caller reports PreparedFailed and the ordinary
+        // end-of-stream advance owns the transition.
+        let new_pads = prepared_element.src_pads();
+        for (kind, want) in [
+            (StreamKind::Video, gst::StreamType::VIDEO),
+            (StreamKind::Audio, gst::StreamType::AUDIO),
+        ] {
+            if !routed_kinds.contains(&kind) {
+                continue;
+            }
+            let covered = new_pads.iter().any(|pad| {
+                pad.stream()
+                    .is_some_and(|s| s.stream_type().contains(want))
+            });
+            if !covered {
+                return Err(anyhow!(
+                    "the prepared item has no {kind:?} stream to continue the live one"
+                ));
+            }
+        }
 
         // Match new pads to old decodebin3 sink pads by stream type, the
         // uridecodebin3 criterion: a reused sink pad keeps the decodebin3
-        // slot (and its output pad) alive across the switch.
-        let new_pads = prepared_element.src_pads();
+        // slot (and its output pad) alive across the switch. Prefer the old
+        // pad whose stream is ROUTED (selected): a multi-track item also
+        // has unselected sibling pads of the same type, and handing the
+        // successor to one of those would let the playing slot die instead
+        // (the exact wedge the coverage check above exists for). Plan
+        // first, mutate after: a failed plan must leave the links alone.
+        let mut taken = vec![false; old_pairs.len()];
         let mut links: Vec<(gst::Pad, gst::Pad)> = Vec::new();
         let mut fresh: Vec<gst::Pad> = Vec::new();
         for new_pad in &new_pads {
             let want = new_pad.stream().map(|s| s.stream_type());
-            let matched = old_pairs.iter().position(|(old_src, _)| match want {
-                None => true,
-                Some(want) => old_src.stream().map(|s| s.stream_type()) == Some(want),
-            });
+            let type_matches = |idx: usize, taken: &[bool]| {
+                !taken[idx]
+                    && match want {
+                        None => true,
+                        Some(want) => {
+                            old_pairs[idx].0.stream().map(|s| s.stream_type()) == Some(want)
+                        }
+                    }
+            };
+            let selected = |idx: usize| {
+                old_pairs[idx]
+                    .0
+                    .stream_id()
+                    .is_some_and(|sid| routed_ids.iter().any(|r| *r == sid))
+            };
+            let matched = (0..old_pairs.len())
+                .find(|&idx| type_matches(idx, &taken) && selected(idx))
+                .or_else(|| (0..old_pairs.len()).find(|&idx| type_matches(idx, &taken)));
             match matched {
                 Some(idx) => {
-                    let (old_src, db3_sink) = old_pairs.remove(idx);
-                    let _ = old_src.unlink(&db3_sink);
+                    taken[idx] = true;
                     debug!(
                         new = %new_pad.name(),
-                        sink = %db3_sink.name(),
+                        sink = %old_pairs[idx].1.name(),
                         "gapless: reusing the decodebin3 sink pad"
                     );
-                    links.push((new_pad.clone(), db3_sink));
+                    links.push((new_pad.clone(), old_pairs[idx].1.clone()));
                 }
                 None => fresh.push(new_pad.clone()),
             }
         }
-        // Old streams with no successor: their slots end here.
-        for (old_src, db3_sink) in old_pairs {
-            debug!(sink = %db3_sink.name(), "gapless: releasing an unmatched old sink pad");
-            let _ = old_src.unlink(&db3_sink);
-            db3.release_request_pad(&db3_sink);
+        for (idx, (old_src, db3_sink)) in old_pairs.iter().enumerate() {
+            let _ = old_src.unlink(db3_sink);
+            if !taken[idx] {
+                // An old stream with no successor: its slot ends here.
+                debug!(sink = %db3_sink.name(), "gapless: releasing an unmatched old sink pad");
+                db3.release_request_pad(db3_sink);
+            }
         }
         for (new_pad, db3_sink) in &links {
             new_pad
@@ -4056,15 +4209,17 @@ impl Inner {
                     None => {
                         // Drop the EOS while a swap is pending (committed
                         // to a next item, nothing may end the pipeline) or
-                        // while THIS pad still carries a previous group
-                        // (its slot has not flipped to the active item
-                        // yet, so this EOS is old-item drainage). The
-                        // pad's sticky stream-start at EOS time is the
-                        // ending stream's, an authoritative fallback when
-                        // the recorded group is missing. Unknowns on
-                        // either side never drop: only a positively
-                        // known group mismatch is old-item drainage.
-                        let pending = inner.swap_gate.state.lock().pending.is_some();
+                        // while THIS pad still carries a previous group,
+                        // either lagging the active one or positively the
+                        // RETIRED one (its slot has not flipped to the
+                        // active item yet, so this EOS is old-item
+                        // drainage; see `Inner::retired_group` for why the
+                        // activation alone cannot cover this). The pad's
+                        // sticky stream-start at EOS time is the ending
+                        // stream's, an authoritative fallback when the
+                        // recorded group is missing. Unknowns on either
+                        // side never drop: only a positively known group
+                        // mismatch is old-item drainage.
                         let pad_group = {
                             let routing = inner.routing.lock();
                             routing
@@ -4077,11 +4232,25 @@ impl Inner {
                             pad.sticky_event::<gst::event::StreamStart>(0)
                                 .and_then(|event| event.group_id())
                         });
-                        let behind = match (pad_group, *inner.active_group.lock()) {
+                        let active_group = *inner.active_group.lock();
+                        let retired_group = *inner.retired_group.lock();
+                        let behind = match (pad_group, active_group) {
                             (Some(pad_group), Some(active)) => pad_group != active,
                             _ => false,
-                        };
+                        } || (pad_group.is_some() && pad_group == retired_group);
+                        // One lock hold for the check AND the drop record:
+                        // a cancel between them would zero the state and
+                        // the mark would pollute the next prepare's gate.
+                        let mut state = inner.swap_gate.state.lock();
+                        let pending = state.pending.is_some();
                         if pending || behind {
+                            if pending {
+                                // The item's end is consumed for good; a
+                                // cancelled swap must synthesize it (see
+                                // `SwapState::dropped_eos`).
+                                state.dropped_eos = true;
+                            }
+                            drop(state);
                             debug!(
                                 pad = %pad.name(),
                                 pending,

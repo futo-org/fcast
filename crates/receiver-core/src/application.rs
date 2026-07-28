@@ -1801,11 +1801,15 @@ impl Application {
     }
 
     /// Time before the current item's end at which the next autoplay item
-    /// is pre-armed on the live pipeline. Comfortably past the pipeline's
-    /// buffered tail (multiqueue plus chain queues) and the next item's
-    /// parse time, and early enough that short clips pre-arm on their first
-    /// progress tick.
-    const GAPLESS_PREARM_MARGIN: gst::ClockTime = gst::ClockTime::from_seconds(6);
+    /// is pre-armed on the live pipeline. The bound that matters: the
+    /// pipeline's audio queue holds up to 30s of DECODED audio, so an audio
+    /// stream's end-of-stream passes decodebin3's outputs ~30s before the
+    /// item audibly ends, and the pre-arm must beat it there or the handoff
+    /// is missed (for an audio-only item the escaped EOS ends the pipeline
+    /// between the items, every time). Also comfortably past the next
+    /// item's parse time, and early enough that short clips pre-arm on
+    /// their first progress tick.
+    const GAPLESS_PREARM_MARGIN: gst::ClockTime = gst::ClockTime::from_seconds(40);
 
     /// Whether a queue item can be the target of a gapless pre-arm: plain
     /// progressive A/V only. Per-item start/speed/volume overrides need a
@@ -1833,6 +1837,17 @@ impl Application {
             return;
         }
         if self.image_via_player || self.is_loading_media || !self.have_media_info {
+            return;
+        }
+        // External subtitles are side inputs on the live core; a swap would
+        // carry them into the next item's collections (fcastplaybin refuses
+        // such a prepare too). Those items advance through the ordinary
+        // end-of-stream load.
+        if self
+            .current_media
+            .as_ref()
+            .is_some_and(|m| !m.external_subtitles.is_empty())
+        {
             return;
         }
         let Some(next) = self.autoplay_next_index() else {
@@ -2537,6 +2552,13 @@ impl Application {
             self.send_error(origin, ErrorKind::InvalidState);
             return Ok(false);
         }
+        // A gapless swap does not carry external subtitles across items (it
+        // would leak this item's sub into the next item's collections), so
+        // an external subtitle on the current item makes it ineligible. A
+        // pre-arm already in flight when the subtitle is added must be
+        // dropped; the item then advances through the ordinary
+        // end-of-stream load.
+        self.cancel_gapless_prearm();
         if !self.player.seekable {
             if !self.player.seekable_known {
                 // Not unseekable, just not answerable yet. Park the op.

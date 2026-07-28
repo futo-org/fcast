@@ -354,6 +354,154 @@ fn failing_prepared_input_reports_and_current_item_ends_normally() {
     h.playbin.stop().expect("stop");
 }
 
+/// A dataless prepared input: an appsrc that is added to the pipeline but
+/// never pushes a buffer, so the block probe never parks a thread and the
+/// swap never performs. Lets a test arm a pending gapless hold that stays
+/// pending for the whole item, driving the current item's end entirely
+/// through the output-side hold.
+fn dataless_prepared_input() -> MediaInput {
+    MediaInput::Element(gst::ElementFactory::make("appsrc").build().unwrap())
+}
+
+/// A mid-item cancel must NOT end the current item early. A video clip
+/// decodes in lockstep with playback (the synced sink backpressures), so at
+/// cancel time its output-side EOS is still ~0.8s away and nothing has been
+/// dropped. With a pending (dataless) prepare armed, cancelling mid-playout
+/// must leave the item's real end untouched: exactly one natural EOS, at
+/// the item's true end, once the cancel disarms the output-side hold.
+///
+/// The property this protects: a cancel (a user seek-back near the end of
+/// an autoplay item, a queue edit) must not fabricate an early end that
+/// would skip to the next item. Nothing may be synthesized while the item's
+/// real end is still coming.
+#[test]
+fn mid_item_cancel_does_not_end_the_item_early() {
+    init();
+    if !encoders_available() || gst::ElementFactory::find("appsrc").is_none() {
+        eprintln!("skipping: required elements unavailable");
+        return;
+    }
+    let first = encode_video_clip("cancel-early-a", "smpte");
+
+    let h = Harness::new();
+    let first_generation = h.load_and_play(&first);
+    let played_at = Instant::now();
+    // Dataless prepare: the input side of the clip drains quickly, but the
+    // swap never performs (no data), so the hold stays pending. Cancel
+    // mid-playout, before the real (output-side) end.
+    let _prepared = h.playbin.prepare_next_async(dataless_prepared_input());
+    std::thread::sleep(Duration::from_millis(1200));
+    h.playbin.cancel_prepared_async();
+
+    let seen = h.wait_for("EndOfStream after the mid-item cancel", |event, _| {
+        matches!(event, PlaybinEvent::EndOfStream)
+    });
+    let (_, eos_generation) = seen.last().unwrap();
+    assert_eq!(*eos_generation, first_generation);
+    let elapsed = played_at.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1700),
+        "EOS after {elapsed:?} means the cancel ended the 2s item early instead of \
+         letting it play out"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::PreparedActivated)),
+        "no activation may fire after a cancel; seen: {seen:#?}"
+    );
+    h.playbin.stop().expect("stop");
+}
+
+/// A cancel AFTER the current item's end was consumed by the hold must
+/// still surface that end. With a pending (dataless) prepare armed, the
+/// item's output-side EOS is dropped by the hold as it plays out; once the
+/// item has fully finished, that EOS is gone for good (the sinks whose EOS
+/// was dropped can never aggregate a real pipeline EOS on their own).
+/// Cancelling then must synthesize the end, or the caller never learns the
+/// item finished (a silent autoplay wedge).
+///
+/// A behavioral guard on the cancel contract, not a discriminator for the
+/// exact synthesis predicate: for a tightly muxed A/V file a single demuxer
+/// throttles both streams together, so "input drained" and "an EOS was
+/// dropped" become true at nearly the same instant near the real end. The
+/// guard still catches a cancel that drops the end entirely or fires a
+/// spurious activation.
+#[test]
+fn cancel_after_consumed_end_synthesizes_end_of_stream() {
+    init();
+    if !encoders_available() || gst::ElementFactory::find("appsrc").is_none() {
+        eprintln!("skipping: required elements unavailable");
+        return;
+    }
+    let first = encode_av_clip("consumed-a", "smpte", 440);
+
+    let h = Harness::new();
+    let first_generation = h.load_and_play(&first);
+    let _prepared = h.playbin.prepare_next_async(dataless_prepared_input());
+
+    // Let the item play past its 2s end: its EOS reaches the outputs and
+    // the pending hold consumes it.
+    std::thread::sleep(Duration::from_secs(3));
+    h.playbin.cancel_prepared_async();
+
+    let seen = h.wait_for("the synthesized EndOfStream", |event, _| {
+        matches!(event, PlaybinEvent::EndOfStream)
+    });
+    let (_, eos_generation) = seen.last().unwrap();
+    assert_eq!(
+        *eos_generation, first_generation,
+        "the synthesized end belongs to the item whose real end was consumed"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::PreparedActivated)),
+        "a dataless prepared input must never activate; seen: {seen:#?}"
+    );
+    h.playbin.stop().expect("stop");
+}
+
+/// A prepared item that lacks a stream type the current item is playing
+/// (A/V current, video-only next) must NOT switch gaplessly: the abandoned
+/// audio sink would block every later end-of-stream. The swap demotes to
+/// PreparedFailed and the current item still ends through the ordinary
+/// path.
+#[test]
+fn prepared_item_missing_a_live_stream_kind_demotes() {
+    init();
+    if !encoders_available() {
+        eprintln!("skipping: vp8/vorbis/webm elements unavailable");
+        return;
+    }
+    let first = encode_av_clip("shape-a", "smpte", 440);
+    let second = encode_video_clip("shape-b", "ball");
+
+    let h = Harness::new();
+    let first_generation = h.load_and_play(&first);
+    let prepared_generation = h.playbin.prepare_next_async(MediaInput::Uri(second));
+
+    h.wait_for("PreparedFailed for the shape mismatch", |event, _| {
+        matches!(
+            event,
+            PlaybinEvent::PreparedFailed { generation } if *generation == prepared_generation
+        )
+    });
+
+    let seen = h.wait_for("EndOfStream after the demoted prepare", |event, _| {
+        matches!(event, PlaybinEvent::EndOfStream)
+    });
+    let (_, eos_generation) = seen.last().unwrap();
+    assert_eq!(*eos_generation, first_generation);
+    assert!(
+        !seen
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::PreparedActivated)),
+        "a demoted prepare must never activate; seen: {seen:#?}"
+    );
+    h.playbin.stop().expect("stop");
+}
+
 /// A normal load while a prepare is pending supersedes it completely: the
 /// loaded item plays under its own generation and no activation fires.
 #[test]
