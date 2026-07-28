@@ -26,7 +26,10 @@ use gst::prelude::*;
 pub mod imp {
     use std::{
         io::{Cursor, Read, Seek, SeekFrom},
-        sync::{Arc, LazyLock},
+        sync::{
+            Arc, LazyLock,
+            atomic::{AtomicI64, Ordering},
+        },
     };
 
     use gst::{glib, prelude::*, subclass::prelude::*};
@@ -275,6 +278,13 @@ pub mod imp {
         sinkpad: gst::Pad,
         srcpad: gst::Pad,
         state: Mutex<State>,
+        /// Worst downstream lateness (ns) reported through QoS events since
+        /// the decode task last rebased its schedule. Animations cannot skip
+        /// frames (each depends on the previous canvas), so when decoding
+        /// cannot keep up with the frame delays the timeline is shifted
+        /// forward instead: the animation plays slower rather than the sink
+        /// dropping nearly every frame.
+        qos_lateness: Arc<AtomicI64>,
     }
 
     /// Everything the decode thread needs. Holds strong refs; the thread is
@@ -288,6 +298,8 @@ pub mod imp {
         pts: gst::ClockTime,
         /// The caps last configured on the src pad, if any.
         out_info: Option<gst_video::VideoInfo>,
+        /// See `FImageDec::qos_lateness`.
+        qos_lateness: Arc<AtomicI64>,
     }
 
     enum PassOutcome {
@@ -363,6 +375,23 @@ pub mod imp {
             self.ensure_output(width, height)?;
 
             let duration = gst::ClockTime::from_mseconds(delay_ms);
+
+            // Downstream reported lateness: rebase the schedule so the next
+            // frame lands on time again (the animation slows down to the
+            // achievable rate instead of the sink dropping frames). One frame
+            // of margin on top of the reported lateness lets the schedule
+            // converge just above the achievable production rate when
+            // decoding is chronically slower than the frame delays.
+            let late = self.qos_lateness.swap(0, Ordering::Relaxed);
+            if late > 0 {
+                let shift = gst::ClockTime::from_nseconds(late as u64) + duration;
+                gst::debug!(
+                    CAT,
+                    obj = self.element,
+                    "Rebasing the schedule by {shift} after downstream lateness"
+                );
+                self.pts += shift;
+            }
             let mut buffer = gst::Buffer::from_mut_slice(frame.into_raw());
             {
                 let buffer = buffer.get_mut().unwrap();
@@ -380,10 +409,21 @@ pub mod imp {
             decoder: impl AnimationDecoder<'a>,
         ) -> Result<PassOutcome, gst::FlowError> {
             let mut frames = 0u64;
-            for frame in decoder.into_frames() {
+            let mut iter = decoder.into_frames();
+            loop {
                 if self.input.aborted() {
                     return Ok(PassOutcome::Stop);
                 }
+                // Decode cost for THIS frame (excludes the sync wait inside
+                // the previous push). When decoding is slower than the frame
+                // delay the schedule paces to the achievable rate up front,
+                // instead of letting the sink drop frames until the QoS
+                // feedback converges. On the streaming first pass this also
+                // absorbs network wait, which is equally real latency.
+                let decode_started = std::time::Instant::now();
+                let Some(frame) = iter.next() else {
+                    break;
+                };
                 let frame = match frame {
                     Ok(f) => f,
                     Err(err) => {
@@ -393,6 +433,7 @@ pub mod imp {
                         break;
                     }
                 };
+                let decode_ms = decode_started.elapsed().as_millis() as u64;
                 let (num, denom) = frame.delay().numer_denom_ms();
                 let mut delay_ms = if denom == 0 {
                     DEFAULT_DELAY_MS
@@ -402,7 +443,7 @@ pub mod imp {
                 if delay_ms <= MIN_DELAY_MS {
                     delay_ms = DEFAULT_DELAY_MS;
                 }
-                match self.push_frame(frame.into_buffer(), delay_ms) {
+                match self.push_frame(frame.into_buffer(), delay_ms.max(decode_ms)) {
                     Ok(()) => frames += 1,
                     Err(gst::FlowError::Flushing | gst::FlowError::Eos) => {
                         return Ok(PassOutcome::Stop);
@@ -675,6 +716,7 @@ pub mod imp {
                     format,
                     pts: gst::ClockTime::ZERO,
                     out_info: None,
+                    qos_lateness: self.qos_lateness.clone(),
                 };
                 let handle = std::thread::Builder::new()
                     .name("fimagedec".into())
@@ -742,6 +784,16 @@ pub mod imp {
                 // Not seekable: loops are internal re-decodes and the UI has
                 // no scrubber for images.
                 EventView::Seek(_) => false,
+                // The sink's lateness reports drive the schedule rebase (see
+                // `qos_lateness`). Consumed here, upstream is compressed
+                // bytes with nothing to throttle.
+                EventView::Qos(qos) => {
+                    let (_, _, jitter, _) = qos.get();
+                    if jitter > 0 {
+                        self.qos_lateness.fetch_max(jitter, Ordering::Relaxed);
+                    }
+                    true
+                }
                 _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
             }
         }
@@ -783,6 +835,7 @@ pub mod imp {
             let mut state = self.state.lock();
             state.input = None;
             state.task = None;
+            self.qos_lateness.store(0, Ordering::Relaxed);
         }
     }
 
@@ -833,6 +886,7 @@ pub mod imp {
                 sinkpad,
                 srcpad,
                 state: Mutex::new(State::default()),
+                qos_lateness: Arc::new(AtomicI64::new(0)),
             }
         }
     }
@@ -1575,3 +1629,4 @@ mod tests {
         pipeline.set_state(gst::State::Null).unwrap();
     }
 }
+

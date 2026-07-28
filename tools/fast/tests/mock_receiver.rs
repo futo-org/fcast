@@ -1283,6 +1283,7 @@ async fn v4_queue_load_and_modify() {
         Step::Send(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(100),
         Step::Send(Send::QueueInsertV4 {

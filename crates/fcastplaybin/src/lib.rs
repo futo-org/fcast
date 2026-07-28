@@ -815,7 +815,16 @@ impl FcastPlaybin {
         // video still fully decodes into it. Callers that want to skip video
         // work deselect the video stream instead.
         let video_sink = match sinks.video {
-            Some(sink) => sink,
+            Some(sink) => {
+                // playsink parity: QoS events from the video sink drive
+                // decoder frame-skipping and fimagedec's schedule rebase.
+                // Without them a slow decode path silently drops at the sink
+                // with no way for upstream to adapt.
+                if sink.has_property_with_type("qos", bool::static_type()) {
+                    sink.set_property("qos", true);
+                }
+                sink
+            }
             None => {
                 let sink = make("fakesink", "fpb-fake-vsink")?;
                 sink.set_property("sync", true);
