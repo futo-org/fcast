@@ -154,12 +154,27 @@ impl Cache {
     /// Reconcile the cache against the desired window: evict entries that
     /// left the window and start fetches (via `fetch`) for missing ones.
     /// `fetch` receives the spec and the epoch to stamp on the result.
-    pub fn sync(&mut self, desired: Vec<PrefetchSpec>, mut fetch: impl FnMut(PrefetchSpec, u64)) {
+    ///
+    /// `retain` lists urls that stay resident WITHOUT being fetched when
+    /// absent: the current item. Its bytes are already playing (fetching
+    /// would double-download next to the pipeline), but evicting it at
+    /// selection time would throw away a warm entry only to re-download it
+    /// the moment it becomes a neighbor again on the next flip.
+    pub fn sync(
+        &mut self,
+        desired: Vec<PrefetchSpec>,
+        retain: &[String],
+        mut fetch: impl FnMut(PrefetchSpec, u64),
+    ) {
         if self.disabled {
             return;
         }
         self.epoch += 1;
-        self.desired = desired.iter().map(|s| s.url.clone()).collect();
+        self.desired = desired
+            .iter()
+            .map(|s| s.url.clone())
+            .chain(retain.iter().cloned())
+            .collect();
 
         self.entries.retain(|url, item| {
             let keep = self.desired.contains(url);
@@ -481,7 +496,7 @@ mod tests {
     fn sync_fetches_missing_and_evicts_stale() {
         let mut cache = enabled_cache();
         let mut fetched = Vec::new();
-        cache.sync(vec![spec("a"), spec("b")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a"), spec("b")], &[], |s, e| fetched.push((s.url, e)));
         assert_eq!(fetched.len(), 2);
 
         // Deliver one result.
@@ -496,7 +511,7 @@ mod tests {
         // New window without "a": entry evicted, "c" fetched, "b" still in
         // flight and not re-fetched.
         fetched.clear();
-        cache.sync(vec![spec("b"), spec("c")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("b"), spec("c")], &[], |s, e| fetched.push((s.url, e)));
         assert!(cache.get("a").is_none());
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].0, "c");
@@ -506,14 +521,14 @@ mod tests {
     fn stale_epoch_results_are_discarded() {
         let mut cache = enabled_cache();
         let mut fetched = Vec::new();
-        cache.sync(vec![spec("a")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         let (url, old_epoch) = fetched[0].clone();
 
         // "a" leaves the window and comes back: a NEW fetch starts with a
         // newer epoch.
-        cache.sync(vec![spec("b")], |_, _| {});
+        cache.sync(vec![spec("b")], &[], |_, _| {});
         fetched.clear();
-        cache.sync(vec![spec("a")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         assert_eq!(fetched.len(), 1);
         let new_epoch = fetched[0].1;
         assert_ne!(old_epoch, new_epoch);
@@ -539,7 +554,7 @@ mod tests {
     fn failed_fetches_do_not_wedge_the_slot() {
         let mut cache = enabled_cache();
         let mut fetched = Vec::new();
-        cache.sync(vec![spec("a")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         let (url, epoch) = fetched[0].clone();
         cache.on_event(Event::Fetched {
             url: url.clone(),
@@ -550,8 +565,43 @@ mod tests {
 
         // The next sync retries the fetch (it is no longer in flight).
         fetched.clear();
-        cache.sync(vec![spec("a")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         assert_eq!(fetched.len(), 1);
+    }
+
+    /// The current item is retained across syncs without being fetched:
+    /// selecting a cached neighbor must not evict-then-redownload it when
+    /// flipping back (the image-viewer slideshow pattern).
+    #[test]
+    fn retained_current_survives_without_fetch() {
+        let mut cache = enabled_cache();
+        let mut fetched = Vec::new();
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
+        let (url, epoch) = fetched[0].clone();
+        cache.on_event(Event::Fetched {
+            url: url.clone(),
+            epoch,
+            result: Ok(item(b"data")),
+        });
+
+        // "a" becomes current: kept, not re-fetched, "b" fetched.
+        fetched.clear();
+        cache.sync(vec![spec("b")], &["a".to_string()], |s, e| {
+            fetched.push((s.url, e))
+        });
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].0, "b");
+        assert!(cache.get("a").is_some(), "current entry must survive");
+
+        // A retained url that is NOT resident is never fetched.
+        fetched.clear();
+        cache.sync(Vec::new(), &["c".to_string()], |s, e| {
+            fetched.push((s.url, e))
+        });
+        assert!(fetched.is_empty());
+        // And the previous entries left the window.
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_none());
     }
 
     #[test]
@@ -561,7 +611,7 @@ mod tests {
             ..Default::default()
         };
         let mut fetched = Vec::new();
-        cache.sync(vec![spec("a")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         assert!(fetched.is_empty());
         assert!(cache.get("a").is_none());
     }
@@ -570,7 +620,7 @@ mod tests {
     fn clear_drops_everything() {
         let mut cache = enabled_cache();
         let mut fetched = Vec::new();
-        cache.sync(vec![spec("a")], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         let (url, epoch) = fetched[0].clone();
         cache.on_event(Event::Fetched {
             url,

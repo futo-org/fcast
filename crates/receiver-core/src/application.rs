@@ -1715,22 +1715,35 @@ impl Application {
     /// Reconcile the prefetch cache with the current queue window. Runs after
     /// every queue mutation (select, insert, remove, initial queue load).
     fn sync_queue_cache(&mut self) {
-        let desired = match self.current_media.as_ref().map(|m| &m.source) {
+        let (desired, retain) = match self.current_media.as_ref().map(|m| &m.source) {
             Some(MediaSource::Queue(queue)) => {
-                queue_cache::window_indices(queue.items.len(), queue.current_idx as usize)
+                let desired = queue_cache::window_indices(
+                    queue.items.len(),
+                    queue.current_idx as usize,
+                )
+                .into_iter()
+                .filter_map(|idx| queue.items.get(idx))
+                .map(|item| queue_cache::PrefetchSpec {
+                    url: item.url.clone(),
+                    headers: item.headers.clone(),
+                })
+                .collect();
+                // The current item is retained but never fetched: its bytes
+                // are already playing, but flipping back to a neighbor and
+                // returning must not re-download it.
+                let retain = queue
+                    .items
+                    .get(queue.current_idx as usize)
+                    .map(|item| item.url.clone())
                     .into_iter()
-                    .filter_map(|idx| queue.items.get(idx))
-                    .map(|item| queue_cache::PrefetchSpec {
-                        url: item.url.clone(),
-                        headers: item.headers.clone(),
-                    })
-                    .collect()
+                    .collect::<Vec<_>>();
+                (desired, retain)
             }
-            _ => Vec::new(),
+            _ => (Vec::new(), Vec::new()),
         };
         let prefetcher = &self.queue_prefetcher;
         self.queue_cache
-            .sync(desired, |spec, epoch| prefetcher.fetch(spec, epoch));
+            .sync(desired, &retain, |spec, epoch| prefetcher.fetch(spec, epoch));
     }
 
     #[tracing::instrument(skip_all)]
