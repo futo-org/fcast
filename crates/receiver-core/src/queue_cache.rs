@@ -67,6 +67,22 @@ pub fn window_indices(len: usize, current: usize) -> Vec<usize> {
     out
 }
 
+/// Whether a queue item's declared container may be prefetched and served
+/// from memory. Only progressive media and images qualify. Adaptive
+/// streaming manifests (HLS, DASH) must stream live: served from an appsrc
+/// they lose the upstream URI context their demuxers rely on (base-URI
+/// resolution of relative fragment references, live playlist reloads), and
+/// a cached manifest head is useless anyway. HLS playlists commonly ride on
+/// audio/video mime types (audio/mpegurl and friends), so those are
+/// filtered before the progressive allowlist.
+pub fn cacheable_container(container: &str) -> bool {
+    let c = container.trim().to_ascii_lowercase();
+    if c.contains("mpegurl") {
+        return false;
+    }
+    c.starts_with("image/") || c.starts_with("audio/") || c.starts_with("video/")
+}
+
 /// What to fetch for one queue item.
 #[derive(Debug, Clone)]
 pub struct PrefetchSpec {
@@ -313,13 +329,7 @@ async fn fetch_http(
     let other = |msg: String| FetchError::Other(msg);
 
     let random_user_agent = crate::user_agent::random_browser_user_agent(url.domain());
-    // Ask for the head only. A range-capable server answers 206 with the
-    // total in Content-Range; one that ignores ranges answers 200 with the
-    // whole body, which is only kept when it fits the cap anyway.
-    let mut request = client.get(url).header(
-        reqwest::header::RANGE,
-        format!("bytes=0-{}", HEAD_MAX_BYTES - 1),
-    );
+    let mut request = client.get(url);
     let mut did_set_user_agent = false;
     if let Some(headers) = headers {
         let header_map = crate::utils::map_to_header_map(&headers);
@@ -329,6 +339,15 @@ async fn fetch_http(
     if !did_set_user_agent {
         request = request.header(reqwest::header::USER_AGENT, random_user_agent);
     }
+    // Ask for the head only. A range-capable server answers 206 with the
+    // total in Content-Range; one that ignores ranges answers 200 with the
+    // whole body, which is only kept when it fits the cap anyway. Applied
+    // after the sender headers so a sender-supplied Range cannot replace
+    // the head bound (reqwest's headers() overwrites same-name keys).
+    let request = request.header(
+        reqwest::header::RANGE,
+        format!("bytes=0-{}", HEAD_MAX_BYTES - 1),
+    );
 
     let mut resp = request.send().await.map_err(|e| other(e.to_string()))?;
     if !resp.status().is_success() {
@@ -475,6 +494,33 @@ mod tests {
             bytes: Bytes::from_static(data),
             complete: true,
             total: Some(data.len() as u64),
+        }
+    }
+
+    #[test]
+    fn cacheable_containers() {
+        for ok in [
+            "image/gif",
+            "image/png",
+            "image/jpeg",
+            "video/mp4",
+            "video/x-matroska",
+            "audio/mpeg",
+        ] {
+            assert!(cacheable_container(ok), "{ok} must be cacheable");
+        }
+        for bad in [
+            "application/vnd.apple.mpegurl",
+            "audio/mpegurl",
+            "audio/x-mpegurl",
+            "video/mpegurl",
+            "application/x-hls",
+            "application/dash+xml",
+            "application/x-whep",
+            "application/octet-stream",
+            "",
+        ] {
+            assert!(!cacheable_container(bad), "{bad} must not be cacheable");
         }
     }
 

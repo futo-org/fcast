@@ -1239,6 +1239,26 @@ impl Application {
         self.sync_queue_cache();
     }
 
+    /// Cached prefetch entry usable for this load. Consulted only for
+    /// queue-sourced loads of cacheable containers: a Single load of a url
+    /// lingering in the cache must not serve possibly stale bytes, and
+    /// adaptive-streaming manifests (HLS, DASH) must never play from memory
+    /// (their demuxers need the upstream URI context for relative fragment
+    /// references and playlist reloads, which the in-memory source cannot
+    /// answer; see `queue_cache::cacheable_container`).
+    fn queue_cache_entry(&self, url: &str, container: &str) -> Option<queue_cache::CachedItem> {
+        if !matches!(
+            self.current_media.as_ref().map(|m| &m.source),
+            Some(MediaSource::Queue(_))
+        ) {
+            return None;
+        }
+        if !queue_cache::cacheable_container(container) {
+            return None;
+        }
+        self.queue_cache.get(url)
+    }
+
     /// Build the source for a load: constructed directly with typed config,
     /// HTTP with per-load headers, WHEP, and fwebrtc, no fake-URI dispatch,
     /// no global header / signalling side channels. (AirPlay mirror is built
@@ -1255,7 +1275,7 @@ impl Application {
                 Some(chan) => media_source::build_fwebrtc_source(chan),
                 None => Err(anyhow::anyhow!("fwebrtc load without a signalling channel")),
             },
-            _ => match self.queue_cache.get(&url) {
+            _ => match self.queue_cache_entry(&url, container) {
                 Some(item) if item.complete => {
                     debug!(
                         url,
@@ -1459,7 +1479,10 @@ impl Application {
         let mut is_image = false;
         if container.starts_with("image/") && !pipeline_image {
             is_image = true;
-            if let Some(item) = self.queue_cache.get(&url).filter(|item| item.complete) {
+            if let Some(item) = self
+                .queue_cache_entry(&url, &container)
+                .filter(|item| item.complete)
+            {
                 // A prefetched queue photo: decode straight from the cached
                 // bytes instead of re-downloading (mirrors the DownloadResult
                 // success arm of handle_image_event). Only complete entries
@@ -1723,6 +1746,9 @@ impl Application {
                 )
                 .into_iter()
                 .filter_map(|idx| queue.items.get(idx))
+                // Adaptive manifests (HLS, DASH) must stream live and a
+                // cached head would be useless anyway: never prefetch them.
+                .filter(|item| queue_cache::cacheable_container(&item.content_type))
                 .map(|item| queue_cache::PrefetchSpec {
                     url: item.url.clone(),
                     headers: item.headers.clone(),
