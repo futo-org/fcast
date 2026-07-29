@@ -202,15 +202,26 @@ pub mod imp {
     }
 
     impl FormatHint {
-        /// Canonical typefound caps names. NOTE image/jpeg is deliberately
-        /// absent: MJPEG video streams carry those caps and the static build
-        /// ships avdec_mjpeg/vajpegdec for them, which this element must not
-        /// outrank. JPEG stills stay on the application's legacy image path.
+        /// Canonical typefound caps names. NOTE the real image/jpeg caps are
+        /// deliberately absent: MJPEG video streams carry those caps and the
+        /// static build ships avdec_mjpeg/vajpegdec for them, which this
+        /// element must not outrank. JPEG stills instead arrive under the
+        /// private image/x-fcast-jpeg caps, suggested by our own fjpeg
+        /// typefinder (see `imagetypefind`) on a bare JPEG file. Only this
+        /// element claims that private type, so still JPEGs route here while
+        /// containerized MJPEG video (caps set by the demuxer, never typefound)
+        /// stays with avdec_mjpeg.
         pub(super) fn from_caps_name(name: &str) -> Option<Self> {
             match name {
                 "image/gif" => Some(Self::Gif),
                 "image/png" | "image/apng" => Some(Self::Png),
                 "image/webp" => Some(Self::WebP),
+                // Both the HW-preferred (baseline) and software (progressive,
+                // unclassified) private JPEG caps decode here. On a VA box the
+                // baseline caps is claimed at a higher rank by fvajpegdec.
+                "image/x-fcast-jpeg" | "image/x-fcast-jpeg-sw" => {
+                    Some(Self::Other(ImageFormat::Jpeg))
+                }
                 "image/jxl" => Some(Self::Jxl),
                 "image/jp2" | "image/x-jpc" => Some(Self::Jp2),
                 #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
@@ -238,6 +249,8 @@ pub mod imp {
                 "image/png",
                 "image/apng",
                 "image/webp",
+                "image/x-fcast-jpeg",
+                "image/x-fcast-jpeg-sw",
                 "image/jxl",
                 "image/jp2",
                 "image/x-jpc",
@@ -640,6 +653,7 @@ pub mod imp {
     /// Announcement name for the still-only formats.
     fn still_name(format: ImageFormat) -> &'static str {
         match format {
+            ImageFormat::Jpeg => "jpeg",
             ImageFormat::Bmp => "bmp",
             ImageFormat::Tiff => "tiff",
             ImageFormat::Ico => "ico",
@@ -981,11 +995,13 @@ glib::wrapper! {
 /// The container mime types the application routes through the player
 /// pipeline (typefind then re-classifies from the actual bytes, so aliases
 /// are fine here even when the canonical caps name differs). image/jpeg is
-/// deliberately absent: MJPEG video shares those caps and the shipped
-/// avdec_mjpeg/vajpegdec must keep them, so JPEG stills stay on the legacy
-/// in-GUI image path.
+/// included: a bare JPEG cast typefinds to the private image/x-fcast-jpeg
+/// (via our fjpeg finder), which only fimagedec claims, so still JPEGs decode
+/// here without disturbing avdec_mjpeg/vajpegdec (those keep containerized
+/// MJPEG video, whose caps come from a demuxer and are never typefound).
 pub fn player_mime_types() -> &'static [&'static str] {
     &[
+        "image/jpeg",
         "image/gif",
         "image/png",
         "image/apng",

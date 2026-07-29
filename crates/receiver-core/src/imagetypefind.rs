@@ -4,6 +4,7 @@
 //! elsewhere) by advertising the right media type on the file's magic bytes.
 //!
 //! Formats handled here:
+//!   - JPEG stills: the private `image/x-fcast-jpeg`
 //!   - JPEG XL (bare codestream and ISOBMFF container): `image/jxl`
 //!   - HEIF still-image family (HEIC, AVIF, plain HEIF): `image/heic`,
 //!     `image/avif`, `image/heif`
@@ -17,6 +18,15 @@
 //! finders in rank order and stops at the first MAXIMUM suggestion, so we
 //! register our HEIF finder at a rank ABOVE the qt one (PRIMARY + a boost, the
 //! in-tree jpeg finder uses PRIMARY + 15 as precedent for a similar boost).
+//!
+//! The JPEG finder is the other deliberate one. GStreamer uses one caps,
+//! image/jpeg, for both a still JPEG and an MJPEG video stream, and the static
+//! build ships avdec_mjpeg/vajpegdec to decode the latter. So we do NOT claim
+//! image/jpeg (that would let fimagedec steal MJPEG video). Instead our finder
+//! outranks the in-tree jpeg finder and re-labels a bare JPEG file as the
+//! private image/x-fcast-jpeg, which only fimagedec claims. Containerized MJPEG
+//! video is unaffected: its caps come from the demuxer, so this finder (and
+//! typefind at all) never runs on it.
 
 use gst::glib;
 
@@ -26,6 +36,8 @@ use gst::glib;
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn produced_caps() -> &'static [&'static str] {
     &[
+        "image/x-fcast-jpeg",
+        "image/x-fcast-jpeg-sw",
         "image/jxl",
         "image/heic",
         "image/avif",
@@ -44,16 +56,122 @@ pub fn produced_caps() -> &'static [&'static str] {
 /// we clear both the base PRIMARY finders and any of their boosts.
 const HEIF_RANK_BOOST: i32 = 24;
 
+/// The JPEG finder must outrank the in-tree jpeg finder (PRIMARY + 15) so a
+/// bare JPEG file is labeled with our private image/x-fcast-jpeg instead of the
+/// MJPEG-shared image/jpeg. Same boost as HEIF clears it with margin.
+const JPEG_RANK_BOOST: i32 = 24;
+
 /// Register every image typefinder this module provides. Call once after
 /// `gst::init()`. Registering into the default registry (plugin = None) means
 /// `decodebin3` and the type-find helpers pick these up automatically.
 pub fn plugin_init() -> Result<(), glib::BoolError> {
+    register_jpeg()?;
     register_jxl()?;
     register_heif()?;
     register_qoi()?;
     register_farbfeld()?;
     register_dds()?;
     Ok(())
+}
+
+/// JPEG still. Magic: the SOI marker FF D8 followed by the first marker's FF,
+/// i.e. FF D8 FF (the same 3-byte signature the in-tree jpeg finder keys on).
+/// We suggest a private caps rather than image/jpeg so this never competes with
+/// avdec_mjpeg/vajpegdec for real MJPEG video. See the module doc.
+///
+/// We split on the frame header: baseline / extended-sequential JPEGs (SOF0 /
+/// SOF1) get image/x-fcast-jpeg, which the hardware decoder (fvajpegdec)
+/// prefers; progressive (SOF2), other SOF types, and headers whose SOF we
+/// cannot see get image/x-fcast-jpeg-sw, which only fimagedec claims (VA JPEG
+/// is baseline-only). Both are decodable by fimagedec, so a non-VA box is
+/// unaffected.
+fn register_jpeg() -> Result<(), glib::BoolError> {
+    const JPEG_MAGIC: [u8; 3] = [0xFF, 0xD8, 0xFF];
+
+    let baseline = gst::Caps::builder("image/x-fcast-jpeg").build();
+    let software = gst::Caps::builder("image/x-fcast-jpeg-sw").build();
+    let possible = gst::Caps::builder_full()
+        .structure(gst::Structure::new_empty("image/x-fcast-jpeg"))
+        .structure(gst::Structure::new_empty("image/x-fcast-jpeg-sw"))
+        .build();
+    gst::TypeFind::register(
+        None::<&gst::Plugin>,
+        "fjpeg",
+        gst::Rank::PRIMARY + JPEG_RANK_BOOST,
+        Some("jpg,jpeg,jpe"),
+        Some(&possible),
+        move |typefind| {
+            if typefind.peek(0, 3) != Some(JPEG_MAGIC.as_slice()) {
+                return;
+            }
+            // The SOF can sit well past a large EXIF/APP1 segment (an embedded
+            // thumbnail is often tens of KB), so peek the whole file up to a
+            // cap. Fall back to smaller windows for a source that cannot peek
+            // that far yet (a still-arriving stream); if the SOF stays out of
+            // reach we take the software caps (correct, just not accelerated).
+            const CAP: u32 = 128 * 1024;
+            let want = typefind
+                .length()
+                .filter(|&len| len > 0)
+                .map(|len| (len.min(u64::from(CAP))) as u32)
+                .unwrap_or(CAP);
+            let mut baseline_hint = false;
+            for n in [want, 65536, 16384, 4096, 512] {
+                if let Some(data) = typefind.peek(0, n) {
+                    baseline_hint = jpeg_is_baseline(data);
+                    break;
+                }
+            }
+            let caps = if baseline_hint { &baseline } else { &software };
+            typefind.suggest(gst::TypeFindProbability::Maximum, caps);
+        },
+    )
+}
+
+/// Walk the JPEG marker segments to the frame header. Returns true only for a
+/// baseline / extended-sequential frame (SOF0 / SOF1), which is what the VA JPEG
+/// decoder handles. Progressive (SOF2), the other SOF types, a malformed header,
+/// and an SOF sitting past `data` all return false so the software path takes
+/// them.
+fn jpeg_is_baseline(data: &[u8]) -> bool {
+    // Skip the SOI (FF D8).
+    let mut i = 2;
+    while i + 1 < data.len() {
+        if data[i] != 0xFF {
+            return false;
+        }
+        // The marker code is the next non-fill (non-0xFF) byte.
+        let mut j = i + 1;
+        while j < data.len() && data[j] == 0xFF {
+            j += 1;
+        }
+        if j >= data.len() {
+            return false;
+        }
+        match data[j] {
+            // SOF0 baseline, SOF1 extended sequential.
+            0xC0 | 0xC1 => return true,
+            // SOF2 progressive and the other SOF types (C4/C8/CC are not SOF).
+            0xC2 | 0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return false,
+            // EOI before any SOF: no frame here.
+            0xD9 => return false,
+            // Standalone markers with no length payload.
+            0x01 | 0xD0..=0xD8 => i = j + 1,
+            // Length-bearing segment (APPn, DQT, DHT, COM, ...): the 2-byte
+            // big-endian length after the code includes those 2 bytes.
+            _ => {
+                if j + 2 >= data.len() {
+                    return false;
+                }
+                let len = u16::from_be_bytes([data[j + 1], data[j + 2]]) as usize;
+                if len < 2 {
+                    return false;
+                }
+                i = j + 1 + len;
+            }
+        }
+    }
+    false
 }
 
 /// JPEG XL. Two on-disk shapes.
@@ -318,6 +436,43 @@ mod tests {
         // have something to look at (real files always have more boxes).
         out.extend_from_slice(&[0u8; 32]);
         out
+    }
+
+    /// Build a minimal JPEG whose frame header uses marker `sof` (0xC0 =
+    /// baseline, 0xC2 = progressive): SOI, a 16-byte APP0, then the SOF. Padded
+    /// past the smallest peek window that succeeds for a short file, so the
+    /// typefinder's marker walk actually reaches the SOF.
+    fn minimal_jpeg(sof: u8) -> Vec<u8> {
+        let mut d = vec![0xFF, 0xD8];
+        d.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x10]); // APP0, length 16
+        d.extend_from_slice(&[0u8; 14]);
+        d.extend_from_slice(&[0xFF, sof, 0x00, 0x11]); // frame header, length 17
+        d.extend_from_slice(&[0u8; 15]);
+        d.extend_from_slice(&[0u8; 600]);
+        d
+    }
+
+    #[test]
+    fn jpeg_baseline_labeled_for_hw() {
+        init();
+        // A baseline (SOF0) JPEG gets the HW-preferred private caps, and our
+        // higher-ranked finder wins over the in-tree image/jpeg finder so it
+        // routes to fvajpegdec/fimagedec, not avdec_mjpeg.
+        assert_eq!(
+            detect(&minimal_jpeg(0xC0)).as_deref(),
+            Some("image/x-fcast-jpeg")
+        );
+    }
+
+    #[test]
+    fn jpeg_progressive_labeled_for_sw() {
+        init();
+        // A progressive (SOF2) JPEG cannot use the VA decoder, so it gets the
+        // software private caps that only fimagedec claims.
+        assert_eq!(
+            detect(&minimal_jpeg(0xC2)).as_deref(),
+            Some("image/x-fcast-jpeg-sw")
+        );
     }
 
     #[test]

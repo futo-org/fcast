@@ -42,6 +42,8 @@ mod gui;
 mod image;
 mod imagedec;
 mod imagetypefind;
+#[cfg(target_os = "linux")]
+mod vajpegdec;
 mod inspector_graph;
 #[cfg(target_os = "macos")]
 mod iosurface;

@@ -3,11 +3,7 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use fcast_protocol::companion;
 use image as imagelib;
-use imagelib::{
-    AnimationDecoder, DynamicImage, ImageFormat, ImageReader,
-    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
-    metadata,
-};
+use imagelib::{DynamicImage, ImageFormat, ImageReader, metadata};
 use tracing::{debug, debug_span, error, info};
 
 use crate::{
@@ -154,12 +150,6 @@ impl ImageDecodeJob {
 }
 
 #[derive(Debug)]
-pub struct AnimationFrame {
-    pub image: SlintRgba8Pixbuf,
-    pub delay_ms: i64,
-}
-
-#[derive(Debug)]
 pub enum Event {
     DownloadResult {
         id: ImageDownloadId,
@@ -167,12 +157,6 @@ pub enum Event {
     },
     AudioThumbnailAvailable(DecodedImage),
     Decoded(DecodedImage),
-    DecodedAnimation {
-        id: ImageId,
-        frames: Vec<AnimationFrame>,
-        /// Source format short name (see `media_formats::Image::to_str`).
-        format: &'static str,
-    },
 }
 
 struct DecoderContext<'a> {
@@ -188,35 +172,6 @@ impl<'a> DecoderContext<'a> {
             job_id,
             job_type,
         }
-    }
-
-    fn handle_animation<'b>(
-        &self,
-        decoder: impl AnimationDecoder<'b>,
-        format: &'static str,
-    ) -> anyhow::Result<()> {
-        let mut slint_frames = Vec::new();
-        for frame in decoder.into_frames() {
-            let Ok(frame) = frame else {
-                break;
-            };
-
-            let delay = frame.delay();
-            let (num, denom) = delay.numer_denom_ms();
-            let delay_ms = (num as f64 / denom as f64) as i64;
-            slint_frames.push(AnimationFrame {
-                image: to_slint_pixbuf(&frame.into_buffer()),
-                delay_ms,
-            });
-        }
-
-        self.msg_tx.image(Event::DecodedAnimation {
-            id: self.job_id,
-            frames: slint_frames,
-            format,
-        });
-
-        Ok(())
     }
 
     fn handle_still(
@@ -286,38 +241,21 @@ impl<'a> DecoderContext<'a> {
         }
 
         match format {
-            media_formats::Image::ImageLib(format) => match format {
-                ImageFormat::Png => {
-                    let decoder = non_fatal!(PngDecoder::new(img_data), "PNG");
-                    if decoder.is_apng().unwrap_or(false) {
-                        self.handle_animation(non_fatal!(decoder.apng(), "APNG"), "apng")?;
-                    } else {
-                        self.handle_still(decoder, format_str)?;
+            media_formats::Image::ImageLib(format) => {
+                // Animations are decoded and looped by the player pipeline
+                // (fimagedec), so anything reaching this legacy decoder is
+                // shown as a still. GIF/APNG/animated WebP only land here as
+                // audio cover art or an odd mime, where the first frame is the
+                // right thing to show.
+                let decoder = match ImageReader::with_format(img_data, format).into_decoder() {
+                    Ok(d) => d,
+                    Err(err) => {
+                        error!(?err, "Failed to read image");
+                        return Ok(());
                     }
-                }
-                ImageFormat::Gif => {
-                    let decoder = non_fatal!(GifDecoder::new(img_data), "GIF");
-                    self.handle_animation(decoder, format_str)?;
-                }
-                ImageFormat::WebP => {
-                    let decoder = non_fatal!(WebPDecoder::new(img_data), "WebP");
-                    if decoder.has_animation() {
-                        self.handle_animation(decoder, format_str)?;
-                    } else {
-                        self.handle_still(decoder, format_str)?;
-                    }
-                }
-                _ => {
-                    let decoder = match ImageReader::with_format(img_data, format).into_decoder() {
-                        Ok(d) => d,
-                        Err(err) => {
-                            error!(?err, "Failed to read image");
-                            return Ok(());
-                        }
-                    };
-                    self.handle_still(decoder, format_str)?;
-                }
-            },
+                };
+                self.handle_still(decoder, format_str)?;
+            }
             media_formats::Image::JpegXl => {
                 // TODO: handle animations
                 // let image = jxl_oxide::JxlImage::builder().read(img_data).unwrap();

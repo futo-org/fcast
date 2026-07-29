@@ -213,6 +213,11 @@ const FULL_ELEMENTS_LINUX: &[(&str, &[&str])] = &[
 /// no wrapdb wrap, so the hermetic mac/win builds drop them — Linux-only.
 const ENABLE_LINUX: &[(Plugins, &str)] = &[
     (Plugins::Bad, "va"),
+    // jpegparse: required by fvajpegdec (VA-API JPEG still decode) to parse the
+    // stream before vajpegdec, whose sink caps need the parsed fields. The image
+    // codecs are stripped in DISABLE_COMMON (fimagedec handles images), so
+    // re-enable just this parser on Linux; ENABLE runs after DISABLE and wins.
+    (Plugins::Bad, "jpegformat"),
     (Plugins::Bad, "srt"),
     (Plugins::Bad, "assrender"),
     (Plugins::Good, "wavpack"),

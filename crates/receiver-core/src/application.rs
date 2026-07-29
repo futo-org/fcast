@@ -391,10 +391,10 @@ pub struct Application {
     load_watchdog_epoch: u64,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
-    /// True while the current load is an animated image routed through the
-    /// player pipeline (fimagedec) rather than the legacy in-GUI image
-    /// downloader. Progress traffic is suppressed for these loads and the
-    /// image view is painted transparent so the video sink shows through.
+    /// True while the current load is an image routed through the player
+    /// pipeline (fimagedec) rather than the legacy in-GUI image downloader.
+    /// Progress traffic is suppressed for these loads and the image view is
+    /// painted transparent so the video sink shows through.
     image_via_player: bool,
     have_audio_track_cover: bool,
     current_media: Option<MediaSourceState>,
@@ -1463,9 +1463,10 @@ impl Application {
 
         // Image containers decoded by fimagedec inside the normal player
         // pipeline (animations loop forever and never post EOS, stills hold
-        // their frame). JPEG stays on the legacy in-GUI downloader path (its
-        // caps collide with MJPEG video, see `imagedec::player_mime_types`),
-        // as does any unrecognized image mime.
+        // their frame). JPEG rides this path too, via the private
+        // image/x-fcast-jpeg caps so it never disturbs MJPEG video (see
+        // `imagedec::player_mime_types`). Only an unrecognized image mime,
+        // which fimagedec cannot decode, stays on the legacy in-GUI path.
         let pipeline_image = crate::imagedec::player_mime_types().contains(&container.as_str());
 
         let player_variant = if container.starts_with("image/") {
@@ -3901,24 +3902,6 @@ impl Application {
                 );
 
                 self.gui.set_image_preview(img);
-                self.gui.set_app_state(AppState::Playing);
-
-                self.media_loaded_successfully();
-            }
-            image::Event::DecodedAnimation { id, frames, format } => {
-                if id != self.current_image_id {
-                    warn!(id, "Ignoring old image decode result");
-                    return Ok(false);
-                }
-
-                let size = frames
-                    .first()
-                    .map(|f| (f.image.width(), f.image.height()))
-                    .unwrap_or((0, 0));
-                self.inspector_image =
-                    format!("{format} {}x{}, {} frames", size.0, size.1, frames.len());
-
-                self.gui.set_animation(frames);
                 self.gui.set_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();

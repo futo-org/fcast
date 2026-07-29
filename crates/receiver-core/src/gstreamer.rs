@@ -66,6 +66,10 @@ pub fn init_and_load_plugins() {
     crate::fwebrtcsrc::plugin_init().unwrap();
     crate::imagetypefind::plugin_init().unwrap();
     crate::imagedec::plugin_init().unwrap();
+    // Registers only on a VA-capable Linux box (see the fn); a no-op otherwise,
+    // so baseline JPEG falls back to fimagedec.
+    #[cfg(target_os = "linux")]
+    crate::vajpegdec::plugin_init().unwrap();
     gstrswebrtc::plugin_register_static().unwrap();
 
     #[cfg(feature = "static-gst-plugins")]
