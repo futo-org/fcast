@@ -1020,11 +1020,11 @@ impl Application {
                 generation_time: current_time_millis(),
                 time: Some(position),
                 duration: Some(duration),
-                state: match playback_state {
-                    GuiPlaybackState::Idle | GuiPlaybackState::Loading => PlaybackState::Idle,
-                    GuiPlaybackState::Playing => PlaybackState::Playing,
-                    GuiPlaybackState::Paused => PlaybackState::Paused,
-                },
+                // NOT derived from the GUI Loading state, which collapses a
+                // mid-playback Buffering into Idle: that reads as "playback
+                // ended" on the wire and makes senders advance the queue
+                // during a gapless handoff (see `project_wire_state`).
+                state: self.player.wire_playback_state(),
                 speed: Some(playback_rate),
                 item_index: None,
             };

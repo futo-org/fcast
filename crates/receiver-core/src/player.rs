@@ -73,6 +73,25 @@ impl PlayerState {
     }
 }
 
+/// Project the player state onto the v3 wire [`PlaybackState`], which has no
+/// Buffering variant (Idle/Playing/Paused only). Progress broadcasts run only
+/// once media info exists, so a transient Buffering there is a mid-playback
+/// rebuffer or gapless switch, NOT a stop: report the transport the pipeline
+/// is resuming toward (`desired`) rather than a bogus Idle. Mapping it to Idle
+/// makes senders read "playback ended" and advance/stop the queue in the
+/// middle of a gapless handoff.
+fn project_wire_state(state: PlayerState, desired: RunningState) -> PlaybackState {
+    match state {
+        PlayerState::Stopped => PlaybackState::Idle,
+        PlayerState::Playing => PlaybackState::Playing,
+        PlayerState::Paused => PlaybackState::Paused,
+        PlayerState::Buffering => match desired {
+            RunningState::Paused => PlaybackState::Paused,
+            RunningState::Playing => PlaybackState::Playing,
+        },
+    }
+}
+
 pub type StreamId = String;
 
 /// Which stream slot a track-change request targets.
@@ -1367,6 +1386,14 @@ impl Player {
         }
     }
 
+    /// The player state projected onto the v3 wire enum (Idle/Playing/Paused,
+    /// no Buffering variant), for progress broadcasts. See
+    /// [`project_wire_state`] for why a transient Buffering must not become
+    /// Idle.
+    pub fn wire_playback_state(&self) -> PlaybackState {
+        project_wire_state(self.player_state(), self.desired_transport)
+    }
+
     pub fn is_live(&self) -> bool {
         self.state_machine.is_live
     }
@@ -1404,6 +1431,37 @@ impl Drop for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffering_projects_onto_the_resuming_transport_not_idle() {
+        // Regression: a gapless switch / rebuffer briefly leaves the state
+        // machine in a transient (running() == None -> Buffering). The v3
+        // wire enum has no Buffering, and the old mapping collapsed it to
+        // Idle, broadcasting "playback ended" mid-handoff (senders then
+        // advanced or stopped the queue). Buffering must project onto the
+        // transport being resumed instead.
+        assert_eq!(
+            project_wire_state(PlayerState::Buffering, RunningState::Playing),
+            PlaybackState::Playing,
+        );
+        assert_eq!(
+            project_wire_state(PlayerState::Buffering, RunningState::Paused),
+            PlaybackState::Paused,
+        );
+        // Steady states pass straight through; a genuine stop is still Idle.
+        assert_eq!(
+            project_wire_state(PlayerState::Playing, RunningState::Playing),
+            PlaybackState::Playing,
+        );
+        assert_eq!(
+            project_wire_state(PlayerState::Paused, RunningState::Paused),
+            PlaybackState::Paused,
+        );
+        assert_eq!(
+            project_wire_state(PlayerState::Stopped, RunningState::Playing),
+            PlaybackState::Idle,
+        );
+    }
 
     #[test]
     fn missing_plugin_ignorable_only_for_metadata_streams() {

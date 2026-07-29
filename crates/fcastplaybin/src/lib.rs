@@ -699,6 +699,16 @@ struct Core {
     pad_removed_sig: gst::glib::SignalHandlerId,
 }
 
+/// The user-facing half of a gapless activation, held back from decodebin3's
+/// output until the new item's audio actually reaches the sink. See
+/// [`Inner::held_activation`].
+struct HeldActivation {
+    /// The new item's stream collection, re-emitted right after
+    /// [`PlaybinEvent::PreparedActivated`] (the fresh-load ordering the caller
+    /// relies on).
+    collection: Option<gst::StreamCollection>,
+}
+
 struct Inner {
     pipeline: gst::Pipeline,
     /// See [`Core`]. `None` only during construction.
@@ -807,6 +817,19 @@ struct Inner {
     /// draining out of decodebin3, and an old EOS reaching the sinks there
     /// can end the pipeline between items. Reset per load.
     retired_group: Mutex<Option<gst::GroupId>>,
+    /// A gapless activation's user-facing events (PreparedActivated + the new
+    /// item's collection), held back from decodebin3's output until the new
+    /// item's audio crosses the decoupling queue to the sink. The switch is
+    /// DETECTED at decodebin3's output — one decoupling-queue ahead of the
+    /// speakers — so emitting the title/duration there flips the UI before the
+    /// sound. The `fpb-aqueue` src STREAM_START probe releases this when the
+    /// item's audio actually reaches the sink, matching the sink-anchored
+    /// playback position. Only set for items with audio (the release is
+    /// anchored on the audio queue); audio-less items emit immediately. At
+    /// most one is ever held: real media never runs two swaps within one
+    /// queue depth, and a superseding activation flushes any prior hold.
+    /// Cleared per load.
+    held_activation: Mutex<Option<HeldActivation>>,
 }
 
 /// An RAII hold on [`Inner::route_gate`]. Dropping it releases the gate
@@ -889,6 +912,22 @@ pub struct Sinks {
     /// How the per-load audio sink is built (see [`AudioSink`]).
     pub audio: AudioSink,
 }
+
+/// Audio decoupling queue depth (`fpb-aqueue` `max-size-time`). Chosen purely
+/// for decoupling headroom: it absorbs sink scheduling jitter so a busy CPU
+/// never starves the audio sink. 1s is generous (audio decodes far faster than
+/// realtime and upstream use-buffering handles the source). It must stay below
+/// the gapless pre-arm lead so the EOS-hold at decodebin3's output still
+/// catches a late pre-arm's outgoing EOS (the pre-arm arms seconds before the
+/// end; 1s of race-ahead is well inside that). It does NOT set the gapless
+/// transition seam any more: the user-facing item switch is HELD and released
+/// when the new item's audio actually crosses this queue to the sink (see
+/// [`Inner::held_activation`]), so the title/duration flip with the sound
+/// regardless of this depth. Deep only while a video chain is present, to
+/// absorb audio during a video re-preroll (the A/V mid-load deadlock the queue
+/// exists for). See `aqueue` in `new`.
+const AQUEUE_AUDIO_TIME_NS: u64 = 1_000_000_000;
+const AQUEUE_VIDEO_TIME_NS: u64 = 30 * 1_000_000_000;
 
 fn make(factory: &str, name: &str) -> Result<gst::Element> {
     gst::ElementFactory::make(factory)
@@ -996,10 +1035,20 @@ impl FcastPlaybin {
         // which then can't feed VIDEO, so the video sink never re-prerolls
         // and the whole pipeline deadlocks. The queue absorbs the audio that
         // piles up during the video re-preroll window. Bounded by TIME (the
-        // default 1s cap is what bites, 30s caps memory to a few MB of PCM)
-        // with no min-threshold, so it adds no playback latency.
+        // default 1s cap is what bites, VIDEO depth caps memory to a few MB
+        // of PCM) with no min-threshold, so it adds no playback latency.
+        //
+        // The depth is video-conditional (see `AQUEUE_*_TIME_NS`): the deep
+        // buffer is ONLY needed while a video chain can re-preroll. For
+        // audio-only playback a deep queue is actively harmful to gapless: it
+        // carries the outgoing item's decoded EOS past the gapless EOS-hold
+        // (at decodebin3's output, upstream of this queue) tens of seconds
+        // before the speakers reach it, so a pre-arm that lands later (the
+        // field: the sender queues the next track seconds before the end) is
+        // too late and the item is skipped. A shallow audio-only queue keeps
+        // the hold near the sink boundary. `ensure_video_chain` deepens it.
         let aqueue = make("queue", "fpb-aqueue")?;
-        aqueue.set_property("max-size-time", 30u64 * 1_000_000_000);
+        aqueue.set_property("max-size-time", AQUEUE_AUDIO_TIME_NS);
         aqueue.set_property("max-size-bytes", 0u32);
         aqueue.set_property("max-size-buffers", 0u32);
 
@@ -1072,9 +1121,32 @@ impl FcastPlaybin {
             swap_gate: SwapGate::default(),
             active_group: Mutex::new(None),
             retired_group: Mutex::new(None),
+            held_activation: Mutex::new(None),
         });
 
         Inner::install_core(&inner)?;
+
+        // The sink-boundary release for a held gapless activation (see
+        // `Inner::held_activation`). A STREAM_START leaving the decoupling
+        // queue means the item behind it has drained and the NEXT item's audio
+        // is now reaching the sink: exactly one STREAM_START crosses per audio
+        // item, and a hold is only ever armed at a gapless boundary, so the
+        // first STREAM_START after an arm IS that boundary — no group-id
+        // bookkeeping needed (and none possible: streamsynchronizer may rewrite
+        // group ids downstream). The initial load's STREAM_START finds no hold
+        // and is a no-op.
+        if let Some(src) = inner.audio_entry.static_pad("src") {
+            let weak = Arc::downgrade(&inner);
+            src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                if let Some(gst::PadProbeData::Event(event)) = &info.data
+                    && matches!(event.view(), gst::EventView::StreamStart(_))
+                    && let Some(inner) = weak.upgrade()
+                {
+                    inner.release_held_activation();
+                }
+                gst::PadProbeReturn::Ok
+            });
+        }
 
         // Volume notifies become events. The dedicated element makes them
         // deterministic (see `set_volume`).
@@ -1211,6 +1283,9 @@ impl FcastPlaybin {
         // records it (see `Inner::active_group`).
         *inner.active_group.lock() = None;
         *inner.retired_group.lock() = None;
+        // A fresh load supersedes any gapless activation still held for the
+        // sink boundary; its events belong to a play item this load replaces.
+        *inner.held_activation.lock() = None;
         // Track desires are per-item: the new load starts on the pipeline's
         // own defaults.
         inner.selection.lock().reset();
@@ -1744,6 +1819,13 @@ impl FcastPlaybin {
     }
 
     pub fn position(&self) -> Option<gst::ClockTime> {
+        // A correct gapless swap resets the segment, so the sink already
+        // reports the current item's own stream time (no cross-item rebase
+        // needed). This is the sink-anchored source of truth: the user-facing
+        // item switch (title/duration) is held until the new item's audio
+        // reaches the sink (see `Inner::held_activation`), so it lands in step
+        // with this position flipping to the new item's 0-based time, not a
+        // decoupling-queue ahead of it.
         self.inner.pipeline.query_position::<gst::ClockTime>()
     }
 
@@ -2358,10 +2440,19 @@ impl Inner {
     /// The activation itself: adopt the prepared generation NOW, on the
     /// calling posting/streaming thread, so everything after it is stamped
     /// with the new one; re-seed the per-item state exactly like a load's
-    /// reset; emit [`PlaybinEvent::PreparedActivated`] and the held-back
-    /// collection (activation-then-collection, a fresh load's order); and
-    /// queue the input surgery for the worker.
+    /// reset; and queue the input surgery for the worker. The user-facing
+    /// [`PlaybinEvent::PreparedActivated`] and the held-back collection are
+    /// NOT emitted here for an item with audio: they are held and released
+    /// when the item's audio reaches the sink (see [`Inner::held_activation`]),
+    /// so the title/duration switch lands with the sound. Audio-less items
+    /// emit them here, keeping the activation-then-collection order.
     fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
+        // A prior hold still waiting on its sink boundary (unreachable with
+        // real media — two swaps within one queue depth) is flushed under the
+        // OUTGOING generation, before we adopt this one, to keep order and
+        // stamps correct.
+        self.release_held_activation();
+
         self.generation.store(prepared.generation, Ordering::SeqCst);
 
         // Output pads still carrying the previous item's group keep their
@@ -2401,10 +2492,15 @@ impl Inner {
                 .unwrap_or_default();
         }
 
-        self.emit(PlaybinEvent::PreparedActivated);
-        if let Some(collection) = prepared.pending_collection {
-            // Feed the engine before the caller sees the collection, the
-            // same sequencing the ordinary collection arm performs.
+        // The selection engine is pipeline truth and updates NOW (a track
+        // command must act on the item that is actually decoding), even though
+        // the caller-facing collection event is held with the switch below.
+        let has_audio = prepared.pending_collection.as_ref().is_some_and(|collection| {
+            collection
+                .iter()
+                .any(|s| s.stream_type().contains(gst::StreamType::AUDIO))
+        });
+        if let Some(collection) = prepared.pending_collection.as_ref() {
             let streams = collection
                 .iter()
                 .filter_map(|s| {
@@ -2423,12 +2519,45 @@ impl Inner {
                 })
                 .collect();
             self.selection.lock().collection_changed(streams);
-            self.emit(PlaybinEvent::StreamCollection(collection));
+        }
+
+        // The user-facing switch: hold it for the sink boundary if the item
+        // has audio to anchor the release on, else emit it now (an audio-less
+        // item never crosses the audio queue, so there is nothing to wait for).
+        let held = HeldActivation {
+            collection: prepared.pending_collection,
+        };
+        if has_audio {
+            *self.held_activation.lock() = Some(held);
+        } else {
+            self.emit_held(held);
         }
 
         // Input surgery (removing the drained previous inputs) must not run
         // on this streaming thread.
         let _ = self.work_tx.send(Job::FinishActivation);
+    }
+
+    /// Emit a gapless activation's user-facing events in the canonical
+    /// fresh-load order: [`PlaybinEvent::PreparedActivated`] (which the caller
+    /// uses to adopt the new generation, letting the collection past its
+    /// supersession guard) followed by the new item's collection.
+    fn emit_held(&self, held: HeldActivation) {
+        self.emit(PlaybinEvent::PreparedActivated);
+        if let Some(collection) = held.collection {
+            self.emit(PlaybinEvent::StreamCollection(collection));
+        }
+    }
+
+    /// Release a held gapless activation, if one is waiting. Called from the
+    /// `fpb-aqueue` src STREAM_START probe when the item's audio reaches the
+    /// sink, and as a flush before a superseding activation. A no-op when
+    /// nothing is held (the common case, and every non-boundary STREAM_START).
+    fn release_held_activation(&self) {
+        let held = self.held_activation.lock().take();
+        if let Some(held) = held {
+            self.emit_held(held);
+        }
     }
 
     /// Translate a bus message into its typed event, applying the crate's
@@ -3839,6 +3968,10 @@ impl Inner {
     /// chain cannot hang a video-less preroll and never counts in the bin's
     /// EOS/STREAM_START aggregation, by construction.
     fn ensure_video_chain(&self) -> Result<()> {
+        // A video chain can re-preroll mid-load and needs the deep audio
+        // buffer to avoid the demuxer-stall deadlock (see `aqueue` in `new`).
+        self.audio_entry
+            .set_property("max-size-time", AQUEUE_VIDEO_TIME_NS);
         if self.overlay.parent().is_none() {
             let elements: Vec<&gst::Element> = self.video_chain.iter().collect();
             self.pipeline
@@ -3891,6 +4024,11 @@ impl Inner {
     /// (`unroute_db3_pad`). Once removed, the bin's EOS aggregation can no
     /// longer wait on a sink that will never see data again.
     fn remove_video_chain(&self) {
+        // No video chain to deadlock: restore the shallow audio-only queue so
+        // gapless holds the outgoing EOS near the sink boundary (see `aqueue`
+        // in `new`). Unconditional: a load reset removes the chain and re-shallows.
+        self.audio_entry
+            .set_property("max-size-time", AQUEUE_AUDIO_TIME_NS);
         if self.overlay.parent().is_none() {
             return;
         }
@@ -4672,6 +4810,7 @@ mod tests {
         assert!(!deselects_video(true, &[], &ids(&["aud-1"])));
     }
 
+
     #[test]
     fn join_state_caps_at_paused_during_transitions() {
         use gst::State::*;
@@ -4797,6 +4936,153 @@ mod tests {
 #[cfg(test)]
 mod pipeline_tests {
     use super::*;
+    use std::time::Instant;
+
+    /// Encode `seconds` of silence to an MP3 file (audio/mpeg, the real fcomp
+    /// container). Done once per source so playback can go through the real
+    /// `urisourcebin` topology below.
+    fn make_mp3_file(path: &std::path::Path, seconds: f64) {
+        // audiotestsrc defaults: 44100 Hz, 1024 samples/buffer.
+        let num_buffers = (seconds * 44100.0 / 1024.0).round() as i32;
+        let src = gst::ElementFactory::make("audiotestsrc")
+            .property("num-buffers", num_buffers)
+            .property("is-live", false)
+            .property_from_str("wave", "silence")
+            .build()
+            .unwrap();
+        let conv = gst::ElementFactory::make("audioconvert").build().unwrap();
+        let enc = gst::ElementFactory::make("lamemp3enc").build().unwrap();
+        let sink = gst::ElementFactory::make("filesink")
+            .property("location", path.to_str().unwrap())
+            .build()
+            .unwrap();
+        let pipeline = gst::Pipeline::new();
+        pipeline.add_many([&src, &conv, &enc, &sink]).unwrap();
+        gst::Element::link_many([&src, &conv, &enc, &sink]).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let bus = pipeline.bus().unwrap();
+        while let Some(msg) = bus.timed_pop(gst::ClockTime::from_seconds(10)) {
+            match msg.view() {
+                gst::MessageView::Eos(_) => break,
+                gst::MessageView::Error(err) => panic!("mp3 encode failed: {err:?}"),
+                _ => {}
+            }
+        }
+        pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    /// A unique temp path under the test dir (no wall clock needed).
+    fn temp_mp3(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "fcastplaybin-gapless-{}-{tag}-{n}.mp3",
+            std::process::id()
+        ))
+    }
+
+    /// The real gapless source: `urisourcebin` over a file URI with
+    /// `parse-streams`, exactly what `media_source::build_uri_source_with_head`
+    /// builds (so decodebin3 gets the stream collection urisourcebin forwards).
+    fn uri_source(path: &std::path::Path) -> gst::Element {
+        gst::ElementFactory::make("urisourcebin")
+            .property("uri", format!("file://{}", path.display()))
+            .property("parse-streams", true)
+            .property("use-buffering", true)
+            .build()
+            .unwrap()
+    }
+
+
+    fn fake_audio_sinks() -> Sinks {
+        Sinks {
+            video: None,
+            audio: AudioSink::Factory(Box::new(|| {
+                Ok(gst::ElementFactory::make("fakesink")
+                    .property("sync", true)
+                    .build()?)
+            })),
+        }
+    }
+
+    /// Gapless handoff smoke test, end to end on a real pipeline: play item A
+    /// through `urisourcebin` (the field's gapless source topology), pre-arm
+    /// item B, and assert B plays to ITS end rather than being cut off at A's.
+    /// Guards the generic swap path. NOTE: this passes for `file://`/`filesrc`
+    /// sources. The FIELD bug (an fcomp item cut at the previous item's
+    /// declared duration) does NOT reproduce here, which localizes it to
+    /// `fcompsrc`'s size/segment/EOS behavior, not the swap itself (a
+    /// fcompsrc + fake-companion repro belongs in receiver-core).
+    #[test]
+    fn gapless_swap_plays_the_next_item_to_its_end() {
+        gst::init().unwrap();
+        let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        playbin.set_event_handler(None, move |event, _generation| match event {
+            PlaybinEvent::PreparedActivated => {
+                let _ = tx.send(Ev::Activated);
+            }
+            PlaybinEvent::EndOfStream => {
+                let _ = tx.send(Ev::Eos);
+            }
+            _ => {}
+        });
+
+        // A is long enough that decodebin3's multiqueue and the decoupling
+        // audio queue cannot swallow it whole, so its EOS is PACED to near its
+        // end (mirroring a real track). Pre-arming early then lands before
+        // A's EOS reaches the output-side hold, the order the field hits.
+        let a_secs = 5.0;
+        let b_secs = 2.0;
+        let a_path = temp_mp3("a");
+        let b_path = temp_mp3("b");
+        make_mp3_file(&a_path, a_secs);
+        make_mp3_file(&b_path, b_secs);
+
+        playbin
+            .load(MediaInput::Element(uri_source(&a_path)), StartPoint::Live)
+            .unwrap();
+        // Pre-arm B BEFORE A's end-of-stream can reach the output hold. The
+        // field pre-arms tens of seconds early; a short test source's input
+        // drains at load (its parsed data fits decodebin3's multiqueue whole),
+        // so the pre-arm has to be up front to win that race. `pending` is
+        // then set when A's EOS drains out, which is what must hold it back.
+        playbin.prepare_next_async(MediaInput::Element(uri_source(&b_path)));
+        let t0 = Instant::now();
+        playbin.play().unwrap();
+
+        let mut activated = false;
+        let eos_elapsed = loop {
+            match rx.recv_timeout(Duration::from_secs(15)) {
+                Ok(Ev::Activated) => activated = true,
+                Ok(Ev::Eos) => break Some(t0.elapsed()),
+                Err(_) => break None,
+            }
+        };
+        let _ = playbin.stop();
+        let _ = std::fs::remove_file(&a_path);
+        let _ = std::fs::remove_file(&b_path);
+
+        let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
+        assert!(activated, "the prepared item never activated (handoff missed)");
+        // Gapless success plays A then B back to back (~7s). The bug cuts B off
+        // at A's end, so EOS lands near A's length (~5s) instead. The 6s
+        // threshold sits between the two with margin for buffering slack.
+        assert!(
+            eos_elapsed >= Duration::from_millis(6000),
+            "playback ended after {eos_elapsed:?}, expected ~{}s (A+B): the \
+             next item was cut off at the previous item's segment end",
+            a_secs + b_secs,
+        );
+    }
+
+    #[derive(PartialEq)]
+    enum Ev {
+        Activated,
+        Eos,
+    }
 
     /// The watchdog end to end, without FAST or media: attach a URI that
     /// never produces a stream (the pipeline sits in NULL, so urisourcebin

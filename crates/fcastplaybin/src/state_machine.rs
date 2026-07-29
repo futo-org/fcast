@@ -329,15 +329,24 @@ impl StateMachine {
                 }
                 SeekSlot::None => {}
             }
-            if self.target != self.current_state {
+            // Buffering held the pipeline at PAUSED (its start returned
+            // Started(Paused), which the caller dispatched). Settle in place
+            // ONLY when PAUSED is also the destination and the pipeline has
+            // already reached it. Otherwise redispatch toward the target. A
+            // PLAYING target must always redispatch: the buffering PAUSE is
+            // applied or still in flight, and current_state can lag it. A fully
+            // prefetched gapless item rebuffers and completes within one state
+            // round-trip, so buffering(100) arrives while current_state still
+            // reads the carried-over PLAYING (the gapless swap keeps the state
+            // machine, it never runs begin_load's reset to READY). Comparing
+            // the target against that stale PLAYING concluded "already settled"
+            // and left the in-flight PAUSE to win, wedging the next queue item
+            // paused for good.
+            if self.target != gst::State::Paused || self.current_state != gst::State::Paused {
                 self.phase = Phase::Changing;
                 return BufferingStateResult::Finished(Some(self.target));
             }
-            self.phase = match self.target {
-                gst::State::Paused => Phase::Running(RunningState::Paused),
-                gst::State::Playing => Phase::Running(RunningState::Playing),
-                _ => Phase::Stopped,
-            };
+            self.phase = Phase::Running(RunningState::Paused);
             return BufferingStateResult::Finished(None);
         }
 
@@ -816,6 +825,26 @@ mod tests {
         assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Waiting);
         assert_eq!(sm.buffering(40), BufferingStateResult::Buffering);
         assert_eq!(sm.buffering(100), BufferingStateResult::Finished(Some(gs!(Playing))));
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
+        assert_eq!(sm.running(), Some(rs!(Playing)));
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn fast_rebuffer_before_paused_settles_recovers() {
+        // Regression (gapless queue handoff): a fully prefetched next item
+        // rebuffers right after the swap and completes within one state
+        // round-trip, so buffering(100) arrives BEFORE the buffering(0)'s
+        // Paused has settled. The gapless swap carries the state machine over
+        // (no begin_load reset), so current_state still reads the previous
+        // item's Playing. Completion must redispatch Playing or the in-flight
+        // Paused lands and parks the item paused forever.
+        let mut sm = playing();
+        assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
+        assert_eq!(sm.current_state, gs!(Playing), "the buffering Paused has not settled yet");
+        assert_eq!(sm.buffering(100), BufferingStateResult::Finished(Some(gs!(Playing))));
+        // The in-flight Paused lands now, after completion already retargeted.
+        assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Playing)));
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), new_ps!(Playing));
         assert_eq!(sm.running(), Some(rs!(Playing)));
     }
