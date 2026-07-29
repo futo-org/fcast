@@ -1103,7 +1103,8 @@ impl InnerDevice {
 
     /// Assemble the aggregated track list from the mirror and forward it to the event handler.
     fn emit_tracks_changed(&mut self) {
-        self.event_handler.tracks_changed(self.track_mirror.snapshot());
+        self.event_handler
+            .tracks_changed(self.track_mirror.snapshot());
     }
 
     /// Resolve a media item's locator to a plain URL, registering a companion source (and taking
@@ -1165,7 +1166,8 @@ impl InnerDevice {
                 playback_duration: entry.playback_duration,
             });
         }
-        let msg = v4::MessageBuilder::new().load_queue(wire_items.into_iter(), start_index, autoplay);
+        let msg =
+            v4::MessageBuilder::new().load_queue(wire_items.into_iter(), start_index, autoplay);
         self.send_bytes(Opcode::Flatbuf, &msg).await?;
         self.queue_mirror
             .set(entries, start_index.map(|i| i as u32), autoplay);
@@ -1199,9 +1201,7 @@ impl InnerDevice {
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!(
-                    "file descriptor {fd} is already registered as a companion source"
-                ),
+                format!("file descriptor {fd} is already registered as a companion source"),
             ));
         }
         // SAFETY: the caller transferred ownership of `fd` to the SDK (see

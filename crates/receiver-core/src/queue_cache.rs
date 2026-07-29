@@ -244,7 +244,10 @@ impl Cache {
                 self.entries.insert(url, item);
             }
             Err(FetchError::HeadUnusable) => {
-                debug!(url, "No usable head for the queue item, it will stream live");
+                debug!(
+                    url,
+                    "No usable head for the queue item, it will stream live"
+                );
             }
             Err(err) => {
                 // Non-fatal: the live load path will report a real error if
@@ -289,7 +292,12 @@ impl Prefetcher {
                 let client = self.client.clone();
                 let headers = spec.headers;
                 tokio::spawn(async move {
-                    let result = match tokio::time::timeout(FETCH_TIMEOUT, fetch_http(&client, url, headers)).await {
+                    let result = match tokio::time::timeout(
+                        FETCH_TIMEOUT,
+                        fetch_http(&client, url, headers),
+                    )
+                    .await
+                    {
                         Ok(result) => result,
                         Err(_) => Err(FetchError::Other("prefetch timed out".into())),
                     };
@@ -303,10 +311,11 @@ impl Prefetcher {
             "fcomp" => {
                 let ctx = self.companion_ctx.clone();
                 tokio::spawn(async move {
-                    let result = match tokio::time::timeout(FETCH_TIMEOUT, fetch_comp(&ctx, &url)).await {
-                        Ok(result) => result,
-                        Err(_) => Err(FetchError::Other("prefetch timed out".into())),
-                    };
+                    let result =
+                        match tokio::time::timeout(FETCH_TIMEOUT, fetch_comp(&ctx, &url)).await {
+                            Ok(result) => result,
+                            Err(_) => Err(FetchError::Other("prefetch timed out".into())),
+                        };
                     tx.queue_cache(Event::Fetched {
                         url: raw_url,
                         epoch,
@@ -542,7 +551,9 @@ mod tests {
     fn sync_fetches_missing_and_evicts_stale() {
         let mut cache = enabled_cache();
         let mut fetched = Vec::new();
-        cache.sync(vec![spec("a"), spec("b")], &[], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("a"), spec("b")], &[], |s, e| {
+            fetched.push((s.url, e))
+        });
         assert_eq!(fetched.len(), 2);
 
         // Deliver one result.
@@ -557,7 +568,9 @@ mod tests {
         // New window without "a": entry evicted, "c" fetched, "b" still in
         // flight and not re-fetched.
         fetched.clear();
-        cache.sync(vec![spec("b"), spec("c")], &[], |s, e| fetched.push((s.url, e)));
+        cache.sync(vec![spec("b"), spec("c")], &[], |s, e| {
+            fetched.push((s.url, e))
+        });
         assert!(cache.get("a").is_none());
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].0, "c");

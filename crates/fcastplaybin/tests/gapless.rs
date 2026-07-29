@@ -10,8 +10,10 @@
 //! collection and selection, and playback continues seamlessly. The final
 //! item's end still produces a normal EOS.
 
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use fcastplaybin::{AudioSink, FcastPlaybin, MediaInput, PlaybinEvent, Sinks, StartPoint};
 use gst::prelude::*;

@@ -536,12 +536,7 @@ mod imp {
         /// A Started state that serves `position..` from the preloaded head,
         /// with no connection open yet. Only built when the settings carry a
         /// head (which implies a range-capable server and a known size).
-        fn head_state(
-            &self,
-            uri: Url,
-            position: u64,
-            stop: Option<u64>,
-        ) -> Option<State> {
+        fn head_state(&self, uri: Url, position: u64, stop: Option<u64>) -> Option<State> {
             let settings = self.settings.lock();
             let head = settings.preloaded_head.as_ref()?;
             if settings.preloaded_size == 0 || position >= head.len() as u64 {
@@ -1092,8 +1087,7 @@ mod imp {
                 if position < limit {
                     let end = (position + PRELOADED_HEAD_CHUNK).min(limit);
                     // Zero-copy sub-slice of the refcounted head bytes.
-                    let chunk =
-                        glib::Bytes::from_bytes(&head, position as usize..end as usize);
+                    let chunk = glib::Bytes::from_bytes(&head, position as usize..end as usize);
                     let mut buffer = gst::Buffer::from_slice(chunk);
                     {
                         let buffer = buffer.get_mut().unwrap();

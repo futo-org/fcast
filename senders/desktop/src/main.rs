@@ -984,9 +984,7 @@ impl Application {
                     thumbnail_url: Self::get_optimal_thumbnail(&src),
                 }),
                 request_headers: format.http_headers.as_ref().map(|headers| {
-                    HashMap::from_iter(
-                        headers.iter().map(|(k, v)| (k.to_string(), v.to_string())),
-                    )
+                    HashMap::from_iter(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())))
                 }),
             },
             None,
@@ -2213,16 +2211,14 @@ impl Application {
             }
             Event::AddSubtitle { url } => {
                 if let Some(session) = &mut self.session_state {
-                    if let Err(err) =
-                        session
-                            .device
-                            .add_subtitle_source(fcast_sender_sdk::device::SubtitleSource {
-                                url,
-                                // Select it immediately so it shows up right away.
-                                select: true,
-                                name: None,
-                            })
-                    {
+                    if let Err(err) = session.device.add_subtitle_source(
+                        fcast_sender_sdk::device::SubtitleSource {
+                            url,
+                            // Select it immediately so it shows up right away.
+                            select: true,
+                            name: None,
+                        },
+                    ) {
                         error!("Failed to add external subtitle: {err}");
                     }
                 }

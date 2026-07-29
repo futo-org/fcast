@@ -16,27 +16,33 @@
 // represent, they participate in signed arithmetic (deltas that can go negative),
 // and some live in `AtomicI64`. `Duration` would fit none of those cleanly.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
+    },
+};
 
 use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
-use crate::buffer::{NO_US, SabrTrackBuffer};
-use crate::error::SabrError;
-use crate::format::{SabrFormat, SabrFormatKey};
-use crate::http::{SabrBody, SabrTransport};
-use crate::proto::{
-    BufferedRange, ClientAbrState, ClientInfo, FormatInitializationMetadata, LiveMetadata,
-    MediaHeader, MediaType, NextRequestPolicy, SabrContext, SabrContextSendingPolicy,
-    SabrContextUpdate, SabrError as SabrErrorPart, SabrRedirect, SabrSeek, SnackbarMessage,
-    StreamProtectionStatus, StreamerContext, TimeRange, VideoPlaybackAbrRequest,
+use crate::{
+    buffer::{NO_US, SabrTrackBuffer},
+    error::SabrError,
+    format::{SabrFormat, SabrFormatKey},
+    http::{SabrBody, SabrTransport},
+    proto::{
+        BufferedRange, ClientAbrState, ClientInfo, FormatInitializationMetadata, LiveMetadata,
+        MediaHeader, MediaType, NextRequestPolicy, SabrContext, SabrContextSendingPolicy,
+        SabrContextUpdate, SabrError as SabrErrorPart, SabrRedirect, SabrSeek, SnackbarMessage,
+        StreamProtectionStatus, StreamerContext, TimeRange, VideoPlaybackAbrRequest,
+    },
+    segment::SabrSegment,
+    spec::{Role, SabrStreamSpec},
+    ump::{PartType, UmpReader},
 };
-use crate::segment::SabrSegment;
-use crate::spec::{Role, SabrStreamSpec};
-use crate::ump::{PartType, UmpReader};
 use prost::Message;
 
 // --- tunables ---
@@ -76,7 +82,9 @@ pub enum SabrSessionEvent<'a> {
     FormatInitialization(&'a FormatInitializationMetadata),
     SessionError(&'a SabrError),
     /// The server asked us to back off for `delay_ms` while starved.
-    Backoff { delay_ms: i64 },
+    Backoff {
+        delay_ms: i64,
+    },
     BackoffEnded,
 }
 
@@ -433,9 +441,10 @@ impl SabrSession {
                     .cloned()
             })
             .or_else(|| {
-                state.server_chosen.get(&role).and_then(|chosen| {
-                    acceptable.iter().find(|a| a.key() == *chosen).cloned()
-                })
+                state
+                    .server_chosen
+                    .get(&role)
+                    .and_then(|chosen| acceptable.iter().find(|a| a.key() == *chosen).cloned())
             })
             .unwrap_or_else(|| acceptable[0].clone());
 
@@ -543,7 +552,9 @@ impl SabrSession {
         }
         reanchor_demands(&mut state, from_us);
 
-        state.backoff_until_ms = state.server_backoff_until_ms.max(state.error_backoff_until_ms);
+        state.backoff_until_ms = state
+            .server_backoff_until_ms
+            .max(state.error_backoff_until_ms);
         state.aborting = true;
         self.shared.notify.notify_waiters();
         true
@@ -591,8 +602,9 @@ async fn pump(shared: Arc<Shared>) {
                 let delay = (ERROR_BACKOFF_BASE_MS << shift).min(ERROR_BACKOFF_MAX_MS);
                 let mut state = shared.state.lock();
                 state.error_backoff_until_ms = now_ms() + delay;
-                state.backoff_until_ms =
-                    state.server_backoff_until_ms.max(state.error_backoff_until_ms);
+                state.backoff_until_ms = state
+                    .server_backoff_until_ms
+                    .max(state.error_backoff_until_ms);
             }
         }
     }
@@ -631,11 +643,8 @@ async fn pump_once(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<(), Pu
                 break;
             }
         }
-        let _ = tokio::time::timeout(
-            Duration::from_millis(PUMP_IDLE_POLL_MS),
-            notified.as_mut(),
-        )
-        .await;
+        let _ =
+            tokio::time::timeout(Duration::from_millis(PUMP_IDLE_POLL_MS), notified.as_mut()).await;
     }
     if shared.released.load(Ordering::Acquire) {
         return Err(PumpStep::Idle);
@@ -767,7 +776,10 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
     let accepted_keys = {
         let state = shared.state.lock();
         let mut keys = HashSet::new();
-        for d in [&state.video_demand, &state.audio_demand].into_iter().flatten() {
+        for d in [&state.video_demand, &state.audio_demand]
+            .into_iter()
+            .flatten()
+        {
             for a in &d.alternates {
                 keys.insert(a.key());
             }
@@ -914,7 +926,11 @@ async fn consume(
             if shared.state.lock().restart_epoch != start_epoch {
                 break;
             }
-            let part = match reader.next().await.map_err(|e| PumpStep::Error(SabrError::Io(e)))? {
+            let part = match reader
+                .next()
+                .await
+                .map_err(|e| PumpStep::Error(SabrError::Io(e)))?
+            {
                 Some(p) => p,
                 None => break,
             };
@@ -1291,8 +1307,14 @@ fn on_live_metadata(shared: &Arc<Shared>, metadata: LiveMetadata) {
     if metadata.min_seekable_timescale > 0 && metadata.max_seekable_timescale > 0 {
         log::debug!(
             "sabr: live metadata window=[{}us,{}us] headSeq={} headTimeMs={}",
-            ticks_to_us(metadata.min_seekable_time_ticks, metadata.min_seekable_timescale),
-            ticks_to_us(metadata.max_seekable_time_ticks, metadata.max_seekable_timescale),
+            ticks_to_us(
+                metadata.min_seekable_time_ticks,
+                metadata.min_seekable_timescale
+            ),
+            ticks_to_us(
+                metadata.max_seekable_time_ticks,
+                metadata.max_seekable_timescale
+            ),
             metadata.head_sequence_number,
             metadata.head_sequence_time_ms,
         );
@@ -1301,8 +1323,7 @@ fn on_live_metadata(shared: &Arc<Shared>, metadata: LiveMetadata) {
 }
 
 fn reestimate_inexact_durations(shared: &Arc<Shared>) {
-    let buffers: Vec<Arc<SabrTrackBuffer>> =
-        shared.buffers.lock().values().cloned().collect();
+    let buffers: Vec<Arc<SabrTrackBuffer>> = shared.buffers.lock().values().cloned().collect();
     for buffer in buffers {
         for segment in buffer.snapshot() {
             if segment.duration_exact() || segment.is_init {
@@ -1314,7 +1335,8 @@ fn reestimate_inexact_durations(shared: &Arc<Shared>) {
             if segment.duration_exact() {
                 continue;
             }
-            let est = estimate_segment_us(shared, segment.sequence_number, segment.start_us, &buffer);
+            let est =
+                estimate_segment_us(shared, segment.sequence_number, segment.start_us, &buffer);
             segment.set_duration(est, false);
         }
     }
@@ -1413,10 +1435,16 @@ fn build_request(
             .max_by_key(|f| f.height)
             .cloned()
             .unwrap_or_else(|| v.clone());
-        abr.client_viewport_width =
-            if state.viewport_width > 0 { state.viewport_width } else { cap.width } as i64;
-        abr.client_viewport_height =
-            if state.viewport_height > 0 { state.viewport_height } else { cap.height } as i64;
+        abr.client_viewport_width = if state.viewport_width > 0 {
+            state.viewport_width
+        } else {
+            cap.width
+        } as i64;
+        abr.client_viewport_height = if state.viewport_height > 0 {
+            state.viewport_height
+        } else {
+            cap.height
+        } as i64;
         if video_alternates.len() <= 1 {
             abr.last_manual_selected_resolution = v.height as i64;
             abr.sticky_resolution = v.height as i64;
@@ -1474,9 +1502,16 @@ fn build_request(
     }
 
     let held: Vec<SabrFormat> = if video_alternates.is_empty() && audio_alternates.is_empty() {
-        [video.clone(), audio.clone()].into_iter().flatten().collect()
+        [video.clone(), audio.clone()]
+            .into_iter()
+            .flatten()
+            .collect()
     } else {
-        video_alternates.iter().chain(&audio_alternates).cloned().collect()
+        video_alternates
+            .iter()
+            .chain(&audio_alternates)
+            .cloned()
+            .collect()
     };
 
     for format in &held {
@@ -1508,7 +1543,11 @@ fn build_request(
         } else {
             buffer.buffered_end_us(from_us)
         };
-        let duration_us = if end == NO_US { 0 } else { (end - start_us).max(0) };
+        let duration_us = if end == NO_US {
+            0
+        } else {
+            (end - start_us).max(0)
+        };
 
         let mut range = BufferedRange {
             format_id: Some(format.to_format_id()),
@@ -1638,11 +1677,18 @@ fn request_position_us(shared: &Arc<Shared>, state: &State) -> i64 {
         return LIVE_HEAD_PLAYER_TIME_US;
     }
     let mut earliest = i64::MAX;
-    for demand in [&state.video_demand, &state.audio_demand].into_iter().flatten() {
+    for demand in [&state.video_demand, &state.audio_demand]
+        .into_iter()
+        .flatten()
+    {
         let buffer = self_buffer(shared, &demand.format.key());
         let effective = effective_from_us(&buffer, demand.from_us);
         let end = buffer.buffered_end_us(effective);
-        let from = if end == NO_US { effective } else { effective.max(end) };
+        let from = if end == NO_US {
+            effective
+        } else {
+            effective.max(end)
+        };
         earliest = earliest.min(from);
     }
     if earliest == i64::MAX {
@@ -1689,7 +1735,12 @@ fn update_progress(shared: &Arc<Shared>, format: &Option<SabrFormat>, requested_
     if !at_frontier {
         return;
     }
-    let n = state.format_no_progress.get(&format.key()).copied().unwrap_or(0) + 1;
+    let n = state
+        .format_no_progress
+        .get(&format.key())
+        .copied()
+        .unwrap_or(0)
+        + 1;
     state.format_no_progress.insert(format.key(), n);
     if n >= NO_PROGRESS_THRESHOLD {
         state.format_complete.insert(format.key());
@@ -1697,8 +1748,10 @@ fn update_progress(shared: &Arc<Shared>, format: &Option<SabrFormat>, requested_
 }
 
 fn starved(shared: &Arc<Shared>, state: &State) -> bool {
-    let demands: Vec<&Demand> =
-        [&state.video_demand, &state.audio_demand].into_iter().flatten().collect();
+    let demands: Vec<&Demand> = [&state.video_demand, &state.audio_demand]
+        .into_iter()
+        .flatten()
+        .collect();
     if demands.is_empty() {
         return false;
     }
@@ -1739,7 +1792,9 @@ fn evict_consumed_segments(shared: &Arc<Shared>) {
 
 fn apply_sabr_seek(shared: &Arc<Shared>, seek_to_us: i64, _requested_position_us: i64) {
     let mut state = shared.state.lock();
-    if shared.is_live && let Some(lm) = state.live_metadata {
+    if shared.is_live
+        && let Some(lm) = state.live_metadata
+    {
         let min_scale = lm.min_seekable_timescale;
         let max_scale = lm.max_seekable_timescale;
         if min_scale <= 0 || max_scale <= 0 {
@@ -1765,7 +1820,11 @@ fn apply_sabr_seek(shared: &Arc<Shared>, seek_to_us: i64, _requested_position_us
     let already_buffered = [&state.video_demand, &state.audio_demand]
         .into_iter()
         .flatten()
-        .any(|d| self_buffer(shared, &d.format.key()).first_covering(seek_to_us).is_some());
+        .any(|d| {
+            self_buffer(shared, &d.format.key())
+                .first_covering(seek_to_us)
+                .is_some()
+        });
     if near_position || already_buffered {
         state.last_sabr_seek_us = seek_to_us;
         return;
@@ -1809,9 +1868,11 @@ fn clear_seek_if_landed(shared: &Arc<Shared>) {
             .collect();
         (pending, demands)
     };
-    let landed = demands
-        .iter()
-        .all(|d| self_buffer(shared, &d.format.key()).first_covering(pending).is_some());
+    let landed = demands.iter().all(|d| {
+        self_buffer(shared, &d.format.key())
+            .first_covering(pending)
+            .is_some()
+    });
     if landed {
         shared.state.lock().seek_pending_us = None;
     }
@@ -1916,7 +1977,8 @@ fn record_throughput(local: &mut PumpLocal, bytes: i64, elapsed_ms: i64, media_u
     local.throughput_bytes_per_sec = if local.throughput_bytes_per_sec == 0 {
         sample
     } else {
-        (local.throughput_bytes_per_sec * (100 - THROUGHPUT_SMOOTHING) + sample * THROUGHPUT_SMOOTHING)
+        (local.throughput_bytes_per_sec * (100 - THROUGHPUT_SMOOTHING)
+            + sample * THROUGHPUT_SMOOTHING)
             / 100
     };
 }
@@ -1951,5 +2013,9 @@ fn decode_base64_lenient(value: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD_NO_PAD
         .decode(&standardized)
         .ok()
-        .or_else(|| base64::engine::general_purpose::STANDARD.decode(&standardized).ok())
+        .or_else(|| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&standardized)
+                .ok()
+        })
 }

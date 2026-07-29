@@ -89,8 +89,6 @@ pub enum TrackKind {
 /// protocol/GUI edge.
 pub use fcastplaybin::TrackSelection;
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaErrorKind {
     NotFound,

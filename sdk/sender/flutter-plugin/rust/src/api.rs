@@ -1,16 +1,17 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use fcast_sender_sdk_raw::context;
-pub use fcast_sender_sdk_raw::device::{
-    self, ApplicationInfo, AudioCapabilities, CastingDeviceError, CompanionSource,
-    CompanionSourceDescriptor, DeviceConnectionState, DeviceFeature, DeviceInfo,
-    DisplayCapabilities, LoadRequest, MediaCapabilities, MediaItem, MediaLocator, MediaTrack,
-    MediaTrackType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Queue, QueueEntry,
-    QueueItem, QueuePosition, QueueState, ReceiverCapabilities, ReceiverError, Source,
-    SubtitleSource, TrackList, VideoResolution,
+pub use fcast_sender_sdk_raw::{
+    device::{
+        self, ApplicationInfo, AudioCapabilities, CastingDeviceError, CompanionSource,
+        CompanionSourceDescriptor, DeviceConnectionState, DeviceFeature, DeviceInfo,
+        DisplayCapabilities, LoadRequest, MediaCapabilities, MediaItem, MediaLocator, MediaTrack,
+        MediaTrackType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Queue, QueueEntry,
+        QueueItem, QueuePosition, QueueState, ReceiverCapabilities, ReceiverError, Source,
+        SubtitleSource, TrackList, VideoResolution,
+    },
+    IpAddr,
 };
-pub use fcast_sender_sdk_raw::IpAddr;
 use flutter_rust_bridge::{frb, DartFnFuture};
 
 #[frb(mirror(IpAddr))]
@@ -290,20 +291,47 @@ pub fn enabled_protocols() -> Vec<ProtocolType> {
 
 #[frb(non_opaque)]
 pub enum DeviceEvent {
-    ConnectionStateChanged { new_state: DeviceConnectionState },
-    VolumeChanged { new_volume: f64 },
-    TimeChanged { new_time: f64 },
-    PlaybackStateChanged { new_playback_state: PlaybackState },
-    DurationChanged { new_duration: f64 },
-    SpeedChanged { new_speed: f64 },
-    SourceChanged { new_source: Source },
-    TracksAvailable { tracks: Vec<MediaTrack> },
-    TrackSelected { id: Option<u32>, typ: MediaTrackType },
-    TracksChanged { tracks: TrackList },
-    QueueChanged { queue: QueueState },
-    CommandError { error: ReceiverError },
+    ConnectionStateChanged {
+        new_state: DeviceConnectionState,
+    },
+    VolumeChanged {
+        new_volume: f64,
+    },
+    TimeChanged {
+        new_time: f64,
+    },
+    PlaybackStateChanged {
+        new_playback_state: PlaybackState,
+    },
+    DurationChanged {
+        new_duration: f64,
+    },
+    SpeedChanged {
+        new_speed: f64,
+    },
+    SourceChanged {
+        new_source: Source,
+    },
+    TracksAvailable {
+        tracks: Vec<MediaTrack>,
+    },
+    TrackSelected {
+        id: Option<u32>,
+        typ: MediaTrackType,
+    },
+    TracksChanged {
+        tracks: TrackList,
+    },
+    QueueChanged {
+        queue: QueueState,
+    },
+    CommandError {
+        error: ReceiverError,
+    },
     PlaybackStopped,
-    PlaybackError { message: String },
+    PlaybackError {
+        message: String,
+    },
 }
 
 #[frb(opaque)]
@@ -369,7 +397,6 @@ impl device::DeviceEventHandler for DeviceEventHandler {
             (self.on_event)(DeviceEvent::SourceChanged { new_source }).await;
         });
     }
-
 
     #[frb(ignore)]
     fn tracks_available(&self, tracks: Vec<MediaTrack>) {
@@ -724,10 +751,7 @@ impl CastingDevice {
 
     /// Add an external subtitle source to the current media. FCast v4 only.
     #[frb(sync)]
-    pub fn add_subtitle_source(
-        &self,
-        subtitle: SubtitleSource,
-    ) -> Result<(), _CastingDeviceError> {
+    pub fn add_subtitle_source(&self, subtitle: SubtitleSource) -> Result<(), _CastingDeviceError> {
         device_error_converter!(self.0.add_subtitle_source(subtitle))
     }
 }

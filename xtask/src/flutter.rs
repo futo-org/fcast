@@ -114,7 +114,12 @@ fn codegen_binary(sh: &Shell) -> Result<Utf8PathBuf> {
 /// reporting anything that had drifted.
 fn enforce_frb_pins(sh: &Shell) -> Result<()> {
     rewrite_pin(sh, "pubspec.yaml", "flutter_rust_bridge:", FRB_VERSION)?;
-    rewrite_pin(sh, "pubspec.yaml", "flutter_rust_bridge_hooks:", FRB_VERSION)?;
+    rewrite_pin(
+        sh,
+        "pubspec.yaml",
+        "flutter_rust_bridge_hooks:",
+        FRB_VERSION,
+    )?;
     rewrite_pin(
         sh,
         "rust/Cargo.toml",
@@ -160,7 +165,10 @@ fn rewrite_pin(sh: &Shell, file: &str, key: &str, value: &str) -> Result<()> {
 /// [`FRB_VERSION`], if any.
 fn drifted_manifest(sh: &Shell) -> Result<Option<&'static str>> {
     for (file, needle) in [
-        ("pubspec.yaml", format!("flutter_rust_bridge: {FRB_VERSION}")),
+        (
+            "pubspec.yaml",
+            format!("flutter_rust_bridge: {FRB_VERSION}"),
+        ),
         (
             "rust/Cargo.toml",
             format!("flutter_rust_bridge = \"={FRB_VERSION}\""),

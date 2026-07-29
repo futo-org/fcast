@@ -392,7 +392,10 @@ impl<'a> MessageBuilder<'a> {
                         let (value_type, value) = self.build_meta_value(v);
                         flat::WrappedGenericMetaValue::create(
                             &mut self.builder,
-                            &flat::WrappedGenericMetaValueArgs { value_type, value: Some(value) },
+                            &flat::WrappedGenericMetaValueArgs {
+                                value_type,
+                                value: Some(value),
+                            },
                         )
                     })
                     .collect::<Vec<_>>();
@@ -419,7 +422,11 @@ impl<'a> MessageBuilder<'a> {
         let key = self.builder.create_string(key);
         flat::MetadataKV::create(
             &mut self.builder,
-            &flat::MetadataKVArgs { key: Some(key), value_type, value: Some(value_off) },
+            &flat::MetadataKVArgs {
+                key: Some(key),
+                value_type,
+                value: Some(value_off),
+            },
         )
     }
 
@@ -428,8 +435,9 @@ impl<'a> MessageBuilder<'a> {
     fn build_extra_metadata(
         &mut self,
         extra: &HashMap<String, MetaValue>,
-    ) -> flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<flat::MetadataKV<'a>>>>
-    {
+    ) -> flatbuffers::WIPOffset<
+        flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<flat::MetadataKV<'a>>>,
+    > {
         let mut entries: Vec<(&String, &MetaValue)> = extra.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         let kvs = entries
@@ -767,7 +775,10 @@ pub enum MetaValue {
     Int(i64),
     List(Vec<MetaValue>),
     /// A single nested key/value pair (the union's `KVPair`/`MetadataKV` arm).
-    KvPair { key: String, value: Box<MetaValue> },
+    KvPair {
+        key: String,
+        value: Box<MetaValue>,
+    },
 }
 
 /// Read one `GenericMetaValue` off a holder (a `MetadataKV` or a
@@ -785,9 +796,12 @@ macro_rules! read_meta_union {
                     .unwrap_or_default()
                     .to_owned(),
             ),
-            flat::GenericMetaValue::Float => {
-                MetaValue::Float(holder.value_as_float().map(|f| f.value()).unwrap_or_default())
-            }
+            flat::GenericMetaValue::Float => MetaValue::Float(
+                holder
+                    .value_as_float()
+                    .map(|f| f.value())
+                    .unwrap_or_default(),
+            ),
             flat::GenericMetaValue::Int => {
                 MetaValue::Int(holder.value_as_int().map(|i| i.value()).unwrap_or_default())
             }
@@ -951,7 +965,10 @@ mod tests {
 
         // Serialize a single-item Load carrying the custom metadata.
         let msg = MessageBuilder::new().load_single(media_item_with_extra(extra));
-        let load = flat::root_as_packet(&msg).unwrap().payload_as_load().unwrap();
+        let load = flat::root_as_packet(&msg)
+            .unwrap()
+            .payload_as_load()
+            .unwrap();
 
         // Run it through the peer-broadcast strip, then read the fields back.
         let relayed = MessageBuilder::new().from_play_stripped(&load).unwrap();
@@ -963,7 +980,10 @@ mod tests {
             .unwrap();
 
         let got = read_extra_metadata(&single).expect("relayed item keeps extra_metadata");
-        assert_eq!(got.get("director"), Some(&MetaValue::String("Sacha".to_owned())));
+        assert_eq!(
+            got.get("director"),
+            Some(&MetaValue::String("Sacha".to_owned()))
+        );
         assert_eq!(got.get("year"), Some(&MetaValue::Int(2008)));
         assert_eq!(got.get("rating"), Some(&MetaValue::Float(4.5)));
         assert_eq!(

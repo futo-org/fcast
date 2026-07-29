@@ -778,10 +778,7 @@ pub trait CastingDevice: Send + Sync {
     /// connection (a reconnect restores the device default). Values are
     /// floored to 100 ms. Supported on FCast v4 and Chromecast (see
     /// [`DeviceFeature::SetProgressUpdateInterval`]).
-    fn set_progress_update_interval(
-        &self,
-        interval_millis: u64,
-    ) -> Result<(), CastingDeviceError>;
+    fn set_progress_update_interval(&self, interval_millis: u64) -> Result<(), CastingDeviceError>;
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -332,12 +331,8 @@ mod tests {
                     16,
                     image::Rgba([shade, 255 - shade, 128, 255]),
                 );
-                let frame = image::Frame::from_parts(
-                    img,
-                    0,
-                    0,
-                    image::Delay::from_numer_denom_ms(100, 1),
-                );
+                let frame =
+                    image::Frame::from_parts(img, 0, 0, image::Delay::from_numer_denom_ms(100, 1));
                 enc.encode_frame(frame).unwrap();
             }
         }
@@ -391,7 +386,9 @@ mod tests {
         // parsebin's ghost pad), so link into decodebin3 on pad-added.
         let db3_weak = db3.downgrade();
         source.connect_pad_added(move |_, pad| {
-            let Some(db3) = db3_weak.upgrade() else { return };
+            let Some(db3) = db3_weak.upgrade() else {
+                return;
+            };
             let sink = db3.request_pad_simple("sink_%u").unwrap();
             pad.link(&sink).unwrap();
         });
@@ -488,7 +485,10 @@ mod tests {
 
         assert_eq!(readback.len(), data.len(), "read back a different length");
         assert!(readback == data, "read-back bytes differ from the input");
-        assert!(appsink.is_eos(), "the bytes source must signal EOS at the end");
+        assert!(
+            appsink.is_eos(),
+            "the bytes source must signal EOS at the end"
+        );
 
         pipeline.set_state(gst::State::Null).unwrap();
     }

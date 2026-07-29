@@ -20,8 +20,7 @@
 //!   animated) so the application can classify the load and feed the
 //!   inspector.
 
-use gst::glib;
-use gst::prelude::*;
+use gst::{glib, prelude::*};
 
 pub mod imp {
     use std::{
@@ -317,9 +316,7 @@ pub mod imp {
                 .field("height", height as i32)
                 .field("animated", animated)
                 .build();
-            let msg = gst::message::Element::builder(s)
-                .src(&self.element)
-                .build();
+            let msg = gst::message::Element::builder(s).src(&self.element).build();
             if self.element.post_message(msg).is_err() {
                 warn!("fimagedec: element not in a bin, image info message dropped");
             }
@@ -562,11 +559,9 @@ pub mod imp {
                         })
                     } else {
                         drop(probe);
-                        let decoder = ImageReader::with_format(
-                            Cursor::new(&bytes),
-                            ImageFormat::Png,
-                        )
-                        .into_decoder()?;
+                        let decoder =
+                            ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Png)
+                                .into_decoder()?;
                         self.push_still(decoder, "png")
                     }
                 }
@@ -1112,7 +1107,11 @@ mod tests {
         let dec = gst::ElementFactory::make("fimagedec").build().unwrap();
         let appsink = gst_app::AppSink::builder().sync(false).build();
         pipeline
-            .add_many([appsrc.upcast_ref::<gst::Element>(), &dec, appsink.upcast_ref()])
+            .add_many([
+                appsrc.upcast_ref::<gst::Element>(),
+                &dec,
+                appsink.upcast_ref(),
+            ])
             .unwrap();
         gst::Element::link_many([appsrc.upcast_ref(), &dec, appsink.upcast_ref()]).unwrap();
         (pipeline, appsrc, dec, appsink)
@@ -1176,9 +1175,7 @@ mod tests {
         });
 
         pipeline.set_state(gst::State::Playing).unwrap();
-        appsrc
-            .push_buffer(gst::Buffer::from_slice(gif))
-            .unwrap();
+        appsrc.push_buffer(gst::Buffer::from_slice(gif)).unwrap();
         appsrc.end_of_stream().unwrap();
 
         // 4 frames in the file; 10 pulled samples prove autoplug, decode,
@@ -1226,9 +1223,7 @@ mod tests {
         gst::Element::link_many([appsrc.upcast_ref(), &dec, appsink.upcast_ref()]).unwrap();
 
         pipeline.set_state(gst::State::Playing).unwrap();
-        appsrc
-            .push_buffer(gst::Buffer::from_slice(gif))
-            .unwrap();
+        appsrc.push_buffer(gst::Buffer::from_slice(gif)).unwrap();
         appsrc.end_of_stream().unwrap();
 
         let sample = appsink
@@ -1340,9 +1335,7 @@ mod tests {
         let (pipeline, appsrc, _dec, appsink) = direct_pipeline("image/gif");
 
         pipeline.set_state(gst::State::Playing).unwrap();
-        appsrc
-            .push_buffer(gst::Buffer::from_slice(gif))
-            .unwrap();
+        appsrc.push_buffer(gst::Buffer::from_slice(gif)).unwrap();
         appsrc.end_of_stream().unwrap();
 
         // 7 samples spans more than two full 3-frame passes (>= 1 loop
@@ -1379,9 +1372,7 @@ mod tests {
         let (pipeline, appsrc, _dec, appsink) = direct_pipeline("image/gif");
 
         pipeline.set_state(gst::State::Playing).unwrap();
-        appsrc
-            .push_buffer(gst::Buffer::from_slice(gif))
-            .unwrap();
+        appsrc.push_buffer(gst::Buffer::from_slice(gif)).unwrap();
         appsrc.end_of_stream().unwrap();
 
         // Confirm the animation is actively looping.
@@ -1407,9 +1398,7 @@ mod tests {
         let (pipeline, appsrc, dec, appsink) = direct_pipeline("image/gif");
 
         pipeline.set_state(gst::State::Playing).unwrap();
-        appsrc
-            .push_buffer(gst::Buffer::from_slice(gif))
-            .unwrap();
+        appsrc.push_buffer(gst::Buffer::from_slice(gif)).unwrap();
         appsrc.end_of_stream().unwrap();
 
         // Let the animation get going.
@@ -1450,10 +1439,7 @@ mod tests {
         appsrc.end_of_stream().unwrap();
 
         let msg = bus
-            .timed_pop_filtered(
-                gst::ClockTime::from_seconds(10),
-                &[gst::MessageType::Error],
-            )
+            .timed_pop_filtered(gst::ClockTime::from_seconds(10), &[gst::MessageType::Error])
             .expect("an error message must be posted for EOS without data");
         match msg.view() {
             gst::MessageView::Error(err) => {
@@ -1478,10 +1464,7 @@ mod tests {
     fn image_stream_message_posted() {
         init();
 
-        fn stream_info(
-            caps_name: &str,
-            data: Vec<u8>,
-        ) -> (String, i32, i32, bool) {
+        fn stream_info(caps_name: &str, data: Vec<u8>) -> (String, i32, i32, bool) {
             let (pipeline, appsrc, _dec, appsink) = direct_pipeline(caps_name);
             let bus = pipeline.bus().unwrap();
 
@@ -1719,8 +1702,7 @@ mod tests {
         let cleanup_pad = sinkpad.clone();
         let cleanup_pipeline = pipeline.clone();
         let cleanup = std::thread::spawn(move || {
-            let _ =
-                cleanup_pad.send_event(gst::event::FlushStop::builder(true).build());
+            let _ = cleanup_pad.send_event(gst::event::FlushStop::builder(true).build());
             let _ = cleanup_pipeline.set_state(gst::State::Null);
         });
 
@@ -1738,9 +1720,7 @@ mod tests {
                 if defused.load(std::sync::atomic::Ordering::SeqCst) {
                     return;
                 }
-                eprintln!(
-                    "fimagedec flush deadlock watchdog: process wedged, forcing exit"
-                );
+                eprintln!("fimagedec flush deadlock watchdog: process wedged, forcing exit");
                 std::process::exit(101);
             }
         });
@@ -1760,4 +1740,3 @@ mod tests {
         defused.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
-

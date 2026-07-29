@@ -2337,7 +2337,9 @@ impl Inner {
             };
             let ids = prepared.stream_ids();
             if selected_ids.is_empty()
-                || !selected_ids.iter().all(|sel| ids.iter().any(|id| id == sel))
+                || !selected_ids
+                    .iter()
+                    .all(|sel| ids.iter().any(|id| id == sel))
             {
                 return;
             }
@@ -2360,8 +2362,7 @@ impl Inner {
     /// collection (activation-then-collection, a fresh load's order); and
     /// queue the input surgery for the worker.
     fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
-        self.generation
-            .store(prepared.generation, Ordering::SeqCst);
+        self.generation.store(prepared.generation, Ordering::SeqCst);
 
         // Output pads still carrying the previous item's group keep their
         // EOS dropped until they flip or die (see `Inner::retired_group`):
@@ -2552,8 +2553,7 @@ impl Inner {
                 // PreparedActivated and stamped with the new generation
                 // (the input-posted form is caught by ancestry, the
                 // decodebin3-posted form by its stream ids).
-                if self.message_from_prepared_input(msg)
-                    || self.collection_is_prepared(&collection)
+                if self.message_from_prepared_input(msg) || self.collection_is_prepared(&collection)
                 {
                     debug!("holding the prepared next input's stream collection");
                     if let Some(prepared) = self.prepared.lock().as_mut() {
@@ -2891,8 +2891,7 @@ impl FcastPlaybin {
                     MediaInput::Element(element) => Ok(element),
                 };
                 let attached = built.and_then(|element| {
-                    Inner::add_prepared_input(inner, element.clone(), generation)
-                        .map(|_| element)
+                    Inner::add_prepared_input(inner, element.clone(), generation).map(|_| element)
                 });
                 match attached {
                     Ok(element) => {
@@ -3023,7 +3022,12 @@ impl FcastPlaybin {
         } else {
             current
         };
-        debug!(?current, ?pending, ?target, "re-committing the pipeline state");
+        debug!(
+            ?current,
+            ?pending,
+            ?target,
+            "re-committing the pipeline state"
+        );
         if target > gst::State::Ready {
             let _ = self.inner.pipeline.set_state(target);
         }
@@ -3323,8 +3327,7 @@ impl Inner {
                 .iter()
                 .filter(|i| i.generation == current && i.external.is_none())
                 .any(|i| {
-                    !i.taps.is_empty()
-                        && i.taps.iter().all(|t| t.saw_eos.load(Ordering::SeqCst))
+                    !i.taps.is_empty() && i.taps.iter().all(|t| t.saw_eos.load(Ordering::SeqCst))
                 })
         };
         if !drained {
@@ -3346,9 +3349,7 @@ impl Inner {
             .inputs
             .iter()
             .filter(|i| i.generation == current && i.external.is_none())
-            .any(|i| {
-                !i.taps.is_empty() && i.taps.iter().all(|t| t.saw_eos.load(Ordering::SeqCst))
-            })
+            .any(|i| !i.taps.is_empty() && i.taps.iter().all(|t| t.saw_eos.load(Ordering::SeqCst)))
     }
 
     /// Register a prepared (gapless) next input: added to the running
@@ -3574,10 +3575,9 @@ impl Inner {
             if !routed_kinds.contains(&kind) {
                 continue;
             }
-            let covered = new_pads.iter().any(|pad| {
-                pad.stream()
-                    .is_some_and(|s| s.stream_type().contains(want))
-            });
+            let covered = new_pads
+                .iter()
+                .any(|pad| pad.stream().is_some_and(|s| s.stream_type().contains(want)));
             if !covered {
                 return Err(anyhow!(
                     "the prepared item has no {kind:?} stream to continue the live one"
@@ -3672,7 +3672,10 @@ impl Inner {
             {
                 input.db3_sink_pads.clear();
             }
-            if let Some(input) = routing.inputs.iter_mut().find(|i| i.generation == generation)
+            if let Some(input) = routing
+                .inputs
+                .iter_mut()
+                .find(|i| i.generation == generation)
             {
                 input.block_probes.clear();
             }
@@ -4197,9 +4200,7 @@ impl Inner {
                 };
                 let group = match event.view() {
                     gst::EventView::Eos(_) => None,
-                    gst::EventView::StreamStart(stream_start) => {
-                        Some(stream_start.group_id())
-                    }
+                    gst::EventView::StreamStart(stream_start) => Some(stream_start.group_id()),
                     _ => return gst::PadProbeReturn::Ok,
                 };
                 let Some(inner) = weak.upgrade() else {

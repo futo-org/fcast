@@ -63,8 +63,9 @@ pub fn plugin_init() -> Result<(), glib::BoolError> {
 ///     is the ISOBMFF signature 0D 0A 87 0A).
 fn register_jxl() -> Result<(), glib::BoolError> {
     // 00 00 00 0C  4A 58 4C 20  0D 0A 87 0A
-    const JXL_CONTAINER_MAGIC: [u8; 12] =
-        [0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A];
+    const JXL_CONTAINER_MAGIC: [u8; 12] = [
+        0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A,
+    ];
     const JXL_CODESTREAM_MAGIC: [u8; 2] = [0xFF, 0x0A];
 
     let caps = gst::Caps::builder("image/jxl").build();
@@ -211,11 +212,7 @@ fn heif_media_type(typefind: &mut gst::TypeFind) -> Option<&'static str> {
 
     // No codec brand anywhere: plain HEIF if a generic still-image brand was
     // present, otherwise not one of ours (for example a plain video mp4 ftyp).
-    if heif_seen {
-        Some("image/heif")
-    } else {
-        None
-    }
+    if heif_seen { Some("image/heif") } else { None }
 }
 
 /// QOI. Magic: the 4 ASCII bytes "qoif" at the start of the file.
@@ -298,8 +295,7 @@ mod tests {
     /// Run the whole rank-ordered typefind helper over `data` and return the
     /// media type name of the winning caps (or None if nothing matched).
     fn detect(data: &[u8]) -> Option<String> {
-        let (caps, _prob) =
-            gst_base::type_find_helper_for_data(None::<&gst::Object>, data).ok()?;
+        let (caps, _prob) = gst_base::type_find_helper_for_data(None::<&gst::Object>, data).ok()?;
         let s = caps.structure(0)?;
         Some(s.name().to_string())
     }

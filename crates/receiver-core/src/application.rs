@@ -644,8 +644,11 @@ impl Application {
         let http_client = reqwest::Client::new();
         let image_downloader =
             image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
-        let queue_prefetcher =
-            queue_cache::Prefetcher::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
+        let queue_prefetcher = queue_cache::Prefetcher::new(
+            msg_tx.clone(),
+            http_client.clone(),
+            companion_ctx.clone(),
+        );
 
         let receiver_info = Arc::new(crate::ReceiverInfo {
             device_info: fcast_protocol::v4::DeviceInfo {
@@ -1913,16 +1916,19 @@ impl Application {
         url: String,
         headers: Option<HashMap<String, String>>,
     ) -> player::MediaInput {
-        let head = self
-            .queue_cache_entry(&url, container)
-            .map(|item| media_source::PreloadedHead {
-                bytes: item.bytes,
-                total: item.total,
-            });
+        let head =
+            self.queue_cache_entry(&url, container)
+                .map(|item| media_source::PreloadedHead {
+                    bytes: item.bytes,
+                    total: item.total,
+                });
         match media_source::build_uri_source_with_head(&url, headers, head) {
             Ok(element) => player::MediaInput::Element(element),
             Err(err) => {
-                error!(?err, container, "Failed to build the gapless source element");
+                error!(
+                    ?err,
+                    container, "Failed to build the gapless source element"
+                );
                 player::MediaInput::Uri(url)
             }
         }
@@ -1943,20 +1949,18 @@ impl Application {
     fn sync_queue_cache(&mut self) {
         let (desired, retain) = match self.current_media.as_ref().map(|m| &m.source) {
             Some(MediaSource::Queue(queue)) => {
-                let desired = queue_cache::window_indices(
-                    queue.items.len(),
-                    queue.current_idx as usize,
-                )
-                .into_iter()
-                .filter_map(|idx| queue.items.get(idx))
-                // Adaptive manifests (HLS, DASH) must stream live and a
-                // cached head would be useless anyway: never prefetch them.
-                .filter(|item| queue_cache::cacheable_container(&item.content_type))
-                .map(|item| queue_cache::PrefetchSpec {
-                    url: item.url.clone(),
-                    headers: item.headers.clone(),
-                })
-                .collect();
+                let desired =
+                    queue_cache::window_indices(queue.items.len(), queue.current_idx as usize)
+                        .into_iter()
+                        .filter_map(|idx| queue.items.get(idx))
+                        // Adaptive manifests (HLS, DASH) must stream live and a
+                        // cached head would be useless anyway: never prefetch them.
+                        .filter(|item| queue_cache::cacheable_container(&item.content_type))
+                        .map(|item| queue_cache::PrefetchSpec {
+                            url: item.url.clone(),
+                            headers: item.headers.clone(),
+                        })
+                        .collect();
                 // The current item is retained but never fetched: its bytes
                 // are already playing, but flipping back to a neighbor and
                 // returning must not re-download it.
@@ -1971,8 +1975,9 @@ impl Application {
             _ => (Vec::new(), Vec::new()),
         };
         let prefetcher = &self.queue_prefetcher;
-        self.queue_cache
-            .sync(desired, &retain, |spec, epoch| prefetcher.fetch(spec, epoch));
+        self.queue_cache.sync(desired, &retain, |spec, epoch| {
+            prefetcher.fetch(spec, epoch)
+        });
     }
 
     #[tracing::instrument(skip_all)]
@@ -2136,10 +2141,7 @@ impl Application {
                         // and the u8 bookkeeping (e.g. the autoplay advance)
                         // would wrap back to item 0.
                         if items.len() > u8::MAX as usize + 1 {
-                            error!(
-                                len = items.len(),
-                                "Queue exceeds the spec's 256 item cap"
-                            );
+                            error!(len = items.len(), "Queue exceeds the spec's 256 item cap");
                             self.send_error(origin, ErrorKind::MalformedBody);
                             return;
                         }
@@ -3475,9 +3477,7 @@ impl Application {
                     self.broadcast_update(ReceiverToSenderMessage::V4(
                         fcast::V4Message::Broadcast {
                             serialized_msg: fcast_protocol::v4::MessageBuilder::new()
-                                .queue_select(v4::QueuePosition::Index(
-                                    prearm.next_index as u8,
-                                )),
+                                .queue_select(v4::QueuePosition::Index(prearm.next_index as u8)),
                         },
                     ));
                 }
