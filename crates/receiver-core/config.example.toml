@@ -1,0 +1,62 @@
+# FCast Receiver configuration.
+#
+# Copy this file to one of the locations the receiver reads (first match wins):
+#
+#   ~/.config/fcast-receiver.toml
+#   ~/.config/fcast-receiver/config.toml
+#   /etc/fcast-receiver.toml            (Linux, system-wide default)
+#   /etc/fcast-receiver/config.toml     (Linux, system-wide default)
+#
+# Every setting below is shown at its built-in default and commented out.
+# Command-line flags override whatever is set here.
+
+[discovery]
+# Regex of network interface names to exclude from advertising on. When unset,
+# every interface is advertised on.
+# exclude_interfaces = "veth.*|docker.*"
+
+[fcast]
+# Advertise and serve the FCast receiver.
+# enabled = true
+# Broadcast name shown to senders. The {hostname} variable is replaced with the
+# local hostname.
+# name = "FCast-{hostname}"
+
+[raop]
+# Advertise and serve the AirPlay audio (RAOP) receiver.
+# enabled = true
+# Broadcast name. Defaults to the FCast name.
+# name = "FCast-{hostname}"
+
+[chromecast]
+# Advertise and serve the Google Cast receiver.
+# enabled = true
+# Broadcast name.
+# name = "Chromecast-{hostname}"
+
+[airplay]
+# Advertise and serve the AirPlay screen-mirroring receiver. Only has an effect
+# on builds compiled with the airplay feature.
+# enabled = true
+
+[interface]
+# Show the main window on start. Set to false to start hidden to the tray.
+# show_window = true
+# Show a system tray icon. Set to false to never open a tray.
+# tray = true
+# Start the main window fullscreen.
+# start_fullscreen = false
+# Run the media player fullscreen. Set to false for a windowed player.
+# fullscreen_player = true
+# Run without a GUI at all.
+# headless = false
+
+[video]
+# Allow HDR passthrough. Set to false to tone-map HDR content to SDR.
+# hdr_output = true
+# Frame render profile: "fast", "balanced" or "high-quality".
+# render_profile = "fast"
+
+[log]
+# Log verbosity: "off", "error", "warn", "info", "debug" or "trace".
+# level = "info"

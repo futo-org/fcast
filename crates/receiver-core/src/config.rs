@@ -504,8 +504,27 @@ fn tmp_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// The shipped, fully-commented example. Kept next to this crate so packagers
+    /// can install it, and embedded here only so the test below can guard it.
+    const EXAMPLE_CONFIG: &str = include_str!("../config.example.toml");
+
     fn parse_config(text: &str) -> Config {
         toml_edit::de::from_str(text).expect("valid config")
+    }
+
+    #[test]
+    fn example_config_is_valid_and_all_defaults() {
+        // Guards two properties of the shipped example:
+        //   1. It is valid TOML that deserializes into `Config`.
+        //   2. A copied-but-unedited copy behaves exactly like having no config,
+        //      i.e. every setting is commented out or left at its default.
+        // Comparing serialized forms canonicalises away comments and layout.
+        let parsed: Config = toml_edit::de::from_str(EXAMPLE_CONFIG).expect("example is valid TOML");
+        assert_eq!(
+            toml_edit::ser::to_string(&parsed).expect("serialize parsed example"),
+            toml_edit::ser::to_string(&Config::default()).expect("serialize default"),
+            "config.example.toml drifted: keep settings commented out or at their default value",
+        );
     }
 
     fn render(existing: &str, config: &Config) -> String {
