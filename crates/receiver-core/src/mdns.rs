@@ -5,20 +5,51 @@ use if_addrs::get_if_addrs;
 use mdns_sd::ServiceDaemon;
 use tracing::error;
 
-use crate::{FCAST_TCP_PORT, GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
+use crate::{GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 #[cfg(feature = "airplay")]
 use crate::{airplay, message::AirPlay};
+
+/// The mDNS instance name advertised for the `_fcast._tcp` service. Shared by
+/// `start_daemon` (for the display name) and `register_fcast`.
+pub fn fcast_device_name() -> String {
+    let host_name = gethostname::gethostname();
+    format!("FCast-{}", host_name.to_string_lossy())
+}
+
+/// Advertise the `_fcast._tcp` service on the given (actually bound) port. This
+/// is registered only once the listening port is committed, so a second
+/// instance that can't bind the default port never advertises a duplicate
+/// record. The gcast/raop/airplay registrations on the same daemon are
+/// independent.
+pub fn register_fcast(
+    daemon: &ServiceDaemon,
+    port: u16,
+    fcast_txt_records: &HashMap<String, String>,
+) -> Result<()> {
+    let device_name = fcast_device_name();
+    let service = mdns_sd::ServiceInfo::new(
+        "_fcast._tcp.local.",
+        &device_name,
+        &format!("{device_name}.local."),
+        (), // Auto
+        port,
+        fcast_txt_records.to_owned(),
+    )?
+    .enable_addr_auto();
+    daemon.register(service)?;
+
+    Ok(())
+}
 
 /// Must be called from a tokio context.
 #[tracing::instrument(skip_all)]
 pub fn start_daemon(
     msg_tx: &crate::MessageSender,
     settings: &crate::Settings,
-    fcast_txt_records: &HashMap<String, String>,
 ) -> Result<ServiceDaemon> {
     let host_name = gethostname::gethostname();
     let host_name = host_name.to_string_lossy();
-    let device_name = format!("FCast-{host_name}");
+    let device_name = fcast_device_name();
     // Avoid naming confusion
     let gcast_device_name = format!("Chromecast-{host_name}");
     msg_tx.mdns(Mdns::NameSet(device_name.clone()));
@@ -71,17 +102,10 @@ pub fn start_daemon(
         msg_tx.mdns(msg);
     }
 
-    let service = mdns_sd::ServiceInfo::new(
-        "_fcast._tcp.local.",
-        &device_name,
-        &format!("{device_name}.local."),
-        (), // Auto
-        FCAST_TCP_PORT,
-        fcast_txt_records.to_owned(),
-    )?
-    .enable_addr_auto();
-
-    daemon.register(service)?;
+    // The `_fcast._tcp` service is registered later, from `register_fcast`, once
+    // the listening port is committed. Registering it here (at the default port,
+    // before binding) would make a second instance advertise a duplicate record
+    // on a port it may not even bind.
 
     if !settings.cli.no_google_cast {
         let gcast_props = HashMap::from([

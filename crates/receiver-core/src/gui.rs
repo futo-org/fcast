@@ -5,7 +5,7 @@ use crate::message;
 use crate::{
     Bridge, CompoundImage, GuiPlaybackState, MainWindow, Message, MessageSender, Operation,
     UiMediaTrack, UiMediaTrackType, UiPlayerVariant, application::PacketOrigin,
-    image::DecodedImage, log_if_err, utils::sec_to_string,
+    image::DecodedImage, log_if_err, message::PortConflictChoice, utils::sec_to_string,
 };
 use fcast_protocol::v3;
 use parking_lot::{Condvar, Mutex};
@@ -49,6 +49,26 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     });
 
     bridge.on_force_quit(move || {
+        log_if_err!(slint::quit_event_loop());
+    });
+
+    bridge.on_port_conflict_retry({
+        let msg_tx = msg_tx.clone();
+        move || {
+            msg_tx.send(Message::PortConflictChoice(PortConflictChoice::Retry));
+        }
+    });
+
+    bridge.on_port_conflict_use_different_port({
+        let msg_tx = msg_tx.clone();
+        move || {
+            msg_tx.send(Message::PortConflictChoice(PortConflictChoice::UseDifferentPort));
+        }
+    });
+
+    // Ending the Slint loop drives the normal `Message::Quit` shutdown, which
+    // `resolve_listen_port` observes and unwinds cleanly.
+    bridge.on_port_conflict_quit(move || {
         log_if_err!(slint::quit_event_loop());
     });
 
@@ -297,6 +317,18 @@ pub enum UpdateGuiCommand {
     /// One inspector tick's display data. The bitrate histories are
     /// rendered into SVG polylines on the GUI thread.
     SetInspectorSample(IgnoredDebug<InspectorSample>),
+    /// Show the modal telling the user the FCast port (the payload) is already
+    /// in use, and force the window visible so the dialog is seen.
+    ShowPortConflict {
+        port: u16,
+    },
+    /// Toggle the startup screen. Turning it off (port committed) also clears
+    /// the conflict prompt so the view fades out cleanly.
+    SetStartingUp(bool),
+    /// Reveal the system tray icon. Sent once the listening port is committed,
+    /// so a conflict that ends in quitting never leaves a stray tray icon.
+    /// Handled in `spawn_command_handler` (it owns the tray handle).
+    ShowSystemTray,
     QuitLoop,
 }
 
@@ -551,6 +583,18 @@ impl GuiController {
         }
     }
 
+    pub fn show_port_conflict(&self, port: u16) {
+        self.send(UpdateGuiCommand::ShowPortConflict { port });
+    }
+
+    pub fn set_starting_up(&self, starting_up: bool) {
+        self.send(UpdateGuiCommand::SetStartingUp(starting_up));
+    }
+
+    pub fn show_system_tray(&self) {
+        self.send(UpdateGuiCommand::ShowSystemTray);
+    }
+
     pub fn quit_loop(&mut self) {
         self.send(UpdateGuiCommand::QuitLoop);
     }
@@ -720,6 +764,24 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             ui.global::<crate::InspectorState>().set_dumping(dumping);
         }
         UpdateGuiCommand::SetInspectorSample(sample) => set_inspector_sample(&ui, sample.0),
+        UpdateGuiCommand::ShowPortConflict { port } => {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_conflicting_port(port as i32);
+            bridge.set_show_port_conflict(true);
+            // Force the window visible so the dialog is seen even under
+            // `--no-main-window` (`resolve_listen_port` restores the hidden
+            // state afterwards).
+            log_if_err!(ui.window().show());
+        }
+        UpdateGuiCommand::SetStartingUp(starting_up) => {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_starting_up(starting_up);
+            if !starting_up {
+                bridge.set_show_port_conflict(false);
+            }
+        }
+        // Handled in `spawn_command_handler`, which holds the tray handle.
+        UpdateGuiCommand::ShowSystemTray => (),
         UpdateGuiCommand::QuitLoop => (),
     }
 }
@@ -903,8 +965,12 @@ pub fn spawn_command_handler(
     ui_weak: slint::Weak<MainWindow>,
     mut cmd_rx: UnboundedReceiver<UpdateGuiCommand>,
     renderer_tx: RendererMsgSender,
+    // Reveals the system tray icon on `ShowSystemTray`. Runs on the event-loop
+    // thread (the tray handle is `!Send`). A no-op when there is no tray.
+    on_show_tray: Box<dyn FnOnce()>,
 ) {
     slint::spawn_local(async move {
+        let mut on_show_tray = Some(on_show_tray);
         loop {
             if let Some(cmd) = cmd_rx.recv().await
                 && let Some(ui) = ui_weak.upgrade()
@@ -915,6 +981,12 @@ pub fn spawn_command_handler(
                 }
                 if matches!(cmd, UpdateGuiCommand::QuitLoop) {
                     break;
+                }
+                if matches!(cmd, UpdateGuiCommand::ShowSystemTray) {
+                    if let Some(show) = on_show_tray.take() {
+                        show();
+                    }
+                    continue;
                 }
                 handle_command(ui, cmd, &renderer_tx);
             } else {

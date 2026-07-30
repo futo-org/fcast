@@ -23,6 +23,7 @@ import { ImageView } from "views/image.slint";
 import { AudioPlayerView } from "views/audio-player.slint";
 import { RaopView } from "views/raop.slint";
 import { ToastOverlay } from "toast-overlay.slint";
+import { StartupView } from "startup.slint";
 import { Inspector, InspectorState } from "inspector.slint";
 
 export {
@@ -85,6 +86,16 @@ export component MainWindow inherits Window {
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
 
     if Bridge.show-inspector: Inspector { }
+
+    StartupView {
+        opacity: Bridge.starting-up ? 100% : 0%;
+        visible: self.opacity > 0%;
+
+        animate opacity {
+            duration: 250ms;
+            easing: ease-in-out;
+        }
+    }
 }
 
 export component SystemTray inherits SystemTrayIcon {

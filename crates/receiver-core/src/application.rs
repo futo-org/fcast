@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::{IpAddr, SocketAddr},
+    net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -401,6 +401,14 @@ pub struct Application {
     have_media_info: bool,
     current_thumbnail_id: image::ImageId,
     current_addresses: HashSet<IpAddr>,
+    /// The port the FCast TCP listener actually bound. Normally
+    /// `FCAST_TCP_PORT`, but the user may relocate it on a port conflict. The
+    /// QR code / network config advertise this so discovery stays correct.
+    fcast_port: u16,
+    /// False until the FCast port is actually bound. While false (e.g. during
+    /// the port-conflict dialog) we don't publish the connection QR/IP panel,
+    /// since we aren't listening on any port yet.
+    port_committed: bool,
     have_media_title: bool,
     last_position_updated: f64,
     http_client: reqwest::Client,
@@ -580,7 +588,7 @@ impl Application {
             ("v".to_owned(), "4".to_owned()),
         ]);
         #[cfg(not(target_os = "android"))]
-        let mdns = mdns::start_daemon(&msg_tx, &settings, &fcast_txt_records)?;
+        let mdns = mdns::start_daemon(&msg_tx, &settings)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
             !settings.cli.no_google_cast
@@ -590,7 +598,16 @@ impl Application {
 
         let gcast_tx = if run_gcast {
             let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
-            tokio::spawn(gcast::run_server(msg_tx.clone(), gcast_rx));
+            tokio::spawn({
+                let msg_tx = msg_tx.clone();
+                async move {
+                    // A failed bind (e.g. port 8009 held by another receiver)
+                    // shouldn't take the process down, so just log and skip gcast.
+                    if let Err(err) = gcast::run_server(msg_tx, gcast_rx).await {
+                        warn!(?err, "Google Cast server stopped (port 8009 may be in use)");
+                    }
+                }
+            });
             GCastUpdateSender(Some(gcast_tx))
         } else {
             GCastUpdateSender(None)
@@ -602,9 +619,23 @@ impl Application {
             use tracing::{Instrument, debug_span};
             let msg_tx = msg_tx.clone();
             async move {
-                let listener = tokio::net::TcpListener::bind("[::]:46897").await.unwrap();
+                // Debug-only DumpPipeline listener. If a sibling instance holds
+                // 46897, disable it rather than panicking the worker.
+                let listener = match tokio::net::TcpListener::bind("[::]:46897").await {
+                    Ok(listener) => listener,
+                    Err(err) => {
+                        warn!(?err, "pipeline debug listener port 46897 unavailable, disabling");
+                        return;
+                    }
+                };
                 loop {
-                    let (mut stream, addr) = listener.accept().await.unwrap();
+                    let (mut stream, addr) = match listener.accept().await {
+                        Ok(conn) => conn,
+                        Err(err) => {
+                            warn!(?err, "pipeline debug listener accept failed; stopping");
+                            return;
+                        }
+                    };
                     debug!(?addr, "Got connection");
 
                     let mut buf = [0u8; 1];
@@ -695,6 +726,8 @@ impl Application {
             inspector_container: None,
             inspector_image: String::new(),
             current_addresses: HashSet::new(),
+            fcast_port: FCAST_TCP_PORT,
+            port_committed: false,
             have_media_title: false,
             last_position_updated: -1.0,
             http_client,
@@ -2442,6 +2475,19 @@ impl Application {
             }
         }
 
+        self.update_connection_details()
+    }
+
+    /// Rebuild the idle-screen QR code / IP list from the current addresses and
+    /// the actually-bound FCast port. Called on every mDNS update and after a
+    /// port relocation.
+    fn update_connection_details(&mut self) -> Result<()> {
+        if !self.port_committed {
+            // Not listening yet (e.g. resolving a port conflict), so don't
+            // advertise a QR for a port we haven't bound.
+            return Ok(());
+        }
+
         let addrs = self
             .current_addresses
             .iter()
@@ -2464,7 +2510,7 @@ impl Application {
                 name: device_name,
                 addresses: addrs.to_vec(),
                 services: vec![fcast_protocol::FCastService {
-                    port: FCAST_TCP_PORT,
+                    port: self.fcast_port,
                     r#type: 0,
                 }],
                 txt: Some(self.fcast_txt_records.clone()),
@@ -3520,13 +3566,25 @@ impl Application {
                     let msg_tx = self.msg_tx.clone();
                     tokio::spawn(async move {
                         // IpV4 only
-                        let listener = tokio::net::TcpListener::bind("0.0.0.0:33505")
-                            .await
-                            .unwrap();
+                        let listener = match tokio::net::TcpListener::bind("0.0.0.0:33505").await {
+                            Ok(listener) => listener,
+                            Err(err) => {
+                                warn!(
+                                    ?err,
+                                    "RAOP port 33505 unavailable, RAOP disabled for this instance"
+                                );
+                                return;
+                            }
+                        };
 
                         loop {
-                            let (stream, _) = listener.accept().await.unwrap();
-                            msg_tx.raop(Raop::SenderConnected(stream));
+                            match listener.accept().await {
+                                Ok((stream, _)) => msg_tx.raop(Raop::SenderConnected(stream)),
+                                Err(err) => {
+                                    warn!(?err, "RAOP listener accept failed; stopping");
+                                    return;
+                                }
+                            }
                         }
                     });
                     self.raop_server = Some(RaopServer { config });
@@ -3626,14 +3684,33 @@ impl Application {
                     let msg_tx = self.msg_tx.clone();
                     tokio::spawn(async move {
                         // IpV4 only
-                        let listener =
-                            tokio::net::TcpListener::bind(("0.0.0.0", airplay::AIRPLAY_TCP_PORT))
-                                .await
-                                .unwrap();
+                        let listener = match tokio::net::TcpListener::bind((
+                            "0.0.0.0",
+                            airplay::AIRPLAY_TCP_PORT,
+                        ))
+                        .await
+                        {
+                            Ok(listener) => listener,
+                            Err(err) => {
+                                warn!(
+                                    ?err,
+                                    port = airplay::AIRPLAY_TCP_PORT,
+                                    "AirPlay port unavailable, AirPlay disabled for this instance"
+                                );
+                                return;
+                            }
+                        };
 
                         loop {
-                            let (stream, _) = listener.accept().await.unwrap();
-                            msg_tx.airplay(AirPlay::SenderConnected(stream));
+                            match listener.accept().await {
+                                Ok((stream, _)) => {
+                                    msg_tx.airplay(AirPlay::SenderConnected(stream))
+                                }
+                                Err(err) => {
+                                    warn!(?err, "AirPlay listener accept failed; stopping");
+                                    return;
+                                }
+                            }
                         }
                     });
                     self.airplay_server = Some(AirPlayServer { config });
@@ -4211,6 +4288,9 @@ impl Application {
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Message) -> Result<bool> {
         match event {
+            // Only meaningful while `resolve_listen_port` is awaiting a choice;
+            // by the time the main loop runs the dialog is gone, so ignore it.
+            Message::PortConflictChoice(_) => {}
             Message::SessionFinished => {
                 self.gui.device_disconnected();
             }
@@ -4456,70 +4536,186 @@ impl Application {
         self.gui.device_connected();
     }
 
+    /// Bind the FCast listening socket(s). `port == 0` requests an ephemeral
+    /// port. When more than one address family is used the later families are
+    /// pinned to the port the first was assigned so a single port number can be
+    /// advertised.
+    async fn bind_fcast_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
+        use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+
+        #[cfg(target_os = "windows")]
+        let addrs: &[IpAddr] = &[
+            IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        ];
+        #[cfg(not(target_os = "windows"))]
+        let addrs: &[IpAddr] = &[IpAddr::V6(Ipv6Addr::UNSPECIFIED)];
+
+        let mut listeners = Vec::with_capacity(addrs.len());
+        let mut chosen = port;
+        for addr in addrs {
+            let listener = TcpListener::bind(SocketAddr::new(*addr, chosen)).await?;
+            if chosen == 0 {
+                chosen = listener.local_addr()?.port();
+            }
+            listeners.push(listener);
+        }
+        Ok(listeners)
+    }
+
+    /// Acquire the FCast listening socket(s), prompting the user if the default
+    /// port is already in use. Returns `None` if the user chose to quit before
+    /// a port could be bound.
+    async fn resolve_listen_port(
+        &mut self,
+        event_rx: &mut UnboundedReceiver<Message>,
+    ) -> Result<Option<Vec<TcpListener>>> {
+        match Self::bind_fcast_listeners(FCAST_TCP_PORT).await {
+            Ok(listeners) => Ok(Some(listeners)),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                self.handle_port_conflict(event_rx).await
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// The default FCast port is taken. Surface the dialog and act on the
+    /// user's choice. Only fcast relocates on "different port". gcast/raop/
+    /// airplay stay on their fixed ports and simply skip if theirs is taken.
+    #[cfg(not(target_os = "android"))]
+    async fn handle_port_conflict(
+        &mut self,
+        event_rx: &mut UnboundedReceiver<Message>,
+    ) -> Result<Option<Vec<TcpListener>>> {
+        // Headless has no window to show the dialog in and no way to receive a
+        // choice, so fail fast instead of blocking forever on a decision that
+        // can never come.
+        if self.settings.cli.headless {
+            anyhow::bail!(
+                "FCast port {FCAST_TCP_PORT} is already in use (another receiver may be running). \
+                 Cannot prompt for an alternative in --headless mode"
+            );
+        }
+
+        warn!(
+            port = FCAST_TCP_PORT,
+            "FCast port already in use; prompting user"
+        );
+        self.gui.show_port_conflict(FCAST_TCP_PORT);
+
+        let outcome = loop {
+            match event_rx.recv().await {
+                Some(Message::PortConflictChoice(crate::message::PortConflictChoice::Retry)) => {
+                    match Self::bind_fcast_listeners(FCAST_TCP_PORT).await {
+                        Ok(listeners) => break Some(listeners),
+                        // Still taken, leave the dialog up for another try.
+                        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+                        Err(err) => return Err(err.into()),
+                    }
+                }
+                Some(Message::PortConflictChoice(crate::message::PortConflictChoice::UseDifferentPort)) => {
+                    let listeners = Self::bind_fcast_listeners(0).await?;
+                    let port = listeners[0].local_addr()?.port();
+                    info!(port, "Starting FCast on a different port");
+                    self.fcast_port = port;
+                    break Some(listeners);
+                }
+                // The Quit button ends the Slint loop, which drives `Message::Quit`.
+                Some(Message::Quit) | None => break None,
+                // Keep dispatching ordinary events while the dialog is up, in
+                // particular the mDNS address/name updates that `start_daemon`
+                // emitted before we got here, so the idle UI shows the network
+                // info instead of "not connected". Mirror the main loop's
+                // error handling.
+                Some(other) => match self.handle_event(other).await {
+                    Ok(true) => break None,
+                    Ok(false) => {}
+                    Err(err) => error!("Handle event error during port conflict: {err}"),
+                },
+            }
+        };
+
+        if self.settings.cli.no_main_window {
+            // The dialog forced the window open, so restore the hidden state.
+            self.gui.set_window_visibility(false);
+        }
+        Ok(outcome)
+    }
+
+    #[cfg(target_os = "android")]
+    async fn handle_port_conflict(
+        &mut self,
+        _event_rx: &mut UnboundedReceiver<Message>,
+    ) -> Result<Option<Vec<TcpListener>>> {
+        anyhow::bail!("FCast port {FCAST_TCP_PORT} is already in use");
+    }
+
     pub async fn run_event_loop(
         mut self,
         mut event_rx: UnboundedReceiver<Message>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
-        macro_rules! listener_stream {
-            ($addr:expr) => {
-                futures::stream::unfold(
-                    TcpListener::bind(SocketAddr::new($addr, FCAST_TCP_PORT)).await?,
-                    |listener| async move { Some((listener.accept().await, listener)) },
-                )
-            };
-        }
+        // Acquire the FCast listening socket(s). If the default port is taken
+        // this prompts the user (retry / different port / quit). `None` means
+        // the user quit before anything was bound, so we skip serving and fall
+        // straight through to the shutdown tail below.
+        if let Some(listeners) = self.resolve_listen_port(&mut event_rx).await? {
+            // The port is ours. Commit to running, publish the connection
+            // QR/IP panel (addresses may have arrived while the conflict dialog
+            // was up) and reveal the system tray.
+            self.port_committed = true;
+            // Advertise the fcast service now, at the port we actually bound,
+            // so a second instance never publishes a duplicate record.
+            #[cfg(not(target_os = "android"))]
+            mdns::register_fcast(&self.mdns, self.fcast_port, &self.fcast_txt_records)?;
+            self.update_connection_details()?;
+            self.gui.show_system_tray();
+            // Fade the startup screen out now that we're actually listening.
+            self.gui.set_starting_up(false);
 
-        #[cfg(target_os = "windows")]
-        let ipv4_stream = listener_stream!(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
-        let ipv6_stream = listener_stream!(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED));
+            let accept_streams = listeners.into_iter().map(|listener| {
+                // `Box::pin` so the `Unfold` streams are `Unpin`, as `select_all` requires.
+                Box::pin(futures::stream::unfold(listener, |listener| async move {
+                    Some((listener.accept().await, listener))
+                }))
+            });
+            let mut listener_stream = futures::stream::select_all(accept_streams);
 
-        #[cfg(target_os = "windows")]
-        tokio::pin!(ipv4_stream);
-        tokio::pin!(ipv6_stream);
+            #[cfg(not(target_os = "android"))]
+            if self.settings.cli.fullscreen {
+                self.gui.set_fullscreen(true);
+            }
 
-        #[cfg(target_os = "windows")]
-        let listener_stream = futures::stream::select(ipv4_stream, ipv6_stream);
-        #[cfg(not(target_os = "windows"))]
-        let mut listener_stream = ipv6_stream;
+            let mut update_interval = tokio::time::interval(PROGRESS_TICK_INTERVAL);
 
-        #[cfg(target_os = "windows")]
-        tokio::pin!(listener_stream);
+            use futures::stream::StreamExt;
 
-        #[cfg(not(target_os = "android"))]
-        if self.settings.cli.fullscreen {
-            self.gui.set_fullscreen(true);
-        }
-
-        let mut update_interval = tokio::time::interval(PROGRESS_TICK_INTERVAL);
-
-        use futures::stream::StreamExt;
-
-        let mut session_id: SenderId = 0;
-        loop {
-            tokio::select! {
-                event = event_rx.recv() => {
-                    if let Some(event) = event {
-                        match self.handle_event(event).await {
-                            Ok(true) => break,
-                            Err(err) => error!("Handle event error: {err}"),
-                            _ => (),
+            let mut session_id: SenderId = 0;
+            loop {
+                tokio::select! {
+                    event = event_rx.recv() => {
+                        if let Some(event) = event {
+                            match self.handle_event(event).await {
+                                Ok(true) => break,
+                                Err(err) => error!("Handle event error: {err}"),
+                                _ => (),
+                            }
+                        } else {
+                            break;
                         }
-                    } else {
-                        break;
                     }
-                }
-                _ = update_interval.tick() => {
-                    if self.player.player_state() == player::PlayerState::Playing {
-                        self.notify_updates(false)?;
-                        self.send_v4_progress_updates();
-                        self.maybe_prearm_gapless();
+                    _ = update_interval.tick() => {
+                        if self.player.player_state() == player::PlayerState::Playing {
+                            self.notify_updates(false)?;
+                            self.send_v4_progress_updates();
+                            self.maybe_prearm_gapless();
+                        }
                     }
-                }
-                session = listener_stream.select_next_some() => {
-                    let (stream, _) = session?;
-                    self.handle_new_fcast_session(stream, session_id);
-                    session_id += 1;
+                    session = listener_stream.select_next_some() => {
+                        let (stream, _) = session?;
+                        self.handle_new_fcast_session(stream, session_id);
+                        session_id += 1;
+                    }
                 }
             }
         }

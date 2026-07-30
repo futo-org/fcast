@@ -177,11 +177,16 @@ slint::include_modules!();
 struct GCastUpdateSender(Option<UnboundedSender<gcast::StatusUpdate>>);
 
 impl GCastUpdateSender {
-    fn send(&self, update: gcast::StatusUpdate) {
-        if let Some(tx) = self.0.as_ref()
-            && let Err(err) = tx.send(update)
-        {
-            error!(?err, "Failed to send GCast update");
+    fn send(&mut self, update: gcast::StatusUpdate) {
+        let Some(tx) = self.0.as_ref() else {
+            return;
+        };
+        if tx.send(update).is_err() {
+            // The receiver is gone only when the gcast server has stopped
+            // (e.g. its port was taken on a second instance). Drop the sender
+            // so later updates are no-ops instead of failing on every call.
+            debug!("GCast server not running, disabling status updates");
+            self.0 = None;
         }
     }
 }
@@ -456,11 +461,12 @@ pub fn run<S: VideoSink + 'static>(
         Some(MainWindow::new()?)
     };
     #[cfg(feature = "systray")]
-    let systray = if cli_args.no_systray {
-        None
-    } else {
-        Some(SystemTray::new()?)
-    };
+    let want_systray = !cli_args.no_systray;
+    // The tray is created and shown lazily, only once the FCast port is
+    // committed (see `on_show_tray`), so a port conflict that ends in quitting
+    // never starts a tray at all. Held here for the lifetime of the event loop.
+    #[cfg(feature = "systray")]
+    let systray_holder: Rc<RefCell<Option<SystemTray>>> = Rc::new(RefCell::new(None));
 
     let gui_is_visible = gui::GuiIsVisible::new();
     let mut renderer_tx = None;
@@ -927,7 +933,55 @@ pub fn run<S: VideoSink + 'static>(
 
     let gui_tx = if let Some(ui) = &ui {
         let (gui_tx, gui_rx) = mpsc::unbounded_channel::<gui::UpdateGuiCommand>();
-        gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx.unwrap());
+
+        // Create, wire and show the tray only once the listening port is
+        // committed (see `Application::resolve_listen_port`), so a port conflict
+        // that ends in quitting never starts a tray at all.
+        let on_show_tray: Box<dyn FnOnce()> = {
+            #[cfg(feature = "systray")]
+            {
+                if want_systray {
+                    let ui_weak = ui.as_weak();
+                    let holder = systray_holder.clone();
+                    Box::new(move || {
+                        let systray = match SystemTray::new() {
+                            Ok(systray) => systray,
+                            Err(err) => {
+                                error!(?err, "Failed to create system tray");
+                                return;
+                            }
+                        };
+                        systray.on_toggle_window({
+                            let ui_weak = ui_weak.clone();
+                            move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    let win = ui.window();
+                                    if win.is_visible() {
+                                        let _ = win.hide();
+                                    } else {
+                                        let _ = win.show();
+                                    }
+                                }
+                            }
+                        });
+                        systray.on_quit(|| {
+                            let _ = slint::quit_event_loop();
+                        });
+                        log_if_err!(systray.show());
+                        // Keep it alive for the rest of the session.
+                        *holder.borrow_mut() = Some(systray);
+                    })
+                } else {
+                    Box::new(|| {})
+                }
+            }
+            #[cfg(not(feature = "systray"))]
+            {
+                Box::new(|| {})
+            }
+        };
+
+        gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx.unwrap(), on_show_tray);
         Some(gui_tx)
     } else {
         None
@@ -1005,33 +1059,37 @@ pub fn run<S: VideoSink + 'static>(
         gui::register_callbacks(&ui, msg_tx.clone());
         info!(initialized_in = ?start.elapsed());
 
+        // Without a tray, `run()` already quits when the window is closed,
+        // which is correct both normally and while the conflict dialog is up.
         #[cfg(any(target_os = "android", not(feature = "systray")))]
         ui.run()?;
 
         #[cfg(feature = "systray")]
-        if let Some(systray) = systray.as_ref() {
-            let ui_weak = ui.as_weak();
-            systray.on_toggle_window(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    let win = ui.window();
-                    if win.is_visible() {
-                        let _ = win.hide();
-                    } else {
-                        let _ = win.show();
+        if want_systray {
+            // In tray mode a normal window-close hides to the tray, but while
+            // the port-conflict dialog is up the app hasn't committed to
+            // running, so closing the window then should quit instead.
+            ui.window().on_close_requested({
+                let ui_weak = ui.as_weak();
+                move || {
+                    let resolving = ui_weak
+                        .upgrade()
+                        .is_some_and(|ui| ui.global::<Bridge>().get_show_port_conflict());
+                    if resolving {
+                        let _ = slint::quit_event_loop();
                     }
+                    slint::CloseRequestResponse::HideWindow
                 }
-            });
-
-            systray.on_quit(|| {
-                let _ = slint::quit_event_loop();
             });
 
             if !no_main_window {
                 ui.show()?;
             }
-            systray.show()?;
+            // The tray is created and shown later, via the `on_show_tray` hook,
+            // once the FCast port is committed (see `spawn_command_handler`).
             slint::run_event_loop_until_quit()?;
         } else {
+            // No tray: window close quits (default `run()` behavior).
             ui.run()?;
         }
 

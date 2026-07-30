@@ -127,9 +127,24 @@ pub enum AppUpdate {
     RestartApp,
 }
 
+/// User's choice from the port-conflict dialog. `Quit` is not represented here:
+/// the Quit button ends the Slint loop, which drives the normal `Message::Quit`
+/// shutdown.
+#[derive(Debug, Clone, Copy)]
+pub enum PortConflictChoice {
+    /// Re-attempt binding the default FCast port (after the user closes the
+    /// other instance).
+    Retry,
+    /// Bind an ephemeral port instead and re-advertise it over mDNS.
+    UseDifferentPort,
+}
+
 #[derive(Debug)]
 pub enum Message {
     Quit,
+    /// Sent by the port-conflict dialog while the receiver is still trying to
+    /// acquire its listening port (see `Application::resolve_listen_port`).
+    PortConflictChoice(PortConflictChoice),
     SessionFinished,
     SeekPercent(f32),
     ToggleDebug,
