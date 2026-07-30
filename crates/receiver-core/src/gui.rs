@@ -98,6 +98,23 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
                     position: slint::LogicalPosition::new(0.0, 0.0),
                     button: slint::platform::PointerEventButton::Other,
                 });
+
+            // With the Wayland subsurface sink the video is a separate surface
+            // stacked above the GUI, so once the controls hide the winit window
+            // is occluded and stops redrawing. Slint only applies a cursor change
+            // during a redraw, so the synthetic event above never takes effect
+            // (the swapchain sink redraws into the window every frame, which is
+            // why it works there). Hide the cursor straight on the winit window
+            // instead: winit flushes the request regardless of the parked redraw
+            // loop. The pointer falls through the video surface's empty input
+            // region onto this window, so this is the surface holding the cursor.
+            #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+            {
+                use i_slint_backend_winit::WinitWindowAccessor;
+                ui.window().with_winit_window(|win| {
+                    win.set_cursor_visible(false);
+                });
+            }
         }
     });
 
