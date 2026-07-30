@@ -297,6 +297,8 @@ enum Action {
         supports_whep: bool,
         capabilities: Option<crate::device::ReceiverCapabilities>,
     },
+    /// The receiver assigned the companion provider ID.
+    CompanionReady,
     LoadedV4(V4Load),
     QueueInserted {
         entry: QueueEntry,
@@ -590,7 +592,7 @@ impl DeviceStateMachine {
                     *companion_provider_id = Some(msg.provider_id());
                 }
 
-                Action::None
+                Action::CompanionReady
             }
             v4::flat::Message::CompanionResourceInfoRequest => {
                 let msg = union!(packet.payload_as_companion_resource_info_request());
@@ -1049,6 +1051,10 @@ struct InnerDevice {
     /// playback-scoped state (in particular the companion sources the new load needs) must not be
     /// dropped for it.
     load_in_flight: bool,
+    /// Companion-source commands that arrived before the receiver assigned the companion provider
+    /// ID. The `Connected` event precedes the `CompanionHelloResponse` carrying the ID, so a load
+    /// issued right at connect time lands in this window. Replayed in order once the ID arrives.
+    pending_companion_cmds: Vec<Command>,
 }
 
 impl InnerDevice {
@@ -1072,6 +1078,7 @@ impl InnerDevice {
             queue_mirror: QueueMirror::default(),
             track_mirror: TrackMirror::default(),
             load_in_flight: false,
+            pending_companion_cmds: Vec::new(),
         }
     }
 
@@ -1096,7 +1103,8 @@ impl InnerDevice {
 
     /// Assemble the aggregated track list from the mirror and forward it to the event handler.
     fn emit_tracks_changed(&mut self) {
-        self.event_handler.tracks_changed(self.track_mirror.snapshot());
+        self.event_handler
+            .tracks_changed(self.track_mirror.snapshot());
     }
 
     /// Resolve a media item's locator to a plain URL, registering a companion source (and taking
@@ -1158,7 +1166,8 @@ impl InnerDevice {
                 playback_duration: entry.playback_duration,
             });
         }
-        let msg = v4::MessageBuilder::new().load_queue(wire_items.into_iter(), start_index, autoplay);
+        let msg =
+            v4::MessageBuilder::new().load_queue(wire_items.into_iter(), start_index, autoplay);
         self.send_bytes(Opcode::Flatbuf, &msg).await?;
         self.queue_mirror
             .set(entries, start_index.map(|i| i as u32), autoplay);
@@ -1192,9 +1201,7 @@ impl InnerDevice {
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!(
-                    "file descriptor {fd} is already registered as a companion source"
-                ),
+                format!("file descriptor {fd} is already registered as a companion source"),
             ));
         }
         // SAFETY: the caller transferred ownership of `fd` to the SDK (see
@@ -1256,6 +1263,60 @@ impl InnerDevice {
         }
         self.companion_sources.insert(id, source);
         Ok(id)
+    }
+
+    /// A v4 session is up but the receiver has not assigned the companion provider ID yet (the
+    /// window between its introduction and its `CompanionHelloResponse`).
+    fn awaiting_companion_provider_id(&self) -> bool {
+        matches!(
+            self.state_machine.variant,
+            StateVariant::V4 {
+                companion_provider_id: None,
+                ..
+            }
+        )
+    }
+
+    /// Whether executing this command requires the companion provider ID.
+    fn command_awaits_companion(cmd: &Command) -> bool {
+        match cmd {
+            Command::Load {
+                type_: LoadType::CompanionResource { .. },
+                ..
+            } => true,
+            Command::LoadQueue(queue) => queue
+                .items
+                .iter()
+                .any(|e| matches!(e.item.source, MediaLocator::FCompanion { .. })),
+            Command::QueueInsert { item, .. } => {
+                matches!(item.source, MediaLocator::FCompanion { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// Release the transferred file descriptors of a command that will never execute (see
+    /// [`Self::discard_companion_descriptor`]).
+    fn discard_command_descriptors(&self, cmd: &Command) {
+        match cmd {
+            Command::Load {
+                type_: LoadType::CompanionResource { source },
+                ..
+            } => self.discard_companion_descriptor(&source.descriptor),
+            Command::LoadQueue(queue) => {
+                for entry in &queue.items {
+                    if let MediaLocator::FCompanion { source } = &entry.item.source {
+                        self.discard_companion_descriptor(&source.descriptor);
+                    }
+                }
+            }
+            Command::QueueInsert { item, .. } => {
+                if let MediaLocator::FCompanion { source } = &item.source {
+                    self.discard_companion_descriptor(&source.descriptor);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn companion_url(&mut self, source: &CompanionSource) -> anyhow::Result<String> {
@@ -1907,6 +1968,13 @@ impl InnerDevice {
                     *has_emitted_connected_event = true;
                 }
             }
+            Action::CompanionReady => {
+                // Replay commands that were parked while the provider ID was
+                // still pending
+                for cmd in self.pending_companion_cmds.drain(..) {
+                    let _ = cmd_tx.send(cmd);
+                }
+            }
             Action::LoadedV4(load) => match load {
                 V4Load::Single(source) => {
                     // Switching to a single item ends any active queue.
@@ -2078,6 +2146,13 @@ impl InnerDevice {
         playlist_length: &mut Option<usize>,
         cmd: Command,
     ) -> anyhow::Result<bool> {
+        // Executing a companion-source command without the provider ID would
+        // fail the whole session. Park it until the ID arrives.
+        if Self::command_awaits_companion(&cmd) && self.awaiting_companion_provider_id() {
+            debug!("Parking companion command until the provider ID is assigned");
+            self.pending_companion_cmds.push(cmd);
+            return Ok(false);
+        }
         match cmd {
             Command::ChangeVolume(volume) => self.change_volume(volume).await?,
             Command::ChangeSpeed(speed) => self.change_speed(speed).await?,
@@ -2336,6 +2411,11 @@ impl InnerDevice {
         // Close any companion sources left over from a previous connection so a
         // dropped-then-reconnected session doesn't leak file descriptors.
         self.companion_sources.clear();
+        // Commands still parked when the previous session died will never
+        // execute, so release their transferred descriptors too.
+        for cmd in std::mem::take(&mut self.pending_companion_cmds) {
+            self.discard_command_descriptors(&cmd);
+        }
         const READ_HEADROOM: usize = 1024 * 8;
         let mut packet_reader =
             fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, READ_HEADROOM);

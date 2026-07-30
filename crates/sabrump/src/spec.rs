@@ -1,7 +1,6 @@
 //! Session configuration.
 
-use crate::format::SabrFormat;
-use crate::proto::ClientInfo;
+use crate::{format::SabrFormat, proto::ClientInfo};
 
 /// Media role. Values match the wire/reference constants (`ROLE_VIDEO = 0`,
 /// `ROLE_AUDIO = 1`).
@@ -38,8 +37,12 @@ pub struct SabrStreamSpec {
 /// leniently across the URL-safe/standard alphabets (padded or not).
 #[cfg(feature = "serde")]
 mod ustreamer_config_b64 {
-    use base64::Engine;
-    use base64::engine::general_purpose::{GeneralPurpose, STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    use base64::{
+        Engine,
+        engine::general_purpose::{
+            GeneralPurpose, STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD,
+        },
+    };
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error> {

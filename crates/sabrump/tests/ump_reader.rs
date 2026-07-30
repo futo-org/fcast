@@ -1,9 +1,7 @@
 //! Tests for the UMP wire-format reader.
 
 use bytes::Bytes;
-use sabrump::http::SabrBody;
-use sabrump::ump::UmpReader;
-use sabrump::PartType;
+use sabrump::{PartType, http::SabrBody, ump::UmpReader};
 
 fn write_varint(out: &mut Vec<u8>, value: u64) {
     if value < 128 {

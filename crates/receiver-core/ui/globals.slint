@@ -58,11 +58,6 @@ export enum UiUpdaterState {
     InstallSuccessful,
 }
 
-export struct UiAnimationFrame {
-    img: image,
-    delay: duration,
-}
-
 export struct UiVideoDbgInfo {
     format: string,
     resolution: string,
@@ -107,8 +102,10 @@ export global Bridge {
     in property <UiMode> ui-mode: UiMode.Full;
     in property <int> update-download-progress;
     in property <string> updater-error-msg;
-    in property <[UiAnimationFrame]> animation-frames;
-    in property <int> current-animation-frame;
+    // True when the current image is decoded through the player pipeline
+    // (fimagedec) rather than the legacy in-GUI decoder. The image view paints
+    // nothing opaque so the video sink below shows through.
+    in property <bool> image-via-player: false;
     in property <int> video-frame-width;
     in property <int> video-frame-height;
 

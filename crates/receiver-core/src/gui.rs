@@ -278,6 +278,7 @@ pub enum UpdateGuiCommand {
     },
     SetPlaybackState(GuiPlaybackState),
     ClearImageState,
+    SetImageViaPlayer(bool),
     SetIsLive(bool),
     SetSeekPending(bool),
     SetPlaybackRate(f32),
@@ -290,9 +291,6 @@ pub enum UpdateGuiCommand {
     SetWindowVisibility {
         visible: bool,
         prev_tx: oneshot::Sender<bool>,
-    },
-    SetAnimation {
-        frames: IgnoredDebug<Vec<crate::image::AnimationFrame>>,
     },
     SetGraphDump(IgnoredDebug<GraphDumpData>),
     SetInspectorDumping(bool),
@@ -510,6 +508,13 @@ impl GuiController {
         self.send(UpdateGuiCommand::ClearImageState);
     }
 
+    /// Mark the current load as an animated image decoded through the player
+    /// pipeline. When set, the image view paints nothing opaque so the video
+    /// sink below shows through.
+    pub fn set_image_via_player(&self, via_player: bool) {
+        self.send(UpdateGuiCommand::SetImageViaPlayer(via_player));
+    }
+
     pub fn set_is_live(&mut self, is_live: bool) {
         if is_live != self.is_live {
             self.send(UpdateGuiCommand::SetIsLive(is_live));
@@ -544,12 +549,6 @@ impl GuiController {
                 false
             }
         }
-    }
-
-    pub fn set_animation(&self, frames: Vec<crate::image::AnimationFrame>) {
-        self.send(UpdateGuiCommand::SetAnimation {
-            frames: frames.into(),
-        });
     }
 
     pub fn quit_loop(&mut self) {
@@ -610,7 +609,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_playlist_idx(length);
         }
         UpdateGuiCommand::SetImage { typ, img } => {
-            bridge.set_animation_frames(slint::ModelRc::default());
             match typ {
                 ImageType::Preview => bridge.set_image_preview(img.as_compound()),
                 ImageType::AudioTrackCover => {
@@ -692,8 +690,8 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         UpdateGuiCommand::ClearImageState => {
             bridge.set_image_preview(CompoundImage::default());
             clear_audio_covers(&bridge, renderer_tx);
-            bridge.set_animation_frames(slint::ModelRc::default());
         }
+        UpdateGuiCommand::SetImageViaPlayer(via_player) => bridge.set_image_via_player(via_player),
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
@@ -716,19 +714,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             if let Err(err) = res {
                 error!(?err, visible, "Failed to set window visibility");
             }
-        }
-        UpdateGuiCommand::SetAnimation { frames } => {
-            bridge.set_image_preview(CompoundImage::default());
-            bridge.set_animation_frames(
-                Rc::new(slint::VecModel::from_iter(frames.0.into_iter().map(
-                    |frame| crate::UiAnimationFrame {
-                        img: slint::Image::from_rgba8(frame.image),
-                        delay: frame.delay_ms,
-                    },
-                )))
-                .into(),
-            );
-            bridge.set_current_animation_frame(0);
         }
         UpdateGuiCommand::SetGraphDump(dump) => set_graph_dump(&ui, dump.0),
         UpdateGuiCommand::SetInspectorDumping(dumping) => {

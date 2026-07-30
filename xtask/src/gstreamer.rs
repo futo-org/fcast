@@ -213,6 +213,11 @@ const FULL_ELEMENTS_LINUX: &[(&str, &[&str])] = &[
 /// no wrapdb wrap, so the hermetic mac/win builds drop them — Linux-only.
 const ENABLE_LINUX: &[(Plugins, &str)] = &[
     (Plugins::Bad, "va"),
+    // jpegparse: required by fvajpegdec (VA-API JPEG still decode) to parse the
+    // stream before vajpegdec, whose sink caps need the parsed fields. The image
+    // codecs are stripped in DISABLE_COMMON (fimagedec handles images), so
+    // re-enable just this parser on Linux; ENABLE runs after DISABLE and wins.
+    (Plugins::Bad, "jpegformat"),
     (Plugins::Bad, "srt"),
     (Plugins::Bad, "assrender"),
     (Plugins::Good, "wavpack"),
@@ -1102,21 +1107,27 @@ fn apply_gst_patches(sh: &Rc<Shell>, source: &Utf8Path, os: &str) -> Result<()> 
         // these LF patches into CRLF; ignoring the trailing CR keeps the apply
         // and the reverse-check idempotency EOL-agnostic against either source.
         // Already applied (reused checkout): reverse-apply must succeed cleanly.
-        if cmd!(sh, "git -C {source} apply --ignore-whitespace --reverse --check {patch}")
-            .quiet()
-            .ignore_stderr()
-            .run()
-            .is_ok()
+        if cmd!(
+            sh,
+            "git -C {source} apply --ignore-whitespace --reverse --check {patch}"
+        )
+        .quiet()
+        .ignore_stderr()
+        .run()
+        .is_ok()
         {
             println!(">> gstreamer patch already applied, skipping: {name}");
             continue;
         }
         // Not applicable to this tree (different ref / already-diverged): warn, don't fail.
-        if cmd!(sh, "git -C {source} apply --ignore-whitespace --check {patch}")
-            .quiet()
-            .ignore_stderr()
-            .run()
-            .is_err()
+        if cmd!(
+            sh,
+            "git -C {source} apply --ignore-whitespace --check {patch}"
+        )
+        .quiet()
+        .ignore_stderr()
+        .run()
+        .is_err()
         {
             println!(">> WARNING: gstreamer patch does not apply cleanly, skipping: {name}");
             continue;
@@ -1823,11 +1834,14 @@ fn apply_subproject_patches(sh: &Rc<Shell>, source: &Utf8Path) -> Result<()> {
         for patch in patches {
             let _d = sh.push_dir(source);
             // A patch that applies cleanly in REVERSE is already present.
-            if cmd!(sh, "git apply --ignore-whitespace --check --reverse {dir_arg} {patch}")
-                .quiet()
-                .ignore_stderr()
-                .run()
-                .is_ok()
+            if cmd!(
+                sh,
+                "git apply --ignore-whitespace --check --reverse {dir_arg} {patch}"
+            )
+            .quiet()
+            .ignore_stderr()
+            .run()
+            .is_ok()
             {
                 continue;
             }
@@ -1842,11 +1856,14 @@ fn apply_subproject_patches(sh: &Rc<Shell>, source: &Utf8Path) -> Result<()> {
                 })?;
             // Belt and suspenders against the silent-skip failure mode: after
             // a successful apply the reverse-check must pass.
-            if cmd!(sh, "git apply --ignore-whitespace --check --reverse {dir_arg} {patch}")
-                .quiet()
-                .ignore_stderr()
-                .run()
-                .is_err()
+            if cmd!(
+                sh,
+                "git apply --ignore-whitespace --check --reverse {dir_arg} {patch}"
+            )
+            .quiet()
+            .ignore_stderr()
+            .run()
+            .is_err()
             {
                 bail!(
                     "{patch} reported success but did not modify {target} \

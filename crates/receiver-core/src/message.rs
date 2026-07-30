@@ -48,6 +48,10 @@ impl MessageSender {
         self.send(Message::Image(msg));
     }
 
+    pub fn queue_cache(&self, msg: crate::queue_cache::Event) {
+        self.send(Message::QueueCache(msg));
+    }
+
     #[cfg(not(target_os = "android"))]
     pub fn mdns(&self, msg: Mdns) {
         self.send(Message::Mdns(msg));
@@ -140,6 +144,7 @@ pub enum Message {
         op: crate::Operation,
     },
     Image(crate::image::Event),
+    QueueCache(crate::queue_cache::Event),
     Mdns(Mdns),
     PlaylistDataResult {
         play_message: Option<fcast_protocol::v3::PlayMessage>,
@@ -164,14 +169,6 @@ pub enum Message {
     /// unseekable streams).
     PendingSeekCheck {
         epoch: u64,
-    },
-    /// fcast backend: bounded wait for an attached external subtitle input
-    /// to produce its stream. If it still hasn't when this fires, the input
-    /// failed silently (a bad URL can fail without a bus error) and is
-    /// detached with `ResourceNotFound`.
-    FcastExternalSubCheck {
-        item: MediaItemId,
-        ext_id: u32,
     },
     /// DIAGNOSTIC (load-stall investigation): a bounded wait after a pipeline
     /// load. If the pipeline still has not reached a steady PAUSED when this

@@ -154,6 +154,9 @@ http-body-util = "0.1.1"
 pin-project-lite = "0.2"
 gst-check = { package = "gstreamer-check", version = "0.25" }
 ctor = "0.2"
+# Encoders are excluded from shipping builds (binary size); tests encode
+# their own image fixtures.
+image = { workspace = true, features = ["encode"] }
 
 
 [features]

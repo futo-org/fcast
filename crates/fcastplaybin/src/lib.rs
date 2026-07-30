@@ -22,20 +22,25 @@
 //! (the `_async` methods), so callers never touch raw GStreamer state
 //! changes, seeks or bus messages.
 
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicU64, Ordering},
-    mpsc,
+use std::{
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow};
 use gst::prelude::*;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use tracing::{debug, debug_span, error, info, warn};
 
 pub mod graph;
+pub mod selection;
 pub mod state_machine;
 
+pub use selection::{SelectionGate, TrackSelection, TrackSlot, TrackTarget};
 pub use state_machine::{
     BufferingStateResult, PlaybackState, RunningState, Seek, StateChangeResult, StateMachine,
 };
@@ -79,18 +84,26 @@ pub struct StartOutcome {
 /// `get_state(None)` here would wedge the caller's worker if preroll stalled.
 const PREROLL_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(10);
 
-/// Identifies one attached external subtitle input for later detach.
+/// Identifies one attached external subtitle input for later detach. The id is STABLE across
+/// internal re-arms (see `Inner::handle_external_error`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternalSubId(u64);
 
-/// A cumulative byte counter for one input stream's PARSED (compressed)
-/// data, for bitrate inspection (see [`FcastPlaybin::stream_io_stats`]).
-/// Counters are per-load by construction (they live and die with the
-/// input); callers sample periodically and derive rates from deltas.
+/// How long an attached external subtitle input may take to produce its stream before it is
+/// failed.
+const EXTERNAL_SUB_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How soon after a (re-)attach an external input's bus error may trigger another re-arm. A dying
+/// input posts several errors in a burst and only the first past this window may replace it.
+const EXTERNAL_REARM_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// A cumulative byte counter for one input stream's PARSED (compressed) data, for bitrate
+/// inspection (see [`FcastPlaybin::stream_io_stats`]). Counters are per-load by construction (they
+/// live and die with the input). Callers sample periodically and derive rates from deltas.
 #[derive(Debug, Clone)]
 pub struct StreamIoStats {
-    /// The GStreamer stream id, for correlating with the stream collection
-    /// (`None` until the pad has carried its stream-start).
+    /// The GStreamer stream id, for correlating with the stream collection (`None` until the pad
+    /// has carried its stream-start).
     pub stream_id: Option<String>,
     /// Set when the stream belongs to an external subtitle input.
     pub external: Option<ExternalSubId>,
@@ -100,10 +113,10 @@ pub struct StreamIoStats {
     pub caps: Option<gst::Caps>,
 }
 
-/// A buffered region of the current media, expressed as fractions
-/// `[0.0, 1.0]` of the whole timeline. Derived from a `GST_QUERY_BUFFERING`
-/// in `PERCENT` format, so the values map directly onto a scrubber. There can
-/// be several disjoint ranges (e.g. after a seek into an unbuffered region).
+/// A buffered region of the current media, expressed as fractions `[0.0, 1.0]` of the whole
+/// timeline. Derived from a `GST_QUERY_BUFFERING` in `PERCENT` format, so the values map directly
+/// onto a scrubber. There can be several disjoint ranges (e.g. after a seek into an unbuffered
+/// region).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BufferedRange {
     pub start: f64,
@@ -137,8 +150,8 @@ fn percent_fraction(v: gst::GenericFormattedValue) -> Option<f64> {
         .then(|| (v.value() as f64 / GST_FORMAT_PERCENT_MAX).clamp(0.0, 1.0))
 }
 
-/// Extract the buffered ranges from an answered `PERCENT`-format buffering
-/// query, dropping any empty or malformed range.
+/// Extract the buffered ranges from an answered `PERCENT`-format buffering query, dropping any
+/// empty or malformed range.
 fn buffered_ranges_from(query: &gst::query::Buffering) -> Vec<BufferedRange> {
     query
         .ranges()
@@ -162,27 +175,39 @@ pub struct SourceDbg {
     pub uri: Option<String>,
 }
 
-/// Where a bus error originated, derived from the generation-tagged inputs.
-/// This replaces playbin3's contextless `failed_uri` guessing.
+/// Where a bus error originated, derived from the generation-tagged inputs. This replaces
+/// playbin3's contextless `failed_uri` guessing. Errors from live external subtitle inputs never
+/// surface here: the crate handles them internally (re-arm, or
+/// [`PlaybinEvent::ExternalSubtitleFailed`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorOrigin {
     /// The main input of the CURRENT load.
     Main,
-    /// A live-attached external subtitle input.
-    ExternalSubtitle(ExternalSubId),
-    /// An element of a previous, already-replaced load whose teardown died
-    /// noisily. Safe to ignore.
+    /// An element of a previous, already-replaced load whose teardown died noisily. Safe to ignore.
     Stale,
-    /// Not attributable to a specific input (sinks, decoders, ...): treat as
-    /// the current load's problem.
+    /// Not attributable to a specific input (sinks, decoders, ...): treat as the current load's
+    /// problem.
+    Unknown,
+}
+
+/// A bus error's source input, classified by the generation-tagged inputs. The internal superset of
+/// [`ErrorOrigin`]: external-input errors are consumed by the crate and need their id for the
+/// fail/re-arm decision.
+enum ErrorSource {
+    Main,
+    External(ExternalSubId),
+    Stale,
+    /// A pre-armed next input that has not activated yet (its generation is
+    /// AHEAD of the current one). Consumed internally: the prepare is
+    /// abandoned and reported as [`PlaybinEvent::PreparedFailed`].
+    Prepared(u64),
     Unknown,
 }
 
 /// A typed pipeline event, delivered through the callback installed by
-/// [`FcastPlaybin::set_event_handler`]. Bus messages are translated on the
-/// posting (streaming) thread, and worker feedback (load completion, seek
-/// outcomes) arrives through the same callback: one ordered event source
-/// instead of a raw bus plus side channels.
+/// [`FcastPlaybin::set_event_handler`]. Bus messages are translated on the posting (streaming)
+/// thread, and worker feedback (load completion, seek outcomes) arrives through the same callback:
+/// one ordered event source instead of a raw bus plus side channels.
 #[derive(Debug)]
 pub enum PlaybinEvent {
     EndOfStream,
@@ -246,13 +271,44 @@ pub enum PlaybinEvent {
         /// URI of the failing source element, when the source is one.
         failed_uri: Option<String>,
     },
+    /// An attached external subtitle input failed for good and has already been DETACHED by the
+    /// crate: its attach failed outright, a bus error arrived while its stream was selected (or
+    /// before it ever produced one), or it produced no stream within the materialization timeout.
+    /// Deselect-race errors are re-armed internally and never surface (see
+    /// `Inner::handle_external_error`). The caller drops its bookkeeping for the id and reports the
+    /// failure.
+    ExternalSubtitleFailed {
+        id: ExternalSubId,
+    },
+    /// fimagedec's announcement of an image load: the "fcast-image-stream"
+    /// structure with format (str), width/height (i32) and animated (bool).
+    /// The caller uses it to classify the load as an image and feed its
+    /// inspector; animations otherwise look like ordinary video streams.
+    ImageStream(gst::Structure),
+    /// A prepared next input ([`FcastPlaybin::prepare_next_async`]) went
+    /// live: the current item drained and decodebin3 switched to the
+    /// prepared item's streams without any state change. Stamped with the
+    /// PREPARED generation (the one `prepare_next_async` returned), which is
+    /// the pipeline's current generation from this event on. Followed by the
+    /// new item's `StreamCollection` and `StreamsSelected`, mirroring a
+    /// fresh load's event order.
+    PreparedActivated,
+    /// A prepared next input failed before it could activate (its element
+    /// errored, or the prepare itself failed). The input is already being
+    /// removed; the caller drops its pre-arm bookkeeping and the item loads
+    /// through the normal end-of-stream advance instead. `generation` names
+    /// the failed prepare (the event itself is stamped with the still
+    /// current item's generation).
+    PreparedFailed {
+        generation: u64,
+    },
     Warning(String),
 }
 
-/// First look at every raw bus message, invoked on the posting (streaming)
-/// thread, for caller-specific messages the crate does not understand
-/// (`NeedContext` for custom source elements, missing-plugin reports).
-/// Return `true` to consume the message. No event is emitted for it.
+/// First look at every raw bus message, invoked on the posting (streaming) thread, for
+/// caller-specific messages the crate does not understand (`NeedContext` for custom source
+/// elements, missing-plugin reports).  Return `true` to consume the message. No event is emitted
+/// for it.
 pub type MessageHook = Box<dyn Fn(&gst::Message) -> bool + Send + Sync>;
 
 /// The caller's event sink. The second argument is the generation of the
@@ -294,11 +350,48 @@ enum Job {
     DetachSub {
         id: ExternalSubId,
     },
+    /// Fail an external subtitle input: detach it and report
+    /// [`PlaybinEvent::ExternalSubtitleFailed`]. Queued by the bus error
+    /// handler (the detach must not run on the posting streaming thread).
+    /// `epoch` guards against acting on an input that was re-armed or
+    /// replaced after the job was queued.
+    FailSub {
+        id: ExternalSubId,
+        epoch: u32,
+    },
+    /// Replace a deselected external subtitle input that died in the
+    /// deselect race with a fresh element on the same URI, under the SAME
+    /// id (see `Inner::handle_external_error`).
+    RearmSub {
+        id: ExternalSubId,
+        epoch: u32,
+    },
+    /// Bounded materialization check, armed per (re-)attach: an input still
+    /// without streams when this fires is dead (bad URL that never errors)
+    /// and is failed.
+    CheckSub {
+        id: ExternalSubId,
+        epoch: u32,
+    },
     /// Snapshot the pipeline graph for the inspector. On the worker so the
     /// element walk cannot race a load's sink teardown.
     DumpGraph {
         done: Box<dyn FnOnce(graph::GraphSnapshot) + Send>,
     },
+    /// Pre-arm the next item on the live core (gapless transition). See
+    /// [`FcastPlaybin::prepare_next_async`].
+    PrepareNext {
+        input: MediaInput,
+        generation: u64,
+    },
+    /// Drop a prepared next input that will not be needed (seek away from
+    /// the end, queue mutation, autoplay turned off).
+    CancelPrepared,
+    /// Post-activation cleanup: remove every input older than the newly
+    /// activated generation (the drained main input and the previous item's
+    /// external subtitles). Queued by the activation detection, which runs
+    /// on a posting (streaming) thread where pipeline surgery is forbidden.
+    FinishActivation,
 }
 
 impl std::fmt::Debug for Job {
@@ -333,7 +426,29 @@ impl std::fmt::Debug for Job {
                 .field("url", url)
                 .finish(),
             Job::DetachSub { id } => f.debug_struct("DetachSub").field("id", id).finish(),
+            Job::FailSub { id, epoch } => f
+                .debug_struct("FailSub")
+                .field("id", id)
+                .field("epoch", epoch)
+                .finish(),
+            Job::RearmSub { id, epoch } => f
+                .debug_struct("RearmSub")
+                .field("id", id)
+                .field("epoch", epoch)
+                .finish(),
+            Job::CheckSub { id, epoch } => f
+                .debug_struct("CheckSub")
+                .field("id", id)
+                .field("epoch", epoch)
+                .finish(),
             Job::DumpGraph { .. } => write!(f, "DumpGraph"),
+            Job::PrepareNext { input, generation } => f
+                .debug_struct("PrepareNext")
+                .field("input", input)
+                .field("generation", generation)
+                .finish(),
+            Job::CancelPrepared => write!(f, "CancelPrepared"),
+            Job::FinishActivation => write!(f, "FinishActivation"),
         }
     }
 }
@@ -358,6 +473,27 @@ struct StreamTap {
     pad: gst::Pad,
     bytes: Arc<AtomicU64>,
     probe: Option<gst::PadProbeId>,
+    /// Drain watch: whether this pad has pushed EOS into decodebin3 (reset
+    /// by SEGMENT/STREAM_START, i.e. by seeks and item switches). The
+    /// gapless swap fires when every main-input pad is drained.
+    saw_eos: Arc<AtomicBool>,
+    /// The EVENT_DOWNSTREAM probe maintaining `saw_eos`.
+    event_probe: Option<gst::PadProbeId>,
+}
+
+/// External-subtitle bookkeeping for an [`Input`] (`None` for the main
+/// input).
+struct ExternalInput {
+    id: ExternalSubId,
+    /// The subtitle URI, kept for re-arming with a fresh element.
+    uri: String,
+    /// Bumped on every re-attach under this id. Queued fail/re-arm/check
+    /// jobs carry the epoch they were decided against and no-op on a
+    /// mismatch, so a stale job can never detach the healthy input a
+    /// re-arm just built.
+    epoch: u32,
+    /// When this input was (re-)attached, for the error debounce.
+    attached_at: Instant,
 }
 
 /// One live input: an element (urisourcebin or caller-provided) whose source
@@ -367,14 +503,35 @@ struct Input {
     /// Which load (or attach) this input belongs to. A bumped generation
     /// makes this input's errors [`ErrorOrigin::Stale`].
     generation: u64,
-    /// External-subtitle id, `None` for the main input.
-    external: Option<ExternalSubId>,
+    /// External-subtitle bookkeeping, `None` for the main input.
+    external: Option<ExternalInput>,
     /// decodebin3 request sink pads we hold for this input.
     db3_sink_pads: Vec<gst::Pad>,
     /// Per-stream byte counters (see [`StreamTap`]).
     taps: Vec<StreamTap>,
     /// Signal handlers to disconnect on removal.
     pad_added_sig: Option<gst::glib::SignalHandlerId>,
+    /// Prepared (gapless) inputs only: the per-pad block probes holding
+    /// buffers back until the swap. Cleared by the swap itself; removed
+    /// here when a still-pending prepare is cancelled.
+    block_probes: Vec<(gst::Pad, gst::PadProbeId)>,
+}
+
+impl Input {
+    /// The stream ids this input's source pads have produced so far. Empty
+    /// until the pads exist and carry their stream-start events (guaranteed
+    /// by the time decodebin3 posts the collection containing the streams).
+    fn stream_ids(&self) -> Vec<String> {
+        self.element
+            .src_pads()
+            .iter()
+            .filter_map(|pad| pad.stream_id().map(|sid| sid.to_string()))
+            .collect()
+    }
+
+    fn is_external(&self, id: ExternalSubId) -> bool {
+        self.external.as_ref().is_some_and(|e| e.id == id)
+    }
 }
 
 /// A decodebin3 output stream routed into a chain.
@@ -416,6 +573,12 @@ struct RoutedStream {
     /// subtitleoverlay's subtitle input stays wired across loads with stale
     /// caps/renderer state and the next preroll wedges.
     tqueue: Option<gst::Element>,
+    /// The group id of the last STREAM_START this pad carried. An EOS on a
+    /// pad whose group is BEHIND the pipeline's active group belongs to a
+    /// previous item draining out during a gapless switch and is dropped
+    /// (uridecodebin3 keeps its gapless EOS drop open until every output
+    /// pad has flipped to the new group, this is the per-pad equivalent).
+    group: Option<gst::GroupId>,
     kind: StreamKind,
 }
 
@@ -446,6 +609,81 @@ struct RoutingState {
     next_external_id: u64,
 }
 
+/// A pre-armed next item (see [`FcastPlaybin::prepare_next_async`]). Its
+/// input element is ALSO registered in `RoutingState::inputs` (under its
+/// future generation), so the ordinary input machinery covers linking,
+/// bitrate taps, and removal. This record carries what the gapless
+/// transition additionally needs: the activation identity (which element,
+/// which generation) and the held-back collection.
+struct PreparedNext {
+    element: gst::Element,
+    /// The generation the item adopts when it activates (returned by
+    /// `prepare_next_async` so the caller can correlate).
+    generation: u64,
+    /// The next item's stream collection, held back until activation so the
+    /// caller sees it AFTER [`PlaybinEvent::PreparedActivated`], stamped
+    /// with the new generation: the same collection-then-selected order a
+    /// fresh load produces.
+    pending_collection: Option<gst::StreamCollection>,
+}
+
+impl PreparedNext {
+    /// The stream ids the prepared input has produced so far (empty until
+    /// its pads exist, guaranteed populated by the time decodebin3 selects
+    /// them).
+    fn stream_ids(&self) -> Vec<String> {
+        self.element
+            .src_pads()
+            .iter()
+            .filter_map(|pad| pad.stream_id().map(|sid| sid.to_string()))
+            .collect()
+    }
+}
+
+/// Coordination between the current input's drain watches and the prepared
+/// input's blocked streaming threads (the uridecodebin3 recipe: the
+/// prepared input's first buffer blocks in a pad probe until the current
+/// input has pushed EOS into decodebin3 on every pad, then that same probe
+/// performs the relink).
+#[derive(Default)]
+struct SwapState {
+    /// The generation of the pending prepared input. `None`: no gapless
+    /// swap pending (never armed, cancelled, or already activated).
+    pending: Option<u64>,
+    /// Every main-input pad has pushed its EOS into decodebin3.
+    drained: bool,
+    /// The relink surgery ran; remaining block probes just remove
+    /// themselves and let their data flow.
+    swapped: bool,
+    /// The output-side hold dropped an EOS while this swap was pending: the
+    /// current item's end has been consumed for good, so a cancel must
+    /// synthesize it or the caller never learns the item ended. An input
+    /// pushing EOS into decodebin3 (`drained`) is NOT that: until the EOS
+    /// re-emerges at the outputs it still flows normally once the hold
+    /// disarms.
+    dropped_eos: bool,
+}
+
+#[derive(Default)]
+struct SwapGate {
+    state: Mutex<SwapState>,
+    cond: Condvar,
+}
+
+impl SwapGate {
+    /// Abort any pending swap and wake every thread parked on the gate.
+    /// MUST run before any downward pipeline transition while a prepare may
+    /// be pending: a state change joins streaming threads, and a prepared
+    /// pad's thread parked in the gate's condvar would deadlock it.
+    /// Returns the aborted state for the caller's cleanup decisions.
+    fn abort(&self) -> SwapState {
+        let mut state = self.state.lock();
+        let aborted = std::mem::take(&mut *state);
+        self.cond.notify_all();
+        aborted
+    }
+}
+
 /// The per-load dynamic core: decodebin3 + streamsynchronizer. Rebuilt FRESH
 /// for every load. These are the only elements that accumulate per-media
 /// state across items (decodebin3's multiqueue keeps its interleave-tuned
@@ -459,6 +697,16 @@ struct Core {
     ssync: gst::Element,
     pad_added_sig: gst::glib::SignalHandlerId,
     pad_removed_sig: gst::glib::SignalHandlerId,
+}
+
+/// The user-facing half of a gapless activation, held back from decodebin3's
+/// output until the new item's audio actually reaches the sink. See
+/// [`Inner::held_activation`].
+struct HeldActivation {
+    /// The new item's stream collection, re-emitted right after
+    /// [`PlaybinEvent::PreparedActivated`] (the fresh-load ordering the caller
+    /// relies on).
+    collection: Option<gst::StreamCollection>,
 }
 
 struct Inner {
@@ -540,6 +788,48 @@ struct Inner {
     /// lifetime discipline as `work_tx`.
     select_tx: mpsc::Sender<SelectJob>,
     routing: Mutex<RoutingState>,
+    /// The declarative track-selection engine (see the [`selection`] module
+    /// docs). Recording happens at bus-translate time, dispatch only in
+    /// [`FcastPlaybin::pump_selection`]. Lock order: `routing` before
+    /// `selection`, never the reverse.
+    selection: Mutex<selection::SelectionEngine>,
+    /// The external-subtitle materialization timeout, normally
+    /// [`EXTERNAL_SUB_TIMEOUT`]. Mutable only so tests can shorten it
+    /// ([`FcastPlaybin::set_external_sub_timeout`]).
+    sub_timeout: Mutex<Duration>,
+    /// The pre-armed next item, if any (see [`PreparedNext`]). Lock order:
+    /// take and RELEASE this before `routing`/`selection`, never hold it
+    /// across them.
+    prepared: Mutex<Option<PreparedNext>>,
+    /// See [`SwapGate`].
+    swap_gate: SwapGate,
+    /// The group id of the item currently flowing OUT of decodebin3 (from
+    /// STREAM_START on its output pads; reset per load). A change while a
+    /// prepared item is pending IS the gapless activation: decodebin3
+    /// posts no new streams-selected for a same-slot continuation, so the
+    /// data plane's group id is the reliable switch signal (uridecodebin3
+    /// tracks output activation the same way).
+    active_group: Mutex<Option<gst::GroupId>>,
+    /// The group id the last gapless activation RETIRED (the previous
+    /// item's). Output pads still carrying it have their EOS dropped even
+    /// after the activation cleared the swap gate: the selection-side
+    /// activation trigger can fire while the old item's tail is still
+    /// draining out of decodebin3, and an old EOS reaching the sinks there
+    /// can end the pipeline between items. Reset per load.
+    retired_group: Mutex<Option<gst::GroupId>>,
+    /// A gapless activation's user-facing events (PreparedActivated + the new
+    /// item's collection), held back from decodebin3's output until the new
+    /// item's audio crosses the decoupling queue to the sink. The switch is
+    /// DETECTED at decodebin3's output — one decoupling-queue ahead of the
+    /// speakers — so emitting the title/duration there flips the UI before the
+    /// sound. The `fpb-aqueue` src STREAM_START probe releases this when the
+    /// item's audio actually reaches the sink, matching the sink-anchored
+    /// playback position. Only set for items with audio (the release is
+    /// anchored on the audio queue); audio-less items emit immediately. At
+    /// most one is ever held: real media never runs two swaps within one
+    /// queue depth, and a superseding activation flushes any prior hold.
+    /// Cleared per load.
+    held_activation: Mutex<Option<HeldActivation>>,
 }
 
 /// An RAII hold on [`Inner::route_gate`]. Dropping it releases the gate
@@ -623,6 +913,22 @@ pub struct Sinks {
     pub audio: AudioSink,
 }
 
+/// Audio decoupling queue depth (`fpb-aqueue` `max-size-time`). Chosen purely
+/// for decoupling headroom: it absorbs sink scheduling jitter so a busy CPU
+/// never starves the audio sink. 1s is generous (audio decodes far faster than
+/// realtime and upstream use-buffering handles the source). It must stay below
+/// the gapless pre-arm lead so the EOS-hold at decodebin3's output still
+/// catches a late pre-arm's outgoing EOS (the pre-arm arms seconds before the
+/// end; 1s of race-ahead is well inside that). It does NOT set the gapless
+/// transition seam any more: the user-facing item switch is HELD and released
+/// when the new item's audio actually crosses this queue to the sink (see
+/// [`Inner::held_activation`]), so the title/duration flip with the sound
+/// regardless of this depth. Deep only while a video chain is present, to
+/// absorb audio during a video re-preroll (the A/V mid-load deadlock the queue
+/// exists for). See `aqueue` in `new`.
+const AQUEUE_AUDIO_TIME_NS: u64 = 1_000_000_000;
+const AQUEUE_VIDEO_TIME_NS: u64 = 30 * 1_000_000_000;
+
 fn make(factory: &str, name: &str) -> Result<gst::Element> {
     gst::ElementFactory::make(factory)
         .name(name)
@@ -701,7 +1007,16 @@ impl FcastPlaybin {
         // video still fully decodes into it. Callers that want to skip video
         // work deselect the video stream instead.
         let video_sink = match sinks.video {
-            Some(sink) => sink,
+            Some(sink) => {
+                // playsink parity: QoS events from the video sink drive
+                // decoder frame-skipping and fimagedec's schedule rebase.
+                // Without them a slow decode path silently drops at the sink
+                // with no way for upstream to adapt.
+                if sink.has_property_with_type("qos", bool::static_type()) {
+                    sink.set_property("qos", true);
+                }
+                sink
+            }
             None => {
                 let sink = make("fakesink", "fpb-fake-vsink")?;
                 sink.set_property("sync", true);
@@ -720,10 +1035,20 @@ impl FcastPlaybin {
         // which then can't feed VIDEO, so the video sink never re-prerolls
         // and the whole pipeline deadlocks. The queue absorbs the audio that
         // piles up during the video re-preroll window. Bounded by TIME (the
-        // default 1s cap is what bites, 30s caps memory to a few MB of PCM)
-        // with no min-threshold, so it adds no playback latency.
+        // default 1s cap is what bites, VIDEO depth caps memory to a few MB
+        // of PCM) with no min-threshold, so it adds no playback latency.
+        //
+        // The depth is video-conditional (see `AQUEUE_*_TIME_NS`): the deep
+        // buffer is ONLY needed while a video chain can re-preroll. For
+        // audio-only playback a deep queue is actively harmful to gapless: it
+        // carries the outgoing item's decoded EOS past the gapless EOS-hold
+        // (at decodebin3's output, upstream of this queue) tens of seconds
+        // before the speakers reach it, so a pre-arm that lands later (the
+        // field: the sender queues the next track seconds before the end) is
+        // too late and the item is skipped. A shallow audio-only queue keeps
+        // the hold near the sink boundary. `ensure_video_chain` deepens it.
         let aqueue = make("queue", "fpb-aqueue")?;
-        aqueue.set_property("max-size-time", 30u64 * 1_000_000_000);
+        aqueue.set_property("max-size-time", AQUEUE_AUDIO_TIME_NS);
         aqueue.set_property("max-size-bytes", 0u32);
         aqueue.set_property("max-size-buffers", 0u32);
 
@@ -790,9 +1115,38 @@ impl FcastPlaybin {
             work_tx,
             select_tx,
             routing: Mutex::new(RoutingState::default()),
+            selection: Mutex::new(selection::SelectionEngine::new()),
+            sub_timeout: Mutex::new(EXTERNAL_SUB_TIMEOUT),
+            prepared: Mutex::new(None),
+            swap_gate: SwapGate::default(),
+            active_group: Mutex::new(None),
+            retired_group: Mutex::new(None),
+            held_activation: Mutex::new(None),
         });
 
         Inner::install_core(&inner)?;
+
+        // The sink-boundary release for a held gapless activation (see
+        // `Inner::held_activation`). A STREAM_START leaving the decoupling
+        // queue means the item behind it has drained and the NEXT item's audio
+        // is now reaching the sink: exactly one STREAM_START crosses per audio
+        // item, and a hold is only ever armed at a gapless boundary, so the
+        // first STREAM_START after an arm IS that boundary — no group-id
+        // bookkeeping needed (and none possible: streamsynchronizer may rewrite
+        // group ids downstream). The initial load's STREAM_START finds no hold
+        // and is a no-op.
+        if let Some(src) = inner.audio_entry.static_pad("src") {
+            let weak = Arc::downgrade(&inner);
+            src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                if let Some(gst::PadProbeData::Event(event)) = &info.data
+                    && matches!(event.view(), gst::EventView::StreamStart(_))
+                    && let Some(inner) = weak.upgrade()
+                {
+                    inner.release_held_activation();
+                }
+                gst::PadProbeReturn::Ok
+            });
+        }
 
         // Volume notifies become events. The dedicated element makes them
         // deterministic (see `set_volume`).
@@ -875,11 +1229,6 @@ impl FcastPlaybin {
         });
     }
 
-    /// Classify a bus error message by its source element (generation tags).
-    pub fn classify_error(&self, msg: &gst::message::Error) -> ErrorOrigin {
-        self.inner.classify_error_src(msg.src())
-    }
-
     /// Load a new media input, replacing the previous one (and any attached
     /// external subtitles). The pipeline ends in READY with the new input
     /// wired. Call [`play`]/[`pause`] to start. The returned outcome carries
@@ -899,6 +1248,12 @@ impl FcastPlaybin {
         {
             // No routes during the reset (see `Inner::route_gate`).
             let _gate = Inner::gate(inner);
+            // A pending prepared next input is superseded by this load; its
+            // element is in `inputs` and leaves with the rest. Wake any of
+            // its threads parked on the swap gate BEFORE the state change,
+            // which joins streaming threads.
+            inner.swap_gate.abort();
+            *inner.prepared.lock() = None;
             inner
                 .pipeline
                 .set_state(gst::State::Ready)
@@ -924,6 +1279,16 @@ impl FcastPlaybin {
         inner.generation.store(generation, Ordering::SeqCst);
         // The previous item's collection is gone with its core.
         inner.routing.lock().collection_video_ids.clear();
+        // A fresh core outputs a fresh group; the first STREAM_START
+        // records it (see `Inner::active_group`).
+        *inner.active_group.lock() = None;
+        *inner.retired_group.lock() = None;
+        // A fresh load supersedes any gapless activation still held for the
+        // sink boundary; its events belong to a play item this load replaces.
+        *inner.held_activation.lock() = None;
+        // Track desires are per-item: the new load starts on the pipeline's
+        // own defaults.
+        inner.selection.lock().reset();
 
         let element = match input {
             MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true)?,
@@ -991,7 +1356,12 @@ impl FcastPlaybin {
 
     /// Live-attach an external subtitle by URI (file/http) under a
     /// pre-reserved id. Works in any pipeline state. The stream becomes
-    /// selectable once decodebin3 announces the updated collection.
+    /// selectable once decodebin3 announces the updated collection. The
+    /// crate babysits the input from here: an input that dies in the
+    /// deselect race is re-armed internally under the same id, and one that
+    /// fails for good (or never produces a stream within the bounded wait)
+    /// is detached and reported as
+    /// [`PlaybinEvent::ExternalSubtitleFailed`].
     pub fn attach_subtitle_with_id(&self, id: ExternalSubId, uri: &str) -> Result<()> {
         let generation = self.inner.current_generation();
         // NO buffering on subtitle side-inputs (uridecodebin3 also buffers
@@ -999,9 +1369,53 @@ impl FcastPlaybin {
         // the caller's buffering state machine and wedge a paused pipeline
         // in "Buffering".
         let element = Inner::make_urisourcebin(uri, false)?;
-        Inner::add_input(&self.inner, element, generation, Some(id))?;
+        let external = ExternalInput {
+            id,
+            uri: uri.to_string(),
+            epoch: 0,
+            attached_at: Instant::now(),
+        };
+        Inner::add_input(&self.inner, element, generation, Some(external))?;
         info!(?id, uri, "attached external subtitle input");
+        self.arm_sub_watchdog(id, 0);
         Ok(())
+    }
+
+    /// Arm the bounded materialization check for a just (re-)attached
+    /// external input: a sleeping thread queues [`Job::CheckSub`] after the
+    /// timeout. The job no-ops if the input produced streams, was detached,
+    /// or was re-armed (epoch mismatch) in the meantime.
+    fn arm_sub_watchdog(&self, id: ExternalSubId, epoch: u32) {
+        let work_tx = self.inner.work_tx.clone();
+        let timeout = *self.inner.sub_timeout.lock();
+        let spawned = std::thread::Builder::new()
+            .name("fpb-sub-watchdog".into())
+            .spawn(move || {
+                std::thread::sleep(timeout);
+                let _ = work_tx.send(Job::CheckSub { id, epoch });
+            });
+        if let Err(err) = spawned {
+            warn!(?err, ?id, "failed to arm the subtitle watchdog");
+        }
+    }
+
+    /// Shorten the external-subtitle materialization timeout. For tests
+    /// only: production callers keep [`EXTERNAL_SUB_TIMEOUT`].
+    #[doc(hidden)]
+    pub fn set_external_sub_timeout(&self, timeout: Duration) {
+        *self.inner.sub_timeout.lock() = timeout;
+    }
+
+    /// Whether any external subtitle input is currently attached. Callers
+    /// gate flushing operations on this: a flush races the external inputs'
+    /// reconfiguration and can freeze the play item.
+    pub fn has_external_subtitles(&self) -> bool {
+        self.inner
+            .routing
+            .lock()
+            .inputs
+            .iter()
+            .any(|i| i.external.is_some())
     }
 
     /// [`allocate_subtitle_id`] + [`attach_subtitle_with_id`] in one call,
@@ -1022,11 +1436,13 @@ impl FcastPlaybin {
         let idx = routing
             .inputs
             .iter()
-            .position(|i| i.external == Some(id))
+            .position(|i| i.is_external(id))
             .ok_or_else(|| anyhow!("no attached subtitle {id:?}"))?;
         let input = routing.inputs.remove(idx);
         drop(routing);
         Inner::remove_input(inner, input);
+        // A selection desire parked on this input must not park forever.
+        inner.selection.lock().external_gone(id);
         info!(?id, "detached external subtitle input");
         Ok(())
     }
@@ -1038,15 +1454,93 @@ impl FcastPlaybin {
     /// can rely on it to map an external input to its stream(s).
     pub fn subtitle_stream_ids(&self, id: ExternalSubId) -> Vec<String> {
         let routing = self.inner.routing.lock();
-        let Some(input) = routing.inputs.iter().find(|i| i.external == Some(id)) else {
+        let Some(input) = routing.inputs.iter().find(|i| i.is_external(id)) else {
             return Vec::new();
         };
-        input
-            .element
-            .src_pads()
-            .iter()
-            .filter_map(|pad| pad.stream_id().map(|sid| sid.to_string()))
-            .collect()
+        input.stream_ids()
+    }
+
+    /// State a slot's desired track (latest wins): a stream id from the
+    /// advertised collection, `None` for "slot off", or (subtitle only) an
+    /// attached external input's stream once it materializes. The engine
+    /// dispatches, confirms and re-asserts on its own. Call
+    /// [`pump_selection`](Self::pump_selection) afterwards (and at every
+    /// transport settle point) to let it act.
+    pub fn request_track(&self, slot: TrackSlot, target: TrackTarget) {
+        self.inner.selection.lock().request(slot, target);
+    }
+
+    /// A user-initiated flushing seek re-emits the current subtitle cue by
+    /// itself, making a scheduled switch-refresh flush redundant.
+    pub fn cancel_selection_refresh(&self) {
+        self.inner.selection.lock().cancel_refresh();
+    }
+
+    /// Let the selection engine dispatch whatever the transport now allows:
+    /// a composed `SELECT_STREAMS` (stamped with a fresh seqnum, confirmed
+    /// by the matching `StreamsSelected` event) or the switch's re-emit
+    /// flush. The caller owns the transport state machine and calls this at
+    /// its settle points. The gate deliberately comes from there, not from
+    /// a pipeline query: only the transport machine knows about queued
+    /// seeks and the mid-cascade quiet instants that wedge a dispatched
+    /// reconfigure (see the [`selection`] module docs).
+    pub fn pump_selection(&self, gate: SelectionGate) {
+        loop {
+            enum Dispatch {
+                Select(TrackSelection, gst::Seqnum),
+                Refresh(gst::Seqnum),
+            }
+
+            let dispatch = {
+                let (externals_attached, externals) = {
+                    let routing = self.inner.routing.lock();
+                    let externals: Vec<(ExternalSubId, Vec<String>)> = routing
+                        .inputs
+                        .iter()
+                        .filter_map(|i| i.external.as_ref().map(|e| (e.id, i.stream_ids())))
+                        .collect();
+                    (!externals.is_empty(), externals)
+                };
+                let ctx = selection::PumpCtx {
+                    gate,
+                    externals_attached,
+                    externals,
+                };
+                let mut engine = self.inner.selection.lock();
+                match engine.pump(&ctx) {
+                    None => break,
+                    Some(selection::Command::SelectStreams(target)) => {
+                        let seqnum = gst::Seqnum::next();
+                        engine.selection_dispatched(seqnum, target.clone());
+                        Dispatch::Select(target, seqnum)
+                    }
+                    Some(selection::Command::RefreshSeek) => {
+                        let seqnum = gst::Seqnum::next();
+                        engine.refresh_dispatched(seqnum);
+                        Dispatch::Refresh(seqnum)
+                    }
+                }
+            };
+
+            // Execute outside the engine lock: `select_streams` touches the
+            // core, and the recorders (translate-time) take the engine lock
+            // on streaming threads.
+            match dispatch {
+                Dispatch::Select(target, seqnum) => {
+                    let ids: Vec<&str> = [&target.video, &target.audio, &target.subtitle]
+                        .into_iter()
+                        .filter_map(|sid| sid.as_deref())
+                        .collect();
+                    // The engine never resolves to an empty selection.
+                    if let Err(err) = self.select_streams(&ids, Some(seqnum)) {
+                        warn!(?err, "selection dispatch refused");
+                        self.inner.selection.lock().dispatch_failed(seqnum);
+                        break;
+                    }
+                }
+                Dispatch::Refresh(seqnum) => self.queue_job(Job::RefreshSeek { seqnum }),
+            }
+        }
     }
 
     /// Queue a stream selection (ids from the current stream collection).
@@ -1113,11 +1607,15 @@ impl FcastPlaybin {
     /// present, follows the pipeline down and is removed by the pad-removed
     /// unroutes or the next load's reset.
     fn teardown(&self, target: gst::State) -> Result<()> {
-        // A chain parked by a mid-item deselect is state-locked; unlock so
-        // it follows the pipeline down.
+        // A chain parked by a mid-item deselect is state-locked. Unlock it
+        // so it follows the pipeline down.
         for element in &self.inner.video_chain {
             element.set_locked_state(false);
         }
+        // Wake any prepared-input thread parked on the swap gate BEFORE
+        // the state change, which joins streaming threads.
+        self.inner.swap_gate.abort();
+        *self.inner.prepared.lock() = None;
         {
             let _gate = Inner::gate(&self.inner);
             self.inner
@@ -1127,6 +1625,9 @@ impl FcastPlaybin {
         }
         Inner::remove_all_inputs(&self.inner);
         self.inner.remove_audio_sink();
+        // Everything desired/applied/in-flight belonged to the torn-down
+        // item.
+        self.inner.selection.lock().reset();
         Ok(())
     }
 
@@ -1170,6 +1671,47 @@ impl FcastPlaybin {
             generation,
         });
         generation
+    }
+
+    /// Pre-arm the next media input on the LIVE core for a gapless
+    /// transition. The input element is created, added to the running
+    /// pipeline, and its parsed streams link into decodebin3 alongside the
+    /// current item's; when the current item drains, decodebin3 switches to
+    /// the prepared streams with no state change, no flush, and no
+    /// pipeline EOS in between. The switch surfaces as
+    /// [`PlaybinEvent::PreparedActivated`] followed by the new item's
+    /// collection and selection, all stamped with the returned generation.
+    ///
+    /// Constraints the caller upholds: the pipeline is in steady playback of
+    /// a finite (non-live) item, and the prepared input is a plain A/V item
+    /// (no start seek, images and live sources go through a normal load).
+    /// A prepare while another is pending replaces it (latest wins). A
+    /// normal `load`/`stop` drops any pending prepare. If the prepared
+    /// input fails before activating, [`PlaybinEvent::PreparedFailed`] is
+    /// emitted and playback of the current item is unaffected: its
+    /// end-of-stream then arrives normally and the caller advances through
+    /// its ordinary path.
+    ///
+    /// The same failure path also covers prepares the crate REFUSES or
+    /// demotes on its own: external subtitles attached to the current item
+    /// (a swap would carry them into the next item's collections), a
+    /// prepare arriving while a performed swap is mid-activation, and a
+    /// prepared item that lacks a stream type the current item is playing
+    /// (the abandoned sink would block the next end-of-stream forever).
+    ///
+    /// Returns the generation the prepared item will carry once active.
+    pub fn prepare_next_async(&self, input: MediaInput) -> u64 {
+        let generation = self.inner.allocate_generation();
+        self.queue_job(Job::PrepareNext { input, generation });
+        generation
+    }
+
+    /// Drop a pending prepared next input (see
+    /// [`prepare_next_async`](Self::prepare_next_async)): the caller seeked
+    /// away from the end, the queue changed, or autoplay was turned off.
+    /// A no-op when nothing is prepared or it already activated.
+    pub fn cancel_prepared_async(&self) {
+        self.queue_job(Job::CancelPrepared);
     }
 
     /// Queue a full stop on the worker thread: pipeline to READY, every
@@ -1277,6 +1819,13 @@ impl FcastPlaybin {
     }
 
     pub fn position(&self) -> Option<gst::ClockTime> {
+        // A correct gapless swap resets the segment, so the sink already
+        // reports the current item's own stream time (no cross-item rebase
+        // needed). This is the sink-anchored source of truth: the user-facing
+        // item switch (title/duration) is held until the new item's audio
+        // reaches the sink (see `Inner::held_activation`), so it lands in step
+        // with this position flipping to the new item's 0-based time, not a
+        // decoupling-queue ahead of it.
         self.inner.pipeline.query_position::<gst::ClockTime>()
     }
 
@@ -1349,9 +1898,9 @@ impl FcastPlaybin {
 
     /// Best-effort "buffered ahead of the playhead" duration. In STREAM mode
     /// (the receiver's default) the buffering query exposes no ranges, but the
-    /// queue elements still track how much media is queued: queue2 /
-    /// downloadbuffer / queue expose it element-wide; multiqueue tracks it per
-    /// sink pad. Returns the deepest level found (the network-side buffer),
+    /// queue elements still track how much media is queued: queue2,
+    /// downloadbuffer and queue expose it element-wide, multiqueue per sink
+    /// pad. Returns the deepest level found (the network-side buffer),
     /// `None` if nothing reports one. Poll it to size a buffered-ahead nub on
     /// the scrubber.
     pub fn buffered_ahead(&self) -> Option<gst::ClockTime> {
@@ -1403,9 +1952,9 @@ impl FcastPlaybin {
 
     /// Cumulative parsed-byte counters for every live input stream (all
     /// streams, selected or not: decodebin3 keeps consuming deselected
-    /// inputs). Poll and diff to plot per-stream bitrate; correlate with
-    /// the stream collection via `stream_id` and with track selection via
-    /// the caller's selected ids.
+    /// inputs). Poll and diff to plot per-stream bitrate, and correlate
+    /// with the stream collection via `stream_id` and with track selection
+    /// via the caller's selected ids.
     pub fn stream_io_stats(&self) -> Vec<StreamIoStats> {
         let routing = self.inner.routing.lock();
         routing
@@ -1414,7 +1963,7 @@ impl FcastPlaybin {
             .flat_map(|input| {
                 input.taps.iter().map(|tap| StreamIoStats {
                     stream_id: tap.pad.stream_id().map(|sid| sid.to_string()),
-                    external: input.external,
+                    external: input.external.as_ref().map(|e| e.id),
                     bytes: tap.bytes.load(Ordering::Relaxed),
                     caps: tap.pad.current_caps(),
                 })
@@ -1434,7 +1983,7 @@ impl FcastPlaybin {
             .map(|input| {
                 let factory = input.element.factory().map(|f| f.name().to_string());
                 SourceDbg {
-                    external: input.external,
+                    external: input.external.as_ref().map(|e| e.id),
                     // A directly-constructed wrapper bin's factory is just
                     // "bin", its NAME carries the source kind
                     // (fcast-whep-source, fcast-fwebrtc-source, ...).
@@ -1528,10 +2077,19 @@ impl FcastPlaybin {
 // streaming thread mid-post and deadlocked a concurrent load's state change.
 impl Drop for Inner {
     fn drop(&mut self) {
-        // A chain parked by a mid-item deselect is state-locked; unlock so
-        // it follows the pipeline down.
+        // A chain parked by a mid-item deselect is state-locked. Unlock it
+        // so it follows the pipeline down.
         for element in &self.video_chain {
             element.set_locked_state(false);
+        }
+        // Wake any prepared-input thread parked on the swap gate before the
+        // state change joins streaming threads.
+        self.swap_gate.abort();
+        // A state-locked prepared input does not follow the pipeline down:
+        // down it explicitly or its unref at PLAYING trips a CRITICAL.
+        for input in self.routing.lock().inputs.iter() {
+            input.element.set_locked_state(false);
+            let _ = input.element.set_state(gst::State::Null);
         }
         let _ = self.pipeline.set_state(gst::State::Null);
         // Between video items the caller sink parks at READY OUTSIDE the
@@ -1645,9 +2203,9 @@ impl Inner {
     }
 
     /// Classify a bus message source by the generation-tagged inputs.
-    fn classify_error_src(&self, src: Option<&gst::Object>) -> ErrorOrigin {
+    fn classify_error_src(&self, src: Option<&gst::Object>) -> ErrorSource {
         let Some(src) = src else {
-            return ErrorOrigin::Unknown;
+            return ErrorSource::Unknown;
         };
         let generation = self.current_generation();
         let routing = self.routing.lock();
@@ -1657,15 +2215,78 @@ impl Inner {
             if !is_from_input {
                 continue;
             }
-            if input.generation != generation {
-                return ErrorOrigin::Stale;
+            if input.generation > generation {
+                return ErrorSource::Prepared(input.generation);
             }
-            return match input.external {
-                Some(id) => ErrorOrigin::ExternalSubtitle(id),
-                None => ErrorOrigin::Main,
+            if input.generation != generation {
+                return ErrorSource::Stale;
+            }
+            return match &input.external {
+                Some(external) => ErrorSource::External(external.id),
+                None => ErrorSource::Main,
             };
         }
-        ErrorOrigin::Unknown
+        ErrorSource::Unknown
+    }
+
+    /// Decide what a bus error from a live external subtitle input means
+    /// and queue the follow-up on the worker. Runs on the posting
+    /// (streaming) thread, so it only inspects state. The detach/re-attach
+    /// itself must not run here.
+    ///
+    /// An error from an input whose stream is currently SELECTED, or from
+    /// one that never produced a stream on its first attach (a bad URL
+    /// dying), is a genuine failure: the input is detached and reported as
+    /// [`PlaybinEvent::ExternalSubtitleFailed`]. An error from a DESELECTED
+    /// input that had materialized is the known deselect race (switching
+    /// away from a selected external races its in-flight push against
+    /// decodebin3's slot deactivation and kills the source with not-linked):
+    /// the input is RE-ARMED with a fresh element on the same URI, under the
+    /// same id, so the track stays selectable. The stream id is URI-derived
+    /// and survives the replacement, so the caller's bookkeeping stays
+    /// valid without it ever learning about the re-arm. A re-armed input's
+    /// own early errors are left to its watchdog ([`Job::CheckSub`]).
+    fn handle_external_error(&self, id: ExternalSubId, error: &gst::glib::Error) {
+        let routing = self.routing.lock();
+        let Some(input) = routing.inputs.iter().find(|i| i.is_external(id)) else {
+            // Already detached (a re-arm or removal won the race).
+            debug!(?id, "error from an already-detached external input");
+            return;
+        };
+        // The borrow checker cannot see through Option here, but
+        // `is_external` guarantees it.
+        let external = input.external.as_ref().expect("external input");
+        let epoch = external.epoch;
+        let sids = input.stream_ids();
+        let selected = routing.routed.iter().any(|r| {
+            r.kind == StreamKind::Text
+                && r.db3_src_pad
+                    .stream_id()
+                    .is_some_and(|routed| sids.iter().any(|sid| *sid == routed))
+        });
+        let action = decisions::external_error_action(
+            !sids.is_empty(),
+            selected,
+            epoch > 0,
+            external.attached_at.elapsed(),
+            EXTERNAL_REARM_DEBOUNCE,
+        );
+        drop(routing);
+
+        use decisions::ExternalErrorAction as Action;
+        match action {
+            Action::Fail => {
+                warn!(?id, %error, "external subtitle input failed");
+                let _ = self.work_tx.send(Job::FailSub { id, epoch });
+            }
+            Action::Rearm => {
+                info!(?id, %error, "re-arming the deselected external subtitle input");
+                let _ = self.work_tx.send(Job::RearmSub { id, epoch });
+            }
+            Action::Ignore => {
+                debug!(?id, %error, "ignoring error from a just (re-)attached external input");
+            }
+        }
     }
 
     /// Whether a bus message originates inside an external subtitle input.
@@ -1688,6 +2309,257 @@ impl Inner {
             })
     }
 
+    /// Whether a bus message originates inside the prepared next input.
+    /// Its buffering messages must not drive the caller's buffering state
+    /// machine while the CURRENT item plays, and its own (parsebin-posted)
+    /// stream collection belongs to the next item.
+    fn message_from_prepared_input(&self, msg: &gst::Message) -> bool {
+        let Some(src) = msg.src() else {
+            return false;
+        };
+        let prepared = self.prepared.lock();
+        prepared.as_ref().is_some_and(|p| {
+            src == p.element.upcast_ref::<gst::Object>() || src.has_as_ancestor(&p.element)
+        })
+    }
+
+    /// Whether a stream collection consists purely of the prepared input's
+    /// streams. Catches the decodebin3-posted form of the next item's
+    /// collection (whose message src is decodebin3, not the input).
+    fn collection_is_prepared(&self, collection: &gst::StreamCollection) -> bool {
+        let prepared = self.prepared.lock();
+        let Some(prepared) = prepared.as_ref() else {
+            return false;
+        };
+        let ids = prepared.stream_ids();
+        if ids.is_empty() {
+            return false;
+        }
+        let mut any = false;
+        for stream in collection.iter() {
+            let Some(sid) = stream.stream_id() else {
+                continue;
+            };
+            if ids.iter().any(|id| *id == sid) {
+                any = true;
+            } else {
+                // A stream from elsewhere: a combined or current-item
+                // collection, not the prepared item's.
+                return false;
+            }
+        }
+        any
+    }
+
+    /// Refresh the recorded output groups from each routed pad's sticky
+    /// stream-start. Route-time recording is best-effort (the first
+    /// stream-start can pass while the pad is being routed, before the
+    /// probe exists); by prepare time the stickies are authoritative.
+    fn refresh_output_groups(inner: &Arc<Inner>) {
+        let mut routing = inner.routing.lock();
+        let mut seen = None;
+        for routed in routing.routed.iter_mut() {
+            if let Some(group) = routed
+                .db3_src_pad
+                .sticky_event::<gst::event::StreamStart>(0)
+                .and_then(|event| event.group_id())
+            {
+                routed.group = Some(group);
+                seen = Some(group);
+            }
+        }
+        drop(routing);
+        if let Some(group) = seen {
+            let mut active = inner.active_group.lock();
+            if active.is_none() {
+                *active = Some(group);
+            }
+        }
+    }
+
+    /// Output-side activation trigger: a STREAM_START on a decodebin3
+    /// output pad carries a new group id. When a prepared item is pending,
+    /// the group change IS the switch (a same-slot continuation posts no
+    /// new streams-selected, so the data plane is the reliable signal).
+    fn note_output_stream_start(&self, group: Option<gst::GroupId>) {
+        let Some(group) = group else { return };
+        let retired = {
+            let mut active = self.active_group.lock();
+            if *active == Some(group) {
+                return;
+            }
+            let first_of_load = active.is_none();
+            let retired = *active;
+            *active = Some(group);
+            if first_of_load {
+                return;
+            }
+            retired
+        };
+        let prepared = self.prepared.lock().take();
+        if let Some(prepared) = prepared {
+            info!(
+                generation = prepared.generation,
+                "gapless activation: the prepared item's group reached the output"
+            );
+            self.activate_prepared_now(prepared, retired);
+        }
+    }
+
+    /// Selection-side activation trigger, run against every
+    /// STREAMS_SELECTED: when the selection names (only) the prepared
+    /// input's streams, decodebin3 has switched to the next item. Some
+    /// switches post this (fresh slots), same-slot continuations do not
+    /// (see [`Self::note_output_stream_start`], the other trigger).
+    fn try_activate_prepared(&self, selected_ids: &[String]) {
+        let prepared = {
+            let mut slot = self.prepared.lock();
+            let Some(prepared) = slot.as_ref() else {
+                return;
+            };
+            let ids = prepared.stream_ids();
+            if selected_ids.is_empty()
+                || !selected_ids
+                    .iter()
+                    .all(|sel| ids.iter().any(|id| id == sel))
+            {
+                return;
+            }
+            slot.take().expect("checked above")
+        };
+        info!(
+            generation = prepared.generation,
+            "gapless activation: the prepared item's streams are selected"
+        );
+        // This trigger fires input-side, BEFORE the output pads flip to the
+        // new group: the still-active group is the one being retired.
+        let retired = *self.active_group.lock();
+        self.activate_prepared_now(prepared, retired);
+    }
+
+    /// The activation itself: adopt the prepared generation NOW, on the
+    /// calling posting/streaming thread, so everything after it is stamped
+    /// with the new one; re-seed the per-item state exactly like a load's
+    /// reset; and queue the input surgery for the worker. The user-facing
+    /// [`PlaybinEvent::PreparedActivated`] and the held-back collection are
+    /// NOT emitted here for an item with audio: they are held and released
+    /// when the item's audio reaches the sink (see [`Inner::held_activation`]),
+    /// so the title/duration switch lands with the sound. Audio-less items
+    /// emit them here, keeping the activation-then-collection order.
+    fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
+        // A prior hold still waiting on its sink boundary (unreachable with
+        // real media — two swaps within one queue depth) is flushed under the
+        // OUTGOING generation, before we adopt this one, to keep order and
+        // stamps correct.
+        self.release_held_activation();
+
+        self.generation.store(prepared.generation, Ordering::SeqCst);
+
+        // Output pads still carrying the previous item's group keep their
+        // EOS dropped until they flip or die (see `Inner::retired_group`):
+        // the selection trigger can run this while the old tail is still
+        // draining.
+        *self.retired_group.lock() = retired;
+
+        // The swap window closes: the output EOS hold disarms (the new
+        // item's own end must flow) while `swapped` stays set so straggler
+        // block probes on the now-live input self-remove. The next prepare
+        // re-seeds the whole gate. Guarded by generation: a concurrent
+        // prepare for the item after this one may have re-armed the gate
+        // already, and ITS pending must survive this activation.
+        {
+            let mut state = self.swap_gate.state.lock();
+            if state.pending == Some(prepared.generation) {
+                state.pending = None;
+                state.dropped_eos = false;
+            }
+        }
+
+        // Per-item state rolls exactly like a load's reset.
+        self.selection.lock().reset();
+        {
+            let mut routing = self.routing.lock();
+            routing.collection_video_ids = prepared
+                .pending_collection
+                .as_ref()
+                .map(|collection| {
+                    collection
+                        .iter()
+                        .filter(|s| s.stream_type().contains(gst::StreamType::VIDEO))
+                        .filter_map(|s| s.stream_id().map(|id| id.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+
+        // The selection engine is pipeline truth and updates NOW (a track
+        // command must act on the item that is actually decoding), even though
+        // the caller-facing collection event is held with the switch below.
+        let has_audio = prepared.pending_collection.as_ref().is_some_and(|collection| {
+            collection
+                .iter()
+                .any(|s| s.stream_type().contains(gst::StreamType::AUDIO))
+        });
+        if let Some(collection) = prepared.pending_collection.as_ref() {
+            let streams = collection
+                .iter()
+                .filter_map(|s| {
+                    let sid = s.stream_id()?.to_string();
+                    let typ = s.stream_type();
+                    let kind = if typ.contains(gst::StreamType::VIDEO) {
+                        StreamKind::Video
+                    } else if typ.contains(gst::StreamType::AUDIO) {
+                        StreamKind::Audio
+                    } else if typ.contains(gst::StreamType::TEXT) {
+                        StreamKind::Text
+                    } else {
+                        return None;
+                    };
+                    Some(selection::CollectionStream { sid, kind })
+                })
+                .collect();
+            self.selection.lock().collection_changed(streams);
+        }
+
+        // The user-facing switch: hold it for the sink boundary if the item
+        // has audio to anchor the release on, else emit it now (an audio-less
+        // item never crosses the audio queue, so there is nothing to wait for).
+        let held = HeldActivation {
+            collection: prepared.pending_collection,
+        };
+        if has_audio {
+            *self.held_activation.lock() = Some(held);
+        } else {
+            self.emit_held(held);
+        }
+
+        // Input surgery (removing the drained previous inputs) must not run
+        // on this streaming thread.
+        let _ = self.work_tx.send(Job::FinishActivation);
+    }
+
+    /// Emit a gapless activation's user-facing events in the canonical
+    /// fresh-load order: [`PlaybinEvent::PreparedActivated`] (which the caller
+    /// uses to adopt the new generation, letting the collection past its
+    /// supersession guard) followed by the new item's collection.
+    fn emit_held(&self, held: HeldActivation) {
+        self.emit(PlaybinEvent::PreparedActivated);
+        if let Some(collection) = held.collection {
+            self.emit(PlaybinEvent::StreamCollection(collection));
+        }
+    }
+
+    /// Release a held gapless activation, if one is waiting. Called from the
+    /// `fpb-aqueue` src STREAM_START probe when the item's audio reaches the
+    /// sink, and as a flush before a superseding activation. A no-op when
+    /// nothing is held (the common case, and every non-boundary STREAM_START).
+    fn release_held_activation(&self) {
+        let held = self.held_activation.lock().take();
+        if let Some(held) = held {
+            self.emit_held(held);
+        }
+    }
+
     /// Translate a bus message into its typed event, applying the crate's
     /// filters: per-element state changes and foreign ASYNC_DONEs are
     /// dropped, external-input collections are swallowed, and errors from
@@ -1698,7 +2570,18 @@ impl Inner {
 
         let pipeline_obj = self.pipeline.upcast_ref::<gst::Object>();
         let event = match msg.view() {
-            MessageView::Eos(_) => PlaybinEvent::EndOfStream,
+            MessageView::Eos(_) => {
+                // With a prepared next input linked, decodebin3 switches at
+                // drain and no pipeline EOS should exist between the items.
+                // One arriving anyway means the gapless handoff missed
+                // (e.g. the prepared input produced no streams in time);
+                // surface it so the caller's ordinary end-of-stream advance
+                // takes over. The next load's reset cleans the input up.
+                if self.prepared.lock().is_some() {
+                    warn!("pipeline EOS with a prepared next input: gapless handoff missed");
+                }
+                PlaybinEvent::EndOfStream
+            }
             MessageView::Error(error) => {
                 if let Some(src) = msg.src()
                     && src != pipeline_obj
@@ -1710,6 +2593,35 @@ impl Inner {
                     );
                     return None;
                 }
+                // Live external subtitle inputs are the crate's own to
+                // babysit: their errors are consumed here (re-arm or a
+                // typed failure event), never surfaced as pipeline errors.
+                let origin = match self.classify_error_src(msg.src()) {
+                    ErrorSource::External(id) => {
+                        self.handle_external_error(id, &error.error());
+                        return None;
+                    }
+                    ErrorSource::Prepared(generation) => {
+                        // The pre-armed next input died before activating
+                        // (e.g. the resource moved since the prefetch). The
+                        // CURRENT item is unaffected: drop the prepare, tell
+                        // the caller, and let its ordinary end-of-stream
+                        // advance load the item normally (surfacing a real
+                        // error then, if it is still broken).
+                        warn!(
+                            generation,
+                            error = %error.error(),
+                            debug = ?error.debug(),
+                            "prepared next input failed before activation"
+                        );
+                        let _ = self.work_tx.send(Job::CancelPrepared);
+                        self.emit(PlaybinEvent::PreparedFailed { generation });
+                        return None;
+                    }
+                    ErrorSource::Main => ErrorOrigin::Main,
+                    ErrorSource::Stale => ErrorOrigin::Stale,
+                    ErrorSource::Unknown => ErrorOrigin::Unknown,
+                };
                 // Diagnostic only: supersession is decided by the event's
                 // generation and attribution by `origin`, not by this URI.
                 let failed_uri = msg
@@ -1718,7 +2630,7 @@ impl Inner {
                     .and_then(|handler| handler.uri())
                     .map(|uri| uri.to_string());
                 PlaybinEvent::Error {
-                    origin: self.classify_error_src(msg.src()),
+                    origin,
                     error: error.error(),
                     failed_uri,
                 }
@@ -1727,7 +2639,20 @@ impl Inner {
                 PlaybinEvent::Warning(warning.error().message().to_string())
             }
             MessageView::Tag(tag) => PlaybinEvent::Tags(tag.tags()),
-            MessageView::Buffering(buffering) => PlaybinEvent::Buffering(buffering.percent()),
+            MessageView::Buffering(buffering) => {
+                // The prepared next input buffers ahead while the CURRENT
+                // item plays; its levels must not drive the caller's
+                // buffering state machine. Once it activates it is the main
+                // input and its messages flow normally.
+                if self.message_from_prepared_input(msg) {
+                    debug!(
+                        percent = buffering.percent(),
+                        "dropping buffering from the prepared next input"
+                    );
+                    return None;
+                }
+                PlaybinEvent::Buffering(buffering.percent())
+            }
             MessageView::StateChanged(change) => {
                 if !msg.src().map(|s| s == pipeline_obj).unwrap_or(false) {
                     return None;
@@ -1752,6 +2677,19 @@ impl Inner {
                     return None;
                 }
                 let collection = collection.stream_collection();
+                // The prepared next input's collection belongs to the NEXT
+                // item: hold it back and deliver it at activation, after
+                // PreparedActivated and stamped with the new generation
+                // (the input-posted form is caught by ancestry, the
+                // decodebin3-posted form by its stream ids).
+                if self.message_from_prepared_input(msg) || self.collection_is_prepared(&collection)
+                {
+                    debug!("holding the prepared next input's stream collection");
+                    if let Some(prepared) = self.prepared.lock().as_mut() {
+                        prepared.pending_collection = Some(collection);
+                    }
+                    return None;
+                }
                 // Cache the collection's video ids BEFORE the caller can
                 // react to the event: `select_streams` classifies a
                 // no-video selection with them (see there).
@@ -1763,16 +2701,41 @@ impl Inner {
                         .filter_map(|s| s.stream_id().map(|id| id.to_string()))
                         .collect();
                 }
+                // The selection engine reconciles against the new collection
+                // BEFORE the caller can react to the event (its next pump
+                // resolves desires against it).
+                let streams = collection
+                    .iter()
+                    .filter_map(|s| {
+                        let sid = s.stream_id()?.to_string();
+                        let typ = s.stream_type();
+                        let kind = if typ.contains(gst::StreamType::VIDEO) {
+                            StreamKind::Video
+                        } else if typ.contains(gst::StreamType::AUDIO) {
+                            StreamKind::Audio
+                        } else if typ.contains(gst::StreamType::TEXT) {
+                            StreamKind::Text
+                        } else {
+                            return None;
+                        };
+                        Some(selection::CollectionStream { sid, kind })
+                    })
+                    .collect();
+                self.selection.lock().collection_changed(streams);
                 PlaybinEvent::StreamCollection(collection)
             }
             MessageView::StreamsSelected(streams) => {
                 let mut video = None;
                 let mut audio = None;
                 let mut subtitle = None;
+                let mut all_ids = Vec::new();
 
                 for stream in streams.streams() {
                     let typ = stream.stream_type();
                     let id = stream.stream_id().map(|id| id.to_string());
+                    if let Some(id) = &id {
+                        all_ids.push(id.clone());
+                    }
 
                     if typ.contains(gst::StreamType::VIDEO) {
                         video = id;
@@ -1783,11 +2746,30 @@ impl Inner {
                     }
                 }
 
+                // A selection naming the prepared input's streams IS the
+                // gapless switch: adopt the next item's generation and
+                // deliver its held-back collection first, so this selection
+                // event arrives in a fresh load's order and stamping.
+                self.try_activate_prepared(&all_ids);
+
+                let seqnum = msg.seqnum();
+                // Record what applied (and settle/overtake the in-flight
+                // dispatch) before the caller sees the event. The caller's
+                // pump then dispatches any re-assertion or queued work.
+                self.selection.lock().streams_selected(
+                    seqnum,
+                    &TrackSelection {
+                        video: video.clone(),
+                        audio: audio.clone(),
+                        subtitle: subtitle.clone(),
+                    },
+                );
+
                 PlaybinEvent::StreamsSelected {
                     video,
                     audio,
                     subtitle,
-                    seqnum: msg.seqnum(),
+                    seqnum,
                 }
             }
             MessageView::ClockLost(_) => PlaybinEvent::ClockLost,
@@ -1795,6 +2777,9 @@ impl Inner {
                 if !msg.src().map(|s| s == pipeline_obj).unwrap_or(false) {
                     return None;
                 }
+                // Settle an in-flight refresh flush (attribution by
+                // exclusivity, see the selection module docs).
+                self.selection.lock().refresh_done();
                 PlaybinEvent::AsyncDone
             }
             MessageView::Latency(_) => {
@@ -1805,6 +2790,15 @@ impl Inner {
                 // `Job::RecalculateLatency`).
                 let _ = self.work_tx.send(Job::RecalculateLatency);
                 return None;
+            }
+            MessageView::Element(element) => {
+                // fimagedec announces what it is decoding (format,
+                // dimensions, animated or still) for load classification.
+                let s = element.structure()?;
+                if s.name() != "fcast-image-stream" {
+                    return None;
+                }
+                PlaybinEvent::ImageStream(s.to_owned())
             }
             _ => return None,
         };
@@ -1886,6 +2880,7 @@ impl FcastPlaybin {
             Job::RefreshSeek { seqnum } => {
                 let Some(position) = inner.pipeline.query_position::<gst::ClockTime>() else {
                     debug!("Skipping the refresh seek: no position");
+                    inner.selection.lock().refresh_failed(seqnum);
                     inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
                     return;
                 };
@@ -1910,6 +2905,7 @@ impl FcastPlaybin {
                 .build();
                 if !inner.pipeline.send_event(event) {
                     warn!("Refresh seek failed");
+                    inner.selection.lock().refresh_failed(seqnum);
                     inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
                 }
             }
@@ -1930,9 +2926,8 @@ impl FcastPlaybin {
             }
             Job::AttachSub { id, url } => {
                 if let Err(err) = self.attach_subtitle_with_id(id, &url) {
-                    // No event from here: the input never produces a
-                    // stream, which the caller's watchdog detects.
                     error!(?err, url, "fcastplaybin subtitle attach failed");
+                    inner.emit(PlaybinEvent::ExternalSubtitleFailed { id });
                 }
             }
             Job::DetachSub { id } => {
@@ -1942,10 +2937,325 @@ impl FcastPlaybin {
                     debug!(?err, ?id, "fcastplaybin subtitle detach failed");
                 }
             }
+            Job::FailSub { id, epoch } => {
+                self.fail_subtitle(id, epoch);
+            }
+            Job::RearmSub { id, epoch } => {
+                self.rearm_subtitle(id, epoch);
+            }
+            Job::CheckSub { id, epoch } => {
+                self.check_subtitle(id, epoch);
+            }
             Job::DumpGraph { done } => {
                 done(graph::snapshot(inner.pipeline.upcast_ref()));
             }
+            Job::PrepareNext { input, generation } => {
+                // A newer load or prepare was requested after this one was
+                // queued; its reset would remove this input right away.
+                if generation != inner.next_generation.load(Ordering::SeqCst) {
+                    debug!(generation, "skipping a superseded prepare");
+                    return;
+                }
+                // External subtitle inputs are per-item side inputs on the
+                // live core. A swap would carry them across: decodebin3
+                // keeps their streams in the (combined) collections it
+                // posts for the NEXT item, which corrupts the held-back
+                // collection and the per-item selection state. Refuse; the
+                // caller's ordinary end-of-stream advance owns that
+                // transition.
+                if inner
+                    .routing
+                    .lock()
+                    .inputs
+                    .iter()
+                    .any(|i| i.external.is_some())
+                {
+                    debug!(
+                        generation,
+                        "external subtitles attached; refusing the gapless prepare"
+                    );
+                    inner.emit(PlaybinEvent::PreparedFailed { generation });
+                    return;
+                }
+                // Latest wins: replace a still-pending previous prepare. A
+                // swap already PERFORMED cannot unwind: its activation is
+                // imminent, and arming over it would hand the activation
+                // this prepare's record while the pipeline plays the other
+                // item. Refuse instead.
+                if !self.cancel_prepared() {
+                    debug!(
+                        generation,
+                        "a performed swap is activating; refusing the prepare"
+                    );
+                    inner.emit(PlaybinEvent::PreparedFailed { generation });
+                    return;
+                }
+
+                // The current item is in steady playback, so every routed
+                // pad's sticky stream-start is present: snapshot the group
+                // state now. Activation detection (a group CHANGE at the
+                // output) and the old-item EOS drop both depend on the
+                // current group being positively known before the switch.
+                Inner::refresh_output_groups(inner);
+
+                // Arm the swap gate BEFORE the input exists: from here on
+                // any EOS at the decodebin3 outputs is held back, so a
+                // drain racing the prepare cannot leak to the sinks. The
+                // INPUT side commonly drained long ago (a small or resident
+                // file is swallowed whole by the multiqueue at load), which
+                // is fine: the swap proceeds immediately and the OUTPUT
+                // side still paces the actual switch. Only an output EOS
+                // that fully escaped before this point misses the handoff,
+                // and then the caller's ordinary end-of-stream advance owns
+                // the transition.
+                *inner.swap_gate.state.lock() = SwapState {
+                    pending: Some(generation),
+                    drained: Inner::main_input_drained(inner),
+                    swapped: false,
+                    dropped_eos: false,
+                };
+
+                let built = match input {
+                    MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true),
+                    MediaInput::Element(element) => Ok(element),
+                };
+                let attached = built.and_then(|element| {
+                    Inner::add_prepared_input(inner, element.clone(), generation).map(|_| element)
+                });
+                match attached {
+                    Ok(element) => {
+                        debug!(generation, "prepared the next input (blocked, unlinked)");
+                        *inner.prepared.lock() = Some(PreparedNext {
+                            element,
+                            generation,
+                            pending_collection: None,
+                        });
+                    }
+                    Err(err) => {
+                        error!(?err, generation, "failed to prepare the next input");
+                        // Disarm what was armed above.
+                        let aborted = inner.swap_gate.abort();
+                        // A prepare failing WHILE the pipeline transitions
+                        // (its error message aborts a bin's in-flight
+                        // async commit) must not strand playback below the
+                        // caller's target: re-commit the transition.
+                        self.recommit_pipeline_state();
+                        inner.emit(PlaybinEvent::PreparedFailed { generation });
+                        // The hold may have consumed the current item's
+                        // end between the arm and this failure (see
+                        // `SwapState::dropped_eos` and `cancel_prepared`).
+                        if aborted.pending.is_some() && aborted.dropped_eos {
+                            debug!("the item's end was consumed while arming: synthesizing it");
+                            inner.emit(PlaybinEvent::EndOfStream);
+                        }
+                    }
+                }
+            }
+            Job::CancelPrepared => {
+                self.cancel_prepared();
+            }
+            Job::FinishActivation => {
+                // The prepared item is live (its generation is current):
+                // every older input is drained history. This removes the
+                // previous item's main input and its external subtitles.
+                let current = inner.current_generation();
+                let old: Vec<Input> = {
+                    let mut routing = inner.routing.lock();
+                    let (old, keep) = routing
+                        .inputs
+                        .drain(..)
+                        .partition(|input| input.generation < current);
+                    routing.inputs = keep;
+                    old
+                };
+                for input in old {
+                    debug!(
+                        generation = input.generation,
+                        "removing a drained input after the gapless activation"
+                    );
+                    Inner::remove_input(inner, input);
+                }
+            }
         }
+    }
+
+    /// Drop a still-pending prepared next input: take it out of the
+    /// prepared slot and remove its element from the pipeline. A no-op
+    /// when nothing is prepared (or it already activated, which empties the
+    /// slot). Worker-thread only (pipeline surgery).
+    ///
+    /// Returns `false` when a performed swap makes cancellation impossible:
+    /// activation is imminent and must be left to finish (a caller-side
+    /// load supersedes it normally anyway). Callers arming a NEW prepare
+    /// must refuse on `false` rather than clobber the in-flight activation.
+    fn cancel_prepared(&self) -> bool {
+        // Atomic against the block probe's surgery: past the swap the
+        // relink is live and activation is imminent, cancelling would rip
+        // the now-active input out mid-stream. `pending` distinguishes the
+        // in-flight window from a long-completed activation (which leaves
+        // `swapped` set but clears `pending`).
+        let dropped_eos = {
+            let mut state = self.inner.swap_gate.state.lock();
+            if state.swapped && state.pending.is_some() {
+                debug!("swap already performed, leaving the activation to finish");
+                return false;
+            }
+            let aborted = std::mem::take(&mut *state);
+            self.inner.swap_gate.cond.notify_all();
+            aborted.pending.is_some() && aborted.dropped_eos
+        };
+        if let Some(prepared) = self.inner.prepared.lock().take() {
+            debug!(
+                generation = prepared.generation,
+                "dropping the prepared next input"
+            );
+            let input = {
+                let mut routing = self.inner.routing.lock();
+                routing
+                    .inputs
+                    .iter()
+                    .position(|i| i.element == prepared.element)
+                    .map(|idx| routing.inputs.remove(idx))
+            };
+            if let Some(input) = input {
+                Inner::remove_input(&self.inner, input);
+            }
+            // A prepared input dying mid-transition can abort the
+            // pipeline's in-flight commit (see Job::PrepareNext's failure
+            // arm): re-assert it. A no-op when nothing was disturbed.
+            self.recommit_pipeline_state();
+        }
+        // The hold DROPPED an output EOS while this swap was pending: that
+        // end is gone for good and nothing else will surface it (a partial
+        // drop even blocks the bin's EOS aggregation forever). Synthesize
+        // it now; a duplicate (an EOS on a pad the hold had not covered
+        // yet) is dropped by the caller's generation guard after it
+        // advances. An EOS that only reached the INPUT side keeps flowing
+        // normally once the hold disarms, so no synthesis there: ending
+        // the item early would cut its buffered tail (and turn a seek-back
+        // near the end into a skip to the next item).
+        if dropped_eos {
+            debug!("prepare cancelled after its end was consumed: synthesizing end-of-stream");
+            self.inner.emit(PlaybinEvent::EndOfStream);
+        }
+        true
+    }
+
+    /// Re-assert the pipeline's in-flight target after a prepared input's
+    /// failure may have aborted an async commit. Worker-thread only.
+    fn recommit_pipeline_state(&self) {
+        let current = self.inner.pipeline.current_state();
+        let pending = self.inner.pipeline.pending_state();
+        let target = if pending != gst::State::VoidPending {
+            pending
+        } else {
+            current
+        };
+        debug!(
+            ?current,
+            ?pending,
+            ?target,
+            "re-committing the pipeline state"
+        );
+        if target > gst::State::Ready {
+            let _ = self.inner.pipeline.set_state(target);
+        }
+    }
+
+    /// Take an external input out of the routing table iff it still exists
+    /// under the epoch the job was decided against. A `None` means the job
+    /// is stale: the input was detached, replaced by a load, or re-armed
+    /// since, and the current holder of the id must be left alone.
+    fn take_external_input(&self, id: ExternalSubId, epoch: u32) -> Option<Input> {
+        let mut routing = self.inner.routing.lock();
+        let idx = routing.inputs.iter().position(|i| {
+            i.external
+                .as_ref()
+                .is_some_and(|e| e.id == id && e.epoch == epoch)
+        })?;
+        Some(routing.inputs.remove(idx))
+    }
+
+    /// Worker side of a genuine external failure: detach the input and
+    /// report it (see [`PlaybinEvent::ExternalSubtitleFailed`]).
+    fn fail_subtitle(&self, id: ExternalSubId, epoch: u32) {
+        let Some(input) = self.take_external_input(id, epoch) else {
+            debug!(?id, epoch, "stale subtitle fail job; input already gone");
+            return;
+        };
+        Inner::remove_input(&self.inner, input);
+        // A selection desire parked on this input must not park forever.
+        self.inner.selection.lock().external_gone(id);
+        warn!(?id, "external subtitle input failed; detached");
+        self.inner.emit(PlaybinEvent::ExternalSubtitleFailed { id });
+    }
+
+    /// Worker side of the deselect-race recovery: replace the dead input
+    /// element with a fresh one on the same URI under the same id (bumped
+    /// epoch). A re-arm that cannot attach is a genuine failure.
+    fn rearm_subtitle(&self, id: ExternalSubId, epoch: u32) {
+        let Some(input) = self.take_external_input(id, epoch) else {
+            debug!(?id, epoch, "stale subtitle re-arm job; input already gone");
+            return;
+        };
+        let uri = input.external.as_ref().expect("external input").uri.clone();
+        Inner::remove_input(&self.inner, input);
+
+        let attach = Inner::make_urisourcebin(&uri, false).and_then(|element| {
+            let external = ExternalInput {
+                id,
+                uri: uri.clone(),
+                epoch: epoch + 1,
+                attached_at: Instant::now(),
+            };
+            Inner::add_input(
+                &self.inner,
+                element,
+                self.inner.current_generation(),
+                Some(external),
+            )
+        });
+        match attach {
+            Ok(()) => {
+                info!(?id, uri, "re-armed external subtitle input");
+                // The fresh input can fail as silently as the original:
+                // without a new bounded check, a dead re-armed input would
+                // stay selectable forever and a selection parked on it
+                // would never resolve or error.
+                self.arm_sub_watchdog(id, epoch + 1);
+            }
+            Err(err) => {
+                error!(?err, ?id, uri, "re-arming the external subtitle failed");
+                self.inner.emit(PlaybinEvent::ExternalSubtitleFailed { id });
+            }
+        }
+    }
+
+    /// Worker side of the materialization watchdog: an input still without
+    /// streams when its check fires never worked (a bad URL can die without
+    /// a bus error). Epoch-guarded like the other subtitle jobs.
+    fn check_subtitle(&self, id: ExternalSubId, epoch: u32) {
+        let materialized = {
+            let routing = self.inner.routing.lock();
+            let Some(input) = routing.inputs.iter().find(|i| {
+                i.external
+                    .as_ref()
+                    .is_some_and(|e| e.id == id && e.epoch == epoch)
+            }) else {
+                // Detached or re-armed since this check was armed (the
+                // re-arm brought its own watchdog).
+                return;
+            };
+            !input.stream_ids().is_empty()
+        };
+        if materialized {
+            return;
+        }
+        warn!(
+            ?id,
+            "external subtitle produced no stream within the timeout"
+        );
+        self.fail_subtitle(id, epoch);
     }
 }
 
@@ -1970,7 +3280,7 @@ impl Inner {
         inner: &Arc<Inner>,
         element: gst::Element,
         generation: u64,
-        external: Option<ExternalSubId>,
+        external: Option<ExternalInput>,
     ) -> Result<()> {
         inner
             .pipeline
@@ -1987,6 +3297,7 @@ impl Inner {
             db3_sink_pads: Vec::new(),
             taps: Vec::new(),
             pad_added_sig: None,
+            block_probes: Vec::new(),
         });
 
         let pad_added_sig = element.connect_pad_added({
@@ -2042,6 +3353,24 @@ impl Inner {
             .with_context(|| format!("linking {} to {}", pad.name(), sinkpad.name()))?;
         debug!(src = %pad.name(), sink = %sinkpad.name(), "linked input pad into decodebin3");
 
+        if !Inner::record_linked_input_pad(inner, element, pad, sinkpad.clone()) {
+            // Only reachable for an input already removed (detach racing a
+            // late pad). Release the pad we just took.
+            warn!("pad appeared for an unregistered input; releasing");
+            db3.release_request_pad(&sinkpad);
+        }
+        Ok(())
+    }
+
+    /// Bookkeeping for one linked input pad: the bitrate tap, the drain
+    /// watch (gapless), and the input's pad lists. Returns `false` when the
+    /// input is no longer registered (the caller releases the request pad).
+    fn record_linked_input_pad(
+        inner: &Arc<Inner>,
+        element: &gst::Element,
+        pad: &gst::Pad,
+        sinkpad: gst::Pad,
+    ) -> bool {
         // Bitrate inspection tap: count the stream's PARSED (compressed)
         // bytes, one relaxed atomic add per buffer. Callers poll cumulative
         // counters and compute rates from deltas (`stream_io_stats`).
@@ -2064,6 +3393,33 @@ impl Inner {
             },
         );
 
+        // Drain watch: track whether this pad has pushed EOS into
+        // decodebin3 (a seek's SEGMENT or an item switch's STREAM_START
+        // reset it). The gapless swap waits for every main-input pad to
+        // drain.
+        let saw_eos = Arc::new(AtomicBool::new(false));
+        let event_probe = pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
+            let saw_eos = Arc::clone(&saw_eos);
+            let weak = Arc::downgrade(inner);
+            move |_pad, info| {
+                if let Some(gst::PadProbeData::Event(event)) = &info.data {
+                    match event.type_() {
+                        gst::EventType::Eos => {
+                            saw_eos.store(true, Ordering::SeqCst);
+                            if let Some(inner) = weak.upgrade() {
+                                Inner::note_input_pad_eos(&inner);
+                            }
+                        }
+                        gst::EventType::StreamStart | gst::EventType::Segment => {
+                            saw_eos.store(false, Ordering::SeqCst);
+                        }
+                        _ => {}
+                    }
+                }
+                gst::PadProbeReturn::Ok
+            }
+        });
+
         let mut routing = inner.routing.lock();
         if let Some(input) = routing.inputs.iter_mut().find(|i| &i.element == element) {
             input.db3_sink_pads.push(sinkpad);
@@ -2071,13 +3427,390 @@ impl Inner {
                 pad: pad.clone(),
                 bytes,
                 probe,
+                saw_eos,
+                event_probe,
             });
+            true
         } else {
-            // Only reachable for an input already removed (detach racing a
-            // late pad). Release the pad we just took.
             drop(routing);
-            warn!("pad appeared for an unregistered input; releasing");
-            db3.release_request_pad(&sinkpad);
+            if let Some(probe) = probe {
+                pad.remove_probe(probe);
+            }
+            if let Some(probe) = event_probe {
+                pad.remove_probe(probe);
+            }
+            false
+        }
+    }
+
+    /// One main-input pad pushed EOS into decodebin3: when EVERY main-input
+    /// pad has, the current item is fully drained and a pending gapless
+    /// swap may proceed (the prepared input's blocked threads are parked on
+    /// the swap gate).
+    fn note_input_pad_eos(inner: &Arc<Inner>) {
+        let current = inner.current_generation();
+        let drained = {
+            let routing = inner.routing.lock();
+            routing
+                .inputs
+                .iter()
+                .filter(|i| i.generation == current && i.external.is_none())
+                .any(|i| {
+                    !i.taps.is_empty() && i.taps.iter().all(|t| t.saw_eos.load(Ordering::SeqCst))
+                })
+        };
+        if !drained {
+            return;
+        }
+        let mut state = inner.swap_gate.state.lock();
+        if state.pending.is_some() && !state.drained {
+            debug!("current input fully drained into decodebin3");
+            state.drained = true;
+            inner.swap_gate.cond.notify_all();
+        }
+    }
+
+    /// Whether the current main input has pushed EOS on all its pads.
+    fn main_input_drained(inner: &Arc<Inner>) -> bool {
+        let current = inner.current_generation();
+        let routing = inner.routing.lock();
+        routing
+            .inputs
+            .iter()
+            .filter(|i| i.generation == current && i.external.is_none())
+            .any(|i| !i.taps.is_empty() && i.taps.iter().all(|t| t.saw_eos.load(Ordering::SeqCst)))
+    }
+
+    /// Register a prepared (gapless) next input: added to the running
+    /// pipeline and activated, but its source pads are NOT linked into
+    /// decodebin3. Each pad gets a block probe that lets serialized events
+    /// through (so parsing completes and sticky stream-start/caps/segment
+    /// accumulate on the unlinked pads) and holds DATA back; the first
+    /// blocked buffer parks its streaming thread on the swap gate until the
+    /// current item drains, then performs the relink
+    /// ([`Self::perform_gapless_swap`]). The uridecodebin3 recipe.
+    fn add_prepared_input(
+        inner: &Arc<Inner>,
+        element: gst::Element,
+        generation: u64,
+    ) -> Result<()> {
+        // State-locked: the bin's state machinery skips this child, so a
+        // broken prepared input (bad URL failing its state change) cannot
+        // poison a concurrent pipeline transition (it wedged the current
+        // item's PAUSED->PLAYING commit). The crate drives its state
+        // explicitly: synced here, unlocked at the swap when it becomes
+        // the live input, NULLed at removal.
+        element.set_locked_state(true);
+        inner
+            .pipeline
+            .add(&element)
+            .context("adding the prepared input element")?;
+        inner.routing.lock().inputs.push(Input {
+            element: element.clone(),
+            generation,
+            external: None,
+            db3_sink_pads: Vec::new(),
+            taps: Vec::new(),
+            pad_added_sig: None,
+            block_probes: Vec::new(),
+        });
+
+        let pad_added_sig = element.connect_pad_added({
+            let inner = Arc::downgrade(inner);
+            move |element, pad| {
+                let Some(inner) = inner.upgrade() else { return };
+                Inner::block_prepared_pad(&inner, element, pad, generation);
+            }
+        });
+        {
+            let mut routing = inner.routing.lock();
+            if let Some(input) = routing.inputs.iter_mut().find(|i| i.element == element) {
+                input.pad_added_sig = Some(pad_added_sig);
+            }
+        }
+        for pad in element.src_pads() {
+            Inner::block_prepared_pad(inner, &element, &pad, generation);
+        }
+
+        if let Err(err) = element.sync_state_with_parent() {
+            let mut routing = inner.routing.lock();
+            if let Some(idx) = routing.inputs.iter().position(|i| i.element == element) {
+                let input = routing.inputs.remove(idx);
+                drop(routing);
+                Inner::remove_input(inner, input);
+            }
+            return Err(err).context("syncing the prepared input element state");
+        }
+        Ok(())
+    }
+
+    /// Install the gapless block probe on one prepared-input source pad.
+    fn block_prepared_pad(
+        inner: &Arc<Inner>,
+        element: &gst::Element,
+        pad: &gst::Pad,
+        generation: u64,
+    ) {
+        let probe = pad.add_probe(
+            gst::PadProbeType::BLOCK
+                | gst::PadProbeType::BUFFER
+                | gst::PadProbeType::BUFFER_LIST
+                | gst::PadProbeType::EVENT_DOWNSTREAM,
+            {
+                let weak = Arc::downgrade(inner);
+                move |pad, info| Inner::prepared_block_probe(&weak, pad, info, generation)
+            },
+        );
+        let Some(probe) = probe else { return };
+        let mut routing = inner.routing.lock();
+        if let Some(input) = routing.inputs.iter_mut().find(|i| &i.element == element) {
+            input.block_probes.push((pad.clone(), probe));
+        } else {
+            drop(routing);
+            pad.remove_probe(probe);
+        }
+    }
+
+    /// The prepared input's data gate (see [`Self::add_prepared_input`]).
+    /// Runs on the prepared input's streaming threads.
+    fn prepared_block_probe(
+        weak: &Weak<Inner>,
+        pad: &gst::Pad,
+        info: &mut gst::PadProbeInfo,
+        generation: u64,
+    ) -> gst::PadProbeReturn {
+        // Serialized events pass (parsing progresses, sticky events
+        // accumulate on the unlinked pad). GAP is data-like and blocks
+        // with the buffers, exactly like uridecodebin3's block probe.
+        if let Some(gst::PadProbeData::Event(event)) = &info.data
+            && event.type_() != gst::EventType::Gap
+        {
+            return gst::PadProbeReturn::Pass;
+        }
+        let Some(inner) = weak.upgrade() else {
+            return gst::PadProbeReturn::Remove;
+        };
+
+        let mut state = inner.swap_gate.state.lock();
+        loop {
+            if state.swapped || inner.current_generation() == generation {
+                // The swap already ran (this pad's link is live): flow.
+                // The generation check covers a straggler probe firing
+                // AFTER the next item's prepare re-armed the gate (a
+                // sparse pad's first datum can come long past this input's
+                // own activation, and the fresh gate no longer names this
+                // generation): its input is the LIVE one and flushing here
+                // would kill the playing stream.
+                return gst::PadProbeReturn::Remove;
+            }
+            if state.pending != Some(generation) {
+                // Cancelled or superseded: flush this input's streaming
+                // thread out so teardown can join it.
+                debug!(pad = %pad.name(), "prepared pad unblocked by a cancelled swap");
+                drop(state);
+                let _ = info.data.take();
+                info.flow_res = Err(gst::FlowError::Flushing);
+                return gst::PadProbeReturn::Handled;
+            }
+            if state.drained {
+                break;
+            }
+            inner.swap_gate.cond.wait(&mut state);
+        }
+
+        // The current input is fully drained and this thread got here
+        // first: relink the core to the prepared input for ALL its pads.
+        match Inner::perform_gapless_swap(&inner, generation) {
+            Ok(()) => {
+                info!(generation, "gapless swap performed at drain");
+                state.swapped = true;
+                inner.swap_gate.cond.notify_all();
+                gst::PadProbeReturn::Remove
+            }
+            Err(err) => {
+                error!(?err, generation, "gapless swap failed");
+                drop(state);
+                // The cancel job cleans the input up and, since the item's
+                // EOS was already consumed by the drain, synthesizes the
+                // end-of-stream the caller now needs to advance normally.
+                inner.emit(PlaybinEvent::PreparedFailed { generation });
+                let _ = inner.work_tx.send(Job::CancelPrepared);
+                let _ = info.data.take();
+                info.flow_res = Err(gst::FlowError::Flushing);
+                gst::PadProbeReturn::Handled
+            }
+        }
+    }
+
+    /// Relink the live core from the drained current input to the prepared
+    /// one: matching streams REUSE the same decodebin3 sink pad (unlink old
+    /// pad, link new pad; the slot and its output pad survive, downstream
+    /// sees only stream-start/caps/segment), unmatched old pads are
+    /// released, unmatched new streams get fresh request pads. Runs on a
+    /// prepared-input streaming thread, which is upstream's own recipe;
+    /// element removal stays on the worker ([`Job::FinishActivation`]).
+    fn perform_gapless_swap(inner: &Arc<Inner>, generation: u64) -> Result<()> {
+        let db3 = inner
+            .core
+            .lock()
+            .as_ref()
+            .map(|c| c.db3.clone())
+            .ok_or_else(|| anyhow!("no dynamic core"))?;
+        let current = inner.current_generation();
+
+        let (prepared_element, old_pairs, routed_ids, routed_kinds) = {
+            let routing = inner.routing.lock();
+            let prepared_element = routing
+                .inputs
+                .iter()
+                .find(|i| i.generation == generation)
+                .map(|i| i.element.clone())
+                .ok_or_else(|| anyhow!("prepared input no longer registered"))?;
+            // (src pad, decodebin3 sink pad) of the drained main input.
+            let old_pairs: Vec<(gst::Pad, gst::Pad)> = routing
+                .inputs
+                .iter()
+                .filter(|i| i.generation == current && i.external.is_none())
+                .flat_map(|i| {
+                    i.db3_sink_pads
+                        .iter()
+                        .filter_map(|sink| sink.peer().map(|src| (src, sink.clone())))
+                })
+                .collect();
+            // The streams actually flowing OUT of decodebin3 (only selected
+            // streams have output slots), by id and by kind.
+            let routed_ids: Vec<String> = routing
+                .routed
+                .iter()
+                .filter_map(|r| r.db3_src_pad.stream_id().map(|sid| sid.to_string()))
+                .collect();
+            let routed_kinds: Vec<StreamKind> = routing.routed.iter().map(|r| r.kind).collect();
+            (prepared_element, old_pairs, routed_ids, routed_kinds)
+        };
+
+        // A live A/V output slot whose kind has NO successor stream cannot
+        // switch gaplessly. Its sink outlives the stream: the hold drops
+        // the old item's EOS, nothing removes an audio sink mid-item, and
+        // the bin can then never aggregate the NEW item's end-of-stream
+        // (a silent autoplay wedge); a dying video slot can conversely EOS
+        // every remaining sink between items. Fail the swap BEFORE touching
+        // any link: the caller reports PreparedFailed and the ordinary
+        // end-of-stream advance owns the transition.
+        let new_pads = prepared_element.src_pads();
+        for (kind, want) in [
+            (StreamKind::Video, gst::StreamType::VIDEO),
+            (StreamKind::Audio, gst::StreamType::AUDIO),
+        ] {
+            if !routed_kinds.contains(&kind) {
+                continue;
+            }
+            let covered = new_pads
+                .iter()
+                .any(|pad| pad.stream().is_some_and(|s| s.stream_type().contains(want)));
+            if !covered {
+                return Err(anyhow!(
+                    "the prepared item has no {kind:?} stream to continue the live one"
+                ));
+            }
+        }
+
+        // Match new pads to old decodebin3 sink pads by stream type, the
+        // uridecodebin3 criterion: a reused sink pad keeps the decodebin3
+        // slot (and its output pad) alive across the switch. Prefer the old
+        // pad whose stream is ROUTED (selected): a multi-track item also
+        // has unselected sibling pads of the same type, and handing the
+        // successor to one of those would let the playing slot die instead
+        // (the exact wedge the coverage check above exists for). Plan
+        // first, mutate after: a failed plan must leave the links alone.
+        let mut taken = vec![false; old_pairs.len()];
+        let mut links: Vec<(gst::Pad, gst::Pad)> = Vec::new();
+        let mut fresh: Vec<gst::Pad> = Vec::new();
+        for new_pad in &new_pads {
+            let want = new_pad.stream().map(|s| s.stream_type());
+            let type_matches = |idx: usize, taken: &[bool]| {
+                !taken[idx]
+                    && match want {
+                        None => true,
+                        Some(want) => {
+                            old_pairs[idx].0.stream().map(|s| s.stream_type()) == Some(want)
+                        }
+                    }
+            };
+            let selected = |idx: usize| {
+                old_pairs[idx]
+                    .0
+                    .stream_id()
+                    .is_some_and(|sid| routed_ids.iter().any(|r| *r == sid))
+            };
+            let matched = (0..old_pairs.len())
+                .find(|&idx| type_matches(idx, &taken) && selected(idx))
+                .or_else(|| (0..old_pairs.len()).find(|&idx| type_matches(idx, &taken)));
+            match matched {
+                Some(idx) => {
+                    taken[idx] = true;
+                    debug!(
+                        new = %new_pad.name(),
+                        sink = %old_pairs[idx].1.name(),
+                        "gapless: reusing the decodebin3 sink pad"
+                    );
+                    links.push((new_pad.clone(), old_pairs[idx].1.clone()));
+                }
+                None => fresh.push(new_pad.clone()),
+            }
+        }
+        for (idx, (old_src, db3_sink)) in old_pairs.iter().enumerate() {
+            let _ = old_src.unlink(db3_sink);
+            if !taken[idx] {
+                // An old stream with no successor: its slot ends here.
+                debug!(sink = %db3_sink.name(), "gapless: releasing an unmatched old sink pad");
+                db3.release_request_pad(db3_sink);
+            }
+        }
+        for (new_pad, db3_sink) in &links {
+            new_pad
+                .link(db3_sink)
+                .with_context(|| format!("relinking {} into decodebin3", new_pad.name()))?;
+        }
+        for new_pad in fresh {
+            let db3_sink = db3
+                .request_pad_simple("sink_%u")
+                .ok_or_else(|| anyhow!("decodebin3 gave no request sink pad"))?;
+            new_pad
+                .link(&db3_sink)
+                .with_context(|| format!("linking {} into decodebin3", new_pad.name()))?;
+            debug!(new = %new_pad.name(), sink = %db3_sink.name(), "gapless: fresh sink pad");
+            links.push((new_pad.clone(), db3_sink));
+        }
+
+        // The prepared input is the live input from here on: it follows
+        // pipeline transitions again (the lock existed so a broken prepare
+        // could not poison them, see `add_prepared_input`).
+        prepared_element.set_locked_state(false);
+
+        // Bookkeeping: the old input no longer owns any decodebin3 pads
+        // (reused ones now belong to the new input, the rest were
+        // released), so its later removal cannot touch them. The block
+        // probe list clears: every remaining probe self-removes on its
+        // next datum (`swapped` is set by our caller).
+        {
+            let mut routing = inner.routing.lock();
+            for input in routing
+                .inputs
+                .iter_mut()
+                .filter(|i| i.generation == current && i.external.is_none())
+            {
+                input.db3_sink_pads.clear();
+            }
+            if let Some(input) = routing
+                .inputs
+                .iter_mut()
+                .find(|i| i.generation == generation)
+            {
+                input.block_probes.clear();
+            }
+        }
+        for (new_pad, db3_sink) in links {
+            Inner::record_linked_input_pad(inner, &prepared_element, &new_pad, db3_sink);
         }
         Ok(())
     }
@@ -2229,12 +3962,16 @@ impl Inner {
 
     /// Put the video chain (subtitleoverlay + video sink) into the pipeline
     /// and bring it to the join state. Called from `route_db3_pad` when a
-    /// video stream routes; idempotent, and also the recovery from a
+    /// video stream routes. Idempotent, and also the recovery from a
     /// mid-item deselect's parked chain (unlocks and re-joins it). The
     /// chain lives in the pipeline ONLY while the item has video: an absent
     /// chain cannot hang a video-less preroll and never counts in the bin's
     /// EOS/STREAM_START aggregation, by construction.
     fn ensure_video_chain(&self) -> Result<()> {
+        // A video chain can re-preroll mid-load and needs the deep audio
+        // buffer to avoid the demuxer-stall deadlock (see `aqueue` in `new`).
+        self.audio_entry
+            .set_property("max-size-time", AQUEUE_VIDEO_TIME_NS);
         if self.overlay.parent().is_none() {
             let elements: Vec<&gst::Element> = self.video_chain.iter().collect();
             self.pipeline
@@ -2284,9 +4021,14 @@ impl Inner {
     /// video sink is GL/window-bound and parks at READY outside the
     /// pipeline, never NULLed (playbin3's own treatment of it). Runs at the
     /// load reset and when a mid-item video deselect completes
-    /// (`unroute_db3_pad`); once removed, the bin's EOS aggregation can no
+    /// (`unroute_db3_pad`). Once removed, the bin's EOS aggregation can no
     /// longer wait on a sink that will never see data again.
     fn remove_video_chain(&self) {
+        // No video chain to deadlock: restore the shallow audio-only queue so
+        // gapless holds the outgoing EOS near the sink boundary (see `aqueue`
+        // in `new`). Unconditional: a load reset removes the chain and re-shallows.
+        self.audio_entry
+            .set_property("max-size-time", AQUEUE_AUDIO_TIME_NS);
         if self.overlay.parent().is_none() {
             return;
         }
@@ -2407,7 +4149,19 @@ impl Inner {
             if let Some(probe) = tap.probe.take() {
                 tap.pad.remove_probe(probe);
             }
+            if let Some(probe) = tap.event_probe.take() {
+                tap.pad.remove_probe(probe);
+            }
         }
+        // A cancelled prepare's block probes (a performed swap clears the
+        // list itself). Any thread parked inside one was already woken and
+        // flushed by the swap gate abort that precedes this removal.
+        for (pad, probe) in input.block_probes {
+            pad.remove_probe(probe);
+        }
+        // A still-locked prepared input unlocks on its way out (harmless
+        // for ordinary inputs).
+        input.element.set_locked_state(false);
         // Losing the state change here is fine, the element is leaving.
         let _ = input.element.set_state(gst::State::Null);
         for db3_sink in &input.db3_sink_pads {
@@ -2568,7 +4322,115 @@ impl Inner {
             }
         };
 
+        // Gapless EOS hold (the uridecodebin3 db_src_probe): while a
+        // prepared next item is PENDING, any EOS coming out of decodebin3
+        // is the drained current item's and must not reach the sinks (it
+        // would end the pipeline between items). Activation clears the
+        // pending state, so the new item's own end flows normally; a
+        // straggler old-slot EOS emerging just after activation is
+        // absorbed by streamsynchronizer (the other streams are active
+        // again by definition of the activation trigger).
+        pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
+            let weak = Arc::downgrade(inner);
+            move |pad, info| {
+                let Some(gst::PadProbeData::Event(event)) = &info.data else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                let group = match event.view() {
+                    gst::EventView::Eos(_) => None,
+                    gst::EventView::StreamStart(stream_start) => Some(stream_start.group_id()),
+                    _ => return gst::PadProbeReturn::Ok,
+                };
+                let Some(inner) = weak.upgrade() else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                match group {
+                    None => {
+                        // Drop the EOS while a swap is pending (committed
+                        // to a next item, nothing may end the pipeline) or
+                        // while THIS pad still carries a previous group,
+                        // either lagging the active one or positively the
+                        // RETIRED one (its slot has not flipped to the
+                        // active item yet, so this EOS is old-item
+                        // drainage; see `Inner::retired_group` for why the
+                        // activation alone cannot cover this). The pad's
+                        // sticky stream-start at EOS time is the ending
+                        // stream's, an authoritative fallback when the
+                        // recorded group is missing. Unknowns on either
+                        // side never drop: only a positively known group
+                        // mismatch is old-item drainage.
+                        let pad_group = {
+                            let routing = inner.routing.lock();
+                            routing
+                                .routed
+                                .iter()
+                                .find(|r| &r.db3_src_pad == pad)
+                                .and_then(|r| r.group)
+                        }
+                        .or_else(|| {
+                            pad.sticky_event::<gst::event::StreamStart>(0)
+                                .and_then(|event| event.group_id())
+                        });
+                        let active_group = *inner.active_group.lock();
+                        let retired_group = *inner.retired_group.lock();
+                        let behind = match (pad_group, active_group) {
+                            (Some(pad_group), Some(active)) => pad_group != active,
+                            _ => false,
+                        } || (pad_group.is_some() && pad_group == retired_group);
+                        // One lock hold for the check AND the drop record:
+                        // a cancel between them would zero the state and
+                        // the mark would pollute the next prepare's gate.
+                        let mut state = inner.swap_gate.state.lock();
+                        let pending = state.pending.is_some();
+                        if pending || behind {
+                            if pending {
+                                // The item's end is consumed for good; a
+                                // cancelled swap must synthesize it (see
+                                // `SwapState::dropped_eos`).
+                                state.dropped_eos = true;
+                            }
+                            drop(state);
+                            debug!(
+                                pad = %pad.name(),
+                                pending,
+                                behind,
+                                "gapless: dropping the drained item's EOS"
+                            );
+                            return gst::PadProbeReturn::Drop;
+                        }
+                    }
+                    // STREAM_START: record the pad's group; a group change
+                    // activates a pending prepared item.
+                    Some(group) => {
+                        if let Some(group) = group {
+                            let mut routing = inner.routing.lock();
+                            if let Some(routed) =
+                                routing.routed.iter_mut().find(|r| &r.db3_src_pad == pad)
+                            {
+                                routed.group = Some(group);
+                            }
+                        }
+                        inner.note_output_stream_start(group);
+                    }
+                }
+                gst::PadProbeReturn::Ok
+            }
+        });
+
         debug!(pad = %pad.name(), ?kind, linked = downstream.is_some(), "routed decodebin3 pad");
+        // Seed the pad's group from its sticky stream-start: the live event
+        // may already have passed (it flows the moment the link above
+        // completes, possibly before the probe existed). The sticky is
+        // authoritative either way.
+        let group = pad
+            .sticky_event::<gst::event::StreamStart>(0)
+            .and_then(|event| event.group_id());
+        if let Some(group) = group {
+            let mut active = inner.active_group.lock();
+            if active.is_none() {
+                *active = Some(group);
+            }
+        }
         let mut routing = inner.routing.lock();
         routing.routed.push(RoutedStream {
             db3_src_pad: pad.clone(),
@@ -2578,6 +4440,7 @@ impl Inner {
             park_pad,
             park_sink,
             tqueue: None,
+            group,
             kind,
         });
         drop(routing);
@@ -2855,9 +4718,62 @@ mod decisions {
         current >= gst::State::Paused && pending == gst::State::VoidPending
     }
 
+    /// What a bus error from a live external subtitle input means (see
+    /// `Inner::handle_external_error` for the mechanism).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum ExternalErrorAction {
+        /// Genuine failure: detach and report `ExternalSubtitleFailed`.
+        Fail,
+        /// The deselect race: replace the input under the same id.
+        Rearm,
+        /// A dying input's echo: the watchdog owns the final verdict.
+        Ignore,
+    }
+
+    /// Decide an external input's error. `materialized` is whether the
+    /// input ever produced a stream, `selected` whether one of its streams
+    /// is the current subtitle selection, `ever_rearmed` whether this
+    /// element is already a replacement, and `since_attach` how long ago
+    /// this element was (re-)attached.
+    pub(crate) fn external_error_action(
+        materialized: bool,
+        selected: bool,
+        ever_rearmed: bool,
+        since_attach: std::time::Duration,
+        debounce: std::time::Duration,
+    ) -> ExternalErrorAction {
+        // Dying while its stream is SHOWN: a genuine failure the user sees.
+        if selected {
+            return ExternalErrorAction::Fail;
+        }
+        if !materialized {
+            // Never produced a stream. On the first attach that is a bad
+            // URL dying: fail fast so the requester gets its error
+            // promptly. A re-armed element's early errors are echoes of
+            // the race that killed its predecessor, and its watchdog fails
+            // it if no stream ever appears.
+            return if ever_rearmed {
+                ExternalErrorAction::Ignore
+            } else {
+                ExternalErrorAction::Fail
+            };
+        }
+        // Deselected but materialized: the deselect race (the input worked,
+        // switching away killed it). Replaceable, but a dying input posts
+        // several errors in a burst, so only the first past the debounce
+        // re-arms.
+        if since_attach < debounce {
+            ExternalErrorAction::Ignore
+        } else {
+            ExternalErrorAction::Rearm
+        }
+    }
+
     /// Caps-name fallback for pads without a GstStream.
     pub(crate) fn kind_from_caps_name(name: &str) -> Option<StreamKind> {
-        if name.starts_with("video/") {
+        // image/* is video: parsebin types image streams as VIDEO and
+        // fimagedec decodes them into raw video frames.
+        if name.starts_with("video/") || name.starts_with("image/") {
             Some(StreamKind::Video)
         } else if name.starts_with("audio/") {
             Some(StreamKind::Audio)
@@ -2893,6 +4809,7 @@ mod tests {
         // Unknown kinds (no cached collection): never deactivate.
         assert!(!deselects_video(true, &[], &ids(&["aud-1"])));
     }
+
 
     #[test]
     fn join_state_caps_at_paused_during_transitions() {
@@ -2944,5 +4861,264 @@ mod tests {
             Some(StreamKind::Text)
         );
         assert_eq!(kind_from_caps_name("application/x-id3"), None);
+    }
+
+    // --- external subtitle error policy --------------------------------------
+
+    use std::time::Duration;
+
+    const DEBOUNCE: Duration = Duration::from_secs(1);
+    const YOUNG: Duration = Duration::from_millis(100);
+    const OLD: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn error_while_shown_fails() {
+        // The user is looking at this track, so a dying input is a real
+        // failure regardless of age or re-arm history.
+        for (rearmed, age) in [(false, YOUNG), (false, OLD), (true, YOUNG), (true, OLD)] {
+            assert_eq!(
+                external_error_action(true, true, rearmed, age, DEBOUNCE),
+                ExternalErrorAction::Fail
+            );
+        }
+    }
+
+    #[test]
+    fn error_before_first_stream_fails_fast() {
+        // A bad URL dies without ever producing a stream: the requester gets
+        // its ResourceNotFound promptly instead of waiting out the watchdog.
+        assert_eq!(
+            external_error_action(false, false, false, YOUNG, DEBOUNCE),
+            ExternalErrorAction::Fail
+        );
+        assert_eq!(
+            external_error_action(false, false, false, OLD, DEBOUNCE),
+            ExternalErrorAction::Fail
+        );
+    }
+
+    #[test]
+    fn rearmed_input_without_streams_defers_to_the_watchdog() {
+        // A replacement element's early errors are echoes of the race that
+        // killed its predecessor, and failing (or re-arming again) on them
+        // would flap. The watchdog armed at the re-arm owns the verdict.
+        assert_eq!(
+            external_error_action(false, false, true, YOUNG, DEBOUNCE),
+            ExternalErrorAction::Ignore
+        );
+        assert_eq!(
+            external_error_action(false, false, true, OLD, DEBOUNCE),
+            ExternalErrorAction::Ignore
+        );
+    }
+
+    #[test]
+    fn deselect_race_rearms_past_the_debounce() {
+        // A materialized, deselected input dying is the deselect race: the
+        // input is replaceable and the track must stay selectable.
+        assert_eq!(
+            external_error_action(true, false, false, OLD, DEBOUNCE),
+            ExternalErrorAction::Rearm
+        );
+        assert_eq!(
+            external_error_action(true, false, true, OLD, DEBOUNCE),
+            ExternalErrorAction::Rearm
+        );
+        // Within the debounce the burst of errors from one death re-arms
+        // only once.
+        assert_eq!(
+            external_error_action(true, false, false, YOUNG, DEBOUNCE),
+            ExternalErrorAction::Ignore
+        );
+    }
+}
+
+#[cfg(test)]
+mod pipeline_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// Encode `seconds` of silence to an MP3 file (audio/mpeg, the real fcomp
+    /// container). Done once per source so playback can go through the real
+    /// `urisourcebin` topology below.
+    fn make_mp3_file(path: &std::path::Path, seconds: f64) {
+        // audiotestsrc defaults: 44100 Hz, 1024 samples/buffer.
+        let num_buffers = (seconds * 44100.0 / 1024.0).round() as i32;
+        let src = gst::ElementFactory::make("audiotestsrc")
+            .property("num-buffers", num_buffers)
+            .property("is-live", false)
+            .property_from_str("wave", "silence")
+            .build()
+            .unwrap();
+        let conv = gst::ElementFactory::make("audioconvert").build().unwrap();
+        let enc = gst::ElementFactory::make("lamemp3enc").build().unwrap();
+        let sink = gst::ElementFactory::make("filesink")
+            .property("location", path.to_str().unwrap())
+            .build()
+            .unwrap();
+        let pipeline = gst::Pipeline::new();
+        pipeline.add_many([&src, &conv, &enc, &sink]).unwrap();
+        gst::Element::link_many([&src, &conv, &enc, &sink]).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let bus = pipeline.bus().unwrap();
+        while let Some(msg) = bus.timed_pop(gst::ClockTime::from_seconds(10)) {
+            match msg.view() {
+                gst::MessageView::Eos(_) => break,
+                gst::MessageView::Error(err) => panic!("mp3 encode failed: {err:?}"),
+                _ => {}
+            }
+        }
+        pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    /// A unique temp path under the test dir (no wall clock needed).
+    fn temp_mp3(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "fcastplaybin-gapless-{}-{tag}-{n}.mp3",
+            std::process::id()
+        ))
+    }
+
+    /// The real gapless source: `urisourcebin` over a file URI with
+    /// `parse-streams`, exactly what `media_source::build_uri_source_with_head`
+    /// builds (so decodebin3 gets the stream collection urisourcebin forwards).
+    fn uri_source(path: &std::path::Path) -> gst::Element {
+        gst::ElementFactory::make("urisourcebin")
+            .property("uri", format!("file://{}", path.display()))
+            .property("parse-streams", true)
+            .property("use-buffering", true)
+            .build()
+            .unwrap()
+    }
+
+
+    fn fake_audio_sinks() -> Sinks {
+        Sinks {
+            video: None,
+            audio: AudioSink::Factory(Box::new(|| {
+                Ok(gst::ElementFactory::make("fakesink")
+                    .property("sync", true)
+                    .build()?)
+            })),
+        }
+    }
+
+    /// Gapless handoff smoke test, end to end on a real pipeline: play item A
+    /// through `urisourcebin` (the field's gapless source topology), pre-arm
+    /// item B, and assert B plays to ITS end rather than being cut off at A's.
+    /// Guards the generic swap path. NOTE: this passes for `file://`/`filesrc`
+    /// sources. The FIELD bug (an fcomp item cut at the previous item's
+    /// declared duration) does NOT reproduce here, which localizes it to
+    /// `fcompsrc`'s size/segment/EOS behavior, not the swap itself (a
+    /// fcompsrc + fake-companion repro belongs in receiver-core).
+    #[test]
+    fn gapless_swap_plays_the_next_item_to_its_end() {
+        gst::init().unwrap();
+        let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        playbin.set_event_handler(None, move |event, _generation| match event {
+            PlaybinEvent::PreparedActivated => {
+                let _ = tx.send(Ev::Activated);
+            }
+            PlaybinEvent::EndOfStream => {
+                let _ = tx.send(Ev::Eos);
+            }
+            _ => {}
+        });
+
+        // A is long enough that decodebin3's multiqueue and the decoupling
+        // audio queue cannot swallow it whole, so its EOS is PACED to near its
+        // end (mirroring a real track). Pre-arming early then lands before
+        // A's EOS reaches the output-side hold, the order the field hits.
+        let a_secs = 5.0;
+        let b_secs = 2.0;
+        let a_path = temp_mp3("a");
+        let b_path = temp_mp3("b");
+        make_mp3_file(&a_path, a_secs);
+        make_mp3_file(&b_path, b_secs);
+
+        playbin
+            .load(MediaInput::Element(uri_source(&a_path)), StartPoint::Live)
+            .unwrap();
+        // Pre-arm B BEFORE A's end-of-stream can reach the output hold. The
+        // field pre-arms tens of seconds early; a short test source's input
+        // drains at load (its parsed data fits decodebin3's multiqueue whole),
+        // so the pre-arm has to be up front to win that race. `pending` is
+        // then set when A's EOS drains out, which is what must hold it back.
+        playbin.prepare_next_async(MediaInput::Element(uri_source(&b_path)));
+        let t0 = Instant::now();
+        playbin.play().unwrap();
+
+        let mut activated = false;
+        let eos_elapsed = loop {
+            match rx.recv_timeout(Duration::from_secs(15)) {
+                Ok(Ev::Activated) => activated = true,
+                Ok(Ev::Eos) => break Some(t0.elapsed()),
+                Err(_) => break None,
+            }
+        };
+        let _ = playbin.stop();
+        let _ = std::fs::remove_file(&a_path);
+        let _ = std::fs::remove_file(&b_path);
+
+        let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
+        assert!(activated, "the prepared item never activated (handoff missed)");
+        // Gapless success plays A then B back to back (~7s). The bug cuts B off
+        // at A's end, so EOS lands near A's length (~5s) instead. The 6s
+        // threshold sits between the two with margin for buffering slack.
+        assert!(
+            eos_elapsed >= Duration::from_millis(6000),
+            "playback ended after {eos_elapsed:?}, expected ~{}s (A+B): the \
+             next item was cut off at the previous item's segment end",
+            a_secs + b_secs,
+        );
+    }
+
+    #[derive(PartialEq)]
+    enum Ev {
+        Activated,
+        Eos,
+    }
+
+    /// The watchdog end to end, without FAST or media: attach a URI that
+    /// never produces a stream (the pipeline sits in NULL, so urisourcebin
+    /// never starts) and expect the crate to detach it and report
+    /// `ExternalSubtitleFailed` on its own.
+    #[test]
+    fn watchdog_fails_a_subtitle_that_never_materializes() {
+        gst::init().unwrap();
+        let playbin = FcastPlaybin::new(Sinks {
+            video: None,
+            audio: AudioSink::Auto,
+        })
+        .unwrap();
+        playbin.set_external_sub_timeout(Duration::from_millis(200));
+
+        let (tx, rx) = mpsc::channel();
+        playbin.set_event_handler(None, move |event, _generation| {
+            if let PlaybinEvent::ExternalSubtitleFailed { id } = event {
+                let _ = tx.send(id);
+            }
+        });
+
+        let id = playbin
+            .attach_subtitle("file:///nonexistent/fcastplaybin-watchdog-test.srt")
+            .unwrap();
+        assert!(playbin.has_external_subtitles());
+
+        let failed = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("watchdog should fail the stream-less input");
+        assert_eq!(failed, id);
+
+        // The crate detached the input itself: nothing external remains and
+        // a caller-side detach of the reported id is a (harmless) error.
+        assert!(!playbin.has_external_subtitles());
+        assert!(playbin.subtitle_stream_ids(id).is_empty());
+        assert!(playbin.detach_subtitle(id).is_err());
     }
 }

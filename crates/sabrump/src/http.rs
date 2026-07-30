@@ -1,7 +1,4 @@
-use std::collections::VecDeque;
-use std::io;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{collections::VecDeque, io, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -72,7 +69,10 @@ impl SabrTransport {
                 for (k, v) in headers {
                     rb = rb.header(k, v);
                 }
-                let resp = rb.send().await.map_err(|e| SabrError::Http(e.to_string()))?;
+                let resp = rb
+                    .send()
+                    .await
+                    .map_err(|e| SabrError::Http(e.to_string()))?;
                 let status = resp.status().as_u16();
                 // Adapt reqwest's `chunk()` into a `Stream` (avoids the `stream`
                 // feature). The client's read timeout still bounds each `chunk()`,
@@ -87,7 +87,11 @@ impl SabrTransport {
                 let body: SabrBody = Box::pin(stream);
                 Ok((status, body))
             }
-            SabrTransport::Canned { responses, requests, status } => {
+            SabrTransport::Canned {
+                responses,
+                requests,
+                status,
+            } => {
                 requests.lock().push(body);
                 let bytes = responses.lock().pop_front().unwrap_or_default();
                 let stream =

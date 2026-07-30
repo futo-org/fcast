@@ -57,9 +57,9 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3f7965c" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "4feae2a0cc1aac42245d380fea190652118a1d8f", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "4feae2a0cc1aac42245d380fea190652118a1d8f" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "4feae2a0cc1aac42245d380fea190652118a1d8f" }
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "0cc73192bb5c2f35974ec511667afa3bc667fe58", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "0cc73192bb5c2f35974ec511667afa3bc667fe58" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "0cc73192bb5c2f35974ec511667afa3bc667fe58" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
@@ -110,6 +110,27 @@ opt-level = "s"
 panic = "abort"
 
 [profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.gif]
+opt-level = 3
+[profile.dev.package.weezl]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.color_quant]
+opt-level = 3
+[profile.dev.package.byteorder-lite]
 opt-level = 3
 
 [profile.dev.package."*"]

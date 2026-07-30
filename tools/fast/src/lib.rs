@@ -77,6 +77,7 @@ pub enum Send {
     LoadQueueV4 {
         items: &'static [PlaylistItem],
         start_index: Option<u8>,
+        autoplay: bool,
     },
     QueueInsertV4 {
         file_id: u32,
@@ -230,6 +231,19 @@ pub enum Step {
     /// playsink finishes its un-signalled text-branch churn, too variable
     /// for a fixed sleep followed by a point-in-time assert.
     AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState),
+    /// Mark the current position in the relayed playback-state log, scoping
+    /// a later `AssertNoPlaybackStateSinceMark`.
+    MarkPlaybackStates,
+    /// No `PlaybackStateChanged` with this state may have been relayed
+    /// since the last `MarkPlaybackStates`. The gapless assertion: a
+    /// seamless queue advance broadcasts neither Ended nor Idle between
+    /// the items.
+    AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState),
+    /// Wait for a receiver-initiated `QueueItemSelected` broadcast naming
+    /// this queue index (an autoplay or gapless advance).
+    AwaitQueueSelect {
+        index: u8,
+    },
     OpenSecondSender,
     SetSecondSenderInterval {
         millis: u64,
@@ -314,6 +328,10 @@ cases!(
     cast_photos_v2,
     cast_photo_v3,
     cast_photos_v3,
+    cast_gif_v2,
+    cast_gif_v3,
+    cast_gif_v4,
+    cast_gif_then_video_v4,
     cast_video_v2,
     // cast_video_set_volume_v2,
     cast_video_v3,
@@ -401,6 +419,10 @@ cases!(
     queue_load_no_start_index_v4,
     queue_full_v4,
     queue_insert_front_v4,
+    queue_select_prefetched_v4,
+    queue_select_prefetched_video_v4,
+    queue_autoplay_v4,
+    gapless_queue_autoplay_v4,
     multi_sender_load_broadcast_v4,
     multi_sender_load_metadata_broadcast_video_v4,
     multi_sender_load_metadata_broadcast_image_v4,
@@ -543,6 +565,103 @@ define_test_case!(
         send!(Send::PlayV2 { file_id: 0 }),
         send!(Send::PlayV2 { file_id: 1 }),
         send!(Send::Stop),
+    ]
+);
+
+// Animated GIF (and animated WebP, APNG) is decoded by fimagedec inside the
+// normal player pipeline, unlike a still JPEG which the legacy in-GUI
+// downloader handles. The load reaches Playing through the real player state
+// machine, loops forever (never EOS), and sends no progress traffic.
+//
+// A v2 session receives no PlaybackUpdate for a pipeline image (progress is
+// suppressed for these loads) and no v4 state relay, so there is no observable
+// "reached Playing" signal to await. This mirrors the legacy cast_photo_v2
+// (which also just sleeps then stops), a fixed settle is the only option here.
+define_test_case!(
+    cast_gif_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV2 { file_id: 0 }),
+        Step::SleepMillis(750),
+        send!(Send::Stop),
+    ]
+);
+
+// v3 twin of cast_gif_v2. A v3 session, like v2, gets no PlaybackUpdate for a
+// pipeline image, but a MediaItemStart subscription confirms the load was
+// dispatched. Mirrors cast_photo_v3 plus the subscribe/event pattern of
+// subscribe_media_item_start_1.
+define_test_case!(
+    cast_gif_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        send!(Send::SubscribeEvent(
+            v3::EventSubscribeObject::MediaItemStart
+        )),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        send!(Send::Stop),
+    ]
+);
+
+// v4 twin: here the receiver relays PlaybackStateChanged, so the "reached
+// Playing" state can be awaited deterministically instead of slept on. The
+// pipeline image exposes exactly one video stream (fimagedec output) and no
+// audio or subtitle tracks. No progress is asserted, a pipeline image sends
+// none.
+define_test_case!(
+    cast_gif_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 0,
+            subtitle: 0,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
+    ]
+);
+
+// A pipeline image loops forever and never posts EOS, so its load must be torn
+// down cleanly when a regular video is cast on top of it. Load the looping GIF,
+// confirm it is Playing, then cast a real video over it and confirm the video
+// reaches Playing (with its own embedded tracks), proving the image load was
+// dismantled.
+define_test_case!(
+    cast_gif_then_video_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/animated.gif", 0, "image/gif"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 0,
+            subtitle: 0,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::PlayV4 { file_id: 1 }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
     ]
 );
 
@@ -957,6 +1076,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(750),
         send!(Send::QueueSelectV4 {
@@ -1019,6 +1139,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(750),
         send!(Send::QueueSelectV4 {
@@ -1041,6 +1162,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueInsertV4 {
@@ -1085,6 +1207,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueSelectV4 {
@@ -1114,6 +1237,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueRemoveV4 {
@@ -2605,6 +2729,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: None,
+            autoplay: false,
         }),
         Step::SleepMillis(750),
         send!(Send::StopV4),
@@ -2646,6 +2771,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueInsertV4 {
@@ -2657,6 +2783,149 @@ define_test_case!(
             position: QueuePosition::Front,
         }),
         Step::SleepMillis(500),
+        send!(Send::StopV4),
+    ]
+);
+
+// All queue items are served BEFORE the queue loads, so the receiver's
+// prefetch cache has time to pull the neighbor while item 0 plays. The
+// select then serves item 1 from memory (visible as a "Serving the load
+// from the queue prefetch cache" debug line in the receiver log). The case
+// itself asserts the switch plays normally either way. GIFs are pipeline
+// image loads, exercising the bytes-source (appsrc) consumption path.
+define_test_case!(
+    queue_select_prefetched_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/animated.gif", 0, "image/gif"),
+        serve!("image/animated.gif", 1, "image/gif"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+            autoplay: false,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        // Give the neighbor prefetch time to land before flipping.
+        Step::SleepMillis(500),
+        send!(Send::QueueSelectV4 {
+            position: QueuePosition::Back,
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 0,
+            subtitle: 0,
+        },
+        Step::SleepMillis(500),
+        send!(Send::StopV4),
+    ]
+);
+
+// The partial-head variant of queue_select_prefetched_v4: the 36M mkv is
+// larger than the prefetch head cap, so the select starts from a prefetched
+// HEAD injected into fcasthttpsrc ("Starting the load from a prefetched
+// head" in the receiver log) and streams the remainder over http.
+define_test_case!(
+    queue_select_prefetched_video_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        serve!("video/video_with_subs.mkv", 1, "video/x-matroska"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+            autoplay: false,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        // Give the 16M head prefetch time to land before flipping.
+        Step::SleepMillis(1500),
+        send!(Send::QueueSelectV4 {
+            position: QueuePosition::Back,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        Step::SleepMillis(500),
+        send!(Send::StopV4),
+    ]
+);
+
+// The spec'd Queue.autoplay flag: when an item of an autoplay queue ends,
+// the receiver advances to the next item BY ITSELF (no QueueItemSelected is
+// sent by this case) and broadcasts the selection to senders. The 2s clip
+// makes item 0's EOS arrive quickly. The advance is detected through item
+// 1's distinct track shape rather than the transient Ended state: under
+// autoplay the Ended broadcast is immediately replaced by the next load's
+// states, so it can never satisfy an AwaitPlaybackState hold.
+define_test_case!(
+    queue_autoplay_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/short_clip.mkv", 0, "video/x-matroska"),
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+            autoplay: true,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        // Item 0 (1 video, 1 audio) ends on its own after ~2s and the
+        // receiver advances to item 1 (1 video, 2 audio, 2 subtitles)
+        // without any sender involvement.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::StopV4),
+    ]
+);
+
+// GAPLESS autoplay: the receiver pre-arms the next item on the LIVE
+// pipeline near the current item's end (fcastplaybin::prepare_next) and
+// switches at the drain with no teardown, no re-preroll, and no pipeline
+// EOS between the items. Observable protocol difference from the plain
+// autoplay case above: the advance broadcasts a receiver-initiated
+// QueueItemSelected and NO Ended (and no Idle) state ever appears between
+// the items. Item shapes mirror queue_autoplay_v4 so the track-shape
+// detection carries over.
+define_test_case!(
+    gapless_queue_autoplay_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/short_clip.mkv", 0, "video/x-matroska"),
+        serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(0),
+            autoplay: true,
+        }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        Step::MarkPlaybackStates,
+        // The switch is announced by the receiver-initiated selection of
+        // item 1 (the 2s clip drains into the pre-armed next input).
+        Step::AwaitQueueSelect { index: 1 },
+        // The gapless property itself: nothing ended in between.
+        Step::AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState::Ended),
+        Step::AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState::Idle),
+        // Item 1's distinct track shape (1 video, 2 audio, 2 subtitles)
+        // proves it is really the one playing.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 2,
+            subtitle: 2,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         send!(Send::StopV4),
     ]
 );
@@ -2813,6 +3082,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueInsertV4 {
@@ -2837,6 +3107,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         // Remove the back (non-playing) item, the front item is playing.
@@ -2861,6 +3132,7 @@ define_test_case!(
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
             start_index: Some(0),
+            autoplay: false,
         }),
         Step::SleepMillis(500),
         send!(Send::QueueSelectV4 {

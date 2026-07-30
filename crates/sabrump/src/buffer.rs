@@ -1,13 +1,14 @@
-use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    ops::RangeInclusive,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
-use crate::format::SabrFormatKey;
-use crate::segment::SabrSegment;
+use crate::{format::SabrFormatKey, segment::SabrSegment};
 
 /// Sentinel matching the Kotlin `Long.MIN_VALUE` "no value" marker.
 pub const NO_US: i64 = i64::MIN;
@@ -79,20 +80,11 @@ impl SabrTrackBuffer {
     }
 
     pub fn get(&self, sequence_number: i32) -> Option<Arc<SabrSegment>> {
-        self.inner
-            .lock()
-            .segments
-            .get(&sequence_number)
-            .cloned()
+        self.inner.lock().segments.get(&sequence_number).cloned()
     }
 
     pub fn snapshot(&self) -> Vec<Arc<SabrSegment>> {
-        self.inner
-            .lock()
-            .segments
-            .values()
-            .cloned()
-            .collect()
+        self.inner.lock().segments.values().cloned().collect()
     }
 
     pub fn first_at_or_after(&self, min_sequence: i32) -> Option<Arc<SabrSegment>> {
@@ -124,13 +116,20 @@ impl SabrTrackBuffer {
             if remaining.is_zero() {
                 return pred();
             }
-            if tokio::time::timeout(remaining, notified.as_mut()).await.is_err() {
+            if tokio::time::timeout(remaining, notified.as_mut())
+                .await
+                .is_err()
+            {
                 return pred();
             }
         }
     }
 
-    pub async fn await_announced(&self, min_sequence: i32, timeout: Duration) -> Option<Arc<SabrSegment>> {
+    pub async fn await_announced(
+        &self,
+        min_sequence: i32,
+        timeout: Duration,
+    ) -> Option<Arc<SabrSegment>> {
         let deadline = Instant::now() + timeout;
         self.await_pred(deadline, || {
             first_at_or_after_locked(&self.inner.lock(), min_sequence)
@@ -138,7 +137,11 @@ impl SabrTrackBuffer {
         .await
     }
 
-    pub async fn await_covering(&self, position_us: i64, timeout: Duration) -> Option<Arc<SabrSegment>> {
+    pub async fn await_covering(
+        &self,
+        position_us: i64,
+        timeout: Duration,
+    ) -> Option<Arc<SabrSegment>> {
         let deadline = Instant::now() + timeout;
         self.await_pred(deadline, || {
             first_covering_locked(&self.inner.lock(), position_us)
@@ -146,14 +149,25 @@ impl SabrTrackBuffer {
         .await
     }
 
-    pub async fn await_sequence(&self, sequence: i32, timeout: Duration) -> Option<Arc<SabrSegment>> {
+    pub async fn await_sequence(
+        &self,
+        sequence: i32,
+        timeout: Duration,
+    ) -> Option<Arc<SabrSegment>> {
         let deadline = Instant::now() + timeout;
-        self.await_pred(deadline, || self.inner.lock().segments.get(&sequence).cloned())
-            .await
+        self.await_pred(deadline, || {
+            self.inner.lock().segments.get(&sequence).cloned()
+        })
+        .await
     }
 
     /// Wait until `segment` has more than `position` bytes or is complete.
-    pub async fn await_bytes(&self, segment: &SabrSegment, position: usize, timeout: Duration) -> bool {
+    pub async fn await_bytes(
+        &self,
+        segment: &SabrSegment,
+        position: usize,
+        timeout: Duration,
+    ) -> bool {
         let deadline = Instant::now() + timeout;
         self.await_pred(deadline, || {
             (segment.size() > position || segment.is_complete()).then_some(())
@@ -376,7 +390,11 @@ fn first_at_or_after_locked(inner: &Inner, min_sequence: i32) -> Option<Arc<Sabr
     if min_sequence < 0 {
         inner.segments.values().next().cloned()
     } else {
-        inner.segments.range(min_sequence..).next().map(|(_, s)| s.clone())
+        inner
+            .segments
+            .range(min_sequence..)
+            .next()
+            .map(|(_, s)| s.clone())
     }
 }
 

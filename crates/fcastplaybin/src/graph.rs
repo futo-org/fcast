@@ -228,9 +228,7 @@ fn non_default_properties(elem: &gst::Element) -> Vec<String> {
     let mut out = Vec::new();
     for pspec in elem.list_properties() {
         if !pspec.flags().contains(gst::glib::ParamFlags::READABLE)
-            || pspec
-                .flags()
-                .contains(gst::glib::ParamFlags::DEPRECATED)
+            || pspec.flags().contains(gst::glib::ParamFlags::DEPRECATED)
         {
             continue;
         }
@@ -335,8 +333,7 @@ mod tests {
         let bin = gst::Bin::with_name("wrap");
         let identity = gst::ElementFactory::make("identity").build().unwrap();
         bin.add(&identity).unwrap();
-        let ghost_sink =
-            gst::GhostPad::with_target(&identity.static_pad("sink").unwrap()).unwrap();
+        let ghost_sink = gst::GhostPad::with_target(&identity.static_pad("sink").unwrap()).unwrap();
         let ghost_src = gst::GhostPad::builder_with_target(&identity.static_pad("src").unwrap())
             .unwrap()
             .name("src")
@@ -423,7 +420,11 @@ mod tests {
             .build();
         let lines = caps_lines(&caps);
         assert_eq!(lines[0], "video/x-raw");
-        assert!(lines.iter().any(|l| l.contains("width") && l.contains("1920")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("width") && l.contains("1920"))
+        );
     }
 
     #[test]

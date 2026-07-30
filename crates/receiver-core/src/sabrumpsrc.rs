@@ -5,16 +5,19 @@
 use gst::glib::{self, types::StaticType};
 
 mod imp {
-    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
-    use std::sync::{Arc, LazyLock};
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc, LazyLock,
+            atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use bytes::Bytes;
     use gst::{glib, prelude::*, subclass::prelude::*};
-    use sabrump::spec::Role;
-    use sabrump::{SabrFormat, SabrSession, SabrStreamSpec, SabrTransport};
-    use tokio::task::JoinHandle;
     use parking_lot::Mutex;
+    use sabrump::{SabrFormat, SabrSession, SabrStreamSpec, SabrTransport, spec::Role};
+    use tokio::task::JoinHandle;
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
@@ -129,7 +132,10 @@ mod imp {
 
         fn set_uri(&self, uri: &str) -> Result<(), glib::Error> {
             let spec = parse_spec(uri).map_err(|msg| {
-                glib::Error::new(gst::URIError::BadUri, &format!("invalid sabrump URI: {msg}"))
+                glib::Error::new(
+                    gst::URIError::BadUri,
+                    &format!("invalid sabrump URI: {msg}"),
+                )
             })?;
 
             let client = build_reqwest_client()
@@ -315,7 +321,8 @@ mod imp {
                         gst::warning!(CAT, "missing src_%u pad template");
                         return;
                     };
-                    let ghost = match gst::GhostPad::builder_from_template_with_target(&templ, pad) {
+                    let ghost = match gst::GhostPad::builder_from_template_with_target(&templ, pad)
+                    {
                         Ok(builder) => builder.name(format!("src_{idx}")).build(),
                         Err(e) => {
                             gst::warning!(CAT, "failed to ghost pad: {e}");
@@ -389,7 +396,10 @@ mod imp {
                 let enough = branch.enough.clone();
                 let elem = self.obj().downgrade();
                 tasks.push(crate::RUNTIME.spawn(async move {
-                    feed(session, appsrc, role, alternates, running, seek_gen, enough, elem).await;
+                    feed(
+                        session, appsrc, role, alternates, running, seek_gen, enough, elem,
+                    )
+                    .await;
                 }));
             }
             state.tasks = tasks;
@@ -672,7 +682,10 @@ mod imp {
         // session to a different format among the alternates (server-side ABR),
         // after which the pump fills that format's buffer. A feeder pinned to
         // the original buffer would then wait forever.
-        let mut format = match session.active_format(role).or_else(|| alternates.first().cloned()) {
+        let mut format = match session
+            .active_format(role)
+            .or_else(|| alternates.first().cloned())
+        {
             Some(f) => f,
             None => return,
         };
@@ -729,7 +742,14 @@ mod imp {
                 if !running.load(Ordering::Acquire) || session.is_released() {
                     return;
                 }
-                if should_restart(&session, role, &format, &seek_gen, generation, last_server_gen) {
+                if should_restart(
+                    &session,
+                    role,
+                    &format,
+                    &seek_gen,
+                    generation,
+                    last_server_gen,
+                ) {
                     continue 'restart;
                 }
                 // Must wait for the init to be *complete*. It is announced (with
@@ -766,7 +786,18 @@ mod imp {
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             };
-            match await_demand(&session, role, &format, &running, &seek_gen, generation, last_server_gen, &enough).await {
+            match await_demand(
+                &session,
+                role,
+                &format,
+                &running,
+                &seek_gen,
+                generation,
+                last_server_gen,
+                &enough,
+            )
+            .await
+            {
                 Demand::Go => {}
                 Demand::Restart => continue 'restart,
                 Demand::Stop => return,
@@ -788,7 +819,14 @@ mod imp {
                 if !running.load(Ordering::Acquire) || session.is_released() {
                     return;
                 }
-                if should_restart(&session, role, &format, &seek_gen, generation, last_server_gen) {
+                if should_restart(
+                    &session,
+                    role,
+                    &format,
+                    &seek_gen,
+                    generation,
+                    last_server_gen,
+                ) {
                     continue 'restart;
                 }
 
@@ -810,7 +848,14 @@ mod imp {
                     if !running.load(Ordering::Acquire) || session.is_released() {
                         return;
                     }
-                    if should_restart(&session, role, &format, &seek_gen, generation, last_server_gen) {
+                    if should_restart(
+                        &session,
+                        role,
+                        &format,
+                        &seek_gen,
+                        generation,
+                        last_server_gen,
+                    ) {
                         continue 'restart;
                     }
                     // The pump can discard this exact segment (a truncated
@@ -828,7 +873,9 @@ mod imp {
                             continue 'media;
                         }
                     }
-                    buffer.await_bytes(&segment, segment.size(), AWAIT_TIMEOUT).await;
+                    buffer
+                        .await_bytes(&segment, segment.size(), AWAIT_TIMEOUT)
+                        .await;
                     if !segment.is_complete()
                         && let Some(err) = session.fatal_error()
                     {
@@ -837,7 +884,18 @@ mod imp {
                     }
                 }
 
-                match await_demand(&session, role, &format, &running, &seek_gen, generation, last_server_gen, &enough).await {
+                match await_demand(
+                    &session,
+                    role,
+                    &format,
+                    &running,
+                    &seek_gen,
+                    generation,
+                    last_server_gen,
+                    &enough,
+                )
+                .await
+                {
                     Demand::Go => {}
                     Demand::Restart => continue 'restart,
                     Demand::Stop => return,
@@ -880,7 +938,10 @@ mod imp {
                     && fim.end_segment_number > 0
                     && seq >= fim.end_segment_number
                 {
-                    gst::debug!(CAT, "feeder {role:?} reached end (seq={seq}); EOS, awaiting seek");
+                    gst::debug!(
+                        CAT,
+                        "feeder {role:?} reached end (seq={seq}); EOS, awaiting seek"
+                    );
                     let _ = appsrc.end_of_stream();
                     // Do NOT exit the feeder task. A seek after EOS (very common
                     // for short videos that fully buffer) must be able to
@@ -890,7 +951,14 @@ mod imp {
                         if !running.load(Ordering::Acquire) || session.is_released() {
                             return;
                         }
-                        if should_restart(&session, role, &format, &seek_gen, generation, last_server_gen) {
+                        if should_restart(
+                            &session,
+                            role,
+                            &format,
+                            &seek_gen,
+                            generation,
+                            last_server_gen,
+                        ) {
                             continue 'restart;
                         }
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -909,12 +977,8 @@ mod imp {
     fn mp4_init_prefix_length(data: &[u8]) -> usize {
         let mut pos = 0usize;
         while pos + 8 <= data.len() {
-            let size32 = u32::from_be_bytes([
-                data[pos],
-                data[pos + 1],
-                data[pos + 2],
-                data[pos + 3],
-            ]) as u64;
+            let size32 =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as u64;
             let box_size = match size32 {
                 1 => {
                     if pos + 16 > data.len() {

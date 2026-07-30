@@ -73,6 +73,25 @@ impl PlayerState {
     }
 }
 
+/// Project the player state onto the v3 wire [`PlaybackState`], which has no
+/// Buffering variant (Idle/Playing/Paused only). Progress broadcasts run only
+/// once media info exists, so a transient Buffering there is a mid-playback
+/// rebuffer or gapless switch, NOT a stop: report the transport the pipeline
+/// is resuming toward (`desired`) rather than a bogus Idle. Mapping it to Idle
+/// makes senders read "playback ended" and advance/stop the queue in the
+/// middle of a gapless handoff.
+fn project_wire_state(state: PlayerState, desired: RunningState) -> PlaybackState {
+    match state {
+        PlayerState::Stopped => PlaybackState::Idle,
+        PlayerState::Playing => PlaybackState::Playing,
+        PlayerState::Paused => PlaybackState::Paused,
+        PlayerState::Buffering => match desired {
+            RunningState::Paused => PlaybackState::Paused,
+            RunningState::Playing => PlaybackState::Playing,
+        },
+    }
+}
+
 pub type StreamId = String;
 
 /// Which stream slot a track-change request targets.
@@ -84,271 +103,10 @@ pub enum TrackKind {
 }
 
 /// A full track selection, keyed by GStreamer stream id (`None` = slot
-/// disabled). Stream ids are stable across collections of the same load,
-/// unlike stream-list indices, so the selection never needs remapping when
-/// a new collection arrives; indices exist only at the protocol/GUI edge.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TrackSelection {
-    pub video: Option<StreamId>,
-    pub audio: Option<StreamId>,
-    pub subtitle: Option<StreamId>,
-}
-
-/// What `TrackOps::pump` decided to dispatch next.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TrackOpCommand {
-    SelectStreams(TrackSelection),
-    RefreshSeek,
-}
-
-/// Pipeline conditions `TrackOps::pump` dispatches under (a snapshot taken by
-/// `Player::pump_track_ops`).
-#[derive(Debug, Clone)]
-struct TrackOpCtx {
-    /// No async state change in progress and the state machine is settled in
-    /// `Running` (not buffering/seeking/changing).
-    quiet: bool,
-    /// Settled in `Running { Paused }`: the streaming threads are parked after
-    /// preroll, so a dispatched selection won't apply (or confirm) until data
-    /// flows again.
-    paused: bool,
-    /// The selection currently applied (or optimistically in flight).
-    applied: TrackSelection,
-}
-
-/// Serialized track selection and subtitle refresh.
-///
-/// A `SELECT_STREAMS` is confirmed by a `STREAMS_SELECTED` message carrying
-/// the event's seqnum (decodebin3 stamps it), so selections settle by exact
-/// seqnum match. A refresh seek completes with a top-level `ASYNC_DONE`,
-/// which CANNOT be seqnum-matched (`GstBin` aggregates with a fresh seqnum),
-/// so the refresh settles by exclusivity: at most one async-causing
-/// operation is in flight, making the next ASYNC_DONE its completion. New
-/// work is held back until the pipeline is quiet, because overlapping
-/// re-prerolls deadlock the pipeline, the failure mode all of this prevents.
-///
-/// Requests are latest-wins: while an operation is in flight only the newest
-/// composed selection is remembered (`pending`) and dispatched at settle.
-///
-/// Paused is special (streaming threads are parked after preroll): a
-/// dispatched selection won't confirm until data flows, so a parked
-/// selection neither blocks a superseding one (no re-preroll to overlap
-/// with) nor blocks the refresh flush, which is exactly what makes data
-/// flow and the selection apply.
-///
-/// Deliberately receiver-side rather than inside fcastplaybin: it composes
-/// selections from the receiver's index-based track bookkeeping
-/// (`current_*`), which is protocol state.
-#[derive(Debug)]
-struct TrackOps {
-    /// Latest desired selection not yet dispatched.
-    pending: Option<TrackSelection>,
-    /// In-flight `SELECT_STREAMS`: the seqnum its `STREAMS_SELECTED` will
-    /// carry and the selection we asked decodebin3 to apply. Settles on an
-    /// exact seqnum match OR on a `STREAMS_SELECTED` reporting exactly this
-    /// selection (a superseded/coalesced/no-op selection confirms under a
-    /// different seqnum, so the content match keeps confirmation
-    /// deterministic). A `STREAMS_SELECTED` matching NEITHER means the
-    /// request was overtaken by a selection decodebin3 made on its own (its
-    /// collection-default auto-select racing ours), so it is re-queued for
-    /// re-dispatch. No timeout: a slow selection stays in flight until its
-    /// confirmation arrives and the pump holds new work off until then.
-    selecting: Option<(gst::Seqnum, TrackSelection)>,
-    /// Dispatches superseded before confirming (the paused supersede path).
-    /// Their late confirmations are our own stale echoes, recognized here by
-    /// seqnum or content so they neither settle the live request nor
-    /// masquerade as an overtaking foreign selection. Cleared on settle.
-    superseded: Vec<(gst::Seqnum, TrackSelection)>,
-    /// In-flight subtitle refresh seek. Settled by the next `ASYNC_DONE`
-    /// (attribution by exclusivity, see the struct docs). The seqnum only
-    /// matches the job's failure report and the logs.
-    refreshing: Option<gst::Seqnum>,
-    /// A re-emit flush is due once the pipeline settles: a sparse text track
-    /// doesn't render its current cue after a switch until the next cue
-    /// boundary, so a flushing seek to the current position re-emits it.
-    refresh_wanted: bool,
-    /// The latest request forbade its re-emit flush (an external subtitle is
-    /// attached, and any flush races the external inputs' reconfiguration
-    /// and can freeze the play item). Re-decided by every request (see
-    /// `suppress_refresh`), cleared by `reset`.
-    refresh_suppressed: bool,
-}
-
-impl TrackOps {
-    fn new() -> Self {
-        Self {
-            pending: None,
-            selecting: None,
-            superseded: Vec::new(),
-            refreshing: None,
-            refresh_wanted: false,
-            refresh_suppressed: false,
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::new();
-    }
-
-    /// A new stream collection arrived: an in-flight confirmation dispatched
-    /// against the old one may never confirm (decodebin3 is on the new
-    /// collection). Abandon those waits deterministically. This is exactly
-    /// what the (removed) selection watchdog used to do after a 5 s timeout.
-    /// The applied selection itself is stream-id-keyed and stays valid.
-    fn invalidate_in_flight(&mut self) {
-        self.selecting = None;
-        self.superseded.clear();
-        self.refreshing = None;
-    }
-
-    /// Compose a single-slot change onto the latest desired selection.
-    fn request(&mut self, kind: TrackKind, sid: Option<StreamId>, applied: TrackSelection) {
-        let mut desired = self.pending.take().unwrap_or(applied);
-        match kind {
-            TrackKind::Video => desired.video = sid,
-            TrackKind::Audio => desired.audio = sid,
-            TrackKind::Subtitle => desired.subtitle = sid,
-        }
-        // Each request re-decides whether its flush is allowed. The caller
-        // re-applies `suppress_refresh` (external suburi attached) after this
-        // call. Reset for every kind so an audio/video switch's flush is gated
-        // by the current suburi state, not a stale subtitle request's.
-        self.refresh_suppressed = false;
-        self.pending = Some(desired);
-    }
-
-    /// Forbid the re-emit flush for the subtitle selection just composed by
-    /// `request` (external suburi attached, see `refresh_suppressed`).
-    fn suppress_refresh(&mut self) {
-        self.refresh_suppressed = true;
-    }
-
-    /// Decide the next operation to dispatch, if the pipeline allows one.
-    fn pump(&mut self, ctx: &TrackOpCtx) -> Option<TrackOpCommand> {
-        if !ctx.quiet {
-            return None;
-        }
-        // A refresh flush is an async re-preroll. Never dispatch on top of it.
-        if self.refreshing.is_some() {
-            return None;
-        }
-        // An unconfirmed selection blocks new work while data flows (its
-        // playsink reconfigure may still be about to re-preroll). While paused
-        // it is merely parked: superseding it, or flushing past it, is safe --
-        // nothing is re-prerolling.
-        if self.selecting.is_some() && !ctx.paused {
-            return None;
-        }
-
-        if let Some(desired) = self.pending.take()
-            && desired != ctx.applied
-        {
-            // A flushing seek to the current position drops the
-            // deeply-buffered old track (decoded audio piled up in
-            // fpb-aqueue, video frames still carrying the old subtitle's
-            // overlay meta) so a switch takes effect immediately instead of
-            // after that buffer drains. Scheduled only for a switch TO a
-            // real audio/subtitle track, and never when:
-            //   * an external subtitle is attached (any flush races the
-            //     external inputs' reconfiguration and can freeze the item)
-            //   * any slot is being DISABLED (Some -> None): flushing across
-            //     a sink/branch teardown wedges (audio-off drops the
-            //     pipeline clock, video-off freezes the audio clock,
-            //     subtitle-off fails vaapi renegotiation) and there is no
-            //     incoming track to make immediate anyway.
-            // Video switches keep the pre-existing no-flush behaviour (rare,
-            // and a flush re-prerolls the whole video chain).
-            let switching_to_track = (desired.subtitle != ctx.applied.subtitle
-                && desired.subtitle.is_some())
-                || (desired.audio != ctx.applied.audio && desired.audio.is_some());
-            let disabling = (ctx.applied.audio.is_some() && desired.audio.is_none())
-                || (ctx.applied.video.is_some() && desired.video.is_none())
-                || (ctx.applied.subtitle.is_some() && desired.subtitle.is_none());
-            self.refresh_wanted = switching_to_track && !disabling && !self.refresh_suppressed;
-            return Some(TrackOpCommand::SelectStreams(desired));
-        }
-
-        if self.refresh_wanted {
-            self.refresh_wanted = false;
-            return Some(TrackOpCommand::RefreshSeek);
-        }
-
-        None
-    }
-
-    fn selection_dispatched(&mut self, seqnum: gst::Seqnum, desired: TrackSelection) {
-        if let Some(old) = self.selecting.replace((seqnum, desired)) {
-            self.superseded.push(old);
-        }
-    }
-
-    fn refresh_dispatched(&mut self, seqnum: gst::Seqnum) {
-        self.refreshing = Some(seqnum);
-    }
-
-    /// A `STREAMS_SELECTED` arrived reporting `applied` as the now-active
-    /// selection. Settles the in-flight selection when it is ours: by the
-    /// SELECT_STREAMS seqnum decodebin3 stamps on, or, when that seqnum was
-    /// lost to superseding/coalescing/a no-op, by the reported selection
-    /// matching what we asked for.
-    ///
-    /// Matching neither means the request was overtaken: decodebin3 applied
-    /// a selection of its own on top of ours (its collection-default
-    /// auto-select computed for a fresh collection lands AFTER a
-    /// SELECT_STREAMS sent against that collection and stomps it). Waiting
-    /// would deadlock the queue forever (there is no timeout), so re-queue
-    /// the overtaken request for re-dispatch. A newer pending request
-    /// supersedes it instead (latest wins). Converges: each re-dispatch
-    /// needs a fresh non-matching `STREAMS_SELECTED` to fire again, and
-    /// decodebin3 auto-selects at most once per collection.
-    fn streams_selected(&mut self, seqnum: gst::Seqnum, applied: &TrackSelection) {
-        let Some((expected, desired)) = self.selecting.take() else {
-            return;
-        };
-        if expected == seqnum || &desired == applied {
-            self.superseded.clear();
-            return;
-        }
-        if self
-            .superseded
-            .iter()
-            .any(|(sn, sel)| *sn == seqnum || sel == applied)
-        {
-            // A superseded dispatch's late confirmation: ours but stale, the
-            // live request's own confirmation is still en route.
-            self.selecting = Some((expected, desired));
-            return;
-        }
-        debug!(?desired, ?applied, "selection overtaken, re-dispatching");
-        if self.pending.is_none() {
-            self.pending = Some(desired);
-        }
-    }
-
-    /// A top-level `ASYNC_DONE` arrived. Returns whether it finished our
-    /// refresh seek. Attribution is by exclusivity, not seqnum: `GstBin` posts
-    /// its aggregated ASYNC_DONE with a fresh seqnum, and this queue never has
-    /// more than one async-causing operation out.
-    fn refresh_done(&mut self) -> bool {
-        self.refreshing.take().is_some()
-    }
-
-    fn refresh_failed(&mut self, seqnum: gst::Seqnum) {
-        if self.refreshing == Some(seqnum) {
-            self.refreshing = None;
-        }
-    }
-
-    /// A user-initiated flushing seek re-emits the current cue by itself, so
-    /// a separately queued refresh flush would be redundant.
-    fn cancel_refresh(&mut self) {
-        self.refresh_wanted = false;
-    }
-
-    fn has_dispatchable_work(&self) -> bool {
-        self.pending.is_some() || self.refresh_wanted
-    }
-}
+/// disabled). Re-exported from `fcastplaybin`, whose selection engine owns
+/// all dispatch/confirmation sequencing; indices exist only at the
+/// protocol/GUI edge.
+pub use fcastplaybin::TrackSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaErrorKind {
@@ -397,8 +155,8 @@ pub enum PlayerEvent {
     StreamCollection(gst::StreamCollection),
     /// An async state change or (flushing) seek finished prerolling. Not
     /// attributable to a specific operation: `GstBin` posts its aggregated
-    /// ASYNC_DONE with a fresh seqnum (`TrackOps` relies on exclusivity
-    /// instead).
+    /// ASYNC_DONE with a fresh seqnum (fcastplaybin's selection engine
+    /// relies on exclusivity instead).
     AsyncDone,
     Buffering(i32),
     IsLive,
@@ -430,15 +188,50 @@ pub enum PlayerEvent {
     ClockLost,
     Error {
         /// Which input the error came from (fcastplaybin's generation-tagged
-        /// attribution); decides external-subtitle handling vs fatal.
+        /// attribution). Never an external subtitle input: those errors are
+        /// handled inside fcastplaybin (re-arm or `ExternalSubtitleFailed`).
         origin: fcastplaybin::ErrorOrigin,
         kind: MediaErrorKind,
         message: String,
         /// Diagnostic only (the failing source's URI, when it has one).
         failed_uri: Option<String>,
     },
+    /// An attached external subtitle input failed for good and fcastplaybin
+    /// already detached it (failed attach, bus error while shown, or its
+    /// stream never materialized within the crate's watchdog). The
+    /// application drops its catalog entry and reports `ResourceNotFound`.
+    ExternalSubtitleFailed {
+        id: fcastplaybin::ExternalSubId,
+    },
     Warning(String),
     StreamTagsUpdated,
+    /// fimagedec announced what the current load decodes to: the load is an
+    /// image (still or animation) rendered through the video pipeline.
+    ImageStream(ImageStreamInfo),
+    /// A pre-armed next item ([`Player::prepare_next`]) went live: the
+    /// current item drained and the pipeline switched gaplessly. Stamped
+    /// with the PREPARED generation; the application validates it against
+    /// its pre-arm bookkeeping and adopts it
+    /// ([`Player::adopt_gapless_generation`]). The new item's collection
+    /// follows under the same generation.
+    GaplessActivated,
+    /// A pre-armed next item failed before activating; fcastplaybin already
+    /// dropped it and the current item plays on. The application clears its
+    /// pre-arm bookkeeping and the item loads through the ordinary
+    /// end-of-stream advance instead.
+    GaplessPrepareFailed {
+        generation: u64,
+    },
+}
+
+/// Parsed form of fimagedec's "fcast-image-stream" announcement.
+#[derive(Debug, Clone)]
+pub struct ImageStreamInfo {
+    /// Source format short name ("gif", "apng", "webp", ...).
+    pub format: String,
+    pub width: i32,
+    pub height: i32,
+    pub animated: bool,
 }
 
 pub fn stream_title(stream: &gst::Stream) -> String {
@@ -477,6 +270,44 @@ pub struct Stream {
     pub title: String,
 }
 
+/// Rebuild the stream list for a new collection with STABLE positions:
+/// every stream of `previous` that is still advertised keeps its index
+/// (adopting the collection's fresh `gst::Stream` object, whose tags may
+/// have changed), streams that left are dropped in place, and newcomers
+/// append in collection order. Positions are the protocol/GUI track ids,
+/// which must not shift mid-item (see `handle_stream_collection`).
+fn merge_streams_stable(previous: Vec<Stream>, collection: &gst::StreamCollection) -> Vec<Stream> {
+    let fresh: Vec<gst::Stream> = collection.iter().collect();
+    let sid_of = |s: &gst::Stream| s.stream_id().map(|id| id.to_string());
+
+    let mut merged: Vec<Stream> = Vec::with_capacity(fresh.len());
+    for old in previous {
+        let old_sid = sid_of(&old.inner);
+        if let Some(new) = fresh
+            .iter()
+            .find(|s| old_sid.is_some() && sid_of(s) == old_sid)
+        {
+            merged.push(Stream {
+                title: stream_title(new),
+                inner: new.clone(),
+            });
+        }
+    }
+    for new in &fresh {
+        let new_sid = sid_of(new);
+        let known = merged
+            .iter()
+            .any(|m| new_sid.is_some() && sid_of(&m.inner) == new_sid);
+        if !known {
+            merged.push(Stream {
+                title: stream_title(new),
+                inner: new.clone(),
+            });
+        }
+    }
+    merged
+}
+
 pub struct Player {
     /// The fcastplaybin playback orchestrator (see fcastplaybin-plan.md):
     /// the only pipeline handle. State changes, seeks, queries and events
@@ -495,6 +326,10 @@ pub struct Player {
     /// (returned by `fcastplaybin::load_async`); `None` when stopped. The
     /// application drops load-scoped events from any other generation.
     expected_generation: Option<u64>,
+    /// The generation of a pending gapless pre-arm
+    /// ([`Player::prepare_next`]), adopted as `expected_generation` when
+    /// its activation arrives.
+    pending_gapless: Option<u64>,
     pub streams: Vec<Stream>,
     /// The applied (or optimistically in-flight) selection, keyed by stream
     /// id. Never index-based: indices exist only at the protocol/GUI edge.
@@ -509,7 +344,6 @@ pub struct Player {
     /// was still in flight, applied when it arrives (see `set_volume`).
     pending_volume: Option<f32>,
     state_machine: StateMachine,
-    track_ops: TrackOps,
     stream_collection: Option<gst::StreamCollection>,
     stream_collection_notify: Option<gst::glib::SignalHandlerId>,
 }
@@ -636,12 +470,12 @@ impl Player {
             msg_tx,
             desired_transport: RunningState::Playing,
             expected_generation: None,
+            pending_gapless: None,
             selected: TrackSelection::default(),
             seekable: false,
             seekable_known: false,
             pending_volume: None,
             state_machine: StateMachine::new(),
-            track_ops: TrackOps::new(),
             stream_collection: None,
             stream_collection_notify: None,
             streams: Vec::new(),
@@ -703,6 +537,15 @@ impl Player {
                 message: error.message().to_string(),
                 failed_uri,
             },
+            E::ExternalSubtitleFailed { id } => PlayerEvent::ExternalSubtitleFailed { id },
+            E::ImageStream(s) => PlayerEvent::ImageStream(ImageStreamInfo {
+                format: s.get::<&str>("format").unwrap_or("unknown").to_string(),
+                width: s.get::<i32>("width").unwrap_or(0),
+                height: s.get::<i32>("height").unwrap_or(0),
+                animated: s.get::<bool>("animated").unwrap_or(false),
+            }),
+            E::PreparedActivated => PlayerEvent::GaplessActivated,
+            E::PreparedFailed { generation } => PlayerEvent::GaplessPrepareFailed { generation },
             E::Warning(message) => PlayerEvent::Warning(message),
         };
         msg_tx.player(event, Some(generation));
@@ -729,17 +572,17 @@ impl Player {
             },
         ));
 
-        self.streams.clear();
-
-        for stream in collection.iter() {
-            let title = stream_title(&stream);
-            let stream = Stream {
-                inner: stream,
-                title,
-            };
-
-            self.streams.push(stream);
-        }
+        // STABLE ORDER across collections of one load: a stream keeps its
+        // position for as long as it is advertised, newcomers append. The
+        // list position is the protocol/GUI track id, and decodebin3 does
+        // NOT keep collection order stable when it rebuilds the collection
+        // (an external subtitle attach can flip video/audio). Ids shifting
+        // mid-item desynchronize the senders' TracksAvailable/TracksSelected
+        // view: a TracksSelected relayed before the flip can never match a
+        // TracksAvailable advertised after it unless a further selection
+        // change happens to re-relay, which is exactly the stuck
+        // track-state settle FAST used to flake on.
+        self.streams = merge_streams_stable(std::mem::take(&mut self.streams), &collection);
 
         // The selection is stream-id-keyed, so nothing needs remapping across
         // collections: drop slots whose stream left the collection and seed
@@ -769,10 +612,11 @@ impl Player {
 
         self.stream_collection = Some(collection);
 
-        // Any SELECT_STREAMS/refresh still in flight targeted the previous
-        // collection and can never confirm now (its stream ids are gone) --
-        // abandon it deterministically rather than leaning on the watchdog.
-        self.track_ops.invalidate_in_flight();
+        // The crate's selection engine already reconciled against this
+        // collection (and abandoned unconfirmable in-flight work) when it
+        // translated the message; give it a pump now that the receiver's
+        // own bookkeeping is consistent too.
+        self.pump_selection();
     }
 
     fn first_sid_of(&self, ty: gst::StreamType) -> Option<StreamId> {
@@ -829,19 +673,65 @@ impl Player {
         self.seekable_known = false;
         self.volume_confirm_in_flight = false;
         self.expected_generation = None;
+        // A load or stop supersedes any pending pre-arm (fcastplaybin drops
+        // the prepared input in its own reset).
+        self.pending_gapless = None;
         // A volume queued behind an in-flight confirmation must not be
         // stranded by the load (volume is not item-scoped): apply it now
         // that nothing is in flight.
         if let Some(volume) = self.pending_volume.take() {
             self.set_volume(volume);
         }
-        self.track_ops.reset();
+        // Track desires reset inside fcastplaybin (they are per-item and it
+        // owns the engine): its load reset and teardown both clear them.
     }
 
     /// Whether an event stamped with `generation` belongs to the current
     /// load. Everything else is a superseded load's straggler.
     pub fn is_event_current(&self, generation: u64) -> bool {
         self.expected_generation == Some(generation)
+    }
+
+    /// Pre-arm the next item on the live pipeline for a gapless transition
+    /// (see `fcastplaybin::prepare_next_async`). Returns the generation the
+    /// item carries once it activates; the application keeps it to validate
+    /// the `GaplessActivated` event.
+    pub fn prepare_next(&mut self, source: MediaInput) -> u64 {
+        let generation = self.fcast.prepare_next_async(source);
+        self.pending_gapless = Some(generation);
+        generation
+    }
+
+    /// Drop a pending pre-armed next item (seek away from the end, queue
+    /// mutation, stop). A no-op when nothing is pending.
+    pub fn cancel_prepared(&mut self) {
+        if self.pending_gapless.take().is_some() {
+            self.fcast.cancel_prepared_async();
+        }
+    }
+
+    /// Adopt a gapless activation: events from `generation` are the current
+    /// item's from here on. Per-item view state resets like a load's
+    /// (selection re-seeds from the incoming collection, seekability is
+    /// re-queried); transport, volume, and the state machine carry over
+    /// untouched, the pipeline never left steady playback. Returns false
+    /// for an activation that does not match the pending pre-arm (stale).
+    pub fn adopt_gapless_generation(&mut self, generation: u64) -> bool {
+        if self.pending_gapless != Some(generation) {
+            return false;
+        }
+        self.pending_gapless = None;
+        self.expected_generation = Some(generation);
+        self.selected = TrackSelection::default();
+        self.seekable = false;
+        self.seekable_known = false;
+        true
+    }
+
+    /// Clear the pre-arm bookkeeping without touching the pipeline (the
+    /// prepare already failed or was consumed elsewhere).
+    pub fn clear_pending_gapless(&mut self) {
+        self.pending_gapless = None;
     }
 
     /// Load a new main source (the crate resets to READY and wires it into
@@ -890,7 +780,7 @@ impl Player {
         if self.seekable || !self.seekable_known {
             // A user seek is itself a flushing seek and re-emits the current
             // subtitle cue, a separately queued refresh flush is redundant.
-            self.track_ops.cancel_refresh();
+            self.fcast.cancel_selection_refresh();
             if let Some(seek) = self.state_machine.seek_internal(seek, None) {
                 self.fcast.seek_async(seek);
             }
@@ -910,57 +800,54 @@ impl Player {
         self.selected.clone()
     }
 
-    /// Handle a track-change request (latest-wins, serialized against other
-    /// track operations, see `TrackOps`). Returns whether the currently
+    /// Handle a track-change request. Sequencing (latest-wins composition,
+    /// serialization against in-flight work, confirmation, re-assertion
+    /// when decodebin3's auto-select stomps it, the switch's re-emit flush
+    /// and its hazards) all lives in fcastplaybin's selection engine; this
+    /// only states the desire and pumps. Returns whether the currently
     /// displayed subtitle cue became stale. The caller should clear the
     /// overlay so the change registers visually, even while paused.
     pub fn request_track_change(&mut self, kind: TrackKind, sid: Option<StreamId>) -> bool {
-        self.request_track_change_impl(kind, sid, false)
-    }
-
-    /// Like `request_track_change`, but never schedules the switch flush.
-    /// For loads with an external subtitle attached: any flush races the
-    /// external inputs' reconfiguration and can freeze the play item, so the
-    /// new track takes effect at its next cue/buffer boundary instead.
-    pub fn request_track_change_no_refresh(
-        &mut self,
-        kind: TrackKind,
-        sid: Option<StreamId>,
-    ) -> bool {
-        self.request_track_change_impl(kind, sid, true)
-    }
-
-    fn request_track_change_impl(
-        &mut self,
-        kind: TrackKind,
-        sid: Option<StreamId>,
-        suppress_refresh: bool,
-    ) -> bool {
         let applied = self.applied_track_selection();
         let stale_cue =
             kind == TrackKind::Subtitle && applied.subtitle.is_some() && sid != applied.subtitle;
-        // The re-emit flush is safe to issue immediately for every subtitle
-        // kind, bitmap included: fcastplaybin's subtitle branch splices in
-        // without the playsink-era video-chain-rebuild deadlock (validated
-        // by stressing the bitmap switch), so no timing defer is needed.
-        self.track_ops.request(kind, sid, applied);
-        if suppress_refresh {
-            self.track_ops.suppress_refresh();
-        }
-        self.pump_track_ops();
+        let slot = match kind {
+            TrackKind::Video => fcastplaybin::TrackSlot::Video,
+            TrackKind::Audio => fcastplaybin::TrackSlot::Audio,
+            TrackKind::Subtitle => fcastplaybin::TrackSlot::Subtitle,
+        };
+        self.fcast
+            .request_track(slot, fcastplaybin::TrackTarget::Stream(sid));
+        self.pump_selection();
         stale_cue
+    }
+
+    /// Ask for an attached external subtitle input's stream, before or
+    /// after it materializes in a collection: the engine parks the desire
+    /// until the stream is advertised, then selects it and re-asserts it
+    /// against decodebin3's collection-default auto-select. Replaces the
+    /// application's parked-desire enforcement.
+    pub fn request_external_subtitle(&mut self, handle: fcastplaybin::ExternalSubId) {
+        self.fcast.request_track(
+            fcastplaybin::TrackSlot::Subtitle,
+            fcastplaybin::TrackTarget::ExternalSubtitle(handle),
+        );
+        self.pump_selection();
     }
 
     /// Dispatch pending track work now that the pipeline may have settled.
     /// Called from the state-change handler (a re-preroll finishing is what
     /// unblocks work parked behind it). The pump is otherwise driven event-
     /// driven: a new request, `streams_selected`, `async_done`, buffering
-    /// completion, and refresh failure, no periodic poll.
+    /// completion, collection changes and refresh failure, no periodic
+    /// poll.
     pub fn poll_track_ops(&mut self) {
-        self.pump_track_ops();
+        self.pump_selection();
     }
 
-    fn track_op_ctx(&self) -> TrackOpCtx {
+    /// Let the selection engine act, under the transport gate only this
+    /// side knows (see `fcastplaybin::SelectionGate`).
+    fn pump_selection(&mut self) {
         // Ask the pipeline whether an async state change (re-preroll, seek
         // preroll) is in progress instead of predicting from the kind of
         // change, mispredictions are what used to wedge this logic.
@@ -969,53 +856,11 @@ impl Player {
             Some(state) => (true, state == RunningState::Paused),
             None => (false, false),
         };
-        TrackOpCtx {
+        self.fcast.pump_selection(fcastplaybin::SelectionGate {
             quiet: running && !async_busy,
             paused,
-            applied: self.applied_track_selection(),
-        }
-    }
-
-    fn pump_track_ops(&mut self) {
-        while self.track_ops.has_dispatchable_work() {
-            let ctx = self.track_op_ctx();
-            let Some(cmd) = self.track_ops.pump(&ctx) else {
-                break;
-            };
-            match cmd {
-                TrackOpCommand::SelectStreams(sel) => {
-                    let seqnum = gst::Seqnum::next();
-                    match self.select_streams(sel, seqnum) {
-                        Ok(true) => {
-                            // `select_streams` set `current_*` to exactly what
-                            // it sent (after the video-less-subtitle
-                            // adjustment), so this is the selection whose
-                            // `STREAMS_SELECTED` we wait for, by seqnum or by
-                            // content.
-                            let desired = self.applied_track_selection();
-                            self.track_ops.selection_dispatched(seqnum, desired);
-                        }
-                        // Nothing was sent, so there is no completion to wait
-                        // for. A refresh scheduled for this switch must not
-                        // fire as an orphan flush either.
-                        Ok(false) => self.track_ops.cancel_refresh(),
-                        Err(err) => {
-                            error!(?err, "Failed to apply track selection");
-                            self.track_ops.cancel_refresh();
-                        }
-                    }
-                }
-                TrackOpCommand::RefreshSeek => {
-                    if !self.seekable {
-                        debug!("Skipping subtitle refresh: stream is not seekable");
-                        continue;
-                    }
-                    let seqnum = gst::Seqnum::next();
-                    self.track_ops.refresh_dispatched(seqnum);
-                    self.fcast.refresh_seek_async(seqnum);
-                }
-            }
-        }
+            seekable: self.seekable,
+        });
     }
 
     /// A top-level `ASYNC_DONE`: the pipeline has re-prerolled and settled.
@@ -1026,18 +871,16 @@ impl Player {
         // pipeline wasn't settled), link it now that we're steady so the
         // re-emit's cue actually composites onto the frozen frame.
         self.fcast.poll_text_policy();
-        // Settle any in-flight refresh seek. The flushing seek re-prerolls
-        // while paused, so every sink has its composited preroll frame before
-        // this ASYNC_DONE fires, a single flush deterministically renders the
-        // new cue, no retry needed.
-        self.track_ops.refresh_done();
-        self.pump_track_ops();
+        // The in-flight refresh seek, if any, was settled by the crate when
+        // it translated this ASYNC_DONE; dispatch whatever was parked
+        // behind it.
+        self.pump_selection();
     }
 
-    /// The refresh seek job could not perform its seek.
-    pub fn subtitle_refresh_failed(&mut self, seqnum: gst::Seqnum) {
-        self.track_ops.refresh_failed(seqnum);
-        self.pump_track_ops();
+    /// The refresh seek job could not perform its seek (already recorded by
+    /// the crate; this is the pump trigger).
+    pub fn subtitle_refresh_failed(&mut self, _seqnum: gst::Seqnum) {
+        self.pump_selection();
     }
 
     pub fn is_seeking(&self) -> bool {
@@ -1209,56 +1052,6 @@ impl Player {
         }
 
         did_change
-    }
-
-    /// Send a `SELECT_STREAMS` for the given selection, stamped with `seqnum`
-    /// so the confirming `STREAMS_SELECTED` message can be attributed to it.
-    /// Returns whether an event was actually sent.
-    fn select_streams(
-        &mut self,
-        mut selection: TrackSelection,
-        seqnum: gst::Seqnum,
-    ) -> Result<bool> {
-        // A text stream cannot be presented without a video stream, so a
-        // selection without video must never carry a subtitle stream.
-        // Deselecting video therefore implicitly deselects subtitles, and
-        // the relayed `TracksSelected` reports that to the senders.
-        if selection.video.is_none() && selection.subtitle.is_some() {
-            debug!("Dropping the subtitle stream from a selection without video");
-            selection.subtitle = None;
-        }
-
-        // Only ids the current collection actually advertises (a stale sid
-        // in the event would confuse decodebin3's selection).
-        let ids: Vec<&str> = [&selection.video, &selection.audio, &selection.subtitle]
-            .into_iter()
-            .filter_map(|sid| sid.as_deref())
-            .filter(|sid| Self::find_stream_idx(sid, &self.streams).is_some())
-            .collect();
-
-        // An empty selection would trip a GStreamer assertion
-        // (`gst_event_new_select_streams: streams != NULL`) and leave the
-        // pipeline in an undefined state, so refuse to send one.
-        if ids.is_empty() {
-            debug!("Refusing to send an empty stream selection");
-            return Ok(false);
-        }
-
-        // Straight to decodebin3, no detour through the sinks.
-        if let Err(err) = self.fcast.select_streams(&ids, Some(seqnum)) {
-            warn!(?err, "fcastplaybin refused the stream selection");
-            return Ok(false);
-        }
-
-        // Track the requested selection right away instead of waiting for
-        // `StreamsSelected`: a second track change arriving before the first
-        // one is confirmed must compose with it, not revert it (each change
-        // rebuilds the full selection from the applied one).
-        // `streams_selected` overwrites this with whatever the pipeline
-        // actually applied.
-        self.selected = selection;
-
-        Ok(true)
     }
 
     /// The index of the stream with this GStreamer stream id, if advertised.
@@ -1441,7 +1234,7 @@ impl Player {
 
         // Buffering completion can settle the pipeline, dispatch queued track
         // work (no-op while still buffering: the machine is not `Running`).
-        self.pump_track_ops();
+        self.pump_selection();
 
         res
     }
@@ -1451,8 +1244,12 @@ impl Player {
     /// playbin's worker thread (the source's `start()` blocks). The stream
     /// becomes selectable once decodebin3 announces the updated collection
     /// (always a later collection, mapped back with
-    /// `external_stream_sid_of`). An attach that fails never produces one,
-    /// which the caller's watchdog turns into `ResourceNotFound`.
+    /// `external_stream_sid_of`). fcastplaybin babysits the input from
+    /// here: deselect-race deaths re-arm internally under the same id, and
+    /// a genuine failure (failed attach, error while shown, or no stream
+    /// within its watchdog) comes back as
+    /// `PlayerEvent::ExternalSubtitleFailed` with the input already
+    /// detached.
     pub fn attach_external_subtitle(&mut self, url: &str) -> fcastplaybin::ExternalSubId {
         let id = self.fcast.allocate_subtitle_id();
         self.fcast.attach_subtitle_async(id, url.to_string());
@@ -1466,12 +1263,11 @@ impl Player {
         self.fcast.detach_subtitle_async(id);
     }
 
-    /// fcast backend: the GStreamer stream id of an attached external
-    /// subtitle input, once its stream has appeared in the advertised
-    /// collection. The id is URI-derived and therefore STABLE across
-    /// replacements of the input (see the application's re-arm logic), so
-    /// callers should remember it rather than re-query the (replaceable)
-    /// handle.
+    /// The GStreamer stream id of an attached external subtitle input, once
+    /// its stream has appeared in the advertised collection. The id is
+    /// URI-derived and therefore STABLE across fcastplaybin's internal
+    /// re-arms of the input, so callers should remember it rather than
+    /// re-query.
     pub fn external_stream_sid_of(&self, id: fcastplaybin::ExternalSubId) -> Option<String> {
         let sids = self.fcast.subtitle_stream_ids(id);
         let sid = sids
@@ -1554,27 +1350,24 @@ impl Player {
         self.fcast.poll_text_policy();
 
         // Adopt what the pipeline reports as applied, verbatim (stream ids
-        // need no index mapping).
+        // need no index mapping). The engine's confirmation/overtake logic
+        // already ran when the crate translated this message; this mirror
+        // only serves the protocol/GUI reads.
         self.selected = TrackSelection {
             video: video_sid.map(str::to_string),
             audio: audio_sid.map(str::to_string),
             subtitle: subtitle_sid.map(str::to_string),
         };
 
-        // Settle the in-flight selection: by the seqnum decodebin3 stamped, or
-        // by the reported selection matching what we dispatched (a superseded /
-        // coalesced / no-op selection confirms under a different seqnum).
-        self.track_ops.streams_selected(seqnum, &self.selected);
-
         // Dispatch the next queued operation now that this one confirmed. A
         // plain switch (subtitle, or an audio/video switch between already-
         // decoded streams) applies with no re-preroll and so posts no further
         // bus message, this is the event that advances the queue for it. If
-        // the switch DID trigger a re-preroll, `pump`'s quiet gate (it
+        // the switch DID trigger a re-preroll, the pump's quiet gate (it
         // queries the pipeline's async state) holds the next op back until
         // the ASYNC_DONE/state-change handler pumps again, so this never
         // dispatches into a re-preroll.
-        self.pump_track_ops();
+        self.pump_selection();
 
         self.selected.clone()
     }
@@ -1591,6 +1384,14 @@ impl Player {
             // transition.
             None => PlayerState::Buffering,
         }
+    }
+
+    /// The player state projected onto the v3 wire enum (Idle/Playing/Paused,
+    /// no Buffering variant), for progress broadcasts. See
+    /// [`project_wire_state`] for why a transient Buffering must not become
+    /// Idle.
+    pub fn wire_playback_state(&self) -> PlaybackState {
+        project_wire_state(self.player_state(), self.desired_transport)
     }
 
     pub fn is_live(&self) -> bool {
@@ -1632,6 +1433,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn buffering_projects_onto_the_resuming_transport_not_idle() {
+        // Regression: a gapless switch / rebuffer briefly leaves the state
+        // machine in a transient (running() == None -> Buffering). The v3
+        // wire enum has no Buffering, and the old mapping collapsed it to
+        // Idle, broadcasting "playback ended" mid-handoff (senders then
+        // advanced or stopped the queue). Buffering must project onto the
+        // transport being resumed instead.
+        assert_eq!(
+            project_wire_state(PlayerState::Buffering, RunningState::Playing),
+            PlaybackState::Playing,
+        );
+        assert_eq!(
+            project_wire_state(PlayerState::Buffering, RunningState::Paused),
+            PlaybackState::Paused,
+        );
+        // Steady states pass straight through; a genuine stop is still Idle.
+        assert_eq!(
+            project_wire_state(PlayerState::Playing, RunningState::Playing),
+            PlaybackState::Playing,
+        );
+        assert_eq!(
+            project_wire_state(PlayerState::Paused, RunningState::Paused),
+            PlaybackState::Paused,
+        );
+        assert_eq!(
+            project_wire_state(PlayerState::Stopped, RunningState::Playing),
+            PlaybackState::Idle,
+        );
+    }
+
+    #[test]
     fn missing_plugin_ignorable_only_for_metadata_streams() {
         crate::gstreamer::init_for_tests();
         // gst_missing_decoder_message_new requires a non-null src element.
@@ -1653,582 +1485,49 @@ mod tests {
         assert!(!missing_plugin_is_ignorable(&msg));
     }
 
-    // --- TrackOps -----------------------------------------------------------
+    fn stream(sid: &str, ty: gst::StreamType) -> gst::Stream {
+        gst::Stream::new(Some(sid), None, ty, gst::StreamFlags::empty())
+    }
 
-    fn sel(video: Option<&str>, audio: Option<&str>, subtitle: Option<&str>) -> TrackSelection {
-        TrackSelection {
-            video: video.map(str::to_string),
-            audio: audio.map(str::to_string),
-            subtitle: subtitle.map(str::to_string),
+    fn collection(streams: &[gst::Stream]) -> gst::StreamCollection {
+        let mut builder = gst::StreamCollection::builder(None);
+        for s in streams {
+            builder = builder.stream(s.clone());
         }
+        builder.build()
     }
 
-    fn ctx(quiet: bool, paused: bool, applied: &TrackSelection) -> TrackOpCtx {
-        TrackOpCtx {
-            quiet,
-            paused,
-            applied: applied.clone(),
-        }
-    }
-
-    #[test]
-    fn selection_dispatches_immediately_when_quiet() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(TrackKind::Audio, Some("st2".to_string()), applied.clone());
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st2"),
-                None
-            )))
-        );
+    fn sids(streams: &[Stream]) -> Vec<String> {
+        streams
+            .iter()
+            .filter_map(|s| s.inner.stream_id().map(|id| id.to_string()))
+            .collect()
     }
 
     #[test]
-    fn selection_waits_until_quiet() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(TrackKind::Audio, Some("st2".to_string()), applied.clone());
-        assert_eq!(ops.pump(&ctx(false, false, &applied)), None);
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st2"),
-                None
-            )))
-        );
-    }
+    fn stream_positions_stay_stable_across_collections() {
+        crate::gstreamer::init_for_tests();
+        let audio = stream("a0", gst::StreamType::AUDIO);
+        let video = stream("v0", gst::StreamType::VIDEO);
+        let text = stream("t0", gst::StreamType::TEXT);
 
-    #[test]
-    fn noop_selection_is_not_dispatched() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-        assert!(!ops.has_dispatchable_work());
-    }
+        // Initial collection: [audio, video].
+        let first = merge_streams_stable(Vec::new(), &collection(&[audio.clone(), video.clone()]));
+        assert_eq!(sids(&first), ["a0", "v0"]);
 
-    #[test]
-    fn playing_switch_serializes_and_coalesces_latest_wins() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st3".to_string()),
-            applied.clone(),
+        // decodebin3 rebuilds the collection in a DIFFERENT order and with a
+        // new text stream (an external subtitle attach). Positions of the
+        // known streams must not move (they are the advertised track ids);
+        // the newcomer appends.
+        let second = merge_streams_stable(
+            first,
+            &collection(&[video.clone(), audio.clone(), text.clone()]),
         );
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st3")
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st3")));
-        // `select_streams` records the new selection optimistically.
-        let applied = sel(Some("st0"), Some("st1"), Some("st3"));
+        assert_eq!(sids(&second), ["a0", "v0", "t0"]);
 
-        // Unconfirmed selection blocks everything while playing, including
-        // the refresh the subtitle switch scheduled.
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-
-        // Spammed changes only remember the latest.
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st4".to_string()),
-            applied.clone(),
-        );
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-
-        // A foreign STREAMS_SELECTED (decodebin3 selecting on its own)
-        // matching ours neither by seqnum nor by content means ours was
-        // overtaken: the wait ends and the queued latest dispatches against
-        // the adopted selection instead of parking forever.
-        let adopted = sel(Some("st0"), Some("st1"), Some("st9"));
-        ops.streams_selected(gst::Seqnum::next(), &adopted);
-        assert_eq!(
-            ops.pump(&ctx(true, false, &adopted)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st2")
-            )))
-        );
-    }
-
-    #[test]
-    fn selection_confirms_by_content_when_seqnum_is_lost() {
-        // decodebin3 can post the confirming STREAMS_SELECTED under a seqnum
-        // that isn't the one we stamped (a superseded/coalesced/no-op request
-        // folds into another event). As long as the reported selection matches
-        // what we dispatched, it settles, no watchdog needed.
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert!(ops.pump(&ctx(true, false, &applied)).is_some());
-        ops.selection_dispatched(
-            gst::Seqnum::next(),
-            sel(Some("st0"), Some("st1"), Some("st2")),
-        );
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-
-        // A confirmation under a *foreign* seqnum, but reporting exactly our
-        // requested selection, settles it.
-        ops.streams_selected(gst::Seqnum::next(), &applied);
-        assert!(ops.selecting.is_none());
-    }
-
-    #[test]
-    fn overtaken_selection_is_redispatched() {
-        // The external_sub_add_unselected stress failure: attaching an
-        // external subtitle with select=false posts a new collection, the
-        // post-attach enforcement dispatches a no-subtitle selection against
-        // it, and decodebin3's own collection-default auto-select (fresh
-        // text stream included) lands after ours and stomps it. That
-        // overtaking STREAMS_SELECTED must re-dispatch the enforcement
-        // instead of waiting forever on a confirmation that never comes.
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("v0"), Some("a0"), Some("ext0"));
-        ops.request(TrackKind::Subtitle, None, applied.clone());
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("v0"),
-                Some("a0"),
-                None
-            )))
-        );
-        ops.selection_dispatched(gst::Seqnum::next(), sel(Some("v0"), Some("a0"), None));
-
-        // decodebin3's own auto-select arrives instead of our confirmation:
-        // foreign seqnum, foreign content.
-        let adopted = sel(Some("v0"), Some("a0"), Some("ext0"));
-        ops.streams_selected(gst::Seqnum::next(), &adopted);
-
-        // The overtaken request re-dispatches with a fresh seqnum.
-        assert_eq!(
-            ops.pump(&ctx(true, false, &adopted)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("v0"),
-                Some("a0"),
-                None
-            )))
-        );
-        ops.selection_dispatched(gst::Seqnum::next(), sel(Some("v0"), Some("a0"), None));
-
-        // This time it applies (content match settles under any seqnum) and
-        // the queue drains.
-        ops.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), None));
-        assert!(ops.selecting.is_none());
-        assert!(!ops.has_dispatchable_work());
-    }
-
-    #[test]
-    fn overtaken_selection_yields_to_a_newer_request() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("v0"), Some("a0"), None);
-        ops.request(TrackKind::Subtitle, Some("s1".to_string()), applied.clone());
-        assert!(ops.pump(&ctx(true, false, &applied)).is_some());
-        ops.selection_dispatched(gst::Seqnum::next(), sel(Some("v0"), Some("a0"), Some("s1")));
-
-        // A newer request lands while the first is unconfirmed.
-        let optimistic = sel(Some("v0"), Some("a0"), Some("s1"));
-        ops.request(
-            TrackKind::Subtitle,
-            Some("s2".to_string()),
-            optimistic.clone(),
-        );
-
-        // The overtaking event must not resurrect the old request over it.
-        let adopted = sel(Some("v0"), Some("a0"), Some("s0"));
-        ops.streams_selected(gst::Seqnum::next(), &adopted);
-        assert_eq!(
-            ops.pump(&ctx(true, false, &adopted)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("v0"),
-                Some("a0"),
-                Some("s2")
-            )))
-        );
-    }
-
-    #[test]
-    fn refresh_dispatches_after_selection_settles_and_pipeline_quiets() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        // Enabling a subtitle schedules a refresh.
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st2")
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st2")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-
-        ops.streams_selected(sn, &applied);
-        // Re-preroll in progress: refresh must hold.
-        assert_eq!(ops.pump(&ctx(false, false, &applied)), None);
-        // Settled: flush.
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::RefreshSeek)
-        );
-        // One flush only.
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-    }
-
-    #[test]
-    fn audio_switch_schedules_refresh() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        // An audio switch must flush the deeply-buffered old track so it's
-        // audible immediately.
-        ops.request(TrackKind::Audio, Some("st2".to_string()), applied.clone());
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st2"),
-                None
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st2"), None));
-        let applied = sel(Some("st0"), Some("st2"), None);
-        ops.streams_selected(sn, &applied);
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::RefreshSeek)
-        );
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-    }
-
-    #[test]
-    fn suppressed_audio_switch_schedules_no_refresh() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        // External suburi attached: any flush can freeze the item, so the app
-        // suppresses it for A/V switches too.
-        ops.request(TrackKind::Audio, Some("st2".to_string()), applied.clone());
-        ops.suppress_refresh();
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st2"),
-                None
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st2"), None));
-        let applied = sel(Some("st0"), Some("st2"), None);
-        ops.streams_selected(sn, &applied);
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-    }
-
-    #[test]
-    fn audio_switch_with_subtitle_disable_schedules_no_refresh() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        // Switching audio while also disabling subtitles: the subtitle-disable
-        // flush hazard wins, so no flush (accept the audio drain in this combo).
-        ops.request(TrackKind::Audio, Some("st3".to_string()), applied.clone());
-        ops.request(TrackKind::Subtitle, None, applied.clone());
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st3"),
-                None
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st3"), None));
-        let applied = sel(Some("st0"), Some("st3"), None);
-        ops.streams_selected(sn, &applied);
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-    }
-
-    #[test]
-    fn subtitle_disable_cancels_refresh() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st2")
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st2")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        ops.streams_selected(sn, &applied);
-
-        // Disable before the refresh fired: no flush may follow (flushing
-        // right after the text-branch teardown breaks renegotiation).
-        ops.request(TrackKind::Subtitle, None, applied.clone());
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                None
-            )))
-        );
-        let sn2 = gst::Seqnum::next();
-        ops.selection_dispatched(sn2, sel(Some("st0"), Some("st1"), None));
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.streams_selected(sn2, &applied);
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-    }
-
-    #[test]
-    fn suppressed_subtitle_switch_schedules_no_refresh() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        // External suburi attached: the app forbids the re-emit flush.
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        ops.suppress_refresh();
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st2")
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st2")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        ops.streams_selected(sn, &applied);
-        // No flush may follow the confirmed selection, and nothing stays
-        // queued or in flight.
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-        assert!(!ops.has_dispatchable_work());
-        assert!(ops.selecting.is_none());
-        assert!(ops.refreshing.is_none());
-    }
-
-    #[test]
-    fn each_subtitle_request_redecides_refresh_suppression() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        // A suppressed request parks (pipeline busy)...
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        ops.suppress_refresh();
-        assert_eq!(ops.pump(&ctx(false, false, &applied)), None);
-        // ...and is superseded by a plain one: its flush is allowed again.
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st3".to_string()),
-            applied.clone(),
-        );
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st3")
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st3")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st3"));
-        ops.streams_selected(sn, &applied);
-        assert_eq!(
-            ops.pump(&ctx(true, false, &applied)),
-            Some(TrackOpCommand::RefreshSeek)
-        );
-    }
-
-    #[test]
-    fn user_seek_cancels_refresh() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert!(ops.pump(&ctx(true, false, &applied)).is_some());
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st2")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        ops.streams_selected(sn, &applied);
-
-        // The user's own flushing seek re-emits the cue already.
-        ops.cancel_refresh();
-        assert_eq!(ops.pump(&ctx(true, false, &applied)), None);
-    }
-
-    #[test]
-    fn paused_selection_parks_and_refresh_flushes_past_it() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert_eq!(
-            ops.pump(&ctx(true, true, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                Some("st2")
-            )))
-        );
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st2")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-
-        // While paused the selection is parked (no STREAMS_SELECTED until data
-        // flows), the refresh must dispatch anyway, it is what wakes the
-        // pipeline and makes the selection apply.
-        assert_eq!(
-            ops.pump(&ctx(true, true, &applied)),
-            Some(TrackOpCommand::RefreshSeek)
-        );
-        let rn = gst::Seqnum::next();
-        ops.refresh_dispatched(rn);
-
-        // Flush in flight: nothing else dispatches even though paused.
-        ops.request(TrackKind::Audio, Some("st3".to_string()), applied.clone());
-        assert_eq!(ops.pump(&ctx(false, true, &applied)), None);
-    }
-
-    #[test]
-    fn paused_selection_can_be_superseded() {
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(TrackKind::Audio, Some("st2".to_string()), applied.clone());
-        assert!(ops.pump(&ctx(true, true, &applied)).is_some());
-        let sn1 = gst::Seqnum::next();
-        ops.selection_dispatched(sn1, sel(Some("st0"), Some("st2"), None));
-        let applied = sel(Some("st0"), Some("st2"), None);
-
-        // A parked selection has no re-preroll to overlap with, the next
-        // request replaces it instead of queueing behind it forever.
-        ops.request(TrackKind::Audio, Some("st1".to_string()), applied.clone());
-        assert_eq!(
-            ops.pump(&ctx(true, true, &applied)),
-            Some(TrackOpCommand::SelectStreams(sel(
-                Some("st0"),
-                Some("st1"),
-                None
-            )))
-        );
-        let sn2 = gst::Seqnum::next();
-        ops.selection_dispatched(sn2, sel(Some("st0"), Some("st1"), None));
-
-        // The stale confirmation (sn1, reporting the superseded audio=2) must
-        // settle neither by its seqnum nor by content.
-        ops.streams_selected(sn1, &applied);
-        assert!(ops.selecting.is_some());
-        // The superseding one settles on its own seqnum.
-        ops.streams_selected(sn2, &sel(Some("st0"), Some("st1"), None));
-        assert!(ops.selecting.is_none());
-    }
-
-    #[test]
-    fn paused_switch_refreshes_exactly_once() {
-        // A paused subtitle switch dispatches the selection, then a single
-        // re-emit flush once it confirms. The flushing seek re-prerolls, so the
-        // cue composites before ASYNC_DONE, one flush is enough, no retry.
-        let mut ops = TrackOps::new();
-        let applied = sel(Some("st0"), Some("st1"), None);
-        ops.request(
-            TrackKind::Subtitle,
-            Some("st2".to_string()),
-            applied.clone(),
-        );
-        assert!(ops.pump(&ctx(true, true, &applied)).is_some());
-        let sn = gst::Seqnum::next();
-        ops.selection_dispatched(sn, sel(Some("st0"), Some("st1"), Some("st2")));
-        let applied = sel(Some("st0"), Some("st1"), Some("st2"));
-        assert_eq!(
-            ops.pump(&ctx(true, true, &applied)),
-            Some(TrackOpCommand::RefreshSeek)
-        );
-        ops.refresh_dispatched(gst::Seqnum::next());
-
-        // The selection confirms and the flush completes, nothing is re-queued.
-        ops.streams_selected(sn, &applied);
-        assert!(ops.refresh_done());
-        assert_eq!(ops.pump(&ctx(true, true, &applied)), None);
-        assert!(!ops.has_dispatchable_work());
-    }
-
-    #[test]
-    fn async_done_settles_refresh_by_exclusivity() {
-        let mut ops = TrackOps::new();
-        // No refresh out: an unrelated ASYNC_DONE is not a refresh completion.
-        assert!(!ops.refresh_done());
-        // GstBin's aggregated ASYNC_DONE carries a fresh seqnum, so the next
-        // one settles the in-flight refresh regardless of seqnums.
-        ops.refresh_dispatched(gst::Seqnum::next());
-        assert!(ops.refresh_done());
-        assert!(ops.refreshing.is_none());
-    }
-
-    #[test]
-    fn new_collection_invalidates_in_flight_selection() {
-        // A reload posts a new stream collection, the in-flight selection
-        // targeted the old one (its stream ids are gone) so it can never
-        // confirm. `invalidate_in_flight` abandons it deterministically, the
-        // job the removed watchdog used to do on a timeout.
-        let mut ops = TrackOps::new();
-        ops.selection_dispatched(
-            gst::Seqnum::next(),
-            sel(Some("st0"), Some("st1"), Some("st2")),
-        );
-        ops.refresh_dispatched(gst::Seqnum::next());
-        assert!(ops.selecting.is_some());
-
-        ops.invalidate_in_flight();
-        assert!(ops.selecting.is_none());
-        assert!(ops.refreshing.is_none());
+        // A stream leaving (external detached) drops in place; the rest
+        // keep their positions.
+        let third = merge_streams_stable(second, &collection(&[video, audio]));
+        assert_eq!(sids(&third), ["a0", "v0"]);
     }
 }

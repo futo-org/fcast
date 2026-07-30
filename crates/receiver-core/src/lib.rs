@@ -40,6 +40,10 @@ mod gcast;
 mod gstreamer;
 mod gui;
 mod image;
+mod imagedec;
+mod imagetypefind;
+#[cfg(target_os = "linux")]
+mod vajpegdec;
 mod inspector_graph;
 #[cfg(target_os = "macos")]
 mod iosurface;
@@ -54,6 +58,7 @@ pub mod placebo;
 mod player;
 #[cfg(target_os = "linux")]
 mod pwaudiosink;
+mod queue_cache;
 mod raop;
 mod render_latency;
 mod sabrumpsrc;

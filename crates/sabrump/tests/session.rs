@@ -3,12 +3,14 @@
 use std::time::{Duration, Instant};
 
 use prost::Message;
-use sabrump::proto::{
-    ByteRange, FormatId, FormatInitializationMetadata, LiveMetadata, MediaHeader, MediaType,
-    NextRequestPolicy, SabrSeek, VideoPlaybackAbrRequest,
+use sabrump::{
+    PartType, SabrFormat, SabrSession, SabrStreamSpec, SabrTransport,
+    proto::{
+        ByteRange, FormatId, FormatInitializationMetadata, LiveMetadata, MediaHeader, MediaType,
+        NextRequestPolicy, SabrSeek, VideoPlaybackAbrRequest,
+    },
+    spec::Role,
 };
-use sabrump::spec::Role;
-use sabrump::{PartType, SabrFormat, SabrSession, SabrStreamSpec, SabrTransport};
 
 const ITAG: i32 = 137;
 const LMT: u64 = 1_700_000_000;
@@ -210,16 +212,50 @@ fn build_audio_response(exact: bool) -> Vec<u8> {
 
     let dur = if exact { 1000 } else { 0 };
     emit_segment(&mut out, AUDIO_ITAG, AUDIO_LMT, 1, 0, true, 0, 0, b"AINIT");
-    emit_segment(&mut out, AUDIO_ITAG, AUDIO_LMT, 2, 0, false, 0, dur, b"AUDIO-SEG0");
-    emit_segment(&mut out, AUDIO_ITAG, AUDIO_LMT, 3, 1, false, 1000, dur, b"AUDIO-SEG1");
-    emit_segment(&mut out, AUDIO_ITAG, AUDIO_LMT, 4, 2, false, 2000, dur, b"AUDIO-SEG2");
+    emit_segment(
+        &mut out,
+        AUDIO_ITAG,
+        AUDIO_LMT,
+        2,
+        0,
+        false,
+        0,
+        dur,
+        b"AUDIO-SEG0",
+    );
+    emit_segment(
+        &mut out,
+        AUDIO_ITAG,
+        AUDIO_LMT,
+        3,
+        1,
+        false,
+        1000,
+        dur,
+        b"AUDIO-SEG1",
+    );
+    emit_segment(
+        &mut out,
+        AUDIO_ITAG,
+        AUDIO_LMT,
+        4,
+        2,
+        false,
+        2000,
+        dur,
+        b"AUDIO-SEG2",
+    );
 
     let policy = NextRequestPolicy {
         target_audio_readahead_ms: 10_000,
         playback_cookie: b"cookie".to_vec(),
         ..Default::default()
     };
-    ump_part(&mut out, PartType::NextRequestPolicy, &policy.encode_to_vec());
+    ump_part(
+        &mut out,
+        PartType::NextRequestPolicy,
+        &policy.encode_to_vec(),
+    );
 
     out
 }
@@ -390,7 +426,10 @@ async fn pumps_an_audio_only_stream_into_buffers() {
     assert_eq!(req.preferred_audio_format_ids.len(), 1);
     assert_eq!(req.preferred_audio_format_ids[0].itag, AUDIO_ITAG);
     assert_eq!(
-        req.client_abr_state.as_ref().unwrap().enabled_track_types_bitfield,
+        req.client_abr_state
+            .as_ref()
+            .unwrap()
+            .enabled_track_types_bitfield,
         MediaType::Audio as i32
     );
 
@@ -437,14 +476,34 @@ async fn live_keepalive_seek_does_not_clear_buffer() {
     // processed rather than dropped by a mid-response epoch bump.
     let mut r1 = Vec::new();
     live_metadata_part(&mut r1);
-    emit_segment(&mut r1, ITAG, LMT, 1, 100, false, 1000, 5000, b"LIVE-SEG100");
+    emit_segment(
+        &mut r1,
+        ITAG,
+        LMT,
+        1,
+        100,
+        false,
+        1000,
+        5000,
+        b"LIVE-SEG100",
+    );
 
     let mut r2 = Vec::new();
     live_metadata_part(&mut r2);
     // Seek to 1.0s, exactly segment 100's start, i.e. a keep-alive to where we
     // already are / already have buffered.
     sabr_seek_part(&mut r2, 1000, 1000);
-    emit_segment(&mut r2, ITAG, LMT, 2, 101, false, 6000, 5000, b"LIVE-SEG101");
+    emit_segment(
+        &mut r2,
+        ITAG,
+        LMT,
+        2,
+        101,
+        false,
+        6000,
+        5000,
+        b"LIVE-SEG101",
+    );
 
     let (transport, _requests) = SabrTransport::canned(vec![r1, r2]);
     let session = SabrSession::new(live_spec(), transport);

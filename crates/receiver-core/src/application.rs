@@ -42,7 +42,7 @@ use crate::{
     media_source,
     message::{Mdns, Message, Raop, ReceiverToFCastSender},
     player::{self, PlayerState},
-    raop,
+    queue_cache, raop,
     utils::{current_time_millis, map_to_header_map},
 };
 #[cfg(not(target_os = "android"))]
@@ -163,6 +163,20 @@ impl QueueItem {
 struct QueueState {
     items: Vec<QueueItem>,
     current_idx: u8,
+    /// The spec'd Queue.autoplay flag: the receiver advances to the next
+    /// item by itself when the current one finishes.
+    autoplay: bool,
+}
+
+/// A gapless pre-arm in flight: the next autoplay queue item is prepared on
+/// the live pipeline (`Player::prepare_next`) and activates at the current
+/// item's drain with no teardown, preroll, or pipeline EOS in between.
+struct GaplessPrearm {
+    /// The generation the prepared item adopts at activation (validates the
+    /// GaplessActivated event).
+    generation: u64,
+    /// The queue index the receiver advances to at activation.
+    next_index: usize,
 }
 
 fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
@@ -269,40 +283,18 @@ struct ExternalSubtitle {
     url: String,
     name: Option<SmolStr>,
     requested_by: PacketOrigin,
-    /// fcast backend only: the live input attached for this entry (every
-    /// catalog external is attached simultaneously there, selection is pure
-    /// SELECT_STREAMS). `None` on the playbin3 backend, where only the
-    /// active entry is realized, as the suburi. The handle is REPLACED when
-    /// the input is re-armed (see `fail_or_rearm`).
-    handle: Option<fcastplaybin::ExternalSubId>,
-    /// fcast backend only: the entry's GStreamer stream id, learned when its
-    /// stream first materializes in a collection. URI-derived, so it stays
-    /// valid across input replacements. All id/index mapping goes through
-    /// this, never through the live handle.
+    /// The live input attached for this entry (every catalog external is
+    /// attached simultaneously, selection is pure SELECT_STREAMS). The id
+    /// is stable for the entry's whole life: fcastplaybin re-arms a dead
+    /// deselected input internally under the same id, and a genuine
+    /// failure comes back as `PlayerEvent::ExternalSubtitleFailed`, which
+    /// removes the entry.
+    handle: fcastplaybin::ExternalSubId,
+    /// The entry's GStreamer stream id, learned when its stream first
+    /// materializes in a collection. URI-derived, so it stays valid across
+    /// fcastplaybin's internal input replacements. All id/index mapping
+    /// goes through this, never through the live handle.
     stream_sid: Option<String>,
-    /// fcast backend only: when this entry's input was last (re-)attached.
-    /// debounces the error-triggered re-arm (an input can post several
-    /// errors while dying).
-    attached_at: Instant,
-}
-
-/// fcast backend: the subtitle end-state to enforce once a just-attached
-/// external's stream materializes in a collection. decodebin3 re-runs its
-/// default selection for the new collection and may auto-select the fresh
-/// text stream, so even "attach but don't show" needs an explicit
-/// correction, and select-on-add needs its explicit selection anyway.
-struct FcastSubDesire {
-    /// The catalog external whose stream is being waited for.
-    ext_id: u32,
-    target: FcastSubTarget,
-}
-
-enum FcastSubTarget {
-    /// Select the awaited external itself.
-    TheExternal,
-    /// Keep what was showing before the attach: an embedded stream id
-    /// (stable within a load), or `None` for no subtitle.
-    Restore(Option<String>),
 }
 
 /// An `AddSubtitleSource` that arrived after the media was loaded but before the pipeline could
@@ -331,9 +323,6 @@ struct MediaSourceState {
     pending_thumbnail_download: Option<image::ImageDownloadId>,
     /// The external subtitle catalog for the current item.
     external_subtitles: Vec<ExternalSubtitle>,
-    /// Enforcement parked until an attached external's stream materializes
-    /// (see `FcastSubDesire`). Latest attach/selection wins.
-    fcast_sub_desire: Option<FcastSubDesire>,
     /// Monotonic id source for `ExternalSubtitle::id` within this item.
     next_external_id: u32,
 }
@@ -347,7 +336,6 @@ impl MediaSourceState {
             pending_thumbnail: None,
             pending_thumbnail_download: None,
             external_subtitles: Vec::new(),
-            fcast_sub_desire: None,
             next_external_id: 0,
         }
     }
@@ -356,7 +344,6 @@ impl MediaSourceState {
     /// advancing so a stale id from the previous item can never alias a new one.
     fn clear_external_subtitles(&mut self) {
         self.external_subtitles.clear();
-        self.fcast_sub_desire = None;
     }
 }
 
@@ -404,6 +391,11 @@ pub struct Application {
     load_watchdog_epoch: u64,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
+    /// True while the current load is an image routed through the player
+    /// pipeline (fimagedec) rather than the legacy in-GUI image downloader.
+    /// Progress traffic is suppressed for these loads and the image view is
+    /// painted transparent so the video sink shows through.
+    image_via_player: bool,
     have_audio_track_cover: bool,
     current_media: Option<MediaSourceState>,
     have_media_info: bool,
@@ -433,6 +425,22 @@ pub struct Application {
     window_fullscreen_before_playing: Option<bool>,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
+    /// Prefetched bytes for the queue items around the current index, so
+    /// selecting a neighbor serves from memory (see `queue_cache`).
+    queue_cache: queue_cache::Cache,
+    queue_prefetcher: queue_cache::Prefetcher,
+    /// A gapless pre-arm in flight (see [`GaplessPrearm`]). Armed from the
+    /// progress tick near the current item's end, consumed by
+    /// GaplessActivated, cancelled by seeks, speed changes, queue
+    /// mutations, and anything that replaces playback.
+    gapless_prearm: Option<GaplessPrearm>,
+    /// The media item id whose pre-arm FAILED: no re-arm for the same item
+    /// (each progress tick would otherwise retry into the same failure).
+    /// The ordinary end-of-stream advance owns that transition instead.
+    gapless_blocked_item: Option<MediaItemId>,
+    /// Kill switch: FCAST_NO_GAPLESS=1 turns the pre-arm off and every
+    /// autoplay advance goes through the ordinary EOS-then-load path.
+    gapless_enabled: bool,
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     companion_ctx: CompanionContext,
@@ -636,6 +644,11 @@ impl Application {
         let http_client = reqwest::Client::new();
         let image_downloader =
             image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
+        let queue_prefetcher = queue_cache::Prefetcher::new(
+            msg_tx.clone(),
+            http_client.clone(),
+            companion_ctx.clone(),
+        );
 
         let receiver_info = Arc::new(crate::ReceiverInfo {
             device_info: fcast_protocol::v4::DeviceInfo {
@@ -672,6 +685,7 @@ impl Application {
             gui_seek_hold: None,
             load_watchdog_epoch: 0,
             current_image_id: 0,
+            image_via_player: false,
             have_audio_track_cover: false,
             current_media: None,
             have_media_info: false,
@@ -701,6 +715,11 @@ impl Application {
             window_fullscreen_before_playing: None,
             image_downloader,
             image_decoder,
+            queue_cache: queue_cache::Cache::new(),
+            queue_prefetcher,
+            gapless_prearm: None,
+            gapless_blocked_item: None,
+            gapless_enabled: !std::env::var("FCAST_NO_GAPLESS").is_ok_and(|v| v == "1"),
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
                 inhibit_screensaver::Options {
                     app_reverse_domain: "org.fcast.receiver".to_owned(),
@@ -864,6 +883,11 @@ impl Application {
     }
 
     fn send_v4_progress_updates(&mut self) {
+        // A pipeline image has no meaningful progress, so send nothing (see
+        // `notify_updates`).
+        if self.image_via_player {
+            return;
+        }
         if self.fcast_senders.is_empty() {
             return;
         }
@@ -939,6 +963,13 @@ impl Application {
     }
 
     fn notify_updates(&mut self, force: bool) -> Result<()> {
+        // A pipeline image loops forever and has no meaningful position or
+        // duration, so it produces no progress traffic (matching the legacy
+        // in-GUI image path). Other broadcasts (playback state and so on) are
+        // unaffected.
+        if self.image_via_player {
+            return Ok(());
+        }
         if !self.player.have_media_info() || self.player.is_seeking() {
             return Ok(());
         }
@@ -989,11 +1020,11 @@ impl Application {
                 generation_time: current_time_millis(),
                 time: Some(position),
                 duration: Some(duration),
-                state: match playback_state {
-                    GuiPlaybackState::Idle | GuiPlaybackState::Loading => PlaybackState::Idle,
-                    GuiPlaybackState::Playing => PlaybackState::Playing,
-                    GuiPlaybackState::Paused => PlaybackState::Paused,
-                },
+                // NOT derived from the GUI Loading state, which collapses a
+                // mid-playback Buffering into Idle: that reads as "playback
+                // ended" on the wire and makes senders advance the queue
+                // during a gapless handoff (see `project_wire_state`).
+                state: self.player.wire_playback_state(),
                 speed: Some(playback_rate),
                 item_index: None,
             };
@@ -1016,6 +1047,11 @@ impl Application {
         preserve_playlist: PreservePlaylist,
     ) {
         self.current_duration = None;
+        // Playback is being replaced: any pending gapless pre-arm targets
+        // media that is going away (the player's load reset drops the
+        // prepared input; this clears the bookkeeping).
+        self.gapless_prearm = None;
+        self.player.clear_pending_gapless();
         // Parked subtitle adds and seeks target the media that is going
         // away. (The player's own per-load state, the text-restore dance,
         // held seeks, parked deselects, is reset by `Player::stop` below.)
@@ -1028,6 +1064,9 @@ impl Application {
         self.have_media_info = false;
         self.have_media_title = false;
         self.last_position_updated = -1.0;
+        // The next load re-arms this if it is another pipeline image.
+        self.image_via_player = false;
+        self.gui.set_image_via_player(false);
         self.player.stop();
         self.is_loading_media = false;
         if let Some(current_media) = self.current_media.as_mut() {
@@ -1140,7 +1179,27 @@ impl Application {
                     self.broadcast_update(ReceiverToSenderMessage::Event { msg });
                 }
             }
-            MediaSource::Queue(_) => (),
+            MediaSource::Queue(queue) => {
+                // The spec'd playback_duration: when it elapses the item is
+                // "finished", which is what autoplay advances on. Images and
+                // animations never post EOS (fimagedec parks stills and loops
+                // animations), so a photo slideshow only ever advances through
+                // this timer. Items without a duration keep playing until EOS
+                // (or, for images, until a sender selects something else).
+                if queue.autoplay
+                    && let Some(show_duration) = queue
+                        .items
+                        .get(queue.current_idx as usize)
+                        .and_then(|item| item.show_duration)
+                {
+                    let msg_tx = self.msg_tx.clone();
+                    let id = self.current_media_item_id;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
+                        msg_tx.send(Message::MediaItemFinish(id));
+                    });
+                }
+            }
             MediaSource::Raop | MediaSource::AirPlayMirror { .. } => (),
         }
     }
@@ -1154,6 +1213,7 @@ impl Application {
 
         self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
         self.current_media = None;
+        self.queue_cache.clear();
 
         if self.should_broadcast() {
             let update = v3::PlaybackUpdateMessage {
@@ -1205,8 +1265,12 @@ impl Application {
             });
         }
 
-        // Special case for when there's a google cast sender connected
-        if self.updates_tx.receiver_count() == 0 {
+        // Special case for when there's a google cast sender connected.
+        // An autoplay queue with a next item is exempt: the receiver-side
+        // advance (`maybe_autoplay_advance`, which runs after this in the
+        // EOS path) must keep working after the last sender disconnects,
+        // that is the fire-and-forget use case autoplay exists for.
+        if self.updates_tx.receiver_count() == 0 && self.autoplay_next_index().is_none() {
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
             self.current_media = None;
         }
@@ -1230,6 +1294,27 @@ impl Application {
                 self.send_error(origin, load_media_error_kind(&err));
             }
         }
+        self.sync_queue_cache();
+    }
+
+    /// Cached prefetch entry usable for this load. Consulted only for
+    /// queue-sourced loads of cacheable containers: a Single load of a url
+    /// lingering in the cache must not serve possibly stale bytes, and
+    /// adaptive-streaming manifests (HLS, DASH) must never play from memory
+    /// (their demuxers need the upstream URI context for relative fragment
+    /// references and playlist reloads, which the in-memory source cannot
+    /// answer; see `queue_cache::cacheable_container`).
+    fn queue_cache_entry(&self, url: &str, container: &str) -> Option<queue_cache::CachedItem> {
+        if !matches!(
+            self.current_media.as_ref().map(|m| &m.source),
+            Some(MediaSource::Queue(_))
+        ) {
+            return None;
+        }
+        if !queue_cache::cacheable_container(container) {
+            return None;
+        }
+        self.queue_cache.get(url)
     }
 
     /// Build the source for a load: constructed directly with typed config,
@@ -1248,7 +1333,33 @@ impl Application {
                 Some(chan) => media_source::build_fwebrtc_source(chan),
                 None => Err(anyhow::anyhow!("fwebrtc load without a signalling channel")),
             },
-            _ => media_source::build_uri_source(&url, headers),
+            _ => match self.queue_cache_entry(&url, container) {
+                Some(item) if item.complete => {
+                    debug!(
+                        url,
+                        len = item.bytes.len(),
+                        "Serving the load from the queue prefetch cache"
+                    );
+                    media_source::build_bytes_source(item.bytes)
+                }
+                Some(item) => {
+                    debug!(
+                        url,
+                        len = item.bytes.len(),
+                        total = item.total,
+                        "Starting the load from a prefetched head"
+                    );
+                    media_source::build_uri_source_with_head(
+                        &url,
+                        headers,
+                        Some(media_source::PreloadedHead {
+                            bytes: item.bytes,
+                            total: item.total,
+                        }),
+                    )
+                }
+                None => media_source::build_uri_source(&url, headers),
+            },
         };
         match built {
             Ok(element) => player::MediaInput::Element(element),
@@ -1350,6 +1461,14 @@ impl Application {
             is_for_sure_live = true;
         }
 
+        // Image containers decoded by fimagedec inside the normal player
+        // pipeline (animations loop forever and never post EOS, stills hold
+        // their frame). JPEG rides this path too, via the private
+        // image/x-fcast-jpeg caps so it never disturbs MJPEG video (see
+        // `imagedec::player_mime_types`). Only an unrecognized image mime,
+        // which fimagedec cannot decode, stays on the legacy in-GUI path.
+        let pipeline_image = crate::imagedec::player_mime_types().contains(&container.as_str());
+
         let player_variant = if container.starts_with("image/") {
             UiPlayerVariant::Image
         } else if container.starts_with("audio/")
@@ -1367,10 +1486,16 @@ impl Application {
         };
 
         match player_variant {
-            UiPlayerVariant::Image => {
+            // Legacy still images keep the previous frame up (ContinueToPlay::Yes)
+            // while the next one downloads. A pipeline image reloads the player
+            // like any other media, so it tears down the previous playback.
+            UiPlayerVariant::Image if !pipeline_image => {
                 self.cleanup_playback_data(ContinueToPlay::Yes, PreservePlaylist::Yes)
             }
-            UiPlayerVariant::Unknown | UiPlayerVariant::Audio | UiPlayerVariant::Video => {
+            UiPlayerVariant::Image
+            | UiPlayerVariant::Unknown
+            | UiPlayerVariant::Audio
+            | UiPlayerVariant::Video => {
                 self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)
             }
             UiPlayerVariant::Raop => (),
@@ -1404,13 +1529,43 @@ impl Application {
                 .queue_download(this_id, thumbnail_url, headers.clone());
         }
 
+        // A pipeline image follows the media load branch below (it is decoded
+        // by fimagedec in the player), so track it so progress traffic is
+        // suppressed and the image view is painted transparent.
+        self.image_via_player = pipeline_image;
+        self.gui.set_image_via_player(pipeline_image);
+
         let mut is_image = false;
-        if container.starts_with("image/") {
-            self.current_image_download_id += 1;
-            let id = self.current_image_download_id;
+        if container.starts_with("image/") && !pipeline_image {
             is_image = true;
-            self.image_downloader
-                .queue_download(id, url.clone(), headers.clone());
+            if let Some(item) = self
+                .queue_cache_entry(&url, &container)
+                .filter(|item| item.complete)
+            {
+                // A prefetched queue photo: decode straight from the cached
+                // bytes instead of re-downloading (mirrors the DownloadResult
+                // success arm of handle_image_event). Only complete entries
+                // decode, a partial head is not a decodable image.
+                debug!(
+                    url,
+                    len = item.bytes.len(),
+                    "Decoding image from the queue prefetch cache"
+                );
+                self.current_image_id += 1;
+                let id = self.current_image_id;
+                self.image_decoder.queue_job(
+                    id,
+                    image::ImageDecodeJob::new_no_format(
+                        item.bytes,
+                        image::ImageDecodeJobType::Regular,
+                    ),
+                );
+            } else {
+                self.current_image_download_id += 1;
+                let id = self.current_image_download_id;
+                self.image_downloader
+                    .queue_download(id, url.clone(), headers.clone());
+            }
         } else {
             // External subtitles are LIVE inputs (attach/detach), never a
             // suburi ridden along a load, so every media load restores
@@ -1458,7 +1613,8 @@ impl Application {
 
         // DIAGNOSTIC (load-stall investigation): a pipeline load should reach a
         // steady PAUSED quickly, if this one has not by the timeout, dump why
-        // (`Player::log_load_stall_diagnostics`). Images bypass the pipeline.
+        // (`Player::log_load_stall_diagnostics`). Legacy images bypass the
+        // pipeline (pipeline images go through it and are covered).
         if !is_image {
             self.load_watchdog_epoch += 1;
             let epoch = self.load_watchdog_epoch;
@@ -1521,6 +1677,12 @@ impl Application {
             return Ok(());
         };
 
+        // A pipeline image exposes a raw video stream (fimagedec output), but
+        // the UI stays on the Image variant so the image view is shown.
+        if self.image_via_player {
+            return Ok(());
+        }
+
         debug!("Video stream available");
 
         self.gui.set_player_type(UiPlayerVariant::Video);
@@ -1534,6 +1696,10 @@ impl Application {
             return;
         };
 
+        if self.image_via_player {
+            return;
+        }
+
         debug!("Video stream unavailable");
 
         self.gui.set_player_type(UiPlayerVariant::Audio);
@@ -1546,6 +1712,7 @@ impl Application {
             self.gui.set_app_state(AppState::Idle);
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
             self.current_media = None;
+            self.queue_cache.clear();
             self.screensaver_inhibitor.un_inhibit();
         }
     }
@@ -1576,6 +1743,9 @@ impl Application {
         debug!(?index, "Selecting queue item");
         queue.current_idx = index;
 
+        // An explicit selection replaces any pending gapless pre-arm.
+        self.cancel_gapless_prearm();
+
         // External subtitles are per-item, don't carry them over to the next.
         if let Some(media) = self.current_media.as_mut() {
             media.clear_external_subtitles();
@@ -1589,6 +1759,226 @@ impl Application {
                 fcast_protocol::v4::MessageBuilder::new().queue_select(position),
             );
         }
+    }
+
+    /// The spec'd Queue.autoplay behavior: when the current item of an
+    /// autoplay queue finishes, the receiver advances to the next item by
+    /// itself instead of waiting for a sender's QueueItemSelected round-trip
+    /// (with the prefetched head already resident, the next item starts
+    /// immediately). Senders are told through a broadcast QueueItemSelected
+    /// so their UIs follow. Runs from the EOS handler, after the Ended
+    /// broadcast.
+    /// The index the receiver should advance to by itself: only meaningful
+    /// for an autoplay queue whose current item has a successor. Also gates
+    /// the `media_ended` teardown, so an unattended autoplay queue is not
+    /// wiped between items.
+    fn autoplay_next_index(&self) -> Option<usize> {
+        let media = self.current_media.as_ref()?;
+        let MediaSource::Queue(queue) = &media.source else {
+            return None;
+        };
+        if !queue.autoplay {
+            return None;
+        }
+        let next = queue.current_idx as usize + 1;
+        (next < queue.items.len()).then_some(next)
+    }
+
+    fn maybe_autoplay_advance(&mut self) {
+        let Some(origin) = self.current_media.as_ref().map(|m| m.origin) else {
+            return;
+        };
+        let Some(next) = self.autoplay_next_index() else {
+            return;
+        };
+
+        info!(next, "Autoplay: advancing to the next queue item");
+        self.play_queue_item(origin, v4::QueuePosition::Index(next as u8), false);
+
+        // Receiver-initiated: every sender hears about the selection.
+        if self.should_broadcast() {
+            self.broadcast_update(ReceiverToSenderMessage::V4(fcast::V4Message::Broadcast {
+                serialized_msg: fcast_protocol::v4::MessageBuilder::new()
+                    .queue_select(v4::QueuePosition::Index(next as u8)),
+            }));
+        }
+    }
+
+    /// Time before the current item's end at which the next autoplay item
+    /// is pre-armed on the live pipeline. The bound that matters: the
+    /// pipeline's audio queue holds up to 30s of DECODED audio, so an audio
+    /// stream's end-of-stream passes decodebin3's outputs ~30s before the
+    /// item audibly ends, and the pre-arm must beat it there or the handoff
+    /// is missed (for an audio-only item the escaped EOS ends the pipeline
+    /// between the items, every time). Also comfortably past the next
+    /// item's parse time, and early enough that short clips pre-arm on
+    /// their first progress tick.
+    const GAPLESS_PREARM_MARGIN: gst::ClockTime = gst::ClockTime::from_seconds(40);
+
+    /// Whether a queue item can be the target of a gapless pre-arm: plain
+    /// progressive A/V only. Per-item start/speed/volume overrides need a
+    /// real load (they apply in PAUSED), images never post EOS (fimagedec
+    /// parks stills and loops animations), adaptive and live containers
+    /// cannot ride a prepared input.
+    fn gapless_eligible(item: &QueueItem) -> bool {
+        item.time.is_none()
+            && item.speed.is_none()
+            && item.volume.is_none()
+            && !item.content_type.starts_with("image/")
+            && queue_cache::cacheable_container(&item.content_type)
+    }
+
+    /// Pre-arm the next autoplay queue item near the current item's end
+    /// (runs from the progress tick): build its source (cache-aware, same
+    /// path a load takes) and hand it to the player, which links it into
+    /// the live pipeline and switches at the drain. The advance itself is
+    /// handled by the GaplessActivated event.
+    fn maybe_prearm_gapless(&mut self) {
+        if !self.gapless_enabled || self.gapless_prearm.is_some() {
+            return;
+        }
+        if self.gapless_blocked_item == Some(self.current_media_item_id) {
+            return;
+        }
+        if self.image_via_player || self.is_loading_media || !self.have_media_info {
+            return;
+        }
+        // External subtitles are side inputs on the live core; a swap would
+        // carry them into the next item's collections (fcastplaybin refuses
+        // such a prepare too). Those items advance through the ordinary
+        // end-of-stream load.
+        if self
+            .current_media
+            .as_ref()
+            .is_some_and(|m| !m.external_subtitles.is_empty())
+        {
+            return;
+        }
+        let Some(next) = self.autoplay_next_index() else {
+            return;
+        };
+        let (current_show_duration, next_item) = {
+            let Some(MediaSource::Queue(queue)) = self.current_media.as_ref().map(|m| &m.source)
+            else {
+                return;
+            };
+            let Some(current) = queue.items.get(queue.current_idx as usize) else {
+                return;
+            };
+            let Some(next_item) = queue.items.get(next) else {
+                return;
+            };
+            (current.show_duration, next_item.clone())
+        };
+        // A playback_duration item advances through its timer with a normal
+        // load cutting the media mid-stream; a pre-arm would fight it.
+        if current_show_duration.is_some() {
+            return;
+        }
+        if !Self::gapless_eligible(&next_item) {
+            return;
+        }
+        // Only near the end of a finite item.
+        let Some(position) = self.player.get_position() else {
+            return;
+        };
+        let Some(duration) = self.current_duration.filter(|d| !d.is_zero()) else {
+            return;
+        };
+        if position + Self::GAPLESS_PREARM_MARGIN < duration {
+            return;
+        }
+
+        info!(next, "Gapless: pre-arming the next queue item");
+        let input = self.build_gapless_source(
+            &next_item.content_type,
+            next_item.url.clone(),
+            next_item.headers.clone(),
+        );
+        let generation = self.player.prepare_next(input);
+        self.gapless_prearm = Some(GaplessPrearm {
+            generation,
+            next_index: next,
+        });
+    }
+
+    /// Like [`build_media_source`](Self::build_media_source) but for a
+    /// gapless pre-arm: a fully cached item still goes through urisourcebin
+    /// with its bytes injected as a preloaded head covering the WHOLE
+    /// resource, instead of the bare appsrc bytes source. A prepared
+    /// input's pads sit unlinked-and-blocked until the swap, the topology
+    /// uridecodebin3's own gapless uses, which the urisourcebin path
+    /// handles and the appsrc bytes source does not (its chain dies
+    /// not-negotiated against the blocked pads). The head covers the full
+    /// resource, so playback still never touches the network.
+    fn build_gapless_source(
+        &mut self,
+        container: &str,
+        url: String,
+        headers: Option<HashMap<String, String>>,
+    ) -> player::MediaInput {
+        let head =
+            self.queue_cache_entry(&url, container)
+                .map(|item| media_source::PreloadedHead {
+                    bytes: item.bytes,
+                    total: item.total,
+                });
+        match media_source::build_uri_source_with_head(&url, headers, head) {
+            Ok(element) => player::MediaInput::Element(element),
+            Err(err) => {
+                error!(
+                    ?err,
+                    container, "Failed to build the gapless source element"
+                );
+                player::MediaInput::Uri(url)
+            }
+        }
+    }
+
+    /// Drop a pending gapless pre-arm (seek, speed change, queue mutation,
+    /// anything that invalidates "the current item plays to its end and the
+    /// next one follows"). A no-op when nothing is pre-armed.
+    fn cancel_gapless_prearm(&mut self) {
+        if self.gapless_prearm.take().is_some() {
+            debug!("Cancelling the gapless pre-arm");
+            self.player.cancel_prepared();
+        }
+    }
+
+    /// Reconcile the prefetch cache with the current queue window. Runs after
+    /// every queue mutation (select, insert, remove, initial queue load).
+    fn sync_queue_cache(&mut self) {
+        let (desired, retain) = match self.current_media.as_ref().map(|m| &m.source) {
+            Some(MediaSource::Queue(queue)) => {
+                let desired =
+                    queue_cache::window_indices(queue.items.len(), queue.current_idx as usize)
+                        .into_iter()
+                        .filter_map(|idx| queue.items.get(idx))
+                        // Adaptive manifests (HLS, DASH) must stream live and a
+                        // cached head would be useless anyway: never prefetch them.
+                        .filter(|item| queue_cache::cacheable_container(&item.content_type))
+                        .map(|item| queue_cache::PrefetchSpec {
+                            url: item.url.clone(),
+                            headers: item.headers.clone(),
+                        })
+                        .collect();
+                // The current item is retained but never fetched: its bytes
+                // are already playing, but flipping back to a neighbor and
+                // returning must not re-download it.
+                let retain = queue
+                    .items
+                    .get(queue.current_idx as usize)
+                    .map(|item| item.url.clone())
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                (desired, retain)
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+        let prefetcher = &self.queue_prefetcher;
+        self.queue_cache.sync(desired, &retain, |spec, epoch| {
+            prefetcher.fetch(spec, epoch)
+        });
     }
 
     #[tracing::instrument(skip_all)]
@@ -1623,13 +2013,17 @@ impl Application {
 
         queue.items.remove(idx);
 
+        // Indices shifted (and the pre-armed item itself may be gone).
+        self.cancel_gapless_prearm();
+
         self.relay_to_other_senders(
             origin,
             fcast_protocol::v4::MessageBuilder::new().queue_remove(position),
         );
+
+        self.sync_queue_cache();
     }
 
-    // TODO: caching
     #[tracing::instrument(skip_all)]
     fn insert_queue_item(&mut self, origin: PacketOrigin, insert: fcast::QueueInsertCell) {
         let Some(queue) = self.queue_mut() else {
@@ -1678,11 +2072,16 @@ impl Application {
             .items
             .insert(idx, QueueItem::from_flat(&insert.item()));
 
+        // Indices shifted; the pre-armed item may no longer be the next.
+        self.cancel_gapless_prearm();
+
         if let Some(relay_msg) =
             fcast_protocol::v4::MessageBuilder::new().from_queue_insert_stripped(insert)
         {
             self.relay_to_other_senders(origin, relay_msg);
         }
+
+        self.sync_queue_cache();
     }
 
     fn pause(&mut self) {
@@ -1737,6 +2136,16 @@ impl Application {
                             return;
                         };
                         let items = queue.items();
+                        // The spec caps a queue at 2^8 items (every queue
+                        // position on the wire is a ubyte). Reject oversized
+                        // queues outright: indices past 255 are unaddressable
+                        // and the u8 bookkeeping (e.g. the autoplay advance)
+                        // would wrap back to item 0.
+                        if items.len() > u8::MAX as usize + 1 {
+                            error!(len = items.len(), "Queue exceeds the spec's 256 item cap");
+                            self.send_error(origin, ErrorKind::MalformedBody);
+                            return;
+                        }
                         let mut queue_items = Vec::new();
                         for item in items {
                             queue_items.push(QueueItem::from_flat(&item));
@@ -1747,6 +2156,7 @@ impl Application {
                             MediaSource::Queue(QueueState {
                                 items: queue_items,
                                 current_idx: idx,
+                                autoplay: queue.autoplay(),
                             }),
                         ));
                         self.play_queue_item(origin, v4::QueuePosition::Index(idx), false);
@@ -1803,6 +2213,9 @@ impl Application {
             }
             Operation::Seek(time) => {
                 if self.is_playing() {
+                    // Seeking away from the end invalidates "plays to its
+                    // end, next item follows".
+                    self.cancel_gapless_prearm();
                     if !self.player.seekable_known {
                         // Tracks are advertised well before the pipeline can answer the seekability
                         // query, in that window the duration for the range check is unknown too,
@@ -1842,6 +2255,9 @@ impl Application {
                     debug!(rate, "Speed unchanged; re-emitting the confirmation");
                     self.broadcast_rate(rate)?;
                 } else {
+                    // The rate change is a flushing seek; the pre-arm's
+                    // drain assumptions no longer hold.
+                    self.cancel_gapless_prearm();
                     self.player.set_rate(rate);
                 }
             }
@@ -2103,11 +2519,6 @@ impl Application {
     /// query to resolve before it is rejected with `InvalidState`.
     const PENDING_SUBTITLE_ADD_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// fcast backend: how long an attached external subtitle input may take
-    /// to produce its stream before it is failed with `ResourceNotFound`
-    /// (matches the playbin3 dance's `EXTERNAL_SUB_TIMEOUT`).
-    const FCAST_EXTERNAL_SUB_TIMEOUT: Duration = Duration::from_secs(5);
-
     /// Handle `AddSubtitleSource`. If the media is loaded but the pipeline
     /// hasn't answered the seekability query yet (tracks are advertised off
     /// the first stream collection, well before the query can succeed at
@@ -2144,6 +2555,13 @@ impl Application {
             self.send_error(origin, ErrorKind::InvalidState);
             return Ok(false);
         }
+        // A gapless swap does not carry external subtitles across items (it
+        // would leak this item's sub into the next item's collections), so
+        // an external subtitle on the current item makes it ineligible. A
+        // pre-arm already in flight when the subtitle is added must be
+        // dropped; the item then advances through the ordinary
+        // end-of-stream load.
+        self.cancel_gapless_prearm();
         if !self.player.seekable {
             if !self.player.seekable_known {
                 // Not unseekable, just not answerable yet. Park the op.
@@ -2175,6 +2593,9 @@ impl Application {
         // no reload in either direction. The virtual track is advertised
         // immediately, the desired end state is enforced once the stream
         // materializes in a collection (see `pump_fcast_sub_desire`).
+        // fcastplaybin babysits the input itself (materialization watchdog,
+        // deselect-race re-arm); a genuine failure arrives as
+        // `PlayerEvent::ExternalSubtitleFailed`.
         let handle = self.player.attach_external_subtitle(&url);
         let Some(media) = self.current_media.as_mut() else {
             self.player.detach_external_subtitle(handle);
@@ -2188,19 +2609,23 @@ impl Application {
             url,
             name,
             requested_by: origin,
-            handle: Some(handle),
+            handle,
             stream_sid: None,
-            attached_at: Instant::now(),
         });
-        let target = if select {
-            FcastSubTarget::TheExternal
+        if select {
+            // The engine parks the desire until the input's stream
+            // materializes, then selects it and re-asserts it against
+            // decodebin3's collection-default auto-select.
+            self.player.request_external_subtitle(handle);
         } else {
-            // Keep what is showing now, decodebin3 may auto-select the
-            // fresh text stream for the new collection otherwise.
-            FcastSubTarget::Restore(self.player.current_subtitle_sid().map(str::to_string))
-        };
-        media.fcast_sub_desire = Some(FcastSubDesire { ext_id: id, target });
-        self.arm_external_sub_watchdog(id);
+            // Pin what is showing NOW as the explicit desire (the old
+            // Restore enforcement, declaratively): decodebin3 may
+            // auto-select the fresh text stream for the new collection,
+            // and a never-requested (unset) desire would simply adopt
+            // that, showing a subtitle nobody asked for.
+            let current = self.player.current_subtitle_sid().map(str::to_string);
+            self.apply_track_change(player::TrackKind::Subtitle, current);
+        }
 
         debug!(id, select, "Attached external subtitle input (live)");
         self.update_tracks(true);
@@ -2334,28 +2759,28 @@ impl Application {
 
         match target {
             SubtitleTarget::External(ext_id) => {
-                // Attached but its stream hasn't materialized yet: park it as
-                // the desired end state, the collection pump applies it and the
-                // eventual selection confirm relays the TracksSelected the
-                // sender is waiting for.
-                debug!(
-                    ext_id,
-                    "Parking the external selection until its stream appears"
-                );
-                if let Some(media) = self.current_media.as_mut() {
-                    media.fcast_sub_desire = Some(FcastSubDesire {
-                        ext_id,
-                        target: FcastSubTarget::TheExternal,
-                    });
+                // Attached but its stream hasn't materialized yet: the
+                // engine parks the desire and applies it when the stream
+                // appears; the eventual selection confirm relays the
+                // TracksSelected the sender is waiting for. Latest-wins
+                // composition in the engine replaces the old parked-desire
+                // supersede bookkeeping.
+                let handle = self
+                    .current_media
+                    .as_ref()
+                    .and_then(|m| m.external_subtitles.iter().find(|s| s.id == ext_id))
+                    .map(|s| s.handle);
+                match handle {
+                    Some(handle) => {
+                        debug!(ext_id, "Requesting the external subtitle from the engine");
+                        self.player.request_external_subtitle(handle);
+                    }
+                    // resolve_subtitle_target just found it, so only a
+                    // racing removal gets here.
+                    None => self.send_error(origin, ErrorKind::MalformedBody),
                 }
             }
             SubtitleTarget::Stream(stream_sid) => {
-                // An explicit subtitle change supersedes a parked post-attach
-                // desire (fcast backend): the newest intent wins, and a stale
-                // desire enforcing itself later would stomp this change.
-                if let Some(media) = self.current_media.as_mut() {
-                    media.fcast_sub_desire = None;
-                }
                 // Apply immediately, paused or playing. A subtitle deselect
                 // tears the overlay's text chain down, under playsink that
                 // deadlocked while paused (the teardown needed flowing data),
@@ -2369,21 +2794,12 @@ impl Application {
         }
     }
 
-    /// Apply a track change through TrackOps. While any external subtitle is
-    /// attached the switch's re-emit flush is suppressed: a flush races the
-    /// external inputs' reconfiguration and can freeze the item (and selecting
-    /// an external needs no flush anyway, its input re-pushes the whole file).
+    /// Apply a track change through TrackOps. Whether the switch's re-emit
+    /// flush is safe (it races an attached external input's reconfiguration
+    /// and can freeze the item) is decided inside the player's pump, off the
+    /// pipeline's own input state, not from the catalog here.
     fn apply_track_change(&mut self, kind: player::TrackKind, sid: Option<player::StreamId>) {
-        let externals_attached = self
-            .current_media
-            .as_ref()
-            .is_some_and(|m| !m.external_subtitles.is_empty());
-        let stale = if externals_attached {
-            self.player.request_track_change_no_refresh(kind, sid)
-        } else {
-            self.player.request_track_change(kind, sid)
-        };
-        if stale {
+        if self.player.request_track_change(kind, sid) {
             // The displayed cue belongs to the previous track. Clear it
             // immediately so the change registers visually, even while paused.
             self.gui.clear_video_overlays();
@@ -2409,8 +2825,7 @@ impl Application {
         };
         for entry in media.external_subtitles.iter_mut() {
             if entry.stream_sid.is_none()
-                && let Some(handle) = entry.handle
-                && let Some(sid) = self.player.external_stream_sid_of(handle)
+                && let Some(sid) = self.player.external_stream_sid_of(entry.handle)
             {
                 debug!(id = entry.id, sid, "external subtitle stream materialized");
                 entry.stream_sid = Some(sid);
@@ -2418,125 +2833,12 @@ impl Application {
         }
     }
 
-    /// fcast backend: enforce the desired subtitle end-state once the awaited
-    /// external's stream has materialized in the advertised collection (run
-    /// from the stream-collection handler). The enforcement goes out AFTER
-    /// decodebin3 computed its own selection for that collection, so it
-    /// supersedes a possible auto-select of the fresh text stream.
-    fn pump_fcast_sub_desire(&mut self) {
-        let Some(media) = self.current_media.as_ref() else {
-            return;
-        };
-        let Some(desire) = media.fcast_sub_desire.as_ref() else {
-            return;
-        };
-        let Some(entry) = media
-            .external_subtitles
-            .iter()
-            .find(|s| s.id == desire.ext_id)
-        else {
-            // The awaited entry is gone (failed and removed), nothing left
-            // to enforce.
-            if let Some(media) = self.current_media.as_mut() {
-                media.fcast_sub_desire = None;
-            }
-            return;
-        };
-        let Some(ext_sid) = self.advertised_external_sid(entry) else {
-            // Stream not in the advertised collection yet, a later
-            // collection re-runs this.
-            return;
-        };
-        let target_sid = match &desire.target {
-            FcastSubTarget::TheExternal => Some(ext_sid),
-            FcastSubTarget::Restore(sid) => sid.clone(),
-        };
-        if let Some(media) = self.current_media.as_mut() {
-            media.fcast_sub_desire = None;
-        }
-        debug!(?target_sid, "Enforcing the post-attach subtitle selection");
-        self.apply_track_change(player::TrackKind::Subtitle, target_sid);
-    }
-
-    /// fcast backend: how soon after a (re-)attach an error may trigger
-    /// another re-arm. A dying input posts several errors and only the first
-    /// past this window may replace it.
-    const FCAST_REARM_DEBOUNCE: Duration = Duration::from_secs(1);
-
-    /// Bounded wait for an attached external's stream to materialize. A bad
-    /// URL can fail without producing a stream or a bus error, so the check
-    /// message fails the entry with `ResourceNotFound` if it is still
-    /// stream-less when it fires. Armed on every attach, including re-arms.
-    fn arm_external_sub_watchdog(&self, ext_id: u32) {
-        let item = self.current_media_item_id;
-        let msg_tx = self.msg_tx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Self::FCAST_EXTERNAL_SUB_TIMEOUT).await;
-            msg_tx.send(Message::FcastExternalSubCheck { item, ext_id });
-        });
-    }
-
-    /// fcast backend: decide what an external input's bus error means.
-    ///
-    /// An error from an input that is currently AWAITED (post-attach desire)
-    /// or SHOWN is a genuine failure: the requester gets `ResourceNotFound`
-    /// and the entry is dropped. An error from a deselected input is the
-    /// known deselect race (switching away from a selected external races its
-    /// in-flight push against decodebin3's slot deactivation and kills the
-    /// source with not-linked) and must NOT fail the entry. Instead the input
-    /// is RE-ARMED with a fresh one on the same URL so the track can be
-    /// selected again. The stream id is URI-derived and stays the same, so
-    /// all advertised ids remain valid.
-    fn fail_or_rearm_fcast_external(&mut self, ext_id: u32) {
-        let Some(media) = self.current_media.as_ref() else {
-            return;
-        };
-        let awaited = media
-            .fcast_sub_desire
-            .as_ref()
-            .is_some_and(|d| d.ext_id == ext_id);
-        let Some(entry) = media.external_subtitles.iter().find(|s| s.id == ext_id) else {
-            return;
-        };
-        let shown = entry.stream_sid.is_some()
-            && entry.stream_sid.as_deref() == self.player.current_subtitle_sid();
-        if awaited || shown {
-            self.fail_fcast_external_subtitle(ext_id);
-            return;
-        }
-        if entry.attached_at.elapsed() < Self::FCAST_REARM_DEBOUNCE {
-            debug!(
-                ext_id,
-                "Ignoring error from an input that was just re-armed"
-            );
-            return;
-        }
-        let (url, old_handle) = (entry.url.clone(), entry.handle);
-        debug!(ext_id, "Re-arming the deselected external subtitle input");
-        if let Some(old) = old_handle {
-            self.player.detach_external_subtitle(old);
-        }
-        let new_handle = Some(self.player.attach_external_subtitle(&url));
-        if let Some(entry) = self
-            .current_media
-            .as_mut()
-            .and_then(|m| m.external_subtitles.iter_mut().find(|s| s.id == ext_id))
-        {
-            entry.handle = new_handle;
-            entry.stream_sid = None;
-            entry.attached_at = Instant::now();
-        }
-        // The fresh input can fail as silently as the original: without a new
-        // bounded check, a dead re-armed entry would stay selectable forever
-        // and a selection parked on it would never resolve or error.
-        self.arm_external_sub_watchdog(ext_id);
-    }
-
-    /// fcast backend: an attached external subtitle failed (a bus error from
-    /// its input, or its stream never materialized). Detach the input, drop
-    /// the catalog entry and tell the requester `ResourceNotFound`, the
-    /// input is independent of the main item, so playback continues
-    /// untouched (no reload).
+    /// An attached external subtitle failed for good: fcastplaybin reported
+    /// `ExternalSubtitleFailed` with the input ALREADY detached (it owns the
+    /// materialization watchdog, the deselect-race re-arm, and dropping any
+    /// selection desire parked on the input). Drop the catalog entry and
+    /// tell the requester `ResourceNotFound`; the input is independent of
+    /// the main item, so playback continues untouched.
     fn fail_fcast_external_subtitle(&mut self, ext_id: u32) {
         let Some(media) = self.current_media.as_mut() else {
             return;
@@ -2545,17 +2847,7 @@ impl Application {
             return;
         };
         let failed = media.external_subtitles.remove(pos);
-        if media
-            .fcast_sub_desire
-            .as_ref()
-            .is_some_and(|d| d.ext_id == ext_id)
-        {
-            media.fcast_sub_desire = None;
-        }
         warn!(url = failed.url, "External subtitle failed; removing it");
-        if let Some(handle) = failed.handle {
-            self.player.detach_external_subtitle(handle);
-        }
         self.send_error(failed.requested_by, ErrorKind::ResourceNotFound);
         self.update_tracks(true);
     }
@@ -2714,6 +3006,9 @@ impl Application {
                 | player::PlayerEvent::RequestState(_)
                 | player::PlayerEvent::ClockLost
                 | player::PlayerEvent::StreamTagsUpdated
+                // Stamped with the PREPARED (future) generation by design;
+                // its handler validates it against the pre-arm bookkeeping.
+                | player::PlayerEvent::GaplessActivated
         )
     }
 
@@ -2738,6 +3033,11 @@ impl Application {
         }
         match event {
             player::PlayerEvent::EndOfStream => {
+                // A pipeline EOS while pre-armed means the gapless handoff
+                // missed (or was cancelled after the drain): the ordinary
+                // advance below owns the transition, drop the pre-arm.
+                self.cancel_gapless_prearm();
+
                 self.player.end_of_stream_reached();
 
                 debug!("Player reached EOS");
@@ -2783,6 +3083,8 @@ impl Application {
                         | MediaSource::AirPlayMirror { .. } => (),
                     }
                 }
+
+                self.maybe_autoplay_advance();
             }
             player::PlayerEvent::Tags(tags) => {
                 if let Some(container) = tags.get::<gst::tags::ContainerFormat>() {
@@ -2861,14 +3163,14 @@ impl Application {
                 // a paused pipeline when a live subtitle attach posted a
                 // mid-playback collection).
 
-                // Learn stream ids for externals that just materialized, then
-                // advertise and enforce the parked desired selection (no-ops
-                // otherwise).
+                // Learn stream ids for externals that just materialized and
+                // advertise them. Selection enforcement is the engine's job
+                // now: `Player::handle_stream_collection` pumped it above,
+                // and a desire parked on a just-materialized external
+                // resolved there.
                 self.refresh_external_stream_sids();
 
                 self.update_tracks(true);
-
-                self.pump_fcast_sub_desire();
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -2967,12 +3269,21 @@ impl Application {
                 subtitle,
                 seqnum,
             } => {
+                let prev_subtitle = self.player.current_subtitle_sid().map(str::to_string);
                 let selected = self.player.streams_selected(
                     video.as_deref(),
                     audio.as_deref(),
                     subtitle.as_deref(),
                     seqnum,
                 );
+                // A confirmed subtitle switch makes the displayed cue stale.
+                // Requests placed through `apply_track_change` cleared it
+                // optimistically already; this also covers engine-initiated
+                // switches (an external materializing, a re-assertion), whose
+                // dispatch the application never sees.
+                if selected.subtitle.as_deref() != prev_subtitle.as_deref() {
+                    self.gui.clear_video_overlays();
+                }
                 // The wire/GUI edge: map the applied stream ids to advertised
                 // indices. Subtitles report an external's STABLE id when its
                 // own stream is selected (matching TracksAvailable).
@@ -3031,27 +3342,11 @@ impl Application {
                 self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
                 // Attribution comes from fcastplaybin's generation-tagged
                 // inputs (supersession is already handled by the generation
-                // filter above); `failed_uri` is diagnostic only.
+                // filter above); `failed_uri` is diagnostic only. External
+                // subtitle inputs never error here: fcastplaybin handles
+                // them itself and reports `ExternalSubtitleFailed` when one
+                // is beyond saving.
                 match err_origin {
-                    // A live subtitle input errored, never the main item, so
-                    // playback keeps running. Whether the entry FAILS or
-                    // merely re-arms is decided in
-                    // `fail_or_rearm_fcast_external`.
-                    fcastplaybin::ErrorOrigin::ExternalSubtitle(handle) => {
-                        warn!(?failed_uri, message, "External subtitle input errored");
-                        let ext_id = self.current_media.as_ref().and_then(|m| {
-                            m.external_subtitles
-                                .iter()
-                                .find(|s| s.handle == Some(handle))
-                                .map(|s| s.id)
-                        });
-                        match ext_id {
-                            Some(ext_id) => self.fail_or_rearm_fcast_external(ext_id),
-                            // The input was already detached (a re-arm or
-                            // removal won the race); nothing to do.
-                            None => debug!(?handle, "Error from an already-detached input"),
-                        }
-                    }
                     fcastplaybin::ErrorOrigin::Stale => {
                         debug!(?failed_uri, message, "Dropping error from a stale input");
                     }
@@ -3064,6 +3359,24 @@ impl Application {
                     }
                 }
             }
+            player::PlayerEvent::ExternalSubtitleFailed { id } => {
+                // fcastplaybin already detached the input (failed attach,
+                // bus error while its stream was shown, or no stream within
+                // its watchdog); what is left is the protocol side: drop the
+                // catalog entry and report ResourceNotFound.
+                let ext_id = self.current_media.as_ref().and_then(|m| {
+                    m.external_subtitles
+                        .iter()
+                        .find(|s| s.handle == id)
+                        .map(|s| s.id)
+                });
+                match ext_id {
+                    Some(ext_id) => self.fail_fcast_external_subtitle(ext_id),
+                    // The catalog entry is already gone (the item was
+                    // replaced, or the entry was removed by its sender).
+                    None => debug!(?id, "Failure report for an unknown external subtitle"),
+                }
+            }
             player::PlayerEvent::Warning(msg) => {
                 #[cfg(debug_assertions)]
                 self.player
@@ -3072,6 +3385,119 @@ impl Application {
             }
             player::PlayerEvent::StreamTagsUpdated => {
                 self.update_tracks(false);
+            }
+            player::PlayerEvent::ImageStream(info) => {
+                debug!(?info, "Image stream announced by fimagedec");
+                self.inspector_image = format!(
+                    "{} {}x{}{}",
+                    info.format,
+                    info.width,
+                    info.height,
+                    if info.animated { ", animated" } else { "" }
+                );
+            }
+            player::PlayerEvent::GaplessActivated => {
+                // Stamped with the PREPARED generation (excluded from the
+                // load-scoped guard above); validate against the pre-arm.
+                let Some(generation) = generation else {
+                    return Ok(());
+                };
+                let matching = self
+                    .gapless_prearm
+                    .as_ref()
+                    .is_some_and(|prearm| prearm.generation == generation);
+                if !matching {
+                    // A stale activation (superseded by a later load) is a
+                    // harmless straggler. One AHEAD of the player means the
+                    // pipeline switched while the application had dropped
+                    // the pre-arm (a cancel raced the swap and lost):
+                    // reload the item the application believes is current
+                    // so pipeline and state agree again.
+                    if self
+                        .player
+                        .dbg_generation()
+                        .is_some_and(|expected| generation > expected)
+                    {
+                        warn!(
+                            generation,
+                            "Gapless activation without a matching pre-arm: reloading to resync"
+                        );
+                        self.gapless_prearm = None;
+                        self.player.clear_pending_gapless();
+                        self.load_media();
+                    } else {
+                        debug!(generation, "Ignoring a stale gapless activation");
+                    }
+                    return Ok(());
+                }
+                let prearm = self.gapless_prearm.take().expect("checked above");
+                if !self.player.adopt_gapless_generation(generation) {
+                    warn!(generation, "Ignoring a stale gapless activation");
+                    return Ok(());
+                }
+
+                info!(
+                    index = prearm.next_index,
+                    "Gapless: the next queue item is playing"
+                );
+
+                // The queue advances exactly like play_queue_item, minus
+                // the load (the pipeline already switched).
+                if let Some(media) = self.current_media.as_mut() {
+                    media.clear_external_subtitles();
+                }
+                let title = match self.queue_mut() {
+                    Some(queue) => {
+                        queue.current_idx = prearm.next_index as u8;
+                        queue
+                            .items
+                            .get(prearm.next_index)
+                            .and_then(|item| item.title.clone())
+                    }
+                    None => None,
+                };
+
+                // Per-item view state rolls like a fresh load. The new
+                // item's collection follows this event and re-runs
+                // media_loaded_successfully through the usual
+                // have_media_info gate (arming its playback_duration
+                // timer among other things).
+                self.current_media_item_id += 1;
+                self.have_media_info = false;
+                self.current_duration = None;
+                self.inspector_container = None;
+                self.inspector_image = String::new();
+                self.have_media_title = title.is_some();
+                if let Some(title) = title {
+                    self.gui.set_media_title(title);
+                }
+
+                // Receiver-initiated selection: every sender hears about it
+                // (the same broadcast the EOS advance sends).
+                if self.should_broadcast() {
+                    self.broadcast_update(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::Broadcast {
+                            serialized_msg: fcast_protocol::v4::MessageBuilder::new()
+                                .queue_select(v4::QueuePosition::Index(prearm.next_index as u8)),
+                        },
+                    ));
+                }
+                self.sync_queue_cache();
+            }
+            player::PlayerEvent::GaplessPrepareFailed { generation } => {
+                if self
+                    .gapless_prearm
+                    .as_ref()
+                    .is_some_and(|prearm| prearm.generation == generation)
+                {
+                    debug!(
+                        generation,
+                        "Gapless pre-arm failed; the end-of-stream advance loads the item normally"
+                    );
+                    self.gapless_prearm = None;
+                    self.gapless_blocked_item = Some(self.current_media_item_id);
+                    self.player.clear_pending_gapless();
+                }
             }
         }
 
@@ -3480,24 +3906,6 @@ impl Application {
 
                 self.media_loaded_successfully();
             }
-            image::Event::DecodedAnimation { id, frames, format } => {
-                if id != self.current_image_id {
-                    warn!(id, "Ignoring old image decode result");
-                    return Ok(false);
-                }
-
-                let size = frames
-                    .first()
-                    .map(|f| (f.image.width(), f.image.height()))
-                    .unwrap_or((0, 0));
-                self.inspector_image =
-                    format!("{format} {}x{}, {} frames", size.0, size.1, frames.len());
-
-                self.gui.set_animation(frames);
-                self.gui.set_app_state(AppState::Playing);
-
-                self.media_loaded_successfully();
-            }
         }
 
         Ok(false)
@@ -3829,6 +4237,7 @@ impl Application {
                 return self.handle_operation(op, origin);
             }
             Message::Image(event) => return self.handle_image_event(event),
+            Message::QueueCache(event) => self.queue_cache.on_event(event),
             Message::Mdns(event) => {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;
@@ -3877,15 +4286,24 @@ impl Application {
                 let Some(media) = &self.current_media else {
                     return Ok(false);
                 };
-                let MediaSource::Playlist { content, index } = &media.source else {
-                    debug!(id, "Ignoring media item finish event");
-                    return Ok(false);
-                };
 
                 if id != self.current_media_item_id {
                     debug!(id, "Ignoring media item finish event");
                     return Ok(false);
                 }
+
+                // A queue item's playback_duration elapsed: the item is
+                // finished (the spec's autoplay trigger; the timer is only
+                // armed for autoplay queues, see media_loaded_successfully).
+                if matches!(media.source, MediaSource::Queue(_)) {
+                    self.maybe_autoplay_advance();
+                    return Ok(false);
+                }
+
+                let MediaSource::Playlist { content, index } = &media.source else {
+                    debug!(id, "Ignoring media item finish event");
+                    return Ok(false);
+                };
 
                 let next_idx = index + 1;
                 if next_idx < content.items.len() {
@@ -3950,22 +4368,6 @@ impl Application {
                 if epoch == self.pending_seek_epoch && self.pending_seek_op.is_some() {
                     warn!("Seekability never resolved; dropping the parked seek");
                     self.drop_pending_seek();
-                }
-            }
-            Message::FcastExternalSubCheck { item, ext_id } => {
-                // Fail only if the external is STILL attached and awaiting
-                // its stream. A detached entry (switched away) legitimately
-                // has no `stream_sid`, and an already-materialized one has
-                // its `stream_sid` set, neither is a failure, so a stale
-                // watchdog from an earlier attach must no-op.
-                if item == self.current_media_item_id
-                    && let Some(media) = self.current_media.as_ref()
-                    && let Some(entry) = media.external_subtitles.iter().find(|s| s.id == ext_id)
-                    && entry.handle.is_some()
-                    && entry.stream_sid.is_none()
-                {
-                    warn!(ext_id, "External subtitle stream never materialized");
-                    self.fail_fcast_external_subtitle(ext_id);
                 }
             }
             Message::LoadStallCheck { item, epoch } => {
@@ -4111,6 +4513,7 @@ impl Application {
                     if self.player.player_state() == player::PlayerState::Playing {
                         self.notify_updates(false)?;
                         self.send_v4_progress_updates();
+                        self.maybe_prearm_gapless();
                     }
                 }
                 session = listener_stream.select_next_some() => {
