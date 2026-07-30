@@ -773,11 +773,11 @@ export component Inspector inherits Rectangle {
         Bridge.app-state == AppState.Playing
         && Bridge.player-variant == UiPlayerVariant.Video;
 
-    // The component only exists while the inspector is shown, so this samples
-    // exactly while it is open.
+    // Only tick while the inspector is open, so we don't walk the pipeline for
+    // bitrate samples in the background when it's closed.
     Timer {
         interval: 500ms;
-        running: true;
+        running: Bridge.show-inspector;
         triggered => {
             Bridge.inspector-tick();
         }

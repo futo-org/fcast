@@ -888,7 +888,10 @@ pub fn run<S: VideoSink + 'static>(
         ui.global::<Bridge>().on_inspector_toggled({
             let ui_weak = ui.as_weak();
             let tick = tick.clone();
+            let msg_tx = msg_tx.clone();
             move |active| {
+                // Let the app gate inspector work and reset sampling state.
+                msg_tx.send(Message::InspectorActive(active));
                 if let Some(ui) = ui_weak.upgrade() {
                     tick.borrow_mut().force_render = true;
                     ui.window().request_redraw();

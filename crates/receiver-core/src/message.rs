@@ -196,6 +196,9 @@ pub enum Message {
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),
+    /// The inspector was opened or closed. Gates inspector work and resets its
+    /// per-session sampling state on close.
+    InspectorActive(bool),
     InspectorRefresh,
     /// One bitrate sample while the inspector is open (driven by its timer).
     InspectorBitrateTick,

@@ -458,6 +458,9 @@ pub struct Application {
     fcast_txt_records: HashMap<String, String>,
     fcast_senders: HashMap<SenderId, FCastSenderHandle>,
     inspector_bitrates: InspectorBitrates,
+    /// Whether the inspector is currently open. Gates all inspector work so
+    /// nothing is computed or sent while it's closed.
+    inspector_active: bool,
     /// Inspector: container format from the current item's tags.
     inspector_container: Option<String>,
     /// Inspector: format/size line for the current image item.
@@ -687,6 +690,7 @@ impl Application {
             current_thumbnail_id: 0,
             current_image_download_id: 0,
             inspector_bitrates: InspectorBitrates::default(),
+            inspector_active: false,
             inspector_container: None,
             inspector_image: String::new(),
             current_addresses: HashSet::new(),
@@ -3948,6 +3952,9 @@ impl Application {
     }
 
     fn refresh_inspector_graph(&self) {
+        if !self.inspector_active {
+            return;
+        }
         let Some(gui_tx) = self.gui.tx.clone() else {
             return;
         };
@@ -3990,6 +3997,9 @@ impl Application {
     /// table, container, sink stats and player internals, pushed to the GUI
     /// as one command.
     fn inspector_tick(&mut self) {
+        if !self.inspector_active {
+            return;
+        }
         let stats = self.player.stream_io_stats();
 
         // The tapped input-side stream ids match the collection's ids for
@@ -4427,6 +4437,13 @@ impl Application {
             Message::Raop(event) => return self.handle_raop_event(event),
             #[cfg(feature = "airplay")]
             Message::AirPlay(event) => return self.handle_airplay_event(event),
+            Message::InspectorActive(active) => {
+                self.inspector_active = active;
+                if !active {
+                    // Reset per-session sampling so a reopen starts fresh.
+                    self.inspector_bitrates = InspectorBitrates::default();
+                }
+            }
             Message::InspectorRefresh => self.refresh_inspector_graph(),
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
