@@ -24,10 +24,6 @@ pub use tracing;
 #[cfg(feature = "airplay")]
 mod airplay;
 mod application;
-#[cfg(target_os = "linux")]
-mod dmabuf;
-#[cfg(target_os = "linux")]
-pub mod egl;
 mod fcast;
 mod fcompsrc;
 mod fwebrtcsrc;
@@ -41,34 +37,32 @@ mod imagetypefind;
 #[cfg(target_os = "linux")]
 mod vajpegdec;
 mod inspector_graph;
-#[cfg(target_os = "macos")]
-mod iosurface;
 mod logging;
 #[cfg(not(target_os = "android"))]
 mod mdns;
 mod media_formats;
 mod media_source;
 mod message;
-mod opengl;
-pub mod placebo;
 mod player;
 mod queue_cache;
 mod raop;
-mod render_latency;
 mod user_agent;
 mod utils;
-pub mod video;
-pub mod video_sink;
-#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
-mod wayland_sink;
+
+// The video rendering stack lives in fcast-video. These imports let the render
+// loop below keep referring to the modules by their short names.
+use fcast_video::{opengl, placebo, render_latency, video};
+// Re-exported: the fhs receiver's pixmap sink uses `receiver_core::egl`.
+#[cfg(target_os = "linux")]
+pub use fcast_video::egl;
 
 pub use glow;
 pub use gst;
 pub use gst_video;
 pub use libplacebo;
-pub use video_sink::{SwapchainSink, VideoSink};
+pub use fcast_video::{SwapchainSink, VideoSink};
 #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
-pub use wayland_sink::WaylandSubsurfaceSink;
+pub use fcast_video::WaylandSubsurfaceSink;
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -601,7 +595,7 @@ pub fn run<S: VideoSink + 'static>(
                             if !display.is_null() && err == glutin_egl_sys::egl::SUCCESS as i32 {
                                 pl_context = unsafe {
                                     Some(
-                                        crate::placebo::PlaceboContext::new_egl(
+                                        placebo::PlaceboContext::new_egl(
                                             &pl_log,
                                             &render_opts,
                                             display as *mut _,
@@ -638,7 +632,7 @@ pub fn run<S: VideoSink + 'static>(
                                 }
                             } else {
                                 pl_context = Some(
-                                    crate::placebo::PlaceboContext::new(&pl_log, &render_opts)
+                                    placebo::PlaceboContext::new(&pl_log, &render_opts)
                                         .unwrap(),
                                 );
                             }
@@ -647,7 +641,7 @@ pub fn run<S: VideoSink + 'static>(
                         #[cfg(not(target_os = "linux"))]
                         {
                             pl_context = Some(
-                                crate::placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
+                                placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
                             );
                         }
 

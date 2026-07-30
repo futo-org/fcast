@@ -2654,6 +2654,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcast-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "drm-fourcc",
+ "egl-sys",
+ "glow",
+ "glutin_egl_sys",
+ "gstreamer 0.25.2",
+ "gstreamer-allocators",
+ "gstreamer-base",
+ "gstreamer-gl-egl",
+ "gstreamer-video",
+ "i-slint-backend-winit",
+ "libplacebo",
+ "libplacebo-vulkan",
+ "objc2-app-kit 0.3.2",
+ "parking_lot",
+ "raw-window-handle",
+ "slint",
+ "smallvec",
+ "thiserror 2.0.18",
+ "tracing",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "fcastplaybin"
 version = "0.1.0"
 dependencies = [
@@ -7875,12 +7905,11 @@ dependencies = [
  "ctor 0.2.9",
  "ctr",
  "directories",
- "drm-fourcc",
- "egl-sys",
  "fast_qr",
  "fcast-gst-elements",
  "fcast-protocol",
  "fcast-runtime",
+ "fcast-video",
  "fcastplaybin",
  "futures",
  "gethostname",
@@ -7891,7 +7920,6 @@ dependencies = [
  "gst-plugin-rtp",
  "gst-plugin-webrtc",
  "gstreamer 0.25.2",
- "gstreamer-allocators",
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
@@ -7915,13 +7943,11 @@ dependencies = [
  "libc",
  "libheif-rs",
  "libplacebo",
- "libplacebo-vulkan",
  "libspa",
  "md-5 0.11.0",
  "mdns-sd",
  "mime",
  "nom 7.1.3",
- "objc2-app-kit 0.3.2",
  "oneshot",
  "pango",
  "parking_lot",
@@ -7929,7 +7955,6 @@ dependencies = [
  "pipewire",
  "plist",
  "rand 0.10.1",
- "raw-window-handle",
  "rcgen",
  "receiver-resources",
  "regex",
@@ -7961,9 +7986,6 @@ dependencies = [
  "tracing-tracy",
  "url",
  "uuid",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
 ]
 
 [[package]]

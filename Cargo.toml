@@ -29,6 +29,7 @@ members = [
     "crates/fcastplaybin",
     "crates/fcast-gst-elements",
     "crates/fcast-runtime",
+    "crates/fcast-video",
     "fuzz", "sdk/sender/examples/image-viewer", "crates/apple-fairplay",
 ]
 resolver = "2"

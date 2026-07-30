@@ -1,0 +1,54 @@
+[package]
+name = "fcast-video"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+gst = { workspace = true, features = ["v1_26"] }
+gst-base.workspace = true
+gst-video.workspace = true
+glow.workspace = true
+libplacebo.path = "../libplacebo"
+drm-fourcc = "2.2.0"
+tracing.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+slint = { workspace = true, features = [ "compat-1-2", "std" ] }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+gst-allocators = { package = "gstreamer-allocators", version = "0.25" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+egl-sys.path = "../egl-sys"
+glutin_egl_sys = "0.7.1"
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", features = ["client_system"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+i-slint-backend-winit = { workspace = true, optional = true }
+libplacebo-vulkan = { path = "../libplacebo-vulkan", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
+glutin_egl_sys = "0.7.1"
+
+[features]
+# Mirrors receiver-core's feature of the same name: pulls in the Wayland
+# subsurface sink and its winit / vulkan dependencies.
+wayland-subsurface = [
+    "dep:wayland-client",
+    "dep:wayland-backend",
+    "dep:wayland-protocols",
+    "dep:raw-window-handle",
+    "dep:i-slint-backend-winit",
+    "dep:libplacebo-vulkan",
+    "slint/backend-winit",
+    "slint/renderer-femtovg",
+]

@@ -10,6 +10,7 @@ gst = { workspace = true, features = [ "v1_26" ] }
 fcastplaybin = { path = "../fcastplaybin" }
 fcast-gst-elements = { path = "../fcast-gst-elements" }
 fcast-runtime = { path = "../fcast-runtime" }
+fcast-video = { path = "../fcast-video" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
 sabrump = { path = "../sabrump", features = ["serde"] }
 gethostname = "1"
@@ -102,11 +103,7 @@ gst-plugin-rtp = { workspace = true, optional = true }
 clap.workspace = true
 inhibit-screensaver.path = "../inhibit-screensaver"
 
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-gst-allocators = { package = "gstreamer-allocators", version = "0.25" }
-
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = "0.3.2"
 image = { workspace = true, features = ["encode"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -118,16 +115,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "charset", 
 # TODO: add this to all targets once linking is figured out
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
-egl-sys.path = "../egl-sys"
-drm-fourcc = "2.2.0"
-# Wayland subsurface video sink (prototype), gated by the `wayland-subsurface` feature so
-# non-winit receivers (e.g. fhs) don't pull in winit.
-wayland-client = { version = "0.31", optional = true }
-wayland-backend = { version = "0.3", features = ["client_system"], optional = true }
-wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"], optional = true }
-raw-window-handle = { version = "0.6", optional = true }
 i-slint-backend-winit = { workspace = true, optional = true }
-libplacebo-vulkan = { path = "../libplacebo-vulkan", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
@@ -172,12 +160,10 @@ desktop = [
     "wayland-subsurface",
 ]
 wayland-subsurface = [
-    "dep:wayland-client",
-    "dep:wayland-backend",
-    "dep:wayland-protocols",
-    "dep:raw-window-handle",
+    # gui.rs uses i-slint-backend-winit directly; the sink and its wayland/vulkan
+    # deps come in through fcast-video.
     "dep:i-slint-backend-winit",
-    "dep:libplacebo-vulkan",
+    "fcast-video/wayland-subsurface",
 ]
 systray = ["slint/system-tray"]
 kms-backend = ["slint/backend-linuxkms"]
