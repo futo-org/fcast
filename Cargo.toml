@@ -27,6 +27,8 @@ members = [
     "crates/fiatlux",
     "crates/inhibit-screensaver",
     "crates/fcastplaybin",
+    "crates/fcast-gst-elements",
+    "crates/fcast-runtime",
     "fuzz", "sdk/sender/examples/image-viewer", "crates/apple-fairplay",
 ]
 resolver = "2"

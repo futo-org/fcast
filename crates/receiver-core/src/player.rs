@@ -364,7 +364,7 @@ impl Player {
         // FCAST_NO_PW_AUDIO=1 forces the fallback for A/B comparisons.
         #[cfg(target_os = "linux")]
         let audio = if std::env::var("FCAST_NO_PW_AUDIO").is_ok_and(|v| v == "1")
-            || !crate::pwaudiosink::is_available()
+            || !fcast_gst_elements::pwaudiosink::is_available()
         {
             info!("audio sink: autoaudiosink (PipeWire disabled or unreachable)");
             fcastplaybin::AudioSink::Auto

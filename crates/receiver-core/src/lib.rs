@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::{
     cell::RefCell,
     rc::Rc,
-    sync::{Arc, LazyLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -29,10 +29,6 @@ mod dmabuf;
 #[cfg(target_os = "linux")]
 pub mod egl;
 mod fcast;
-mod fcasthttpsrc;
-#[allow(dead_code)]
-mod fcasttextoverlay;
-mod fcastwhepsrcbin;
 mod fcompsrc;
 mod fwebrtcsrc;
 mod gcast;
@@ -56,12 +52,9 @@ mod message;
 mod opengl;
 pub mod placebo;
 mod player;
-#[cfg(target_os = "linux")]
-mod pwaudiosink;
 mod queue_cache;
 mod raop;
 mod render_latency;
-mod sabrumpsrc;
 mod user_agent;
 mod utils;
 pub mod video;
@@ -163,14 +156,9 @@ macro_rules! log_if_err {
     };
 }
 
-pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(num_cpus::get().min(4))
-        .thread_name("main-async-worker")
-        .build()
-        .unwrap()
-});
+// The single shared async runtime lives in its own crate so receiver-core and
+// the GStreamer element crate spawn on the same thread pool.
+pub use fcast_runtime::RUNTIME;
 
 slint::include_modules!();
 

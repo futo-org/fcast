@@ -54,13 +54,12 @@ pub fn init_and_load_plugins() {
         }
     }
 
-    crate::fcastwhepsrcbin::plugin_init().unwrap();
-    // crate::fcasttextoverlay::plugin_init().unwrap();
-    crate::fcasthttpsrc::plugin_init().unwrap();
+    fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
+    fcast_gst_elements::fcasthttpsrc::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
-    crate::pwaudiosink::plugin_init().unwrap();
+    fcast_gst_elements::pwaudiosink::plugin_init().unwrap();
     crate::fcompsrc::plugin_init().unwrap();
-    crate::sabrumpsrc::plugin_init().unwrap();
+    fcast_gst_elements::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
     crate::airplay::source::plugin_init().unwrap();
     crate::fwebrtcsrc::plugin_init().unwrap();

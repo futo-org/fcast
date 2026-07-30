@@ -2555,6 +2555,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcast-gst-elements"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "ctor 0.2.9",
+ "fcast-runtime",
+ "futures",
+ "gst-plugin-webrtc",
+ "gstreamer 0.25.2",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-check",
+ "gstreamer-video",
+ "headers",
+ "http-body-util",
+ "hyper",
+ "libc",
+ "libspa",
+ "mime",
+ "parking_lot",
+ "pin-project-lite",
+ "pipewire",
+ "reqwest",
+ "sabrump",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "fcast-protocol"
 version = "0.1.5"
 dependencies = [
@@ -2574,6 +2608,14 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "x509-parser 0.17.0",
+]
+
+[[package]]
+name = "fcast-runtime"
+version = "0.1.0"
+dependencies = [
+ "num_cpus",
+ "tokio",
 ]
 
 [[package]]
@@ -7836,7 +7878,9 @@ dependencies = [
  "drm-fourcc",
  "egl-sys",
  "fast_qr",
+ "fcast-gst-elements",
  "fcast-protocol",
+ "fcast-runtime",
  "fcastplaybin",
  "futures",
  "gethostname",
@@ -7877,7 +7921,6 @@ dependencies = [
  "mdns-sd",
  "mime",
  "nom 7.1.3",
- "num_cpus",
  "objc2-app-kit 0.3.2",
  "oneshot",
  "pango",

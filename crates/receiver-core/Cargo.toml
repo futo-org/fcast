@@ -8,6 +8,8 @@ license = "GPL-3.0-only"
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 fcastplaybin = { path = "../fcastplaybin" }
+fcast-gst-elements = { path = "../fcast-gst-elements" }
+fcast-runtime = { path = "../fcast-runtime" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
 sabrump = { path = "../sabrump", features = ["serde"] }
 gethostname = "1"
@@ -34,7 +36,6 @@ bytes.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
-num_cpus.workspace = true
 rand = { workspace = true, features = ["std_rng"] }
 tracing-tracy = { version = "=0.11.2", optional = true }
 pango = { version = "0.22.0", features = ["v1_44"] }

@@ -382,7 +382,7 @@ mod imp {
             // The session pump and the per-branch feeders all run as tasks on
             // the shared runtime, not dedicated threads.
             let mut tasks = Vec::new();
-            tasks.push(crate::RUNTIME.spawn({
+            tasks.push(fcast_runtime::RUNTIME.spawn({
                 let session = session.clone();
                 async move { session.run().await }
             }));
@@ -395,7 +395,7 @@ mod imp {
                 let seek_gen = seek_gen.clone();
                 let enough = branch.enough.clone();
                 let elem = self.obj().downgrade();
-                tasks.push(crate::RUNTIME.spawn(async move {
+                tasks.push(fcast_runtime::RUNTIME.spawn(async move {
                     feed(
                         session, appsrc, role, alternates, running, seek_gen, enough, elem,
                     )

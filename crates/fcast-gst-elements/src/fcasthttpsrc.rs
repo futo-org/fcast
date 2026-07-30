@@ -604,7 +604,7 @@ mod imp {
                 }
             };
 
-            let res = crate::RUNTIME.block_on(future);
+            let res = fcast_runtime::RUNTIME.block_on(future);
 
             /* Clear out the canceller */
             let mut canceller = self.canceller.lock();
