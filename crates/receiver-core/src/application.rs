@@ -3455,15 +3455,19 @@ impl Application {
                 if let Some(media) = self.current_media.as_mut() {
                     media.clear_external_subtitles();
                 }
-                let title = match self.queue_mut() {
+                let (title, thumbnail_url, headers) = match self.queue_mut() {
                     Some(queue) => {
                         queue.current_idx = prearm.next_index as u8;
-                        queue
-                            .items
-                            .get(prearm.next_index)
-                            .and_then(|item| item.title.clone())
+                        match queue.items.get(prearm.next_index) {
+                            Some(item) => (
+                                item.title.clone(),
+                                item.thumbnail_url.clone(),
+                                item.headers.clone(),
+                            ),
+                            None => (None, None, None),
+                        }
                     }
-                    None => None,
+                    None => (None, None, None),
                 };
 
                 // Per-item view state rolls like a fresh load. The new
@@ -3479,6 +3483,35 @@ impl Application {
                 self.have_media_title = title.is_some();
                 if let Some(title) = title {
                     self.gui.set_media_title(title);
+                }
+
+                // The gapless path bypasses the normal load, so refresh the audio
+                // cover ourselves. Otherwise the previous track's thumbnail
+                // lingers: the metadata thumbnail is never fetched, and
+                // `have_audio_track_cover` staying set makes the Tags handler
+                // ignore an embedded image tag too.
+                self.have_audio_track_cover = false;
+                if let Some(media) = self.current_media.as_mut() {
+                    media.pending_thumbnail = None;
+                    media.pending_thumbnail_download = None;
+                }
+                if !self.settings.headless()
+                    && let Some(thumbnail_url) = thumbnail_url
+                {
+                    self.have_audio_track_cover = true;
+                    self.current_image_download_id += 1;
+                    let this_id = self.current_image_download_id;
+                    if let Some(media) = self.current_media.as_mut() {
+                        media.pending_thumbnail_download = Some(this_id);
+                    }
+                    self.image_downloader
+                        .queue_download(this_id, thumbnail_url, headers);
+                } else {
+                    // No metadata thumbnail for the new item: drop the old cover
+                    // so it doesn't linger (an embedded image tag, if any, is
+                    // still picked up by the Tags handler now that the flag and
+                    // pending state are reset).
+                    self.gui.clear_audio_covers();
                 }
 
                 // Receiver-initiated selection: every sender hears about it

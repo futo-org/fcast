@@ -3,7 +3,7 @@ import {
     FText,
     Button,
 } from "../../../../ui-components/std-widgets.slint";
-import { Bridge, UiMode } from "../globals.slint";
+import { Bridge, UiMode, AppState } from "../globals.slint";
 import {
     PositionScrubber,
     ProgressLabels,
@@ -31,21 +31,163 @@ component PlaylistControlButton inherits Button {
     }
 }
 
+// One crossfade layer: the image, or (when `placeholder` is set) the grey box
+// with a music note if the layer's image is empty.
+component CoverLayer inherits Rectangle {
+    in property <image> src;
+    in property <angle> rotation;
+    in property <ImageFit> fit: ImageFit.contain;
+    in property <bool> placeholder: true;
+
+    if src.width > 0: Image {
+        source: src;
+        image-fit: fit;
+        width: parent.width;
+        height: parent.height;
+        transform-rotation: rotation;
+    }
+
+    if src.width == 0 && placeholder: Rectangle {
+        background: FCastPalette.neutral-1000;
+        border-radius: 4px;
+
+        Image {
+            source: Icons.music-note;
+            width: parent.width * 50%;
+            height: parent.height * 52%;
+        }
+    }
+}
+
+// Crossfading cover image. It holds the current image through a short grace
+// period when the source is cleared, so a quick track change (old cover to a
+// transient empty to the new cover) crossfades straight to the new art instead
+// of dipping through the empty state. A source that stays empty past the grace
+// period fades out: to the music-note placeholder, or to nothing when
+// `placeholder` is false.
+component CrossfadeImage inherits Rectangle {
+    in property <image> cover;
+    in property <angle> cover-rotation;
+    in property <ImageFit> fit: ImageFit.contain;
+    in property <bool> placeholder: true;
+    in property <duration> fade-duration: 250ms;
+    in property <duration> grace-duration: 400ms;
+
+    // True while a real image (not the empty/placeholder state) is settled on
+    // top, so callers can fade a companion overlay (e.g. the darkening gradient)
+    // in step with the crossfade.
+    out property <bool> showing-image: settled-src().width > 0;
+
+    // Two crossfade layers. Each holds its own image (an empty one renders the
+    // placeholder or nothing); `show-front` selects which is on top.
+    property <image> front-src;
+    property <angle> front-rotation;
+    property <image> back-src;
+    property <angle> back-rotation;
+    property <bool> show-front: true;
+
+    clip: true;
+
+    pure function settled-src() -> image {
+        show-front ? front-src : back-src
+    }
+
+    // Move `img` into the hidden layer and flip to it, so the visible layer keeps
+    // its old image and the two crossfade.
+    function commit(img: image, rot: angle) {
+        if show-front {
+            back-src = img;
+            back-rotation = rot;
+            show-front = false;
+        } else {
+            front-src = img;
+            front-rotation = rot;
+            show-front = true;
+        }
+    }
+
+    init => {
+        if cover.width > 0 {
+            commit(cover, cover-rotation);
+        }
+    }
+
+    changed cover => {
+        if cover.width > 0 {
+            grace-timer.running = false;
+            commit(cover, cover-rotation);
+        } else if settled-src().width > 0 {
+            grace-timer.running = false;
+            if Bridge.app-state == AppState.Playing {
+                // Cleared mid-playback (a track change): hold the current image
+                // and wait out the grace period rather than dipping to the empty
+                // state, in case a new cover is on the way.
+                grace-timer.running = true;
+            } else {
+                // Leaving playback (e.g. a Stop): clear now instead of holding
+                // the previous art on screen.
+                commit(cover, cover-rotation);
+            }
+        }
+    }
+
+    grace-timer := Timer {
+        interval: grace-duration;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.cover.width == 0 {
+                root.commit(root.cover, root.cover-rotation);
+            }
+        }
+    }
+
+    CoverLayer {
+        src: front-src;
+        rotation: front-rotation;
+        fit: root.fit;
+        placeholder: root.placeholder;
+        opacity: show-front ? 1.0 : 0.0;
+        animate opacity {
+            duration: fade-duration;
+            easing: ease-in-out;
+        }
+    }
+
+    CoverLayer {
+        src: back-src;
+        rotation: back-rotation;
+        fit: root.fit;
+        placeholder: root.placeholder;
+        opacity: show-front ? 0.0 : 1.0;
+        animate opacity {
+            duration: fade-duration;
+            easing: ease-in-out;
+        }
+    }
+}
+
 export component AudioPlayerView inherits Rectangle {
     background: FCastPalette.neutral-1100;
 
     property <bool> small-mode: root.height <= (500px + (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
 
-    Image {
-        image-fit: cover;
-        source: Bridge.blured-audio-track-cover.img;
+    blurred-bg := CrossfadeImage {
         width: 100%;
         height: 100%;
-        transform-rotation: Bridge.blured-audio-track-cover.rotation;
+        fit: cover;
+        placeholder: false;
+        cover: Bridge.blured-audio-track-cover.img;
+        cover-rotation: Bridge.blured-audio-track-cover.rotation;
     }
 
-    if Bridge.blured-audio-track-cover.img.width > 0: Rectangle {
+    Rectangle {
         background: Bridge.controls-bg-gradient;
+        opacity: blurred-bg.showing-image ? 1.0 : 0.0;
+        animate opacity {
+            duration: 250ms;
+            easing: ease-in-out;
+        }
     }
 
     VerticalLayout {
@@ -63,25 +205,12 @@ export component AudioPlayerView inherits Rectangle {
                 Math.min(width, height)
             }
 
-            Rectangle {
+            CrossfadeImage {
                 width: thumbnail-size();
                 height: self.width;
                 border-radius: 4px;
-                background: Bridge.audio-track-cover.img.width == 0 ? FCastPalette.neutral-1000 : transparent;
-
-                if Bridge.audio-track-cover.img.width > 0: Image {
-                    source: Bridge.audio-track-cover.img;
-                    image-fit: contain;
-                    width: parent.width;
-                    height: parent.height;
-                    transform-rotation: Bridge.audio-track-cover.rotation;
-                }
-
-                if Bridge.audio-track-cover.img.width == 0: Image {
-                    source: Icons.music-note;
-                    width: parent.width * 50%;
-                    height: parent.height * 52%;
-                }
+                cover: Bridge.audio-track-cover.img;
+                cover-rotation: Bridge.audio-track-cover.rotation;
             }
         }
 
