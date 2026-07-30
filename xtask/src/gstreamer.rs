@@ -1185,6 +1185,39 @@ fn os_from_target(target: Option<&str>) -> &'static str {
     std::env::consts::OS // "linux" | "macos" | "windows"
 }
 
+/// First `bin` found on PATH (executable regular file), as an absolute path.
+fn which(bin: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        let cand = dir.join(bin);
+        cand.is_file().then(|| cand.to_string_lossy().into_owned())
+    })
+}
+
+/// rustc args picking the fastest available linker for the builds that fall
+/// back to GNU bfd (the non-cross-LTO ones: dev and release-dbg). bfd links the
+/// ~0.5 GB static-gstreamer debug binary single threaded and dominates the
+/// edit/relink loop. Preference order: wild, then mold, then gold, else the
+/// default (bfd). wild and mold are not `-fuse-ld` names the GNU cc driver
+/// accepts, so they are driven through `clang --ld-path`; gold IS a recognised
+/// name, so it keeps the default driver. Cross-LTO keeps its own clang+lld
+/// wiring, and non-Linux keeps its platform default (lld on macOS, link.exe on
+/// Windows), so both are left untouched here.
+fn fast_linker_args(profile: &Profile) -> Vec<String> {
+    if profile.lto == Lto::Cross || target_os(profile) != "linux" {
+        return Vec::new();
+    }
+    for name in ["wild", "mold"] {
+        if let Some(path) = which(name) {
+            return vec!["-Clinker=clang".into(), format!("-Clink-arg=--ld-path={path}")];
+        }
+    }
+    if which("ld.gold").is_some() {
+        return vec!["-Clink-arg=-fuse-ld=gold".into()];
+    }
+    Vec::new()
+}
+
 /// Configure (meson setup) the static GStreamer without compiling. Returns
 /// the build handle plus the config stamp to write after a successful
 /// compile. The uninstalled .pc files exist once this returns.
@@ -2095,6 +2128,8 @@ fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result
             rustc_args.push("-Clinker=clang".into());
             rustc_args.push("-Clink-arg=-fuse-ld=lld".into());
         }
+        // Non-cross builds otherwise default to bfd (slow on this binary).
+        rustc_args.extend(fast_linker_args(profile));
         for a in &link_args {
             rustc_args.push(format!("-Clink-arg={a}"));
         }
@@ -2170,12 +2205,14 @@ fn receiver_test(
 
         let mut rustflags: Vec<String> = Vec::new();
         // Cross-LTO drives the LLVM plugin via clang/lld (matches build_receiver);
-        // the default debug test build keeps the workspace linker.
+        // the non-cross test build otherwise falls back to bfd, so pick the
+        // fastest available linker the same way build_receiver does.
         if profile.lto == Lto::Cross {
             rustflags.push("-Clinker-plugin-lto".into());
             rustflags.push("-Clinker=clang".into());
             rustflags.push("-Clink-arg=-fuse-ld=lld".into());
         }
+        rustflags.extend(fast_linker_args(profile));
         for a in &link_args {
             rustflags.push(format!("-Clink-arg={a}"));
         }
