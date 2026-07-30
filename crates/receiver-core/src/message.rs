@@ -196,8 +196,6 @@ pub enum Message {
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),
-    #[cfg(debug_assertions)]
-    DumpPipeline,
     InspectorRefresh,
     /// One bitrate sample while the inspector is open (driven by its timer).
     InspectorBitrateTick,

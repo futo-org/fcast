@@ -16,7 +16,6 @@ members = [
     "receivers/desktop",
     "receivers/experimental/android",
     "receivers/experimental/fhs",
-    "tools/remote-pipeline-dbg",
     "crates/app-updater",
     "crates/google-cast-protocol",
     "crates/receiver-resources",

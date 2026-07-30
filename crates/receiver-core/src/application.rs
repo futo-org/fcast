@@ -613,42 +613,6 @@ impl Application {
             GCastUpdateSender(None)
         };
 
-        #[cfg(debug_assertions)]
-        tokio::spawn({
-            use tokio::io::AsyncReadExt;
-            use tracing::{Instrument, debug_span};
-            let msg_tx = msg_tx.clone();
-            async move {
-                // Debug-only DumpPipeline listener. If a sibling instance holds
-                // 46897, disable it rather than panicking the worker.
-                let listener = match tokio::net::TcpListener::bind("[::]:46897").await {
-                    Ok(listener) => listener,
-                    Err(err) => {
-                        warn!(?err, "pipeline debug listener port 46897 unavailable, disabling");
-                        return;
-                    }
-                };
-                loop {
-                    let (mut stream, addr) = match listener.accept().await {
-                        Ok(conn) => conn,
-                        Err(err) => {
-                            warn!(?err, "pipeline debug listener accept failed; stopping");
-                            return;
-                        }
-                    };
-                    debug!(?addr, "Got connection");
-
-                    let mut buf = [0u8; 1];
-                    if let Ok(_) = stream.read_exact(&mut buf).await
-                        && buf[0] == 0xFF
-                    {
-                        msg_tx.send(Message::DumpPipeline);
-                    }
-                }
-            }
-            .instrument(debug_span!("pipeline-dbg-listener"))
-        });
-
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         tokio::spawn({
             use tracing::Instrument;
@@ -3384,8 +3348,6 @@ impl Application {
                 message,
                 failed_uri,
             } => {
-                #[cfg(debug_assertions)]
-                self.player.dump_graph(remote_pipeline_dbg::Trigger::Error);
                 // Attribution comes from fcastplaybin's generation-tagged
                 // inputs (supersession is already handled by the generation
                 // filter above); `failed_uri` is diagnostic only. External
@@ -3424,9 +3386,6 @@ impl Application {
                 }
             }
             player::PlayerEvent::Warning(msg) => {
-                #[cfg(debug_assertions)]
-                self.player
-                    .dump_graph(remote_pipeline_dbg::Trigger::Warning);
                 self.media_warning(msg)?;
             }
             player::PlayerEvent::StreamTagsUpdated => {
@@ -4468,10 +4427,6 @@ impl Application {
             Message::Raop(event) => return self.handle_raop_event(event),
             #[cfg(feature = "airplay")]
             Message::AirPlay(event) => return self.handle_airplay_event(event),
-            #[cfg(debug_assertions)]
-            Message::DumpPipeline => {
-                self.player.dump_graph(remote_pipeline_dbg::Trigger::Manual);
-            }
             Message::InspectorRefresh => self.refresh_inspector_graph(),
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]

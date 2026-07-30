@@ -987,13 +987,6 @@ impl Player {
         self.fcast.debug_graph_async(Box::new(done));
     }
 
-    #[cfg(debug_assertions)]
-    pub fn dump_graph(&self, _trigger: remote_pipeline_dbg::Trigger) {
-        // Disabled: an inline dot walk races per-load audio sink teardown
-        // into a double-free (see request_graph_dot_data). A fatal crash in
-        // a debugging aid whose endpoint usually isn't even listening.
-    }
-
     pub fn pause(&mut self) {
         self.desired_transport = RunningState::Paused;
         if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
