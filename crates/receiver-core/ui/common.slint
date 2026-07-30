@@ -105,73 +105,91 @@ export component MasterButton inherits Button {
 }
 
 export component VolumePreview {
-    volume-preview := HorizontalLayout {
-        visible: Bridge.volume-set-at > 0;
+    property <bool> shown: Bridge.volume-set-at > 0;
+    // A single animated factor drives the slide and the fade together, so a
+    // window resize never animates. Swap the easing to taste: `ease-out-expo`
+    // for a snappier settle, `ease-in-out` for symmetric, `ease-in-expo` for a
+    // slow-then-accelerating entrance.
+    property <float> reveal: root.shown ? 1.0 : 0.0;
+    animate reveal {
+        duration: 250ms;
+        easing: ease-out;
+    }
 
-        Rectangle {}
+    // Tell the Wayland subsurface sink to keep the video below the GUI for as
+    // long as any part of the overlay is on screen, i.e. through the whole
+    // slide/fade animation and not just while `volume-set-at > 0`.
+    init => {
+        Bridge.volume-overlay-shown = root.reveal > 0.01;
+    }
+    changed reveal => {
+        Bridge.volume-overlay-shown = root.reveal > 0.01;
+    }
 
-        VerticalLayout {
-            padding: 45px;
-            alignment: center;
-            spacing: 15px;
+    pill := Rectangle {
+        border-radius: self.width / 2;
+        background: #00000080;
+        height: root.height * 40%;
+        border-width: 1px;
+        width: bar.preferred-width + 26px * 2;
 
-            Rectangle {
-                border-radius: self.width / 2;
-                background: #00000080;
-                height: root.height * 40%;
-                border-width: 1px;
-                width: bar.preferred-width + 26px * 2;
+        // Right side, vertically centred. Slides in from off the right edge:
+        // reveal = 1 rests 45px from the edge, reveal = 0 sits fully off-screen.
+        y: (root.height - self.height) / 2;
+        x: root.width - (self.width + 45px) * root.reveal;
+        opacity: root.reveal;
+        visible: root.reveal > 0.01;
 
-                vl := VerticalLayout {
-                    padding-top: 10px;
-                    padding-bottom: 10px;
-                    alignment: space-between;
+        vl := VerticalLayout {
+            padding-top: 10px;
+            padding-bottom: 10px;
+            alignment: space-between;
 
-                    bar := Slider {
-                        maximum: 1.0;
-                        minimum: 0.0;
-                        value: Bridge.volume;
-                        height: parent.height - icon-rect.height - 15px;
-                        orientation: vertical;
-                        rail-color: #FFFFFF33;
-                        hide-thumb: true;
-                    }
+            bar := Slider {
+                maximum: 1.0;
+                minimum: 0.0;
+                value: Bridge.volume;
+                height: parent.height - icon-rect.height - 15px;
+                orientation: vertical;
+                rail-color: #FFFFFF33;
+                hide-thumb: true;
+            }
 
-                    icon-rect := Rectangle {
-                        width: parent.width;
-                        height: vol-img.height + 15px;
+            icon-rect := Rectangle {
+                width: parent.width;
+                height: vol-img.height + 15px;
 
-                        vol-img := Image {
-                            colorize: FCastPalette.neutral-100;
-                            width: 25px;
-                            height: 23px;
-                            x: parent.width / 2 - self.width / 2;
-                            y: parent.height / 2 - self.height / 2;
+                vol-img := Image {
+                    colorize: FCastPalette.neutral-100;
+                    width: 25px;
+                    height: 23px;
+                    x: parent.width / 2 - self.width / 2;
+                    y: parent.height / 2 - self.height / 2;
 
-                            states [
-                                high when Bridge.volume > 50%: {
-                                    source: Icons.volume-high;
-                                }
-                                muted when Bridge.volume == 0%: {
-                                    source: Icons.volume-muted;
-                                }
-                                low when Bridge.volume < 50%: {
-                                    source: Icons.volume-low;
-                                }
-                            ]
+                    states [
+                        high when Bridge.volume > 50%: {
+                            source: Icons.volume-high;
                         }
-                    }
+                        muted when Bridge.volume == 0%: {
+                            source: Icons.volume-muted;
+                        }
+                        low when Bridge.volume < 50%: {
+                            source: Icons.volume-low;
+                        }
+                    ]
                 }
             }
         }
     }
 
+    // The indicator stays visible while `volume-set-at` counts down to 0.
+    // 5 ticks * 350ms = 1750ms visible (Rust resets it to 1.0 on each change).
     Timer {
         running: Bridge.volume-set-at > 0;
-        interval: 250ms;
+        interval: 350ms;
 
         triggered => {
-            Bridge.volume-set-at -= 0.25;
+            Bridge.volume-set-at -= 0.2;
         }
     }
 }
