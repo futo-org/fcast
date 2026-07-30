@@ -410,6 +410,10 @@ pub struct Application {
     /// since we aren't listening on any port yet.
     port_committed: bool,
     have_media_title: bool,
+    // Last artist pushed to the UI. GStreamer re-emits the artist tag many
+    // times per item and (unlike the title) gapless has no queue-metadata artist
+    // to gate on, so we dedup by value instead of a "seen it" boolean.
+    last_artist_name: Option<String>,
     last_position_updated: f64,
     http_client: reqwest::Client,
     /// The fwebrtc signalling channel from the most recent
@@ -697,6 +701,7 @@ impl Application {
             fcast_port: FCAST_TCP_PORT,
             port_committed: false,
             have_media_title: false,
+            last_artist_name: None,
             last_position_updated: -1.0,
             http_client,
             pending_fwebrtc_channel: None,
@@ -1064,6 +1069,7 @@ impl Application {
         self.have_audio_track_cover = false;
         self.have_media_info = false;
         self.have_media_title = false;
+        self.last_artist_name = None;
         self.last_position_updated = -1.0;
         // The next load re-arms this if it is another pipeline image.
         self.image_via_player = false;
@@ -3142,8 +3148,12 @@ impl Application {
                     self.gui.set_media_title(title.get().to_owned());
                 }
 
-                if let Some(artist) = tags.get::<gst::tags::Artist>() {
-                    self.gui.set_artist_name(artist.get().to_owned());
+                if let Some(artist) = tags.get::<gst::tags::Artist>()
+                    && self.last_artist_name.as_deref() != Some(artist.get())
+                {
+                    let name = artist.get().to_owned();
+                    self.gui.set_artist_name(name.clone());
+                    self.last_artist_name = Some(name);
                 }
             }
             player::PlayerEvent::VolumeChanged(volume) => {
