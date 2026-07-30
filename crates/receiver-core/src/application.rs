@@ -594,7 +594,7 @@ impl Application {
         let mdns = mdns::start_daemon(&msg_tx, &settings)?;
 
         let run_gcast = if cfg!(not(target_os = "android")) {
-            !settings.cli.no_google_cast
+            settings.google_cast_enabled()
         } else {
             true
         };
@@ -1504,14 +1504,14 @@ impl Application {
 
         self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
         #[cfg(not(target_os = "android"))]
-        if !self.settings.cli.no_fullscreen_player {
+        if !self.settings.no_fullscreen_player() {
             // If the window was hidden, it takes some time before it can be fullscreened.
             self.gui.wait_for_is_visible();
             self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
         }
 
         let mut media_title = None;
-        if !self.settings.cli.headless
+        if !self.settings.headless()
             && let Some(v3::MetadataObject::Generic {
                 title,
                 thumbnail_url: Some(thumbnail_url),
@@ -3114,7 +3114,7 @@ impl Application {
                     return Ok(());
                 };
 
-                if !self.settings.cli.headless
+                if !self.settings.headless()
                     && !self.have_audio_track_cover
                     && let Some(cover) = tags.get::<gst::tags::Image>()
                     && let Some(buffer) = cover.get().buffer()
@@ -3518,7 +3518,7 @@ impl Application {
         match event {
             Raop::ConfigAvailable(config) => {
                 let run_raop = if cfg!(not(target_os = "android")) {
-                    !self.settings.cli.no_raop
+                    self.settings.raop_enabled()
                 } else {
                     true
                 };
@@ -3636,7 +3636,7 @@ impl Application {
         match event {
             AirPlay::ConfigAvailable(config) => {
                 let run_airplay = if cfg!(not(target_os = "android")) {
-                    !self.settings.cli.no_airplay
+                    self.settings.airplay_enabled()
                 } else {
                     true
                 };
@@ -4562,7 +4562,7 @@ impl Application {
         // Headless has no window to show the dialog in and no way to receive a
         // choice, so fail fast instead of blocking forever on a decision that
         // can never come.
-        if self.settings.cli.headless {
+        if self.settings.headless() {
             anyhow::bail!(
                 "FCast port {FCAST_TCP_PORT} is already in use (another receiver may be running). \
                  Cannot prompt for an alternative in --headless mode"
@@ -4607,7 +4607,7 @@ impl Application {
             }
         };
 
-        if self.settings.cli.no_main_window {
+        if self.settings.no_main_window() {
             // The dialog forced the window open, so restore the hidden state.
             self.gui.set_window_visibility(false);
         }
@@ -4631,7 +4631,17 @@ impl Application {
         // this prompts the user (retry / different port / quit). `None` means
         // the user quit before anything was bound, so we skip serving and fall
         // straight through to the shutdown tail below.
-        if let Some(listeners) = self.resolve_listen_port(&mut event_rx).await? {
+        // When FCast is disabled we skip binding and advertising it entirely and
+        // commit with no listeners, so the event loop still serves
+        // chromecast/airplay/raop. `select_next_some` on the resulting empty,
+        // terminated listener stream stays pending, so it simply never fires.
+        let listeners = if self.settings.fcast_enabled() {
+            self.resolve_listen_port(&mut event_rx).await?
+        } else {
+            info!("FCast receiver disabled by settings, not binding or advertising it");
+            Some(Vec::new())
+        };
+        if let Some(listeners) = listeners {
             // The port is ours. Commit to running, publish the connection
             // QR/IP panel (addresses may have arrived while the conflict dialog
             // was up) and reveal the system tray.
@@ -4639,7 +4649,14 @@ impl Application {
             // Advertise the fcast service now, at the port we actually bound,
             // so a second instance never publishes a duplicate record.
             #[cfg(not(target_os = "android"))]
-            mdns::register_fcast(&self.mdns, self.fcast_port, &self.fcast_txt_records)?;
+            if self.settings.fcast_enabled() {
+                mdns::register_fcast(
+                    &self.mdns,
+                    &self.settings.fcast_name(),
+                    self.fcast_port,
+                    &self.fcast_txt_records,
+                )?;
+            }
             self.update_connection_details()?;
             self.gui.show_system_tray();
             // Fade the startup screen out now that we're actually listening.
@@ -4654,7 +4671,7 @@ impl Application {
             let mut listener_stream = futures::stream::select_all(accept_streams);
 
             #[cfg(not(target_os = "android"))]
-            if self.settings.cli.fullscreen {
+            if self.settings.fullscreen() {
                 self.gui.set_fullscreen(true);
             }
 

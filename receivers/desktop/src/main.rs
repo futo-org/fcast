@@ -4,11 +4,16 @@ use rcore::clap::Parser;
 
 fn main() -> anyhow::Result<()> {
     let args = rcore::CliArgs::parse();
+    // Resolve the CLI flags against the persisted config once, up front. The
+    // config is read synchronously here because this runs before any async
+    // runtime exists. `settings` is the single source of truth from here on.
+    let settings = rcore::Settings::load(args);
 
     #[cfg(target_os = "windows")]
     let _ = enable_ansi_support::enable_ansi_support();
 
-    if !args.headless && std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent) {
+    if !settings.headless() && std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent)
+    {
         let selector = rcore::slint::BackendSelector::new();
         #[cfg(not(target_os = "windows"))]
         let selector = selector.require_opengl_with_version(3, 30);
@@ -24,10 +29,12 @@ fn main() -> anyhow::Result<()> {
     // Opt into the experimental Wayland subsurface sink with FCAST_VIDEO_SINK=wayland-subsurface.
     #[cfg(target_os = "linux")]
     if std::env::var("FCAST_VIDEO_SINK").as_deref() == Ok("wayland-subsurface") {
-        let sink =
-            rcore::WaylandSubsurfaceSink::new(args.disable_hdr_output, args.rendering_options());
-        return rcore::run(args, sink);
+        let sink = rcore::WaylandSubsurfaceSink::new(
+            settings.disable_hdr_output(),
+            settings.rendering_options(),
+        );
+        return rcore::run(settings, sink);
     }
 
-    rcore::run(args, rcore::SwapchainSink::new())
+    rcore::run(settings, rcore::SwapchainSink::new())
 }

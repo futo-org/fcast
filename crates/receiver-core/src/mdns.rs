@@ -9,28 +9,39 @@ use crate::{GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 #[cfg(feature = "airplay")]
 use crate::{airplay, message::AirPlay};
 
-/// The mDNS instance name advertised for the `_fcast._tcp` service. Shared by
-/// `start_daemon` (for the display name) and `register_fcast`.
-pub fn fcast_device_name() -> String {
-    let host_name = gethostname::gethostname();
-    format!("FCast-{}", host_name.to_string_lossy())
+/// The local hostname, used both for the default broadcast names and to expand
+/// the `{hostname}` variable in a configured name.
+pub fn hostname() -> String {
+    gethostname::gethostname().to_string_lossy().into_owned()
 }
 
-/// Advertise the `_fcast._tcp` service on the given (actually bound) port. This
-/// is registered only once the listening port is committed, so a second
-/// instance that can't bind the default port never advertises a duplicate
-/// record. The gcast/raop/airplay registrations on the same daemon are
-/// independent.
+/// The default FCast instance name, `FCast-<hostname>`. Used when the config
+/// does not override [`crate::Settings::fcast_name`].
+pub fn fcast_device_name() -> String {
+    format!("FCast-{}", hostname())
+}
+
+/// The default Google Cast display name, `Chromecast-<hostname>`. Used when the
+/// config does not override [`crate::Settings::chromecast_name`].
+pub fn chromecast_device_name() -> String {
+    format!("Chromecast-{}", hostname())
+}
+
+/// Advertise the `_fcast._tcp` service under `name` on the given (actually
+/// bound) port. This is registered only once the listening port is committed,
+/// so a second instance that can't bind the default port never advertises a
+/// duplicate record. The gcast/raop/airplay registrations on the same daemon
+/// are independent.
 pub fn register_fcast(
     daemon: &ServiceDaemon,
+    name: &str,
     port: u16,
     fcast_txt_records: &HashMap<String, String>,
 ) -> Result<()> {
-    let device_name = fcast_device_name();
     let service = mdns_sd::ServiceInfo::new(
         "_fcast._tcp.local.",
-        &device_name,
-        &format!("{device_name}.local."),
+        name,
+        &format!("{name}.local."),
         (), // Auto
         port,
         fcast_txt_records.to_owned(),
@@ -47,12 +58,10 @@ pub fn start_daemon(
     msg_tx: &crate::MessageSender,
     settings: &crate::Settings,
 ) -> Result<ServiceDaemon> {
-    let host_name = gethostname::gethostname();
-    let host_name = host_name.to_string_lossy();
-    let device_name = fcast_device_name();
-    // Avoid naming confusion
-    let gcast_device_name = format!("Chromecast-{host_name}");
-    msg_tx.mdns(Mdns::NameSet(device_name.clone()));
+    let fcast_name = settings.fcast_name();
+    let raop_name = settings.raop_name();
+    let chromecast_name = settings.chromecast_name();
+    msg_tx.mdns(Mdns::NameSet(fcast_name.clone()));
 
     let ifaces = get_if_addrs();
     let mut set_ips_msg = None;
@@ -60,11 +69,7 @@ pub fn start_daemon(
     let daemon = mdns_sd::ServiceDaemon::new()?;
     let monitor = daemon.monitor()?;
 
-    if let Some(Some(Some(excluded_interfaces))) = settings
-        .file
-        .as_ref()
-        .map(|s| s.discovery.as_ref().map(|d| d.exclude_interfaces.as_ref()))
-    {
+    if let Some(excluded_interfaces) = settings.exclude_interfaces() {
         match regex::Regex::new(excluded_interfaces) {
             Ok(re) => {
                 if let Ok(ifaces) = &ifaces {
@@ -107,15 +112,15 @@ pub fn start_daemon(
     // before binding) would make a second instance advertise a duplicate record
     // on a port it may not even bind.
 
-    if !settings.cli.no_google_cast {
+    if settings.google_cast_enabled() {
         let gcast_props = HashMap::from([
-            ("fn".to_owned(), gcast_device_name.clone()),
+            ("fn".to_owned(), chromecast_name.clone()),
             ("ca".to_owned(), "1".to_owned()), // Has display
         ]);
 
         let gcast_service = mdns_sd::ServiceInfo::new(
             "_googlecast._tcp.local.",
-            &gcast::get_host_name(&gcast_device_name),
+            &gcast::get_host_name(&chromecast_name),
             &format!("{}.local.", uuid::Uuid::new_v4()),
             (), // Auto
             GCAST_TCP_PORT,
@@ -126,15 +131,15 @@ pub fn start_daemon(
         daemon.register(gcast_service)?;
     }
 
-    if !settings.cli.no_raop {
-        let (raop_service, raop_config) = raop::service_info(device_name.clone()).unwrap();
+    if settings.raop_enabled() {
+        let (raop_service, raop_config) = raop::service_info(raop_name).unwrap();
         daemon.register(raop_service).unwrap();
         msg_tx.raop(Raop::ConfigAvailable(raop_config));
     }
 
     #[cfg(feature = "airplay")]
-    if !settings.cli.no_airplay {
-        let (airplay_service, airplay_config) = airplay::service_info(device_name).unwrap();
+    if settings.airplay_enabled() {
+        let (airplay_service, airplay_config) = airplay::service_info(fcast_name).unwrap();
         daemon.register(airplay_service).unwrap();
         msg_tx.airplay(AirPlay::ConfigAvailable(airplay_config));
     }

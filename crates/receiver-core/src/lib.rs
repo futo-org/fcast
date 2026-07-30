@@ -12,7 +12,6 @@ use tracing::{debug, error, info};
 use std::collections::HashSet;
 use std::{
     cell::RefCell,
-    path::PathBuf,
     rc::Rc,
     sync::{Arc, LazyLock},
     time::Duration,
@@ -37,6 +36,7 @@ mod fcastwhepsrcbin;
 mod fcompsrc;
 mod fwebrtcsrc;
 mod gcast;
+pub mod config;
 mod gstreamer;
 mod gui;
 mod image;
@@ -191,80 +191,6 @@ impl GCastUpdateSender {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct DiscoverySettings {
-    /// A regex for excluding network interface names to broadcast to.
-    pub exclude_interfaces: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct SettingsFile {
-    pub discovery: Option<DiscoverySettings>,
-}
-
-impl SettingsFile {
-    async fn try_load(cli: &CliArgs) -> Option<Self> {
-        let base_dirs = directories::BaseDirs::new();
-        let paths = [
-            cli.settings_file_path
-                .as_ref()
-                .map(|p| PathBuf::try_from(p).ok())
-                .flatten(),
-            base_dirs
-                .as_ref()
-                .map(|b| b.config_dir().to_path_buf().join("fcast-receiver.toml")),
-            base_dirs.as_ref().map(|b| {
-                b.config_dir()
-                    .to_path_buf()
-                    .join("fcast-receiver")
-                    .join("config.toml")
-            }),
-            #[cfg(target_os = "linux")]
-            Some(PathBuf::from("/etc").join("fcast-receiver.toml")),
-            #[cfg(target_os = "linux")]
-            Some(
-                PathBuf::from("/etc")
-                    .join("fcast-receiver")
-                    .join("config.toml"),
-            ),
-        ];
-
-        for path in paths {
-            let Some(path) = path else {
-                continue;
-            };
-            if !path.exists() {
-                continue;
-            };
-
-            let settings_str = match tokio::fs::read_to_string(&path).await {
-                Ok(s) => s,
-                Err(err) => {
-                    error!(?err, ?path, "Failed to read from file");
-                    continue;
-                }
-            };
-
-            match toml_edit::de::from_str::<SettingsFile>(&settings_str) {
-                Ok(settings) => {
-                    info!(?path, ?settings, "Loaded settings from file");
-                    return Some(settings);
-                }
-                Err(err) => {
-                    error!(
-                        ?err,
-                        ?path,
-                        settings_str,
-                        "Failed to deserialize settings file"
-                    );
-                }
-            }
-        }
-
-        None
-    }
-}
-
 #[cfg(not(target_os = "android"))]
 #[derive(clap::Parser)]
 #[command(name = "FCast Receiver")]
@@ -295,9 +221,12 @@ pub struct CliArgs {
     /// Disable the Google Cast receiver
     #[arg(long, default_value_t = false)]
     no_google_cast: bool,
+    /// Disable the FCast receiver
+    #[arg(long, default_value_t = false)]
+    no_fcast: bool,
     /// Change what video frame render profile should be used
-    #[arg(long, value_enum, default_value_t = placebo::RenderProfile::Fast)]
-    render_profile: placebo::RenderProfile,
+    #[arg(long, value_enum)]
+    render_profile: Option<placebo::RenderProfile>,
     /// Visualize the color mapping lookup table used for video rendering
     #[arg(long, default_value_t = false)]
     visualize_color_mapping_lut: bool,
@@ -315,19 +244,172 @@ pub struct CliArgs {
     pub disable_hdr_output: bool,
 }
 
-impl CliArgs {
+/// The receiver's effective settings: the parsed CLI flags plus the persisted
+/// [`config::ConfigStore`]. Everything the app actually reads goes through the
+/// accessor methods below, which resolve the two sources.
+///
+/// Resolution rule: a CLI flag that was passed always wins. The existing flags
+/// are one-directional (`--no-raop`, `--fullscreen`, ...), so the CLI can force
+/// a behavior on but cannot force one off against the config. When the CLI is
+/// silent the config value is used, and when both are silent the built-in
+/// default applies.
+pub struct Settings {
+    pub cli: CliArgs,
+    pub config: config::ConfigStore,
+}
+
+#[cfg(not(target_os = "android"))]
+impl Settings {
+    /// Parse the CLI flags and load the persisted config they point at.
+    pub fn load(cli: CliArgs) -> Self {
+        let config = config::ConfigStore::load(cli.settings_file_path.as_deref());
+        Self { cli, config }
+    }
+
+    /// Log verbosity, resolved from `--loglevel` then `[log] level`.
+    pub fn log_level(&self) -> Option<LevelFilter> {
+        if let Some(level) = self.cli.loglevel {
+            return Some(level);
+        }
+        self.config
+            .get()
+            .log
+            .level
+            .as_deref()
+            .and_then(parse_log_level)
+    }
+
+    /// The frame render profile, resolved from `--render-profile` then
+    /// `[video] render_profile`, defaulting to `Fast`.
+    pub fn render_profile(&self) -> placebo::RenderProfile {
+        self.cli
+            .render_profile
+            .or_else(|| {
+                self.config
+                    .get()
+                    .video
+                    .render_profile
+                    .as_deref()
+                    .and_then(parse_render_profile)
+            })
+            .unwrap_or(placebo::RenderProfile::Fast)
+    }
+
     pub fn rendering_options(&self) -> placebo::RenderingOptions {
         placebo::RenderingOptions {
-            profile: self.render_profile,
-            visualize_lut: self.visualize_color_mapping_lut,
-            show_clipping: self.visualize_hdr_clipping,
+            profile: self.render_profile(),
+            visualize_lut: self.cli.visualize_color_mapping_lut,
+            show_clipping: self.cli.visualize_hdr_clipping,
+        }
+    }
+
+    /// Regex of network interface names to exclude from advertising on.
+    pub fn exclude_interfaces(&self) -> Option<&str> {
+        self.config.get().discovery.exclude_interfaces.as_deref()
+    }
+
+    pub fn fcast_enabled(&self) -> bool {
+        !self.cli.no_fcast && self.config.get().fcast.enabled
+    }
+
+    pub fn raop_enabled(&self) -> bool {
+        !self.cli.no_raop && self.config.get().raop.enabled
+    }
+
+    pub fn google_cast_enabled(&self) -> bool {
+        !self.cli.no_google_cast && self.config.get().chromecast.enabled
+    }
+
+    #[cfg(feature = "airplay")]
+    pub fn airplay_enabled(&self) -> bool {
+        !self.cli.no_airplay && self.config.get().airplay.enabled
+    }
+
+    /// Broadcast name for the FCast service. Defaults to `FCast-<hostname>`.
+    pub fn fcast_name(&self) -> String {
+        self.config
+            .get()
+            .fcast
+            .name
+            .as_deref()
+            .map(expand_name_vars)
+            .unwrap_or_else(mdns::fcast_device_name)
+    }
+
+    /// Broadcast name for RAOP. Defaults to the FCast name.
+    pub fn raop_name(&self) -> String {
+        self.config
+            .get()
+            .raop
+            .name
+            .as_deref()
+            .map(expand_name_vars)
+            .unwrap_or_else(|| self.fcast_name())
+    }
+
+    /// Broadcast name for Google Cast. Defaults to `Chromecast-<hostname>`.
+    pub fn chromecast_name(&self) -> String {
+        self.config
+            .get()
+            .chromecast
+            .name
+            .as_deref()
+            .map(expand_name_vars)
+            .unwrap_or_else(mdns::chromecast_device_name)
+    }
+
+    pub fn headless(&self) -> bool {
+        self.cli.headless || self.config.get().interface.headless
+    }
+
+    pub fn want_systray(&self) -> bool {
+        !self.cli.no_systray && self.config.get().interface.tray
+    }
+
+    pub fn no_main_window(&self) -> bool {
+        self.cli.no_main_window || !self.config.get().interface.show_window
+    }
+
+    pub fn fullscreen(&self) -> bool {
+        self.cli.fullscreen || self.config.get().interface.start_fullscreen
+    }
+
+    pub fn no_fullscreen_player(&self) -> bool {
+        self.cli.no_fullscreen_player || !self.config.get().interface.fullscreen_player
+    }
+
+    pub fn disable_hdr_output(&self) -> bool {
+        self.cli.disable_hdr_output || !self.config.get().video.hdr_output
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn parse_render_profile(value: &str) -> Option<placebo::RenderProfile> {
+    match <placebo::RenderProfile as clap::ValueEnum>::from_str(value, true) {
+        Ok(profile) => Some(profile),
+        Err(_) => {
+            tracing::warn!(value, "Unknown render_profile in config, using default");
+            None
         }
     }
 }
 
-pub struct Settings {
-    pub cli: CliArgs,
-    pub file: Option<SettingsFile>,
+#[cfg(not(target_os = "android"))]
+fn parse_log_level(value: &str) -> Option<LevelFilter> {
+    match value.parse::<LevelFilter>() {
+        Ok(level) => Some(level),
+        Err(_) => {
+            tracing::warn!(value, "Unknown log level in config, using default");
+            None
+        }
+    }
+}
+
+/// Expand the variables allowed in a configured broadcast name. Currently only
+/// `{hostname}`, which becomes the local hostname.
+#[cfg(not(target_os = "android"))]
+fn expand_name_vars(template: &str) -> String {
+    template.replace("{hostname}", &mdns::hostname())
 }
 
 /// Per-tick video state shared (on the event-loop thread) between the Slint rendering notifier
@@ -417,7 +499,7 @@ fn allow_ptrace_attach() {}
 ///
 /// Slint and friends are assumed to be initialized by the platform specific target.
 pub fn run<S: VideoSink + 'static>(
-    #[cfg(not(target_os = "android"))] cli_args: CliArgs,
+    #[cfg(not(target_os = "android"))] settings: Settings,
     #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
     #[cfg(target_os = "android")] mut platform_event_rx: UnboundedReceiver<Message>,
     video_sink: S,
@@ -427,7 +509,7 @@ pub fn run<S: VideoSink + 'static>(
     tune_allocator();
     allow_ptrace_attach();
 
-    logging::init(cli_args.loglevel);
+    logging::init(settings.log_level());
 
     if let Err(err) = tokio_rustls::rustls::crypto::ring::default_provider().install_default() {
         error!(
@@ -452,7 +534,7 @@ pub fn run<S: VideoSink + 'static>(
         }
     });
 
-    let is_headless = cli_args.headless;
+    let is_headless = settings.headless();
 
     let sink_mutex = Arc::new(parking_lot::Mutex::new(None::<video::FSink>));
     let ui = if is_headless {
@@ -461,7 +543,7 @@ pub fn run<S: VideoSink + 'static>(
         Some(MainWindow::new()?)
     };
     #[cfg(feature = "systray")]
-    let want_systray = !cli_args.no_systray;
+    let want_systray = settings.want_systray();
     // The tray is created and shown lazily, only once the FCast port is
     // committed (see `on_show_tray`), so a port conflict that ends in quitting
     // never starts a tray at all. Held here for the lifetime of the event loop.
@@ -473,7 +555,7 @@ pub fn run<S: VideoSink + 'static>(
     let mut _obstruction_watchdog = None;
     if let Some(ui) = &ui {
         let pl_log = libplacebo::Log::new().unwrap();
-        let render_opts = cli_args.rendering_options();
+        let render_opts = settings.rendering_options();
 
         #[cfg(debug_assertions)]
         ui.global::<Bridge>().set_is_debugging(true);
@@ -493,7 +575,7 @@ pub fn run<S: VideoSink + 'static>(
         ui.window().set_rendering_notifier({
             let ui_weak = ui.as_weak();
             #[cfg(not(target_os = "android"))]
-            let mut start_fullscreen = Some(cli_args.fullscreen);
+            let mut start_fullscreen = Some(settings.fullscreen());
             let mut prev_size = (0, 0);
             let mut sink = None;
             let msg_tx = msg_tx.clone();
@@ -994,7 +1076,7 @@ pub fn run<S: VideoSink + 'static>(
 
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
-    let no_main_window = cli_args.no_main_window;
+    let no_main_window = settings.no_main_window();
     let event_loop_jh = RUNTIME.spawn({
         let ui_weak = ui.as_ref().map(|ui| ui.as_weak());
         let msg_tx = msg_tx.clone();
@@ -1016,12 +1098,6 @@ pub fn run<S: VideoSink + 'static>(
                 Some(video_sink_elem)
             } else {
                 None
-            };
-
-            let settings_file = SettingsFile::try_load(&cli_args).await;
-            let settings = Settings {
-                cli: cli_args,
-                file: settings_file,
             };
 
             application::Application::new(
