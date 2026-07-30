@@ -4454,9 +4454,63 @@ impl Application {
             Message::FCastSenderDisconnect(id) => {
                 self.fcast_senders.remove(&id);
             }
+            Message::SetConfigBool { key, value } => {
+                #[cfg(not(target_os = "android"))]
+                {
+                    let mut known = false;
+                    let res = self
+                        .settings
+                        .config
+                        .update(|config| known = config.set_bool(&key, value));
+                    self.report_config_change(&key, known, res);
+                }
+                #[cfg(target_os = "android")]
+                let _ = (key, value);
+            }
+            Message::SetConfigString { key, value } => {
+                #[cfg(not(target_os = "android"))]
+                {
+                    let mut known = false;
+                    let res = self
+                        .settings
+                        .config
+                        .update(|config| known = config.set_string(&key, &value));
+                    self.report_config_change(&key, known, res);
+                }
+                #[cfg(target_os = "android")]
+                let _ = (key, value);
+            }
         }
 
         Ok(false)
+    }
+
+    /// Push the current persisted config into the settings drawer's bindings.
+    #[cfg(not(target_os = "android"))]
+    fn push_settings_to_ui(&self) {
+        let path = self
+            .settings
+            .config
+            .path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        self.gui.init_settings(
+            self.settings.config.get().clone(),
+            path,
+            cfg!(feature = "airplay"),
+        );
+    }
+
+    /// Log the outcome of an autosaved settings change from the UI.
+    #[cfg(not(target_os = "android"))]
+    fn report_config_change(&self, key: &str, known: bool, result: std::io::Result<()>) {
+        if !known {
+            warn!(key, "Ignoring unknown setting from the settings UI");
+        } else if let Err(err) = result {
+            error!(?err, key, "Failed to persist settings change");
+        } else {
+            debug!(key, "Persisted settings change (applies on restart)");
+        }
     }
 
     fn handle_new_fcast_session(&mut self, stream: tokio::net::TcpStream, session_id: SenderId) {
@@ -4627,6 +4681,10 @@ impl Application {
         mut event_rx: UnboundedReceiver<Message>,
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
+        // Seed the settings drawer with the current persisted config.
+        #[cfg(not(target_os = "android"))]
+        self.push_settings_to_ui();
+
         // Acquire the FCast listening socket(s). If the default port is taken
         // this prompts the user (retry / different port / quit). `None` means
         // the user quit before anything was bound, so we skip serving and fall

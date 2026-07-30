@@ -120,8 +120,12 @@ export component Button {
         }
 
         i-layout := HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
+            // Icon-only buttons carry no horizontal padding, so the icon stays
+            // centred even when the button is narrower than 24px + icon-size.
+            // With padding the layout would keep the left padding and squeeze
+            // the right, nudging the icon off-centre to the right.
+            padding-left: root.text == "" ? 0px : 12px;
+            padding-right: root.text == "" ? 0px : 12px;
             padding-top: 5px;
             padding-bottom: 5px;
             spacing: 8px;

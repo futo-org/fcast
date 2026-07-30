@@ -1,0 +1,446 @@
+import {
+    Switch,
+    LineEdit,
+    Button,
+    ScrollView,
+    Icons,
+} from "../../../ui-components/std-widgets.slint";
+import { FCastPalette, Icons as FluentIcons } from "../../../ui-components/styling.slint";
+import { Bridge } from "globals.slint";
+
+// A section heading (icon + label) that groups related settings.
+component SectionHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <image> icon;
+
+    spacing: 8px;
+    padding-left: 20px;
+    padding-right: 20px;
+    padding-top: 18px;
+    padding-bottom: 6px;
+
+    VerticalLayout {
+        alignment: center;
+
+        Image {
+            source: root.icon;
+            width: 15px;
+            height: 15px;
+            colorize: FCastPalette.opacity-light-500;
+        }
+    }
+
+    Text {
+        text: root.title;
+        color: FCastPalette.opacity-light-500;
+        font-size: 12px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+
+    Rectangle { }
+}
+
+// A boolean setting: label on the left, a Switch on the right. Toggling
+// autosaves through `set-bool-setting`.
+component ToggleRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> setting-key;
+    in-out property <bool> value;
+
+    spacing: 12px;
+    padding-left: 24px;
+    padding-right: 20px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+
+    Text {
+        text: root.label;
+        color: FCastPalette.foreground;
+        font-size: 14px;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    VerticalLayout {
+        alignment: center;
+
+        Switch {
+            checked <=> root.value;
+            toggled => {
+                Bridge.set-bool-setting(root.setting-key, self.checked);
+            }
+        }
+    }
+}
+
+// A free-text setting. Autosaves on Enter or when focus leaves the field, so a
+// half-typed value is never written.
+component TextRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> setting-key;
+    in property <string> placeholder;
+    in-out property <string> value;
+
+    spacing: 12px;
+    padding-left: 24px;
+    padding-right: 20px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+
+    Text {
+        text: root.label;
+        color: FCastPalette.foreground;
+        font-size: 14px;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    VerticalLayout {
+        alignment: center;
+
+        edit := LineEdit {
+            width: 190px;
+            text <=> root.value;
+            placeholder-text: root.placeholder;
+            accepted => {
+                Bridge.set-string-setting(root.setting-key, self.text);
+            }
+            changed has-focus => {
+                if !self.has-focus {
+                    Bridge.set-string-setting(root.setting-key, self.text);
+                }
+            }
+        }
+    }
+}
+
+// A one-of setting that expands inline instead of opening a popup, so it can
+// never overflow the window or get stranded on a resize. The first model entry,
+// "Default", maps to an unset value. Selecting an option autosaves.
+component SelectRow inherits VerticalLayout {
+    in property <string> label;
+    in property <string> setting-key;
+    in property <[string]> model;
+    in-out property <string> value;
+    property <bool> expanded: false;
+
+    Rectangle {
+        height: 34px;
+
+        TouchArea {
+            clicked => {
+                root.expanded = !root.expanded;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            padding-left: 24px;
+            padding-right: 20px;
+
+            Text {
+                text: root.label;
+                color: FCastPalette.foreground;
+                font-size: 14px;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.value;
+                color: FCastPalette.opacity-light-500;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                Image {
+                    source: root.expanded ? FluentIcons.chevron-up : FluentIcons.chevron-down;
+                    width: 12px;
+                    colorize: FCastPalette.opacity-light-500;
+                }
+            }
+        }
+    }
+
+    if root.expanded: VerticalLayout {
+        padding-left: 24px;
+        padding-right: 20px;
+        padding-bottom: 4px;
+        spacing: 2px;
+
+        for opt in root.model: Rectangle {
+            height: 30px;
+            border-radius: 4px;
+            background: opt == root.value
+                ? FCastPalette.opacity-light-1000
+                : (option-touch.has-hover ? FCastPalette.opacity-light-1100 : transparent);
+
+            animate background {
+                duration: 100ms;
+            }
+
+            option-touch := TouchArea {
+                clicked => {
+                    root.value = opt;
+                    Bridge.set-string-setting(root.setting-key, opt);
+                    root.expanded = false;
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 12px;
+
+                Text {
+                    text: opt;
+                    color: opt == root.value ? FCastPalette.foreground : FCastPalette.opacity-light-500;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// A drawer that slides in from the right over a dimmed scrim. Reachable from the
+// idle screen's gear button (`Bridge.show-settings`).
+//
+// Only the panel animates (it slides via the `reveal` factor). The scrim does
+// not fade, and because the slide is driven by `reveal` rather than an animated
+// `x`, resizing the window repositions the panel instantly instead of animating.
+export component SettingsDrawer inherits Rectangle {
+    property <bool> open: Bridge.show-settings;
+    property <float> reveal: root.open ? 1.0 : 0.0;
+
+    // A single animated factor drives everything: the panel slide and the scrim
+    // fade both follow `reveal`, and nothing else animates (so resizing the
+    // window repositions the panel instantly). The duration matches the video
+    // player settings drawer.
+    animate reveal {
+        duration: 100ms;
+    }
+
+    visible: root.reveal > 0.0;
+
+    // Dimmed background tint. Its opacity fades with `reveal`. The panel itself
+    // only slides, it does not fade.
+    Rectangle {
+        background: #000000.transparentize(0.45);
+        opacity: root.reveal;
+
+        // Clicking the dimmed area closes the drawer.
+        TouchArea {
+            enabled: root.open;
+            clicked => {
+                Bridge.show-settings = false;
+            }
+        }
+    }
+
+    panel := Rectangle {
+        width: min(440px, parent.width * 0.9);
+        height: parent.height;
+        x: parent.width - self.width * root.reveal;
+        background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
+
+        // Left edge divider.
+        Rectangle {
+            x: 0;
+            width: 1px;
+            background: FCastPalette.opacity-light-1000;
+        }
+
+        // Absorb clicks inside the panel so they don't reach the scrim.
+        TouchArea { }
+
+        VerticalLayout {
+            HorizontalLayout {
+                padding: 20px;
+                padding-bottom: 12px;
+                spacing: 12px;
+
+                Text {
+                    text: @tr("Settings");
+                    color: FCastPalette.foreground;
+                    font-size: 20px;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+
+                Button {
+                    icon: Icons.close;
+                    icon-size: 13px;
+                    width: 34px;
+                    height: 34px;
+                    clicked => {
+                        Bridge.show-settings = false;
+                    }
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding-bottom: 16px;
+
+                    SectionHeader {
+                        title: @tr("FCast");
+                        icon: Icons.fcast-small;
+                    }
+                    ToggleRow {
+                        label: @tr("Enabled");
+                        setting-key: "fcast.enabled";
+                        value <=> Bridge.cfg-fcast-enabled;
+                    }
+                    TextRow {
+                        label: @tr("Name");
+                        setting-key: "fcast.name";
+                        placeholder: "FCast-{hostname}";
+                        value <=> Bridge.cfg-fcast-name;
+                    }
+
+                    SectionHeader {
+                        title: @tr("AirPlay audio");
+                        icon: Icons.audio;
+                    }
+                    ToggleRow {
+                        label: @tr("Enabled");
+                        setting-key: "raop.enabled";
+                        value <=> Bridge.cfg-raop-enabled;
+                    }
+                    TextRow {
+                        label: @tr("Name");
+                        setting-key: "raop.name";
+                        placeholder: Bridge.cfg-fcast-name != "" ? Bridge.cfg-fcast-name : "FCast-{hostname}";
+                        value <=> Bridge.cfg-raop-name;
+                    }
+
+                    SectionHeader {
+                        title: @tr("Google Cast");
+                        icon: Icons.gcast-small;
+                    }
+                    ToggleRow {
+                        label: @tr("Enabled");
+                        setting-key: "chromecast.enabled";
+                        value <=> Bridge.cfg-chromecast-enabled;
+                    }
+                    TextRow {
+                        label: @tr("Name");
+                        setting-key: "chromecast.name";
+                        placeholder: "Chromecast-{hostname}";
+                        value <=> Bridge.cfg-chromecast-name;
+                    }
+
+                    if Bridge.settings-airplay-available: SectionHeader {
+                        title: @tr("AirPlay mirroring");
+                        icon: Icons.mirror;
+                    }
+                    if Bridge.settings-airplay-available: ToggleRow {
+                        label: @tr("Enabled");
+                        setting-key: "airplay.enabled";
+                        value <=> Bridge.cfg-airplay-enabled;
+                    }
+
+                    SectionHeader {
+                        title: @tr("Interface");
+                        icon: Icons.tv-outline;
+                    }
+                    ToggleRow {
+                        label: @tr("Show window on start");
+                        setting-key: "interface.show_window";
+                        value <=> Bridge.cfg-interface-show-window;
+                    }
+                    ToggleRow {
+                        label: @tr("System tray icon");
+                        setting-key: "interface.tray";
+                        value <=> Bridge.cfg-interface-tray;
+                    }
+                    ToggleRow {
+                        label: @tr("Start fullscreen");
+                        setting-key: "interface.start_fullscreen";
+                        value <=> Bridge.cfg-interface-start-fullscreen;
+                    }
+                    ToggleRow {
+                        label: @tr("Fullscreen player");
+                        setting-key: "interface.fullscreen_player";
+                        value <=> Bridge.cfg-interface-fullscreen-player;
+                    }
+                    ToggleRow {
+                        label: @tr("Headless (no window)");
+                        setting-key: "interface.headless";
+                        value <=> Bridge.cfg-interface-headless;
+                    }
+
+                    SectionHeader {
+                        title: @tr("Video");
+                        icon: Icons.settings-video;
+                    }
+                    ToggleRow {
+                        label: @tr("HDR passthrough");
+                        setting-key: "video.hdr_output";
+                        value <=> Bridge.cfg-video-hdr-output;
+                    }
+                    SelectRow {
+                        label: @tr("Render profile");
+                        setting-key: "video.render_profile";
+                        model: ["Default", "fast", "balanced", "high-quality"];
+                        value <=> Bridge.cfg-video-render-profile;
+                    }
+
+                    SectionHeader {
+                        title: @tr("Network");
+                        icon: Icons.network;
+                    }
+                    TextRow {
+                        label: @tr("Exclude interfaces (regex)");
+                        setting-key: "discovery.exclude_interfaces";
+                        placeholder: @tr("none");
+                        value <=> Bridge.cfg-discovery-exclude-interfaces;
+                    }
+
+                    SectionHeader {
+                        title: @tr("Logging");
+                        icon: Icons.dev-log;
+                    }
+                    SelectRow {
+                        label: @tr("Log level");
+                        setting-key: "log.level";
+                        model: ["Default", "off", "error", "warn", "info", "debug", "trace"];
+                        value <=> Bridge.cfg-log-level;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: FCastPalette.opacity-light-1000;
+            }
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 5px;
+
+                Text {
+                    text: @tr("Changes save automatically and take effect after you restart the receiver.");
+                    color: FCastPalette.opacity-light-500;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+
+                if Bridge.settings-config-path != "": Text {
+                    text: Bridge.settings-config-path;
+                    color: FCastPalette.opacity-light-700;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

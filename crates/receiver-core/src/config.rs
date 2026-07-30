@@ -181,6 +181,49 @@ pub struct LogConfig {
     pub level: Option<String>,
 }
 
+impl Config {
+    /// Apply a boolean setting identified by a dotted `section.key`, as sent from
+    /// the settings UI. Returns false for an unknown key so the caller can log it
+    /// instead of silently doing nothing.
+    pub fn set_bool(&mut self, key: &str, value: bool) -> bool {
+        match key {
+            "fcast.enabled" => self.fcast.enabled = value,
+            "raop.enabled" => self.raop.enabled = value,
+            "chromecast.enabled" => self.chromecast.enabled = value,
+            "airplay.enabled" => self.airplay.enabled = value,
+            "interface.show_window" => self.interface.show_window = value,
+            "interface.tray" => self.interface.tray = value,
+            "interface.start_fullscreen" => self.interface.start_fullscreen = value,
+            "interface.fullscreen_player" => self.interface.fullscreen_player = value,
+            "interface.headless" => self.interface.headless = value,
+            "video.hdr_output" => self.video.hdr_output = value,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Apply a string setting identified by a dotted `section.key`, as sent from
+    /// the settings UI. An empty value clears the setting back to its default.
+    /// Dropdown settings additionally treat the `"Default"` sentinel as unset,
+    /// while free-text names keep it as a literal value. Returns false for an
+    /// unknown key.
+    pub fn set_string(&mut self, key: &str, value: &str) -> bool {
+        let trimmed = value.trim();
+        let text = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        let choice = (!trimmed.is_empty() && trimmed != "Default").then(|| trimmed.to_owned());
+        match key {
+            "discovery.exclude_interfaces" => self.discovery.exclude_interfaces = text,
+            "fcast.name" => self.fcast.name = text,
+            "raop.name" => self.raop.name = text,
+            "chromecast.name" => self.chromecast.name = text,
+            "video.render_profile" => self.video.render_profile = choice,
+            "log.level" => self.log.level = choice,
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// Owns the receiver's persisted [`Config`]: loads it, hands out a typed view,
 /// applies programmatic edits, and writes them back while preserving the
 /// existing file's comments and layout.
@@ -519,7 +562,8 @@ mod tests {
         //   2. A copied-but-unedited copy behaves exactly like having no config,
         //      i.e. every setting is commented out or left at its default.
         // Comparing serialized forms canonicalises away comments and layout.
-        let parsed: Config = toml_edit::de::from_str(EXAMPLE_CONFIG).expect("example is valid TOML");
+        let parsed: Config =
+            toml_edit::de::from_str(EXAMPLE_CONFIG).expect("example is valid TOML");
         assert_eq!(
             toml_edit::ser::to_string(&parsed).expect("serialize parsed example"),
             toml_edit::ser::to_string(&Config::default()).expect("serialize default"),
@@ -554,6 +598,48 @@ mod tests {
         let config = parse_config("[fcast]\nname = \"Living Room\"\n");
         assert!(config.fcast.enabled);
         assert_eq!(config.fcast.name.as_deref(), Some("Living Room"));
+    }
+
+    #[test]
+    fn set_bool_dispatch() {
+        let mut config = Config::default();
+        assert!(config.set_bool("raop.enabled", false));
+        assert!(!config.raop.enabled);
+        assert!(config.set_bool("interface.tray", false));
+        assert!(!config.interface.tray);
+        assert!(config.set_bool("video.hdr_output", false));
+        assert!(!config.video.hdr_output);
+        assert!(
+            !config.set_bool("bogus.key", true),
+            "unknown key returns false"
+        );
+    }
+
+    #[test]
+    fn set_string_dispatch_and_clear() {
+        let mut config = Config::default();
+
+        assert!(config.set_string("fcast.name", "Living Room"));
+        assert_eq!(config.fcast.name.as_deref(), Some("Living Room"));
+        // Whitespace-only clears back to the default.
+        assert!(config.set_string("fcast.name", "   "));
+        assert!(config.fcast.name.is_none());
+
+        // Dropdowns clear via the "Default" sentinel.
+        assert!(config.set_string("video.render_profile", "balanced"));
+        assert_eq!(config.video.render_profile.as_deref(), Some("balanced"));
+        assert!(config.set_string("video.render_profile", "Default"));
+        assert!(config.video.render_profile.is_none());
+
+        // A free-text name of "Default" stays literal (only dropdowns treat it
+        // as unset).
+        assert!(config.set_string("chromecast.name", "Default"));
+        assert_eq!(config.chromecast.name.as_deref(), Some("Default"));
+
+        assert!(
+            !config.set_string("bogus.key", "x"),
+            "unknown key returns false"
+        );
     }
 
     #[test]

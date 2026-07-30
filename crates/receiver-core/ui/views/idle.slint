@@ -61,18 +61,20 @@ export component IdleView inherits Rectangle {
         spacing: 20px;
 
 
-        // TODO: re-introduce when we have settings
-        // HorizontalLayout {
-        //     Rectangle { }
+        HorizontalLayout {
+            Rectangle { }
 
-        //     Button {
-        //         icon-size: 18px;
-        //         width: 40px;
-        //         height: 40px;
-        //         background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.1) 6.7%, rgba(20, 20, 20, 0.1) 92.77%);
-        //         icon: Icons.settings;
-        //     }
-        // }
+            Button {
+                icon-size: 18px;
+                width: 40px;
+                height: 40px;
+                background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.1) 6.7%, rgba(20, 20, 20, 0.1) 92.77%);
+                icon: Icons.settings;
+                clicked => {
+                    Bridge.show-settings = true;
+                }
+            }
+        }
 
         HorizontalLayout {
             alignment: space-between;

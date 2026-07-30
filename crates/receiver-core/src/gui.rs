@@ -108,6 +108,26 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
+    bridge.on_set_bool_setting({
+        let msg_tx = msg_tx.clone();
+        move |key: SharedString, value: bool| {
+            msg_tx.send(Message::SetConfigBool {
+                key: key.to_string(),
+                value,
+            });
+        }
+    });
+
+    bridge.on_set_string_setting({
+        let msg_tx = msg_tx.clone();
+        move |key: SharedString, value: SharedString| {
+            msg_tx.send(Message::SetConfigString {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
+        }
+    });
+
     bridge.on_select_playlist_item({
         let msg_tx = msg_tx.clone();
         move |idx: i32| {
@@ -329,6 +349,14 @@ pub enum UpdateGuiCommand {
     /// so a conflict that ends in quitting never leaves a stray tray icon.
     /// Handled in `spawn_command_handler` (it owns the tray handle).
     ShowSystemTray,
+    /// Push the current persisted config into the settings drawer's bindings.
+    /// Sent once at startup; drawer edits update the bindings in place after.
+    #[cfg(not(target_os = "android"))]
+    InitSettings {
+        config: crate::config::Config,
+        config_path: String,
+        airplay_available: bool,
+    },
     QuitLoop,
 }
 
@@ -395,6 +423,21 @@ impl GuiController {
 
     pub fn device_disconnected(&self) {
         self.send(UpdateGuiCommand::DeviceDisconnected);
+    }
+
+    /// Push the current persisted config into the settings drawer's bindings.
+    #[cfg(not(target_os = "android"))]
+    pub fn init_settings(
+        &self,
+        config: crate::config::Config,
+        config_path: String,
+        airplay_available: bool,
+    ) {
+        self.send(UpdateGuiCommand::InitSettings {
+            config,
+            config_path,
+            airplay_available,
+        });
     }
 
     /// Returns the the previous window fulscreen state.
@@ -779,6 +822,54 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             if !starting_up {
                 bridge.set_show_port_conflict(false);
             }
+        }
+        #[cfg(not(target_os = "android"))]
+        UpdateGuiCommand::InitSettings {
+            config,
+            config_path,
+            airplay_available,
+        } => {
+            let bridge = ui.global::<Bridge>();
+            bridge.set_cfg_fcast_enabled(config.fcast.enabled);
+            bridge.set_cfg_fcast_name(config.fcast.name.clone().unwrap_or_default().into());
+            bridge.set_cfg_raop_enabled(config.raop.enabled);
+            bridge.set_cfg_raop_name(config.raop.name.clone().unwrap_or_default().into());
+            bridge.set_cfg_chromecast_enabled(config.chromecast.enabled);
+            bridge
+                .set_cfg_chromecast_name(config.chromecast.name.clone().unwrap_or_default().into());
+            bridge.set_cfg_airplay_enabled(config.airplay.enabled);
+            bridge.set_cfg_interface_show_window(config.interface.show_window);
+            bridge.set_cfg_interface_tray(config.interface.tray);
+            bridge.set_cfg_interface_start_fullscreen(config.interface.start_fullscreen);
+            bridge.set_cfg_interface_fullscreen_player(config.interface.fullscreen_player);
+            bridge.set_cfg_interface_headless(config.interface.headless);
+            bridge.set_cfg_video_hdr_output(config.video.hdr_output);
+            bridge.set_cfg_video_render_profile(
+                config
+                    .video
+                    .render_profile
+                    .clone()
+                    .unwrap_or_else(|| "Default".to_owned())
+                    .into(),
+            );
+            bridge.set_cfg_discovery_exclude_interfaces(
+                config
+                    .discovery
+                    .exclude_interfaces
+                    .clone()
+                    .unwrap_or_default()
+                    .into(),
+            );
+            bridge.set_cfg_log_level(
+                config
+                    .log
+                    .level
+                    .clone()
+                    .unwrap_or_else(|| "Default".to_owned())
+                    .into(),
+            );
+            bridge.set_settings_config_path(config_path.into());
+            bridge.set_settings_airplay_available(airplay_available);
         }
         // Handled in `spawn_command_handler`, which holds the tray handle.
         UpdateGuiCommand::ShowSystemTray => (),

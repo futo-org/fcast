@@ -140,6 +140,30 @@ export global Bridge {
     // path (see `note_render_cost`).
     in property <string> render-latency-info;
 
+    // Settings drawer. `show-settings` toggles the slide-in panel. The `cfg-*`
+    // properties mirror the persisted config, seeded once at startup by
+    // `InitSettings` and two-way bound to the drawer's controls, which autosave
+    // through `set-bool-setting` / `set-string-setting`.
+    in-out property <bool> show-settings: false;
+    in property <string> settings-config-path;
+    in property <bool> settings-airplay-available: true;
+    in-out property <bool> cfg-fcast-enabled: true;
+    in-out property <string> cfg-fcast-name;
+    in-out property <bool> cfg-raop-enabled: true;
+    in-out property <string> cfg-raop-name;
+    in-out property <bool> cfg-chromecast-enabled: true;
+    in-out property <string> cfg-chromecast-name;
+    in-out property <bool> cfg-airplay-enabled: true;
+    in-out property <bool> cfg-interface-show-window: true;
+    in-out property <bool> cfg-interface-tray: true;
+    in-out property <bool> cfg-interface-start-fullscreen: false;
+    in-out property <bool> cfg-interface-fullscreen-player: true;
+    in-out property <bool> cfg-interface-headless: false;
+    in-out property <bool> cfg-video-hdr-output: true;
+    in-out property <string> cfg-video-render-profile: "Default";
+    in-out property <string> cfg-discovery-exclude-interfaces;
+    in-out property <string> cfg-log-level: "Default";
+
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
     // Whether any GUI element is (potentially) drawn over the video area.
     out property <bool> video-obstructed:
@@ -177,6 +201,12 @@ export global Bridge {
     // Fired periodically while the inspector is open, drives the bitrate
     // sampling (the receiver polls the player and pushes a fresh graph).
     callback inspector-tick();
+
+    // Settings drawer autosave. `key` is a dotted `section.key` (see
+    // `Config::set_bool` / `Config::set_string`). A bool fires on toggle, a
+    // string on Enter or focus-out (or dropdown selection).
+    callback set-bool-setting(key: string, value: bool);
+    callback set-string-setting(key: string, value: string);
 
     pure callback sec-to-string(sec: int) -> string;
     pure callback sec-float-to-string(sec: float) -> string;

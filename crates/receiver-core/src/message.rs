@@ -169,6 +169,18 @@ pub enum Message {
         id: i32,
         variant: UiMediaTrackType,
     },
+    /// A boolean setting was toggled in the settings drawer. `key` is a dotted
+    /// `section.key` (see `Config::set_bool`). Autosaved to the config file.
+    SetConfigBool {
+        key: String,
+        value: bool,
+    },
+    /// A string setting was committed in the settings drawer (see
+    /// `Config::set_string`). Autosaved to the config file.
+    SetConfigString {
+        key: String,
+        value: String,
+    },
     ShouldSetLoadingStatus(MediaItemId),
     /// Bounded wait for a parked `AddSubtitleSource`: the op arrived after
     /// the load but before the pipeline could answer the seekability query

@@ -25,6 +25,7 @@ import { RaopView } from "views/raop.slint";
 import { ToastOverlay } from "toast-overlay.slint";
 import { StartupView } from "startup.slint";
 import { Inspector, InspectorState } from "inspector.slint";
+import { SettingsDrawer } from "settings-drawer.slint";
 
 export {
     Bridge,
@@ -86,6 +87,8 @@ export component MainWindow inherits Window {
     if Bridge.should-show-toast-overlay(): ToastOverlay { }
 
     if Bridge.show-inspector: Inspector { }
+
+    SettingsDrawer { }
 
     StartupView {
         opacity: Bridge.starting-up ? 100% : 0%;
