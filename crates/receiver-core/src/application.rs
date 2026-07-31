@@ -179,12 +179,18 @@ struct GaplessPrearm {
     next_index: usize,
 }
 
+/// Convert a wire `showDuration` (seconds, as a bare `f64`) into a timer delay.
+fn show_duration_delay(show_duration: f64) -> Option<Duration> {
+    Duration::try_from_secs_f64(show_duration).ok()
+}
+
 fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
     use image::DownloadImageError as E;
     match err {
         E::RequestFailed(_)
         | E::Unsuccessful(_)
         | E::InvalidUrl(_)
+        | E::UnsupportedScheme(_)
         | E::FailedToGetInfo
         | E::InvalidCompUrl
         | E::ProviderNotFound
@@ -1118,6 +1124,25 @@ impl Application {
         self.current_media.is_some()
     }
 
+    /// Arm the show-duration timer for `id`.
+    ///
+    /// `show_duration` arrives as a bare `f64` on the v3 wire, so a negative,
+    /// NaN or absurdly large value would panic inside `Duration::from_secs_f64`.
+    /// Reject it here instead: an item without a usable duration plays until
+    /// EOS, which is already what an item with no duration at all does.
+    fn arm_show_duration(&self, show_duration: f64, id: MediaItemId) {
+        let Some(after) = show_duration_delay(show_duration) else {
+            warn!(show_duration, "Ignoring invalid showDuration");
+            return;
+        };
+
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            msg_tx.send(Message::MediaItemFinish(id));
+        });
+    }
+
     fn media_loaded_successfully(&mut self) {
         self.is_loading_media = false;
 
@@ -1166,12 +1191,7 @@ impl Application {
                 };
 
                 if let Some(show_duration) = item.show_duration {
-                    let msg_tx = self.msg_tx.clone();
-                    let id = self.current_media_item_id;
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
-                        msg_tx.send(Message::MediaItemFinish(id));
-                    });
+                    self.arm_show_duration(show_duration, self.current_media_item_id);
                 }
 
                 if self.should_broadcast() {
@@ -1199,12 +1219,7 @@ impl Application {
                         .get(queue.current_idx as usize)
                         .and_then(|item| item.show_duration)
                 {
-                    let msg_tx = self.msg_tx.clone();
-                    let id = self.current_media_item_id;
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs_f64(show_duration)).await;
-                        msg_tx.send(Message::MediaItemFinish(id));
-                    });
+                    self.arm_show_duration(show_duration, self.current_media_item_id);
                 }
             }
             MediaSource::Raop | MediaSource::AirPlayMirror { .. } => (),
@@ -4847,5 +4862,28 @@ impl Application {
         let _ = slint::quit_event_loop();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_show_durations_become_delays() {
+        assert_eq!(show_duration_delay(0.0), Some(Duration::ZERO));
+        assert_eq!(show_duration_delay(1.5), Some(Duration::from_millis(1500)));
+        assert_eq!(show_duration_delay(30.0), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn unusable_show_durations_are_rejected_not_panicked() {
+        // `showDuration` is an unvalidated `f64` on the v3 wire. Each of these
+        // used to panic inside `Duration::from_secs_f64` on the app task.
+        assert_eq!(show_duration_delay(-1.0), None);
+        assert_eq!(show_duration_delay(f64::NAN), None);
+        assert_eq!(show_duration_delay(f64::INFINITY), None);
+        assert_eq!(show_duration_delay(f64::NEG_INFINITY), None);
+        assert_eq!(show_duration_delay(f64::MAX), None);
     }
 }
