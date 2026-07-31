@@ -459,7 +459,65 @@ fn apply(doc: &DocumentMut, config: &Config) -> Result<DocumentMut, toml_edit::s
     }
     let mut out = doc.clone();
     merge_table_like(out.as_table_mut(), src.as_table());
+    // The merge only ever writes keys present in `src`; a cleared optional
+    // setting is absent there (serde skips `None`), so its stale value would
+    // otherwise linger on disk. Drop those so clearing a value in the UI truly
+    // reverts the file to the default.
+    prune_cleared_keys(out.as_table_mut(), src.as_table());
     Ok(out)
+}
+
+/// Dotted paths of the optional settings that can be cleared back to their
+/// default. These are exactly the `Option` fields serialized with
+/// `skip_serializing_if = "Option::is_none"` and handled by
+/// [`Config::set_string`]; keep the two lists in sync when adding one.
+const CLEARABLE_KEYS: &[&[&str]] = &[
+    &["discovery", "exclude_interfaces"],
+    &["fcast", "name"],
+    &["raop", "name"],
+    &["chromecast", "name"],
+    &["video", "render_profile"],
+    &["log", "level"],
+];
+
+/// Remove every [`CLEARABLE_KEYS`] path that is absent from the freshly
+/// serialized config (i.e. was reset to `None`) from `dst`. Foreign keys and
+/// still-set values are left untouched, since only these known paths are
+/// considered.
+fn prune_cleared_keys(dst: &mut dyn TableLike, src: &dyn TableLike) {
+    for path in CLEARABLE_KEYS {
+        if !path_present(src, path) {
+            remove_path(dst, path);
+        }
+    }
+}
+
+/// Whether the nested `path` resolves to a present key in `table`.
+fn path_present(table: &dyn TableLike, path: &[&str]) -> bool {
+    match path {
+        [] => true,
+        [key] => table.contains_key(key),
+        [key, rest @ ..] => table
+            .get(key)
+            .and_then(Item::as_table_like)
+            .is_some_and(|child| path_present(child, rest)),
+    }
+}
+
+/// Remove the leaf named by the nested `path` from `table`, if present. Empty
+/// parent sections are left in place (harmless, and preserves their decor).
+fn remove_path(table: &mut dyn TableLike, path: &[&str]) {
+    match path {
+        [] => {}
+        [key] => {
+            table.remove(key);
+        }
+        [key, rest @ ..] => {
+            if let Some(child) = table.get_mut(key).and_then(Item::as_table_like_mut) {
+                remove_path(child, rest);
+            }
+        }
+    }
 }
 
 /// Recursively copy every key from `src` into `dst`. Table-like values (standard
@@ -704,6 +762,41 @@ exclude_interfaces = \"old\" # trailing note
         let out = render(existing, &config);
         assert!(out.contains("custom = true"), "foreign key kept: {out}");
         assert!(out.contains("\"b\""), "value updated: {out}");
+    }
+
+    #[test]
+    fn clearing_a_value_reverts_the_file_to_default() {
+        // A previously-set name that the user clears in the UI (name -> None)
+        // must be removed from disk, not left behind to reappear on reload.
+        let existing = "[raop]\nname = \"Old Name\"\n";
+        let mut config = parse_config(existing);
+        assert_eq!(config.raop.name.as_deref(), Some("Old Name"));
+
+        config.raop.name = None; // what set_string does for an empty value
+
+        let out = render(existing, &config);
+        assert!(!out.contains("Old Name"), "cleared value removed: {out}");
+        assert!(
+            parse_config(&out).raop.name.is_none(),
+            "reloads at default: {out}"
+        );
+    }
+
+    #[test]
+    fn clearing_one_key_keeps_siblings_and_foreign_keys() {
+        // Pruning a cleared key must not disturb other set values or foreign keys.
+        let existing = "custom = true\n[raop]\nname = \"Old\"\n[fcast]\nname = \"Keep\"\n";
+        let mut config = parse_config(existing);
+        config.raop.name = None;
+
+        let out = render(existing, &config);
+        assert!(!out.contains("Old"), "cleared key removed: {out}");
+        assert!(out.contains("custom = true"), "foreign key kept: {out}");
+        assert_eq!(
+            parse_config(&out).fcast.name.as_deref(),
+            Some("Keep"),
+            "sibling value kept: {out}"
+        );
     }
 
     #[test]
