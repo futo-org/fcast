@@ -1152,15 +1152,7 @@ impl Player {
                 }
                 Command::SetParameter { volume, resp } => {
                     current_volume = volume;
-
-                    // https://openairplay.github.io/airplay-spec/audio/volume_control.html
-                    let percentage = if volume < -30.0 {
-                        0.0
-                    } else {
-                        1.0 - (volume / -30.0)
-                    };
-
-                    volume_elem.set_property("volume", percentage.clamp(0.0, 10.0));
+                    volume_elem.set_property("volume", airplay_volume_to_linear(volume));
                     let _ = resp.send(Ok(()));
                 }
                 Command::GetParameter { resp } => {
@@ -1673,6 +1665,23 @@ pub struct Configuration {
     pub hw_addr: [u8; 6],
 }
 
+/// Convert an AirPlay-family `volume:` value (gain in decibels, nominal range
+/// `[-30.0, 0.0]`, with `-144.0` meaning muted) into GStreamer's linear volume
+/// scale (`0.0`..=`1.0`).
+///
+/// Shared by RAOP and AirPlay mirroring: it is the same wire field with the
+/// same semantics, so it must produce the same loudness on both. See
+/// <https://openairplay.github.io/airplay-spec/audio/volume_control.html>.
+pub(crate) fn airplay_volume_to_linear(db: f64) -> f64 {
+    if db <= -30.0 {
+        return 0.0;
+    }
+    if db >= 0.0 {
+        return 1.0;
+    }
+    10f64.powf(0.05 * db)
+}
+
 pub fn device_name_hash(name: &str) -> [u8; 6] {
     use md5::Digest;
     let mut hasher = md5::Md5::new();
@@ -1939,6 +1948,44 @@ mod tests {
         let result = decrypt_audio_packet(&cipher, &iv, &packet).unwrap();
 
         assert_eq!(result, plaintext);
+    }
+
+    // --- Volume ---------------------------------------------------------------
+
+    #[test]
+    fn airplay_volume_maps_db_to_linear() {
+        // Mute signal and the bottom of the range are silence.
+        assert_eq!(airplay_volume_to_linear(-144.0), 0.0);
+        assert_eq!(airplay_volume_to_linear(-30.0), 0.0);
+        // 0 dB is full volume.
+        assert_eq!(airplay_volume_to_linear(0.0), 1.0);
+        // -15 dB → 10^(-0.75) ≈ 0.1778.
+        let mid = airplay_volume_to_linear(-15.0);
+        assert!((mid - 0.177_827_9).abs() < 1e-5, "got {mid}");
+    }
+
+    #[test]
+    fn volume_curve_is_logarithmic_and_bounded() {
+        // RAOP used to apply a linear ramp (`1.0 - db / -30.0`), putting -15 dB
+        // at 0.5 where AirPlay's logarithmic curve puts it at 0.178 — the same
+        // slider position, roughly 9 dB apart, on one shared wire field.
+        let mid = airplay_volume_to_linear(-15.0);
+        assert!(mid < 0.25, "-15 dB looks like the old linear ramp: {mid}");
+
+        // RAOP also clamped to `0.0..=10.0`, so an out-of-spec positive gain
+        // let a sender ask for up to 10x amplification.
+        for db in [0.5, 3.0, 30.0, 144.0] {
+            assert_eq!(airplay_volume_to_linear(db), 1.0, "db={db}");
+        }
+
+        // Monotonic and in range across the whole nominal slider.
+        let mut prev = airplay_volume_to_linear(-30.0);
+        for step in 1..=30 {
+            let cur = airplay_volume_to_linear(-30.0 + f64::from(step));
+            assert!((0.0..=1.0).contains(&cur), "out of range at {step}: {cur}");
+            assert!(cur >= prev, "not monotonic at {step}: {prev} -> {cur}");
+            prev = cur;
+        }
     }
 
     // --- ALAC stream configuration --------------------------------------------

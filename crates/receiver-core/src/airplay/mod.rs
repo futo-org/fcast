@@ -215,26 +215,6 @@ fn plist_u64(v: &plist::Value) -> Option<u64> {
         .or_else(|| v.as_string().and_then(|s| s.parse().ok()))
 }
 
-/// Convert an AirPlay `volume:` value (gain in decibels, nominal range
-/// `[-30.0, 0.0]`, with `-144.0` meaning muted) into GStreamer's linear volume
-/// scale (`0.0`..=`1.0`). Mirrors UxPlay's flat mapping (`uxplay.cpp`
-/// `audio_set_volume`): the `[-30, 0] dB` slider is rescaled onto its length
-/// fraction and converted back with `10^(dB/20)`, so `-30 dB` (and below) is
-/// silence and `0 dB` is full volume.
-fn airplay_volume_to_linear(db: f32) -> f64 {
-    // `-144` (mute) and anything at/below the bottom of the range → silence.
-    if db <= -30.0 {
-        return 0.0;
-    }
-    if db >= 0.0 {
-        return 1.0;
-    }
-    // Fraction of the slider above the -30 dB floor, then dB → linear gain.
-    let frac = f64::from(30.0 + db) / 30.0;
-    let gain_db = -30.0 + 30.0 * frac; // == db, kept explicit to match UxPlay.
-    10f64.powf(0.05 * gain_db)
-}
-
 /// Build the `audioLatencies`/`audioFormats` two-element arrays (types 100 and
 /// 101). `formats` is `0` for latencies and the format bitmask for formats.
 fn audio_array(formats: u64) -> Vec<plist::Value> {
@@ -568,7 +548,7 @@ impl Handler {
                         // Mirror audio now decodes inside the shared playbin, so
                         // the player's own volume reaches it - route the change to
                         // the app loop, which applies it via `player.set_volume`.
-                        let linear = airplay_volume_to_linear(db);
+                        let linear = crate::raop::airplay_volume_to_linear(db.into());
                         debug!(db, linear, "SET_PARAMETER volume");
                         if let Some(stream_connection_id) = self.mirror_session {
                             self.msg_tx.airplay(crate::message::AirPlay::VolumeChanged {
@@ -915,19 +895,7 @@ mod tests {
         assert_eq!(teardown_stream_types(b""), (false, false));
     }
 
-    #[test]
-    fn airplay_volume_maps_db_to_linear() {
-        // Mute signal and the bottom of the range are silence.
-        assert_eq!(airplay_volume_to_linear(-144.0), 0.0);
-        assert_eq!(airplay_volume_to_linear(-30.0), 0.0);
-        // 0 dB is full volume.
-        assert_eq!(airplay_volume_to_linear(0.0), 1.0);
-        // Out-of-range positive clamps to full.
-        assert_eq!(airplay_volume_to_linear(3.0), 1.0);
-        // -15 dB → 10^(-0.75) ≈ 0.1778.
-        let mid = airplay_volume_to_linear(-15.0);
-        assert!((mid - 0.177_827_9).abs() < 1e-5, "got {mid}");
-    }
+    // The volume-curve tests live next to the shared conversion, in `raop`.
 
     #[test]
     fn info_plist_parses_with_expected_keys() {
