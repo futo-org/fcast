@@ -1082,7 +1082,7 @@ pub fn run<S: VideoSink + 'static>(
                 None
             };
 
-            application::Application::new(
+            let app = application::Application::new(
                 gui,
                 video_sink_elem.map(|e| e.upcast()),
                 msg_tx,
@@ -1091,11 +1091,20 @@ pub fn run<S: VideoSink + 'static>(
                 #[cfg(not(target_os = "android"))]
                 settings,
             )
-            .await
-            .unwrap()
-            .run_event_loop(event_rx, fin_tx)
-            .await
-            .unwrap();
+            .await;
+
+            // This task is detached, so panicking here left the Slint loop running a UI with no
+            // protocol handling behind it, no pipeline teardown, and mDNS still advertising. Fail
+            // visibly and quit instead, so both halves of the process go down together.
+            let result = match app {
+                Ok(app) => app.run_event_loop(event_rx, fin_tx).await,
+                Err(err) => Err(err),
+            };
+
+            if let Err(err) = result {
+                error!(?err, "Receiver event loop failed");
+                let _ = slint::quit_event_loop();
+            }
         }
     });
 

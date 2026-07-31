@@ -475,7 +475,16 @@ pub async fn run_server(
     loop {
         tokio::select! {
             res = listener_stream.select_next_some() => {
-                let (stream, _addr) = res?;
+                // Same reasoning as the FCast accept loop: a failed accept is per-connection and
+                // must not end the Chromecast server.
+                let (stream, _addr) = match res {
+                    Ok(accepted) => accepted,
+                    Err(err) => {
+                        warn!(?err, "Failed to accept a Chromecast connection");
+                        tokio::time::sleep(crate::application::ACCEPT_ERROR_BACKOFF).await;
+                        continue;
+                    }
+                };
                 let acceptor = acceptor.clone();
                 let msg_tx = msg_tx.clone();
                 let media_status = Arc::clone(&media_status);
