@@ -182,18 +182,20 @@ pub enum Message {
         value: String,
     },
     ShouldSetLoadingStatus(MediaItemId),
-    /// Bounded wait for a parked `AddSubtitleSource`: the op arrived after
-    /// the load but before the pipeline could answer the seekability query
-    /// (`Player::seekable_known`). If the query still hasn't resolved when
-    /// this fires, the parked adds are rejected with `InvalidState`.
+    /// Bounded wait for a parked `AddSubtitleSource`: the op arrived while the
+    /// load it targets was still in flight (`Application::is_loading_media`,
+    /// a sender may send `Load` and `AddSubtitleSource` back to back), or
+    /// after the load but before the pipeline could answer the seekability
+    /// query (`Player::seekable_known`). If neither has settled when this
+    /// fires, the parked adds are rejected with `InvalidState`.
     PendingSubtitleAddCheck {
         item: MediaItemId,
         epoch: u64,
     },
-    /// Bounded wait for a parked `Seek` (same unresolved-seekability window
-    /// as `PendingSubtitleAddCheck`). If still unresolved when this fires,
-    /// the parked seek is dropped (matching the old silent behavior for
-    /// unseekable streams).
+    /// Bounded wait for a parked `Seek` (the unresolved-seekability window
+    /// `PendingSubtitleAddCheck` also covers). If still unresolved when this
+    /// fires, the parked seek is dropped (matching the old silent behavior
+    /// for unseekable streams).
     PendingSeekCheck {
         epoch: u64,
     },

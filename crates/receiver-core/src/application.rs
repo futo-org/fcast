@@ -440,8 +440,9 @@ struct ExternalSubtitle {
     stream_sid: Option<String>,
 }
 
-/// An `AddSubtitleSource` that arrived after the media was loaded but before the pipeline could
-/// answer the seekability query.
+/// An `AddSubtitleSource` that arrived before the receiver could act on it: either while the load
+/// it targets is still in flight, or after the load but before the pipeline could answer the
+/// seekability query.
 struct PendingSubtitleAdd {
     url: String,
     select: bool,
@@ -3041,8 +3042,9 @@ impl Application {
     }
 
     fn on_media_info_updated(&mut self) {
-        // An `AddSubtitleSource` may be parked waiting for the seekability
-        // query this update may have just resolved.
+        // An `AddSubtitleSource` may be parked waiting for the load to
+        // complete, or for the seekability query this update may have just
+        // resolved.
         self.maybe_apply_pending_subtitle_adds();
 
         // The start position/rate is applied inside `fcastplaybin::load`, here
@@ -3066,16 +3068,24 @@ impl Application {
         self.player.stream_idx_by_id(sid)
     }
 
-    /// How long a parked `AddSubtitleSource` may wait for the seekability
-    /// query to resolve before it is rejected with `InvalidState`.
-    const PENDING_SUBTITLE_ADD_TIMEOUT: Duration = Duration::from_secs(10);
+    /// How long a parked `AddSubtitleSource` may wait before it is rejected
+    /// with `InvalidState`. This bounds the combined wait: the in-flight load
+    /// completing, then the seekability query resolving. A slow preroll under
+    /// load contention can take well over 10 seconds on its own, so the two
+    /// waits back to back need the headroom.
+    const PENDING_SUBTITLE_ADD_TIMEOUT: Duration = Duration::from_secs(20);
 
-    /// Handle `AddSubtitleSource`. If the media is loaded but the pipeline
-    /// hasn't answered the seekability query yet (tracks are advertised off
-    /// the first stream collection, well before the query can succeed at
-    /// preroll completion, seconds apart on a slow preroll), the op is
-    /// parked and replayed once seekability is known instead of being
-    /// spuriously rejected.
+    /// Handle `AddSubtitleSource`. The op is parked and replayed instead of
+    /// being spuriously rejected in two windows:
+    ///
+    /// - The load it targets is still in flight. A sender may send `Load` and
+    ///   `AddSubtitleSource` back to back, and everything the preconditions
+    ///   below ask about (liveness, seekability) only becomes answerable once
+    ///   the pipeline has something to answer with.
+    /// - The media is loaded but the pipeline hasn't answered the seekability
+    ///   query yet. Tracks are advertised off the first stream collection,
+    ///   well before the query can succeed at preroll completion, seconds
+    ///   apart on a slow preroll.
     fn add_subtitle_source(
         &mut self,
         origin: PacketOrigin,
@@ -3088,17 +3098,36 @@ impl Application {
         // Preconditions: an active, non-live, seekable, fully loaded
         // media item. Selecting an external needs a reload+seek
         // (`suburi` only applies at load time), impossible on a
-        // live/unseekable stream, and an in-flight load would be
-        // raced.
+        // live/unseekable stream, and acting on an in-flight load would
+        // race it. Only an incompatible source is a genuine rejection
+        // here: liveness and seekability are answerable once the load has
+        // settled, so an op that arrives before then is parked.
         let src_supported = match self.current_media.as_ref().map(|m| &m.source) {
             Some(MediaSource::Single(_) | MediaSource::Playlist { .. } | MediaSource::Queue(_)) => {
                 true
             }
             Some(MediaSource::Raop | MediaSource::AirPlayMirror { .. }) | None => false,
         };
-        if !src_supported || self.is_loading_media {
+        if !src_supported {
             error!("Cannot add a subtitle source: no compatible media is loaded");
             self.send_error(origin, ErrorKind::InvalidState);
+            return Ok(false);
+        }
+        if self.is_loading_media {
+            // The media the op targets is the one currently loading, so it is
+            // not a mistake by the sender, just early. This whole window
+            // (between the `Load` op and its first stream collection) used to
+            // be a hard `InvalidState`, which forced senders to guess when the
+            // receiver was ready. Park instead and let the load's completion
+            // replay it.
+            //
+            // Parking happens BEFORE the liveness and seekability checks and
+            // before `cancel_gapless_prearm` on purpose: mid-load neither
+            // property is known yet, and a fresh load has no pre-arm to
+            // cancel. All of that is evaluated on the replay, where the
+            // answers mean something.
+            debug!("Parking the subtitle source until the in-flight load completes");
+            self.park_pending_subtitle_add(url, select, name, origin);
             return Ok(false);
         }
         if self.player.is_live() {
@@ -3119,19 +3148,7 @@ impl Application {
                 // `on_media_info_updated` replays it once the query
                 // resolves, and the check timer bounds the wait.
                 debug!("Parking the subtitle source until the seekability query resolves");
-                self.pending_subtitle_adds.push(PendingSubtitleAdd {
-                    url,
-                    select,
-                    name,
-                    origin,
-                });
-                let epoch = self.pending_subtitle_add_epoch;
-                let item = self.current_media_item_id;
-                let msg_tx = self.msg_tx.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Self::PENDING_SUBTITLE_ADD_TIMEOUT).await;
-                    msg_tx.send(Message::PendingSubtitleAddCheck { item, epoch });
-                });
+                self.park_pending_subtitle_add(url, select, name, origin);
                 return Ok(false);
             }
             error!("Cannot add a subtitle source to an unseekable stream");
@@ -3183,11 +3200,46 @@ impl Application {
         Ok(false)
     }
 
-    /// Replay `AddSubtitleSource` ops parked while the seekability query was
-    /// unresolved. No-op until it resolves, called whenever media info
-    /// updates.
+    /// Park an `AddSubtitleSource` for a later replay and arm the timer that
+    /// bounds the wait. Shared by both park sites (in-flight load, unresolved
+    /// seekability). The timer is stamped with the current epoch and media
+    /// item, so if the list is drained (applied or rejected) before it fires,
+    /// the check is a no-op.
+    fn park_pending_subtitle_add(
+        &mut self,
+        url: String,
+        select: bool,
+        name: Option<SmolStr>,
+        origin: PacketOrigin,
+    ) {
+        self.pending_subtitle_adds.push(PendingSubtitleAdd {
+            url,
+            select,
+            name,
+            origin,
+        });
+        let epoch = self.pending_subtitle_add_epoch;
+        let item = self.current_media_item_id;
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Self::PENDING_SUBTITLE_ADD_TIMEOUT).await;
+            msg_tx.send(Message::PendingSubtitleAddCheck { item, epoch });
+        });
+    }
+
+    /// Replay `AddSubtitleSource` ops parked while the load was in flight or
+    /// the seekability query was unresolved. No-op until both have settled,
+    /// called whenever media info updates.
     fn maybe_apply_pending_subtitle_adds(&mut self) {
-        if self.pending_subtitle_adds.is_empty() || !self.player.seekable_known {
+        // `is_loading_media` matters here because the first stream collection
+        // calls `on_media_info_updated` before `media_loaded_successfully`
+        // clears the flag: replaying at that point would re-enter
+        // `add_subtitle_source` mid-load and just park again. The
+        // StreamCollection arm calls back here once the flag is clear.
+        if self.pending_subtitle_adds.is_empty()
+            || self.is_loading_media
+            || !self.player.seekable_known
+        {
             return;
         }
         self.pending_subtitle_add_epoch += 1;
@@ -3755,6 +3807,15 @@ impl Application {
                     self.media_loaded_successfully();
                     self.have_media_info = true;
                 }
+
+                // A parked `AddSubtitleSource` may have been waiting on the
+                // load itself, and this collection's `on_media_info_updated`
+                // above ran while `is_loading_media` was still set. Retry the
+                // release now that it is clear. In the common order
+                // (collection first, seekability at preroll completion) the
+                // later `on_media_info_updated` does the release, this covers
+                // the reverse order where seekability resolved first.
+                self.maybe_apply_pending_subtitle_adds();
             }
             player::PlayerEvent::AsyncDone => {
                 // Settles an in-flight subtitle refresh (retrying it while
@@ -5118,7 +5179,7 @@ impl Application {
                 {
                     warn!(
                         item,
-                        "Seekability never resolved; rejecting parked subtitle source(s)"
+                        "Load or seekability never resolved, rejecting parked subtitle source(s)"
                     );
                     self.reject_pending_subtitle_adds();
                 }

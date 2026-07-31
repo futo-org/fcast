@@ -390,6 +390,9 @@ cases!(
     external_sub_empty_url_malformed_v4,
     external_sub_add_invalid_url_v4,
     external_sub_no_media_rejected_v4,
+    external_sub_add_during_load_v4,
+    external_sub_add_during_load_unselected_v4,
+    external_sub_add_during_load_dropped_on_error_v4,
     // cast_video_set_volume_v4,
     cast_video_set_speed_v4,
     cast_seek_v4,
@@ -2322,6 +2325,121 @@ define_test_case!(
             name: None,
         }),
         recv!(Receive::Error(ErrorKind::InvalidState)),
+    ]
+);
+
+// The parked-add window: the add lands while the media is still loading, so
+// before the first stream collection arrives. A sender cannot know when the
+// load finishes, so instead of refusing the op the receiver parks it and
+// applies it once the load completes. Note the deliberate absence of any
+// sleep between the play and the add, that back-to-back pair is the whole
+// point of the case.
+define_test_case!(
+    external_sub_add_during_load_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English (external)"),
+        }),
+        // The parked add is applied on top of the finished load, so the
+        // external text stream must end up advertised alongside the media's
+        // own tracks.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Playback must survive the parked add being applied.
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+// Same parked-add window as above, but "add but don't show". decodebin3
+// auto-selects a lone fresh text stream, so the receiver has to pin the
+// no-subtitle selection through the parked add being applied.
+define_test_case!(
+    external_sub_add_during_load_unselected_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("subs/sample_en.srt", 1, "application/x-subrip"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: false,
+            name: Some("English"),
+        }),
+        // The external is still catalogued and advertised even though it is
+        // not the active selection.
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: None,
+        },
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+// A parked add whose load never completes: the main media URL 404s, so the
+// load fails and is cleaned up, and the add parked behind it can never be
+// applied. It must be rejected (InvalidState) rather than left parked
+// forever or applied to a dead load.
+//
+// ORDERING ASSUMPTION: the engine matches errors strictly in the order the
+// case expects them, and an error of any other kind fails the case on the
+// spot. We expect the load failure (ResourceNotFound) first and the parked
+// add's rejection (InvalidState) second, because the rejection is a
+// consequence of the failed load's cleanup. If this case ever fails with
+// "receiver reported a v4 error: InvalidState" while waiting for
+// ResourceNotFound, the receiver drained the parked op before broadcasting
+// the load failure and the two expectations below simply need swapping.
+define_test_case!(
+    external_sub_add_during_load_dropped_on_error_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("subs/sample_en.srt", 0, "application/x-subrip"),
+        // A well-formed but never-served media URL, the receiver gets a 404.
+        send!(Send::PlayFakeUrlV4 {
+            container: "video/mp4",
+        }),
+        // Parked behind a load that is doomed. The subtitle itself is real,
+        // so the only possible failure is the doomed load it waits on.
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 0,
+            select: true,
+            name: Some("English (external)"),
+        }),
+        recv!(Receive::Error(ErrorKind::ResourceNotFound)),
+        recv!(Receive::Error(ErrorKind::InvalidState)),
+        send!(Send::StopV4),
     ]
 );
 
