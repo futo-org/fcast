@@ -384,6 +384,7 @@ cases!(
     external_sub_switch_embedded_external_v4,
     external_sub_add_two_selected_v4,
     external_sub_switch_between_externals_v4,
+    external_sub_add_after_deselect_v4,
     external_sub_seek_v4,
     external_sub_empty_url_malformed_v4,
     external_sub_add_invalid_url_v4,
@@ -2059,6 +2060,101 @@ define_test_case!(
         },
         // Playback survived the switching.
         recv!(Receive::ProgressV4AtLeast(4.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+// Add an external while a previously deselected external sits re-armed.
+// Deselecting an external kills its input in the deselect race (decodebin3
+// unlinks the deselected input stream mid-push, the source errors
+// not-linked) and the playbin re-arms it under the same id. The second
+// AddSubtitleSource then lands on a decodebin3 whose pending collection
+// list contains a non-update intermediary, which used to trip a fatal
+// assertion in mq_slot_handle_stream_start and abort the receiver.
+define_test_case!(
+    external_sub_add_after_deselect_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        // Dense enough that the parsed cues exceed multiqueue's byte limit:
+        // the text input then always has a push in flight while selected,
+        // which is what the deselect race needs to kill it. Served three
+        // times, mirroring a sender that posts a fresh source per
+        // captions-on toggle.
+        serve!("subs/generated_dense.vtt", 1, "text/vtt"),
+        serve!("subs/generated_dense.vtt", 2, "text/vtt"),
+        serve!("subs/generated_dense.vtt", 3, "text/vtt"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 1,
+            select: true,
+            name: Some("English 1"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        // Captions off: the deselect lands on the mid-push input, kills it,
+        // and the playbin re-arms it under the same id.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: None,
+        }),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: None,
+        },
+        Step::SleepMillis(1200),
+        // Captions on again: a fresh source, attached while the killed one
+        // sits re-armed.
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 2,
+            select: true,
+            name: Some("English 2"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 2,
+        },
+        Step::SleepMillis(1200),
+        // And one more off/on round.
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: None,
+        }),
+        Step::SleepMillis(1200),
+        send!(Send::AddSubtitleSourceV4 {
+            file_id: 3,
+            select: true,
+            name: Some("English 3"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 3,
+        },
+        // The newest external (advertised at index 2) becomes the active
+        // selection.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(2),
+        },
+        // Playback survived both the deselect and the second add.
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
         send!(Send::StopV4),
     ]
 );
