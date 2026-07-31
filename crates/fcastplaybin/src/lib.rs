@@ -540,6 +540,17 @@ struct ExternalInput {
     epoch: u32,
     /// When this input was (re-)attached, for the error debounce.
     attached_at: Instant,
+    /// Re-arms only: block this input's buffers at its source pads until a
+    /// selection naming its stream applies. A re-armed input attaches while
+    /// its stream is DESELECTED, and pushing into a deselected stream is
+    /// what killed its predecessor (decodebin3 unlinks such inputs and the
+    /// push dies not-linked), so an unblocked replacement just dies the
+    /// same death and a later re-select then wedges against a dead element
+    /// forever. Blocked, the input stays alive indefinitely: its sticky
+    /// events still reach decodebin3 (the stream stays advertised and
+    /// selectable) and the buffers follow once the re-select's
+    /// `STREAMS_SELECTED` confirms (see `Inner::unblock_selected_externals`).
+    hold_until_selected: bool,
 }
 
 /// One live input: an element (urisourcebin or caller-provided) whose source
@@ -890,6 +901,20 @@ struct Inner {
     /// draining out of decodebin3, and an old EOS reaching the sinks there
     /// can end the pipeline between items. Reset per load.
     retired_group: Mutex<Option<gst::GroupId>>,
+    /// The group whose EOS the output gate committed to LETTING THROUGH
+    /// into streamsynchronizer. A short item's fastest stream (audio
+    /// decodes a whole 2s clip in milliseconds) can push its EOS past the
+    /// output gate BEFORE a pre-arm arms it. streamsynchronizer then parks
+    /// that stream's pushing thread (the multiqueue slot task!) until the
+    /// whole group is EOS, and the parked task can never deliver the next
+    /// item's stream-start queued behind it. Dropping the group's REMAINING
+    /// EOS at the output gate would leave the group forever incomplete and
+    /// wedge the switch, so the gate is all-or-nothing per group: once one
+    /// EOS of a group passed, its siblings pass too, streamsynchronizer
+    /// completes the group and re-emits EOS on its src pads, where the
+    /// post-ssync gate consumes them before they reach the sinks. Reset per
+    /// load.
+    passing_eos_group: Mutex<Option<gst::GroupId>>,
     /// A gapless activation's user-facing events (PreparedActivated + the new
     /// item's collection), held back from decodebin3's output until the new
     /// item's audio crosses the decoupling queue to the sink. The switch is
@@ -1194,6 +1219,7 @@ impl FcastPlaybin {
             swap_gate: SwapGate::default(),
             active_group: Mutex::new(None),
             retired_group: Mutex::new(None),
+            passing_eos_group: Mutex::new(None),
             held_activation: Mutex::new(None),
         });
 
@@ -1356,6 +1382,7 @@ impl FcastPlaybin {
         // records it (see `Inner::active_group`).
         *inner.active_group.lock() = None;
         *inner.retired_group.lock() = None;
+        *inner.passing_eos_group.lock() = None;
         // A fresh load supersedes any gapless activation still held for the
         // sink boundary; its events belong to a play item this load replaces.
         *inner.held_activation.lock() = None;
@@ -1447,6 +1474,7 @@ impl FcastPlaybin {
             uri: uri.to_string(),
             epoch: 0,
             attached_at: Instant::now(),
+            hold_until_selected: false,
         };
         Inner::add_input(&self.inner, element, generation, Some(external))?;
         info!(?id, uri, "attached external subtitle input");
@@ -2401,6 +2429,19 @@ impl Inner {
                 info!(?id, %error, "re-arming the deselected external subtitle input");
                 let _ = self.work_tx.send(Job::RearmSub { id, epoch });
             }
+            Action::RearmDeferred => {
+                info!(?id, %error, "re-arming the deselected external subtitle input (deferred)");
+                let work_tx = self.work_tx.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("fpb-sub-rearm".into())
+                    .spawn(move || {
+                        std::thread::sleep(EXTERNAL_REARM_DEBOUNCE);
+                        let _ = work_tx.send(Job::RearmSub { id, epoch });
+                    });
+                if let Err(err) = spawned {
+                    warn!(?err, ?id, "failed to defer the subtitle re-arm");
+                }
+            }
             Action::Ignore => {
                 debug!(?id, %error, "ignoring error from a just (re-)attached external input");
             }
@@ -2523,6 +2564,36 @@ impl Inner {
             );
             self.activate_prepared_now(prepared, retired);
         }
+    }
+
+    /// The gapless EOS-hold decision, shared by the output gate and the
+    /// post-streamsynchronizer gate: an EOS on a pad whose stream group is
+    /// `pad_group` must be dropped while a swap is pending (committed to a
+    /// next item, nothing may end the pipeline) or while the pad still
+    /// carries a non-active group, either lagging the active one or
+    /// positively the RETIRED one (old-item drainage, see
+    /// [`Inner::retired_group`]). Unknowns on either side never drop: only
+    /// a positively known group mismatch is old-item drainage. A pending
+    /// drop is recorded for the cancel synthesis (see
+    /// [`SwapState::dropped_eos`]). Returns (drop, pending, behind).
+    fn gapless_eos_check_and_mark(&self, pad_group: Option<gst::GroupId>) -> (bool, bool, bool) {
+        let active_group = *self.active_group.lock();
+        let retired_group = *self.retired_group.lock();
+        let behind = match (pad_group, active_group) {
+            (Some(pad_group), Some(active)) => pad_group != active,
+            _ => false,
+        } || (pad_group.is_some() && pad_group == retired_group);
+        // One lock hold for the check AND the drop record: a cancel between
+        // them would zero the state and the mark would pollute the next
+        // prepare's gate.
+        let mut state = self.swap_gate.state.lock();
+        let pending = state.pending.is_some();
+        if pending {
+            // The item's end is consumed for good; a cancelled swap must
+            // synthesize it (see `SwapState::dropped_eos`).
+            state.dropped_eos = true;
+        }
+        (pending || behind, pending, behind)
     }
 
     /// Selection-side activation trigger, run against every
@@ -2870,6 +2941,10 @@ impl Inner {
                 // deliver its held-back collection first, so this selection
                 // event arrives in a fresh load's order and stamping.
                 self.try_activate_prepared(&all_ids);
+
+                // A re-armed external held blocked until selected may flow
+                // now (see `ExternalInput::hold_until_selected`).
+                self.unblock_selected_externals(&all_ids);
 
                 let seqnum = msg.seqnum();
                 // Record what applied (and settle/overtake the in-flight
@@ -3369,6 +3444,10 @@ impl FcastPlaybin {
                 uri: uri.clone(),
                 epoch: epoch + 1,
                 attached_at: Instant::now(),
+                // The predecessor died pushing into a deselected stream;
+                // the replacement holds its buffers until a selection
+                // actually wants it (see `ExternalInput::hold_until_selected`).
+                hold_until_selected: true,
             };
             Inner::add_input(
                 &self.inner,
@@ -3508,6 +3587,11 @@ impl Inner {
             .as_ref()
             .map(|c| c.db3.clone())
             .ok_or_else(|| anyhow!("no dynamic core"))?;
+        // A held external's buffers must never reach decodebin3 while its
+        // stream is deselected (see `ExternalInput::hold_until_selected`).
+        // Installed BEFORE the link so no buffer can slip through: this runs
+        // on the element's streaming thread ahead of any push through `pad`.
+        Inner::block_held_external_pad(inner, element, pad);
         let sinkpad = db3
             .request_pad_simple("sink_%u")
             .ok_or_else(|| anyhow!("decodebin3 gave no request sink pad"))?;
@@ -3522,6 +3606,84 @@ impl Inner {
             db3.release_request_pad(&sinkpad);
         }
         Ok(())
+    }
+
+    /// Install the hold-until-selected block on one source pad of a
+    /// re-armed external input (see [`ExternalInput::hold_until_selected`]).
+    /// Serialized events pass, so the stream's sticky events reach
+    /// decodebin3 and it stays advertised; buffers and GAP hold until
+    /// [`Inner::unblock_selected_externals`] removes the probe. A no-op for
+    /// every other input.
+    fn block_held_external_pad(inner: &Arc<Inner>, element: &gst::Element, pad: &gst::Pad) {
+        {
+            let routing = inner.routing.lock();
+            let held = routing.inputs.iter().any(|i| {
+                i.element == *element
+                    && i.external.as_ref().is_some_and(|e| e.hold_until_selected)
+            });
+            if !held {
+                return;
+            }
+        }
+        let probe = pad.add_probe(
+            gst::PadProbeType::BLOCK
+                | gst::PadProbeType::BUFFER
+                | gst::PadProbeType::BUFFER_LIST
+                | gst::PadProbeType::EVENT_DOWNSTREAM,
+            |_pad, info| {
+                // GAP is data-like and holds with the buffers, exactly like
+                // the gapless prepare's block probe.
+                if let Some(gst::PadProbeData::Event(event)) = &info.data
+                    && event.type_() != gst::EventType::Gap
+                {
+                    return gst::PadProbeReturn::Pass;
+                }
+                gst::PadProbeReturn::Ok
+            },
+        );
+        let Some(probe) = probe else { return };
+        debug!(pad = %pad.name(), "holding a re-armed external input's data until selected");
+        let mut routing = inner.routing.lock();
+        if let Some(input) = routing.inputs.iter_mut().find(|i| &i.element == element) {
+            input.block_probes.push((pad.clone(), probe));
+        } else {
+            drop(routing);
+            pad.remove_probe(probe);
+        }
+    }
+
+    /// Release the hold-until-selected blocks of every external input whose
+    /// stream a just-applied selection names (see
+    /// [`ExternalInput::hold_until_selected`]). Once decodebin3 confirmed
+    /// the stream selected, the flowing buffers relink the input stream to
+    /// its multiqueue slot (decodebin3's own input machinery) and the
+    /// subtitle plays.
+    fn unblock_selected_externals(&self, selected_ids: &[String]) {
+        let to_unblock: Vec<(gst::Pad, gst::PadProbeId)> = {
+            let mut routing = self.routing.lock();
+            let mut probes = Vec::new();
+            for input in routing.inputs.iter_mut() {
+                let held = input
+                    .external
+                    .as_ref()
+                    .is_some_and(|e| e.hold_until_selected);
+                if !held || input.block_probes.is_empty() {
+                    continue;
+                }
+                let sids = input.stream_ids();
+                if sids.iter().any(|sid| selected_ids.iter().any(|s| s == sid)) {
+                    probes.append(&mut input.block_probes);
+                    if let Some(external) = input.external.as_mut() {
+                        external.hold_until_selected = false;
+                    }
+                }
+            }
+            probes
+        };
+        for (pad, probe) in to_unblock {
+            debug!(pad = %pad.name(), "releasing a selected external input's data hold");
+            pad.remove_probe(probe);
+        }
     }
 
     /// Bookkeeping for one linked input pad: the bitrate tap, the drain
@@ -4491,6 +4653,45 @@ impl Inner {
             }
         };
 
+        // The post-streamsynchronizer half of the gapless EOS hold. An EOS
+        // that entered streamsynchronizer (it slipped the output gate below
+        // before a pre-arm armed it, see `Inner::passing_eos_group`) parks
+        // its pushing thread there until the whole group is EOS, and
+        // streamsynchronizer then re-emits EOS on every src pad. Those must
+        // still not reach the sinks while a swap is in flight: drop them
+        // here under the same conditions as the output gate. At a true end
+        // of playback nothing is pending, the pad's group matches the
+        // active one, and the EOS flows to the sinks normally.
+        if let Some(ss_src) = &ssync_src {
+            let weak = Arc::downgrade(inner);
+            ss_src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |pad, info| {
+                let Some(gst::PadProbeData::Event(event)) = &info.data else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                if !matches!(event.view(), gst::EventView::Eos(_)) {
+                    return gst::PadProbeReturn::Ok;
+                }
+                let Some(inner) = weak.upgrade() else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                let pad_group = pad
+                    .sticky_event::<gst::event::StreamStart>(0)
+                    .and_then(|event| event.group_id());
+                let (should_drop, pending, behind) =
+                    inner.gapless_eos_check_and_mark(pad_group);
+                if should_drop {
+                    debug!(
+                        pad = %pad.name(),
+                        pending,
+                        behind,
+                        "gapless: dropping a drained EOS after streamsynchronizer"
+                    );
+                    return gst::PadProbeReturn::Drop;
+                }
+                gst::PadProbeReturn::Ok
+            });
+        }
+
         // Gapless EOS hold (the uridecodebin3 db_src_probe): while a
         // prepared next item is PENDING, any EOS coming out of decodebin3
         // is the drained current item's and must not reach the sinks (it
@@ -4515,19 +4716,12 @@ impl Inner {
                 };
                 match group {
                     None => {
-                        // Drop the EOS while a swap is pending (committed
-                        // to a next item, nothing may end the pipeline) or
-                        // while THIS pad still carries a previous group,
-                        // either lagging the active one or positively the
-                        // RETIRED one (its slot has not flipped to the
-                        // active item yet, so this EOS is old-item
-                        // drainage; see `Inner::retired_group` for why the
-                        // activation alone cannot cover this). The pad's
+                        // Drop the EOS while a swap is pending or while
+                        // THIS pad still carries a previous group (see
+                        // `Inner::gapless_eos_check_and_mark`). The pad's
                         // sticky stream-start at EOS time is the ending
                         // stream's, an authoritative fallback when the
-                        // recorded group is missing. Unknowns on either
-                        // side never drop: only a positively known group
-                        // mismatch is old-item drainage.
+                        // recorded group is missing.
                         let pad_group = {
                             let routing = inner.routing.lock();
                             routing
@@ -4540,25 +4734,26 @@ impl Inner {
                             pad.sticky_event::<gst::event::StreamStart>(0)
                                 .and_then(|event| event.group_id())
                         });
-                        let active_group = *inner.active_group.lock();
-                        let retired_group = *inner.retired_group.lock();
-                        let behind = match (pad_group, active_group) {
-                            (Some(pad_group), Some(active)) => pad_group != active,
-                            _ => false,
-                        } || (pad_group.is_some() && pad_group == retired_group);
-                        // One lock hold for the check AND the drop record:
-                        // a cancel between them would zero the state and
-                        // the mark would pollute the next prepare's gate.
-                        let mut state = inner.swap_gate.state.lock();
-                        let pending = state.pending.is_some();
-                        if pending || behind {
-                            if pending {
-                                // The item's end is consumed for good; a
-                                // cancelled swap must synthesize it (see
-                                // `SwapState::dropped_eos`).
-                                state.dropped_eos = true;
-                            }
-                            drop(state);
+                        let av = matches!(kind, StreamKind::Video | StreamKind::Audio);
+                        // Group consistency with streamsynchronizer: once
+                        // one EOS of this group passed into ssync, its
+                        // siblings MUST follow or ssync never completes the
+                        // group and its parked thread (the multiqueue slot
+                        // task of the stream that EOSed first) never wakes.
+                        // The post-ssync gate consumes them instead (see
+                        // `Inner::passing_eos_group`).
+                        if av && pad_group.is_some()
+                            && pad_group == *inner.passing_eos_group.lock()
+                        {
+                            debug!(
+                                pad = %pad.name(),
+                                "gapless: passing a sibling EOS through to complete the group"
+                            );
+                            return gst::PadProbeReturn::Ok;
+                        }
+                        let (should_drop, pending, behind) =
+                            inner.gapless_eos_check_and_mark(pad_group);
+                        if should_drop {
                             debug!(
                                 pad = %pad.name(),
                                 pending,
@@ -4566,6 +4761,13 @@ impl Inner {
                                 "gapless: dropping the drained item's EOS"
                             );
                             return gst::PadProbeReturn::Drop;
+                        }
+                        // This EOS enters streamsynchronizer. Commit the
+                        // whole group to passing so a pre-arm landing
+                        // between now and the siblings' EOS cannot strand
+                        // the group half-ended in ssync.
+                        if av && let Some(group) = pad_group {
+                            *inner.passing_eos_group.lock() = Some(group);
                         }
                     }
                     // STREAM_START: record the pad's group; a group change
@@ -4895,6 +5097,13 @@ mod decisions {
         Fail,
         /// The deselect race: replace the input under the same id.
         Rearm,
+        /// The deselect race hit a just-attached input (its error burst is
+        /// still settling): replace it after the debounce. A dead input
+        /// must NEVER stay attached: its stream keeps advertising in the
+        /// merged collection while its multiqueue slot gets reused, and
+        /// such a ghost stream blocks `all_streams_present` for every newer
+        /// collection, wedging all future selections.
+        RearmDeferred,
         /// A dying input's echo: the watchdog owns the final verdict.
         Ignore,
     }
@@ -4929,10 +5138,11 @@ mod decisions {
         }
         // Deselected but materialized: the deselect race (the input worked,
         // switching away killed it). Replaceable, but a dying input posts
-        // several errors in a burst, so only the first past the debounce
-        // re-arms.
+        // several errors in a burst, so a young input's re-arm is DEFERRED
+        // past the debounce (every burst error defers one, the first to run
+        // wins by epoch, the rest no-op) instead of firing per error.
         if since_attach < debounce {
-            ExternalErrorAction::Ignore
+            ExternalErrorAction::RearmDeferred
         } else {
             ExternalErrorAction::Rearm
         }
@@ -5130,11 +5340,17 @@ mod tests {
             external_error_action(true, false, true, OLD, DEBOUNCE),
             ExternalErrorAction::Rearm
         );
-        // Within the debounce the burst of errors from one death re-arms
-        // only once.
+        // Within the debounce the burst of errors from one death coalesces
+        // into deferred re-arms (the first past the debounce wins by epoch,
+        // the rest no-op). A dead input must never stay attached: its ghost
+        // stream would wedge every future selection.
         assert_eq!(
             external_error_action(true, false, false, YOUNG, DEBOUNCE),
-            ExternalErrorAction::Ignore
+            ExternalErrorAction::RearmDeferred
+        );
+        assert_eq!(
+            external_error_action(true, false, true, YOUNG, DEBOUNCE),
+            ExternalErrorAction::RearmDeferred
         );
     }
 }

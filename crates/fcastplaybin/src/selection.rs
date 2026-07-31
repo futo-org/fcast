@@ -228,20 +228,32 @@ impl SelectionEngine {
     /// so abandon it deterministically.
     pub(crate) fn collection_changed(&mut self, collection: Vec<CollectionStream>) {
         self.collection = collection;
+        // A slot the desire explicitly disables must NOT be seeded with the
+        // collection default: the pipeline honors the disable across
+        // collection re-posts (text auto-select is off, and A/V inherit the
+        // previous selection), so seeding would fabricate an applied state
+        // the pipeline is not in. The pump would then dispatch a selection
+        // decodebin3 already has, a no-op it never confirms, and that
+        // phantom in-flight request starves every later change (seen when
+        // re-attaching an external subtitle re-posts the collection while
+        // subtitles are switched off).
         self.applied.video = Self::seed_slot(
             &self.collection,
             StreamKind::Video,
             self.applied.video.take(),
+            self.desired_video != Some(None),
         );
         self.applied.audio = Self::seed_slot(
             &self.collection,
             StreamKind::Audio,
             self.applied.audio.take(),
+            self.desired_audio != Some(None),
         );
         self.applied.subtitle = Self::seed_slot(
             &self.collection,
             StreamKind::Text,
             self.applied.subtitle.take(),
+            self.desired_subtitle != Some(SubtitleDesire::Stream(None)),
         );
 
         self.selecting = None;
@@ -254,17 +266,23 @@ impl SelectionEngine {
     }
 
     /// The collection's default for a slot: keep `current` when its stream
-    /// is still advertised, else the first stream of the kind (mirroring
-    /// decodebin3's own auto-select), so a change dispatched before the
-    /// initial `STREAMS_SELECTED` composes against a full selection.
+    /// is still advertised, else (`allow_default`) the first stream of the
+    /// kind (mirroring decodebin3's own auto-select), so a change
+    /// dispatched before the initial `STREAMS_SELECTED` composes against a
+    /// full selection. `allow_default` is false for a slot the desire
+    /// explicitly disables (see `collection_changed`).
     fn seed_slot(
         collection: &[CollectionStream],
         kind: StreamKind,
         current: Option<String>,
+        allow_default: bool,
     ) -> Option<String> {
         current
             .filter(|sid| collection.iter().any(|s| &s.sid == sid))
             .or_else(|| {
+                if !allow_default {
+                    return None;
+                }
                 collection
                     .iter()
                     .find(|s| s.kind == kind)
