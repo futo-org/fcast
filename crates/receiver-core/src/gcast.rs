@@ -270,10 +270,12 @@ async fn handle_message(
                     current_time: Some(time),
                     ..
                 } => {
-                    state.msg_tx.operation(
-                        origin,
-                        crate::Operation::Seek(gst::ClockTime::from_seconds_f64(time)),
-                    );
+                    match gst::ClockTime::try_from_seconds_f64(time) {
+                        Ok(t) => state.msg_tx.operation(origin, crate::Operation::Seek(t)),
+                        Err(err) => {
+                            error!(time, ?err, "Got invalid time in Chromecast seek message");
+                        }
+                    }
                 }
                 namespaces::Media::Resume { .. } => {
                     state.msg_tx.operation(origin, crate::Operation::Resume);
