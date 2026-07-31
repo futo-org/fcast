@@ -30,6 +30,8 @@ pub enum DownloadImageError {
     DecodeImage(#[from] imagelib::ImageError),
     #[error("failed to parse URL: {0:?}")]
     InvalidUrl(#[from] url::ParseError),
+    #[error("URL scheme ({0}) is unsupported")]
+    UnsupportedScheme(String),
     #[error("unsuccessful status={0}")]
     Unsuccessful(reqwest::StatusCode),
     #[error("failed to get resource info")]
@@ -456,8 +458,22 @@ impl Downloader {
     }
 
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
-        let url = url::Url::parse(&url).unwrap();
         let tx = self.msg_tx.clone();
+
+        // `url` is a sender-supplied string (`MediaItem::url` /
+        // `thumbnail_url`) that nothing validates on the way in, so both the
+        // parse and the scheme dispatch have to report rather than panic. The
+        // caller already handles `DownloadResult`'s error arm.
+        let url = match url::Url::parse(&url) {
+            Ok(url) => url,
+            Err(err) => {
+                tx.image(Event::DownloadResult {
+                    id,
+                    res: Err(DownloadImageError::InvalidUrl(err)),
+                });
+                return;
+            }
+        };
 
         match url.scheme() {
             "http" | "https" => {
@@ -474,7 +490,12 @@ impl Downloader {
                     tx.image(Event::DownloadResult { id, res });
                 });
             }
-            _ => todo!(),
+            scheme => {
+                tx.image(Event::DownloadResult {
+                    id,
+                    res: Err(DownloadImageError::UnsupportedScheme(scheme.to_owned())),
+                });
+            }
         }
     }
 }
@@ -507,4 +528,69 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
         #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
         Image::Heif,
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Events = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
+
+    fn downloader() -> (Downloader, Events) {
+        // The application installs this at startup (see `lib.rs`);
+        // `reqwest::Client::new()` panics without a process-wide provider on
+        // the `rustls-no-provider` build. Idempotent, so racing tests are fine.
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let downloader = Downloader::new(
+            MessageSender::new(tx),
+            reqwest::Client::new(),
+            CompanionContext::new(),
+        );
+        (downloader, rx)
+    }
+
+    /// Pull the single expected `DownloadResult` and unwrap its error.
+    ///
+    /// `try_recv` is deliberate: both rejection paths post synchronously, so a
+    /// pending channel means the code took a `tokio::spawn` branch instead.
+    fn download_error(events: &mut Events, expected_id: ImageDownloadId) -> DownloadImageError {
+        match events.try_recv().expect("no image event was posted") {
+            crate::message::Message::Image(Event::DownloadResult { id, res }) => {
+                assert_eq!(id, expected_id);
+                res.expect_err("expected the download to fail")
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparseable_url_is_reported_not_panicked() {
+        let (downloader, mut events) = downloader();
+
+        // `MediaItem::url` / `thumbnail_url` are sender-supplied and nothing
+        // validates them on the way in; this used to be `Url::parse(..).unwrap()`.
+        downloader.queue_download(7, "not a url".to_owned(), None);
+
+        let err = download_error(&mut events, 7);
+        assert!(
+            matches!(err, DownloadImageError::InvalidUrl(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_url_scheme_is_reported_not_panicked() {
+        let (downloader, mut events) = downloader();
+
+        // Anything outside http/https/fcomp used to reach `todo!()`.
+        downloader.queue_download(9, "ftp://example.invalid/cover.png".to_owned(), None);
+
+        let err = download_error(&mut events, 9);
+        assert!(
+            matches!(&err, DownloadImageError::UnsupportedScheme(s) if s == "ftp"),
+            "unexpected error: {err:?}"
+        );
+    }
 }
