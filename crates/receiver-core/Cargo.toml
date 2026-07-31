@@ -112,8 +112,7 @@ pipewire = { version = "0.10", features = ["v0_3_50"] }
 libspa = "0.10"
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
-# TODO: add this to all targets once linking is figured out
-libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ], optional = true }
+libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] }
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 i-slint-backend-winit = { workspace = true, optional = true }
 
@@ -132,6 +131,7 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 app-updater = { path = "../app-updater"}
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 receiver-resources.path = "../receiver-resources"
+libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image", "embedded-libheif" ] }
 
 [build-dependencies]
 slint-build.workspace = true
@@ -150,9 +150,7 @@ image = { workspace = true, features = ["encode"] }
 [features]
 default = []
 airplay = ["dep:plist", "dep:ctr", "dep:apple-fairplay"]
-extra-imgfmt = ["dep:libheif-rs"]
 desktop = [
-    "extra-imgfmt",
     # "slint/accessibility", Disabled because it causes too many allocations during playback
     "slint/backend-winit",
     "slint/renderer-femtovg",
@@ -172,4 +170,4 @@ tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
 # Enable when linking against a fully static gstreamer-full build
 static-gstreamer = []
-fhs = ["extra-imgfmt", "slint/renderer-femtovg"]
+fhs = ["slint/renderer-femtovg"]

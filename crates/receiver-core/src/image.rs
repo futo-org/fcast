@@ -283,7 +283,7 @@ impl<'a> DecoderContext<'a> {
                 );
                 self.handle_still(decoder, format_str)?;
             }
-            #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+            #[cfg(not(target_os = "android"))]
             media_formats::Image::Heif => {
                 let reader = non_fatal!(ImageReader::new(img_data).with_guessed_format(), "HEIF");
                 let decoder = non_fatal!(reader.into_decoder(), "HEIF");
@@ -296,7 +296,7 @@ impl<'a> DecoderContext<'a> {
 }
 
 pub fn init_extra_decoders() {
-    #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+    #[cfg(not(target_os = "android"))]
     libheif_rs::integration::image::register_all_decoding_hooks();
     hayro_jpeg2000::integration::register_decoding_hook();
     jxl_oxide::integration::register_image_decoding_hook();
@@ -372,7 +372,7 @@ impl Downloader {
                 "image/jp2" | "image/jpx" | "image/jpm" | "video/mj2" => {
                     media_formats::Image::Jpeg2000
                 }
-                #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+                #[cfg(not(target_os = "android"))]
                 "image/heif" | "image/heic" => media_formats::Image::Heif,
                 _ => {
                     return Err(DownloadImageError::UnsupportedContentType(
@@ -525,7 +525,7 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
         il!(Qoi),
         Image::Jpeg2000,
         Image::JpegXl,
-        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+        #[cfg(not(target_os = "android"))]
         Image::Heif,
     ])
 }

@@ -146,7 +146,7 @@ pub enum Image {
     ImageLib(image::ImageFormat),
     JpegXl,
     Jpeg2000,
-    #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+    #[cfg(not(target_os = "android"))]
     Heif,
 }
 
@@ -173,7 +173,7 @@ impl Image {
             },
             Image::JpegXl => "jxl",
             Image::Jpeg2000 => "jp2",
-            #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+            #[cfg(not(target_os = "android"))]
             Image::Heif => "heif",
         }
     }
