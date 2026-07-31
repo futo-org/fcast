@@ -71,7 +71,7 @@ pub struct RaopConfig {
     /// Whether to advertise and serve RAOP.
     pub enabled: bool,
     /// Broadcast name. The `{hostname}` variable is replaced with the local
-    /// hostname. Defaults to the FCast name.
+    /// hostname. Defaults to `FCast-{hostname}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }

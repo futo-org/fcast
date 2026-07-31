@@ -318,7 +318,7 @@ impl Settings {
             .unwrap_or_else(mdns::fcast_device_name)
     }
 
-    /// Broadcast name for RAOP. Defaults to the FCast name.
+    /// Broadcast name for RAOP. Defaults to `FCast-<hostname>`.
     pub fn raop_name(&self) -> String {
         self.config
             .get()
@@ -326,7 +326,7 @@ impl Settings {
             .name
             .as_deref()
             .map(expand_name_vars)
-            .unwrap_or_else(|| self.fcast_name())
+            .unwrap_or_else(mdns::fcast_device_name)
     }
 
     /// Broadcast name for Google Cast. Defaults to `Chromecast-<hostname>`.

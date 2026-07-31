@@ -318,7 +318,7 @@ export component SettingsDrawer inherits Rectangle {
                     TextRow {
                         label: @tr("Name");
                         setting-key: "raop.name";
-                        placeholder: Bridge.cfg-fcast-name != "" ? Bridge.cfg-fcast-name : "FCast-{hostname}";
+                        placeholder: "FCast-{hostname}";
                         value <=> Bridge.cfg-raop-name;
                     }
 
