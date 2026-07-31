@@ -179,41 +179,70 @@ mod alacdec_imp {
         }
     }
 
+    /// Whether `Decoder::decode_packet::<i16>` can handle this stream.
+    ///
+    /// It asserts `S::bits() >= bit_depth`, so a sender announcing a deeper
+    /// stream in its SDP would panic the streaming thread. Reject at
+    /// negotiation instead.
+    pub(super) fn is_decodable_as_i16(info: &alac::StreamInfo) -> bool {
+        info.bit_depth() <= 16
+    }
+
     impl AudioDecoderImpl for FcAlacDec {
         fn set_format(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
-            let s = caps.structure(0).unwrap();
-            if let Ok(Some(sdp_fmtp)) = s.get_optional::<gst::Buffer>("sdp-fmtp") {
-                let map = sdp_fmtp.map_readable().unwrap();
-                let buf = map.as_slice();
-                let fmtp = str::from_utf8(buf).unwrap();
-                let stream_info = alac::StreamInfo::from_sdp_format_parameters(fmtp).unwrap();
-                let max_samples = stream_info.max_samples_per_packet() as usize;
-                let decoder = alac::Decoder::new(stream_info);
+            // Everything below derives from the `fmtp` line of the sender's
+            // RTSP ANNOUNCE. None of it may panic: a malformed announcement has
+            // to fail negotiation, not abort the streaming thread.
+            let Some(s) = caps.structure(0) else {
+                return Err(gst::loggable_error!(CAT, "caps have no structure"));
+            };
+            let Ok(Some(sdp_fmtp)) = s.get_optional::<gst::Buffer>("sdp-fmtp") else {
+                return Err(gst::loggable_error!(
+                    CAT,
+                    "caps are missing the sdp-fmtp field"
+                ));
+            };
+            let map = sdp_fmtp
+                .map_readable()
+                .map_err(|_| gst::loggable_error!(CAT, "failed to map the sdp-fmtp buffer"))?;
+            let fmtp = str::from_utf8(map.as_slice())
+                .map_err(|err| gst::loggable_error!(CAT, "sdp-fmtp is not valid UTF-8: {err}"))?;
+            let stream_info = alac::StreamInfo::from_sdp_format_parameters(fmtp).map_err(|err| {
+                gst::loggable_error!(CAT, "invalid ALAC stream info in sdp-fmtp: {err:?}")
+            })?;
 
-                {
-                    let mut state = self.state.lock();
-                    state.decoder = Some(decoder);
-                    state.output_buffer = vec![0; max_samples];
-                }
+            if !is_decodable_as_i16(&stream_info) {
+                let bit_depth = stream_info.bit_depth();
+                return Err(gst::loggable_error!(
+                    CAT,
+                    "unsupported ALAC bit depth {bit_depth} (at most 16 is decodable)"
+                ));
+            }
 
-                let audio_info = gst_audio::AudioInfo::builder(
-                    gst_audio::AudioFormat::S16le,
-                    SAMPLING_RATE as u32,
-                    2,
-                )
-                .build()
-                .unwrap();
+            let max_samples = stream_info.max_samples_per_packet() as usize;
+            let decoder = alac::Decoder::new(stream_info);
 
-                let element = self.obj();
-                if element.set_output_format(&audio_info).is_err() || element.negotiate().is_err() {
-                    gst::debug!(
-                        CAT,
-                        imp = self,
-                        "Error to negotiate output from based on in-caps streaminfo"
-                    );
-                }
-            } else {
-                todo!();
+            {
+                let mut state = self.state.lock();
+                state.decoder = Some(decoder);
+                state.output_buffer = vec![0; max_samples];
+            }
+
+            let audio_info = gst_audio::AudioInfo::builder(
+                gst_audio::AudioFormat::S16le,
+                SAMPLING_RATE as u32,
+                2,
+            )
+            .build()
+            .map_err(|err| gst::loggable_error!(CAT, "failed to build audio info: {err}"))?;
+
+            let element = self.obj();
+            if element.set_output_format(&audio_info).is_err() || element.negotiate().is_err() {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Error to negotiate output from based on in-caps streaminfo"
+                );
             }
 
             Ok(())
@@ -241,9 +270,21 @@ mod alacdec_imp {
             } = &mut *state;
             match decoder {
                 Some(decoder) => {
-                    let samples = decoder
-                        .decode_packet::<i16>(&inbuf_map, output_buffer)
-                        .unwrap();
+                    // The payload comes off the network, so a corrupt or
+                    // truncated packet is expected input. Drop the frame and
+                    // keep the stream alive rather than erroring the pipeline.
+                    let samples = match decoder.decode_packet::<i16>(&inbuf_map, output_buffer) {
+                        Ok(samples) => samples,
+                        Err(err) => {
+                            gst::warning!(
+                                CAT,
+                                imp = self,
+                                "Dropping undecodable ALAC packet: {:?}",
+                                err
+                            );
+                            return self.obj().finish_frame(None, 1);
+                        }
+                    };
                     let mut buffer = gst::Buffer::with_size(samples.len() * 2).unwrap();
                     {
                         let buffer = buffer.get_mut().unwrap();
@@ -258,7 +299,12 @@ mod alacdec_imp {
                     self.obj().finish_frame(Some(buffer), 1)
                 }
                 None => {
-                    todo!()
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Got an audio frame before the format was negotiated"
+                    );
+                    Err(gst::FlowError::NotNegotiated)
                 }
             }
         }
@@ -1202,9 +1248,20 @@ impl Handler {
                 }
             };
 
+            // A peer can put anything on the wire, so a non-request message is
+            // not a bug in us. Dropping it keeps the session alive; unwinding
+            // here would skip the `SenderDisconnected` notification below and
+            // leave `current_media` occupied for the rest of the process.
             let request = match maybe_request {
                 Some(Message::Request(request)) => request,
-                Some(_) => unreachable!(),
+                Some(Message::Response(_)) => {
+                    warn!("Ignoring unexpected RTSP response from sender");
+                    continue;
+                }
+                Some(Message::Data(_)) => {
+                    warn!("Ignoring unexpected RTSP interleaved data from sender");
+                    continue;
+                }
                 None => return Ok(()),
             };
 
@@ -1548,7 +1605,17 @@ impl Handler {
                     self.connection.write_response(&response).await?;
                     Ok(())
                 }
-                _ => todo!(),
+                // `rtsp_types::Method` has no variants for HTTP verbs, so any
+                // stray `GET`/`POST` on this port arrives here. Answer 405
+                // rather than panicking the session task.
+                other => {
+                    warn!(method = other, "Rejecting unsupported RTSP method");
+                    let response =
+                        Response::builder(Version::V1_0, StatusCode::MethodNotAllowed).empty();
+
+                    self.connection.write_response(&response).await?;
+                    Ok(())
+                }
             },
 
             Method::Describe
@@ -1872,5 +1939,163 @@ mod tests {
         let result = decrypt_audio_packet(&cipher, &iv, &packet).unwrap();
 
         assert_eq!(result, plaintext);
+    }
+
+    // --- ALAC stream configuration --------------------------------------------
+
+    /// A well-formed fmtp line, per the `alac` crate's own test vector, with
+    /// `bit_depth` in field 3.
+    fn fmtp(bit_depth: u8) -> String {
+        format!("4096 0 {bit_depth} 40 10 14 2 255 0 0 44100")
+    }
+
+    #[test]
+    fn alac_streams_deeper_than_16_bit_are_rejected() {
+        let sixteen = alac::StreamInfo::from_sdp_format_parameters(&fmtp(16)).unwrap();
+        assert_eq!(sixteen.bit_depth(), 16);
+        assert!(alacdec_imp::is_decodable_as_i16(&sixteen));
+
+        // A sender can legitimately announce this; decoding it into `i16`
+        // trips an assertion inside the `alac` crate, so `set_format` has to
+        // refuse it before any audio flows.
+        let twenty_four = alac::StreamInfo::from_sdp_format_parameters(&fmtp(24)).unwrap();
+        assert_eq!(twenty_four.bit_depth(), 24);
+        assert!(!alacdec_imp::is_decodable_as_i16(&twenty_four));
+    }
+
+    #[test]
+    fn malformed_alac_fmtp_is_an_error_not_a_panic() {
+        // `set_format` maps each of these to a negotiation failure; they used
+        // to reach `.unwrap()`.
+        for params in ["", "not-a-config", "4096 0 16", "4096 0 x 40 10 14 2 255 0 0 44100"] {
+            assert!(
+                alac::StreamInfo::from_sdp_format_parameters(params).is_err(),
+                "expected {params:?} to be rejected"
+            );
+        }
+    }
+
+    // --- RTSP request dispatch ------------------------------------------------
+
+    /// A `Handler` driven over a real loopback socket.
+    ///
+    /// The `_`-prefixed fields are liveness guards, not decoration. Dropping
+    /// `_notify_shutdown` in particular closes the broadcast, which makes
+    /// `Shutdown::recv()` return immediately and tears the handler down before
+    /// it ever reads a request.
+    struct HandlerHarness {
+        client: TcpStream,
+        _notify_shutdown: broadcast::Sender<()>,
+        _shutdown_complete_rx: mpsc::Receiver<()>,
+        _player_rx: mpsc::Receiver<Command>,
+        _msg_rx: tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>,
+        join: tokio::task::JoinHandle<Result<()>>,
+    }
+
+    impl HandlerHarness {
+        async fn spawn() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+            let client = client.unwrap();
+            let (server, _) = accepted.unwrap();
+
+            let (notify_shutdown, _) = broadcast::channel(1);
+            let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+            let (player_tx, player_rx) = mpsc::channel(4);
+            let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            let mut handler = Handler {
+                config: Arc::new(Configuration { hw_addr: [0; 6] }),
+                connection: Connection::new(server).unwrap(),
+                player_tx,
+                shutdown: Shutdown::new(notify_shutdown.subscribe()),
+                _shutdown_complete: shutdown_complete_tx,
+                msg_tx: MessageSender::new(msg_tx),
+            };
+
+            Self {
+                client,
+                _notify_shutdown: notify_shutdown,
+                _shutdown_complete_rx: shutdown_complete_rx,
+                _player_rx: player_rx,
+                _msg_rx: msg_rx,
+                join: tokio::spawn(async move { handler.run().await }),
+            }
+        }
+
+        async fn send(&mut self, raw: &str) {
+            self.client.write_all(raw.as_bytes()).await.unwrap();
+            self.client.flush().await.unwrap();
+        }
+
+        async fn read_response(&mut self) -> Response<Vec<u8>> {
+            let mut buf = Vec::new();
+            let read = async {
+                loop {
+                    let mut chunk = [0u8; 512];
+                    let n = self.client.read(&mut chunk).await.unwrap();
+                    assert_ne!(n, 0, "connection closed before a response arrived");
+                    buf.extend_from_slice(&chunk[..n]);
+
+                    match Message::parse(&buf) {
+                        Ok((Message::Response(response), _)) => return response,
+                        Ok(_) => panic!("expected an RTSP response"),
+                        Err(ParseError::Incomplete(_)) => continue,
+                        Err(err) => panic!("malformed response: {err:?}"),
+                    }
+                }
+            };
+
+            tokio::time::timeout(Duration::from_secs(5), read)
+                .await
+                .expect("timed out waiting for an RTSP response")
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_rtsp_method_is_rejected_and_the_session_survives() {
+        let mut harness = HandlerHarness::spawn().await;
+
+        // `rtsp_types::Method` has no variants for HTTP verbs, so this parses
+        // as `Method::Extension("GET")` — the shape that used to hit `todo!()`.
+        harness
+            .send("GET rtsp://127.0.0.1/info RTSP/1.0\r\nCSeq: 1\r\n\r\n")
+            .await;
+        assert_eq!(
+            harness.read_response().await.status(),
+            StatusCode::MethodNotAllowed
+        );
+
+        // The part that actually regressed. A panic here unwinds out of
+        // `handler.run()`, so `handle_sender` never posts
+        // `Raop::SenderDisconnected` and `Application::current_media` stays
+        // occupied — rejecting every later RAOP sender for the process
+        // lifetime. Serving a second request proves the session is still live.
+        harness
+            .send("OPTIONS rtsp://127.0.0.1/ RTSP/1.0\r\nCSeq: 2\r\n\r\n")
+            .await;
+        assert_eq!(harness.read_response().await.status(), StatusCode::Ok);
+        assert!(
+            !harness.join.is_finished(),
+            "handler exited instead of continuing to serve the session"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_request_rtsp_message_is_ignored_and_the_session_survives() {
+        let mut harness = HandlerHarness::spawn().await;
+
+        // A peer may put a response on the wire; this used to be `unreachable!()`.
+        harness.send("RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n").await;
+        harness
+            .send("OPTIONS rtsp://127.0.0.1/ RTSP/1.0\r\nCSeq: 2\r\n\r\n")
+            .await;
+
+        assert_eq!(harness.read_response().await.status(), StatusCode::Ok);
+        assert!(
+            !harness.join.is_finished(),
+            "handler exited instead of ignoring the stray response"
+        );
     }
 }
