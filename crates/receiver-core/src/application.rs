@@ -183,6 +183,137 @@ struct GaplessPrearm {
     generation: u64,
     /// The queue index the receiver advances to at activation.
     next_index: usize,
+    /// The prepared item's URL, captured at arm time. Identifies the item
+    /// when a declined cancel's activation has to be adopted after the
+    /// queue moved underneath it (`next_index` is only a hint then).
+    url: String,
+    /// A cancel was requested but its outcome is not known yet. The pre-arm
+    /// is KEPT in this state: the cancel races the pipeline's swap and a
+    /// declined cancel activates anyway, so the bookkeeping has to survive
+    /// long enough to adopt that activation instead of resync-reloading the
+    /// item that just finished.
+    cancelling: bool,
+}
+
+/// An operation held back until a gapless pre-arm's cancellation reports its
+/// outcome (see [`Application::gapless_parked_op`]). Every payload here is
+/// already validated, so a replay cannot produce a second error reply and
+/// cannot re-derive a different answer than the original request did.
+#[derive(Debug)]
+enum GaplessParkedOp {
+    /// A user seek, already range-clamped (its `SeekOutOfRange` reply, if
+    /// any, went out when the operation arrived).
+    Seek {
+        origin: PacketOrigin,
+        time: gst::ClockTime,
+    },
+    /// A real speed change. An idempotent one never parks: it performs no
+    /// seek at all and is confirmed on the spot.
+    SetSpeed { origin: PacketOrigin, rate: f32 },
+    /// A validated audio/video selection, already resolved from the wire's
+    /// track index to a stream id (`None` disables the slot).
+    TrackChange {
+        kind: player::TrackKind,
+        sid: Option<player::StreamId>,
+    },
+    /// A validated subtitle selection: an advertised stream, "off", or an
+    /// external whose own stream has not materialized yet.
+    SubtitleChange {
+        origin: PacketOrigin,
+        target: SubtitleTarget,
+    },
+}
+
+/// Which kind of operation is parked. The outcome policy below depends on the
+/// operation's *shape*, not on its payload, so it is decided from this alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GaplessParkedOpKind {
+    Seek,
+    SetSpeed,
+    TrackChange,
+    SubtitleChange,
+}
+
+impl GaplessParkedOp {
+    fn kind(&self) -> GaplessParkedOpKind {
+        match self {
+            Self::Seek { .. } => GaplessParkedOpKind::Seek,
+            Self::SetSpeed { .. } => GaplessParkedOpKind::SetSpeed,
+            Self::TrackChange { .. } => GaplessParkedOpKind::TrackChange,
+            Self::SubtitleChange { .. } => GaplessParkedOpKind::SubtitleChange,
+        }
+    }
+}
+
+/// The pipeline state a parked operation is resolved against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GaplessOutcome {
+    /// The prepare is gone and nothing will activate (`GaplessCancelled`,
+    /// `GaplessPrepareFailed`). The playing item is the only linked input
+    /// again, so the operation applies exactly as a fresh one would.
+    PrepareGone,
+    /// The swap already performed (`GaplessCancelDeclined`, or an activation
+    /// that beat that report to the loop). The playing item's input is
+    /// unlinked, so a flushing seek would be answered by the SUCCESSOR's
+    /// source: whatever the pipeline still owes the user has to be reloaded
+    /// rather than seeked.
+    SwapPerformed,
+    /// The item ended before any outcome arrived. The end-of-stream advance
+    /// owns the transition and the operation has no item left to act on.
+    ItemEnded,
+}
+
+/// What to do with a parked operation once the outcome is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParkedOpAction {
+    /// Run it now, through the same code path a fresh operation takes.
+    Replay,
+    /// Reload the playing item at the operation's target instead of seeking
+    /// into a pipeline whose only linked upstream is the next item.
+    ReloadAtTarget,
+    /// Give up on it, deliberately (see `parked_op_action`).
+    Drop,
+}
+
+/// The whole park-until-outcome policy, in one pure function.
+///
+/// The one judgement call is `(TrackChange, SwapPerformed)`: it is dropped, not
+/// reloaded. A switch flushed into the successor is corruption, so applying it
+/// is not an option; and reloading is not one either, because the desired
+/// selection is a stream id resolved against the RETIRING item's collection and
+/// re-resolving it against the reloaded item's collection is the selection
+/// engine's business, not this decision's. A seek and a speed change have no
+/// such dependency: their target is a plain position and rate that a load can
+/// carry directly.
+///
+/// The honest caveat: "the item is nearly over anyway" is only true for a long
+/// item. The swap performs once the item's INPUT has drained, which for a short
+/// or cached item happens near the start, so a dropped switch can land well
+/// before the end. Losing a switch is still strictly better than corrupting
+/// playback, and the follow-up belongs with the pre-arm margin (CLEANUP.md
+/// already flags sub-40s items arming on their first tick).
+fn parked_op_action(kind: GaplessParkedOpKind, outcome: GaplessOutcome) -> ParkedOpAction {
+    use GaplessOutcome as O;
+    use GaplessParkedOpKind as K;
+    match (kind, outcome) {
+        (_, O::ItemEnded) => ParkedOpAction::Drop,
+        (_, O::PrepareGone) => ParkedOpAction::Replay,
+        (K::Seek | K::SetSpeed, O::SwapPerformed) => ParkedOpAction::ReloadAtTarget,
+        (K::TrackChange | K::SubtitleChange, O::SwapPerformed) => ParkedOpAction::Drop,
+    }
+}
+
+/// Filter a duration query result down to what may be CACHED in
+/// `current_duration`, i.e. a real answer about the current item.
+///
+/// A failed query and a zero duration are both "not known yet", and latching
+/// either poisons everything downstream for the rest of the session: `dur: 0`
+/// on the wire, a dead buffered-range nub, the seek clamp disabled,
+/// `SeekPercent` mapping to 0, and `maybe_prearm_gapless`'s non-zero filter
+/// suppressing every further gapless pre-arm. The cache stays `None` instead,
+/// so the next progress tick simply asks again.
+fn cacheable_duration(queried: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
+    queried.filter(|duration| !duration.is_zero())
 }
 
 /// Convert a wire `showDuration` (seconds, as a bare `f64`) into a timer delay.
@@ -318,6 +449,7 @@ struct PendingSubtitleAdd {
     origin: PacketOrigin,
 }
 
+#[derive(Debug)]
 enum SubtitleTarget {
     /// A real advertised stream (an embedded track or an attached external's
     /// own stream) by stream id, or `None` to show no subtitle.
@@ -458,6 +590,30 @@ pub struct Application {
     /// GaplessActivated, cancelled by seeks, speed changes, queue
     /// mutations, and anything that replaces playback.
     gapless_prearm: Option<GaplessPrearm>,
+    /// The one operation held back until a pending pre-arm's cancellation
+    /// reports its outcome (see [`GaplessParkedOp`]).
+    ///
+    /// This is NOT [`Self::pending_seek_op`]: that one parks a seek until the
+    /// pipeline can answer the seekability query, on its own 10s timer, and
+    /// only ever holds a seek. This park is scoped to a single cancel
+    /// round-trip instead, has no timer at all (fcastplaybin reports exactly
+    /// one outcome per cancel, and a failed prepare or a fresh load cover the
+    /// rest), and holds any of the operations that reach the pipeline as a
+    /// flushing seek. The two compose: a replayed seek can still end up parked
+    /// in `pending_seek_op` afterwards.
+    ///
+    /// Invariant: a parked operation only ever exists alongside a
+    /// `cancelling` pre-arm, because parking and requesting the cancel happen
+    /// together. Every site that clears `gapless_prearm` therefore also has to
+    /// decide what happens to this.
+    gapless_parked_op: Option<GaplessParkedOp>,
+    /// Start position/rate for the NEXT `load_current_media_item`, overriding
+    /// the item's own `time`/`speed`. Set when a load stands in for an
+    /// operation the pipeline can no longer serve (a seek or speed change
+    /// whose gapless cancel was declined), so the item resumes where the user
+    /// asked instead of at its start. Consumed unconditionally by the next
+    /// load so it can never leak into a later one.
+    load_start_override: Option<player::RestorePoint>,
     /// The media item id whose pre-arm FAILED: no re-arm for the same item
     /// (each progress tick would otherwise retry into the same failure).
     /// The ordinary end-of-stream advance owns that transition instead.
@@ -736,6 +892,8 @@ impl Application {
             queue_cache: queue_cache::Cache::new(),
             queue_prefetcher,
             gapless_prearm: None,
+            gapless_parked_op: None,
+            load_start_override: None,
             gapless_blocked_item: None,
             gapless_enabled: !std::env::var("FCAST_NO_GAPLESS").is_ok_and(|v| v == "1"),
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
@@ -1001,12 +1159,24 @@ impl Application {
         // precede the progress write below, which is suppressed while the hold is active).
         self.release_seek_hold_if_landed(position);
         self.last_position_updated = position;
+        // The lazy duration read, and deliberately ONE-SHOT per item: it only
+        // runs while the cache is empty. A re-query mid-item could be answered
+        // by the NEXT item once a gapless swap has performed (up to ~30s before
+        // the app learns of it), and would then latch the successor's duration
+        // onto the item still playing. fcastplaybin drops its own
+        // `DurationChanged` inside that window as the primary guard. This is
+        // the second one.
+        //
+        // Only a real answer is cached (see `cacheable_duration`). A failed or
+        // zero query reports 0 for THIS tick and leaves the cache empty, so the
+        // next tick retries, instead of latching a zero that would kill the seek
+        // clamp and every remaining gapless pre-arm.
         let duration = match self.current_duration {
             Some(dur) => dur,
             None => {
-                let dur = self.player.get_duration().unwrap_or_default();
-                self.current_duration = Some(dur);
-                dur
+                let queried = self.player.get_duration();
+                self.current_duration = cacheable_duration(queried);
+                queried.unwrap_or_default()
             }
         };
         let duration = duration.seconds_f64();
@@ -1070,6 +1240,9 @@ impl Application {
         // prepared input; this clears the bookkeeping).
         self.gapless_prearm = None;
         self.player.clear_pending_gapless();
+        // An operation parked on that pre-arm's outcome targets the media
+        // going away too, and a fresh load supersedes it outright.
+        self.gapless_parked_op = None;
         // Parked subtitle adds and seeks target the media that is going
         // away. (The player's own per-load state, the text-restore dance,
         // held seeks, parked deselects, is reset by `Player::stop` below.)
@@ -1401,6 +1574,10 @@ impl Application {
     }
 
     fn load_current_media_item(&mut self) -> std::result::Result<(), LoadMediaError> {
+        // Taken up front, unconditionally: this function has several early
+        // exits (image containers, RAOP, malformed bodies) and an override
+        // surviving one of them would silently relocate a LATER load.
+        let start_override = self.load_start_override.take();
         let current_media = self.current_media.as_ref().ok_or(LoadMediaError::NoItem)?;
         // TODO: this shouldn't be v3 item
         let item = match &current_media.source {
@@ -1474,11 +1651,20 @@ impl Application {
             }
         };
         let volume = item.volume.map(|v| v as f32);
-        let start_position = item
-            .time
-            .and_then(|s| gst::ClockTime::try_from_seconds_f64(s).ok())
-            .unwrap_or(gst::ClockTime::ZERO);
-        let playback_rate = item.speed.unwrap_or(1.0) as f32;
+        // An override stands for an operation this load is replacing, so it
+        // wins over the item's own start point (`gapless_eligible` refuses to
+        // pre-arm an item that has either, so the two never really compete).
+        let start_position = match start_override {
+            Some(start) => start.position,
+            None => item
+                .time
+                .and_then(|s| gst::ClockTime::try_from_seconds_f64(s).ok())
+                .unwrap_or(gst::ClockTime::ZERO),
+        };
+        let playback_rate = match start_override {
+            Some(start) => start.rate,
+            None => item.speed.unwrap_or(1.0) as f32,
+        };
         let headers = item.headers;
 
         self.have_audio_track_cover = false;
@@ -1927,6 +2113,8 @@ impl Application {
         self.gapless_prearm = Some(GaplessPrearm {
             generation,
             next_index: next,
+            url: next_item.url,
+            cancelling: false,
         });
     }
 
@@ -1963,14 +2151,348 @@ impl Application {
         }
     }
 
-    /// Drop a pending gapless pre-arm (seek, speed change, queue mutation,
-    /// anything that invalidates "the current item plays to its end and the
-    /// next one follows"). A no-op when nothing is pre-armed.
+    /// Invalidate a pending gapless pre-arm (seek, speed change, queue
+    /// mutation, anything that breaks "the current item plays to its end and
+    /// the next one follows"). A no-op when nothing is pre-armed.
+    ///
+    /// The bookkeeping is only marked here, not dropped: the cancel races
+    /// the pipeline's swap and commonly loses (the swap performs at pre-arm
+    /// time for a small or cached item), and a declined cancel activates
+    /// regardless. Dropping the pre-arm up front left that activation
+    /// unmatched, and the resync branch then reloaded (audibly replayed) the
+    /// track that had just finished. The pre-arm now clears on the outcome:
+    /// `GaplessCancelled`, an adoption, `GaplessPrepareFailed`, or the next
+    /// load's `cleanup_playback_data`.
     fn cancel_gapless_prearm(&mut self) {
-        if self.gapless_prearm.take().is_some() {
-            debug!("Cancelling the gapless pre-arm");
-            self.player.cancel_prepared();
+        let Some(prearm) = self.gapless_prearm.as_mut() else {
+            return;
+        };
+        // A second cancel has nothing left to ask for: the first one's
+        // outcome decides for both.
+        if prearm.cancelling {
+            return;
         }
+        prearm.cancelling = true;
+        let generation = prearm.generation;
+        debug!(generation, "Cancelling the gapless pre-arm");
+        self.player.cancel_prepared();
+    }
+
+    /// Run an operation that reaches the pipeline as a flushing seek, or park
+    /// it until a pending pre-arm's cancellation reports its outcome.
+    ///
+    /// Contract invariant 8 (`fcastplaybin/CLEANUP.md`): a pending prepare must
+    /// be cancelled AND the cancellation confirmed before a flushing seek
+    /// reaches the pipeline. Once the swap has performed, the prepared input is
+    /// the only linked upstream, so a `FLUSH|ACCURATE` seek flushes away the
+    /// playing item's buffered tail and is answered by the SUCCESSOR's source:
+    /// the user seeks inside track N and hears track N+1. Requesting the cancel
+    /// and forwarding the operation in the same breath (what this used to do)
+    /// loses that race whenever the swap performed early, which is the normal
+    /// case for a small or cached item.
+    fn park_or_apply_gapless_op(&mut self, op: GaplessParkedOp) {
+        if self.gapless_prearm.is_none() {
+            self.apply_gapless_op(op);
+            return;
+        }
+        // Latest intent wins, across kinds as well as within one: a seek
+        // arriving while a track change waits replaces it, the same way the
+        // pipeline's own seek parking is latest-wins. One slot, never a queue,
+        // so a burst of scrubbing cannot pile up work for the outcome.
+        let kind = op.kind();
+        if let Some(previous) = self.gapless_parked_op.replace(op) {
+            debug!(
+                replaced = ?previous.kind(),
+                ?kind,
+                "Replacing the operation parked on the gapless cancel outcome"
+            );
+        } else {
+            debug!(?kind, "Parking the operation until the gapless cancel resolves");
+        }
+        // Idempotent when a cancel is already in flight (e.g. one a queue
+        // mutation asked for): that cancel's outcome resolves this too.
+        self.cancel_gapless_prearm();
+    }
+
+    /// The apply half of [`park_or_apply_gapless_op`](Self::park_or_apply_gapless_op),
+    /// shared by the immediate path and by a replay after a confirmed
+    /// cancellation so the two cannot drift.
+    fn apply_gapless_op(&mut self, op: GaplessParkedOp) {
+        match op {
+            GaplessParkedOp::Seek { origin, time } => self.apply_seek(origin, time),
+            // Confirmed by the pipeline's own `RateChanged`, like any other
+            // real speed change.
+            GaplessParkedOp::SetSpeed { rate, .. } => self.player.set_rate(rate),
+            GaplessParkedOp::TrackChange { kind, sid } => self.apply_track_change(kind, sid),
+            GaplessParkedOp::SubtitleChange { origin, target } => {
+                self.apply_subtitle_target(origin, target)
+            }
+        }
+    }
+
+    /// Report and clamp a seek target against the known duration. Done before
+    /// the gapless park so the sender's error reply is never delayed by a
+    /// cancel round-trip.
+    ///
+    /// `current_duration` can be stale in exactly this window: it is a
+    /// pipeline query, and once the swap has performed the PREPARED input
+    /// answers it, so a late seek can be clamped against the next item's
+    /// duration. Accepted, and not made worse by parking: the check reads the
+    /// same field the old inline one did. CLEANUP.md's ranked defect 3 owns
+    /// that readout.
+    fn clamp_seek_target(&mut self, origin: PacketOrigin, time: gst::ClockTime) -> gst::ClockTime {
+        match self.current_duration {
+            Some(duration) if duration > gst::ClockTime::ZERO && time > duration => {
+                self.send_error(origin, ErrorKind::SeekOutOfRange);
+                duration
+            }
+            _ => time,
+        }
+    }
+
+    /// Send an already-clamped seek to the pipeline, or park it until the
+    /// seekability query resolves (see [`Self::pending_seek_op`]).
+    fn apply_seek(&mut self, origin: PacketOrigin, time: gst::ClockTime) {
+        if self.player.seekable_known {
+            self.player.seek(time);
+            return;
+        }
+        // Tracks are advertised well before the pipeline can answer the
+        // seekability query, and the player would silently drop the seek in
+        // that window. Park it (last seek wins) and apply it once the query
+        // resolves.
+        debug!(
+            ?time,
+            "Parking the seek until the seekability query resolves"
+        );
+        self.pending_seek_op = Some((origin, time));
+        self.pending_seek_epoch += 1;
+        let epoch = self.pending_seek_epoch;
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Self::PENDING_SEEK_TIMEOUT).await;
+            msg_tx.send(Message::PendingSeekCheck { epoch });
+        });
+    }
+
+    /// Resolve the operation parked on a gapless cancel, now that `outcome` is
+    /// known. Returns whether playback was replaced, in which case the caller
+    /// must not go on to adopt an activation (the reload superseded it).
+    fn resolve_parked_gapless_op(&mut self, outcome: GaplessOutcome) -> bool {
+        let Some(op) = self.gapless_parked_op.take() else {
+            return false;
+        };
+        let action = parked_op_action(op.kind(), outcome);
+        debug!(kind = ?op.kind(), ?outcome, ?action, "Resolving the parked operation");
+        match (action, op) {
+            (ParkedOpAction::Replay, op) => {
+                self.apply_gapless_op(op);
+                false
+            }
+            (ParkedOpAction::ReloadAtTarget, GaplessParkedOp::Seek { origin, time }) => {
+                info!(
+                    ?origin,
+                    ?time,
+                    "Gapless: the swap already performed, reloading the item at the seek target"
+                );
+                // Rate carries over: a reload resets the pipeline's rate, and
+                // the user did not ask to change speed.
+                let rate = self.player.rate() as f32;
+                self.reload_current_item_at(time, rate);
+                true
+            }
+            (ParkedOpAction::ReloadAtTarget, GaplessParkedOp::SetSpeed { origin, rate }) => {
+                // Best effort: the pipeline's position is the outgoing item's
+                // (its tail is still what the sink renders), so this resumes
+                // roughly where the speed change was asked for.
+                let position = self.player.get_position().unwrap_or(gst::ClockTime::ZERO);
+                info!(
+                    ?origin,
+                    rate,
+                    ?position,
+                    "Gapless: the swap already performed, reloading the item at the new speed"
+                );
+                self.reload_current_item_at(position, rate);
+                // A real speed change is normally confirmed by the pipeline's
+                // `RateChanged`, but the load applies the rate as its start
+                // seek (`apply_start_seek`), which emits none. Confirm from
+                // here so the sender is not left waiting for an ack that will
+                // never come.
+                if let Err(err) = self.broadcast_rate(rate) {
+                    warn!(?err, "Failed to relay the rate after a gapless reload");
+                }
+                true
+            }
+            // `parked_op_action` never pairs `ReloadAtTarget` with a track
+            // change (there is no position to reload at), so folding the two
+            // together keeps this total without a panicking arm.
+            (ParkedOpAction::Drop | ParkedOpAction::ReloadAtTarget, op) => {
+                info!(
+                    kind = ?op.kind(),
+                    ?outcome,
+                    "Gapless: dropping the parked operation"
+                );
+                false
+            }
+        }
+    }
+
+    /// Reload the item the application considers current, starting at
+    /// `position` and `rate`. Stands in for an operation the pipeline can no
+    /// longer serve because the gapless swap already performed and unlinked
+    /// this item's input.
+    fn reload_current_item_at(&mut self, position: gst::ClockTime, rate: f32) {
+        // The load supersedes the in-flight activation (fcastplaybin's jobs
+        // are latest-wins and its load resets the prepared input), so clear
+        // the pre-arm bookkeeping first, exactly like the unmatched-activation
+        // resync branch. The queue index is left alone: the advance only
+        // happens on adoption, so "current" is still the playing item.
+        self.gapless_prearm = None;
+        self.player.clear_pending_gapless();
+        // `cleanup_playback_data` drops the optimistic GUI seek hold. Carry it
+        // across: this load lands exactly on the hold's target, so the thumb
+        // should stay pinned until then instead of springing back for a tick.
+        // Taking it here also keeps the cleanup from clearing the GUI's own
+        // `seek-pending` flag.
+        let seek_hold = self.gui_seek_hold.take();
+        // The start point rides the load (applied in PAUSED inside
+        // fcastplaybin) rather than being seeked in afterwards: that is the
+        // same mechanism a per-item `time`/`speed` uses, and it avoids
+        // rendering a 1.0x slice that a later seek would flush (the pop).
+        self.load_start_override = Some(player::RestorePoint { position, rate });
+        self.load_media();
+        self.gui_seek_hold = seek_hold;
+        // `Player::load` resets the tracked rate to 1.0 and the crate's start
+        // seek emits no `RateChanged`, so restate it or the application would
+        // compare later speed requests against the wrong value.
+        self.player.set_rate_changed(rate as f64);
+    }
+
+    /// Where the pre-armed item sits in the queue now. Only needed when a
+    /// declined cancel's activation has to be adopted: the queue mutation
+    /// that triggered the cancel may have shifted the item (insert/remove) or
+    /// dropped it entirely, so the armed index is a hint, the URL is the
+    /// identity.
+    fn prepared_queue_index(&self, armed_index: usize, url: &str) -> Option<usize> {
+        let Some(MediaSource::Queue(queue)) = self.current_media.as_ref().map(|m| &m.source) else {
+            return None;
+        };
+        if queue
+            .items
+            .get(armed_index)
+            .is_some_and(|item| item.url == url)
+        {
+            return Some(armed_index);
+        }
+        queue.items.iter().position(|item| item.url == url)
+    }
+
+    /// Roll the application onto a gapless activation: `generation` is live in
+    /// the pipeline and `next_index` is the queue item it plays. Everything
+    /// `play_queue_item` does except the load, since the pipeline already
+    /// switched.
+    ///
+    /// The index is a parameter instead of being read from the pre-arm because
+    /// a declined cancel's activation can arrive after the queue moved (see
+    /// the `GaplessActivated` handler).
+    fn adopt_gapless_activation(&mut self, generation: u64, next_index: usize) {
+        // Consumed either way: an activation the player refuses never comes
+        // back, and keeping the pre-arm would only block gapless for the rest
+        // of the item.
+        self.gapless_prearm = None;
+        // An adoption is an item boundary, and a parked operation belongs to
+        // the item that just retired. Callers resolve it before getting here,
+        // so this only ever catches bookkeeping drift, but applying an old
+        // item's operation to the new one is the exact class of bug the reset
+        // table in CLEANUP.md is about.
+        if let Some(op) = self.gapless_parked_op.take() {
+            debug!(
+                kind = ?op.kind(),
+                "Dropping an operation still parked at a gapless boundary"
+            );
+        }
+        if !self.player.adopt_gapless_generation(generation) {
+            warn!(generation, "Ignoring a stale gapless activation");
+            return;
+        }
+
+        info!(
+            index = next_index,
+            "Gapless: the next queue item is playing"
+        );
+
+        // The queue advances exactly like play_queue_item, minus the load
+        // (the pipeline already switched).
+        if let Some(media) = self.current_media.as_mut() {
+            media.clear_external_subtitles();
+        }
+        let (title, thumbnail_url, headers) = match self.queue_mut() {
+            Some(queue) => {
+                queue.current_idx = next_index as u8;
+                match queue.items.get(next_index) {
+                    Some(item) => (
+                        item.title.clone(),
+                        item.thumbnail_url.clone(),
+                        item.headers.clone(),
+                    ),
+                    None => (None, None, None),
+                }
+            }
+            None => (None, None, None),
+        };
+
+        // Per-item view state rolls like a fresh load. The new item's
+        // collection follows this event and re-runs
+        // media_loaded_successfully through the usual have_media_info gate
+        // (arming its playback_duration timer among other things).
+        self.current_media_item_id += 1;
+        self.have_media_info = false;
+        self.current_duration = None;
+        self.inspector_container = None;
+        self.inspector_image = String::new();
+        self.have_media_title = title.is_some();
+        if let Some(title) = title {
+            self.gui.set_media_title(title);
+        }
+
+        // The gapless path bypasses the normal load, so refresh the audio
+        // cover ourselves. Otherwise the previous track's thumbnail
+        // lingers: the metadata thumbnail is never fetched, and
+        // `have_audio_track_cover` staying set makes the Tags handler
+        // ignore an embedded image tag too.
+        self.have_audio_track_cover = false;
+        if let Some(media) = self.current_media.as_mut() {
+            media.pending_thumbnail = None;
+            media.pending_thumbnail_download = None;
+        }
+        if !self.settings.headless()
+            && let Some(thumbnail_url) = thumbnail_url
+        {
+            self.have_audio_track_cover = true;
+            self.current_image_download_id += 1;
+            let this_id = self.current_image_download_id;
+            if let Some(media) = self.current_media.as_mut() {
+                media.pending_thumbnail_download = Some(this_id);
+            }
+            self.image_downloader
+                .queue_download(this_id, thumbnail_url, headers);
+        } else {
+            // No metadata thumbnail for the new item: drop the old cover
+            // so it doesn't linger (an embedded image tag, if any, is
+            // still picked up by the Tags handler now that the flag and
+            // pending state are reset).
+            self.gui.clear_audio_covers();
+        }
+
+        // Receiver-initiated selection: every sender hears about it
+        // (the same broadcast the EOS advance sends).
+        if self.should_broadcast() {
+            self.broadcast_update(ReceiverToSenderMessage::V4(fcast::V4Message::Broadcast {
+                serialized_msg: fcast_protocol::v4::MessageBuilder::new()
+                    .queue_select(v4::QueuePosition::Index(next_index as u8)),
+            }));
+        }
+        self.sync_queue_cache();
     }
 
     /// Reconcile the prefetch cache with the current queue window. Runs after
@@ -2241,37 +2763,20 @@ impl Application {
             }
             Operation::Seek(time) => {
                 if self.is_playing() {
-                    // Seeking away from the end invalidates "plays to its
-                    // end, next item follows".
-                    self.cancel_gapless_prearm();
-                    if !self.player.seekable_known {
-                        // Tracks are advertised well before the pipeline can answer the seekability
-                        // query, in that window the duration for the range check is unknown too,
-                        // and the player would silently drop the seek. Park it (last seek wins) and
-                        // apply it once the query resolves.
-                        debug!(
-                            ?time,
-                            "Parking the seek until the seekability query resolves"
-                        );
-                        self.pending_seek_op = Some((origin, time));
-                        self.pending_seek_epoch += 1;
-                        let epoch = self.pending_seek_epoch;
-                        let msg_tx = self.msg_tx.clone();
-                        tokio::spawn(async move {
-                            tokio::time::sleep(Self::PENDING_SEEK_TIMEOUT).await;
-                            msg_tx.send(Message::PendingSeekCheck { epoch });
-                        });
-                    } else {
-                        match self.current_duration {
-                            Some(duration)
-                                if duration > gst::ClockTime::ZERO && time > duration =>
-                            {
-                                self.send_error(origin, ErrorKind::SeekOutOfRange);
-                                self.player.seek(duration);
-                            }
-                            _ => self.player.seek(time),
-                        }
-                    }
+                    // Range-check first so a park below cannot delay the
+                    // sender's error reply. This used to run only on the
+                    // seekable-known branch, with `maybe_apply_pending_seek`
+                    // repeating it for a seek parked before the query
+                    // resolved; the check is idempotent (it clamps to the
+                    // duration, so the second pass finds nothing to report)
+                    // and running it once, up front, is the same answer unless
+                    // the item's duration GROWS between PAUSED and PLAYING,
+                    // which would now clamp where it previously would not.
+                    let time = self.clamp_seek_target(origin, time);
+                    // Seeking away from the end invalidates "plays to its end,
+                    // next item follows", and a flushing seek must not reach
+                    // the pipeline before the cancellation is confirmed.
+                    self.park_or_apply_gapless_op(GaplessParkedOp::Seek { origin, time });
                 }
             }
             Operation::SetSpeed(rate) => {
@@ -2283,10 +2788,9 @@ impl Application {
                     debug!(rate, "Speed unchanged; re-emitting the confirmation");
                     self.broadcast_rate(rate)?;
                 } else {
-                    // The rate change is a flushing seek; the pre-arm's
-                    // drain assumptions no longer hold.
-                    self.cancel_gapless_prearm();
-                    self.player.set_rate(rate);
+                    // A real rate change IS a flushing seek: same hazard and
+                    // same park as `Seek` above.
+                    self.park_or_apply_gapless_op(GaplessParkedOp::SetSpeed { origin, rate });
                 }
             }
             Operation::SetPlaylistItem(msg) => {
@@ -2410,7 +2914,13 @@ impl Application {
                     v4::flat::MediaTrackType::Audio => player::TrackKind::Audio,
                     _ => unreachable!(),
                 };
-                self.apply_track_change(kind, sid);
+                // An audio switch is a flushing seek in the selection engine
+                // (`Job::RefreshSeek`), so it carries the same post-swap hazard
+                // as `Seek`: park it until a pending pre-arm's cancellation is
+                // confirmed. Video and subtitle switches ride along because a
+                // selection resolved against the retired item's stream list is
+                // wrong for the successor either way.
+                self.park_or_apply_gapless_op(GaplessParkedOp::TrackChange { kind, sid });
             }
             Operation::AddSubtitleSource { url, select, name } => {
                 return self.add_subtitle_source(origin, url, select, name);
@@ -2778,6 +3288,10 @@ impl Application {
     /// GUI `SelectTrack`. `origin` receives any error (a `Gui` origin swallows
     /// it). External-track selection parks the desired state until the stream
     /// materializes, everything else goes through the selection logic.
+    ///
+    /// Validation happens here; enacting the result goes through the gapless
+    /// gate, so it can be held back until a pending pre-arm's cancellation is
+    /// confirmed (see [`park_or_apply_gapless_op`](Self::park_or_apply_gapless_op)).
     fn change_subtitle_track(&mut self, origin: PacketOrigin, id: Option<u32>) {
         let target = match self.resolve_subtitle_target(id) {
             Ok(t) => t,
@@ -2798,6 +3312,15 @@ impl Application {
             return;
         }
 
+        // `target` is fully validated from here on, so it is safe to hold
+        // across a gapless cancel round-trip if one is in flight.
+        self.park_or_apply_gapless_op(GaplessParkedOp::SubtitleChange { origin, target });
+    }
+
+    /// Enact a validated subtitle target. Split out of
+    /// [`change_subtitle_track`](Self::change_subtitle_track) so a replay after
+    /// a gapless cancel runs the identical code the original request would.
+    fn apply_subtitle_target(&mut self, origin: PacketOrigin, target: SubtitleTarget) {
         match target {
             SubtitleTarget::External(ext_id) => {
                 // Attached but its stream hasn't materialized yet: the
@@ -3050,6 +3573,11 @@ impl Application {
                 // Stamped with the PREPARED (future) generation by design;
                 // its handler validates it against the pre-arm bookkeeping.
                 | player::PlayerEvent::GaplessActivated
+                // Cancel outcomes are control-plane too: they carry the
+                // prepared generation and are validated against the pre-arm
+                // bookkeeping, not against the current load.
+                | player::PlayerEvent::GaplessCancelled { .. }
+                | player::PlayerEvent::GaplessCancelDeclined { .. }
         )
     }
 
@@ -3074,6 +3602,12 @@ impl Application {
         }
         match event {
             player::PlayerEvent::EndOfStream => {
+                // The item ended before the cancel outcome arrived, so an
+                // operation parked on it has no item left to act on: the
+                // advance below owns the transition. Resolved before the
+                // cancel so the parked operation cannot survive into the next
+                // item on this path.
+                self.resolve_parked_gapless_op(GaplessOutcome::ItemEnded);
                 // A pipeline EOS while pre-armed means the gapless handoff
                 // missed (or was cancelled after the drain): the ordinary
                 // advance below owns the transition, drop the pre-arm.
@@ -3234,6 +3768,40 @@ impl Application {
                     self.playback_progress_changed();
                 }
             }
+            player::PlayerEvent::DurationChanged => {
+                // The refresh edge `current_duration` used to lack entirely.
+                // A push-mode demuxer announces an approximate duration up
+                // front and refines it as it plays (oggdemux over the fcomp
+                // transport does exactly this), so without re-querying here an
+                // opus track reports a duration a few seconds short for its
+                // whole length.
+                //
+                // A pipeline image has no meaningful timeline and produces no
+                // progress traffic at all (see `notify_updates`), so it must
+                // not start doing so here.
+                if self.image_via_player {
+                    return Ok(());
+                }
+                match cacheable_duration(self.player.get_duration()) {
+                    Some(duration) => {
+                        debug!(?duration, "Duration refined mid-item");
+                        self.current_duration = Some(duration);
+                        // Out to the GUI and the senders now rather than at the
+                        // next tick, on the same interval bypass a seek settle
+                        // uses. Held back mid-load or mid-seek for the reason
+                        // `notify_updates` holds back there: the position read
+                        // would be transient and would fight the seek hold. The
+                        // cached value is what matters, and the next tick
+                        // reports it.
+                        if self.player.have_media_info() && !self.player.is_seeking() {
+                            self.playback_progress_changed();
+                        }
+                    }
+                    // Nothing usable came back: keep what is cached (or keep
+                    // the cache empty for the lazy read to retry).
+                    None => debug!("Ignoring a duration change the pipeline cannot answer"),
+                }
+            }
             player::PlayerEvent::Buffering(percent) => {
                 if self.player.buffering(percent) {
                     self.notify_updates(true)?;
@@ -3264,9 +3832,22 @@ impl Application {
                     && pending == gst::State::VoidPending;
                 let started_playing =
                     current == gst::State::Playing && pending == gst::State::VoidPending;
-                // Try to get duration
+                // Duration writer #1 of three, and the only one that
+                // deliberately overwrites: a preroll or a resume is the edge
+                // where the pipeline first has a real answer, so it always
+                // wins. The other two never fight it: the lazy read in
+                // `notify_updates` only fills an EMPTY cache, and
+                // `DurationChanged` only ever refines upward from the source
+                // itself. All three go through `cacheable_duration`, so a
+                // failed or zero query leaves the cache empty for the lazy read
+                // to retry rather than latching a zero (which would disable the
+                // seek clamp and suppress every further gapless pre-arm).
+                //
+                // A gapless swap produces neither of these edges by design,
+                // which is why the boundary needs the `DurationChanged` handler
+                // and the activation's own `current_duration = None` reset.
                 if first_paused || started_playing {
-                    self.current_duration = self.player.get_duration();
+                    self.current_duration = cacheable_duration(self.player.get_duration());
                     if self.current_duration.is_some() && self.should_broadcast() {
                         self.playback_progress_changed();
                     }
@@ -3442,17 +4023,19 @@ impl Application {
                 let Some(generation) = generation else {
                     return Ok(());
                 };
-                let matching = self
+                let armed = self
                     .gapless_prearm
                     .as_ref()
-                    .is_some_and(|prearm| prearm.generation == generation);
-                if !matching {
+                    .filter(|prearm| prearm.generation == generation)
+                    .map(|prearm| (prearm.next_index, prearm.url.clone(), prearm.cancelling));
+                let Some((next_index, url, cancelling)) = armed else {
                     // A stale activation (superseded by a later load) is a
                     // harmless straggler. One AHEAD of the player means the
                     // pipeline switched while the application had dropped
-                    // the pre-arm (a cancel raced the swap and lost):
-                    // reload the item the application believes is current
-                    // so pipeline and state agree again.
+                    // the pre-arm: reload the item the application believes
+                    // is current so pipeline and state agree again. This is
+                    // the last resort now that a cancel losing the race
+                    // against the swap keeps its pre-arm (below).
                     if self
                         .player
                         .dbg_generation()
@@ -3464,100 +4047,86 @@ impl Application {
                         );
                         self.gapless_prearm = None;
                         self.player.clear_pending_gapless();
+                        // No parked operation can be here (it only exists
+                        // alongside the pre-arm this branch failed to match),
+                        // and the reload's cleanup would drop one anyway.
                         self.load_media();
                     } else {
                         debug!(generation, "Ignoring a stale gapless activation");
                     }
                     return Ok(());
-                }
-                let prearm = self.gapless_prearm.take().expect("checked above");
-                if !self.player.adopt_gapless_generation(generation) {
-                    warn!(generation, "Ignoring a stale gapless activation");
+                };
+                if !cancelling {
+                    self.adopt_gapless_activation(generation, next_index);
                     return Ok(());
                 }
 
-                info!(
-                    index = prearm.next_index,
-                    "Gapless: the next queue item is playing"
-                );
-
-                // The queue advances exactly like play_queue_item, minus
-                // the load (the pipeline already switched).
-                if let Some(media) = self.current_media.as_mut() {
-                    media.clear_external_subtitles();
+                // The activation can beat the decline report to the loop (they
+                // are emitted from different threads), so an operation parked
+                // on that cancel is resolved HERE too, against the same
+                // swap-already-performed state. A seek or speed change takes
+                // over with a reload (it cannot be served by a pipeline whose
+                // only linked upstream is the next item); a track change is
+                // dropped and the activation is adopted normally below.
+                if self.resolve_parked_gapless_op(GaplessOutcome::SwapPerformed) {
+                    return Ok(());
                 }
-                let (title, thumbnail_url, headers) = match self.queue_mut() {
-                    Some(queue) => {
-                        queue.current_idx = prearm.next_index as u8;
-                        match queue.items.get(prearm.next_index) {
-                            Some(item) => (
-                                item.title.clone(),
-                                item.thumbnail_url.clone(),
-                                item.headers.clone(),
-                            ),
-                            None => (None, None, None),
+
+                // A cancel was requested and lost the race against the swap
+                // (the decline report may still be behind this event in the
+                // channel, the two are emitted from different threads): the
+                // prepared item IS playing, so adopt it instead of falling
+                // to the resync reload, which would restart the item that
+                // just finished. The reason for the cancel may have been a
+                // queue mutation though, so re-locate the item first.
+                match self.prepared_queue_index(next_index, &url) {
+                    Some(index) => {
+                        debug!(
+                            generation,
+                            index, "Gapless: adopting the activation of a declined cancel"
+                        );
+                        self.adopt_gapless_activation(generation, index);
+                    }
+                    None => {
+                        // The item that just went live was removed from the
+                        // queue while its swap had already performed, so
+                        // there is no slot to advance to. Hand the boundary
+                        // back to the ordinary end-of-stream advance: it
+                        // either loads the queue's next item (superseding
+                        // the pipeline's phantom) or ends playback.
+                        warn!(
+                            generation,
+                            url, "Gapless: the activated item is gone from the queue"
+                        );
+                        // Keep the player's view of the pipeline honest
+                        // (the generation IS live) before tearing it down.
+                        self.player.adopt_gapless_generation(generation);
+                        // The parked operation, if any, was already resolved
+                        // above (a seek/speed change reloaded and returned, a
+                        // track change was dropped), so nothing survives here.
+                        self.gapless_prearm = None;
+                        self.player.end_of_stream_reached();
+                        self.media_ended();
+                        // The outgoing item did end, and this fallback is the
+                        // gapped path: senders see the same shape they see
+                        // for an ordinary end-of-stream advance.
+                        if self.should_broadcast() {
+                            self.broadcast_update(ReceiverToSenderMessage::V4(
+                                fcast::V4Message::PlaybackStateChanged(
+                                    fcast_protocol::v4::PlaybackState::Ended,
+                                ),
+                            ));
                         }
+                        self.maybe_autoplay_advance();
                     }
-                    None => (None, None, None),
-                };
-
-                // Per-item view state rolls like a fresh load. The new
-                // item's collection follows this event and re-runs
-                // media_loaded_successfully through the usual
-                // have_media_info gate (arming its playback_duration
-                // timer among other things).
-                self.current_media_item_id += 1;
-                self.have_media_info = false;
-                self.current_duration = None;
-                self.inspector_container = None;
-                self.inspector_image = String::new();
-                self.have_media_title = title.is_some();
-                if let Some(title) = title {
-                    self.gui.set_media_title(title);
                 }
-
-                // The gapless path bypasses the normal load, so refresh the audio
-                // cover ourselves. Otherwise the previous track's thumbnail
-                // lingers: the metadata thumbnail is never fetched, and
-                // `have_audio_track_cover` staying set makes the Tags handler
-                // ignore an embedded image tag too.
-                self.have_audio_track_cover = false;
-                if let Some(media) = self.current_media.as_mut() {
-                    media.pending_thumbnail = None;
-                    media.pending_thumbnail_download = None;
-                }
-                if !self.settings.headless()
-                    && let Some(thumbnail_url) = thumbnail_url
-                {
-                    self.have_audio_track_cover = true;
-                    self.current_image_download_id += 1;
-                    let this_id = self.current_image_download_id;
-                    if let Some(media) = self.current_media.as_mut() {
-                        media.pending_thumbnail_download = Some(this_id);
-                    }
-                    self.image_downloader
-                        .queue_download(this_id, thumbnail_url, headers);
-                } else {
-                    // No metadata thumbnail for the new item: drop the old cover
-                    // so it doesn't linger (an embedded image tag, if any, is
-                    // still picked up by the Tags handler now that the flag and
-                    // pending state are reset).
-                    self.gui.clear_audio_covers();
-                }
-
-                // Receiver-initiated selection: every sender hears about it
-                // (the same broadcast the EOS advance sends).
-                if self.should_broadcast() {
-                    self.broadcast_update(ReceiverToSenderMessage::V4(
-                        fcast::V4Message::Broadcast {
-                            serialized_msg: fcast_protocol::v4::MessageBuilder::new()
-                                .queue_select(v4::QueuePosition::Index(prearm.next_index as u8)),
-                        },
-                    ));
-                }
-                self.sync_queue_cache();
             }
             player::PlayerEvent::GaplessPrepareFailed { generation } => {
+                // Also the exit for a prepare that fails while a cancel is in
+                // flight: nothing will activate, so the `cancelling` pre-arm
+                // must go here too or it would block gapless for the rest of
+                // the item (the cancel's own outcome then finds no pre-arm
+                // and is ignored).
                 if self
                     .gapless_prearm
                     .as_ref()
@@ -3570,6 +4139,82 @@ impl Application {
                     self.gapless_prearm = None;
                     self.gapless_blocked_item = Some(self.current_media_item_id);
                     self.player.clear_pending_gapless();
+                    // Nothing was ever swapped in, so the playing item is the
+                    // only input and a parked operation applies as if fresh.
+                    self.resolve_parked_gapless_op(GaplessOutcome::PrepareGone);
+                }
+            }
+            player::PlayerEvent::GaplessCancelled { generation } => {
+                // The prepare really is gone and no activation follows, so the
+                // bookkeeping the cancel kept alive can finally be dropped.
+                // Re-arming the same item later is allowed again from here.
+                match self.gapless_prearm.as_ref() {
+                    Some(prearm) if prearm.cancelling => {
+                        if let Some(generation) = generation
+                            && generation != prearm.generation
+                        {
+                            // The application only ever has one pre-arm, so
+                            // this is bookkeeping drift. Clear it anyway:
+                            // keeping a pre-arm nothing will ever activate
+                            // wedges gapless for the rest of the item.
+                            warn!(
+                                generation,
+                                armed = prearm.generation,
+                                "Gapless cancellation confirmed for an unexpected generation"
+                            );
+                        } else {
+                            debug!(?generation, "Gapless pre-arm cancellation confirmed");
+                        }
+                        self.gapless_prearm = None;
+                        self.player.clear_pending_gapless();
+                        // The cancel won: the pipeline is back to a single
+                        // linked input, so an operation parked on this outcome
+                        // applies exactly as a fresh one would.
+                        self.resolve_parked_gapless_op(GaplessOutcome::PrepareGone);
+                    }
+                    // Either a no-op cancel (nothing was prepared), or a
+                    // fresh load already cleaned up and re-armed. Both are
+                    // stragglers with nothing left to clear, and a pre-arm
+                    // with no cancel in flight is NOT this cancel's. Nothing
+                    // can be parked either (parking always marks the pre-arm
+                    // `cancelling`, and every path that clears a pre-arm
+                    // resolves the parked operation with it).
+                    _ => debug!(
+                        ?generation,
+                        "Gapless cancellation confirmed with no pre-arm"
+                    ),
+                }
+            }
+            player::PlayerEvent::GaplessCancelDeclined { generation } => {
+                if self
+                    .gapless_prearm
+                    .as_ref()
+                    .is_some_and(|prearm| prearm.generation == generation)
+                {
+                    // The swap had already performed when the cancel reached
+                    // the worker, so the prepared item goes live regardless.
+                    //
+                    // With nothing parked, the pre-arm is kept exactly as it
+                    // is and the activation handler adopts it, which is what
+                    // keeps the finished item from being reloaded. With a seek
+                    // or speed change parked, the playing item's input is
+                    // already unlinked and can never serve it, so that
+                    // operation takes over: it reloads the item at its target,
+                    // superseding the activation. A parked track change is
+                    // dropped and the adoption proceeds as normal.
+                    info!(
+                        generation,
+                        "Gapless cancellation declined (the swap already performed)"
+                    );
+                    self.resolve_parked_gapless_op(GaplessOutcome::SwapPerformed);
+                } else {
+                    // The activation beat this report to the loop (they are
+                    // emitted from different threads) and was already
+                    // adopted, or a load cleaned the pre-arm up first.
+                    debug!(
+                        generation,
+                        "Gapless cancellation declined for a pre-arm that is already gone"
+                    );
                 }
             }
         }
@@ -4454,7 +5099,8 @@ impl Application {
                     UiMediaTrackType::Audio => player::TrackKind::Audio,
                     UiMediaTrackType::Subtitle => unreachable!(),
                 };
-                self.apply_track_change(kind, sid);
+                // Same gapless park as the protocol ChangeTrack above.
+                self.park_or_apply_gapless_op(GaplessParkedOp::TrackChange { kind, sid });
             }
             Message::NewPlayerEvent { event, generation } => {
                 self.handle_player_event(event, generation)?;
@@ -4893,6 +5539,124 @@ mod tests {
         assert_eq!(show_duration_delay(0.0), Some(Duration::ZERO));
         assert_eq!(show_duration_delay(1.5), Some(Duration::from_millis(1500)));
         assert_eq!(show_duration_delay(30.0), Some(Duration::from_secs(30)));
+    }
+
+    /// A confirmed cancellation (or a failed prepare) leaves the playing item
+    /// as the only linked input, so every parked operation runs as if fresh.
+    #[test]
+    fn a_won_cancel_replays_every_parked_operation() {
+        for kind in [
+            GaplessParkedOpKind::Seek,
+            GaplessParkedOpKind::SetSpeed,
+            GaplessParkedOpKind::TrackChange,
+            GaplessParkedOpKind::SubtitleChange,
+        ] {
+            assert_eq!(
+                parked_op_action(kind, GaplessOutcome::PrepareGone),
+                ParkedOpAction::Replay,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// The defect this whole park exists for: once the swap has performed, the
+    /// prepared input is the only linked upstream, so a flushing seek would be
+    /// answered by the NEXT item's source. Never replay one, reload instead.
+    #[test]
+    fn a_performed_swap_reloads_instead_of_seeking() {
+        assert_eq!(
+            parked_op_action(GaplessParkedOpKind::Seek, GaplessOutcome::SwapPerformed),
+            ParkedOpAction::ReloadAtTarget
+        );
+        assert_eq!(
+            parked_op_action(GaplessParkedOpKind::SetSpeed, GaplessOutcome::SwapPerformed),
+            ParkedOpAction::ReloadAtTarget
+        );
+    }
+
+    /// Deliberate policy: a track switch is not worth restarting the item the
+    /// user is listening to, and the item is in its final stretch anyway.
+    #[test]
+    fn a_performed_swap_drops_a_parked_track_change() {
+        assert_eq!(
+            parked_op_action(
+                GaplessParkedOpKind::TrackChange,
+                GaplessOutcome::SwapPerformed
+            ),
+            ParkedOpAction::Drop
+        );
+        assert_eq!(
+            parked_op_action(
+                GaplessParkedOpKind::SubtitleChange,
+                GaplessOutcome::SwapPerformed
+            ),
+            ParkedOpAction::Drop
+        );
+    }
+
+    /// A parked operation must never leak into the next item: if the item ends
+    /// before the outcome arrives, the advance owns the transition.
+    #[test]
+    fn an_ended_item_drops_every_parked_operation() {
+        for kind in [
+            GaplessParkedOpKind::Seek,
+            GaplessParkedOpKind::SetSpeed,
+            GaplessParkedOpKind::TrackChange,
+            GaplessParkedOpKind::SubtitleChange,
+        ] {
+            assert_eq!(
+                parked_op_action(kind, GaplessOutcome::ItemEnded),
+                ParkedOpAction::Drop,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// `resolve_parked_gapless_op` only reports "playback replaced" (and so
+    /// skips the caller's adopt) for the actions that actually reload.
+    #[test]
+    fn only_a_reload_supersedes_a_pending_activation() {
+        for kind in [
+            GaplessParkedOpKind::Seek,
+            GaplessParkedOpKind::SetSpeed,
+            GaplessParkedOpKind::TrackChange,
+            GaplessParkedOpKind::SubtitleChange,
+        ] {
+            for outcome in [
+                GaplessOutcome::PrepareGone,
+                GaplessOutcome::SwapPerformed,
+                GaplessOutcome::ItemEnded,
+            ] {
+                let action = parked_op_action(kind, outcome);
+                let reloads = action == ParkedOpAction::ReloadAtTarget;
+                // Only a performed swap can strand an operation this way.
+                assert_eq!(
+                    reloads,
+                    outcome == GaplessOutcome::SwapPerformed
+                        && matches!(
+                            kind,
+                            GaplessParkedOpKind::Seek | GaplessParkedOpKind::SetSpeed
+                        ),
+                    "{kind:?} x {outcome:?} -> {action:?}"
+                );
+            }
+        }
+    }
+
+    /// The `Some(0)` latch: a failed or zero duration query must NOT be
+    /// cached. Latching one used to survive for the rest of the session (the
+    /// lazy read is one-shot per item), putting `dur: 0` on the wire, disabling
+    /// the seek clamp, mapping `SeekPercent` to 0 and suppressing every further
+    /// gapless pre-arm.
+    #[test]
+    fn a_failed_or_zero_duration_query_is_never_cached() {
+        assert_eq!(cacheable_duration(None), None);
+        assert_eq!(cacheable_duration(Some(gst::ClockTime::ZERO)), None);
+        let real = gst::ClockTime::from_seconds(42);
+        assert_eq!(cacheable_duration(Some(real)), Some(real));
+        // Sub-second durations are real durations (a short image/animation).
+        let tiny = gst::ClockTime::from_nseconds(1);
+        assert_eq!(cacheable_duration(Some(tiny)), Some(tiny));
     }
 
     #[test]

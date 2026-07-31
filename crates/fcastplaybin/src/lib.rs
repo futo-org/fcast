@@ -229,6 +229,22 @@ pub enum PlaybinEvent {
     /// attributable to a specific operation: `GstBin` posts its aggregated
     /// ASYNC_DONE with a fresh seqnum.
     AsyncDone,
+    /// The media's duration changed and any value the caller cached is stale:
+    /// re-query [`duration`](FcastPlaybin::duration). No payload, mirroring
+    /// GStreamer's own `DURATION_CHANGED` contract (the message carries no
+    /// duration either, precisely because only a fresh query is authoritative).
+    ///
+    /// Real sources need this: a push-mode `oggdemux` (the fcomp/companion
+    /// transport) reports an APPROXIMATE duration up front and refines it as it
+    /// plays, so a caller that never re-queries reports the whole item a few
+    /// seconds short.
+    ///
+    /// NOT emitted for anything describing the NEXT item: a refinement posted
+    /// BY a prefetching prepared input, and anything at all while a performed
+    /// gapless swap waits to activate (upstream answers for the successor item
+    /// there, so a refresh would poison the caller's view of the item still
+    /// playing). See `Inner::translate_message`.
+    DurationChanged,
     Buffering(i32),
     /// A state change of the pipeline itself (per-element state changes are
     /// filtered out).
@@ -300,6 +316,26 @@ pub enum PlaybinEvent {
     /// the failed prepare (the event itself is stamped with the still
     /// current item's generation).
     PreparedFailed {
+        generation: u64,
+    },
+    /// A caller-requested cancel ([`FcastPlaybin::cancel_prepared_async`])
+    /// took effect: the prepared input is gone and NO activation will fire.
+    /// `generation` names the prepare that was dropped, and is `None` when
+    /// there was nothing to cancel. The caller drops its pre-arm bookkeeping
+    /// here.
+    PreparedCancelled {
+        generation: Option<u64>,
+    },
+    /// A caller-requested cancel arrived after the swap had already performed:
+    /// the activation is imminent and was left to finish, so `generation` WILL
+    /// activate.
+    ///
+    /// The caller must KEEP its pre-arm bookkeeping so the coming
+    /// [`PreparedActivated`](Self::PreparedActivated) is adopted instead of
+    /// treated as unmatched. An unmatched activation makes the caller reload
+    /// the item it still believes is current, i.e. the track that just
+    /// finished replays from 0.
+    PreparedCancelDeclined {
         generation: u64,
     },
     Warning(String),
@@ -386,7 +422,14 @@ enum Job {
     },
     /// Drop a prepared next input that will not be needed (seek away from
     /// the end, queue mutation, autoplay turned off).
-    CancelPrepared,
+    CancelPrepared {
+        /// Report the outcome ([`PlaybinEvent::PreparedCancelled`] /
+        /// [`PlaybinEvent::PreparedCancelDeclined`]). Only a CALLER's cancel
+        /// wants that: the crate's own self-cancels follow a
+        /// [`PlaybinEvent::PreparedFailed`] that already told the caller its
+        /// prepare is gone.
+        notify: bool,
+    },
     /// Post-activation cleanup: remove every input older than the newly
     /// activated generation (the drained main input and the previous item's
     /// external subtitles). Queued by the activation detection, which runs
@@ -447,7 +490,10 @@ impl std::fmt::Debug for Job {
                 .field("input", input)
                 .field("generation", generation)
                 .finish(),
-            Job::CancelPrepared => write!(f, "CancelPrepared"),
+            Job::CancelPrepared { notify } => f
+                .debug_struct("CancelPrepared")
+                .field("notify", notify)
+                .finish(),
             Job::FinishActivation => write!(f, "FinishActivation"),
         }
     }
@@ -664,6 +710,20 @@ struct SwapState {
     dropped_eos: bool,
 }
 
+impl SwapState {
+    /// The generation of a swap that has already PERFORMED and is still
+    /// waiting to activate, if any. In that window the prepared input is the
+    /// only linked upstream, so anything asking upstream (a timeline query, a
+    /// cancel's surgery) is describing the SUCCESSOR item, not the one still
+    /// coming out of the sinks.
+    ///
+    /// `swapped` alone is not the window: a long-completed activation leaves
+    /// `swapped` set with `pending` cleared.
+    fn activation_pending(&self) -> Option<u64> {
+        self.pending.filter(|_| self.swapped)
+    }
+}
+
 #[derive(Default)]
 struct SwapGate {
     state: Mutex<SwapState>,
@@ -682,6 +742,19 @@ impl SwapGate {
         self.cond.notify_all();
         aborted
     }
+}
+
+/// What a `cancel_prepared` did. The distinction is load-bearing for the
+/// caller's pre-arm bookkeeping (see [`PlaybinEvent::PreparedCancelDeclined`])
+/// and for a `Job::PrepareNext` deciding whether it may arm over the slot.
+enum CancelOutcome {
+    /// Nothing is prepared any more and no activation will fire.
+    /// `generation` names the dropped prepare, `None` for a no-op cancel
+    /// (nothing was prepared).
+    Cancelled { generation: Option<u64> },
+    /// A performed swap made cancellation impossible: the relink is live, the
+    /// activation of `generation` is imminent and was left to finish.
+    Declined { generation: u64 },
 }
 
 /// The per-load dynamic core: decodebin3 + streamsynchronizer. Rebuilt FRESH
@@ -1710,8 +1783,16 @@ impl FcastPlaybin {
     /// [`prepare_next_async`](Self::prepare_next_async)): the caller seeked
     /// away from the end, the queue changed, or autoplay was turned off.
     /// A no-op when nothing is prepared or it already activated.
+    ///
+    /// The outcome comes back as exactly one event, because a cancel RACES the
+    /// swap and commonly loses (the swap performs at pre-arm time for a small
+    /// or cached item): [`PlaybinEvent::PreparedCancelled`] means the prepare
+    /// is gone, [`PlaybinEvent::PreparedCancelDeclined`] means it is
+    /// activating anyway. On the latter the caller MUST keep its pre-arm
+    /// bookkeeping so the imminent [`PlaybinEvent::PreparedActivated`] is
+    /// adopted rather than treated as unmatched.
     pub fn cancel_prepared_async(&self) {
-        self.queue_job(Job::CancelPrepared);
+        self.queue_job(Job::CancelPrepared { notify: true });
     }
 
     /// Queue a full stop on the worker thread: pipeline to READY, every
@@ -1818,19 +1899,56 @@ impl FcastPlaybin {
         self.inner.volume.notify("volume");
     }
 
+    /// The current item's own stream time, asked of the OUTPUT sink.
+    ///
+    /// A correct gapless swap resets the segment, so the sink already reports
+    /// the current item's own stream time (no cross-item rebase needed). This
+    /// is the sink-anchored source of truth: the user-facing item switch
+    /// (title/duration) is held until the new item's audio reaches the sink
+    /// (see `Inner::held_activation`), so it lands in step with this position
+    /// flipping to the new item's 0-based time, not a decoupling-queue ahead
+    /// of it.
+    ///
+    /// Asking the PIPELINE instead would break that: `GstBin` folds POSITION
+    /// with MAX over every SINK-flagged child, so an unsynced text parking
+    /// sink racing toward the item's end can dominate the answer, and a `-1`
+    /// DURATION from any folded sink poisons `duration()` outright.
     pub fn position(&self) -> Option<gst::ClockTime> {
-        // A correct gapless swap resets the segment, so the sink already
-        // reports the current item's own stream time (no cross-item rebase
-        // needed). This is the sink-anchored source of truth: the user-facing
-        // item switch (title/duration) is held until the new item's audio
-        // reaches the sink (see `Inner::held_activation`), so it lands in step
-        // with this position flipping to the new item's 0-based time, not a
-        // decoupling-queue ahead of it.
-        self.inner.pipeline.query_position::<gst::ClockTime>()
+        self.query_timeline(|element| element.query_position::<gst::ClockTime>())
     }
 
+    /// The current item's duration, asked of the same sink `position()` is
+    /// anchored on (so the two answers describe one item).
     pub fn duration(&self) -> Option<gst::ClockTime> {
-        self.inner.pipeline.query_duration::<gst::ClockTime>()
+        self.query_timeline(|element| element.query_duration::<gst::ClockTime>())
+    }
+
+    /// Run a timeline query against the authoritative element: the per-load
+    /// audio sink (the pipeline clock and the held-activation anchor), else
+    /// the video sink, else the pipeline as a whole. One helper so
+    /// `position()` and `duration()` cannot drift onto different items.
+    ///
+    /// A candidate outside the pipeline is skipped (`ensure_audio_sink` has
+    /// not built one yet, or `remove_video_chain` took the chain out for an
+    /// audio-only item), as is one that cannot answer.
+    fn query_timeline(
+        &self,
+        query: impl Fn(&gst::Element) -> Option<gst::ClockTime>,
+    ) -> Option<gst::ClockTime> {
+        // Cloned out first: a query takes element and pad locks and can block
+        // behind a streaming thread, and holding `audio_sink` across that
+        // would stall every load's sink teardown.
+        let audio_sink = self.inner.audio_sink.lock().clone();
+        let video_sink = self.inner.video_chain.last().cloned();
+        for candidate in [audio_sink, video_sink].into_iter().flatten() {
+            if candidate.parent().is_none() {
+                continue;
+            }
+            if let Some(value) = query(&candidate) {
+                return Some(value);
+            }
+        }
+        query(self.inner.pipeline.upcast_ref::<gst::Element>())
     }
 
     /// Whether the pipeline is settled: the last state change succeeded and
@@ -2311,8 +2429,9 @@ impl Inner {
 
     /// Whether a bus message originates inside the prepared next input.
     /// Its buffering messages must not drive the caller's buffering state
-    /// machine while the CURRENT item plays, and its own (parsebin-posted)
-    /// stream collection belongs to the next item.
+    /// machine while the CURRENT item plays, its own (parsebin-posted) stream
+    /// collection belongs to the next item, and so does any duration it
+    /// refines.
     fn message_from_prepared_input(&self, msg: &gst::Message) -> bool {
         let Some(src) = msg.src() else {
             return false;
@@ -2614,7 +2733,7 @@ impl Inner {
                             debug = ?error.debug(),
                             "prepared next input failed before activation"
                         );
-                        let _ = self.work_tx.send(Job::CancelPrepared);
+                        let _ = self.work_tx.send(Job::CancelPrepared { notify: false });
                         self.emit(PlaybinEvent::PreparedFailed { generation });
                         return None;
                     }
@@ -2781,6 +2900,34 @@ impl Inner {
                 // exclusivity, see the selection module docs).
                 self.selection.lock().refresh_done();
                 PlaybinEvent::AsyncDone
+            }
+            MessageView::DurationChanged(_) => {
+                // A prefetching prepared input refines the NEXT item's
+                // duration, which says nothing about the item playing now. Same
+                // treatment as its buffering levels: dropped until it activates
+                // and becomes the main input.
+                if self.message_from_prepared_input(msg) {
+                    debug!("dropping duration-changed from the prepared next input");
+                    return None;
+                }
+                // Past a performed swap the prepared input is the only linked
+                // upstream, so the re-query this event asks for would be
+                // answered by the NEXT item and latch its duration onto the
+                // item still playing. Drop it: the activation that follows
+                // resets the caller's duration anyway, and the new item posts
+                // its own duration-changed once its demuxer refines it.
+                //
+                // Minimal lock scope on purpose: this runs on the posting
+                // (streaming) thread, and the guard is released before the log.
+                let activating = self.swap_gate.state.lock().activation_pending();
+                if let Some(generation) = activating {
+                    debug!(
+                        generation,
+                        "dropping duration-changed inside the gapless activation window"
+                    );
+                    return None;
+                }
+                PlaybinEvent::DurationChanged
             }
             MessageView::Latency(_) => {
                 // An element's latency changed (e.g. the video sink's
@@ -2982,7 +3129,7 @@ impl FcastPlaybin {
                 // imminent, and arming over it would hand the activation
                 // this prepare's record while the pipeline plays the other
                 // item. Refuse instead.
-                if !self.cancel_prepared() {
+                if matches!(self.cancel_prepared(), CancelOutcome::Declined { .. }) {
                     debug!(
                         generation,
                         "a performed swap is activating; refusing the prepare"
@@ -3051,8 +3198,18 @@ impl FcastPlaybin {
                     }
                 }
             }
-            Job::CancelPrepared => {
-                self.cancel_prepared();
+            Job::CancelPrepared { notify } => {
+                let outcome = self.cancel_prepared();
+                if notify {
+                    inner.emit(match outcome {
+                        CancelOutcome::Cancelled { generation } => {
+                            PlaybinEvent::PreparedCancelled { generation }
+                        }
+                        CancelOutcome::Declined { generation } => {
+                            PlaybinEvent::PreparedCancelDeclined { generation }
+                        }
+                    });
+                }
             }
             Job::FinishActivation => {
                 // The prepared item is live (its generation is current):
@@ -3084,11 +3241,12 @@ impl FcastPlaybin {
     /// when nothing is prepared (or it already activated, which empties the
     /// slot). Worker-thread only (pipeline surgery).
     ///
-    /// Returns `false` when a performed swap makes cancellation impossible:
-    /// activation is imminent and must be left to finish (a caller-side
-    /// load supersedes it normally anyway). Callers arming a NEW prepare
-    /// must refuse on `false` rather than clobber the in-flight activation.
-    fn cancel_prepared(&self) -> bool {
+    /// Returns [`CancelOutcome::Declined`] when a performed swap makes
+    /// cancellation impossible: activation is imminent and must be left to
+    /// finish (a caller-side load supersedes it normally anyway). Callers
+    /// arming a NEW prepare must refuse on it rather than clobber the
+    /// in-flight activation.
+    fn cancel_prepared(&self) -> CancelOutcome {
         // Atomic against the block probe's surgery: past the swap the
         // relink is live and activation is imminent, cancelling would rip
         // the now-active input out mid-stream. `pending` distinguishes the
@@ -3096,19 +3254,21 @@ impl FcastPlaybin {
         // `swapped` set but clears `pending`).
         let dropped_eos = {
             let mut state = self.inner.swap_gate.state.lock();
-            if state.swapped && state.pending.is_some() {
+            if let Some(generation) = state.activation_pending() {
                 debug!("swap already performed, leaving the activation to finish");
-                return false;
+                return CancelOutcome::Declined { generation };
             }
             let aborted = std::mem::take(&mut *state);
             self.inner.swap_gate.cond.notify_all();
             aborted.pending.is_some() && aborted.dropped_eos
         };
+        let mut cancelled = None;
         if let Some(prepared) = self.inner.prepared.lock().take() {
             debug!(
                 generation = prepared.generation,
                 "dropping the prepared next input"
             );
+            cancelled = Some(prepared.generation);
             let input = {
                 let mut routing = self.inner.routing.lock();
                 routing
@@ -3138,7 +3298,9 @@ impl FcastPlaybin {
             debug!("prepare cancelled after its end was consumed: synthesizing end-of-stream");
             self.inner.emit(PlaybinEvent::EndOfStream);
         }
-        true
+        CancelOutcome::Cancelled {
+            generation: cancelled,
+        }
     }
 
     /// Re-assert the pipeline's in-flight target after a prepared input's
@@ -3634,7 +3796,7 @@ impl Inner {
                 // EOS was already consumed by the drain, synthesizes the
                 // end-of-stream the caller now needs to advance normally.
                 inner.emit(PlaybinEvent::PreparedFailed { generation });
-                let _ = inner.work_tx.send(Job::CancelPrepared);
+                let _ = inner.work_tx.send(Job::CancelPrepared { notify: false });
                 let _ = info.data.take();
                 info.flow_res = Err(gst::FlowError::Flushing);
                 gst::PadProbeReturn::Handled
@@ -4113,6 +4275,13 @@ impl Inner {
             .property("enable-last-sample", false)
             .build()
             .context("creating a text parking sink")?;
+        // Keep it out of everything GstBin routes through SINK-flagged
+        // children (the `fpb-token-sink` treatment, for the same class of
+        // reason). An unsynced parking sink consumes at multiqueue speed, so
+        // it races toward the item's end: in the bin's POSITION fold (MAX over
+        // the flagged children) it can dominate the answer, and a `-1`
+        // DURATION from it poisons the duration fold entirely.
+        sink.unset_element_flags(gst::ElementFlags::SINK);
         self.pipeline
             .add(&sink)
             .context("adding the text parking sink")?;
@@ -4306,7 +4475,7 @@ impl Inner {
                 let entry = inner
                     .audio_entry
                     .static_pad("sink")
-                    .ok_or_else(|| anyhow!("audioconvert sink missing"))?;
+                    .ok_or_else(|| anyhow!("fpb-aqueue sink missing"))?;
                 ss_src.link(&entry).context("linking audio chain")?;
                 inner.finish_preroll_token();
                 (Some(ss_sink), Some(ss_src), Some(entry), None, None)
@@ -4787,10 +4956,47 @@ mod decisions {
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamKind, decisions::*};
+    use super::{StreamKind, SwapState, decisions::*};
 
     fn ids(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The gapless activation window is `swapped` AND `pending`, nothing
+    /// looser. Two callers depend on exactly this shape: the cancel refusal
+    /// (`cancel_prepared`) and the duration-refresh gate in
+    /// `translate_message`, which must not let a successor item's duration
+    /// reach the caller.
+    #[test]
+    fn activation_pending_needs_both_swapped_and_pending() {
+        assert_eq!(SwapState::default().activation_pending(), None);
+        // Armed but not yet performed: upstream is still the playing item.
+        assert_eq!(
+            SwapState {
+                pending: Some(7),
+                ..Default::default()
+            }
+            .activation_pending(),
+            None
+        );
+        // A long-completed activation leaves `swapped` set, `pending` cleared.
+        assert_eq!(
+            SwapState {
+                swapped: true,
+                ..Default::default()
+            }
+            .activation_pending(),
+            None
+        );
+        assert_eq!(
+            SwapState {
+                pending: Some(7),
+                swapped: true,
+                ..Default::default()
+            }
+            .activation_pending(),
+            Some(7)
+        );
     }
 
     #[test]
@@ -5082,6 +5288,53 @@ mod pipeline_tests {
     enum Ev {
         Activated,
         Eos,
+    }
+
+    /// The duration-refresh edge, end to end through the real bus
+    /// translation: a `DURATION_CHANGED` must reach the caller as
+    /// [`PlaybinEvent::DurationChanged`] (its cue to re-query), and must be
+    /// dropped while a performed swap waits to activate, where the query would
+    /// be answered by the successor item.
+    ///
+    /// Posting the message is the deterministic trigger: translation is a bus
+    /// SYNC handler, so `post` runs it inline on this thread and the channel is
+    /// already settled when it returns. The message carries no payload, so a
+    /// synthesized one is indistinguishable from a demuxer's (which is the
+    /// whole point of the no-payload contract).
+    #[test]
+    fn duration_changed_reaches_the_caller_except_mid_activation() {
+        gst::init().unwrap();
+        let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        playbin.set_event_handler(None, move |event, generation| {
+            if matches!(event, PlaybinEvent::DurationChanged) {
+                let _ = tx.send(generation);
+            }
+        });
+
+        let bus = playbin.bus();
+        bus.post(gst::message::DurationChanged::new()).unwrap();
+        rx.try_recv()
+            .expect("a duration-changed on the bus must reach the caller");
+
+        // The swapped-with-pending-activation window (the same predicate the
+        // cancel refusal uses).
+        *playbin.inner.swap_gate.state.lock() = SwapState {
+            pending: Some(42),
+            swapped: true,
+            ..Default::default()
+        };
+        bus.post(gst::message::DurationChanged::new()).unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "duration-changed must be dropped while a performed swap waits to activate: \
+             upstream answers for the successor item there"
+        );
+
+        // Leave the gate as found: teardown reads it.
+        *playbin.inner.swap_gate.state.lock() = SwapState::default();
+        let _ = playbin.stop();
     }
 
     /// The watchdog end to end, without FAST or media: attach a URI that
