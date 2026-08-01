@@ -971,9 +971,13 @@ impl Application {
         origin: PacketOrigin,
         serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
     ) {
-        if let PacketOrigin::FCast { sender_id, .. } = origin
-            && self.should_broadcast()
-        {
+        let sender_id = match origin {
+            PacketOrigin::Gui => Some(0),
+            PacketOrigin::FCast {sender_id, ..} => Some(sender_id),
+            _ => None,
+        };
+
+        if let Some(sender_id) = sender_id && self.should_broadcast() {
             self.broadcast_update(ReceiverToSenderMessage::V4(
                 fcast::V4Message::RelayToOtherSenders {
                     initiator_session_id: sender_id,
@@ -5508,7 +5512,8 @@ impl Application {
 
                 use futures::stream::StreamExt;
 
-                let mut session_id: SenderId = 0;
+                // Start at 1, let 0 be an anonymous session (e.g. the GUI)
+                let mut session_id: SenderId = 1;
                 loop {
                     tokio::select! {
                         event = event_rx.recv() => {

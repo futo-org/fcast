@@ -355,6 +355,15 @@ component PlaybackControls inherits Rectangle {
         if Bridge.ui-mode == UiMode.Full: HorizontalLayout {
             visible: elems-opacity > 0;
 
+            SecondaryButton {
+                opacity: elems-opacity;
+                icon: Icons.close;
+                icon-rotation: 180deg;
+                icon-size: 14px;
+
+                clicked => Bridge.stop-playback();
+            }
+
             Rectangle { }
 
             SecondaryButton {

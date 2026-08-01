@@ -187,6 +187,13 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
+    bridge.on_stop_playback({
+        let msg_tx = msg_tx.clone();
+        move || {
+            msg_tx.operation(PacketOrigin::Gui, Operation::Stop);
+        }
+    });
+
     bridge.on_sec_to_string(|sec: i32| -> SharedString {
         sec_to_string(sec as f64).to_shared_string()
     });

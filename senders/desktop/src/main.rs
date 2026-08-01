@@ -646,6 +646,49 @@ impl Application {
         Ok(())
     }
 
+    /// Playback stopped on the receiver.
+    async fn handle_playback_stopped(&mut self) -> Result<()> {
+        let Some(session) = self.session_state.as_mut() else {
+            // Disconnecting: end_session() takes the session before the stop it sent comes back,
+            // and the UI is already on its way to Disconnected. Nothing to wind back.
+            return Ok(());
+        };
+
+        session.playback_state = UiPlaybackState::Idle;
+        session.time = 0.0;
+        session.duration = 0.0;
+
+        // Mirroring cannot outlive the receiver dropping the stream, so tear the capture side
+        // down and leave the view, like the local Stop button. A browsing session keeps its view
+        // and only stops marking an item as playing, like clicking the playing entry again.
+        let was_mirroring = if let SessionSpecificState::Mirroring {
+            tx_sink,
+            video_source_fetcher_tx,
+            ..
+        } = &mut session.specific
+        {
+            if let Some(mut tx_sink) = tx_sink.take() {
+                tx_sink.shutdown();
+            }
+            let _ = video_source_fetcher_tx.send(FetchEvent::Quit).await;
+            session.specific = SessionSpecificState::Idle;
+            true
+        } else {
+            false
+        };
+
+        self.ui_weak.upgrade_in_event_loop(move |ui| {
+            let bridge = ui.global::<Bridge>();
+            bridge.invoke_clear_playback_state();
+            if was_mirroring {
+                bridge.invoke_clear_mirroring_state();
+                bridge.invoke_change_state(UiAppState::SelectingInputType);
+            }
+        })?;
+
+        Ok(())
+    }
+
     async fn end_session(&mut self, stop_playback: bool) -> Result<()> {
         if let Some(session) = self.session_state.take() {
             self.disconnect_device(session.device, stop_playback);
@@ -1586,7 +1629,7 @@ impl Application {
                     }
                 }
                 mcore::DeviceEvent::PlaybackError(_) => (),
-                mcore::DeviceEvent::PlaybackStopped => (),
+                mcore::DeviceEvent::PlaybackStopped => self.handle_playback_stopped().await?,
                 _ => self.update_device_state(event)?,
             },
             Event::FromDevice { id, .. } => {

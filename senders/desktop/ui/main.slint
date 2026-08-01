@@ -209,26 +209,35 @@ export global Bridge {
         files = [];
     }
 
+    // Everything tied to the item that was playing, including which entry the
+    // browsing lists mark as playing. Cleared whenever playback stops, no
+    // matter who stopped it, and on disconnect.
+    public function clear-playback-state() {
+        playback-state = UiPlaybackState.Idle;
+        playback-position = 0.0;
+        track-duration = 0.0;
+        playback-pos-str = "00:00:00";
+        track-dur-str = "00:00:00";
+        current-local-media-id = -1;
+        current-yt-dlp-id = -1;
+        video-tracks = [];
+        audio-tracks = [];
+        subtitle-tracks = [];
+        current-video-track = -1;
+        current-audio-track = -1;
+        current-subtitle-track = -1;
+    }
+
     public function change-state(new-state: UiAppState) {
         if new-state == UiAppState.Disconnected {
             device-name = "";
             device-ip = "";
-            current-local-media-id = -1;
-            playback-state = UiPlaybackState.Idle;
-            playback-position = 0.0;
-            track-duration = 0.0;
             current-media-type = UiMediaFileType.Image;
+            clear-playback-state();
             clear-mirroring-state();
             clear-yt-dlp-state();
             clear-local-media-state();
             is-connecting-to-manually-inputted-device = false;
-            // TODO: these should be changed on media stop as well
-            video-tracks = [];
-            audio-tracks = [];
-            subtitle-tracks = [];
-            current-video-track = -1;
-            current-audio-track = -1;
-            current-subtitle-track = -1;
         }
         app-state = new-state;
     }
