@@ -1,0 +1,21 @@
+diff --git a/subprojects/gst-plugins-base/ext/ogg/gstoggdemux.c b/subprojects/gst-plugins-base/ext/ogg/gstoggdemux.c
+index 69d0c86..79539a2 100644
+--- a/subprojects/gst-plugins-base/ext/ogg/gstoggdemux.c
++++ b/subprojects/gst-plugins-base/ext/ogg/gstoggdemux.c
+@@ -2434,6 +2434,16 @@ gst_ogg_demux_reset_streams (GstOggDemux * ogg)
+     stream->map.accumulated_granule = 0;
+     stream->current_granule = -1;
+     stream->keyframe_granule = -1;
++    /* Data before and after a reset is discontinuous, so packets still
++     * queued in the libogg stream are stale: drop them, like the pull-mode
++     * pad reset and the push-mode bisection do. Without this the push-mode
++     * duration probe poisons the next chain's start time: pages streamed
++     * while its seek-back is pending are submitted with stream_out
++     * suppressed, so their packets sit in the ogg_stream_state, survive the
++     * flush, and come out first once data flows again. collect_start_time
++     * then anchors the chain near the END of the media and the pipeline
++     * reports position ~= duration from the very first buffer. */
++    ogg_stream_reset (&stream->map.stream);
+   }
+   ogg->building_chain = chain;
+   GST_DEBUG_OBJECT (ogg, "Resetting current chain");

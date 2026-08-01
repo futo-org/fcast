@@ -158,6 +158,18 @@ pub enum PlayerEvent {
     /// ASYNC_DONE with a fresh seqnum (fcastplaybin's selection engine
     /// relies on exclusivity instead).
     AsyncDone,
+    /// The media's duration changed and any cached value is stale: re-query
+    /// `Player::get_duration`. Carries no value on purpose (GStreamer's own
+    /// `DURATION_CHANGED` does not either): only a fresh query is
+    /// authoritative. A push-mode demuxer (`oggdemux` over the fcomp
+    /// transport) announces an approximate duration up front and refines it
+    /// while the item plays, which is what this event delivers.
+    ///
+    /// LOAD-SCOPED deliberately: a superseded load's refresh must be dropped
+    /// by the generation filter, and fcastplaybin already suppresses the one
+    /// case where the current generation would still answer for the wrong item
+    /// (a performed gapless swap waiting to activate).
+    DurationChanged,
     Buffering(i32),
     IsLive,
     StateChanged {
@@ -220,6 +232,19 @@ pub enum PlayerEvent {
     /// pre-arm bookkeeping and the item loads through the ordinary
     /// end-of-stream advance instead.
     GaplessPrepareFailed {
+        generation: u64,
+    },
+    /// A requested cancel ([`Player::cancel_prepared`]) took effect: nothing
+    /// is pre-armed any more and no activation will follow. `generation` names
+    /// the dropped pre-arm, `None` when there was nothing to cancel.
+    GaplessCancelled {
+        generation: Option<u64>,
+    },
+    /// A requested cancel lost the race against the swap: `generation` is
+    /// activating regardless. The application must KEEP its pre-arm
+    /// bookkeeping so the imminent [`PlayerEvent::GaplessActivated`] is
+    /// adopted instead of resyncing with a reload of the finished item.
+    GaplessCancelDeclined {
         generation: u64,
     },
 }
@@ -309,9 +334,8 @@ fn merge_streams_stable(previous: Vec<Stream>, collection: &gst::StreamCollectio
 }
 
 pub struct Player {
-    /// The fcastplaybin playback orchestrator (see fcastplaybin-plan.md):
-    /// the only pipeline handle. State changes, seeks, queries and events
-    /// all go through its API.
+    /// The fcastplaybin playback orchestrator: the only pipeline handle.
+    /// State changes, seeks, queries and events all go through its API.
     fcast: fcastplaybin::FcastPlaybin,
     /// A volume change was dispatched and its `VolumeChanged` confirmation
     /// has not arrived yet (see `set_volume`).
@@ -500,6 +524,7 @@ impl Player {
             E::VolumeChanged(volume) => PlayerEvent::VolumeChanged(volume),
             E::StreamCollection(collection) => PlayerEvent::StreamCollection(collection),
             E::AsyncDone => PlayerEvent::AsyncDone,
+            E::DurationChanged => PlayerEvent::DurationChanged,
             E::Buffering(percent) => PlayerEvent::Buffering(percent),
             E::StateChanged {
                 old,
@@ -546,6 +571,10 @@ impl Player {
             }),
             E::PreparedActivated => PlayerEvent::GaplessActivated,
             E::PreparedFailed { generation } => PlayerEvent::GaplessPrepareFailed { generation },
+            E::PreparedCancelled { generation } => PlayerEvent::GaplessCancelled { generation },
+            E::PreparedCancelDeclined { generation } => {
+                PlayerEvent::GaplessCancelDeclined { generation }
+            }
             E::Warning(message) => PlayerEvent::Warning(message),
         };
         msg_tx.player(event, Some(generation));
@@ -702,10 +731,18 @@ impl Player {
         generation
     }
 
-    /// Drop a pending pre-armed next item (seek away from the end, queue
-    /// mutation, stop). A no-op when nothing is pending.
+    /// Ask the pipeline to drop a pending pre-armed next item (seek away from
+    /// the end, queue mutation, stop). A no-op when nothing is pending.
+    ///
+    /// `pending_gapless` deliberately SURVIVES the request: the cancel races
+    /// the pipeline's swap and a cancel that loses activates anyway
+    /// (`GaplessCancelDeclined`), and that activation is only adoptable while
+    /// the generation is still recorded here. The outcome clears it, through
+    /// [`clear_pending_gapless`](Self::clear_pending_gapless) on a confirmed
+    /// cancel or [`adopt_gapless_generation`](Self::adopt_gapless_generation)
+    /// on the activation.
     pub fn cancel_prepared(&mut self) {
-        if self.pending_gapless.take().is_some() {
+        if self.pending_gapless.is_some() {
             self.fcast.cancel_prepared_async();
         }
     }
@@ -729,7 +766,8 @@ impl Player {
     }
 
     /// Clear the pre-arm bookkeeping without touching the pipeline (the
-    /// prepare already failed or was consumed elsewhere).
+    /// prepare already failed, was confirmed cancelled, or was consumed
+    /// elsewhere).
     pub fn clear_pending_gapless(&mut self) {
         self.pending_gapless = None;
     }
