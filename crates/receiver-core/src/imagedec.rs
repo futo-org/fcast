@@ -195,7 +195,7 @@ pub mod imp {
         Jp2,
         /// HEIC/HEIF via the libheif decoding hooks (registered by
         /// `image::init_extra_decoders`).
-        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+        #[cfg(not(target_os = "android"))]
         Heif,
         /// Still-only formats the image crate reads natively.
         Other(ImageFormat),
@@ -224,7 +224,7 @@ pub mod imp {
                 }
                 "image/jxl" => Some(Self::Jxl),
                 "image/jp2" | "image/x-jpc" => Some(Self::Jp2),
-                #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+                #[cfg(not(target_os = "android"))]
                 "image/heic" | "image/heif" => Some(Self::Heif),
                 "image/bmp" => Some(Self::Other(ImageFormat::Bmp)),
                 "image/tiff" => Some(Self::Other(ImageFormat::Tiff)),
@@ -266,7 +266,7 @@ pub mod imp {
                 "image/x-portable-pixmap",
                 "image/x-portable-anymap",
             ];
-            let heif: &[&str] = if cfg!(all(feature = "extra-imgfmt", target_os = "linux")) {
+            let heif: &[&str] = if cfg!(not(target_os = "android")) {
                 &["image/heic", "image/heif"]
             } else {
                 &[]
@@ -609,7 +609,7 @@ pub mod imp {
                     .map_err(|err| DecodeError::Other(format!("JPEG 2000: {err:?}")))?;
                     self.push_still(decoder, "jp2")
                 }
-                #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+                #[cfg(not(target_os = "android"))]
                 FormatHint::Heif => {
                     // Through the image crate's decoding hooks (libheif),
                     // which key off the guessed format.
@@ -1023,9 +1023,9 @@ pub fn player_mime_types() -> &'static [&'static str] {
         "image/x-portable-graymap",
         "image/x-portable-pixmap",
         "image/x-portable-anymap",
-        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+        #[cfg(not(target_os = "android"))]
         "image/heic",
-        #[cfg(all(feature = "extra-imgfmt", target_os = "linux"))]
+        #[cfg(not(target_os = "android"))]
         "image/heif",
     ]
 }
@@ -1587,7 +1587,7 @@ mod tests {
     /// the libheif hooks are compiled out.
     #[test]
     fn typefinder_caps_all_decodable() {
-        let heif_gated = !cfg!(all(feature = "extra-imgfmt", target_os = "linux"));
+        let heif_gated = cfg!(target_os = "android");
         for name in crate::imagetypefind::produced_caps() {
             if heif_gated && matches!(*name, "image/heic" | "image/heif") {
                 continue;

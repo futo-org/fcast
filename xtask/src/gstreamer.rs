@@ -648,6 +648,28 @@ const FULL_SCOPE_FALLBACK: &[&str] = &[
 /// in-tree and dav1d-sys must link that archive.
 const SYSTEM_DEPS_FULL_SCOPE: &[&str] = &["GLIB_2_0", "GOBJECT_2_0", "GIO_2_0", "DAV1D"];
 
+/// HEIC still-image decode (mac/win, scope=Full) links a static libheif compiled
+/// from libheif-sys's vendored source (its `embedded-libheif` feature). libheif
+/// is only a container/tiling layer, so it needs a HEVC decoder plugin to decode
+/// any pixels — libde265, which we build statically ([`build_libde265`]) and hand
+/// to both libheif's CMake build and the final Rust link. Linux instead links the
+/// system libheif (the Nix build supplies it), so none of this applies there.
+const LIBDE265_REPO: &str = "https://github.com/strukturag/libde265.git";
+const LIBDE265_REF: &str = "v1.0.16";
+
+/// Codecs libheif-sys's embedded build force-enables (`WITH_<x>=ON`) and then
+/// leaves to `find_package` to disable when absent. On a host with Homebrew /
+/// vcpkg those get compiled in and either break the static link on their
+/// versioned symbols or drag a dynamic dependency into the "hermetic" binary —
+/// the same class of leak as the pkg-config isolation in [`configure_gstreamer`].
+/// A decode-only receiver wants exactly one of them (libde265), so every other
+/// codec here is force-disabled via `CMAKE_DISABLE_FIND_PACKAGE_*` in the
+/// toolchain file [`write_libheif_toolchain`] feeds to that CMake build.
+const LIBHEIF_DISABLED_CODECS: &[&str] = &[
+    "AOM", "DAV1D", "FFMPEG", "JPEG", "OPENJPH", "OpenH264", "OpenJPEG", "RAV1E", "SvtEnc",
+    "UVG266", "X264", "X265", "kvazaar", "libsharpyuv", "vvdec", "vvenc",
+];
+
 /// pkg-config modules a *Linux* build requires from the environment; asserted
 /// up front with an actionable error. On mac/win the codecs come from wraps
 /// and the platform plugins from OS frameworks — no assertion needed.
@@ -1983,6 +2005,243 @@ fn receiver_cargo_flags(profile: &Profile, package: &str) -> Vec<String> {
     flags
 }
 
+/// Resolve the libde265 source (clone `LIBDE265_REF` into target/libde265-src,
+/// reusing an existing checkout). Mirrors [`resolve_source`]; refuses to clone
+/// under `--offline`.
+fn resolve_libde265_source(sh: &Rc<Shell>, offline: bool) -> Result<Utf8PathBuf> {
+    let dir = crate::workspace::root_path()?.join("target/libde265-src");
+    if checkout_present(&dir) {
+        println!(">> Reusing libde265 checkout at {dir}");
+        return Ok(dir);
+    }
+    if offline {
+        bail!("--offline requires a target/libde265-src checkout (cannot clone without network)");
+    }
+    println!(">> Cloning libde265 {LIBDE265_REF} into {dir} …");
+    if let Err(e) = cmd!(sh, "git clone --depth 1 --branch {LIBDE265_REF} {LIBDE265_REPO} {dir}").run()
+    {
+        // Same transient false-negative guard as resolve_source (Windows).
+        if !checkout_present(&dir) {
+            return Err(e).context("cloning libde265 source");
+        }
+        println!(">> {dir} already present — reusing existing checkout");
+    }
+    Ok(dir)
+}
+
+/// Patch libde265's vendored source for clang-cl (which we use for the Windows
+/// C deps). libde265 v1.0.16 assumes `_MSC_VER`/`MSVC` implies real `cl`, but
+/// clang-cl sets both while behaving like clang, so two source guards need
+/// tightening. Both edits are idempotent and tolerate upstream drift (a missing
+/// needle is logged, not fatal), so a future `LIBDE265_REF` that fixes these
+/// upstream just makes this a no-op.
+fn patch_libde265_for_clang_cl(src: &Utf8Path) -> Result<()> {
+    // 1. util.h: the `for each (type var in list)` FOR_LOOP branch is a
+    //    Microsoft C++/CLI extension that real `cl` accepts but clang-cl does
+    //    not (it parses `for each` as `for` + `each(...)` and errors "expected
+    //    '(' after 'for'"). Tighten the `_MSC_VER` guard with `!__clang__` so
+    //    clang-cl takes the standard C++11 `for (var : list)` branch instead.
+    patch_file(
+        &src.join("libde265/util.h"),
+        "#if defined(_MSC_VER) || (!__clang__ && __GNUC__ && GCC_VERSION < 40600)",
+        "#if (defined(_MSC_VER) && !defined(__clang__)) || (!__clang__ && __GNUC__ && GCC_VERSION < 40600)",
+        "util.h FOR_LOOP guard",
+    )?;
+
+    // 2. x86/CMakeLists.txt: the SSE object library gets its `-msse4.1` feature
+    //    flag only `if(NOT MSVC)`. `cl` needs no flag to use SSE4.1 intrinsics,
+    //    but clang-cl (like clang) rejects `_mm_packus_epi32` unless the TU is
+    //    built with `-msse4.1`. clang-cl reports `CMAKE_CXX_COMPILER_ID` as
+    //    "Clang" while `MSVC` is true, so widen the guard to also flag clang-cl.
+    patch_file(
+        &src.join("libde265/x86/CMakeLists.txt"),
+        "if(NOT MSVC)",
+        "if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES \"Clang\")",
+        "x86 SSE flag guard",
+    )?;
+
+    Ok(())
+}
+
+/// Replace the first occurrence of `needle` with `fixed` in `path`, idempotently.
+/// A no-op if already patched; logs (rather than errors) when the needle is
+/// absent, so upstream changes to the vendored source don't break the build.
+fn patch_file(path: &Utf8Path, needle: &str, fixed: &str, what: &str) -> Result<()> {
+    let contents =
+        std::fs::read_to_string(path).with_context(|| format!("reading libde265 {what}"))?;
+    if contents.contains(fixed) {
+        return Ok(()); // already patched
+    }
+    let patched = contents.replacen(needle, fixed, 1);
+    if patched == contents {
+        println!(">> libde265 {what} not found — skipping clang-cl patch");
+        return Ok(());
+    }
+    std::fs::write(path, patched).with_context(|| format!("patching libde265 {what}"))?;
+    println!(">> Patched libde265 {what} for clang-cl");
+    Ok(())
+}
+
+/// Build a static `libde265` (the HEVC decoder libheif needs for HEIC) and
+/// return its install prefix (`lib/libde265.a` + `lib/pkgconfig/libde265.pc`).
+/// Idempotent: an existing archive short-circuits. Library only — the dec265/
+/// enc265 example tools (and their SDL dependency) are turned off.
+fn build_libde265(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Utf8PathBuf> {
+    let prefix = build.build_dir.join("libde265-install");
+    let libdir = prefix.join("lib");
+    // cmake emits `libde265.a` on unix and `libde265.lib` under clang-cl on
+    // Windows; `alias_de265_lib` may also have left a `de265.lib` copy. Any of
+    // them means the prefix is already built, so skip the (re)build.
+    let built = ["libde265.a", "libde265.lib", "de265.lib"]
+        .iter()
+        .any(|n| libdir.join(n).exists());
+
+    if !built {
+        let src = resolve_libde265_source(sh, profile.offline)?;
+        if target_os(profile) == "windows" {
+            patch_libde265_for_clang_cl(&src)?;
+        }
+        let cmake_build = build.build_dir.join("libde265-build");
+
+        let mut args: Vec<String> = vec![
+            "-S".into(),
+            src.to_string(),
+            "-B".into(),
+            cmake_build.to_string(),
+            format!("-DCMAKE_INSTALL_PREFIX={prefix}"),
+            "-DCMAKE_INSTALL_LIBDIR=lib".into(),
+            "-DBUILD_SHARED_LIBS=OFF".into(),
+            "-DENABLE_SDL=OFF".into(),
+            "-DENABLE_DECODER=OFF".into(), // skip the dec265 tool; we only want the lib
+            "-DENABLE_ENCODER=OFF".into(),
+            "-DCMAKE_POSITION_INDEPENDENT_CODE=ON".into(),
+            "-DCMAKE_BUILD_TYPE=Release".into(),
+        ];
+        match target_os(profile) {
+            "macos" => {
+                // Match the receiver's deployment target so the archive doesn't
+                // warn about a newer minimum; pin the arch when cross/explicit.
+                args.push("-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0".into());
+                if let Some(arch) = macos_osx_arch(sh, profile)? {
+                    args.push(format!("-DCMAKE_OSX_ARCHITECTURES={arch}"));
+                }
+            }
+            // with_receiver_env has already imported vcvars and set CC/CXX=clang-cl;
+            // Ninja honours those (the default VS generator would ignore them).
+            "windows" => args.push("-GNinja".into()),
+            _ => {}
+        }
+
+        println!(">> Building static libde265 (HEVC decoder for HEIF) …");
+        cmd!(sh, "cmake {args...}")
+            .run()
+            .context("configuring libde265")?;
+        cmd!(
+            sh,
+            "cmake --build {cmake_build} --config Release --target install --parallel"
+        )
+        .run()
+        .context("building libde265")?;
+    }
+
+    if target_os(profile) == "windows" {
+        alias_de265_lib(&libdir)?;
+        stub_stdcxx_lib(sh, &libdir)?;
+    }
+    Ok(prefix)
+}
+
+/// libde265.pc and libheif.pc both declare `Libs.private: -lstdc++`, a GNU-ism
+/// with no meaning under MSVC (the C++ runtime is the auto-linked CRT; no
+/// `stdc++.lib` exists). The final rustc link turns those into `stdc++.lib` and
+/// fails with LNK1181. Drop a stub `stdc++.lib` on the libde265 link-search dir
+/// — already on the link's `-L` path via libde265.pc — so the reference
+/// resolves to a no-symbol archive while the real C++ symbols come from MSVC's
+/// CRT. One stub covers every `-lstdc++` source, so the regenerated OUT_DIR
+/// libheif.pc needs no patching. Mirrors the sysprof-capture-4 `.pc` stub in
+/// `with_receiver_env`.
+///
+/// The archive must contain one (empty) object: MSVC's link.exe rejects a
+/// memberless archive with LNK1107, and lib.exe/llvm-lib won't even emit a
+/// usable empty one. Always (re)created so a stale/invalid stub is replaced.
+fn stub_stdcxx_lib(sh: &Rc<Shell>, libdir: &Utf8Path) -> Result<()> {
+    let dst = libdir.join("stdc++.lib");
+    let stub_c = libdir.join("xtask-stdcxx-stub.c");
+    let stub_obj = libdir.join("xtask-stdcxx-stub.obj");
+    std::fs::write(&stub_c, "\n").context("writing stdc++ stub source")?;
+    // clang-cl + llvm-lib are already on PATH for the clang-cl libde265 build.
+    cmd!(sh, "clang-cl /nologo /c {stub_c} /Fo{stub_obj}")
+        .run()
+        .context("compiling stdc++ stub object")?;
+    cmd!(sh, "llvm-lib /OUT:{dst} {stub_obj}")
+        .run()
+        .context("archiving stdc++.lib stub")?;
+    let _ = std::fs::remove_file(&stub_c);
+    let _ = std::fs::remove_file(&stub_obj);
+    println!(">> Created stdc++.lib stub (satisfies -lstdc++ on MSVC)");
+    Ok(())
+}
+
+/// On Windows, cmake installs the archive as `libde265.lib`, but the final
+/// rustc link resolves libheif.pc's `Requires.private: libde265` down to
+/// `libde265.pc`'s `Libs: -lde265`, which MSVC `link.exe` looks up as
+/// `de265.lib` (no `lib` prefix). Drop a `de265.lib` copy next to it on the
+/// same `-L` path so that lookup succeeds. Mirrors the dav1d handling in
+/// `with_receiver_env`. Idempotent; a no-op if the copy already exists or the
+/// source archive isn't there (e.g. a unix `libde265.a` prefix).
+fn alias_de265_lib(libdir: &Utf8Path) -> Result<()> {
+    let src = libdir.join("libde265.lib");
+    let dst = libdir.join("de265.lib");
+    if dst.exists() || !src.exists() {
+        return Ok(());
+    }
+    std::fs::copy(&src, &dst).context("aliasing libde265.lib to de265.lib")?;
+    println!(">> Aliased libde265.lib -> de265.lib for the rustc link");
+    Ok(())
+}
+
+/// The `CMAKE_OSX_ARCHITECTURES` value for an explicit/cross macOS target
+/// (arm64 / x86_64), or None for a native build (let CMake pick the host arch).
+fn macos_osx_arch(sh: &Rc<Shell>, profile: &Profile) -> Result<Option<String>> {
+    let triple = match profile.target.as_deref() {
+        Some(t) => t.to_string(),
+        None => host_triple(sh)?,
+    };
+    Ok(if triple.starts_with("aarch64") {
+        Some("arm64".into())
+    } else if triple.starts_with("x86_64") {
+        Some("x86_64".into())
+    } else {
+        None
+    })
+}
+
+/// Write the CMake toolchain file that makes libheif-sys's embedded build
+/// compile a minimal, hermetic libheif: every codec except libde265 is
+/// force-disabled (see `LIBHEIF_DISABLED_CODECS`) so nothing from the host
+/// leaks in, and our static libde265 is put on the prefix path so libheif's
+/// own `find_package(LIBDE265)` resolves it. Returns the file path.
+fn write_libheif_toolchain(build: &GstBuild, de265_prefix: &Utf8Path) -> Result<Utf8PathBuf> {
+    let path = build.build_dir.join("xtask-libheif-toolchain.cmake");
+    let disables: String = LIBHEIF_DISABLED_CODECS
+        .iter()
+        .map(|c| format!("set(CMAKE_DISABLE_FIND_PACKAGE_{c} ON)\n"))
+        .collect();
+    // CMake reads the prefix with forward slashes on every platform.
+    let prefix = de265_prefix.as_str().replace('\\', "/");
+    std::fs::write(
+        &path,
+        format!(
+            "# Generated by xtask: decode-only, hermetic libheif for the receiver.\n\
+             # Keep libde265 (HEVC decode); drop every other codec so no host\n\
+             # library (Homebrew/vcpkg) is detected and linked in.\n\
+             {disables}list(PREPEND CMAKE_PREFIX_PATH \"{prefix}\")\n"
+        ),
+    )
+    .context("writing libheif toolchain file")?;
+    Ok(path)
+}
+
 /// Set up the env cargo needs against the static gstreamer (PKG_CONFIG_PATH
 /// to the meson-uninstalled .pc + stubs, `SYSTEM_DEPS_*_LINK=static`), then
 /// run `f`. Shared by build/run/check/clippy so build-script fingerprints
@@ -2019,9 +2278,32 @@ fn with_receiver_env<T>(
         Vec::new()
     };
 
+    // HEIC decode (scope=Full only): libheif-sys compiles a static libheif from
+    // its vendored source (`embedded-libheif`), but that only parses the
+    // container — it needs a HEVC decoder to produce pixels. Build a static
+    // libde265, hand it to libheif's CMake build via a toolchain file (which
+    // also disables every other codec so nothing from the host leaks in), and
+    // put its .pc on PKG_CONFIG_PATH so system-deps resolves libheif.pc's
+    // `Requires.private: libde265` and links it statically. Runs after the MSVC
+    // env is set (the Windows libde265 build needs vcvars + clang-cl); before
+    // pkg_path so the .pc dir folds in. Linux links the system libheif instead,
+    // so this is skipped there. Idempotent — a built prefix short-circuits.
+    let mut heif_guards: Vec<xshell::PushEnv<'_>> = Vec::new();
+    let mut libde265_pc: Option<Utf8PathBuf> = None;
+    if profile.scope == StaticScope::Full {
+        let de265 = build_libde265(sh, build, profile)?;
+        let toolchain = write_libheif_toolchain(build, &de265)?;
+        heif_guards.push(sh.push_env("CMAKE_TOOLCHAIN_FILE", toolchain.as_str()));
+        heif_guards.push(sh.push_env("SYSTEM_DEPS_LIBHEIF_LINK", "static"));
+        libde265_pc = Some(de265.join("lib/pkgconfig"));
+    }
+
     // Link against the BUILD TREE via meson-uninstalled .pc (the install tree
     // omits per-plugin .pc, so the gstreamer-full aggregate can't resolve there).
     let mut pkg_path = prepend_env_path(&pkg_config_path(sh), build.uninstalled_pc.as_str());
+    if let Some(pc) = &libde265_pc {
+        pkg_path = prepend_env_path(&pkg_path, pc.as_str());
+    }
 
     // LINK PHASE ONLY: some distros ship a glib-2.0.pc whose Requires.private
     // lists sysprof-capture-4 without shipping its .pc or lib (the code is in
