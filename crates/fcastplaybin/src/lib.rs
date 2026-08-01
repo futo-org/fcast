@@ -540,16 +540,24 @@ struct ExternalInput {
     epoch: u32,
     /// When this input was (re-)attached, for the error debounce.
     attached_at: Instant,
-    /// Re-arms only: block this input's buffers at its source pads until a
-    /// selection naming its stream applies. A re-armed input attaches while
-    /// its stream is DESELECTED, and pushing into a deselected stream is
-    /// what killed its predecessor (decodebin3 unlinks such inputs and the
-    /// push dies not-linked), so an unblocked replacement just dies the
-    /// same death and a later re-select then wedges against a dead element
-    /// forever. Blocked, the input stays alive indefinitely: its sticky
-    /// events still reach decodebin3 (the stream stays advertised and
-    /// selectable) and the buffers follow once the re-select's
-    /// `STREAMS_SELECTED` confirms (see `Inner::unblock_selected_externals`).
+    /// Block this input's buffers at its source pads until a selection
+    /// naming its stream applies.
+    ///
+    /// An external input's buffers may only flow once decodebin3 has given
+    /// its stream a multiqueue slot WITH an output, i.e. once the stream is
+    /// selected. Pushing earlier dies not-linked (the slot's source pad has
+    /// nothing behind it and multiqueue relays that upstream), taking the
+    /// whole input down. Nothing about attaching makes selection win that
+    /// race: decodebin3 only learns the stream from the events the first
+    /// push carries, so the first push is inherently too early whenever the
+    /// stream is not auto-selected (another text stream already is) or the
+    /// caller attached it unselected.
+    ///
+    /// Held, the input survives indefinitely: its sticky events reach
+    /// decodebin3, one seeded GAP gets the stream slotted (see
+    /// [`Inner::seed_slot_for_held_pad`]) and therefore selectable, and the
+    /// buffers follow once `STREAMS_SELECTED` confirms the selection (see
+    /// [`Inner::unblock_selected_externals`]).
     hold_until_selected: bool,
 }
 
@@ -1474,7 +1482,10 @@ impl FcastPlaybin {
             uri: uri.to_string(),
             epoch: 0,
             attached_at: Instant::now(),
-            hold_until_selected: false,
+            // Held from the very first attach: a fresh input's first push is
+            // just as fatal as a re-armed one's whenever the stream is not
+            // selected yet (see `ExternalInput::hold_until_selected`).
+            hold_until_selected: true,
         };
         Inner::add_input(&self.inner, element, generation, Some(external))?;
         info!(?id, uri, "attached external subtitle input");
@@ -3444,9 +3455,9 @@ impl FcastPlaybin {
                 uri: uri.clone(),
                 epoch: epoch + 1,
                 attached_at: Instant::now(),
-                // The predecessor died pushing into a deselected stream;
-                // the replacement holds its buffers until a selection
-                // actually wants it (see `ExternalInput::hold_until_selected`).
+                // Like every attach: the replacement holds its buffers until
+                // a selection actually wants its stream (see
+                // `ExternalInput::hold_until_selected`).
                 hold_until_selected: true,
             };
             Inner::add_input(
@@ -3608,12 +3619,16 @@ impl Inner {
         Ok(())
     }
 
-    /// Install the hold-until-selected block on one source pad of a
-    /// re-armed external input (see [`ExternalInput::hold_until_selected`]).
+    /// Install the hold-until-selected block on one source pad of a held
+    /// external input (see [`ExternalInput::hold_until_selected`]).
     /// Serialized events pass, so the stream's sticky events reach
-    /// decodebin3 and it stays advertised; buffers and GAP hold until
+    /// decodebin3 and it stays advertised; buffers hold until
     /// [`Inner::unblock_selected_externals`] removes the probe. A no-op for
     /// every other input.
+    ///
+    /// Events alone leave the stream advertised but NOT selectable, so the
+    /// first held buffer also seeds one GAP (see
+    /// [`Inner::seed_slot_for_held_pad`]).
     fn block_held_external_pad(inner: &Arc<Inner>, element: &gst::Element, pad: &gst::Pad) {
         {
             let routing = inner.routing.lock();
@@ -3625,24 +3640,47 @@ impl Inner {
                 return;
             }
         }
+        let seeded = AtomicBool::new(false);
         let probe = pad.add_probe(
             gst::PadProbeType::BLOCK
                 | gst::PadProbeType::BUFFER
                 | gst::PadProbeType::BUFFER_LIST
                 | gst::PadProbeType::EVENT_DOWNSTREAM,
-            |_pad, info| {
-                // GAP is data-like and holds with the buffers, exactly like
-                // the gapless prepare's block probe.
-                if let Some(gst::PadProbeData::Event(event)) = &info.data
-                    && event.type_() != gst::EventType::Gap
-                {
+            move |pad, info| {
+                // Every event passes, GAP included: decodebin3 needs one to
+                // give the stream a multiqueue slot, and the stream must be
+                // slotted to be selectable at all.
+                if let Some(gst::PadProbeData::Event(event)) = &info.data {
+                    // A cue-less subtitle reaches EOS without ever pushing a
+                    // buffer. Seed off its EOS instead, BEFORE forwarding it:
+                    // nothing may be pushed afterwards, and an unslotted
+                    // stream would stay unselectable for good.
+                    if event.type_() == gst::EventType::Eos
+                        && !seeded.swap(true, Ordering::Relaxed)
+                    {
+                        Inner::seed_slot_for_held_pad(pad, None);
+                    }
                     return gst::PadProbeReturn::Pass;
+                }
+                // A buffer means the sticky events have reached decodebin3
+                // (`check_sticky` runs ahead of block probes) and this is the
+                // input's streaming thread, parked here for as long as the
+                // hold lasts: the one safe moment to seed the slot.
+                if !seeded.swap(true, Ordering::Relaxed) {
+                    let pts = match &info.data {
+                        Some(gst::PadProbeData::Buffer(buffer)) => buffer.pts(),
+                        Some(gst::PadProbeData::BufferList(list)) => {
+                            list.get(0).and_then(|b| b.pts())
+                        }
+                        _ => None,
+                    };
+                    Inner::seed_slot_for_held_pad(pad, pts);
                 }
                 gst::PadProbeReturn::Ok
             },
         );
         let Some(probe) = probe else { return };
-        debug!(pad = %pad.name(), "holding a re-armed external input's data until selected");
+        debug!(pad = %pad.name(), "holding an external input's data until selected");
         let mut routing = inner.routing.lock();
         if let Some(input) = routing.inputs.iter_mut().find(|i| &i.element == element) {
             input.block_probes.push((pad.clone(), probe));
@@ -3652,12 +3690,54 @@ impl Inner {
         }
     }
 
+    /// Give a held external input's stream a decodebin3 multiqueue slot by
+    /// pushing one GAP down the (blocked) pad.
+    ///
+    /// Without this a held stream is advertised but permanently
+    /// UNSELECTABLE, and that deadlocks the hold. decodebin3 links an input
+    /// stream to a slot in exactly three places: the STREAM_START handler on
+    /// the input stream's own source pad, the first buffer's block probe, and
+    /// the GAP handler. The first one cannot fire for a pre-parsed input
+    /// (`urisourcebin parse-streams=true`): decodebin3 builds the input's
+    /// `identity` only once the STREAM_COLLECTION arrives and seeds the input
+    /// stream's `active_stream` from the sink pad's sticky STREAM_START, so
+    /// when it then replays that STREAM_START the handler sees no change and
+    /// skips the linking. The second is what the hold exists to prevent (a
+    /// buffer pushed into a slotless or output-less stream returns
+    /// not-linked and kills the source). That leaves the GAP.
+    ///
+    /// A stream with no slot is worse than merely unselectable: it can never
+    /// be `all_streams_present`, so no collection containing it becomes
+    /// decodebin3's output collection, and every SELECT_STREAMS naming it is
+    /// then silently discarded (`handle_select_streams` binds the request to
+    /// the collection and only switches for the output one). No selection
+    /// applies, no `STREAMS_SELECTED` is posted, and the hold, which only
+    /// [`Inner::unblock_selected_externals`] lifts, never lifts.
+    ///
+    /// The GAP is pushed from the block probe on purpose: on the input's
+    /// streaming thread (serialized events must not come from anywhere else)
+    /// and after the sticky events have reached decodebin3, so the slot link
+    /// happens in the probe and the post-probe sticky re-push carries
+    /// STREAM_START into the fresh slot, which is what finally marks the
+    /// stream present.
+    fn seed_slot_for_held_pad(pad: &gst::Pad, pts: Option<gst::ClockTime>) {
+        // Zero duration: this announces no missing content, it only gives
+        // decodebin3 a data-like event to react to. A cue may legitimately
+        // start at the same instant.
+        let gap = gst::event::Gap::builder(pts.unwrap_or(gst::ClockTime::ZERO))
+            .duration(gst::ClockTime::ZERO)
+            .build();
+        debug!(pad = %pad.name(), ?pts, "seeding a decodebin3 slot for the held external stream");
+        if !pad.push_event(gap) {
+            warn!(pad = %pad.name(), "the held external input refused the slot-seeding gap");
+        }
+    }
+
     /// Release the hold-until-selected blocks of every external input whose
     /// stream a just-applied selection names (see
     /// [`ExternalInput::hold_until_selected`]). Once decodebin3 confirmed
-    /// the stream selected, the flowing buffers relink the input stream to
-    /// its multiqueue slot (decodebin3's own input machinery) and the
-    /// subtitle plays.
+    /// the stream selected, the flowing buffers reach the stream's multiqueue
+    /// slot, which now has an output, and the subtitle plays.
     fn unblock_selected_externals(&self, selected_ids: &[String]) {
         let to_unblock: Vec<(gst::Pad, gst::PadProbeId)> = {
             let mut routing = self.routing.lock();

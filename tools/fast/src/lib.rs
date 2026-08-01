@@ -2054,6 +2054,11 @@ define_test_case!(
             audio: 1,
             subtitle: 2,
         },
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(1),
+        },
         send!(Send::SetProgressIntervalV4 { millis: 200 }),
         recv!(Receive::ProgressV4AtLeast(2.0)),
         send!(Send::StopV4),
