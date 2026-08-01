@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::{Read, Seek},
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -36,7 +35,7 @@ use crate::{
         CompanionSourceDescriptor, DeviceConnectionState, DeviceEventHandler, DeviceFeature,
         DeviceInfo, LoadRequest, MediaItem, MediaLocator, MediaTrack, MediaTrackType, Metadata,
         PlaybackState, PlaylistItem, ProtocolType, Queue, QueueEntry, QueueItem, QueuePosition,
-        QueueState, ReceiverError, Source, SubtitleSource, TrackList,
+        QueueState, ReceiverError, Source, SubtitleContent, SubtitleSource, TrackList,
     },
     utils, IpAddr,
 };
@@ -91,7 +90,7 @@ enum Command {
     LoadPlaylist(Vec<PlaylistItem>),
     LoadQueue(Queue),
     AddSubtitleSource {
-        url: String,
+        source: SubtitleCommandSource,
         select: bool,
         name: Option<String>,
     },
@@ -1028,9 +1027,60 @@ fn queue_item_to_entry(item: QueueItem) -> QueueEntry {
     }
 }
 
+/// Internal locator for an `AddSubtitleSource` command. Either a ready URL, or a companion source
+/// that resolves to an `fcomp://` URL at send time (once the provider ID is known).
+#[derive(Debug, Clone, PartialEq)]
+enum SubtitleCommandSource {
+    Url(String),
+    Companion(CompanionSource),
+}
+
+/// Backing bytes for a registered companion source. An opened file (path/fd) or an in-memory buffer.
+enum CompanionData {
+    File(std::fs::File),
+    Bytes(std::io::Cursor<Vec<u8>>),
+}
+
+impl CompanionData {
+    /// Total length in bytes. One `fstat` for a file, so callers cache it (see
+    /// [`WrappedCompanionSource::len`]).
+    fn len(&self) -> std::io::Result<u64> {
+        match self {
+            CompanionData::File(f) => Ok(f.metadata()?.len()),
+            CompanionData::Bytes(c) => Ok(c.get_ref().len() as u64),
+        }
+    }
+
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            CompanionData::File(f) => std::io::Seek::seek(f, pos),
+            CompanionData::Bytes(c) => std::io::Seek::seek(c, pos),
+        }
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            CompanionData::File(f) => std::io::Read::read(f, buf),
+            CompanionData::Bytes(c) => std::io::Read::read(c, buf),
+        }
+    }
+
+    /// The raw fd of a file-backed source, for the fd-reuse guard. `None` for in-memory bytes.
+    #[cfg(unix)]
+    fn raw_fd(&self) -> Option<i32> {
+        use std::os::fd::AsRawFd as _;
+        match self {
+            CompanionData::File(f) => Some(f.as_raw_fd()),
+            CompanionData::Bytes(_) => None,
+        }
+    }
+}
+
 struct WrappedCompanionSource {
-    file: std::fs::File,
+    data: CompanionData,
     content_type: String,
+    /// Cached at registration. Companion resources are treated as immutable for the session.
+    len: u64,
 }
 
 struct InnerDevice {
@@ -1186,7 +1236,7 @@ impl InnerDevice {
     /// gets recycled to.
     #[cfg(unix)]
     fn take_fd_ownership(&self, fd: i32) -> std::io::Result<std::fs::File> {
-        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        use std::os::fd::{FromRawFd as _, OwnedFd};
 
         if fd < 0 {
             return Err(std::io::Error::new(
@@ -1197,7 +1247,7 @@ impl InnerDevice {
         if self
             .companion_sources
             .values()
-            .any(|s| s.file.as_raw_fd() == fd)
+            .any(|s| s.data.raw_fd() == Some(fd))
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1222,12 +1272,12 @@ impl InnerDevice {
     fn discard_companion_descriptor(&self, descriptor: &CompanionSourceDescriptor) {
         #[cfg(unix)]
         if let CompanionSourceDescriptor::Fd(fd) = *descriptor {
-            use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+            use std::os::fd::{FromRawFd as _, OwnedFd};
             if fd >= 0
                 && !self
                     .companion_sources
                     .values()
-                    .any(|s| s.file.as_raw_fd() == fd)
+                    .any(|s| s.data.raw_fd() == Some(fd))
             {
                 // SAFETY: same ownership transfer as `take_fd_ownership`. The descriptor was never
                 // registered, so this is its only owner.
@@ -1239,10 +1289,12 @@ impl InnerDevice {
     }
 
     fn add_source(&mut self, source: &CompanionSource) -> std::io::Result<u32> {
-        let file = match source.descriptor {
-            CompanionSourceDescriptor::Path(ref path) => std::fs::File::open(path)?,
+        let data = match source.descriptor {
+            CompanionSourceDescriptor::Path(ref path) => {
+                CompanionData::File(std::fs::File::open(path)?)
+            }
             #[cfg(unix)]
-            CompanionSourceDescriptor::Fd(fd) => self.take_fd_ownership(fd)?,
+            CompanionSourceDescriptor::Fd(fd) => CompanionData::File(self.take_fd_ownership(fd)?),
             #[cfg(not(unix))]
             CompanionSourceDescriptor::Fd(..) => {
                 return Err(std::io::Error::new(
@@ -1250,11 +1302,16 @@ impl InnerDevice {
                     "file-descriptor companion sources are only supported on Unix targets",
                 ));
             }
+            CompanionSourceDescriptor::Bytes(ref data) => {
+                CompanionData::Bytes(std::io::Cursor::new(data.clone()))
+            }
         };
 
+        let len = data.len()?;
         let source = WrappedCompanionSource {
-            file,
+            data,
             content_type: source.content_type.clone(),
+            len,
         };
 
         let mut id = 0;
@@ -1291,6 +1348,10 @@ impl InnerDevice {
             Command::QueueInsert { item, .. } => {
                 matches!(item.source, MediaLocator::FCompanion { .. })
             }
+            Command::AddSubtitleSource {
+                source: SubtitleCommandSource::Companion(_),
+                ..
+            } => true,
             _ => false,
         }
     }
@@ -1315,6 +1376,10 @@ impl InnerDevice {
                     self.discard_companion_descriptor(&source.descriptor);
                 }
             }
+            Command::AddSubtitleSource {
+                source: SubtitleCommandSource::Companion(source),
+                ..
+            } => self.discard_companion_descriptor(&source.descriptor),
             _ => {}
         }
     }
@@ -1525,89 +1590,8 @@ impl InnerDevice {
         resource_id: u32,
         read_head: Option<(/* start */ u64, /* stop_inclusive */ u64)>,
     ) -> Result<(), utils::WorkError> {
-        let Some(source) = self.companion_sources.get_mut(&resource_id) else {
-            let body = companion::ResourceResponse {
-                request_id,
-                part: 0,
-                total_parts: 1,
-                result: companion::GetResourceResult::NotFound,
-            }
-            .serialize();
-
-            let size = 1 + body.len();
-            let mut header = [0u8; HEADER_LENGTH];
-            header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
-            header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
-            self.stream.write_all(&header).await?;
-            self.stream.write_all(&body).await?;
-            self.stream.flush().await?;
-            return Ok(());
-        };
-
-        let meta = source.file.metadata()?;
-        let file_len = meta.len();
-        let (start, stop_inclusive): (u64, u64) = match read_head {
-            Some((start, stop_inclusive)) => (start, stop_inclusive),
-            None => (0, file_len.saturating_sub(1)),
-        };
-
-        source.file.seek(std::io::SeekFrom::Start(start))?;
-
-        let max_packet_size = companion::MAX_RESOURCE_READ_SIZE;
-        let mut bytes_to_read = resource_bytes_to_read(start, stop_inclusive, file_len);
-        let total_packets = bytes_to_read.div_ceil(max_packet_size as u64);
-        if total_packets > u8::MAX.into() {
-            error!(
-                "Companion resource request {request_id} for resource {resource_id} needs {total_packets} parts, exceeding the 256-part limit"
-            );
-            return Ok(());
-        }
-
-        let total_packets = total_packets as u8;
-        let mut current_packet = 0;
-        'outer: while bytes_to_read > 0 {
-            let response_header = companion::ResourceResponse::header_success(
-                request_id,
-                current_packet,
-                total_packets,
-            );
-
-            let mut packet_bytes_to_read = bytes_to_read.min(max_packet_size as u64);
-
-            let size = 1 + response_header.len() + packet_bytes_to_read as usize;
-            let mut header = [0u8; HEADER_LENGTH];
-            header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
-            header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
-            self.stream.write_all(&header).await?;
-            self.stream.write_all(&response_header).await?;
-
-            while packet_bytes_to_read > 0 {
-                let mut buf = [0u8; 1024 * 8];
-                let max_read = packet_bytes_to_read.min(buf.len() as u64) as usize;
-                let mut n_read = source.file.read(&mut buf[0..max_read])?;
-                if n_read == 0 {
-                    return Err(utils::WorkError::Anyhow(anyhow!(
-                        "Failed to read from local resource"
-                    )));
-                }
-
-                n_read = (n_read as u64).min(bytes_to_read) as usize;
-
-                self.stream.write_all(&buf[0..n_read]).await?;
-                if (n_read as u64) < bytes_to_read {
-                    packet_bytes_to_read -= n_read as u64;
-                    bytes_to_read -= n_read as u64;
-                } else {
-                    break 'outer;
-                }
-            }
-
-            current_packet += 1;
-        }
-
-        self.stream.flush().await?;
-
-        Ok(())
+        let source = self.companion_sources.get_mut(&resource_id);
+        serve_resource(&mut self.stream, source, request_id, read_head).await
     }
 
     /// Returns `true` if the main loop should be quit.
@@ -1915,16 +1899,12 @@ impl InnerDevice {
                         resource_id,
                     } => {
                         if let Some(source) = self.companion_sources.get(&resource_id) {
-                            if let Ok(meta) = source.file.metadata() {
-                                let len = meta.len();
-                                let msg = v4::MessageBuilder::new()
-                                    .companion_resource_info_response(
-                                        request_id,
-                                        &source.content_type,
-                                        Some(len),
-                                    );
-                                self.send_bytes(Opcode::Flatbuf, &msg).await?;
-                            }
+                            let msg = v4::MessageBuilder::new().companion_resource_info_response(
+                                request_id,
+                                &source.content_type,
+                                Some(source.len),
+                            );
+                            self.send_bytes(Opcode::Flatbuf, &msg).await?;
                         }
                         // TODO: send failed?
                     }
@@ -2315,7 +2295,17 @@ impl InnerDevice {
                 *playlist_length = None;
                 *current_playlist_item_index = None;
             }
-            Command::AddSubtitleSource { url, select, name } => {
+            Command::AddSubtitleSource {
+                source,
+                select,
+                name,
+            } => {
+                // `command_awaits_companion` guarantees the provider ID is set by now, so a
+                // companion source resolves to its `fcomp://` URL here.
+                let url = match source {
+                    SubtitleCommandSource::Url(url) => url,
+                    SubtitleCommandSource::Companion(source) => self.companion_url(&source)?,
+                };
                 let msg =
                     v4::MessageBuilder::new().add_subtitle_source(&url, select, name.as_deref());
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
@@ -2956,16 +2946,136 @@ impl CastingDevice for FCastDevice {
 
     fn add_subtitle_source(&self, subtitle: SubtitleSource) -> Result<(), CastingDeviceError> {
         // External subtitles are a v4 feature (`AddSubtitleSource`).
-        if self.session_version.get() >= 4 {
-            self.send_command(Command::AddSubtitleSource {
-                url: subtitle.url,
-                select: subtitle.select,
-                name: subtitle.name,
-            })
-        } else {
-            Err(CastingDeviceError::UnsupportedFeature)
+        if self.session_version.get() < 4 {
+            return Err(CastingDeviceError::UnsupportedFeature);
         }
+        let source = match subtitle.content {
+            SubtitleContent::Url { url } => SubtitleCommandSource::Url(url),
+            // Data rides the companion channel. Wrap the bytes in an in-memory companion source,
+            // which the command handler registers and turns into an `fcomp://` URL at send time.
+            SubtitleContent::Data { data, content_type } => {
+                SubtitleCommandSource::Companion(CompanionSource {
+                    descriptor: CompanionSourceDescriptor::Bytes(data),
+                    content_type,
+                })
+            }
+        };
+        self.send_command(Command::AddSubtitleSource {
+            source,
+            select: subtitle.select,
+            name: subtitle.name,
+        })
     }
+}
+
+/// Minimal async byte sink, so [`serve_resource`] can write to an in-memory buffer in tests, not
+/// only a live [`NetworkStream`].
+#[allow(async_fn_in_trait)]
+trait ByteSink {
+    async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
+    async fn flush(&mut self) -> std::io::Result<()>;
+}
+
+impl ByteSink for NetworkStream {
+    async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        NetworkStream::write_all(self, buf).await
+    }
+    async fn flush(&mut self) -> std::io::Result<()> {
+        NetworkStream::flush(self).await
+    }
+}
+
+/// Answer one companion `GetResource`. Sends a `NotFound` frame when `source` is `None`, otherwise
+/// the requested byte range (whole resource when `read_head` is `None`) split into
+/// `MAX_RESOURCE_READ_SIZE` parts.
+///
+/// A served range of zero bytes (empty resource, or a range past EOF), and a range needing more
+/// than 255 parts, both emit no frames, so the requester gets no response.
+async fn serve_resource<S: ByteSink>(
+    stream: &mut S,
+    source: Option<&mut WrappedCompanionSource>,
+    request_id: u32,
+    read_head: Option<(/* start */ u64, /* stop_inclusive */ u64)>,
+) -> Result<(), utils::WorkError> {
+    let Some(source) = source else {
+        let body = companion::ResourceResponse {
+            request_id,
+            part: 0,
+            total_parts: 1,
+            result: companion::GetResourceResult::NotFound,
+        }
+        .serialize();
+
+        let size = 1 + body.len();
+        let mut header = [0u8; HEADER_LENGTH];
+        header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
+        header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
+        stream.write_all(&header).await?;
+        stream.write_all(&body).await?;
+        stream.flush().await?;
+        return Ok(());
+    };
+
+    let file_len = source.len;
+    let (start, stop_inclusive): (u64, u64) = match read_head {
+        Some((start, stop_inclusive)) => (start, stop_inclusive),
+        None => (0, file_len.saturating_sub(1)),
+    };
+
+    source.data.seek(std::io::SeekFrom::Start(start))?;
+
+    let max_packet_size = companion::MAX_RESOURCE_READ_SIZE;
+    let mut bytes_to_read = resource_bytes_to_read(start, stop_inclusive, file_len);
+    let total_packets = bytes_to_read.div_ceil(max_packet_size as u64);
+    if total_packets > u8::MAX.into() {
+        error!(
+            "Companion resource request {request_id} needs {total_packets} parts, exceeding the 256-part limit"
+        );
+        return Ok(());
+    }
+
+    let total_packets = total_packets as u8;
+    let mut current_packet = 0;
+    'outer: while bytes_to_read > 0 {
+        let response_header =
+            companion::ResourceResponse::header_success(request_id, current_packet, total_packets);
+
+        let mut packet_bytes_to_read = bytes_to_read.min(max_packet_size as u64);
+
+        let size = 1 + response_header.len() + packet_bytes_to_read as usize;
+        let mut header = [0u8; HEADER_LENGTH];
+        header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
+        header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
+        stream.write_all(&header).await?;
+        stream.write_all(&response_header).await?;
+
+        while packet_bytes_to_read > 0 {
+            let mut buf = [0u8; 1024 * 8];
+            let max_read = packet_bytes_to_read.min(buf.len() as u64) as usize;
+            let mut n_read = source.data.read(&mut buf[0..max_read])?;
+            if n_read == 0 {
+                return Err(utils::WorkError::Anyhow(anyhow!(
+                    "Failed to read from local resource"
+                )));
+            }
+
+            n_read = (n_read as u64).min(bytes_to_read) as usize;
+
+            stream.write_all(&buf[0..n_read]).await?;
+            if (n_read as u64) < bytes_to_read {
+                packet_bytes_to_read -= n_read as u64;
+                bytes_to_read -= n_read as u64;
+            } else {
+                break 'outer;
+            }
+        }
+
+        current_packet += 1;
+    }
+
+    stream.flush().await?;
+
+    Ok(())
 }
 
 fn resource_bytes_to_read(start: u64, stop_inclusive: u64, file_len: u64) -> u64 {
@@ -2991,6 +3101,170 @@ fn wrapped_playlist_index(current: usize, jump: i32, length: usize) -> Option<us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- companion resource serving ---
+
+    #[derive(Default)]
+    struct VecSink(Vec<u8>);
+
+    impl ByteSink for VecSink {
+        async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+            self.0.extend_from_slice(buf);
+            Ok(())
+        }
+        async fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn bytes_source(data: Vec<u8>) -> WrappedCompanionSource {
+        let len = data.len() as u64;
+        WrappedCompanionSource {
+            data: CompanionData::Bytes(std::io::Cursor::new(data)),
+            content_type: "text/vtt".to_owned(),
+            len,
+        }
+    }
+
+    /// Split a captured sink back into the `ResourceResponse` frames it carries.
+    fn parse_frames(mut buf: &[u8]) -> Vec<companion::ResourceResponse> {
+        let mut out = Vec::new();
+        while !buf.is_empty() {
+            assert!(buf.len() >= HEADER_LENGTH, "truncated frame header");
+            let mut size_bytes = [0u8; 4];
+            size_bytes.copy_from_slice(&buf[..HEADER_LENGTH - 1]);
+            let size = u32::from_le_bytes(size_bytes) as usize; // opcode byte + body
+            assert_eq!(buf[HEADER_LENGTH - 1], Opcode::Resource as u8);
+            let body_len = size - 1;
+            let body = &buf[HEADER_LENGTH..HEADER_LENGTH + body_len];
+            out.push(companion::ResourceResponse::parse(body).unwrap());
+            buf = &buf[HEADER_LENGTH + body_len..];
+        }
+        out
+    }
+
+    /// Concatenate success-frame payloads, asserting parts are ordered `0..len` and agree on
+    /// `total_parts`.
+    fn reassemble(frames: &[companion::ResourceResponse]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.part as usize, i, "parts out of order");
+            assert_eq!(
+                frame.total_parts as usize,
+                frames.len(),
+                "total_parts disagrees with the number of frames sent"
+            );
+            match &frame.result {
+                companion::GetResourceResult::Success(bytes) => payload.extend_from_slice(bytes),
+                companion::GetResourceResult::NotFound => panic!("unexpected NotFound frame"),
+            }
+        }
+        payload
+    }
+
+    async fn serve(source: Option<&mut WrappedCompanionSource>, head: Option<(u64, u64)>) -> Vec<u8> {
+        let mut sink = VecSink::default();
+        serve_resource(&mut sink, source, 42, head).await.unwrap();
+        sink.0
+    }
+
+    #[tokio::test]
+    async fn serve_resource_not_found_when_absent() {
+        let frames = parse_frames(&serve(None, None).await);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].request_id, 42);
+        assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
+    }
+
+    #[tokio::test]
+    async fn serve_resource_whole_small_resource() {
+        let data = b"WEBVTT\n\n00:00.000 --> 00:01.000\nhi\n".to_vec();
+        let mut src = bytes_source(data.clone());
+        let frames = parse_frames(&serve(Some(&mut src), None).await);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].request_id, 42);
+        assert_eq!(reassemble(&frames), data);
+    }
+
+    #[tokio::test]
+    async fn serve_resource_serves_explicit_subrange() {
+        let data: Vec<u8> = (0..100u8).collect();
+        let mut src = bytes_source(data.clone());
+        let frames = parse_frames(&serve(Some(&mut src), Some((10, 19))).await);
+        assert_eq!(reassemble(&frames), data[10..=19]);
+    }
+
+    #[tokio::test]
+    async fn serve_resource_clamps_stop_past_eof() {
+        let data: Vec<u8> = (0..100u8).collect();
+        let mut src = bytes_source(data.clone());
+        let frames = parse_frames(&serve(Some(&mut src), Some((90, 1000))).await);
+        assert_eq!(reassemble(&frames), data[90..100]);
+    }
+
+    #[tokio::test]
+    async fn serve_resource_start_past_eof_sends_nothing() {
+        // A range entirely past EOF yields no frames at all (documented behaviour).
+        let mut src = bytes_source((0..100u8).collect());
+        assert!(serve(Some(&mut src), Some((100, 200))).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn serve_resource_empty_resource_sends_nothing() {
+        // A zero-length resource yields no frames (documented behaviour).
+        let mut src = bytes_source(Vec::new());
+        assert!(serve(Some(&mut src), None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn serve_resource_splits_into_multiple_parts() {
+        // Just over two full packets, so three parts with the last partial.
+        let max = companion::MAX_RESOURCE_READ_SIZE;
+        let data: Vec<u8> = (0..(max * 2 + 123)).map(|i| i as u8).collect();
+        let mut src = bytes_source(data.clone());
+        let frames = parse_frames(&serve(Some(&mut src), None).await);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(reassemble(&frames), data);
+    }
+
+    #[test]
+    fn companion_data_bytes_len_and_no_fd() {
+        let data = CompanionData::Bytes(std::io::Cursor::new(vec![1, 2, 3, 4, 5]));
+        assert_eq!(data.len().unwrap(), 5);
+        #[cfg(unix)]
+        assert!(data.raw_fd().is_none());
+    }
+
+    #[test]
+    fn companion_data_file_len_and_fd() {
+        let path =
+            std::env::temp_dir().join(format!("fcast_companion_test_{}.bin", std::process::id()));
+        std::fs::write(&path, b"hello world").unwrap();
+        let data = CompanionData::File(std::fs::File::open(&path).unwrap());
+        assert_eq!(data.len().unwrap(), 11);
+        #[cfg(unix)]
+        assert!(data.raw_fd().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn resource_bytes_to_read_ranges() {
+        // Whole file (as the `read_head = None` path computes it).
+        assert_eq!(resource_bytes_to_read(0, 99, 100), 100);
+        // Sub-range, inclusive.
+        assert_eq!(resource_bytes_to_read(10, 19, 100), 10);
+        // Single byte.
+        assert_eq!(resource_bytes_to_read(5, 5, 100), 1);
+        // Stop past EOF is clamped to the last byte.
+        assert_eq!(resource_bytes_to_read(90, 1000, 100), 10);
+        // Start at/after EOF yields nothing.
+        assert_eq!(resource_bytes_to_read(100, 200, 100), 0);
+        assert_eq!(resource_bytes_to_read(150, 200, 100), 0);
+        // Empty resource yields nothing regardless of range.
+        assert_eq!(resource_bytes_to_read(0, 0, 0), 0);
+        // Inverted range yields nothing.
+        assert_eq!(resource_bytes_to_read(50, 40, 100), 0);
+    }
 
     fn test_entry(n: u32) -> QueueEntry {
         QueueEntry {

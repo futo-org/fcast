@@ -40,7 +40,11 @@ dependencies {
 
 mavenPublishing {
     publishToMavenCentral(automaticRelease = true)
-    signAllPublications()
+    // Signing is required for Maven Central but not for local publishing. Allow a local
+    // `publishToMavenLocal` (which has no signatory configured) to opt out with `-PskipSigning=true`.
+    if (project.findProperty("skipSigning") != "true") {
+        signAllPublications()
+    }
 
     val sdkVersion = (project.findProperty("sdkVersion") as String?) ?: "0.4.1"
     coordinates("org.fcast", "sender-sdk", sdkVersion)

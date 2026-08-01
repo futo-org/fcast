@@ -420,6 +420,9 @@ pub enum CompanionSourceDescriptor {
     /// everywhere, but it is only usable on Unix targets. On other platforms a load carrying it
     /// fails.
     Fd(i32),
+    /// In-memory bytes, copied into the SDK and served directly. Best for small payloads (e.g. a
+    /// subtitle file) rather than large media.
+    Bytes(Vec<u8>),
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -570,11 +573,28 @@ pub struct QueueState {
     pub autoplay: bool,
 }
 
+/// Where an external subtitle's content comes from.
+///
+/// The receiver fetches [`SubtitleContent::Url`] itself. [`SubtitleContent::Data`] is served to it
+/// over the FCast companion channel, so no HTTP server or receiver-reachable URL is needed.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubtitleContent {
+    /// A subtitle at a URL the receiver fetches directly (e.g. `https://example.com/subs.vtt`).
+    Url { url: String },
+    /// Raw subtitle bytes, delivered to the receiver over the FCast companion channel.
+    Data {
+        data: Vec<u8>,
+        /// MIME type of the payload, e.g. `"text/vtt"`.
+        content_type: String,
+    },
+}
+
 /// An external subtitle track to attach to the current media. FCast v4 only.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubtitleSource {
-    pub url: String,
+    pub content: SubtitleContent,
     /// Whether the receiver should select this track immediately.
     pub select: bool,
     pub name: Option<String>,

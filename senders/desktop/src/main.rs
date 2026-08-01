@@ -2256,7 +2256,7 @@ impl Application {
                 if let Some(session) = &mut self.session_state {
                     if let Err(err) = session.device.add_subtitle_source(
                         fcast_sender_sdk::device::SubtitleSource {
-                            url,
+                            content: fcast_sender_sdk::device::SubtitleContent::Url { url },
                             // Select it immediately so it shows up right away.
                             select: true,
                             name: None,

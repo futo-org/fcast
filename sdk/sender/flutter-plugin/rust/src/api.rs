@@ -8,7 +8,7 @@ pub use fcast_sender_sdk_raw::{
         DisplayCapabilities, LoadRequest, MediaCapabilities, MediaItem, MediaLocator, MediaTrack,
         MediaTrackType, Metadata, PlaybackState, PlaylistItem, ProtocolType, Queue, QueueEntry,
         QueueItem, QueuePosition, QueueState, ReceiverCapabilities, ReceiverError, Source,
-        SubtitleSource, TrackList, VideoResolution,
+        SubtitleContent, SubtitleSource, TrackList, VideoResolution,
     },
     IpAddr,
 };
@@ -145,6 +145,7 @@ pub enum _Source {
 pub enum _CompanionSourceDescriptor {
     Path(String),
     Fd(i32),
+    Bytes(Vec<u8>),
 }
 
 #[frb(mirror(CompanionSource))]
@@ -246,9 +247,15 @@ pub enum _QueuePosition {
     Index(u8),
 }
 
+#[frb(mirror(SubtitleContent))]
+pub enum _SubtitleContent {
+    Url { url: String },
+    Data { data: Vec<u8>, content_type: String },
+}
+
 #[frb(mirror(SubtitleSource))]
 pub struct _SubtitleSource {
-    pub url: String,
+    pub content: SubtitleContent,
     pub select: bool,
     pub name: Option<String>,
 }
