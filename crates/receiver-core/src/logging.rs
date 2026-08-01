@@ -40,7 +40,8 @@ pub fn init(loglevel: Option<LevelFilter>) {
             .with_target("winit", LevelFilter::INFO)
             .with_default(LevelFilter::TRACE);
 
-        let fmt_layer = tracing_subscriber::fmt::layer();
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_timer(tracing_subscriber::fmt::time::Uptime::default());
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
         if let Ok(spec) = std::env::var("GST_DEBUG") {
             gst::log::set_threshold_from_string(&spec, false);
