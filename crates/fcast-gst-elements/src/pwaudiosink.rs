@@ -14,6 +14,7 @@ mod imp {
 
     use gst::{glib, subclass::prelude::*};
     use gst_audio::subclass::prelude::*;
+    use gst_base::prelude::BaseSinkExt;
 
     use pipewire as pw;
     use pw::{
@@ -48,6 +49,35 @@ mod imp {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("FCAST_PW_DELAY_TRACE").is_ok_and(|v| v == "1"))
     }
+
+    /// `FCAST_PW_NO_DEVICE_LATENCY=1`: stop declaring the graph->device
+    /// latency as the sink's render delay and fold it back into `delay()`
+    /// (the behaviour before that split, see [`PwAudioSink::device_delay`]).
+    /// An A/B hatch: latency reporting is route- and driver-dependent, and a
+    /// device that lies about it is better served by the base class's
+    /// slaving than by a wrong constant.
+    fn no_device_latency() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("FCAST_PW_NO_DEVICE_LATENCY").is_ok_and(|v| v == "1"))
+    }
+
+    /// Re-declare the device latency only once it has moved this far. Every
+    /// change posts a LATENCY message and makes the whole pipeline
+    /// redistribute, and the leftover rounding sits far inside the base
+    /// class's 20ms slaving tolerance, which absorbs it silently.
+    const RENDER_DELAY_HYSTERESIS: gst::ClockTime = gst::ClockTime::from_mseconds(5);
+
+    /// Sanity cap on a reported device latency. A2DP tops out near 300ms
+    /// (headset delay report plus transport), so anything past this is a
+    /// broken report: inflating the pipeline's latency by it would be worse
+    /// than ignoring it.
+    const MAX_DEVICE_DELAY: gst::ClockTime = gst::ClockTime::from_mseconds(1000);
+
+    /// How long the PLAYING->PAUSED edge may wait for the graph to pick up
+    /// an EOS tail still sitting in the bridge (see
+    /// [`PwAudioSink::drain_eos_tail`]). A segment or two in practice.
+    const TAIL_DRAIN_LIMIT: Duration = Duration::from_millis(250);
+    const TAIL_DRAIN_STEP: Duration = Duration::from_millis(10);
 
     /// The `write()` <-> pw-`process` bridge.
     ///
@@ -95,6 +125,17 @@ mod imp {
         /// receiver wedged). Set before chaining the transition, cleared
         /// only by the next prepare().
         shutting_down: bool,
+        /// EOS reached and not flushed away since: the stream ended for
+        /// real, so the tail is owed a bounded drain on the way out of
+        /// PLAYING instead of being cut. Cleared by FlushStop and by every
+        /// `prepare()`.
+        eos: bool,
+        /// Bytes process() has taken out of the ring, monotonic. The only
+        /// way to wait for a specific piece of audio to reach the graph:
+        /// the ring itself never empties, because the base class's writer
+        /// thread keeps handing us whole segments (silence for the ones
+        /// nothing was committed to) for as long as its ring is started.
+        drained: u64,
         /// Process cycles that found less data than they wanted. Counts
         /// idle/paused silence-fill cycles too, a coarse stat, logged at
         /// unprepare for quantum sanity-checking, not an error signal.
@@ -120,6 +161,8 @@ mod imp {
                 resume_fade: false,
                 paused: false,
                 shutting_down: false,
+                eos: false,
+                drained: 0,
                 underruns: 0,
                 cycles: 0,
             }
@@ -242,6 +285,117 @@ mod imp {
         stream: Mutex<Option<PwStream>>,
         conn: Mutex<Option<PwConn>>,
         shared: Arc<BridgeShared>,
+        /// Nanoseconds of device latency last handed to `set_render_delay`,
+        /// so a re-check only pays for a bus message when the route actually
+        /// changed (see [`PwAudioSink::sync_render_delay`]).
+        announced_device_delay: std::sync::atomic::AtomicU64,
+        /// `write()` calls, to keep the device-latency re-check off the hot
+        /// path (one segment per call, so every 32nd is a third of a second).
+        writes: std::sync::atomic::AtomicU64,
+    }
+
+    impl PwAudioSink {
+        /// The fixed graph->device latency: everything between handing a
+        /// frame to the pw graph and it becoming audible. Graph filters, the
+        /// device's own buffering, and on a Bluetooth route the A2DP/BAP
+        /// transport plus the headset's own delay report (pipewire's bluez5
+        /// sink publishes all of that as its port latency, which is what
+        /// `pw_time.delay` carries).
+        ///
+        /// This is not queueing: it never drains, it is a property of the
+        /// route. That distinction is the whole point, see `delay()` for the
+        /// queued half and `sync_render_delay()` for what this half is for.
+        fn device_delay(&self) -> Option<gst::ClockTime> {
+            if no_device_latency() {
+                return None;
+            }
+            let stream = self.stream.lock();
+            let time = stream.as_ref()?.stream.time().ok()?;
+            let rate = time.rate();
+            if rate.num == 0 || rate.denom == 0 {
+                return None;
+            }
+            let ns = time.delay().max(0) as u128 * rate.num as u128 * 1_000_000_000u128
+                / rate.denom as u128;
+            // Saturate rather than panic on a nonsense report, the caller caps it anyway.
+            Some(gst::ClockTime::from_nseconds(
+                ns.min(gst::ClockTime::MAX.nseconds() as u128) as u64,
+            ))
+        }
+
+        /// Declare the device latency to the base class whenever it moves
+        /// enough to be worth a pipeline-wide redistribution.
+        ///
+        /// `set_render_delay()` is GstBaseSink's mechanism for exactly this
+        /// case. It adds the value to what this sink answers to the LATENCY
+        /// query, so the pipeline configures a latency that covers the
+        /// device and every other sink delays its own rendering to match,
+        /// and it posts a LATENCY message so the pipeline re-runs the query.
+        ///
+        /// Without it a Bluetooth route's 100-300ms is invisible: the video
+        /// keeps the old timeline, and the base class's clock slaving is
+        /// left to discover the offset on its own. It reads a constant
+        /// offset as drift and corrects it in drift-tolerance-sized steps,
+        /// resyncing the ring (so dropping audio) every time, and it never
+        /// converges. Measured against a 200ms device: nine ~22ms
+        /// corrections in eight seconds, versus none once the latency is
+        /// declared here.
+        ///
+        /// A live source (AirPlay, WHEP) fares worse still, since the
+        /// pipeline never buys the extra lead time the sink needs to run
+        /// that far ahead of the device.
+        fn sync_render_delay(&self) {
+            let Some(delay) = self.device_delay() else {
+                return;
+            };
+            let capped = delay.min(MAX_DEVICE_DELAY);
+            if capped != delay {
+                gst::warning!(
+                    CAT,
+                    "device reports {delay} of latency, capping at {capped}"
+                );
+            }
+            let announced = self
+                .announced_device_delay
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if capped.nseconds().abs_diff(announced) < RENDER_DELAY_HYSTERESIS.nseconds() {
+                return;
+            }
+            self.announced_device_delay
+                .store(capped.nseconds(), std::sync::atomic::Ordering::Relaxed);
+            gst::info!(CAT, "device latency {capped}, declaring it as render delay");
+            self.obj().set_render_delay(capped);
+        }
+
+        /// Let the graph take what is left in the bridge after an EOS, before
+        /// the sink is corked and the stream torn down.
+        ///
+        /// The base class stops waiting once the last sample's sync time
+        /// passes, and that timeline ends at the hand-off point rather than
+        /// at the device now that the fixed latency is declared as a render
+        /// delay (GstBaseSink subtracts it back out of its own waits). So a
+        /// ring's worth of real audio can still be sitting here. Bounded,
+        /// and only on the EOS path: a Stop or a flush means silence now,
+        /// and process() ramps that cut out instead.
+        ///
+        /// Waits for exactly what is queued right now to be consumed, NOT
+        /// for the ring to empty: it never does, the writer thread keeps
+        /// pushing silence segments behind the tail (see `Bridge::drained`).
+        fn drain_eos_tail(&self) {
+            let mut bridge = self.shared.bridge.lock();
+            if !bridge.eos || bridge.paused {
+                return;
+            }
+            let target = bridge.drained + bridge.ring.len() as u64;
+            let deadline = std::time::Instant::now() + TAIL_DRAIN_LIMIT;
+            while bridge.drained < target && !bridge.dead && !bridge.flushing {
+                if std::time::Instant::now() >= deadline {
+                    gst::warning!(CAT, "EOS tail still queued after {TAIL_DRAIN_LIMIT:?}");
+                    break;
+                }
+                self.shared.space.wait_for(&mut bridge, TAIL_DRAIN_STEP);
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -313,6 +467,7 @@ mod imp {
             // parent's ring pause (which calls reset()) sees it.
             match transition {
                 gst::StateChange::PlayingToPaused => {
+                    self.drain_eos_tail();
                     self.shared.bridge.lock().paused = true;
                 }
                 gst::StateChange::PausedToPlaying => {
@@ -333,6 +488,13 @@ mod imp {
 
     impl BaseSinkImpl for PwAudioSink {
         fn event(&self, event: gst::Event) -> bool {
+            // Latched BEFORE chaining up: the parent's EOS handling drains
+            // and posts the message without returning here in between, and
+            // the teardown path needs to know an EOS is what ended the
+            // stream (see drain_eos_tail).
+            if let gst::EventView::Eos(_) = event.view() {
+                self.shared.bridge.lock().eos = true;
+            }
             // Real flushes discard the bridge here, reset() can't (the
             // pause path funnels there too, and a flush-while-paused may
             // skip reset() entirely because the ring is already paused).
@@ -340,6 +502,7 @@ mod imp {
                 {
                     let mut bridge = self.shared.bridge.lock();
                     bridge.ring.clear();
+                    bridge.eos = false;
                 }
                 self.shared.space.notify_all();
                 let conn_slot = self.conn.lock();
@@ -433,6 +596,7 @@ mod imp {
                 bridge.paused = false;
                 bridge.shutting_down = false;
                 bridge.flushing = false;
+                bridge.eos = false;
                 bridge.dead = false;
                 bridge.ring.clear();
                 bridge.underruns = 0;
@@ -611,6 +775,7 @@ mod imp {
                             slice[n1..have].copy_from_slice(&b[..have - n1]);
                         }
                         bridge.ring.drain(..have);
+                        bridge.drained += have as u64;
                         let channels = bridge.channels;
                         let is_f32 = bridge.is_f32;
                         if have > 0 {
@@ -722,10 +887,28 @@ mod imp {
                 _listener: listener,
                 rate,
             });
+
+            // Declare the route's latency before the sink prerolls: the
+            // pipeline runs its LATENCY query once preroll completes, and
+            // this is the only window where the answer can be right from the
+            // first frame instead of being corrected afterwards.
+            self.sync_render_delay();
             Ok(())
         }
 
         fn write(&self, data: &[u8]) -> Result<i32, gst::LoggableError> {
+            // Cheap re-check for a route that changed under us (a Bluetooth
+            // device connecting, a codec or profile switch, a default-sink
+            // move): the declared latency has to follow it. Off the hot path
+            // by a counter, and BEFORE the bridge lock, the stream mutex is
+            // always taken first (see delay()).
+            let writes = self
+                .writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if writes.is_multiple_of(32) {
+                self.sync_render_delay();
+            }
+
             let mut bridge = self.shared.bridge.lock();
             // Never true in practice (capacity >= 2 segments, writes are <= 1
             // segment), but a too-small ring must not become a livelock.
@@ -769,24 +952,34 @@ mod imp {
         }
 
         fn delay(&self) -> u32 {
-            // Frames not yet audible = bridge ring + pw-side queue. The pw term comes from
-            // pw_stream_get_time_n (RT- and thread-safe seqlock read, the one pw call made without
-            // the loop lock): `delay` = graph->device latency in rate ticks, `buffered` = frames
-            // sitting in pw's resampler. Both decay/stop naturally as the stream plays out, so EOS
-            // drain waits terminate.
+            // Frames handed over but not yet taken by the graph: the bridge ring plus what pw
+            // still holds in its resampler (`buffered`, from pw_stream_get_time_n, an RT- and
+            // thread-safe seqlock read and the one pw call made without the loop lock). Both
+            // drain as the stream plays out, so EOS drain waits terminate.
+            //
+            // Deliberately NOT the fixed graph->device latency (`pw_time.delay`, which on a
+            // Bluetooth route is the 100-300ms the headset itself adds). That part never drains,
+            // and the base class subtracts whatever this returns from its audio clock to get
+            // "what is audible now". Folding a constant in there parks that clock permanently
+            // behind the pipeline clock, which the skew slaving reads as drift and keeps
+            // resyncing away (see `sync_render_delay` for the measured cost). The fixed part is
+            // declared as the sink's render delay instead, which delays the rest of the pipeline
+            // to meet the device rather than dragging the audio forward to meet the video.
             let mut pw_frames: u64 = 0;
             let mut trace: Option<String> = None;
             if let Some(s) = self.stream.lock().as_ref() {
                 if let Ok(t) = s.stream.time() {
                     let rate = t.rate();
-                    if rate.num > 0 && rate.denom > 0 {
-                        pw_frames = t.delay().max(0) as u64 * rate.num as u64 * s.rate as u64
+                    pw_frames += t.buffered();
+                    if no_device_latency() && rate.num > 0 && rate.denom > 0 {
+                        // Hatch: fold the device latency back in and leave the
+                        // compensation to the slaving, the pre-split behaviour.
+                        pw_frames += t.delay().max(0) as u64 * rate.num as u64 * s.rate as u64
                             / rate.denom as u64;
                     }
-                    pw_frames += t.buffered();
                     if delay_trace() {
                         trace = Some(format!(
-                            "delay={} rate={}/{} buffered={} queued={} queued_bufs={} pw_frames={}",
+                            "delay={} rate={}/{} buffered={} queued={} queued_bufs={} pw_frames={} declared={}",
                             t.delay(),
                             rate.num,
                             rate.denom,
@@ -794,6 +987,8 @@ mod imp {
                             t.queued(),
                             t.queued_buffers(),
                             pw_frames,
+                            self.announced_device_delay
+                                .load(std::sync::atomic::Ordering::Relaxed),
                         ));
                     }
                 }
@@ -844,8 +1039,10 @@ mod imp {
         }
 
         fn unprepare(&self) -> Result<(), gst::LoggableError> {
-            // No drain here: audiobasesink waits out the EOS time (last sample + delay()) on the
-            // pipeline clock BEFORE unprepare.
+            // No drain here: the EOS tail is flushed out on the PLAYING->PAUSED edge (see
+            // change_state), the only point where the graph is still consuming, and the
+            // device-side latency lives in the daemon, which keeps playing what it already has
+            // after our stream disconnects.
             if let Some(s) = self.stream.lock().take() {
                 let conn = self.conn.lock();
                 if let Some(conn) = conn.as_ref() {
