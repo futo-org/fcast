@@ -269,14 +269,12 @@ async fn handle_message(
                 namespaces::Media::Seek {
                     current_time: Some(time),
                     ..
-                } => {
-                    match gst::ClockTime::try_from_seconds_f64(time) {
-                        Ok(t) => state.msg_tx.operation(origin, crate::Operation::Seek(t)),
-                        Err(err) => {
-                            error!(time, ?err, "Got invalid time in Chromecast seek message");
-                        }
+                } => match gst::ClockTime::try_from_seconds_f64(time) {
+                    Ok(t) => state.msg_tx.operation(origin, crate::Operation::Seek(t)),
+                    Err(err) => {
+                        error!(time, ?err, "Got invalid time in Chromecast seek message");
                     }
-                }
+                },
                 namespaces::Media::Resume { .. } => {
                     state.msg_tx.operation(origin, crate::Operation::Resume);
                 }

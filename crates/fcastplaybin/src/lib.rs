@@ -2706,11 +2706,14 @@ impl Inner {
         // The selection engine is pipeline truth and updates NOW (a track
         // command must act on the item that is actually decoding), even though
         // the caller-facing collection event is held with the switch below.
-        let has_audio = prepared.pending_collection.as_ref().is_some_and(|collection| {
-            collection
-                .iter()
-                .any(|s| s.stream_type().contains(gst::StreamType::AUDIO))
-        });
+        let has_audio = prepared
+            .pending_collection
+            .as_ref()
+            .is_some_and(|collection| {
+                collection
+                    .iter()
+                    .any(|s| s.stream_type().contains(gst::StreamType::AUDIO))
+            });
         if let Some(collection) = prepared.pending_collection.as_ref() {
             let streams = collection
                 .iter()
@@ -3643,8 +3646,7 @@ impl Inner {
         {
             let routing = inner.routing.lock();
             let held = routing.inputs.iter().any(|i| {
-                i.element == *element
-                    && i.external.as_ref().is_some_and(|e| e.hold_until_selected)
+                i.element == *element && i.external.as_ref().is_some_and(|e| e.hold_until_selected)
             });
             if !held {
                 return;
@@ -3665,8 +3667,7 @@ impl Inner {
                     // buffer. Seed off its EOS instead, BEFORE forwarding it:
                     // nothing may be pushed afterwards, and an unslotted
                     // stream would stay unselectable for good.
-                    if event.type_() == gst::EventType::Eos
-                        && !seeded.swap(true, Ordering::Relaxed)
+                    if event.type_() == gst::EventType::Eos && !seeded.swap(true, Ordering::Relaxed)
                     {
                         Inner::seed_slot_for_held_pad(pad, None);
                     }
@@ -4767,8 +4768,7 @@ impl Inner {
                 let pad_group = pad
                     .sticky_event::<gst::event::StreamStart>(0)
                     .and_then(|event| event.group_id());
-                let (should_drop, pending, behind) =
-                    inner.gapless_eos_check_and_mark(pad_group);
+                let (should_drop, pending, behind) = inner.gapless_eos_check_and_mark(pad_group);
                 if should_drop {
                     debug!(
                         pad = %pad.name(),
@@ -4832,8 +4832,7 @@ impl Inner {
                         // task of the stream that EOSed first) never wakes.
                         // The post-ssync gate consumes them instead (see
                         // `Inner::passing_eos_group`).
-                        if av && pad_group.is_some()
-                            && pad_group == *inner.passing_eos_group.lock()
+                        if av && pad_group.is_some() && pad_group == *inner.passing_eos_group.lock()
                         {
                             debug!(
                                 pad = %pad.name(),
@@ -5326,7 +5325,6 @@ mod tests {
         assert!(!deselects_video(true, &[], &ids(&["aud-1"])));
     }
 
-
     #[test]
     fn join_state_caps_at_paused_during_transitions() {
         use gst::State::*;
@@ -5516,7 +5514,6 @@ mod pipeline_tests {
             .unwrap()
     }
 
-
     fn fake_audio_sinks() -> Sinks {
         Sinks {
             video: None,
@@ -5588,7 +5585,10 @@ mod pipeline_tests {
         let _ = std::fs::remove_file(&b_path);
 
         let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
-        assert!(activated, "the prepared item never activated (handoff missed)");
+        assert!(
+            activated,
+            "the prepared item never activated (handoff missed)"
+        );
         // Gapless success plays A then B back to back (~7s). The bug cuts B off
         // at A's end, so EOS lands near A's length (~5s) instead. The 6s
         // threshold sits between the two with margin for buffering slack.

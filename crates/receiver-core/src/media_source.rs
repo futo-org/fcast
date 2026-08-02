@@ -328,8 +328,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .join(format!("fcomp-gapless-{}-{n}.mp3", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("fcomp-gapless-{}-{n}.mp3", std::process::id()));
         // audiotestsrc defaults: 44100 Hz, 1024 samples/buffer.
         let num_buffers = (seconds * 44100.0 / 1024.0).round() as i32;
         let src = gst::ElementFactory::make("audiotestsrc")
@@ -371,7 +371,10 @@ mod tests {
     /// bytes, reported_size)`. A `reported_size` larger than `bytes.len()`
     /// reproduces the field's byte-size overshoot (declared duration > real
     /// audio); equal is the honest case.
-    fn spawn_fake_provider(ctx: &crate::fcast::CompanionContext, resources: Vec<(u32, Bytes, u64)>) {
+    fn spawn_fake_provider(
+        ctx: &crate::fcast::CompanionContext,
+        resources: Vec<(u32, Bytes, u64)>,
+    ) {
         use crate::fcast::{CompanionMessage, FeedbackSender, ResourceInfoResponseCell};
         use fcast_protocol::{companion, v4};
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompanionMessage>();
@@ -445,8 +448,10 @@ mod tests {
         use fcastplaybin::{
             AudioSink, FcastPlaybin, MediaInput, MessageHook, PlaybinEvent, Sinks, StartPoint,
         };
-        use std::sync::mpsc;
-        use std::time::{Duration, Instant};
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
 
         crate::gstreamer::init_for_tests();
         // init_for_tests only calls gst::init; fcompsrc is a receiver plugin.
@@ -484,12 +489,12 @@ mod tests {
             if let gst::MessageView::NeedContext(nc) = msg.view() {
                 let typ = nc.context_type();
                 if typ == crate::fcompsrc::imp::FCOMP_CONTEXT {
-                    if let Some(el) = msg
-                        .src()
-                        .and_then(|s| s.downcast_ref::<gst::Element>())
-                    {
+                    if let Some(el) = msg.src().and_then(|s| s.downcast_ref::<gst::Element>()) {
                         let mut c = gst::Context::new(typ, true);
-                        c.get_mut().unwrap().structure_mut().set("context", &comp_ctx);
+                        c.get_mut()
+                            .unwrap()
+                            .structure_mut()
+                            .set("context", &comp_ctx);
                         el.set_context(&c);
                     }
                     return true;
@@ -548,7 +553,10 @@ mod tests {
         let _ = playbin.stop();
 
         let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
-        assert!(activated, "the prepared fcomp item never activated (handoff missed)");
+        assert!(
+            activated,
+            "the prepared fcomp item never activated (handoff missed)"
+        );
         // A (5s) then B's full 4s ~= 9s. A cutoff would end playback near A's
         // 5s instead.
         assert!(
@@ -578,8 +586,10 @@ mod tests {
         use fcastplaybin::{
             AudioSink, FcastPlaybin, MediaInput, MessageHook, PlaybinEvent, Sinks, StartPoint,
         };
-        use std::sync::mpsc;
-        use std::time::{Duration, Instant};
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
 
         crate::gstreamer::init_for_tests();
         let _ = crate::fcompsrc::plugin_init();
@@ -617,7 +627,10 @@ mod tests {
                 if typ == crate::fcompsrc::imp::FCOMP_CONTEXT {
                     if let Some(el) = msg.src().and_then(|s| s.downcast_ref::<gst::Element>()) {
                         let mut c = gst::Context::new(typ, true);
-                        c.get_mut().unwrap().structure_mut().set("context", &comp_ctx);
+                        c.get_mut()
+                            .unwrap()
+                            .structure_mut()
+                            .set("context", &comp_ctx);
                         el.set_context(&c);
                     }
                     return true;

@@ -666,8 +666,22 @@ const LIBDE265_REF: &str = "v1.0.16";
 /// codec here is force-disabled via `CMAKE_DISABLE_FIND_PACKAGE_*` in the
 /// toolchain file [`write_libheif_toolchain`] feeds to that CMake build.
 const LIBHEIF_DISABLED_CODECS: &[&str] = &[
-    "AOM", "DAV1D", "FFMPEG", "JPEG", "OPENJPH", "OpenH264", "OpenJPEG", "RAV1E", "SvtEnc",
-    "UVG266", "X264", "X265", "kvazaar", "libsharpyuv", "vvdec", "vvenc",
+    "AOM",
+    "DAV1D",
+    "FFMPEG",
+    "JPEG",
+    "OPENJPH",
+    "OpenH264",
+    "OpenJPEG",
+    "RAV1E",
+    "SvtEnc",
+    "UVG266",
+    "X264",
+    "X265",
+    "kvazaar",
+    "libsharpyuv",
+    "vvdec",
+    "vvenc",
 ];
 
 /// pkg-config modules a *Linux* build requires from the environment; asserted
@@ -1231,7 +1245,10 @@ fn fast_linker_args(profile: &Profile) -> Vec<String> {
     }
     for name in ["wild", "mold"] {
         if let Some(path) = which(name) {
-            return vec!["-Clinker=clang".into(), format!("-Clink-arg=--ld-path={path}")];
+            return vec![
+                "-Clinker=clang".into(),
+                format!("-Clink-arg=--ld-path={path}"),
+            ];
         }
     }
     if which("ld.gold").is_some() {
@@ -2044,7 +2061,11 @@ fn resolve_libde265_source(sh: &Rc<Shell>, offline: bool) -> Result<Utf8PathBuf>
         bail!("--offline requires a target/libde265-src checkout (cannot clone without network)");
     }
     println!(">> Cloning libde265 {LIBDE265_REF} into {dir} …");
-    if let Err(e) = cmd!(sh, "git clone --depth 1 --branch {LIBDE265_REF} {LIBDE265_REPO} {dir}").run()
+    if let Err(e) = cmd!(
+        sh,
+        "git clone --depth 1 --branch {LIBDE265_REF} {LIBDE265_REPO} {dir}"
+    )
+    .run()
     {
         // Same transient false-negative guard as resolve_source (Windows).
         if !checkout_present(&dir) {

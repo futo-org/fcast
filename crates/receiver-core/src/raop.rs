@@ -207,9 +207,10 @@ mod alacdec_imp {
                 .map_err(|_| gst::loggable_error!(CAT, "failed to map the sdp-fmtp buffer"))?;
             let fmtp = str::from_utf8(map.as_slice())
                 .map_err(|err| gst::loggable_error!(CAT, "sdp-fmtp is not valid UTF-8: {err}"))?;
-            let stream_info = alac::StreamInfo::from_sdp_format_parameters(fmtp).map_err(|err| {
-                gst::loggable_error!(CAT, "invalid ALAC stream info in sdp-fmtp: {err:?}")
-            })?;
+            let stream_info =
+                alac::StreamInfo::from_sdp_format_parameters(fmtp).map_err(|err| {
+                    gst::loggable_error!(CAT, "invalid ALAC stream info in sdp-fmtp: {err:?}")
+                })?;
 
             if !is_decodable_as_i16(&stream_info) {
                 let bit_depth = stream_info.bit_depth();
@@ -2014,7 +2015,12 @@ mod tests {
     fn malformed_alac_fmtp_is_an_error_not_a_panic() {
         // `set_format` maps each of these to a negotiation failure; they used
         // to reach `.unwrap()`.
-        for params in ["", "not-a-config", "4096 0 16", "4096 0 x 40 10 14 2 255 0 0 44100"] {
+        for params in [
+            "",
+            "not-a-config",
+            "4096 0 16",
+            "4096 0 x 40 10 14 2 255 0 0 44100",
+        ] {
             assert!(
                 alac::StreamInfo::from_sdp_format_parameters(params).is_err(),
                 "expected {params:?} to be rejected"

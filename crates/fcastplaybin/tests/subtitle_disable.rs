@@ -227,24 +227,34 @@ impl Harness {
 
     /// The latest `StreamsSelected` in the log (subtitle slot), if any.
     fn last_selected_subtitle(&self) -> Option<Option<String>> {
-        self.log.borrow().iter().rev().find_map(|event| match event {
-            PlaybinEvent::StreamsSelected { subtitle, .. } => Some(subtitle.clone()),
-            _ => None,
-        })
+        self.log
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                PlaybinEvent::StreamsSelected { subtitle, .. } => Some(subtitle.clone()),
+                _ => None,
+            })
     }
 
     /// The text stream id of the latest advertised collection in the log.
     fn text_sid(&self) -> Option<String> {
-        self.log.borrow().iter().rev().find_map(|event| match event {
-            PlaybinEvent::StreamCollection(collection) => collection.iter().find_map(|stream| {
-                stream
-                    .stream_type()
-                    .contains(gst::StreamType::TEXT)
-                    .then(|| stream.stream_id().map(|s| s.to_string()))
-                    .flatten()
-            }),
-            _ => None,
-        })
+        self.log
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                PlaybinEvent::StreamCollection(collection) => {
+                    collection.iter().find_map(|stream| {
+                        stream
+                            .stream_type()
+                            .contains(gst::StreamType::TEXT)
+                            .then(|| stream.stream_id().map(|s| s.to_string()))
+                            .flatten()
+                    })
+                }
+                _ => None,
+            })
     }
 
     /// Load `uri`, start playback and wait for the settled PLAYING.
@@ -347,10 +357,7 @@ impl Harness {
             {
                 return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "position never reached {target}"
-            );
+            assert!(Instant::now() < deadline, "position never reached {target}");
             self.settle_pump();
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -366,10 +373,7 @@ impl Harness {
 
         let unlink = self.wait_subtitle_branch(false, EVENT_TIMEOUT, "subtitle disable");
         self.wait_for("deselect StreamsSelected", |event| {
-            matches!(
-                event,
-                PlaybinEvent::StreamsSelected { subtitle: None, .. }
-            )
+            matches!(event, PlaybinEvent::StreamsSelected { subtitle: None, .. })
         });
         let confirm = t0.elapsed();
 

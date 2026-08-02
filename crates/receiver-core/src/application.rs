@@ -985,11 +985,13 @@ impl Application {
     ) {
         let sender_id = match origin {
             PacketOrigin::Gui => Some(0),
-            PacketOrigin::FCast {sender_id, ..} => Some(sender_id),
+            PacketOrigin::FCast { sender_id, .. } => Some(sender_id),
             _ => None,
         };
 
-        if let Some(sender_id) = sender_id && self.should_broadcast() {
+        if let Some(sender_id) = sender_id
+            && self.should_broadcast()
+        {
             self.broadcast_update(ReceiverToSenderMessage::V4(
                 fcast::V4Message::RelayToOtherSenders {
                     initiator_session_id: sender_id,
@@ -2246,7 +2248,10 @@ impl Application {
                 "Replacing the operation parked on the gapless cancel outcome"
             );
         } else {
-            debug!(?kind, "Parking the operation until the gapless cancel resolves");
+            debug!(
+                ?kind,
+                "Parking the operation until the gapless cancel resolves"
+            );
         }
         // Idempotent when a cancel is already in flight (e.g. one a queue
         // mutation asked for): that cancel's outcome resolves this too.
@@ -4478,9 +4483,7 @@ impl Application {
 
                         loop {
                             match listener.accept().await {
-                                Ok((stream, _)) => {
-                                    msg_tx.airplay(AirPlay::SenderConnected(stream))
-                                }
+                                Ok((stream, _)) => msg_tx.airplay(AirPlay::SenderConnected(stream)),
                                 Err(err) => {
                                     warn!(?err, "AirPlay listener accept failed; stopping");
                                     return;
@@ -5465,7 +5468,9 @@ impl Application {
                         Err(err) => return Err(err.into()),
                     }
                 }
-                Some(Message::PortConflictChoice(crate::message::PortConflictChoice::UseDifferentPort)) => {
+                Some(Message::PortConflictChoice(
+                    crate::message::PortConflictChoice::UseDifferentPort,
+                )) => {
                     let listeners = Self::bind_fcast_listeners(0).await?;
                     let port = listeners[0].local_addr()?.port();
                     info!(port, "Starting FCast on a different port");
@@ -5502,149 +5507,149 @@ impl Application {
         anyhow::bail!("FCast port {FCAST_TCP_PORT} is already in use");
     }
 
-        pub async fn run_event_loop(
-            mut self,
-            mut event_rx: UnboundedReceiver<Message>,
-            fin_tx: tokio::sync::oneshot::Sender<()>,
-        ) -> Result<()> {
-            // Seed the settings drawer with the current persisted config.
+    pub async fn run_event_loop(
+        mut self,
+        mut event_rx: UnboundedReceiver<Message>,
+        fin_tx: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<()> {
+        // Seed the settings drawer with the current persisted config.
+        #[cfg(not(target_os = "android"))]
+        self.push_settings_to_ui();
+
+        // Acquire the FCast listening socket(s). If the default port is taken
+        // this prompts the user (retry / different port / quit). `None` means
+        // the user quit before anything was bound, so we skip serving and fall
+        // straight through to the shutdown tail below.
+        // When FCast is disabled we skip binding and advertising it entirely and
+        // commit with no listeners, so the event loop still serves
+        // chromecast/airplay/raop. `select_next_some` on the resulting empty,
+        // terminated listener stream stays pending, so it simply never fires.
+        let listeners = if self.settings.fcast_enabled() {
+            self.resolve_listen_port(&mut event_rx).await?
+        } else {
+            info!("FCast receiver disabled by settings, not binding or advertising it");
+            Some(Vec::new())
+        };
+        if let Some(listeners) = listeners {
+            // The port is ours. Commit to running, publish the connection
+            // QR/IP panel (addresses may have arrived while the conflict dialog
+            // was up) and reveal the system tray.
+            self.port_committed = true;
+            // Advertise the fcast service now, at the port we actually bound,
+            // so a second instance never publishes a duplicate record.
             #[cfg(not(target_os = "android"))]
-            self.push_settings_to_ui();
+            if self.settings.fcast_enabled() {
+                mdns::register_fcast(
+                    &self.mdns,
+                    &self.settings.fcast_name(),
+                    self.fcast_port,
+                    &self.fcast_txt_records,
+                )?;
+            }
+            self.update_connection_details()?;
+            self.gui.show_system_tray();
+            // Fade the startup screen out now that we're actually listening.
+            self.gui.set_starting_up(false);
 
-            // Acquire the FCast listening socket(s). If the default port is taken
-            // this prompts the user (retry / different port / quit). `None` means
-            // the user quit before anything was bound, so we skip serving and fall
-            // straight through to the shutdown tail below.
-            // When FCast is disabled we skip binding and advertising it entirely and
-            // commit with no listeners, so the event loop still serves
-            // chromecast/airplay/raop. `select_next_some` on the resulting empty,
-            // terminated listener stream stays pending, so it simply never fires.
-            let listeners = if self.settings.fcast_enabled() {
-                self.resolve_listen_port(&mut event_rx).await?
-            } else {
-                info!("FCast receiver disabled by settings, not binding or advertising it");
-                Some(Vec::new())
-            };
-            if let Some(listeners) = listeners {
-                // The port is ours. Commit to running, publish the connection
-                // QR/IP panel (addresses may have arrived while the conflict dialog
-                // was up) and reveal the system tray.
-                self.port_committed = true;
-                // Advertise the fcast service now, at the port we actually bound,
-                // so a second instance never publishes a duplicate record.
-                #[cfg(not(target_os = "android"))]
-                if self.settings.fcast_enabled() {
-                    mdns::register_fcast(
-                        &self.mdns,
-                        &self.settings.fcast_name(),
-                        self.fcast_port,
-                        &self.fcast_txt_records,
-                    )?;
-                }
-                self.update_connection_details()?;
-                self.gui.show_system_tray();
-                // Fade the startup screen out now that we're actually listening.
-                self.gui.set_starting_up(false);
+            let accept_streams = listeners.into_iter().map(|listener| {
+                // `Box::pin` so the `Unfold` streams are `Unpin`, as `select_all` requires.
+                Box::pin(futures::stream::unfold(listener, |listener| async move {
+                    Some((listener.accept().await, listener))
+                }))
+            });
+            let mut listener_stream = futures::stream::select_all(accept_streams);
 
-                let accept_streams = listeners.into_iter().map(|listener| {
-                    // `Box::pin` so the `Unfold` streams are `Unpin`, as `select_all` requires.
-                    Box::pin(futures::stream::unfold(listener, |listener| async move {
-                        Some((listener.accept().await, listener))
-                    }))
-                });
-                let mut listener_stream = futures::stream::select_all(accept_streams);
+            #[cfg(not(target_os = "android"))]
+            if self.settings.fullscreen() {
+                self.gui.set_fullscreen(true);
+            }
 
-                #[cfg(not(target_os = "android"))]
-                if self.settings.fullscreen() {
-                    self.gui.set_fullscreen(true);
-                }
+            let mut update_interval = tokio::time::interval(PROGRESS_TICK_INTERVAL);
 
-                let mut update_interval = tokio::time::interval(PROGRESS_TICK_INTERVAL);
+            use futures::stream::StreamExt;
 
-                use futures::stream::StreamExt;
-
-                // Start at 1, let 0 be an anonymous session (e.g. the GUI)
-                let mut session_id: SenderId = 1;
-                loop {
-                    tokio::select! {
-                        event = event_rx.recv() => {
-                            if let Some(event) = event {
-                                match self.handle_event(event).await {
-                                    Ok(true) => break,
-                                    Err(err) => error!("Handle event error: {err}"),
-                                    _ => (),
-                                }
-                            } else {
-                                break;
+            // Start at 1, let 0 be an anonymous session (e.g. the GUI)
+            let mut session_id: SenderId = 1;
+            loop {
+                tokio::select! {
+                    event = event_rx.recv() => {
+                        if let Some(event) = event {
+                            match self.handle_event(event).await {
+                                Ok(true) => break,
+                                Err(err) => error!("Handle event error: {err}"),
+                                _ => (),
                             }
+                        } else {
+                            break;
                         }
-                        _ = update_interval.tick() => {
-                            if self.player.player_state() == player::PlayerState::Playing {
-                                if let Err(err) = self.notify_updates(false) {
-                                    error!(?err, "Failed to push a progress update");
-                                }
-                                self.send_v4_progress_updates();
-                                self.maybe_prearm_gapless();
+                    }
+                    _ = update_interval.tick() => {
+                        if self.player.player_state() == player::PlayerState::Playing {
+                            if let Err(err) = self.notify_updates(false) {
+                                error!(?err, "Failed to push a progress update");
                             }
+                            self.send_v4_progress_updates();
+                            self.maybe_prearm_gapless();
                         }
-                        session = listener_stream.select_next_some() => {
-                            match session {
-                                Ok((stream, _)) => {
-                                    self.handle_new_fcast_session(stream, session_id);
-                                    session_id += 1;
-                                }
-                                // A failed accept is per-connection and usually
-                                // transient. Propagating it would end the event loop, leaving the
-                                // UI running with no protocol handling, no pipeline teardown, and
-                                // mDNS still advertising a receiver that answers nothing.
-                                Err(err) => {
-                                    warn!(?err, "Failed to accept an FCast connection");
-                                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
-                                }
+                    }
+                    session = listener_stream.select_next_some() => {
+                        match session {
+                            Ok((stream, _)) => {
+                                self.handle_new_fcast_session(stream, session_id);
+                                session_id += 1;
+                            }
+                            // A failed accept is per-connection and usually
+                            // transient. Propagating it would end the event loop, leaving the
+                            // UI running with no protocol handling, no pipeline teardown, and
+                            // mDNS still advertising a receiver that answers nothing.
+                            Err(err) => {
+                                warn!(?err, "Failed to accept an FCast connection");
+                                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                             }
                         }
                     }
                 }
             }
+        }
 
-            debug!("Quitting");
+        debug!("Quitting");
 
-            self.player.stop();
-            self.gui.quit_loop();
+        self.player.stop();
+        self.gui.quit_loop();
 
-            if fin_tx.send(()).is_err() {
-                bail!("Failed to send fin");
-            }
+        if fin_tx.send(()).is_err() {
+            bail!("Failed to send fin");
+        }
 
-            #[cfg(not(target_os = "android"))]
-            {
-                'outer: loop {
-                    let shutdown_rx = self.mdns.shutdown();
-                    match shutdown_rx {
-                        Ok(rx) => loop {
-                            match rx.recv_async().await {
-                                Ok(status) => {
-                                    if status == mdns_sd::DaemonStatus::Shutdown {
-                                        debug!("mDNS daemon shutdown");
-                                        break 'outer;
-                                    }
-                                }
-                                Err(err) => {
-                                    error!(?err, "Failed to shutdown mDNS daemon");
+        #[cfg(not(target_os = "android"))]
+        {
+            'outer: loop {
+                let shutdown_rx = self.mdns.shutdown();
+                match shutdown_rx {
+                    Ok(rx) => loop {
+                        match rx.recv_async().await {
+                            Ok(status) => {
+                                if status == mdns_sd::DaemonStatus::Shutdown {
+                                    debug!("mDNS daemon shutdown");
                                     break 'outer;
                                 }
                             }
-                        },
-                        Err(mdns_sd::Error::Again) => continue,
-                        Err(_) => break,
-                    }
+                            Err(err) => {
+                                error!(?err, "Failed to shutdown mDNS daemon");
+                                break 'outer;
+                            }
+                        }
+                    },
+                    Err(mdns_sd::Error::Again) => continue,
+                    Err(_) => break,
                 }
             }
-
-            let _ = slint::quit_event_loop();
-
-            Ok(())
         }
+
+        let _ = slint::quit_event_loop();
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
-use gst::glib;
-use gst::prelude::*;
+use gst::{glib, prelude::*};
 
 glib::wrapper! {
     pub struct FVaJpegDec(ObjectSubclass<imp::FVaJpegDec>)
@@ -9,9 +8,7 @@ glib::wrapper! {
 pub mod imp {
     use std::sync::LazyLock;
 
-    use gst::glib;
-    use gst::prelude::*;
-    use gst::subclass::prelude::*;
+    use gst::{glib, prelude::*, subclass::prelude::*};
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
@@ -91,14 +88,13 @@ pub mod imp {
                         if let Some(obj) = weak.upgrade()
                             && let Ok(vinfo) = gst_video::VideoInfo::from_caps(caps_ev.caps())
                         {
-                            let s = gst::Structure::builder(
-                                crate::imagedec::imp::IMAGE_STREAM_MESSAGE,
-                            )
-                            .field("format", "jpeg")
-                            .field("width", vinfo.width() as i32)
-                            .field("height", vinfo.height() as i32)
-                            .field("animated", false)
-                            .build();
+                            let s =
+                                gst::Structure::builder(crate::imagedec::imp::IMAGE_STREAM_MESSAGE)
+                                    .field("format", "jpeg")
+                                    .field("width", vinfo.width() as i32)
+                                    .field("height", vinfo.height() as i32)
+                                    .field("animated", false)
+                                    .build();
                             let msg = gst::message::Element::builder(s).src(&obj).build();
                             let _ = obj.post_message(msg);
                         }
@@ -147,8 +143,7 @@ pub mod imp {
             sink_ghost.set_target(Some(&parse_sink)).ok()?;
             obj.add_pad(&sink_ghost).ok()?;
 
-            let src_ghost =
-                gst::GhostPad::builder_from_template(&obj.pad_template("src")?).build();
+            let src_ghost = gst::GhostPad::builder_from_template(&obj.pad_template("src")?).build();
             src_ghost.set_target(Some(&dec_src)).ok()?;
             obj.add_pad(&src_ghost).ok()?;
 
@@ -362,7 +357,10 @@ mod tests {
         let _ = pipeline.set_state(gst::State::Null);
 
         let elems = elems.lock().unwrap().clone();
-        assert!(error.is_none(), "pipeline error: {error:?} (elems: {elems:?})");
+        assert!(
+            error.is_none(),
+            "pipeline error: {error:?} (elems: {elems:?})"
+        );
         assert!(
             frames.load(Ordering::Relaxed) > 0,
             "no frame decoded (elems: {elems:?})"
@@ -377,4 +375,3 @@ mod tests {
         );
     }
 }
-

@@ -10,12 +10,7 @@ use tracing::{debug, error, info};
 
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-    time::Duration,
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 #[cfg(not(target_os = "android"))]
 pub use clap;
@@ -24,18 +19,16 @@ pub use tracing;
 #[cfg(feature = "airplay")]
 mod airplay;
 mod application;
+pub mod config;
 mod fcast;
 mod fcompsrc;
 mod fwebrtcsrc;
 mod gcast;
-pub mod config;
 mod gstreamer;
 mod gui;
 mod image;
 mod imagedec;
 mod imagetypefind;
-#[cfg(target_os = "linux")]
-mod vajpegdec;
 mod inspector_graph;
 mod logging;
 #[cfg(not(target_os = "android"))]
@@ -48,6 +41,8 @@ mod queue_cache;
 mod raop;
 mod user_agent;
 mod utils;
+#[cfg(target_os = "linux")]
+mod vajpegdec;
 
 // The video rendering stack lives in fcast-video. These imports let the render
 // loop below keep referring to the modules by their short names.
@@ -56,13 +51,13 @@ use fcast_video::{opengl, placebo, render_latency, video};
 #[cfg(target_os = "linux")]
 pub use fcast_video::egl;
 
+#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+pub use fcast_video::WaylandSubsurfaceSink;
+pub use fcast_video::{SwapchainSink, VideoSink};
 pub use glow;
 pub use gst;
 pub use gst_video;
 pub use libplacebo;
-pub use fcast_video::{SwapchainSink, VideoSink};
-#[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
-pub use fcast_video::WaylandSubsurfaceSink;
 
 use crate::{fcast::Operation, gui::GuiController, player::PlayerState};
 
@@ -666,17 +661,15 @@ pub fn run<S: VideoSink + 'static>(
                                 }
                             } else {
                                 pl_context = Some(
-                                    placebo::PlaceboContext::new(&pl_log, &render_opts)
-                                        .unwrap(),
+                                    placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
                                 );
                             }
                         }
 
                         #[cfg(not(target_os = "linux"))]
                         {
-                            pl_context = Some(
-                                placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap(),
-                            );
+                            pl_context =
+                                Some(placebo::PlaceboContext::new(&pl_log, &render_opts).unwrap());
                         }
 
                         let gl = unsafe {

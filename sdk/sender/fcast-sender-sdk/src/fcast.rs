@@ -3162,7 +3162,10 @@ mod tests {
         payload
     }
 
-    async fn serve(source: Option<&mut WrappedCompanionSource>, head: Option<(u64, u64)>) -> Vec<u8> {
+    async fn serve(
+        source: Option<&mut WrappedCompanionSource>,
+        head: Option<(u64, u64)>,
+    ) -> Vec<u8> {
         let mut sink = VecSink::default();
         serve_resource(&mut sink, source, 42, head).await.unwrap();
         sink.0

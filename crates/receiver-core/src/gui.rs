@@ -62,7 +62,9 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     bridge.on_port_conflict_use_different_port({
         let msg_tx = msg_tx.clone();
         move || {
-            msg_tx.send(Message::PortConflictChoice(PortConflictChoice::UseDifferentPort));
+            msg_tx.send(Message::PortConflictChoice(
+                PortConflictChoice::UseDifferentPort,
+            ));
         }
     });
 
@@ -93,12 +95,12 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
                 .upgrade()
                 .expect("callbacks are always called from the event loop");
             if hidden {
-                let _ = ui
-                    .window()
-                    .try_dispatch_event(slint::platform::WindowEvent::PointerReleased {
-                        position: slint::LogicalPosition::new(0.0, 0.0),
-                        button: slint::platform::PointerEventButton::Other,
-                    });
+                let _ =
+                    ui.window()
+                        .try_dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                            position: slint::LogicalPosition::new(0.0, 0.0),
+                            button: slint::platform::PointerEventButton::Other,
+                        });
             }
 
             // The subsurface sink occludes the winit window once controls hide,
@@ -718,15 +720,13 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_playlist_idx(start_idx);
             bridge.set_playlist_idx(length);
         }
-        UpdateGuiCommand::SetImage { typ, img } => {
-            match typ {
-                ImageType::Preview => bridge.set_image_preview(img.as_compound()),
-                ImageType::AudioTrackCover => {
-                    bridge.set_audio_track_cover(img.as_compound());
-                    let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img.0));
-                }
+        UpdateGuiCommand::SetImage { typ, img } => match typ {
+            ImageType::Preview => bridge.set_image_preview(img.as_compound()),
+            ImageType::AudioTrackCover => {
+                bridge.set_audio_track_cover(img.as_compound());
+                let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img.0));
             }
-        }
+        },
         UpdateGuiCommand::UpdatePlaybackProgress {
             progress_s,
             duration_s,
