@@ -101,13 +101,16 @@ export global InspectorState {
 
     // Bitrate sparklines for the selected video/audio streams. The receiver
     // renders each history into an SVG polyline over a fixed 300x100 viewbox
-    // (newest sample at the right edge), so the UI just draws the strings.
+    // (newest sample at the right edge, each series normalized to its own
+    // peak), so the UI just draws the strings.
     in-out property <bool> have-bitrate: false;
     in-out property <string> video-bitrate-path;
     in-out property <string> audio-bitrate-path;
     in-out property <string> video-bitrate-label;
     in-out property <string> audio-bitrate-label;
-    in-out property <string> bitrate-peak-label;
+    // Scale maxima, one per y axis (video left, audio right).
+    in-out property <string> video-bitrate-peak-label;
+    in-out property <string> audio-bitrate-peak-label;
 
     // Buffering health (see `Application::inspector_buffering`). STREAM mode
     // exposes a fill level + rates, not timeline ranges.
@@ -237,6 +240,11 @@ component VideoInfoCard inherits Rectangle {
 }
 
 component BitrateCard inherits Rectangle {
+    // One color per series, shared by the line, its axis label and its
+    // legend entry, so which scale belongs to which line stays readable.
+    property <color> video-color: #4da3ff;
+    property <color> audio-color: #6ee7a0;
+
     min-width: 240px;
     max-width: 560px;
     background: #1c1c1eee;
@@ -269,7 +277,7 @@ component BitrateCard inherits Rectangle {
                 fit: fill;
                 commands: InspectorState.video-bitrate-path;
                 fill: transparent;
-                stroke: #4da3ff;
+                stroke: root.video-color;
                 stroke-width: 1.5px;
             }
 
@@ -283,16 +291,45 @@ component BitrateCard inherits Rectangle {
                 fit: fill;
                 commands: InspectorState.audio-bitrate-path;
                 fill: transparent;
-                stroke: #6ee7a0;
+                stroke: root.audio-color;
                 stroke-width: 1.5px;
             }
 
-            Text {
-                x: 4px;
-                y: 2px;
-                text: InspectorState.bitrate-peak-label;
-                color: #8a8a8a;
-                font-size: 10px;
+            // Per-axis scale maxima, colored like their lines (video's
+            // scale left, audio's right) and backed so they stay readable
+            // where a line passes underneath.
+            Rectangle {
+                x: 3px;
+                y: 3px;
+                width: video-peak.preferred-width + 8px;
+                height: video-peak.preferred-height + 3px;
+                background: #1c1c1ecc;
+                border-radius: 3px;
+
+                video-peak := Text {
+                    x: 4px;
+                    y: 1px;
+                    text: InspectorState.video-bitrate-peak-label;
+                    color: root.video-color;
+                    font-size: 10px;
+                }
+            }
+
+            Rectangle {
+                x: parent.width - self.width - 3px;
+                y: 3px;
+                width: audio-peak.preferred-width + 8px;
+                height: audio-peak.preferred-height + 3px;
+                background: #1c1c1ecc;
+                border-radius: 3px;
+
+                audio-peak := Text {
+                    x: 4px;
+                    y: 1px;
+                    text: InspectorState.audio-bitrate-peak-label;
+                    color: root.audio-color;
+                    font-size: 10px;
+                }
             }
         }
 
@@ -301,13 +338,13 @@ component BitrateCard inherits Rectangle {
 
             Text {
                 text: InspectorState.video-bitrate-label;
-                color: #4da3ff;
+                color: root.video-color;
                 font-size: 12px;
             }
 
             Text {
                 text: InspectorState.audio-bitrate-label;
-                color: #6ee7a0;
+                color: root.audio-color;
                 font-size: 12px;
             }
 

@@ -902,8 +902,9 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
 }
 
 /// Push one inspector sample into the UI: sparkline paths (SVG polylines
-/// over the fixed 300x100 viewbox, both scaled to the shared peak so video
-/// and audio are comparable), the track table and the info line lists.
+/// over the fixed 300x100 viewbox, each series scaled to its own peak:
+/// video dwarfs audio by 10-20x, so a shared scale pinned the audio line
+/// flat to the floor), the track table and the info line lists.
 fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
     use std::fmt::Write;
 
@@ -930,14 +931,12 @@ fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
         commands.into()
     }
 
-    let peak = video_kbps
-        .iter()
-        .chain(audio_kbps)
-        .fold(1.0f32, |m, v| m.max(*v));
+    let video_peak = video_kbps.iter().fold(1.0f32, |m, v| m.max(*v));
+    let audio_peak = audio_kbps.iter().fold(1.0f32, |m, v| m.max(*v));
 
     let state = ui.global::<crate::InspectorState>();
-    state.set_video_bitrate_path(polyline(video_kbps, peak));
-    state.set_audio_bitrate_path(polyline(audio_kbps, peak));
+    state.set_video_bitrate_path(polyline(video_kbps, video_peak));
+    state.set_audio_bitrate_path(polyline(audio_kbps, audio_peak));
     state.set_video_bitrate_label(
         format!(
             "Video {}",
@@ -952,7 +951,8 @@ fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
         )
         .into(),
     );
-    state.set_bitrate_peak_label(fmt_rate(peak).into());
+    state.set_video_bitrate_peak_label(fmt_rate(video_peak).into());
+    state.set_audio_bitrate_peak_label(fmt_rate(audio_peak).into());
     state.set_have_bitrate(true);
 
     let tracks: Vec<crate::UiInspectorTrack> = sample
