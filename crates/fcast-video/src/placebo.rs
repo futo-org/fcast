@@ -1,5 +1,9 @@
 #[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::ffi::c_void;
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::{mem::ManuallyDrop, ptr};
 
 use anyhow::anyhow;
@@ -89,7 +93,9 @@ fn gst_transfer_to_placebo(transfer: gst_video::VideoTransferFunction) -> pl_col
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// Only the macOS IOSurface path still destroys per frame. Linux dmabuf
+// imports are owned by the texture cache.
+#[cfg(target_os = "macos")]
 unsafe fn destroy_textures(gpu: *const pl_gpu_t, num_planes: i32, planes: &mut [pl_plane; 4]) {
     for p in 0..num_planes {
         let mut tex = planes[p as usize].texture;
@@ -97,6 +103,94 @@ unsafe fn destroy_textures(gpu: *const pl_gpu_t, num_planes: i32, planes: &mut [
             unsafe {
                 pl_tex_destroy(gpu, &mut tex);
             }
+        }
+    }
+}
+
+/// Everything that must match for a cached dmabuf plane import to be
+/// reused.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DmabufPlaneKey {
+    fd: i32,
+    offset: usize,
+    size: usize,
+    stride: usize,
+    modifier: u64,
+    fourcc: u32,
+    width: i32,
+    height: i32,
+}
+
+#[cfg(target_os = "linux")]
+struct DmabufPlaneTex {
+    key: DmabufPlaneKey,
+    tex: pl_tex,
+}
+
+/// A `pl_tex` moved across threads only as an opaque value. Created and
+/// destroyed on the render thread only.
+#[cfg(target_os = "linux")]
+struct SendTex(pl_tex);
+#[cfg(target_os = "linux")]
+unsafe impl Send for SendTex {}
+
+/// Cache of zero-copy dmabuf plane imports, shared between the context and
+/// the destroy-notify tokens riding the source `GstMemory` objects as qdata.
+///
+/// Only the render thread inserts and looks up `entries` (keyed by live
+/// `GstMemory` pointer). A freed memory's token moves its textures to
+/// `pending`, and the render thread destroys them at the next drain point
+/// (the GL backend needs its context current). Keys are never stale: the
+/// destroy-notify runs before the memory is deallocated.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct DmabufTexCache {
+    entries: HashMap<usize, Vec<DmabufPlaneTex>>,
+    pending: Vec<SendTex>,
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for DmabufTexCache {}
+
+#[cfg(target_os = "linux")]
+type SharedDmabufTexCache = Arc<Mutex<DmabufTexCache>>;
+
+/// Poison-tolerant lock: a panic elsewhere must not escalate inside a
+/// GStreamer destroy-notify or context teardown.
+#[cfg(target_os = "linux")]
+fn lock_dmabuf_cache(cache: &Mutex<DmabufTexCache>) -> std::sync::MutexGuard<'_, DmabufTexCache> {
+    match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn dmabuf_cache_quark() -> gst::glib::Quark {
+    static QUARK: OnceLock<gst::glib::Quark> = OnceLock::new();
+    *QUARK.get_or_init(|| gst::glib::Quark::from_str("fcast-video-pl-tex-cache"))
+}
+
+/// qdata payload installed on each imported `GstMemory`. Its destroy-notify
+/// fires when the memory is freed or the qdata is replaced, retiring this
+/// cache's entry either way. The `Weak` makes it a no-op once the owning
+/// context is gone.
+#[cfg(target_os = "linux")]
+struct DmabufCacheToken {
+    cache: Weak<Mutex<DmabufTexCache>>,
+    mem: usize,
+}
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" fn dmabuf_cache_token_free(data: gst::glib::ffi::gpointer) {
+    let token = unsafe { Box::from_raw(data as *mut DmabufCacheToken) };
+    if let Some(cache) = token.cache.upgrade() {
+        let mut cache = lock_dmabuf_cache(&cache);
+        if let Some(planes) = cache.entries.remove(&token.mem) {
+            cache
+                .pending
+                .extend(planes.into_iter().map(|p| SendTex(p.tex)));
         }
     }
 }
@@ -238,6 +332,10 @@ pub struct PlaceboContext {
     cached_textures: [pl_tex; 4],
     // Reusable textures backing composited overlays
     overlay_textures: Vec<pl_tex>,
+    /// Zero-copy dmabuf plane imports, cached for the lifetime of the source
+    /// GstMemory (see [`DmabufTexCache`]).
+    #[cfg(target_os = "linux")]
+    dmabuf_tex_cache: SharedDmabufTexCache,
     rendering_params: pl_render_params,
     // Warn-once latch for the IOSurface -> CPU-readback fallback in `render_frame`.
     #[cfg(target_os = "macos")]
@@ -279,6 +377,8 @@ impl PlaceboContext {
             renderer: ManuallyDrop::new(renderer),
             cached_textures: [std::ptr::null(); 4],
             overlay_textures: Vec::new(),
+            #[cfg(target_os = "linux")]
+            dmabuf_tex_cache: SharedDmabufTexCache::default(),
             rendering_params: build_render_params(opts),
             #[cfg(target_os = "macos")]
             iosurface_fallback_warned: false,
@@ -305,6 +405,7 @@ impl PlaceboContext {
             renderer: ManuallyDrop::new(renderer),
             cached_textures: [std::ptr::null(); 4],
             overlay_textures: Vec::new(),
+            dmabuf_tex_cache: SharedDmabufTexCache::default(),
             rendering_params: build_render_params(opts),
         })
     }
@@ -329,7 +430,81 @@ impl PlaceboContext {
         }
     }
 
+    /// Destroy cached dmabuf textures whose backing memory died since the
+    /// last call. Render thread only (the GL backend needs its context
+    /// current).
+    #[cfg(target_os = "linux")]
+    fn drain_dmabuf_pending(&mut self) {
+        let pending = std::mem::take(&mut lock_dmabuf_cache(&self.dmabuf_tex_cache).pending);
+        if pending.is_empty() {
+            return;
+        }
+        let gpu = self.gpu();
+        for mut tex in pending {
+            unsafe { pl_tex_destroy(gpu, &mut tex.0) };
+        }
+    }
+
+    /// Destroy every cached dmabuf import immediately (render thread only).
+    /// Tokens on live memories become no-ops and a later re-import recreates
+    /// the entries.
+    #[cfg(target_os = "linux")]
+    fn flush_dmabuf_cache(&mut self) {
+        let (entries, pending) = {
+            let mut cache = lock_dmabuf_cache(&self.dmabuf_tex_cache);
+            (
+                std::mem::take(&mut cache.entries),
+                std::mem::take(&mut cache.pending),
+            )
+        };
+        let gpu = self.gpu();
+        for (_, planes) in entries {
+            for mut plane in planes {
+                unsafe { pl_tex_destroy(gpu, &mut plane.tex) };
+            }
+        }
+        for mut tex in pending {
+            unsafe { pl_tex_destroy(gpu, &mut tex.0) };
+        }
+    }
+
+    /// Insert a freshly imported plane texture, installing the qdata token on
+    /// first import. Setting the qdata fires any previous token's
+    /// destroy-notify synchronously, which takes the cache lock, so it must
+    /// run before the insert and without the lock held.
+    #[cfg(target_os = "linux")]
+    fn cache_dmabuf_plane(&mut self, mem_ptr: usize, key: DmabufPlaneKey, tex: pl_tex) {
+        let already_tracked = lock_dmabuf_cache(&self.dmabuf_tex_cache)
+            .entries
+            .contains_key(&mem_ptr);
+
+        if !already_tracked {
+            let token = Box::new(DmabufCacheToken {
+                cache: Arc::downgrade(&self.dmabuf_tex_cache),
+                mem: mem_ptr,
+            });
+            unsafe {
+                gst::ffi::gst_mini_object_set_qdata(
+                    mem_ptr as *mut gst::ffi::GstMiniObject,
+                    <gst::glib::Quark as gst::glib::translate::IntoGlib>::into_glib(
+                        dmabuf_cache_quark(),
+                    ),
+                    Box::into_raw(token) as *mut _,
+                    Some(dmabuf_cache_token_free),
+                );
+            }
+        }
+
+        lock_dmabuf_cache(&self.dmabuf_tex_cache)
+            .entries
+            .entry(mem_ptr)
+            .or_default()
+            .push(DmabufPlaneTex { key, tex });
+    }
+
     fn flush_texture_cache(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.flush_dmabuf_cache();
         let gpu = self.gpu();
         for i in 0..self.cached_textures.len() {
             if !self.cached_textures[i].is_null() {
@@ -409,7 +584,7 @@ impl PlaceboContext {
             // `pl_plane_data` describes components in *memory order* (component_map maps the
             // n-th component in memory to a color channel). For planar/biplanar YUV memory
             // order coincides with component index order, but packed formats don't (BGRA
-            // stores B first while B is component 2) — sort by the component's byte offset
+            // stores B first while B is component 2), so sort by the component's byte offset
             // into the pixel. The stable sort keeps index order for planar formats where all
             // offsets are 0. Padding bytes that aren't a component (the X in xRGB/BGRx) are
             // expressed via component_pad.
@@ -660,6 +835,9 @@ impl PlaceboContext {
         let mut offsets = [0; 4];
         let mut strides = [0; 4];
         let mut sizes = [0usize; 4];
+        // The GstMemory each plane lives in, used as the cache key (planes
+        // may share one memory in single-fd dmabufs).
+        let mut mem_ptrs = [0usize; 4];
         let n_planes = vmeta.n_planes() as usize;
         let dma_drm_fourcc = DrmFourcc::try_from(source_dma_info.fourcc())
             .map_err(|_| RenderFrameError::InvalidFourcc)?;
@@ -686,6 +864,7 @@ impl PlaceboContext {
             offsets[plane] = mem.offset() + skip;
             strides[plane] = vmeta_strides[plane] as usize;
             sizes[plane] = size;
+            mem_ptrs[plane] = mem.as_ptr() as usize;
         }
 
         if !fds[0..n_planes].iter().all(|fd| *fd != -1) {
@@ -700,50 +879,76 @@ impl PlaceboContext {
         let mut image = create_pl_frame(n_planes as i32, &normal_info, &frame_info, mdi);
         image.rotation = rotation_to_pl(rotation);
         for plane_idx in 0..image.num_planes {
+            let plane = plane_idx as usize;
             let fmt_fourcc = crate::dmabuf::fourcc_from_plane(plane_idx, dma_drm_fourcc);
             let fmt = unsafe {
                 libplacebo::libplacebo_sys::pl_find_fourcc(self.gpu(), fmt_fourcc as u32)
             };
             if fmt.is_null() {
                 error!(?fmt_fourcc, "Plane has unsupported fourcc");
-                unsafe { destroy_textures(self.gpu(), image.num_planes, &mut image.planes) };
+                // Planes imported so far are cache-owned, nothing to
+                // destroy here.
                 return Err(RenderFrameError::UnsupportedPlaneFormat);
             }
 
-            let mut tex_params: pl_tex_params = unsafe { std::mem::zeroed() };
             let plane_width = frame_info
                 .format
                 .scale_width(plane_idx as u8, normal_info.width());
             let plane_height = frame_info
                 .format
                 .scale_height(plane_idx as u8, normal_info.height());
-            tex_params.w = plane_width as i32;
-            tex_params.h = plane_height as i32;
-            tex_params.format = fmt;
-            tex_params.sampleable = true;
-            let caps = unsafe { (*fmt).caps as u32 };
-            tex_params.blit_src = caps & pl_fmt_caps::PL_FMT_CAP_BLITTABLE as u32 > 0;
-            tex_params.import_handle = pl_handle_type_PL_HANDLE_DMA_BUF;
-            tex_params.shared_mem = pl_shared_mem {
-                handle: pl_handle {
-                    fd: fds[plane_idx as usize],
-                },
-                size: sizes[plane_idx as usize],
-                offset: offsets[plane_idx as usize],
-                drm_format_mod: modifier,
-                stride_w: strides[plane_idx as usize],
-                stride_h: 0,
-                plane: 0,
+            let key = DmabufPlaneKey {
+                fd: fds[plane],
+                offset: offsets[plane],
+                size: sizes[plane],
+                stride: strides[plane],
+                modifier,
+                fourcc: fmt_fourcc as u32,
+                width: plane_width as i32,
+                height: plane_height as i32,
             };
 
-            let tex = unsafe { pl_tex_create(self.gpu(), &tex_params) };
-            if tex.is_null() {
-                unsafe {
-                    destroy_textures(self.gpu(), plane_idx + 1, &mut image.planes);
+            // Imports are cached per source GstMemory: the decoder cycles a
+            // fixed pool of dmabufs, so re-importing per frame is pure
+            // waste. The texture is a view of the dmabuf, so the decoder's
+            // writes stay visible.
+            let cached = lock_dmabuf_cache(&self.dmabuf_tex_cache)
+                .entries
+                .get(&mem_ptrs[plane])
+                .and_then(|planes| planes.iter().find(|p| p.key == key).map(|p| p.tex));
+
+            let tex = match cached {
+                Some(tex) => tex,
+                None => {
+                    let mut tex_params: pl_tex_params = unsafe { std::mem::zeroed() };
+                    tex_params.w = key.width;
+                    tex_params.h = key.height;
+                    tex_params.format = fmt;
+                    tex_params.sampleable = true;
+                    let caps = unsafe { (*fmt).caps as u32 };
+                    tex_params.blit_src = caps & pl_fmt_caps::PL_FMT_CAP_BLITTABLE as u32 > 0;
+                    tex_params.import_handle = pl_handle_type_PL_HANDLE_DMA_BUF;
+                    tex_params.shared_mem = pl_shared_mem {
+                        handle: pl_handle { fd: key.fd },
+                        size: key.size,
+                        offset: key.offset,
+                        drm_format_mod: key.modifier,
+                        stride_w: key.stride,
+                        stride_h: 0,
+                        plane: 0,
+                    };
+
+                    let tex = unsafe { pl_tex_create(self.gpu(), &tex_params) };
+                    if tex.is_null() {
+                        // Earlier planes are cache-owned and stay valid for
+                        // future frames.
+                        return Err(RenderFrameError::TextureCreation);
+                    }
+                    self.cache_dmabuf_plane(mem_ptrs[plane], key, tex);
+                    tex
                 }
-                return Err(RenderFrameError::TextureCreation);
-            }
-            image.planes[plane_idx as usize].texture = tex;
+            };
+            image.planes[plane].texture = tex;
 
             let mut components = 0;
             for comp_idx in 0..normal_info.n_components() {
@@ -761,9 +966,8 @@ impl PlaceboContext {
             libplacebo::scale_and_fit(&destination.crop, &rotated_fit_rect(&image.crop, rotation));
 
         self.render_image_with_overlays(&mut image, destination, overlays);
-        unsafe {
-            destroy_textures(self.gpu(), image.num_planes, &mut image.planes);
-        }
+        // Plane textures are cache-owned for the source memory's lifetime,
+        // no per-frame destroy.
 
         Ok(())
     }
@@ -771,8 +975,8 @@ impl PlaceboContext {
     /// Zero-copy render of a VideoToolbox IOSurface frame. Mirrors [`render_dmabuf`]: import each
     /// plane's IOSurface into a `GL_TEXTURE_RECTANGLE`, wrap it with `pl_opengl_wrap`, then render.
     ///
-    /// Runs inside `SwapchainSink::render` where Slint's CGL context (the same one libplacebo was
-    /// created against) is current — so no context sharing and no sync meta are needed.
+    /// Runs inside `SwapchainSink::render` where Slint's CGL context (the same one libplacebo
+    /// was created against) is current, so no context sharing and no sync meta are needed.
     #[cfg(target_os = "macos")]
     fn render_iosurface(
         &mut self,
@@ -886,6 +1090,10 @@ impl PlaceboContext {
         swframe: &libplacebo::SwapchainFrame,
         frame: &crate::video::Frame,
     ) -> std::result::Result<(), RenderFrameError> {
+        // Retire cached imports whose backing memory died since the last
+        // frame. The destroy must happen here with the GL context current.
+        #[cfg(target_os = "linux")]
+        self.drain_dmabuf_pending();
         match &frame.data {
             crate::video::FrameData::SystemMemory { frame: v_frame } => self.render_sysmem(
                 swframe,
@@ -949,6 +1157,7 @@ impl PlaceboContext {
         destination_color: pl_color_space,
         source_frame: &crate::video::Frame,
     ) -> std::result::Result<(), RenderFrameError> {
+        self.drain_dmabuf_pending();
         let mut destination_frame: pl_frame = unsafe { std::mem::zeroed() };
         destination_frame.num_planes = 1;
         destination_frame.planes[0] = libplacebo::new_plane();

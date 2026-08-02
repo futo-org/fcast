@@ -3,7 +3,7 @@
 //! `vtdec` decodes into IOSurface-backed CVPixelBuffers and (given the `memory:IOSurface` caps
 //! feature) hands them downstream without a CPU readback. This module borrows the `IOSurfaceRef`
 //! out of a `GstMemory` and wraps each plane in a `GL_TEXTURE_RECTANGLE` via
-//! `CGLTexImageIOSurface2D` — the exact call GStreamer's own `iosurfaceglmemory.c` makes. The
+//! `CGLTexImageIOSurface2D`, the exact call GStreamer's own `iosurfaceglmemory.c` makes. The
 //! resulting texture is then wrapped by libplacebo with `pl_opengl_wrap` (see `placebo.rs`).
 //!
 //! This mirrors the Linux dma-buf path (`dmabuf.rs` + `placebo::render_dmabuf`): the buffer
@@ -93,10 +93,10 @@ unsafe extern "C" {
 /// `iformat` for `pl_opengl_wrap`.
 ///
 /// `cgl_internal` and `pl_iformat` are separate on purpose: `CGLTexImageIOSurface2D` wants the
-/// legacy interop formats (unsized `GL_RGBA` for BGRA — sized `GL_RGBA8` is rejected with
-/// `kCGLBadValue`; sized `GL_R16`/`GL_RG16` for 16-bit so the plane isn't read as 8-bit), while
-/// libplacebo only matches *sized* internal formats. The CGL triples mirror mpv's VideoToolbox
-/// interop table (`hwdec_vt.c`).
+/// legacy interop formats (unsized `GL_RGBA` for BGRA since sized `GL_RGBA8` is rejected with
+/// `kCGLBadValue`, and sized `GL_R16`/`GL_RG16` for 16-bit so the plane isn't read as 8-bit),
+/// while libplacebo only matches sized internal formats. The CGL triples mirror mpv's
+/// VideoToolbox interop table (`hwdec_vt.c`).
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneGlFormat {
     /// Internal format for `CGLTexImageIOSurface2D`.
