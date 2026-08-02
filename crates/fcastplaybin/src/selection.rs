@@ -373,6 +373,14 @@ impl SelectionEngine {
         self.refresh_wanted = false;
     }
 
+    /// The subtitle stream the applied (or in-flight) selection shows.
+    /// Only this stream may join the overlay. `None` means off, possibly
+    /// still draining, when `Inner::poll_text_policy` must not relink a
+    /// detached stream.
+    pub(crate) fn subtitle_sid(&self) -> Option<String> {
+        self.applied.subtitle.clone()
+    }
+
     /// Record a dispatched `SELECT_STREAMS` (the pump's caller sent it
     /// stamped with `seqnum`). The target becomes the optimistic applied
     /// selection so later requests compose with it instead of reverting it.

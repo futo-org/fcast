@@ -926,8 +926,8 @@ struct Inner {
     /// A gapless activation's user-facing events (PreparedActivated + the new
     /// item's collection), held back from decodebin3's output until the new
     /// item's audio crosses the decoupling queue to the sink. The switch is
-    /// DETECTED at decodebin3's output — one decoupling-queue ahead of the
-    /// speakers — so emitting the title/duration there flips the UI before the
+    /// detected at decodebin3's output, one decoupling-queue ahead of the
+    /// speakers, so emitting the title/duration there flips the UI before the
     /// sound. The `fpb-aqueue` src STREAM_START probe releases this when the
     /// item's audio actually reaches the sink, matching the sink-anchored
     /// playback position. Only set for items with audio (the release is
@@ -1238,7 +1238,7 @@ impl FcastPlaybin {
         // queue means the item behind it has drained and the NEXT item's audio
         // is now reaching the sink: exactly one STREAM_START crosses per audio
         // item, and a hold is only ever armed at a gapless boundary, so the
-        // first STREAM_START after an arm IS that boundary — no group-id
+        // first STREAM_START after an arm is that boundary. No group-id
         // bookkeeping needed (and none possible: streamsynchronizer may rewrite
         // group ids downstream). The initial load's STREAM_START finds no hold
         // and is a no-op.
@@ -1639,6 +1639,16 @@ impl FcastPlaybin {
             // on streaming threads.
             match dispatch {
                 Dispatch::Select(target, seqnum) => {
+                    // Dropping subtitles: detach text from the overlay now.
+                    // Waiting for decodebin3's pad removal queues behind the
+                    // overlay's blocked next-cue push, so the on-screen cue
+                    // would linger until its line ends. Runs before the send
+                    // so the deselect cannot race the detach. A failed
+                    // dispatch leaves text parked, matching the optimistic
+                    // applied state.
+                    if target.subtitle.is_none() {
+                        Inner::park_text_streams(&self.inner);
+                    }
                     let ids: Vec<&str> = [&target.video, &target.audio, &target.subtitle]
                         .into_iter()
                         .filter_map(|sid| sid.as_deref())
@@ -2649,8 +2659,8 @@ impl Inner {
     /// emit them here, keeping the activation-then-collection order.
     fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
         // A prior hold still waiting on its sink boundary (unreachable with
-        // real media — two swaps within one queue depth) is flushed under the
-        // OUTGOING generation, before we adopt this one, to keep order and
+        // real media, two swaps within one queue depth) is flushed under the
+        // outgoing generation, before we adopt this one, to keep order and
         // stamps correct.
         self.release_held_activation();
 
@@ -4982,8 +4992,8 @@ impl Inner {
         }
     }
 
-    /// Move overlay-linked text streams back to the parking sink (video is
-    /// going away, see `detach_text_from_overlay` for the mechanics).
+    /// Move overlay-linked text streams back to the parking sink (video
+    /// going away, or subtitles dropped). See `detach_text_from_overlay`.
     fn park_text_streams(inner: &Arc<Inner>) {
         let mut routing = inner.routing.lock();
         for routed in routing
@@ -4994,7 +5004,7 @@ impl Inner {
             Inner::detach_text_from_overlay(inner, routed);
             match inner.park_stream(&routed.db3_src_pad) {
                 Ok((sink, park)) => {
-                    debug!(pad = %routed.db3_src_pad.name(), "parked text stream (no video)");
+                    debug!(pad = %routed.db3_src_pad.name(), "parked text stream");
                     routed.park_sink = Some(sink);
                     routed.park_pad = Some(park);
                 }
@@ -5023,6 +5033,11 @@ impl Inner {
         if !decisions::text_may_link(current, pending) {
             return;
         }
+        // Only the selected subtitle stream may relink. A disabled stream
+        // stays routed until decodebin3 removes its pad, and relinking it
+        // here would resurrect the cue the eager detach just cleared.
+        // Snapshot before taking the routing lock.
+        let allowed_sid = inner.selection.lock().subtitle_sid();
         let mut routing = inner.routing.lock();
         if !routing
             .routed
@@ -5036,6 +5051,11 @@ impl Inner {
             .iter_mut()
             .filter(|r| r.kind == StreamKind::Text && r.downstream.is_none())
         {
+            // No stream id yet means wait for a later poll.
+            let sid = routed.db3_src_pad.stream_id();
+            if sid.is_none() || sid.as_deref() != allowed_sid.as_deref() {
+                continue;
+            }
             let Some(overlay_entry) = inner.overlay.static_pad("subtitle_sink") else {
                 warn!("subtitleoverlay has no subtitle_sink pad");
                 continue;
