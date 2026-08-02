@@ -1,0 +1,54 @@
+gst_mini_object_is_writable(): lock-free fast path for parentless objects
+
+Upstream gst_mini_object_is_writable() unconditionally acquires the
+priv_uint spinlock (a CAS to LOCKED plus an atomic store to release) just
+to discover that the object has no parents -- which is the case for every
+event, caps and query, and for buffers themselves (a buffer's memories
+have parents; the buffer does not). This patch returns early on a single
+atomic load when the state is PRIV_DATA_STATE_NO_PARENT.
+
+Safety: mutating the parent list requires holding a reference to the
+object, which contradicts the sole ownership (refcount==1 / single
+exclusive lock) already established before the fast path runs. The
+answer is exactly as current as the locked path's, which also drops its
+lock before returning.
+
+Besides the cycles, this makes the common-case query genuinely read-only:
+the spinlock CAS dirtied the object's cache line on every check, so
+concurrent writability checks on a shared object bounced the line
+between cores.
+
+Measured (debugoptimized, x86-64, pinned, 100M iters):
+  is_writable(buffer):          17.3 ns -> 2.2 ns   (7.9x)
+  is_writable(event):           19.4 ns -> 2.3 ns   (8.3x)
+  make_writable(when writable): 15.8 ns -> 3.5 ns   (4.5x)
+
+Call frequency (LD_PRELOAD counter, cross-DSO calls only, so a lower
+bound): 1 is_writable per buffer per in-place transform (volume:
+10000/10000 buffers); ~1.7 make_writable per compressed packet in Ogg
+Opus decode (39548 over one file); bursts during caps negotiation.
+
+Core test suites pass (gstbuffer, gstpad, gstevent, gstmemory).
+Not upstreamed yet: candidate follow-up after the gst_pad_forward MR.
+
+diff --git a/subprojects/gstreamer/gst/gstminiobject.c b/subprojects/gstreamer/gst/gstminiobject.c
+index bf0a9fcbc9..8622d90fbe 100644
+--- a/subprojects/gstreamer/gst/gstminiobject.c
++++ b/subprojects/gstreamer/gst/gstminiobject.c
+@@ -373,6 +373,16 @@ gst_mini_object_is_writable (const GstMiniObject * mini_object)
+   if (!result)
+     return result;
+ 
++  /* Fast path: no parents and no qdata, the common case for events, caps,
++   * queries and most buffers. A single atomic read suffices: mutating the
++   * parent list requires holding a reference to the object, which
++   * contradicts the sole ownership established above, and the answer is
++   * exactly as current as the locked path's, which also drops its lock
++   * before returning. */
++  if (G_LIKELY (g_atomic_int_get ((gint *) & mini_object->priv_uint) ==
++          PRIV_DATA_STATE_NO_PARENT))
++    return TRUE;
++
+   /* We are writable ourselves, but are there parents and are they all
+    * writable too? */
+   priv_state = lock_priv_pointer (GST_MINI_OBJECT_CAST (mini_object));
