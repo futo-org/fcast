@@ -111,6 +111,13 @@ inherits = "release"
 opt-level = "s"
 panic = "abort"
 
+[profile.release-prof]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+debug = "line-tables-only"
+strip = false
+
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"

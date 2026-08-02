@@ -1313,6 +1313,16 @@ fn configure_gstreamer(
             }
         ),
         format!("--force-fallback-for={}", fallback.join(",")),
+        // The pinned 1.29.x is a DEV-series GStreamer, where glib_debug
+        // (né gobject-cast-checks) defaults to enabled: every GST_IS_* macro
+        // in the static gst code does a runtime type walk (measured ~1% of
+        // playback CPU in the receiver profile). Stable-series releases
+        // default this off — do the same. extra-checks similarly compiles
+        // extra hot-path validation intended for development; both propagate
+        // to all gst subprojects (yield: true). glib_assert/glib_checks stay
+        // ON: those are behavior-relevant API guards.
+        "-Dglib_debug=disabled".into(),
+        "-Dextra-checks=disabled".into(),
         "-Dgst-full-target-type=static_library".into(),
         "-Dgst-full-plugins=*".into(),
         // Element-level whitelist: plugins named here register ONLY the listed
@@ -1428,10 +1438,23 @@ fn configure_gstreamer(
     // granularity is a whole object file. Skipped for MSVC (`cl` spells it
     // /Gy//Gw; the experimental Windows path is left untouched).
     let mut c_args: Vec<String> = Vec::new();
+    let mut cpp_args: Vec<String> = Vec::new();
     if os != "windows" {
         c_args.push("-ffunction-sections".into());
         c_args.push("-fdata-sections".into());
-        args.push("-Dcpp_args=-ffunction-sections -fdata-sections".into());
+        cpp_args.push("-ffunction-sections".into());
+        cpp_args.push("-fdata-sections".into());
+    }
+
+    // The profiling build keeps frame pointers in the static C/C++ code so
+    // `perf record --call-graph fp` can walk GStreamer frames: DWARF
+    // unwinding (libdw) fails through the huge static binary, and gcc omits
+    // frame pointers at any -O level otherwise. The Rust side gets the same
+    // flag via RUSTFLAGS in `with_receiver_env`. Part of `args`, so the setup
+    // stamp changes and the build dir reconfigures itself on profile switch.
+    if profile.cargo_profile == "release-prof" && os != "windows" {
+        c_args.push("-fno-omit-frame-pointer".into());
+        cpp_args.push("-fno-omit-frame-pointer".into());
     }
 
     // vorbis/theora headers include <ogg/ogg.h>, but ogg is only in their
@@ -1451,6 +1474,9 @@ fn configure_gstreamer(
     }
     if !c_args.is_empty() {
         args.push(format!("-Dc_args={}", c_args.join(" ")));
+    }
+    if !cpp_args.is_empty() {
+        args.push(format!("-Dcpp_args={}", cpp_args.join(" ")));
     }
 
     let (enable_os, disable_os): (&[(Plugins, &str)], &[(Plugins, &str)]) = match os {
@@ -2335,12 +2361,18 @@ fn with_receiver_env<T>(
 
     // Debug/profiling profiles keep frame pointers so `perf record
     // --call-graph fp` resolves Rust frames (rustc omits them even at
-    // opt-level 0; the static gstreamer C side already keeps them). Appended
-    // via RUSTFLAGS because a `cargo rustc` arg after `--` would only cover
-    // the final crate, and applied here so build/check/clippy share unit
-    // fingerprints. Plain `cargo build/test` outside xtask doesn't set this,
-    // so alternating the two rebuilds shared dev-profile deps.
-    let _fp = matches!(profile.cargo_profile.as_str(), "dev" | "release-dbg").then(|| {
+    // opt-level 0). For release-prof the static gstreamer C/C++ side gets
+    // the matching -fno-omit-frame-pointer in its meson c_args/cpp_args, so
+    // stacks walk end to end. Appended via RUSTFLAGS because a `cargo rustc`
+    // arg after `--` would only cover the final crate, and applied here so
+    // build/check/clippy share unit fingerprints. Plain `cargo build/test`
+    // outside xtask doesn't set this, so alternating the two rebuilds shared
+    // dev-profile deps.
+    let _fp = matches!(
+        profile.cargo_profile.as_str(),
+        "dev" | "release-dbg" | "release-prof"
+    )
+    .then(|| {
         let mut flags = std::env::var("RUSTFLAGS").unwrap_or_default();
         if !flags.contains("force-frame-pointers") {
             if !flags.is_empty() {
