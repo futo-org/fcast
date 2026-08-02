@@ -24,6 +24,26 @@
   </description>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="3.0.4" date="2026-08-02">
+      <description>
+        <ul>
+            <li>Gapless playback between queue items</li>
+            <li>Receiver-side queue autoplay with item prefetching, so transitions start instantly</li>
+            <li>Settings menu in the GUI</li>
+            <li>Stop button in the player controls</li>
+            <li>Show a dialog when another receiver instance is already running</li>
+            <li>Fix potential deadlocks in the PipeWire audio sink</li>
+            <li>Fix freezes and crashes when adding external subtitles, and allow adding them while media is still loading</li>
+            <li>Clear subtitles from the screen immediately when turned off</li>
+            <li>Fix tearing with the Wayland subsurface video sink under direct scanout</li>
+            <li>Hide the mouse cursor when the player controls hide with the Wayland subsurface sink</li>
+            <li>Improve video rendering and media pipeline performance (~50% reduction in CPU utilization during playback)</li>
+            <li>Fix crashes on malformed input (Google Cast seek timestamps, RAOP streams, image URLs, show durations)</li>
+            <li>Keep the receiver usable after a failed network accept</li>
+            <li>Fix the system tray icon in sandboxed builds</li>
+        </ul>
+      </description>
+    </release>
     <release version="3.0.3" date="2026-07-23">
       <description>
         <ul>

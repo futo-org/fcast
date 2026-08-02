@@ -1,6 +1,31 @@
 # FCast Receiver Changelog
 
-## 3.0.3 - UNRELEASED
+## 3.0.4 - 2026-08-02
+
+### New Features
+
+ - Gapless playback between queue items
+ - Receiver-side queue autoplay with item prefetching, so transitions start instantly
+ - Settings menu in the GUI
+ - Stop button in the player controls
+ - HEIC image support on all platforms
+ - Decode images and animations in the media pipeline, with hardware-accelerated JPEG decoding where available
+ - Show a dialog when another receiver instance is already running
+
+### Fixes
+
+ - Fix potential deadlocks in the PipeWire audio sink
+ - Fix freezes and crashes when adding external subtitles, and allow adding them while media is still loading
+ - Clear subtitles from the screen immediately when turned off
+ - Fix tearing with the Wayland subsurface video sink under direct scanout
+ - Hide the mouse cursor when the player controls hide with the Wayland subsurface sink
+ - Improve video rendering and media pipeline performance (~50% reduction in CPU utilization during playback)
+ - Honor the requested show duration (`playback_duration`)
+ - Fix crashes on malformed input (Google Cast seek timestamps, RAOP streams, image URLs, show durations)
+ - Keep the receiver usable after a failed network accept
+ - Fix the system tray icon in sandboxed builds
+
+## 3.0.3 - 2026-07-24
 
 ### New Features
 

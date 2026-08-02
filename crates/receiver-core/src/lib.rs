@@ -575,7 +575,7 @@ pub fn run<S: VideoSink + 'static>(
                     // video below directly. Registered HERE and not at app setup:
                     // on_winit_window_event silently no-ops unless the winit window
                     // adapter exists, which RenderingSetup guarantees.
-                    #[cfg(feature = "wayland-subsurface")]
+                    #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
                     if let Some(ui) = ui_weak.upgrade() {
                         use i_slint_backend_winit::WinitWindowAccessor;
                         debug!("Installing winit input-reveal filter");
