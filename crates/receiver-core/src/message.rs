@@ -199,6 +199,11 @@ pub enum Message {
     PendingSeekCheck {
         epoch: u64,
     },
+    /// The seek broadcast debounce expired (see `Application::seek_quiet`).
+    /// If the seek still has not settled, v4 senders get a Buffering state.
+    SeekQuietTimeout {
+        epoch: u64,
+    },
     /// DIAGNOSTIC (load-stall investigation): a bounded wait after a pipeline
     /// load. If the pipeline still has not reached a steady PAUSED when this
     /// fires (a selected stream's pad never routed), dump why (see

@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     MessageSender, ReceiverInfo, SenderId, application::PacketOrigin,
-    message::ReceiverToFCastSender,
+    message::ReceiverToFCastSender, utils::current_time_millis,
 };
 use anyhow::{Context, bail};
 use bitflags::bitflags;
@@ -427,6 +427,8 @@ enum Action {
     EndSession,
     Op(Operation),
     SendInitial,
+    /// Seed a newly active session with the receiver's current volume.
+    SendVolume,
     Forward {
         session_version: Option<SessionVersion>,
         msg: Arc<ReceiverToSenderMessage>,
@@ -729,7 +731,10 @@ impl State {
                 if version == SessionVersion::V3 {
                     Action::SendInitial
                 } else {
-                    Action::None
+                    // v1/v2 have no Initial message, but the sender still
+                    // needs the current volume to start in sync (volume
+                    // only broadcasts on change).
+                    Action::SendVolume
                 }
             }
             // TODO: technically v2 doesn't need to accept VersionMessage before starting the session
@@ -1296,6 +1301,11 @@ pub struct SessionDriver {
     receiver_info: Arc<ReceiverInfo>,
     // TODO: this should be updated in the time between new updates happen and when the state is sent out
     initial_v4_state: Option<InitialV4State>,
+    /// Volume at accept time, sent once the session activates so the
+    /// sender's UI starts in sync. Same staleness caveat as
+    /// `initial_v4_state`: a change in the accept-to-handshake window is
+    /// missed, the window is milliseconds.
+    initial_volume: f32,
     pending_tls_upgrade: bool,
 }
 
@@ -1308,6 +1318,7 @@ impl SessionDriver {
         internal_companion_tx: CompanionMsgSender,
         receiver_info: Arc<ReceiverInfo>,
         initial_v4_state: Option<InitialV4State>,
+        initial_volume: f32,
     ) -> Self {
         Self {
             stream: NetworkStream::new(stream),
@@ -1321,6 +1332,7 @@ impl SessionDriver {
             mirroring_offer_tx: None,
             receiver_info,
             initial_v4_state,
+            initial_volume,
             pending_tls_upgrade: false,
         }
     }
@@ -1449,6 +1461,12 @@ impl SessionDriver {
 
         self.send_bin_msg(Opcode::Flatbuf, &msg).await?;
 
+        // Volume seed, same reason as the play state below: it only
+        // broadcasts on change, so a freshly connected sender would
+        // otherwise start with a stale idea of the level.
+        let volume_msg = v4::MessageBuilder::new().volume_changed(self.initial_volume);
+        self.send_bin_msg(Opcode::Flatbuf, &volume_msg).await?;
+
         if let Some(initial) = self.initial_v4_state.take()
             && let WrappedPlayMessage::V4(play_msg) = initial.play_data.as_ref()
         {
@@ -1461,6 +1479,24 @@ impl SessionDriver {
             }
         }
 
+        Ok(())
+    }
+
+    /// Seed a newly active v1/v2/v3 session with the receiver's current
+    /// volume (v4 gets it in `finish_tls_upgrade`). Volume only broadcasts
+    /// on change, so without this a sender connecting between changes never
+    /// learns the level and its UI starts out of sync.
+    async fn send_connect_volume(&mut self) -> anyhow::Result<()> {
+        let StateVariant::Active { version } = &self.state.variant else {
+            return Ok(());
+        };
+        let msg = TranslatableMessage::VolumeUpdate(VolumeUpdateMessage {
+            generation_time: current_time_millis(),
+            volume: self.initial_volume as f64,
+        });
+        if let Some(body) = msg.translate_and_serialize(*version) {
+            self.send_bin_msg(Opcode::VolumeUpdate, &body).await?;
+        }
         Ok(())
     }
 
@@ -1520,8 +1556,10 @@ impl SessionDriver {
                             }),
                         }),
                     }))
-                    .await?
+                    .await?;
+                    self.send_connect_volume().await?;
                 }
+                Action::SendVolume => self.send_connect_volume().await?,
                 Action::Forward {
                     session_version,
                     msg,
@@ -1908,7 +1946,7 @@ mod tests {
             (
                 Opcode::Version,
                 Some(v2_json.as_bytes()),
-                Action::None,
+                Action::SendVolume,
                 SessionVersion::V2,
             ),
             (
@@ -1956,7 +1994,7 @@ mod tests {
                         opcode: Opcode::Version,
                         body: Some(v2_json.as_bytes()),
                     },
-                    Ok(Action::None),
+                    Ok(Action::SendVolume),
                 ),
                 (
                     DriverEvent::Packet {

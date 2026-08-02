@@ -929,6 +929,16 @@ impl Player {
         self.state_machine.queue_seek(seek);
     }
 
+    /// The current volume: the queued pending request when one exists (it
+    /// is the receiver's newest intent), otherwise the playbin's live
+    /// value. For seeding a newly connected sender's state.
+    pub fn volume(&self) -> f32 {
+        match self.pending_volume {
+            Some(volume) => volume.clamp(0.0, 1.0),
+            None => self.fcast.volume() as f32,
+        }
+    }
+
     /// Set the volume. The value itself lives in the playbin
     /// (`FcastPlaybin::set_volume`). What stays here is the receiver's
     /// confirmation protocol: senders expect exactly one `VolumeChanged`
