@@ -865,21 +865,32 @@ mod imp {
             // handling.
             drop(guard);
             let deadline = std::time::Instant::now() + Duration::from_millis(1500);
-            loop {
+            let died = loop {
                 {
                     let bridge = self.shared.bridge.lock();
                     if bridge.dead {
-                        return Err(gst::loggable_error!(CAT, "pw stream died in prepare()"));
+                        break true;
                     }
                     if bridge.cycles >= 2 {
-                        break;
+                        break false;
                     }
                 }
                 if std::time::Instant::now() >= deadline {
                     gst::warning!(CAT, "no pw graph cycles within 1.5s; starting anyway");
-                    break;
+                    break false;
                 }
                 std::thread::sleep(Duration::from_millis(5));
+            };
+            if died {
+                // The loop thread is still dispatching (it just delivered the
+                // error that latched `dead`), so the stream and listener must
+                // die under the loop lock like every other pw object (see the
+                // PwConn Send contract). A bare `return Err` here would drop
+                // them unlocked.
+                let _guard = conn.thread_loop.lock();
+                drop(listener);
+                drop(stream);
+                return Err(gst::loggable_error!(CAT, "pw stream died in prepare()"));
             }
 
             *self.stream.lock() = Some(PwStream {
@@ -1043,14 +1054,18 @@ mod imp {
             // change_state), the only point where the graph is still consuming, and the
             // device-side latency lives in the daemon, which keeps playing what it already has
             // after our stream disconnects.
+            // conn before stream, the order reset() and FlushStop use (an
+            // inverted pair here is an ABBA deadlock waiting for a caller
+            // change to make the paths overlap).
+            let conn = self.conn.lock();
             if let Some(s) = self.stream.lock().take() {
-                let conn = self.conn.lock();
                 if let Some(conn) = conn.as_ref() {
                     let _guard = conn.thread_loop.lock();
                     let _ = s.stream.disconnect();
                     drop(s); // stream + listener die under the loop lock
                 }
             }
+            drop(conn);
             let underruns = self.shared.bridge.lock().underruns;
             gst::debug!(CAT, "unprepared; {underruns} underrun/idle process cycles");
             Ok(())
